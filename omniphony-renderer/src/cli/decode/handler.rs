@@ -1,9 +1,9 @@
 use super::output::{AudioSamples, AudioWriter};
 use crate::cli::command::OutputBackend;
 use crate::events::{Configuration, Event};
-#[cfg(all(target_os = "linux", feature = "pipewire"))]
+#[cfg(target_os = "linux")]
 use audio_output::pipewire::{PipewireAdaptiveResamplingConfig, PipewireBufferConfig};
-#[cfg(all(target_os = "windows", feature = "asio"))]
+#[cfg(target_os = "windows")]
 use audio_output::AdaptiveResamplingConfig;
 use bridge_api::{RChannelLabel, RCoordinateFormat, RDecodedFrame, RMetadataFrame};
 
@@ -483,15 +483,15 @@ pub struct WriterState {
 #[derive(Clone)]
 pub struct RuntimeOutputState {
     #[cfg(any(
-        all(target_os = "linux", feature = "pipewire"),
-        all(target_os = "windows", feature = "asio")
+        target_os = "linux",
+        target_os = "windows"
     ))]
     pub output_device: Option<String>,
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    #[cfg(target_os = "linux")]
     pub pw_buffer_config: PipewireBufferConfig,
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    #[cfg(target_os = "linux")]
     pub pw_adaptive_config: PipewireAdaptiveResamplingConfig,
-    #[cfg(all(target_os = "windows", feature = "asio"))]
+    #[cfg(target_os = "windows")]
     pub asio_adaptive_config: AdaptiveResamplingConfig,
     /// Works for both ASIO (Windows) and PipeWire (Linux)
     pub output_sample_rate: Option<u32>,
@@ -502,15 +502,15 @@ impl Default for RuntimeOutputState {
     fn default() -> Self {
         Self {
             #[cfg(any(
-                all(target_os = "linux", feature = "pipewire"),
-                all(target_os = "windows", feature = "asio")
+                target_os = "linux",
+                target_os = "windows"
             ))]
             output_device: None,
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             pw_buffer_config: PipewireBufferConfig::default(),
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             pw_adaptive_config: PipewireAdaptiveResamplingConfig::default(),
-            #[cfg(all(target_os = "windows", feature = "asio"))]
+            #[cfg(target_os = "windows")]
             asio_adaptive_config: AdaptiveResamplingConfig::default(),
             output_sample_rate: None,
             enable_adaptive_resampling: false,
@@ -710,9 +710,9 @@ impl DecodeHandler {
         _output_rate: Option<u32>,
     ) -> (u32, &'static str) {
         match output_backend {
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             OutputBackend::Pipewire => (_output_rate.unwrap_or(input_sample_rate), "f32le"),
-            #[cfg(all(target_os = "windows", feature = "asio"))]
+            #[cfg(target_os = "windows")]
             OutputBackend::Asio => (_output_rate.unwrap_or(input_sample_rate), "f32le"),
             _ => (input_sample_rate, "s24le"),
         }
@@ -739,13 +739,13 @@ impl DecodeHandler {
 
         // Recreate streaming backends to apply the new output rate.
         match output_backend {
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             OutputBackend::Pipewire => {
                 if let Some(mut writer) = self.output.invalidate_writer() {
                     let _ = writer.flush();
                 }
             }
-            #[cfg(all(target_os = "windows", feature = "asio"))]
+            #[cfg(target_os = "windows")]
             OutputBackend::Asio => {
                 if let Some(mut writer) = self.output.invalidate_writer() {
                     let _ = writer.flush();
@@ -758,6 +758,20 @@ impl DecodeHandler {
     }
 
     fn sync_requested_output_device(&mut self, output_backend: OutputBackend) -> Result<()> {
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "windows"
+        )))]
+        {
+            let _ = output_backend;
+            return Ok(());
+        }
+
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "windows"
+        ))]
+        {
         let requested = self
             .spatial_renderer
             .as_ref()
@@ -775,13 +789,13 @@ impl DecodeHandler {
         );
 
         match output_backend {
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             OutputBackend::Pipewire => {
                 if let Some(mut writer) = self.output.invalidate_writer() {
                     let _ = writer.flush();
                 }
             }
-            #[cfg(all(target_os = "windows", feature = "asio"))]
+            #[cfg(target_os = "windows")]
             OutputBackend::Asio => {
                 if let Some(mut writer) = self.output.invalidate_writer() {
                     let _ = writer.flush();
@@ -791,6 +805,7 @@ impl DecodeHandler {
         }
 
         Ok(())
+        }
     }
 
     fn sync_requested_adaptive_resampling(&mut self, output_backend: OutputBackend) -> Result<()> {
@@ -812,13 +827,13 @@ impl DecodeHandler {
 
         // Recreate streaming backends to apply the new adaptive mode.
         match output_backend {
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             OutputBackend::Pipewire => {
                 if let Some(mut writer) = self.output.invalidate_writer() {
                     let _ = writer.flush();
                 }
             }
-            #[cfg(all(target_os = "windows", feature = "asio"))]
+            #[cfg(target_os = "windows")]
             OutputBackend::Asio => {
                 if let Some(mut writer) = self.output.invalidate_writer() {
                     let _ = writer.flush();
@@ -831,7 +846,7 @@ impl DecodeHandler {
     }
 
     fn sync_requested_latency_target(&mut self, output_backend: OutputBackend) -> Result<()> {
-        #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        #[cfg(target_os = "linux")]
         {
             let requested = self
                 .spatial_renderer
@@ -863,14 +878,14 @@ impl DecodeHandler {
             }
         }
 
-        #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
+        #[cfg(not(target_os = "linux"))]
         let _ = output_backend;
 
         Ok(())
     }
 
     fn sync_requested_adaptive_tuning(&mut self, output_backend: OutputBackend) -> Result<()> {
-        #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        #[cfg(target_os = "linux")]
         {
             let requested = self
                 .spatial_renderer
@@ -926,7 +941,7 @@ impl DecodeHandler {
             }
         }
 
-        #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
+        #[cfg(not(target_os = "linux"))]
         let _ = output_backend;
 
         Ok(())
@@ -1269,13 +1284,13 @@ impl DecodeHandler {
         channel_count: usize,
     ) -> Result<()> {
         #[cfg(not(any(
-            all(target_os = "linux", feature = "pipewire"),
-            all(target_os = "windows", feature = "asio")
+            target_os = "linux",
+            target_os = "windows"
         )))]
         let _ = (output_backend, sample_rate, channel_count);
 
         if self.output.audio_writer.is_none() && !self.output.output_init_failed {
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             if output_backend == OutputBackend::Pipewire {
                 // With VBAP active, do not start PipeWire on the first decoded
                 // frames before we know whether the stream carries objects.
@@ -1346,7 +1361,7 @@ impl DecodeHandler {
                 return Ok(());
             }
 
-            #[cfg(all(target_os = "windows", feature = "asio"))]
+            #[cfg(target_os = "windows")]
             if output_backend == OutputBackend::Asio {
                 // Use output_sample_rate if specified, otherwise use stream's native sample_rate
                 let effective_sample_rate = self.runtime.output_sample_rate.unwrap_or(sample_rate);
@@ -1386,21 +1401,21 @@ impl DecodeHandler {
         output_backend: OutputBackend,
         sample_rate: u32,
         channel_count: usize,
-        #[cfg(all(target_os = "linux", feature = "pipewire"))] pipewire_channel_names: Option<
+        #[cfg(target_os = "linux")] pipewire_channel_names: Option<
             Vec<String>,
         >,
-        #[cfg(not(all(target_os = "linux", feature = "pipewire")))] _pipewire_channel_names: Option<
+        #[cfg(not(target_os = "linux"))] _pipewire_channel_names: Option<
             Vec<String>,
         >,
     ) -> Result<AudioWriter> {
         #[cfg(not(any(
-            all(target_os = "linux", feature = "pipewire"),
-            all(target_os = "windows", feature = "asio")
+            target_os = "linux",
+            target_os = "windows"
         )))]
         let _ = (output_backend, sample_rate, channel_count);
 
         match output_backend {
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             OutputBackend::Pipewire => {
                 if let Some(names) = pipewire_channel_names {
                     Ok(AudioWriter::create_pipewire_with_channel_names(
@@ -1425,7 +1440,7 @@ impl DecodeHandler {
                     )?)
                 }
             }
-            #[cfg(all(target_os = "windows", feature = "asio"))]
+            #[cfg(target_os = "windows")]
             OutputBackend::Asio => {
                 let effective_sample_rate = self.runtime.output_sample_rate.unwrap_or(sample_rate);
                 Ok(AudioWriter::create_asio(

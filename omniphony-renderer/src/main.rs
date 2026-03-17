@@ -6,7 +6,7 @@ use cli::command::{Cli, Commands, LogFormat, LogLevel};
 use cli::decode::cmd_render;
 #[cfg(feature = "saf_vbap")]
 use cli::generate_vbap::cmd_generate_vbap;
-#[cfg(all(target_os = "windows", feature = "asio"))]
+#[cfg(target_os = "windows")]
 use cli::list_asio_devices::cmd_list_asio_devices;
 use log::info;
 use std::ffi::OsString;
@@ -30,7 +30,7 @@ where
         OsString::from("render"),
         #[cfg(feature = "saf_vbap")]
         OsString::from("generate-vbap"),
-        #[cfg(all(target_os = "windows", feature = "asio"))]
+        #[cfg(target_os = "windows")]
         OsString::from("list-asio-devices"),
         OsString::from("help"),
     ];
@@ -156,7 +156,7 @@ fn main() -> Result<()> {
         Commands::Render(ref args) => cmd_render(args, &cli)?,
         #[cfg(feature = "saf_vbap")]
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args)?,
-        #[cfg(all(target_os = "windows", feature = "asio"))]
+        #[cfg(target_os = "windows")]
         Commands::ListAsioDevices => cmd_list_asio_devices()?,
     }
 

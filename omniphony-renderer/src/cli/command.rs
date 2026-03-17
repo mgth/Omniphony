@@ -61,7 +61,7 @@ pub enum Commands {
     GenerateVbap(GenerateVbapArgs),
 
     /// List available ASIO output devices (Windows only)
-    #[cfg(all(target_os = "windows", feature = "asio"))]
+    #[cfg(target_os = "windows")]
     ListAsioDevices,
 }
 
@@ -128,8 +128,8 @@ pub struct RenderArgs {
     /// PipeWire: node target name (e.g. "omniphony_router")
     /// ASIO: device name as listed by `orender list-asio-devices`
     #[cfg(any(
-        all(target_os = "linux", feature = "pipewire"),
-        all(target_os = "windows", feature = "asio")
+        target_os = "linux",
+        target_os = "windows"
     ))]
     #[arg(
         long,
@@ -143,19 +143,19 @@ pub struct RenderArgs {
     /// Playback starts once the ring buffer has reached this level, and the PI
     /// controller (--enable-adaptive-resampling) maintains it at this level.
     /// Default: 500.
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    #[cfg(target_os = "linux")]
     #[arg(long, value_name = "MS")]
     pub pw_latency: Option<u32>,
 
     /// [LINUX ONLY] PipeWire maximum buffer fill before applying back-pressure, in milliseconds.
     /// Defaults to 2 × pw-latency.  Must be greater than pw-latency.
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    #[cfg(target_os = "linux")]
     #[arg(long, value_name = "MS")]
     pub pw_max_latency: Option<u32>,
 
     /// [LINUX ONLY] PipeWire processing quantum in frames (~21ms at 48kHz for 1024 frames).
     /// Smaller values reduce hardware latency but increase CPU load. Default: 1024.
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    #[cfg(target_os = "linux")]
     #[arg(long, value_name = "FRAMES")]
     pub pw_quantum: Option<u32>,
 
@@ -493,10 +493,10 @@ impl std::str::FromStr for LogFormat {
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
 pub enum OutputBackend {
     /// PipeWire audio output (streaming, Linux only).
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    #[cfg(target_os = "linux")]
     Pipewire,
     /// ASIO audio output (Windows only, requires 'asio' feature).
-    #[cfg(all(target_os = "windows", feature = "asio"))]
+    #[cfg(target_os = "windows")]
     Asio,
     /// Placeholder used when no realtime output backend is compiled in.
     #[value(skip)]
@@ -505,11 +505,11 @@ pub enum OutputBackend {
 
 impl OutputBackend {
     pub fn platform_default() -> Option<Self> {
-        #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        #[cfg(target_os = "linux")]
         {
             return Some(Self::Pipewire);
         }
-        #[cfg(all(target_os = "windows", feature = "asio"))]
+        #[cfg(target_os = "windows")]
         {
             return Some(Self::Asio);
         }
@@ -545,9 +545,9 @@ impl std::str::FromStr for OutputBackend {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             "pipewire" => Ok(Self::Pipewire),
-            #[cfg(all(target_os = "windows", feature = "asio"))]
+            #[cfg(target_os = "windows")]
             "asio" => Ok(Self::Asio),
             _ => Err(format!("Unknown output backend: {s}")),
         }

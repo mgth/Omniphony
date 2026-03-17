@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", feature = "pipewire"))]
+#![cfg(target_os = "linux")]
 
 use anyhow::{Result, anyhow};
 use crossbeam::queue::ArrayQueue;
@@ -131,12 +131,12 @@ pub type PipewireAdaptiveResamplingConfig = AdaptiveResamplingConfig;
 pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
     pw::init();
 
-    let mainloop = pw::main_loop::MainLoop::new(None)
+    let mainloop = pw::main_loop::MainLoopRc::new(None)
         .map_err(|e| anyhow!("Failed to create PipeWire main loop: {e:?}"))?;
-    let context = pw::context::Context::new(&mainloop)
+    let context = pw::context::ContextRc::new(&mainloop, None)
         .map_err(|e| anyhow!("Failed to create PipeWire context: {e:?}"))?;
     let core = context
-        .connect(None)
+        .connect_rc(None)
         .map_err(|e| anyhow!("Failed to connect to PipeWire core: {e:?}"))?;
     let registry = core
         .get_registry()
@@ -169,7 +169,7 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
             let Some(props) = global.props.as_ref() else {
                 return;
             };
-            let Some(media_class) = props.get(&pw::keys::MEDIA_CLASS) else {
+            let Some(media_class) = props.get(*pw::keys::MEDIA_CLASS) else {
                 return;
             };
             if media_class != "Audio/Sink" {
@@ -177,7 +177,7 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
             }
 
             let Some(value) = props
-                .get(&pw::keys::NODE_NAME)
+                .get(*pw::keys::NODE_NAME)
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
             else {
@@ -185,15 +185,15 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
             };
 
             let label = props
-                .get(&pw::keys::NODE_DESCRIPTION)
-                .or_else(|| props.get(&pw::keys::NODE_NICK))
-                .or_else(|| props.get(&pw::keys::DEVICE_DESCRIPTION))
-                .or_else(|| props.get(&pw::keys::DEVICE_NAME))
+                .get(*pw::keys::NODE_DESCRIPTION)
+                .or_else(|| props.get(*pw::keys::NODE_NICK))
+                .or_else(|| props.get(*pw::keys::DEVICE_DESCRIPTION))
+                .or_else(|| props.get(*pw::keys::DEVICE_NAME))
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
                 .unwrap_or(value);
 
-            collected_clone
+        collected_clone
                 .borrow_mut()
                 .push((value.to_string(), label.to_string()));
         })
@@ -688,18 +688,18 @@ fn run_pipewire_loop(
 
     // Use ThreadLoop for thread-safe rate control
     let main_loop = unsafe {
-        pw::thread_loop::ThreadLoop::new(None, None)
+        pw::thread_loop::ThreadLoopRc::new(None, None)
             .map_err(|e| anyhow!("Failed to create thread loop: {:?}", e))?
     };
 
-    let context = pw::context::Context::new(&main_loop)
+    let context = pw::context::ContextRc::new(&main_loop, None)
         .map_err(|e| anyhow!("Failed to create context: {:?}", e))?;
 
     let core = context
-        .connect(None)
+        .connect_rc(None)
         .map_err(|e| anyhow!("Failed to connect: {:?}", e))?;
 
-    let mut props = pw::properties::Properties::new();
+    let mut props = pw::properties::PropertiesBox::new();
 
     // Set node name
     props.insert("node.name", "omniphony-vbap-renderer");
@@ -743,7 +743,7 @@ fn run_pipewire_loop(
         requested_latency_frames as f64 / actual_output_rate as f64 * 1000.0
     );
 
-    let stream = pw::stream::Stream::new(&core, "omniphony-audio", props)
+    let stream = pw::stream::StreamBox::new(&core, "omniphony-audio", props)
         .map_err(|e| anyhow!("Failed to create stream: {:?}", e))?;
 
     // Setup state changed listener

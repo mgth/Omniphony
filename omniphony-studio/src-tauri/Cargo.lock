@@ -2390,6 +2390,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "omniphony-studio"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "log",
+ "rfd",
+ "rosc",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3492,21 +3507,6 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
-]
-
-[[package]]
-name = "omniphony-studio"
-version = "0.1.0"
-dependencies = [
- "image",
- "log",
- "rfd",
- "rosc",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tokio",
 ]
 
 [[package]]

@@ -61,18 +61,16 @@ lto = "thin"
 strip = "symbols"
 
 [features]
-# No default features - users must explicitly choose their platform profile
-default = []
+# Native platform audio backends and SAF-backed VBAP are compiled by default.
+default = ["saf_vbap"]
 
 # SAF-backed VBAP support (Linux and Windows)
 # Enables runtime VBAP table generation with generate-vbap command
 # Usage: cargo build --features saf_vbap
 saf_vbap = ["renderer/saf_vbap"]
 
-# ASIO audio output (Windows only, requires native Windows build)
-# Usage on Windows: cargo build --features asio
-asio = ["audio_output/asio"]
+# Legacy compatibility alias. Windows ASIO support is compiled by default on Windows.
+asio = []
 
-# PipeWire audio output (Linux only)
-# Usage on Linux: cargo build --features pipewire
-pipewire = ["audio_output/pipewire"]
+# Legacy compatibility alias. PipeWire support is compiled by default on Linux.
+pipewire = []

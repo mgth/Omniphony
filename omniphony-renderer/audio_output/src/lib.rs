@@ -123,14 +123,14 @@ pub fn compute_adaptive_step(
 }
 
 pub mod asio;
-#[cfg(all(target_os = "linux", feature = "pipewire"))]
+#[cfg(target_os = "linux")]
 pub mod pipewire;
 
-#[cfg(all(target_os = "linux", feature = "pipewire"))]
+#[cfg(target_os = "linux")]
 pub use pipewire::{PipewireBufferConfig, PipewireWriter, list_pipewire_output_devices};
 
-#[cfg(all(target_os = "linux", feature = "pipewire"))]
+#[cfg(target_os = "linux")]
 pub type PipewireAdaptiveResamplingConfig = AdaptiveResamplingConfig;
 
-#[cfg(all(target_os = "windows", feature = "asio"))]
+#[cfg(target_os = "windows")]
 pub use asio::{AsioWriter, list_asio_devices};

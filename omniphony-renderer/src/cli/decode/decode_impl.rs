@@ -5,7 +5,7 @@ use crate::cli::command::{
     Cli, LogFormat, LogLevel, OutputBackend, RampModeArg, RenderArgs, VbapTableModeArg,
 };
 use anyhow::Result;
-#[cfg(all(target_os = "linux", feature = "pipewire"))]
+#[cfg(target_os = "linux")]
 use audio_output::pipewire::{
     PipewireAdaptiveResamplingConfig, PipewireBufferConfig, list_pipewire_output_devices,
 };
@@ -14,7 +14,7 @@ use renderer::live_params::OutputDeviceOption;
 use renderer::metering::AudioMeter;
 use std::sync::mpsc;
 
-#[cfg(all(target_os = "windows", feature = "asio"))]
+#[cfg(target_os = "windows")]
 fn list_available_output_devices(_backend: OutputBackend) -> Vec<OutputDeviceOption> {
     audio_output::list_asio_devices()
         .unwrap_or_default()
@@ -26,7 +26,7 @@ fn list_available_output_devices(_backend: OutputBackend) -> Vec<OutputDeviceOpt
         .collect()
 }
 
-#[cfg(all(target_os = "linux", feature = "pipewire"))]
+#[cfg(target_os = "linux")]
 fn list_available_output_devices(backend: OutputBackend) -> Vec<OutputDeviceOption> {
     match backend {
         OutputBackend::Pipewire => list_pipewire_output_devices()
@@ -40,8 +40,8 @@ fn list_available_output_devices(backend: OutputBackend) -> Vec<OutputDeviceOpti
 }
 
 #[cfg(not(any(
-    all(target_os = "windows", feature = "asio"),
-    all(target_os = "linux", feature = "pipewire")
+    target_os = "windows",
+    target_os = "linux"
 )))]
 fn list_available_output_devices(_backend: OutputBackend) -> Vec<OutputDeviceOption> {
     Vec::new()
@@ -197,13 +197,13 @@ fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderAr
     }
 
     // Platform-specific Option fields
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    #[cfg(target_os = "linux")]
     if args.pw_latency.is_none() {
         args.pw_latency = cfg.pw_latency;
     }
     #[cfg(any(
-        all(target_os = "linux", feature = "pipewire"),
-        all(target_os = "windows", feature = "asio")
+        target_os = "linux",
+        target_os = "windows"
     ))]
     if args.output_device.is_none() {
         if let Some(ref s) = cfg.output_device {
@@ -405,26 +405,26 @@ fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<renderer::config:
         },
         output_device: {
             #[cfg(any(
-                all(target_os = "linux", feature = "pipewire"),
-                all(target_os = "windows", feature = "asio")
+                target_os = "linux",
+                target_os = "windows"
             ))]
             {
                 args.output_device.clone()
             }
             #[cfg(not(any(
-                all(target_os = "linux", feature = "pipewire"),
-                all(target_os = "windows", feature = "asio")
+                target_os = "linux",
+                target_os = "windows"
             )))]
             {
                 None
             }
         },
         pw_latency: {
-            #[cfg(all(target_os = "linux", feature = "pipewire"))]
+            #[cfg(target_os = "linux")]
             {
                 args.pw_latency
             }
-            #[cfg(not(all(target_os = "linux", feature = "pipewire")))]
+            #[cfg(not(target_os = "linux"))]
             {
                 None
             }
@@ -686,7 +686,7 @@ fn init_render_handler(
     let _ = (preferred_vbap_table_mode, vbap_table_mode_explicit);
 
     // Set PipeWire output target and buffer config (Linux only)
-    #[cfg(all(target_os = "linux", feature = "pipewire"))]
+    #[cfg(target_os = "linux")]
     {
         handler.runtime.output_device = args.output_device.clone();
         let defaults = PipewireBufferConfig::default();
@@ -744,7 +744,7 @@ fn init_render_handler(
     }
 
     // Set ASIO output device if specified (Windows only)
-    #[cfg(all(target_os = "windows", feature = "asio"))]
+    #[cfg(target_os = "windows")]
     {
         handler.runtime.output_device = args.output_device.clone();
     }
@@ -1066,6 +1066,10 @@ fn init_render_handler(
     // Wire the renderer control into the OSC sender so the listener can read/write live params.
     if let Some(renderer) = &handler.spatial_renderer {
         let ctrl = renderer.renderer_control();
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "windows"
+        ))]
         ctrl.set_requested_output_device(args.output_device.clone());
         if let Some(backend) = args.output_backend.or_else(OutputBackend::platform_default) {
             ctrl.set_available_output_devices(list_available_output_devices(backend));
@@ -1076,7 +1080,7 @@ fn init_render_handler(
         ctrl.set_requested_adaptive_resampling(args.enable_adaptive_resampling);
         ctrl.set_requested_ramp_mode(args.ramp_mode.into());
         ctrl.live.write().unwrap().ramp_mode = args.ramp_mode.into();
-        #[cfg(all(target_os = "linux", feature = "pipewire"))]
+        #[cfg(target_os = "linux")]
         {
             let defaults = PipewireBufferConfig::default();
             let adaptive = &handler.runtime.pw_adaptive_config;

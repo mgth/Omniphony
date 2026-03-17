@@ -2,22 +2,27 @@
 
 ## Platform-Specific Build Instructions
 
-`omniphony-renderer` has different build profiles for different platforms. You **must** specify the appropriate feature when building.
+`omniphony-renderer` now compiles its native realtime backend and SAF-backed VBAP support by default on each supported OS:
+
+- Linux: PipeWire
+- Windows: ASIO
+
+- Linux: PipeWire + `saf_vbap`
+- Windows: ASIO + `saf_vbap`
+
+The default build is now the full native build.
 
 ### Linux
 
-On Linux, use the `pipewire` feature for audio streaming output and optionally `saf_vbap` for VBAP table generation:
+On Linux, PipeWire output and runtime VBAP generation are built by default:
 
 ```bash
 # SAF_ROOT must point to the Spatial_Audio_Framework source tree
 # (default: ../SPARTA/SDKs/Spatial_Audio_Framework — adjust if needed)
 export SAF_ROOT="/path/to/Spatial_Audio_Framework"
 
-# Full build: SAF-backed VBAP + PipeWire
-cargo build --release --features saf_vbap,pipewire
-
-# PipeWire only (no VBAP generation)
-cargo build --release --features pipewire
+# Full native Linux build: PipeWire + SAF-backed VBAP
+cargo build --release
 ```
 
 Prerequisites (install via package manager):
@@ -26,26 +31,23 @@ Prerequisites (install via package manager):
 - `libpipewire-0.3-dev` (for PipeWire audio output)
 
 This enables:
-- Runtime VBAP table generation via SAF's `saf_vbap` module (with `saf_vbap`)
+- Runtime VBAP table generation via SAF's `saf_vbap` module
 - `generate-vbap` command for creating .vbap files
-- PipeWire audio streaming output (with `pipewire`)
+- PipeWire audio streaming output
 - All runtime rendering functionality
 
 ### Windows
 
-On Windows, use the `asio` feature for ASIO audio output and optionally `saf_vbap` (VBAP generation).
+On Windows, ASIO output and runtime VBAP generation are built by default.
 
-> **Prerequisites:** Building with `saf_vbap` or `asio` requires several native dependencies (MSVC, SAF, OpenBLAS, ASIO SDK). See **[BUILDING_WINDOWS.md](BUILDING_WINDOWS.md)** for the full setup procedure.
+> **Prerequisites:** Native Windows builds require the ASIO SDK, SAF and OpenBLAS. See **[BUILDING_WINDOWS.md](BUILDING_WINDOWS.md)** for the full setup procedure.
 
 ```bash
-# Full build: SAF-backed VBAP + ASIO + Windows Service
+# Full native Windows build: ASIO + SAF-backed VBAP + Windows Service
 export SAF_ROOT="C:/dev/SAF"
 export VCPKG_ROOT="C:/dev/vcpkg"
 export CPAL_ASIO_DIR="C:/dev/asio_sdk"
-cargo build --release --features saf_vbap,asio
-
-# ASIO only (no VBAP generation)
-cargo build --release --features asio
+cargo build --release
 ```
 
 Full build enables:
@@ -53,19 +55,27 @@ Full build enables:
 - ASIO audio output (`--output-backend asio`, `list-asio-devices`)
 - Windows Service Control Manager integration
 
-### Building Without Platform Features
+### Building Without Extra Features
 
-You can build without any platform-specific features:
+You can build the full native profile directly:
 
 ```bash
 cargo build --release
 ```
 
-This minimal build:
+This default build:
 - Can process supported bridge-provided streams
 - Can load pre-generated VBAP tables
-- Cannot generate VBAP tables at runtime
-- No ASIO support (Windows will use default WASAPI/DirectSound)
+- Can generate VBAP tables at runtime
+- Includes the platform realtime backend for the current OS
+
+Quick sanity check:
+
+```bash
+cargo check
+```
+
+This validates the default native build.
 
 ## Workflow: VBAP + ASIO on Windows
 
@@ -113,8 +123,8 @@ for your build.
 | Feature | Description | Platforms |
 |---------|-------------|-----------|
 | `saf_vbap` | Enable runtime VBAP table generation via SAF (`saf_vbap`) | Linux, Windows |
-| `asio` | Enable ASIO audio output (requires ASIO SDK) | Windows only |
-| `pipewire` | Enable PipeWire audio streaming output | Linux only |
+| `asio` | Legacy compatibility alias; ASIO is built by default on Windows | Windows only |
+| `pipewire` | Legacy compatibility alias; PipeWire is built by default on Linux | Linux only |
 
 ## ASIO Devices (Windows Only)
 
@@ -154,13 +164,16 @@ If you don't have any ASIO devices, install one of these:
 
 ### "VBAP table generation not available"
 
-This means you're trying to use runtime VBAP generation without the `saf_vbap` feature. Either:
-- Rebuild with `--features saf_vbap` (Linux only)
-- Use a pre-generated .vbap file with `--vbap-table`
+This means the build could not enable SAF-backed VBAP support. Check that:
+- `SAF_ROOT` points to a valid `Spatial_Audio_Framework` tree when needed
+- SAF has been built and provides `build/framework/libsaf.a`
+- the native dependencies required by SAF are installed
 
 ### Missing ASIO options on Windows
 
-You need to rebuild with `--features asio` to enable ASIO support.
+On Windows, ASIO support is now part of the default native build. If it is missing,
+check that you are building on Windows with the ASIO SDK configured as documented in
+[BUILDING_WINDOWS.md](BUILDING_WINDOWS.md).
 
 ### SAF build fails on Windows
 
