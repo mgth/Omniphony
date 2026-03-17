@@ -1,6 +1,6 @@
 # Quickstart
 
-This file gives the shortest path to a working `gsrd` setup.
+This file gives the shortest path to a working `omniphony-renderer` setup.
 
 ## 1. Build
 
@@ -37,12 +37,12 @@ cargo build --release --features asio
 
 ## 2. Prepare a Bridge Plugin
 
-`gsrd` requires a bridge plugin.
+`orender` requires a bridge plugin.
 
 You can provide it explicitly:
 
 ```bash
-./target/release/gsrd input.bin \
+./target/release/orender input.bin \
   --bridge-path ./libformat_bridge.so
 ```
 
@@ -57,14 +57,14 @@ Or place a matching bridge next to the executable:
 Use the default runtime path:
 
 ```bash
-./target/release/gsrd input.bin \
+./target/release/orender input.bin \
   --bridge-path ./libformat_bridge.so
 ```
 
 Read from stdin:
 
 ```bash
-cat input.bin | ./target/release/gsrd - \
+cat input.bin | ./target/release/orender - \
   --bridge-path ./libformat_bridge.so
 ```
 
@@ -73,7 +73,7 @@ cat input.bin | ./target/release/gsrd - \
 Use a standard speaker layout:
 
 ```bash
-./target/release/gsrd input.bin \
+./target/release/orender input.bin \
   --bridge-path ./libformat_bridge.so \
   --enable-vbap \
   --speaker-layout layouts/7.1.4.yaml
@@ -82,7 +82,7 @@ Use a standard speaker layout:
 Or precompute a VBAP table:
 
 ```bash
-./target/release/gsrd generate-vbap \
+./target/release/orender generate-vbap \
   --speaker-layout layouts/7.1.4.yaml \
   --output 7.1.4.vbap \
   --az-res 2 \
@@ -93,7 +93,7 @@ Or precompute a VBAP table:
 Then reuse it:
 
 ```bash
-./target/release/gsrd input.bin \
+./target/release/orender input.bin \
   --bridge-path ./libformat_bridge.so \
   --enable-vbap \
   --vbap-table ./7.1.4.vbap
@@ -104,7 +104,7 @@ Then reuse it:
 Send metadata to a local OSC client:
 
 ```bash
-./target/release/gsrd input.bin \
+./target/release/orender input.bin \
   --bridge-path ./libformat_bridge.so \
   --osc \
   --osc-host 127.0.0.1 \
@@ -118,30 +118,30 @@ See [OSC_PROTOCOL.md](OSC_PROTOCOL.md) for the full message surface.
 Linux / PipeWire:
 
 ```bash
-./target/release/gsrd input.bin \
+./target/release/orender input.bin \
   --bridge-path ./libformat_bridge.so \
   --output-backend pipewire \
-  --output-device gsrd_router
+  --output-device omniphony_router
 ```
 
 Windows / ASIO:
 
 ```powershell
-.\target\release\gsrd.exe list-asio-devices
-.\target\release\gsrd.exe input.bin --output-backend asio --output-device "Your ASIO Device"
+.\target\release\orender.exe list-asio-devices
+.\target\release\orender.exe input.bin --output-backend asio --output-device "Your ASIO Device"
 ```
 
 ## 7. Configuration File
 
 Default config path:
 
-- Linux: `~/.config/gsrd/config.yaml`
-- Windows: `%APPDATA%\gsrd\config.yaml`
+- Linux: `~/.config/omniphony/config.yaml`
+- Windows: `%APPDATA%\omniphony\config.yaml`
 
 Save the current effective configuration:
 
 ```bash
-./target/release/gsrd --config ./config.yaml --save-config input.bin \
+./target/release/orender --config ./config.yaml --save-config input.bin \
   --bridge-path ./libformat_bridge.so \
   --enable-vbap \
   --speaker-layout layouts/7.1.4.yaml \

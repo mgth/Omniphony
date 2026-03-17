@@ -1,11 +1,11 @@
 # OSC Protocol
 
-This document describes the OSC messages exchanged between `gsrd` and a visualizer
+This document describes the OSC messages exchanged between `orender` and a visualizer
 or control client.
 
 ## Overview
 
-`gsrd` can:
+`orender` can:
 
 - broadcast decoded spatial metadata
 - broadcast live renderer state
@@ -18,14 +18,14 @@ or control client.
 |---|---|---|
 | `--osc-host` | `127.0.0.1` | Fixed OSC client target |
 | `--osc-port` | `9000` | Fixed OSC client port |
-| `--osc-rx-port` | `9000` | `gsrd` receive port for registration and control |
+| `--osc-rx-port` | `9000` | `orender` receive port for registration and control |
 
 The fixed client defined by `--osc-host:--osc-port` always receives broadcasts.
 Additional clients can register dynamically.
 
 ## Registration
 
-### `/gsrd/register`
+### `/omniphony/register`
 
 Sent by a client to `--osc-rx-port`.
 
@@ -35,37 +35,37 @@ Arguments:
 |---|---|---|---|
 | `listen_port` | `i32` | Yes | Client receive port if different from the UDP source port |
 
-After registration, `gsrd` sends:
+After registration, `orender` sends:
 
 1. a config bundle with the speaker layout
 2. a state bundle with the current live renderer state
 
-### `/gsrd/heartbeat`
+### `/omniphony/heartbeat`
 
 Arguments:
 
 | Name | Type | Optional | Description |
 |---|---|---|---|
-| `listen_port` | `i32` | Yes | Same convention as `/gsrd/register` |
+| `listen_port` | `i32` | Yes | Same convention as `/omniphony/register` |
 
 Responses:
 
-- `/gsrd/heartbeat/ack`
-- `/gsrd/heartbeat/unknown`
+- `/omniphony/heartbeat/ack`
+- `/omniphony/heartbeat/unknown`
 
 Dynamic clients should send heartbeats periodically to stay registered.
 
-## Messages Sent by gsrd
+## Messages Sent by orender
 
 ### Initial Configuration
 
-#### `/gsrd/config/speakers`
+#### `/omniphony/config/speakers`
 
 | Argument | Type | Description |
 |---|---|---|
 | `count` | `i32` | Total speaker count |
 
-#### `/gsrd/config/speaker/{idx}`
+#### `/omniphony/config/speaker/{idx}`
 
 | Argument | Type | Description |
 |---|---|---|
@@ -77,7 +77,7 @@ Dynamic clients should send heartbeats periodically to stay registered.
 
 ### Spatial Metadata
 
-#### `/gsrd/spatial/frame`
+#### `/omniphony/spatial/frame`
 
 | Argument | Type | Description |
 |---|---|---|
@@ -86,7 +86,7 @@ Dynamic clients should send heartbeats periodically to stay registered.
 | `object_count` | `i32` | Number of active objects in this frame |
 | `coordinate_format` | `i32` | `0=cartesian`, `1=polar` |
 
-#### `/gsrd/object/{idx}/xyz`
+#### `/omniphony/object/{idx}/xyz`
 
 | Argument | Type | Description |
 |---|---|---|
@@ -104,18 +104,18 @@ Dynamic clients should send heartbeats periodically to stay registered.
 
 Enabled with `--osc-metering`.
 
-#### `/gsrd/meter/object/{idx}`
+#### `/omniphony/meter/object/{idx}`
 
 | Argument | Type | Description |
 |---|---|---|
 | `peak_dbfs` | `f32` | Object peak level |
 | `rms_dbfs` | `f32` | Object RMS level |
 
-#### `/gsrd/meter/object/{idx}/gains`
+#### `/omniphony/meter/object/{idx}/gains`
 
 Variable-length list of linear gains, one value per output speaker.
 
-#### `/gsrd/meter/speaker/{idx}`
+#### `/omniphony/meter/speaker/{idx}`
 
 | Argument | Type | Description |
 |---|---|---|
@@ -124,7 +124,7 @@ Variable-length list of linear gains, one value per output speaker.
 
 ### Timestamp
 
-#### `/gsrd/timestamp`
+#### `/omniphony/timestamp`
 
 | Argument | Type | Description |
 |---|---|---|
@@ -138,29 +138,29 @@ to newly registered clients as part of the initial state bundle.
 
 Common addresses include:
 
-- `/gsrd/state/gain`
-- `/gsrd/state/object/{idx}/gain`
-- `/gsrd/state/object/{idx}/mute`
-- `/gsrd/state/speaker/{idx}/gain`
-- `/gsrd/state/speaker/{idx}/mute`
-- `/gsrd/state/speaker/{idx}`
-- `/gsrd/state/speakers/recomputing`
-- `/gsrd/state/spread/min`
-- `/gsrd/state/spread/max`
-- `/gsrd/state/spread/from_distance`
-- `/gsrd/state/spread/distance_range`
-- `/gsrd/state/spread/distance_curve`
-- `/gsrd/state/loudness`
-- `/gsrd/state/loudness/source`
-- `/gsrd/state/loudness/gain`
-- `/gsrd/state/room_ratio`
-- `/gsrd/state/vbap/table_mode`
-- `/gsrd/state/vbap/effective_mode`
-- `/gsrd/state/log_level`
+- `/omniphony/state/gain`
+- `/omniphony/state/object/{idx}/gain`
+- `/omniphony/state/object/{idx}/mute`
+- `/omniphony/state/speaker/{idx}/gain`
+- `/omniphony/state/speaker/{idx}/mute`
+- `/omniphony/state/speaker/{idx}`
+- `/omniphony/state/speakers/recomputing`
+- `/omniphony/state/spread/min`
+- `/omniphony/state/spread/max`
+- `/omniphony/state/spread/from_distance`
+- `/omniphony/state/spread/distance_range`
+- `/omniphony/state/spread/distance_curve`
+- `/omniphony/state/loudness`
+- `/omniphony/state/loudness/source`
+- `/omniphony/state/loudness/gain`
+- `/omniphony/state/room_ratio`
+- `/omniphony/state/vbap/table_mode`
+- `/omniphony/state/vbap/effective_mode`
+- `/omniphony/state/log_level`
 
 ### Log Stream
 
-#### `/gsrd/log`
+#### `/omniphony/log`
 
 | Argument | Type | Description |
 |---|---|---|
@@ -169,44 +169,44 @@ Common addresses include:
 | `target` | `string` | Rust log target/module |
 | `message` | `string` | Log message text |
 
-## Messages Sent to gsrd
+## Messages Sent to orender
 
 All control messages are sent to `--osc-rx-port`.
 
 Common control addresses include:
 
-- `/gsrd/control/gain`
-- `/gsrd/control/object/{idx}/gain`
-- `/gsrd/control/object/{idx}/mute`
-- `/gsrd/control/speaker/{idx}/gain`
-- `/gsrd/control/speaker/{idx}/mute`
-- `/gsrd/control/spread/min`
-- `/gsrd/control/spread/max`
-- `/gsrd/control/spread/from_distance`
-- `/gsrd/control/spread/distance_range`
-- `/gsrd/control/spread/distance_curve`
-- `/gsrd/control/loudness`
-- `/gsrd/control/room_ratio`
-- `/gsrd/control/vbap/table_mode`
-- `/gsrd/control/speaker/{idx}/az`
-- `/gsrd/control/speaker/{idx}/el`
-- `/gsrd/control/speaker/{idx}/distance`
-- `/gsrd/control/speaker/{idx}/spatialize`
-- `/gsrd/control/speakers/apply`
-- `/gsrd/control/speakers/reset`
-- `/gsrd/control/save_config`
-- `/gsrd/control/reload_config`
-- `/gsrd/control/log_level`
-- `/gsrd/control/ramp_mode`
+- `/omniphony/control/gain`
+- `/omniphony/control/object/{idx}/gain`
+- `/omniphony/control/object/{idx}/mute`
+- `/omniphony/control/speaker/{idx}/gain`
+- `/omniphony/control/speaker/{idx}/mute`
+- `/omniphony/control/spread/min`
+- `/omniphony/control/spread/max`
+- `/omniphony/control/spread/from_distance`
+- `/omniphony/control/spread/distance_range`
+- `/omniphony/control/spread/distance_curve`
+- `/omniphony/control/loudness`
+- `/omniphony/control/room_ratio`
+- `/omniphony/control/vbap/table_mode`
+- `/omniphony/control/speaker/{idx}/az`
+- `/omniphony/control/speaker/{idx}/el`
+- `/omniphony/control/speaker/{idx}/distance`
+- `/omniphony/control/speaker/{idx}/spatialize`
+- `/omniphony/control/speakers/apply`
+- `/omniphony/control/speakers/reset`
+- `/omniphony/control/save_config`
+- `/omniphony/control/reload_config`
+- `/omniphony/control/log_level`
+- `/omniphony/control/ramp_mode`
 
-`/gsrd/control/reload_config` requests a full render restart so `gsrd` re-resolves
+`/omniphony/control/reload_config` requests a full render restart so `orender` re-resolves
 its effective options from the config file and restarts the current stream with
 those settings.
 
-`/gsrd/control/log_level s <level>` changes the runtime log filter immediately.
+`/omniphony/control/log_level s <level>` changes the runtime log filter immediately.
 Accepted values are `off`, `error`, `warn`, `info`, `debug`, `trace`.
 
-`/gsrd/control/ramp_mode s <mode>` changes how object ramps are rendered.
+`/omniphony/control/ramp_mode s <mode>` changes how object ramps are rendered.
 Accepted values are:
 
 - `off`: no interpolation, jump directly to the target
@@ -217,18 +217,18 @@ Accepted values are:
 
 Speaker position edits are staged first, then applied atomically through:
 
-- `/gsrd/control/speakers/apply`
+- `/omniphony/control/speakers/apply`
 
-During recompute, `gsrd` broadcasts:
+During recompute, `orender` broadcasts:
 
-- `/gsrd/state/speakers/recomputing i 1`
+- `/omniphony/state/speakers/recomputing i 1`
 
 When the new topology is published, it broadcasts:
 
-- `/gsrd/state/speakers/recomputing i 0`
-- updated `/gsrd/state/speaker/{idx}` messages
-- updated `/gsrd/state/speaker/{idx}/spatialize` messages
-- `/gsrd/state/vbap/effective_mode`
+- `/omniphony/state/speakers/recomputing i 0`
+- updated `/omniphony/state/speaker/{idx}` messages
+- updated `/omniphony/state/speaker/{idx}/spatialize` messages
+- `/omniphony/state/vbap/effective_mode`
 
 ## Notes
 
@@ -240,5 +240,5 @@ When the new topology is published, it broadcasts:
 ## Recommended Next Step
 
 The bridge API is documented separately in
-[BRIDGE_API.md](/home/user/dev/spatial-renderer/gsrd/BRIDGE_API.md). This file
-only describes the OSC surface exposed by `gsrd`.
+[BRIDGE_API.md](BRIDGE_API.md). This file
+only describes the OSC surface exposed by `orender`.

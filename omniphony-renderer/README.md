@@ -1,6 +1,6 @@
 # omniphony-renderer
 
-![omniphony-renderer preview](gsrd.png)
+![omniphony-renderer preview](omniphony-renderer.png)
 
 `omniphony-renderer` is the realtime decode and spatial rendering engine of the Omniphony suite.
 

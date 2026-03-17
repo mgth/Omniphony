@@ -1,6 +1,6 @@
 # Omniphony Studio
 
-![Omniphony Studio preview](gsrd.png)
+![Omniphony Studio preview](omniphony-studio.png)
 
 Omniphony Studio est l’interface de supervision, de visualisation 3D et de contrôle live de la suite Omniphony.
 

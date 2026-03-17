@@ -26,13 +26,13 @@ Immersive audio 9.1.6 configuration (ITU-R BS.2051-3 Config 6+4+0)
 Use the `--speaker-layout` flag to specify a layout file when decoding with VBAP:
 
 ```bash
-gsrd decode --enable-vbap --speaker-layout layouts/7.1.4.yaml input.thd
+orender render --enable-vbap --speaker-layout layouts/7.1.4.yaml input.bin
 ```
 
 Or use a preset name directly in code:
 
 ```rust
-use gsrd::speaker_layout::SpeakerLayout;
+use omniphony_renderer::speaker_layout::SpeakerLayout;
 
 let layout = SpeakerLayout::preset("7.1.4")?;
 ```
@@ -120,10 +120,10 @@ You can test if your layout file is valid by trying to load it:
 
 ```bash
 # This will validate the layout during build
-gsrd decode --enable-vbap --speaker-layout my_layout.yaml --help
+orender render --enable-vbap --speaker-layout my_layout.yaml --help
 ```
 
-If there are errors in the YAML format or speaker positions, gsrd will report them clearly.
+If there are errors in the YAML format or speaker positions, orender will report them clearly.
 
 ## Reference Standards
 

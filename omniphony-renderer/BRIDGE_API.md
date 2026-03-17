@@ -1,13 +1,13 @@
 # Bridge API
 
-This document describes the runtime plugin ABI used by `gsrd` to load external
+This document describes the runtime plugin ABI used by `omniphony-renderer` to load external
 decoder bridges.
 
 The ABI is defined in:
-- [bridge_api/src/lib.rs](/home/user/dev/spatial-renderer/gsrd/bridge_api/src/lib.rs)
-- [src/bridge_loader.rs](/home/user/dev/spatial-renderer/gsrd/src/bridge_loader.rs)
+- [bridge_api/src/lib.rs](bridge_api/src/lib.rs)
+- [src/bridge_loader.rs](src/bridge_loader.rs)
 
-`gsrd` does not decode immersive formats directly. A bridge plugin owns the
+`omniphony-renderer` does not decode immersive formats directly. A bridge plugin owns the
 format-specific parsing, decode pipeline, and spatial metadata extraction.
 
 ## Loading Model
@@ -16,9 +16,9 @@ Bridge lookup order:
 1. `--bridge-path <FILE>`
 2. `render.bridge_path` in the config file
 3. the first file matching `lib*_bridge.so`, `lib*_bridge.dll`, or
-   `lib*_bridge.dylib` next to the `gsrd` executable
+   `lib*_bridge.dylib` next to the `orender` executable
 
-Without a bridge plugin, `gsrd` will not start.
+Without a bridge plugin, `orender` will not start.
 
 ## Exported Root Module
 
@@ -205,7 +205,7 @@ These are host hints, not host commands.
 
 `configure(key, value)` is bridge-defined.
 
-`gsrd` currently relies on:
+`omniphony-renderer` currently relies on:
 - `presentation`
   - used to select the presentation / substream / best presentation according
     to bridge-specific semantics
@@ -241,6 +241,6 @@ A usable bridge plugin must:
 
 ## Related Host Code
 
-- [src/bridge_loader.rs](/home/user/dev/spatial-renderer/gsrd/src/bridge_loader.rs)
-- [src/cli/decode/decode_impl.rs](/home/user/dev/spatial-renderer/gsrd/src/cli/decode/decode_impl.rs)
-- [src/cli/decode/decoder_thread.rs](/home/user/dev/spatial-renderer/gsrd/src/cli/decode/decoder_thread.rs)
+- [src/bridge_loader.rs](src/bridge_loader.rs)
+- [src/cli/decode/decode_impl.rs](src/cli/decode/decode_impl.rs)
+- [src/cli/decode/decoder_thread.rs](src/cli/decode/decoder_thread.rs)

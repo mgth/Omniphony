@@ -1,8 +1,8 @@
-# Building gsrd
+# Building omniphony-renderer
 
 ## Platform-Specific Build Instructions
 
-gsrd has different build profiles for different platforms. You **must** specify the appropriate feature when building.
+`omniphony-renderer` has different build profiles for different platforms. You **must** specify the appropriate feature when building.
 
 ### Linux
 
@@ -73,7 +73,7 @@ Generate a VBAP table (Linux or Windows with `saf_vbap`) and use it for playback
 
 ```bash
 # Generate a VBAP table
-gsrd generate-vbap \
+orender generate-vbap \
   --speaker-layout layouts/7.1.4.yaml \
   --output 7.1.4.vbap \
   --az-res 5 \
@@ -81,10 +81,10 @@ gsrd generate-vbap \
   --spread-res 0.05
 
 # List available ASIO devices
-gsrd.exe list-asio-devices
+orender.exe list-asio-devices
 
 # Decode with ASIO + VBAP
-gsrd.exe input.thd \
+orender.exe input.bin \
   --output-backend asio \
   --output-device "Your ASIO Device" \
   --enable-vbap \
@@ -93,7 +93,7 @@ gsrd.exe input.thd \
 
 ## SAF / SPARTA Naming
 
-`gsrd` runtime VBAP generation uses
+`omniphony-renderer` runtime VBAP generation uses
 [`Spatial_Audio_Framework` (SAF)](https://github.com/leomccormack/Spatial_Audio_Framework),
 not the separate
 [`SPARTA`](https://leomccormack.github.io/sparta-site/) plug-in suite.
@@ -104,7 +104,7 @@ The `saf_vbap` feature means:
 - link SAF
 - enable runtime VBAP table generation through SAF's `saf_vbap` module
 
-`gsrd` does not bundle or redistribute SAF or SPARTA. You must obtain and
+`omniphony-renderer` does not bundle or redistribute SAF or SPARTA. You must obtain and
 build SAF separately and comply with the applicable upstream SAF license terms
 for your build.
 
@@ -123,7 +123,7 @@ When building with the `asio` feature, you get access to ASIO audio output and t
 ### Listing Available ASIO Devices
 
 ```powershell
-gsrd.exe list-asio-devices
+orender.exe list-asio-devices
 ```
 
 This will show all ASIO devices installed on your system:
@@ -138,7 +138,7 @@ Available ASIO devices:
 ### Using a Specific ASIO Device
 
 ```powershell
-gsrd.exe input.thd --output-backend asio --output-device "FlexASIO"
+orender.exe input.bin --output-backend asio --output-device "FlexASIO"
 ```
 
 **Note:** The device name must match exactly as shown by `list-asio-devices`.
@@ -164,5 +164,5 @@ You need to rebuild with `--features asio` to enable ASIO support.
 
 ### SAF build fails on Windows
 
-The `saf_vbap` feature in `gsrd` depends on a separate SAF build plus OpenBLAS.
+The `saf_vbap` feature in `omniphony-renderer` depends on a separate SAF build plus OpenBLAS.
 Follow the setup steps in [BUILDING_WINDOWS.md](BUILDING_WINDOWS.md).

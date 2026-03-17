@@ -1,16 +1,16 @@
-# Building gsrd with SAF-backed VBAP on Windows
+# Building omniphony-renderer with SAF-backed VBAP on Windows
 
-This guide documents how to build `gsrd` with the `saf_vbap` feature on Windows,
+This guide documents how to build `omniphony-renderer` with the `saf_vbap` feature on Windows,
 enabling runtime VBAP gain table generation via the `generate-vbap` command.
 
 Important naming note:
 
-- the dependency actually used by `gsrd` is
+- the dependency actually used by `omniphony-renderer` is
   [`Spatial_Audio_Framework` (SAF)](https://github.com/leomccormack/Spatial_Audio_Framework)
 - `SPARTA` is a separate plug-in suite built using SAF:
   https://leomccormack.github.io/sparta-site/
 - the Cargo feature name `saf_vbap` specifically enables SAF-backed VBAP
-  generation in `gsrd`
+  generation in `omniphony-renderer`
 
 ## Prerequisites
 
@@ -30,7 +30,7 @@ Both must be built as **static libraries** with **MSVC**.
 Licensing note:
 
 - SAF upstream documents a dual-licensing model
-- for `gsrd`, you should review the exact SAF configuration you build and the
+- for `omniphony-renderer`, you should review the exact SAF configuration you build and the
   upstream terms that apply to it before redistributing binaries
 - this repository does not bundle or redistribute SAF or SPARTA source/binaries
 
@@ -143,7 +143,7 @@ Output: `C:\dev\SAF\build-win\framework\saf.lib` (~3.3 MB)
 >
 > `clang-cl` is not an alternative due to C99 `_Complex` vs MSVC `_Fcomplex` type mismatches. This may be fixed in a future MSVC update.
 
-## Step 4: Build gsrd
+## Step 4: Build omniphony-renderer
 
 Set environment variables and build:
 
@@ -180,7 +180,7 @@ cargo build --release --features saf_vbap
 
 ### Building from a different directory
 
-If building from a directory other than the repo root (e.g., `C:\dev\GSRD`), use `SAF_ROOT` to point to the SAF source:
+If building from a directory other than the repo root (e.g., `C:\dev\Omniphony\omniphony-renderer`), use `SAF_ROOT` to point to the SAF source:
 
 ```bash
 export SAF_ROOT="C:/dev/SAF"
@@ -190,10 +190,10 @@ cargo build --features saf_vbap,asio --release
 ## Step 5: Verify
 
 ```bash
-gsrd.exe --help
+orender.exe --help
 # Should show "generate-vbap" and "list-asio-devices" in the commands list
 
-gsrd.exe generate-vbap --speaker-layout layouts/7.1.4.yaml --output test.vbap
+orender.exe generate-vbap --speaker-layout layouts/7.1.4.yaml --output test.vbap
 # Should generate a VBAP gain table file
 ```
 
