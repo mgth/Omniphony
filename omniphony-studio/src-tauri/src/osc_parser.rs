@@ -307,8 +307,8 @@ pub enum OscEvent {
 
 // ── sub-parsers ─────────────────────────────────────────────────────────────
 
-fn parse_gsrd_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> Option<OscEvent> {
-    if !parts.contains(&"gsrd") || !parts.contains(&"config") {
+fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> Option<OscEvent> {
+    if !parts.contains(&"omniphony") || !parts.contains(&"config") {
         return None;
     }
 
@@ -368,13 +368,13 @@ fn parse_gsrd_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> Opti
     None
 }
 
-fn parse_gsrd_object_xyz(
+fn parse_omniphony_object_xyz(
     parts: &[&str],
     args: &[f64],
     raw_args: &[OscType],
     coordinate_format: CoordinateFormat,
 ) -> Option<OscEvent> {
-    if !parts.contains(&"gsrd") || !parts.contains(&"object") || !parts.contains(&"xyz") {
+    if !parts.contains(&"omniphony") || !parts.contains(&"object") || !parts.contains(&"xyz") {
         return None;
     }
 
@@ -410,7 +410,7 @@ fn parse_gsrd_object_xyz(
         .filter(|s| !s.trim().is_empty());
 
     let (mx, my, mz) = match coordinate_format {
-        // gsrd xyz: x=right, y=front, z=up → scene: x=front, y=up, z=right
+        // omniphony xyz: x=right, y=front, z=up → scene: x=front, y=up, z=right
         CoordinateFormat::Cartesian => (y, z, x),
         // In polar mode payload is [azimuth_deg, elevation_deg, distance]
         CoordinateFormat::Polar => spherical_to_cartesian(x, y, z),
@@ -428,8 +428,8 @@ fn parse_gsrd_object_xyz(
     })
 }
 
-fn parse_gsrd_spatial_frame(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
-    if parts.len() != 3 || parts[0] != "gsrd" || parts[1] != "spatial" || parts[2] != "frame" {
+fn parse_omniphony_spatial_frame(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
+    if parts.len() != 3 || parts[0] != "omniphony" || parts[1] != "spatial" || parts[2] != "frame" {
         return None;
     }
     let sample_pos = to_number(args[0])? as i64;
@@ -457,8 +457,8 @@ fn parse_gsrd_spatial_frame(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
     })
 }
 
-fn parse_gsrd_log(parts: &[&str], raw_args: &[OscType]) -> Option<OscEvent> {
-    if parts.len() != 2 || parts[0] != "gsrd" || parts[1] != "log" {
+fn parse_omniphony_log(parts: &[&str], raw_args: &[OscType]) -> Option<OscEvent> {
+    if parts.len() != 2 || parts[0] != "omniphony" || parts[1] != "log" {
         return None;
     }
     let seq = match raw_args.first()? {
@@ -479,8 +479,8 @@ fn parse_gsrd_log(parts: &[&str], raw_args: &[OscType]) -> Option<OscEvent> {
     })
 }
 
-fn parse_gsrd_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> Option<OscEvent> {
-    if parts.len() < 3 || parts[0] != "gsrd" || parts[1] != "state" {
+fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> Option<OscEvent> {
+    if parts.len() < 3 || parts[0] != "omniphony" || parts[1] != "state" {
         return None;
     }
 
@@ -767,26 +767,26 @@ pub fn parse_osc_message(
     let args: Vec<f64> = raw_args.iter().map(|a| unwrap_arg(a)).collect();
 
     // config
-    if let Some(ev) = parse_gsrd_config(&parts, &args, raw_args) {
+    if let Some(ev) = parse_omniphony_config(&parts, &args, raw_args) {
         return Some(ev);
     }
 
-    // gsrd object xyz
-    if let Some(ev) = parse_gsrd_object_xyz(&parts, &args, raw_args, coordinate_format) {
+    // omniphony object xyz
+    if let Some(ev) = parse_omniphony_object_xyz(&parts, &args, raw_args, coordinate_format) {
         return Some(ev);
     }
 
-    // gsrd spatial frame
-    if let Some(ev) = parse_gsrd_spatial_frame(&parts, &args) {
+    // omniphony spatial frame
+    if let Some(ev) = parse_omniphony_spatial_frame(&parts, &args) {
         return Some(ev);
     }
 
-    if let Some(ev) = parse_gsrd_log(&parts, raw_args) {
+    if let Some(ev) = parse_omniphony_log(&parts, raw_args) {
         return Some(ev);
     }
 
-    // gsrd state
-    if let Some(ev) = parse_gsrd_state(&parts, &args, raw_args) {
+    // omniphony state
+    if let Some(ev) = parse_omniphony_state(&parts, &args, raw_args) {
         return Some(ev);
     }
 

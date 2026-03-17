@@ -25,13 +25,13 @@ function sphericalToCartesian(azimuthDeg, elevationDeg, distance) {
   return { x, y, z };
 }
 
-function gsrdSpeakerToSceneCartesian(azimuthDeg, elevationDeg, distance) {
+function omniphonySpeakerToSceneCartesian(azimuthDeg, elevationDeg, distance) {
   const az = (azimuthDeg * Math.PI) / 180;
   const el = (elevationDeg * Math.PI) / 180;
   const d = distance;
 
   return {
-    // gsrd convention: 0 front, +90 left, +elevation up
+    // omniphony convention: 0 front, +90 left, +elevation up
     x: d * Math.cos(el) * Math.cos(az),
     y: d * Math.sin(el),
     z: d * Math.cos(el) * Math.sin(az)
@@ -59,7 +59,7 @@ function findIdInAddress(parts) {
 }
 
 function parseOmniphonyConfigMessage(parts, args) {
-  if (!parts.includes('gsrd') || !parts.includes('config')) {
+  if (!parts.includes('omniphony') || !parts.includes('config')) {
     return null;
   }
 
@@ -89,7 +89,7 @@ function parseOmniphonyConfigMessage(parts, args) {
       return null;
     }
 
-    const position = gsrdSpeakerToSceneCartesian(azimuth, elevation, distance);
+    const position = omniphonySpeakerToSceneCartesian(azimuth, elevation, distance);
     const spatialize = toNumber(spatializeRaw);
 
     return {
@@ -112,7 +112,7 @@ function parseOmniphonyConfigMessage(parts, args) {
 }
 
 function parseOmniphonyObjectXyz(parts, args, context) {
-  if (!parts.includes('gsrd') || !parts.includes('object') || !parts.includes('xyz')) {
+  if (!parts.includes('omniphony') || !parts.includes('object') || !parts.includes('xyz')) {
     return null;
   }
 
@@ -150,7 +150,7 @@ function parseOmniphonyObjectXyz(parts, args, context) {
 }
 
 function parseOmniphonySpatialFrame(parts, args, context) {
-  if (parts.length !== 3 || parts[0] !== 'gsrd' || parts[1] !== 'spatial' || parts[2] !== 'frame') {
+  if (parts.length !== 3 || parts[0] !== 'omniphony' || parts[1] !== 'spatial' || parts[2] !== 'frame') {
     return null;
   }
 
@@ -174,7 +174,7 @@ function parseOmniphonySpatialFrame(parts, args, context) {
 }
 
 function parseOmniphonyStateMessage(parts, args) {
-  if (parts.length === 3 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'latency') {
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'latency') {
     const value = toNumber(args[0]);
     if (value === null) {
       return null;
@@ -184,7 +184,7 @@ function parseOmniphonyStateMessage(parts, args) {
       value
     };
   }
-  if (parts.length === 3 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'latency_instant') {
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'latency_instant') {
     const value = toNumber(args[0]);
     if (value === null) {
       return null;
@@ -194,7 +194,7 @@ function parseOmniphonyStateMessage(parts, args) {
       value
     };
   }
-  if (parts.length === 3 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'latency_target') {
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'latency_target') {
     const value = toNumber(args[0]);
     if (value === null) {
       return null;
@@ -205,7 +205,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 3 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'resample_ratio') {
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'resample_ratio') {
     const value = toNumber(args[0]);
     if (value === null) {
       return null;
@@ -215,7 +215,7 @@ function parseOmniphonyStateMessage(parts, args) {
       value
     };
   }
-  if (parts.length === 3 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'adaptive_resampling') {
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'adaptive_resampling') {
     const value = toNumber(args[0]);
     if (value === null) {
       return null;
@@ -225,7 +225,7 @@ function parseOmniphonyStateMessage(parts, args) {
       enabled: value !== 0
     };
   }
-  if (parts.length === 4 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'adaptive_resampling') {
+  if (parts.length === 4 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'adaptive_resampling') {
     const value = toNumber(args[0]);
     if (value === null) {
       return null;
@@ -248,7 +248,7 @@ function parseOmniphonyStateMessage(parts, args) {
     return null;
   }
 
-  if (parts.length === 3 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'gain') {
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'gain') {
     const value = toNumber(args[0]);
     if (value === null) {
       return null;
@@ -259,7 +259,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 3 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'loudness') {
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'loudness') {
     const value = toNumber(args[0]);
     if (value === null) {
       return null;
@@ -270,7 +270,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 4 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'loudness') {
+  if (parts.length === 4 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'loudness') {
     const kind = parts[3];
     if (!['source', 'gain'].includes(kind)) {
       return null;
@@ -285,7 +285,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 4 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'spread') {
+  if (parts.length === 4 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'spread') {
     const kind = parts[3];
     if (!['min', 'max', 'from_distance', 'distance_range', 'distance_curve'].includes(kind)) {
       return null;
@@ -309,7 +309,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 5 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[4] === 'gain') {
+  if (parts.length === 5 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[4] === 'gain') {
     const kind = parts[2];
     if (!['object', 'speaker'].includes(kind)) {
       return null;
@@ -332,7 +332,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 3 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'room_ratio') {
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'room_ratio') {
     const width = toNumber(args[0]);
     const length = toNumber(args[1]);
     const height = toNumber(args[2]);
@@ -348,7 +348,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 5 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[4] === 'mute') {
+  if (parts.length === 5 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[4] === 'mute') {
     const kind = parts[2];
     if (!['object', 'speaker'].includes(kind)) {
       return null;
@@ -371,7 +371,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 5 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'speaker' && parts[4] === 'spatialize') {
+  if (parts.length === 5 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'speaker' && parts[4] === 'spatialize') {
     const index = toNumber(parts[3]);
     if (index === null || index < 0) {
       return null;
@@ -387,7 +387,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 5 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'speaker' && parts[4] === 'name') {
+  if (parts.length === 5 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'speaker' && parts[4] === 'name') {
     const index = toNumber(parts[3]);
     if (index === null || index < 0) {
       return null;
@@ -403,7 +403,7 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
-  if (parts.length === 4 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'distance_diffuse') {
+  if (parts.length === 4 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'distance_diffuse') {
     const key = parts[3];
     if (key === 'enabled') {
       const value = toNumber(args[0]);
@@ -417,7 +417,7 @@ function parseOmniphonyStateMessage(parts, args) {
     }
   }
 
-  if (parts.length === 4 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'vbap' && parts[3] === 'table_mode') {
+  if (parts.length === 4 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'vbap' && parts[3] === 'table_mode') {
     const value = typeof args[0] === 'string' ? args[0].trim().toLowerCase() : '';
     if (!['auto', 'polar', 'cartesian'].includes(value)) {
       return null;
@@ -425,7 +425,7 @@ function parseOmniphonyStateMessage(parts, args) {
     return { type: 'state:vbap:table_mode', value };
   }
 
-  if (parts.length === 4 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'vbap' && parts[3] === 'effective_mode') {
+  if (parts.length === 4 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'vbap' && parts[3] === 'effective_mode') {
     const value = typeof args[0] === 'string' ? args[0].trim().toLowerCase() : '';
     if (!['polar', 'cartesian'].includes(value)) {
       return null;
@@ -433,7 +433,7 @@ function parseOmniphonyStateMessage(parts, args) {
     return { type: 'state:vbap:effective_mode', value };
   }
 
-  if (parts.length === 4 && parts[0] === 'gsrd' && parts[1] === 'state' && parts[2] === 'config' && parts[3] === 'saved') {
+  if (parts.length === 4 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'config' && parts[3] === 'saved') {
     const value = toNumber(args[0]);
     if (value === null) return null;
     return { type: 'state:config:saved', saved: value !== 0 };
@@ -493,12 +493,12 @@ function parseMeterMessage(parts, args) {
 
 
 function mapCartesianByAddress(parts, position) {
-  const isOmniphonyObjectXyz = parts.includes('gsrd') && parts.includes('object') && parts.includes('xyz');
+  const isOmniphonyObjectXyz = parts.includes('omniphony') && parts.includes('object') && parts.includes('xyz');
   if (!isOmniphonyObjectXyz) {
     return position;
   }
 
-  // gsrd/object/{id}/xyz uses x=right, y=front, z=up.
+  // omniphony/object/{id}/xyz uses x=right, y=front, z=up.
   // Our scene convention is x=front, y=up, z=right.
   return {
     x: position.y,

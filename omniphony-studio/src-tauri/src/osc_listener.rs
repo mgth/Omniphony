@@ -550,7 +550,7 @@ fn apply_speaker_config(events: Vec<OscEvent>, app: &AppHandle, state: &Arc<Mute
             }
         }
 
-        s.layouts.retain(|l| l.key != "gsrd-live");
+        s.layouts.retain(|l| l.key != "omniphony-live");
         if let Some(live) = build_live_layout_from_cache(&s.live_speakers, s.live_speaker_count) {
             s.layouts.insert(0, live.clone());
             s.selected_layout_key = Some(live.key.clone());
@@ -1114,7 +1114,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
 
             OscEvent::Log { entry } => (
-                Some(("gsrd:log", serde_json::to_value::<LogEntry>(entry).unwrap_or_default())),
+                Some(("omniphony:log", serde_json::to_value::<LogEntry>(entry).unwrap_or_default())),
                 removed_ids,
             ),
 

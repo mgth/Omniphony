@@ -471,8 +471,8 @@ pub fn build_live_layout_from_cache(
     }
 
     Some(Layout {
-        key: "gsrd-live".to_string(),
-        name: "gsrd (live)".to_string(),
+        key: "omniphony-live".to_string(),
+        name: "omniphony (live)".to_string(),
         speakers: spk_list,
         radius_m: 1.0,
     })

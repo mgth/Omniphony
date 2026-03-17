@@ -7302,7 +7302,7 @@ listen('state:log_level', ({ payload }) => {
   renderLogLevelControl();
 });
 
-listen('gsrd:log', ({ payload }) => {
+listen('omniphony:log', ({ payload }) => {
   const level = normalizeLogLevel(payload?.level);
   const target = String(payload?.target || '').trim();
   const message = String(payload?.message || '').trim();
@@ -7322,7 +7322,7 @@ listen('spatial:frame', ({ payload }) => {
     }
   }
 
-  // Ensure IDs [0..objectCount-1] exist, even if gsrd sends only deltas.
+  // Ensure IDs [0..objectCount-1] exist, even if omniphony sends only deltas.
   for (let i = 0; i < objectCount; i += 1) {
     const id = String(i);
     if (!sourceMeshes.has(id)) {

@@ -107,7 +107,7 @@ function broadcast(payload) {
 
 function buildLiveLayoutFromSpeakers(speakers) {
   return {
-    key: 'gsrd-live',
+    key: 'omniphony-live',
     name: 'omniphony (live)',
     speakers: speakers.map((speaker) => ({
       id: speaker.name || `spk-${speaker.index}`,
