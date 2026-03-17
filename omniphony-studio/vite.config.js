@@ -1,7 +1,7 @@
-import { defineConfig } from 'vite'
+const { defineConfig } = require('vite');
 
-export default defineConfig({
+module.exports = defineConfig({
   root: 'src',
   build: { outDir: '../dist', emptyOutDir: true },
   base: './'
-})
+});
