@@ -1,0 +1,91 @@
+# ITU-R BS.2051 9.1.6 immersive speaker layout
+#
+# Standard 9.1 bed with 6 height channels.
+# Total: 16 channels (including LFE)
+
+speakers:
+  # Front layer
+  - name: "FL"
+    azimuth: -30.0
+    elevation: 0.0
+    spatialize: true
+
+  - name: "FR"
+    azimuth: 30.0
+    elevation: 0.0
+    spatialize: true
+
+  - name: "C"
+    azimuth: 0.0
+    elevation: 0.0
+    spatialize: true
+
+  # LFE does not participate in VBAP
+  - name: "LFE"
+    azimuth: 0.0
+    elevation: 0.0
+    spatialize: false
+
+  # Front wide layer
+  - name: "FWL"
+    azimuth: -60.0
+    elevation: 0.0
+    spatialize: true
+
+  - name: "FWR"
+    azimuth: 60.0
+    elevation: 0.0
+    spatialize: true
+
+  # Side surround layer
+  - name: "SL"
+    azimuth: -90.0
+    elevation: 0.0
+    spatialize: true
+
+  - name: "SR"
+    azimuth: 90.0
+    elevation: 0.0
+    spatialize: true
+
+  # Rear surround layer
+  - name: "BL"
+    azimuth: -135.0
+    elevation: 0.0
+    spatialize: true
+
+  - name: "BR"
+    azimuth: 135.0
+    elevation: 0.0
+    spatialize: true
+
+  # Height layer
+  - name: "TFL"
+    azimuth: -30.0
+    elevation: 45.0
+    spatialize: true
+
+  - name: "TFR"
+    azimuth: 30.0
+    elevation: 45.0
+    spatialize: true
+
+  - name: "TSL"
+    azimuth: -90.0
+    elevation: 45.0
+    spatialize: true
+
+  - name: "TSR"
+    azimuth: 90.0
+    elevation: 45.0
+    spatialize: true
+
+  - name: "TBL"
+    azimuth: -135.0
+    elevation: 45.0
+    spatialize: true
+
+  - name: "TBR"
+    azimuth: 135.0
+    elevation: 45.0
+    spatialize: true

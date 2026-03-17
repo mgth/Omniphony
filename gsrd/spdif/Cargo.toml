@@ -1,0 +1,12 @@
+[package]
+name = "spdif"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "IEC 61937 S/PDIF parser for immersive audio bitstreams"
+
+[lib]
+name = "spdif"
+
+[dependencies]
+log = "0.4"

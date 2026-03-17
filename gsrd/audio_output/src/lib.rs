@@ -1,0 +1,136 @@
+#[derive(Debug, Clone)]
+pub struct AdaptiveResamplingConfig {
+    pub kp_near: f64,
+    pub kp_far: f64,
+    pub ki: f64,
+    pub max_adjust: f64,
+    pub max_adjust_far: f64,
+    pub near_far_threshold_ms: u32,
+    pub hard_correction_threshold_ms: u32,
+    pub measurement_smoothing_alpha: f64,
+}
+
+impl Default for AdaptiveResamplingConfig {
+    fn default() -> Self {
+        Self {
+            kp_near: 0.00001,
+            kp_far: 0.00002,
+            ki: 0.0000005,
+            max_adjust: 0.01,
+            max_adjust_far: 0.01,
+            near_far_threshold_ms: 120,
+            hard_correction_threshold_ms: 0,
+            measurement_smoothing_alpha: 0.15,
+        }
+    }
+}
+
+pub const ADAPTIVE_BAND_NONE: u8 = 0;
+pub const ADAPTIVE_BAND_NEAR: u8 = 1;
+pub const ADAPTIVE_BAND_FAR: u8 = 2;
+pub const ADAPTIVE_BAND_HARD: u8 = 3;
+
+pub fn adaptive_band_name(band: u8) -> Option<&'static str> {
+    match band {
+        ADAPTIVE_BAND_NEAR => Some("near"),
+        ADAPTIVE_BAND_FAR => Some("far"),
+        ADAPTIVE_BAND_HARD => Some("hard"),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AdaptiveControllerState {
+    pub accumulated_drift: f64,
+    pub smoothed_control_available: f64,
+    pub smoothed_total_available: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AdaptiveControlStep {
+    pub drift: i64,
+    pub p_term: f64,
+    pub i_term: f64,
+    pub consume_adjust: f64,
+    pub current_ratio: f64,
+    pub band: u8,
+}
+
+pub fn apply_ema(previous: &mut f64, sample: f64, alpha: f64) -> f64 {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if *previous == 0.0 {
+        *previous = sample;
+    } else {
+        *previous += alpha * (sample - *previous);
+    }
+    *previous
+}
+
+pub fn compute_adaptive_step(
+    state: &mut AdaptiveControllerState,
+    config: &AdaptiveResamplingConfig,
+    available_samples: usize,
+    target_buffer_fill: usize,
+    near_far_threshold_samples: usize,
+    base_ratio: f64,
+    deadband_samples: usize,
+    max_integral_term: f64,
+) -> AdaptiveControlStep {
+    let drift = available_samples as i64 - target_buffer_fill as i64;
+
+    if drift.unsigned_abs() as usize > deadband_samples {
+        state.accumulated_drift += drift as f64;
+        let integral_contribution = state.accumulated_drift * config.ki;
+        if integral_contribution.abs() > max_integral_term && config.ki > 0.0 {
+            state.accumulated_drift =
+                (max_integral_term / config.ki) * integral_contribution.signum();
+        }
+    }
+
+    let is_far = near_far_threshold_samples > 0
+        && (drift.unsigned_abs() as usize) >= near_far_threshold_samples;
+    let band = if is_far {
+        ADAPTIVE_BAND_FAR
+    } else {
+        ADAPTIVE_BAND_NEAR
+    };
+    let kp = if is_far {
+        config.kp_far
+    } else {
+        config.kp_near
+    };
+    let max_adjust = if is_far {
+        config.max_adjust_far
+    } else {
+        config.max_adjust
+    };
+    let p_term = drift as f64 * kp / 100.0;
+    let i_term = state.accumulated_drift * config.ki;
+    let consume_adjust = (1.0 + p_term + i_term).clamp(1.0 - max_adjust, 1.0 + max_adjust);
+    let current_ratio = (base_ratio / consume_adjust).clamp(
+        base_ratio * (1.0 - max_adjust),
+        base_ratio * (1.0 + max_adjust),
+    );
+
+    AdaptiveControlStep {
+        drift,
+        p_term,
+        i_term,
+        consume_adjust,
+        current_ratio,
+        band,
+    }
+}
+
+pub mod asio;
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+pub mod pipewire;
+
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+pub use pipewire::{PipewireBufferConfig, PipewireWriter, list_pipewire_output_devices};
+
+#[cfg(all(target_os = "linux", feature = "pipewire"))]
+pub type PipewireAdaptiveResamplingConfig = AdaptiveResamplingConfig;
+
+#[cfg(all(target_os = "windows", feature = "asio"))]
+pub use asio::{AsioWriter, list_asio_devices};

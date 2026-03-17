@@ -1,0 +1,27 @@
+[package]
+name = "sys"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Platform abstraction: signals, service lifecycle, interrupt-aware I/O"
+
+[lib]
+name = "sys"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+windows = { version = "0.54", features = [
+    "Win32_Foundation",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }

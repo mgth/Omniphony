@@ -1,0 +1,25 @@
+[package]
+name = "audio_output"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Audio output backends (PipeWire, ASIO)"
+
+[lib]
+name = "audio_output"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+crossbeam = "0.8"
+rubato = "0.14"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = { version = "0.8", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+cpal = "0.15.3"
+
+[features]
+pipewire = ["dep:pipewire"]
+asio = ["cpal/asio"]

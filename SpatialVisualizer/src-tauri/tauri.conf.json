@@ -1,0 +1,28 @@
+{
+  "identifier": "fr.gsrd.spatial-visualizer",
+  "productName": "Spatial Visualizer",
+  "version": "0.1.0",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "resources": ["../layouts/*"]
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Spatial Visualizer",
+        "width": 1400,
+        "height": 900
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

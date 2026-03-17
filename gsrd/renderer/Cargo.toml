@@ -1,0 +1,29 @@
+[package]
+name = "renderer"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "VBAP-based spatial audio renderer"
+
+[lib]
+name = "renderer"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+arc-swap = "1"
+libc = "0.2"
+parking_lot = "0.12"
+flate2 = "1.0"
+rosc = "0.10"
+sys = { path = "../sys" }
+
+[build-dependencies]
+anyhow = "1"
+bindgen = "0.70"
+
+[features]
+saf_vbap = []

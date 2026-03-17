@@ -1,0 +1,7 @@
+{
+  "name": "Stereo",
+  "speakers": [
+    { "id": "L", "azimuth": -30, "elevation": 0, "distance": 1 },
+    { "id": "R", "azimuth": 30, "elevation": 0, "distance": 1 }
+  ]
+}

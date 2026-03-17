@@ -1,0 +1,1896 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Spatial Visualizer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        font-family: Inter, system-ui, sans-serif;
+        background: #0a0b10;
+      }
+
+      #overlay {
+        position: fixed;
+        top: 1rem;
+        left: 1rem;
+        background: rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        backdrop-filter: blur(8px);
+        font-size: 14px;
+        line-height: 1.45;
+        z-index: 2;
+        width: min(440px, 92vw);
+        height: calc(100vh - 2rem);
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      #speakersOverlay {
+        position: fixed;
+        top: 1rem;
+        right: 1rem;
+        background: rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        backdrop-filter: blur(8px);
+        font-size: 14px;
+        line-height: 1.45;
+        z-index: 2;
+        width: min(440px, 92vw);
+        height: calc(100vh - 2rem);
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      #logOverlay {
+        position: fixed;
+        top: 0.9rem;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 3;
+        width: min(760px, calc(100vw - 31rem));
+        min-width: min(360px, calc(100vw - 2rem));
+        max-width: calc(100vw - 2rem);
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        background: rgba(8, 11, 18, 0.42);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 14px;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+        color: #d9ecff;
+        overflow: hidden;
+      }
+
+      #logOverlay.collapsed {
+        padding: 0.45rem 0.7rem;
+      }
+
+      #logOverlay.expanded {
+        padding: 0.55rem 0.75rem 0.7rem;
+      }
+
+      .log-panel-header {
+        display: grid;
+        grid-template-columns: auto 1fr auto auto;
+        align-items: center;
+        gap: 0.65rem;
+        min-height: 1.5rem;
+      }
+
+      .log-panel-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: rgba(217, 236, 255, 0.82);
+      }
+
+      .log-panel-summary {
+        min-width: 0;
+        font-size: 12px;
+        color: #edf5ff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .log-panel-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+      }
+
+      .log-panel-level {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 12px;
+        color: rgba(217, 236, 255, 0.82);
+      }
+
+      .log-panel-level select {
+        min-width: 6.8rem;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        color: #d9ecff;
+        border-radius: 999px;
+        padding: 0.2rem 0.55rem;
+        font-size: 12px;
+      }
+
+      .log-panel-btn {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(255, 255, 255, 0.08);
+        color: #d9ecff;
+        border-radius: 999px;
+        min-width: 1.9rem;
+        height: 1.9rem;
+        padding: 0 0.65rem;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .log-panel-btn:hover {
+        background: rgba(255, 255, 255, 0.14);
+      }
+
+      .log-panel-btn.icon-only {
+        padding: 0;
+        width: 1.9rem;
+      }
+
+      .log-panel-body {
+        display: none;
+        max-height: min(28vh, 260px);
+        overflow-y: auto;
+        padding-right: 0.15rem;
+      }
+
+      #logOverlay.expanded .log-panel-body {
+        display: block;
+      }
+
+      .log-panel-empty {
+        font-size: 12px;
+        color: rgba(217, 236, 255, 0.62);
+        padding: 0.15rem 0 0.05rem;
+      }
+
+      .log-panel-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.32rem;
+      }
+
+      .log-entry {
+        display: grid;
+        grid-template-columns: auto auto 1fr;
+        gap: 0.55rem;
+        align-items: start;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 9px;
+        padding: 0.42rem 0.52rem;
+      }
+
+      .log-entry-time {
+        font-size: 11px;
+        color: rgba(217, 236, 255, 0.56);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .log-entry-level {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        border-radius: 999px;
+        padding: 0.08rem 0.42rem;
+        min-width: 3.3rem;
+        text-align: center;
+      }
+
+      .log-entry-level.info {
+        color: #b8deff;
+        background: rgba(86, 158, 255, 0.14);
+      }
+
+      .log-entry-level.warn {
+        color: #ffd891;
+        background: rgba(255, 177, 71, 0.16);
+      }
+
+      .log-entry-level.error {
+        color: #ffb0b0;
+        background: rgba(255, 92, 92, 0.16);
+      }
+
+      .log-entry-level.debug {
+        color: #d2c2ff;
+        background: rgba(158, 118, 255, 0.15);
+      }
+
+      .log-entry-level.trace {
+        color: #b8c1cf;
+        background: rgba(168, 177, 191, 0.12);
+      }
+
+      .log-entry-message {
+        font-size: 12px;
+        line-height: 1.4;
+        color: #edf5ff;
+        word-break: break-word;
+      }
+
+      #status {
+        font-weight: 700;
+      }
+
+      #layoutSelect {
+        margin-top: 0.35rem;
+        width: 100%;
+      }
+
+      .room-geometry-summary {
+        margin-top: 0.3rem;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        padding: 0.35rem 0.45rem;
+        display: grid;
+        gap: 0.22rem;
+        font-size: 11px;
+      }
+
+      .room-geometry-summary-row {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.4rem;
+        align-items: center;
+      }
+
+      .room-geometry-summary-label {
+        color: rgba(217, 236, 255, 0.75);
+        font-weight: 600;
+      }
+
+      .room-geometry-summary-value {
+        color: #d9ecff;
+      }
+
+      #spreadInfo {
+        margin-top: 0.25rem;
+        font-size: 12px;
+        color: #d9ecff;
+      }
+
+      #loudnessInfo {
+        margin-top: 0.2rem;
+        font-size: 12px;
+        color: #d9ecff;
+      }
+
+      .meter-fill.latency {
+        background: linear-gradient(90deg, #52e2a2 0%, #ffd56a 60%, #ff8a5c 82%, #ff4d4d 100%);
+        box-shadow: 0 0 6px rgba(255, 160, 90, 0.35);
+      }
+
+      .meter-fill.latency-ctrl {
+        background: linear-gradient(90deg, #7aa8ff 0%, #8af0ff 52%, #7bffb8 100%);
+        box-shadow: 0 0 6px rgba(122, 168, 255, 0.35);
+      }
+
+      .switch-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-top: 0.25rem;
+      }
+
+      .inline-toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.2rem;
+        justify-content: space-between;
+      }
+
+      .spread-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.25rem;
+      }
+
+      .dual-range {
+        position: relative;
+        flex: 1 1 auto;
+        height: 18px;
+      }
+
+      .dual-range input[type="range"] {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 18px;
+        background: transparent;
+        pointer-events: none;
+        -webkit-appearance: none;
+      }
+
+      .dual-range input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #d9ecff;
+        border: 1px solid rgba(0, 0, 0, 0.4);
+        pointer-events: auto;
+      }
+
+      .dual-range input[type="range"]::-moz-range-thumb {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #d9ecff;
+        border: 1px solid rgba(0, 0, 0, 0.4);
+        pointer-events: auto;
+      }
+
+      .dual-range input[type="range"]::-webkit-slider-runnable-track {
+        height: 4px;
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+      }
+
+      .dual-range input[type="range"]::-moz-range-track {
+        height: 4px;
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+      }
+
+      .switch-row input[type="checkbox"],
+      .inline-toggle input[type="checkbox"] {
+        width: 34px;
+        height: 18px;
+        appearance: none;
+        background: rgba(255, 255, 255, 0.18);
+        border-radius: 999px;
+        position: relative;
+        outline: none;
+        cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+      }
+
+      .switch-row input[type="checkbox"]::after,
+      .inline-toggle input[type="checkbox"]::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #d9ecff;
+        transition: transform 0.2s ease;
+      }
+
+      .switch-row input[type="checkbox"]:checked,
+      .inline-toggle input[type="checkbox"]:checked {
+        background: rgba(80, 200, 120, 0.45);
+      }
+
+      .switch-row input[type="checkbox"]:checked::after,
+      .inline-toggle input[type="checkbox"]:checked::after {
+        transform: translateX(16px);
+      }
+
+      .info-section {
+        margin-top: 0.75rem;
+        padding-top: 0.5rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .osc-config-form {
+        display: none;
+        flex-direction: column;
+        gap: 0.35rem;
+        margin-top: 0.4rem;
+      }
+
+      .osc-config-form.open {
+        display: flex;
+      }
+
+      .room-geometry-form {
+        display: none;
+        flex-direction: column;
+        gap: 0.25rem;
+        margin-top: 0.2rem;
+      }
+
+      .room-geometry-form.open {
+        display: flex;
+      }
+
+      .adaptive-advanced-form {
+        display: none;
+        flex-direction: column;
+        gap: 0.25rem;
+        margin-top: 0.35rem;
+        padding: 0.45rem 0.5rem;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+      }
+
+      .adaptive-advanced-form.open {
+        display: flex;
+      }
+
+      .telemetry-gauges-form {
+        display: none;
+        flex-direction: column;
+        gap: 0.3rem;
+        margin-top: 0.35rem;
+        padding: 0.45rem 0.5rem;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+      }
+
+      .telemetry-gauges-form.open {
+        display: flex;
+      }
+
+      .save-footer {
+        position: fixed;
+        left: 50%;
+        bottom: 1rem;
+        transform: translateX(-50%);
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.35rem;
+      }
+
+      .save-footer-button {
+        min-width: 8.5rem;
+        background: rgba(255, 255, 255, 0.12);
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        color: #d9ecff;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 0.45rem 1rem;
+        cursor: pointer;
+      }
+
+      .osc-config-row {
+        display: grid;
+        grid-template-columns: 6rem 1fr;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 12px;
+      }
+
+      .osc-config-row input[type="text"],
+      .osc-config-row input[type="number"] {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 6px;
+        color: #d9ecff;
+        font-size: 12px;
+        padding: 0.15rem 0.4rem;
+        outline: none;
+        width: 100%;
+        box-sizing: border-box;
+      }
+
+      .osc-config-row input:focus {
+        border-color: rgba(100, 180, 255, 0.5);
+      }
+
+      .osc-config-actions {
+        display: flex;
+        gap: 0.4rem;
+        justify-content: flex-end;
+        margin-top: 0.2rem;
+      }
+
+      .osc-status-dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #52e2a2;
+        margin-right: 0.3rem;
+        flex-shrink: 0;
+      }
+
+      .info-title {
+        font-weight: 600;
+        margin-bottom: 0.35rem;
+      }
+
+      .title-with-info {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.4rem;
+      }
+
+      .info-icon-btn {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        background: rgba(255, 255, 255, 0.08);
+        color: #d9ecff;
+        font-size: 11px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0;
+      }
+
+      .info-icon-btn:hover {
+        background: rgba(255, 255, 255, 0.16);
+      }
+
+      .panel-toggle-btn {
+        min-width: 1.8rem;
+        height: 1.3rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 6px;
+        color: #d9ecff;
+        font-size: 11px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0.1rem 0.4rem;
+        transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+      }
+
+      .panel-toggle-btn:hover {
+        background: rgba(255, 255, 255, 0.16);
+        border-color: rgba(255, 255, 255, 0.28);
+        color: #ffffff;
+      }
+
+      .info-modal {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.45);
+        z-index: 70;
+      }
+
+      .info-modal.open {
+        display: flex;
+      }
+
+      .info-modal-card {
+        width: min(460px, calc(100vw - 2rem));
+        background: rgba(14, 16, 22, 0.96);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 10px;
+        padding: 0.8rem 0.9rem;
+        color: #d9ecff;
+        box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+      }
+
+      .info-modal-title {
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 0.45rem;
+      }
+
+      .info-modal-text {
+        font-size: 12px;
+        line-height: 1.45;
+        color: rgba(217, 236, 255, 0.92);
+      }
+
+      .info-modal-actions {
+        margin-top: 0.7rem;
+        display: flex;
+        justify-content: flex-end;
+      }
+
+      .conditional-params {
+        display: none;
+      }
+
+      .conditional-params.open {
+        display: grid;
+        gap: 0.2rem;
+      }
+
+      .info-list {
+        max-height: none;
+        overflow: auto;
+        scrollbar-gutter: stable;
+        font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+        font-size: 12.5px;
+        display: grid;
+        gap: 0.25rem;
+        align-content: start;
+        grid-auto-rows: max-content;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+
+      #objectsList {
+        padding-right: 0.6rem;
+        box-sizing: border-box;
+      }
+
+      .info-item {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.1rem;
+        padding: 0.25rem 0.35rem;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .info-item strong {
+        font-weight: 600;
+        color: #d9ecff;
+      }
+
+      .meter-row {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .fixed-metric {
+        width: 20ch;
+        min-width: 20ch;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-variant-numeric: tabular-nums;
+        white-space: pre;
+      }
+
+      .fixed-metric-line {
+        margin-top: 0.15rem;
+      }
+
+      .meter-bar {
+        position: relative;
+        height: 6px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(77, 215, 255, 0.18) 0%, rgba(123, 255, 106, 0.18) 60%, rgba(255, 209, 58, 0.18) 82%, rgba(255, 93, 93, 0.18) 100%);
+        overflow: hidden;
+      }
+
+      .meter-range-mask {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        background: rgba(6, 9, 14, 0.42);
+        pointer-events: none;
+      }
+
+      .meter-bar.resample-meter-shell {
+        background: linear-gradient(
+          90deg,
+          rgba(255, 93, 93, 0.20) 0%,
+          rgba(255, 160, 90, 0.18) 18%,
+          rgba(255, 213, 106, 0.15) 34%,
+          rgba(138, 240, 255, 0.10) 50%,
+          rgba(255, 213, 106, 0.15) 66%,
+          rgba(255, 160, 90, 0.18) 82%,
+          rgba(255, 93, 93, 0.20) 100%
+        );
+      }
+
+      .meter-stack {
+        display: grid;
+        gap: 0.22rem;
+        width: 100%;
+      }
+
+      .meter-mini-row {
+        display: grid;
+        grid-template-columns: 4.2rem 1fr;
+        align-items: center;
+        gap: 0.35rem;
+        width: 100%;
+      }
+
+      .meter-mini-label {
+        font-size: 11px;
+        color: #d9ecff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-variant-numeric: tabular-nums;
+        align-self: start;
+        padding-top: 0;
+      }
+
+      .meter-subvalues {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        font-size: 10px;
+        color: #b9c7d8;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        margin-top: 0;
+      }
+
+      .meter-subvalues > :first-child {
+        justify-self: start;
+      }
+
+      .meter-subvalues > :nth-child(2) {
+        justify-self: center;
+        text-align: center;
+      }
+
+      .meter-subvalues > :last-child {
+        justify-self: end;
+        text-align: right;
+      }
+
+      .meter-subvalues.placeholder {
+        visibility: hidden;
+      }
+
+      .meter-marker {
+        position: absolute;
+        top: -1px;
+        bottom: -1px;
+        width: 2px;
+        border-radius: 999px;
+        pointer-events: none;
+        opacity: 0.95;
+      }
+
+      .meter-marker.min {
+        background: rgba(255, 160, 90, 0.95);
+        box-shadow: 0 0 4px rgba(255, 160, 90, 0.35);
+      }
+
+      .meter-marker.max {
+        background: rgba(255, 213, 106, 0.95);
+        box-shadow: 0 0 4px rgba(255, 213, 106, 0.35);
+      }
+
+      .resample-meter-shell {
+        position: relative;
+      }
+
+      .resample-meter-center {
+        position: absolute;
+        top: -1px;
+        bottom: -1px;
+        left: calc(50% - 1px);
+        width: 2px;
+        background: rgba(217, 236, 255, 0.6);
+        border-radius: 999px;
+        pointer-events: none;
+      }
+
+      .meter-fill.resample-pos {
+        background: linear-gradient(90deg, #8af0ff 0%, #7bffb8 100%);
+        box-shadow: 0 0 6px rgba(123, 255, 184, 0.3);
+      }
+
+      .meter-fill.resample-neg {
+        background: linear-gradient(90deg, #ffd56a 0%, #ff8a5c 100%);
+        box-shadow: 0 0 6px rgba(255, 138, 92, 0.3);
+      }
+
+      .meter-fill {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        background: linear-gradient(90deg, #4dd7ff 0%, #7bff6a 60%, #ffd13a 82%, #ff5d5d 100%);
+        box-shadow: 0 0 8px rgba(255, 140, 80, 0.35);
+        clip-path: inset(0 calc(100% - var(--level, 0%)) 0 0);
+      }
+
+      .control-row {
+        display: grid;
+        grid-template-columns: 1fr auto auto auto;
+        gap: 0.35rem;
+        align-items: center;
+        margin-top: 0.2rem;
+      }
+
+      .speaker-item .control-row {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+        padding-right: 0.35rem;
+      }
+
+      .object-item .control-row {
+        grid-template-columns: minmax(0, 1fr) auto auto auto;
+        padding-right: 0.35rem;
+      }
+
+      .delay-input {
+        width: 52px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 6px;
+        color: #dfe8f3;
+        font-size: 11px;
+        padding: 0.1rem 0.3rem;
+        text-align: right;
+      }
+
+      .delay-input:focus {
+        outline: none;
+        border-color: rgba(255, 255, 255, 0.45);
+      }
+
+      .vbap-polar-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-rows: auto auto;
+        column-gap: 0.25rem;
+        row-gap: 0.15rem;
+        align-items: center;
+        width: 13.1rem;
+        min-width: 0;
+      }
+
+      .vbap-grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        column-gap: 0.25rem;
+        align-items: center;
+        width: 13.1rem;
+        min-width: 0;
+      }
+
+      .vbap-grid-3 .delay-input {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+      }
+
+      .vbap-polar-grid .delay-input {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+      }
+
+      .vbap-polar-meta {
+        font-size: 10px;
+        color: #9eb4c8;
+        line-height: 1;
+        text-align: center;
+      }
+
+      .vbap-step {
+        font-size: 10px;
+        color: #86a7c3;
+        line-height: 1;
+        text-align: center;
+      }
+
+      .derived-field {
+        -moz-appearance: textfield;
+        appearance: textfield;
+      }
+
+      .derived-field::-webkit-outer-spin-button,
+      .derived-field::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+
+      .axis-driver {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        align-items: center;
+        min-width: 2rem;
+        justify-self: center;
+        width: 100%;
+      }
+
+      .axis-driver input[type="checkbox"] {
+        appearance: none;
+        -webkit-appearance: none;
+        width: 1.8rem;
+        height: 1rem;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        background: rgba(255, 255, 255, 0.12);
+        position: relative;
+        cursor: pointer;
+        transition: border-color 0.12s ease;
+      }
+
+      .axis-driver input[type="checkbox"]::after {
+        content: "";
+        position: absolute;
+        top: 1px;
+        left: 1px;
+        width: 0.75rem;
+        height: 0.75rem;
+        border-radius: 50%;
+        background: #dfe8f3;
+        transition: transform 0.12s ease;
+      }
+
+      .axis-driver input[type="checkbox"]:checked {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.3);
+      }
+
+      .axis-driver input[type="checkbox"]:checked::after {
+        transform: translateX(0.8rem);
+      }
+
+      .axis-driver input[type="checkbox"]:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+
+      .delay-label {
+        font-size: 10px;
+        color: rgba(255, 255, 255, 0.45);
+        white-space: nowrap;
+      }
+
+      #masterSection .control-row {
+        grid-template-columns: 1fr auto;
+      }
+
+      .gain-slider {
+        width: 100%;
+      }
+
+      .toggle-btn {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: #dfe8f3;
+        border-radius: 6px;
+        font-size: 11px;
+        padding: 0.1rem 0.35rem;
+        cursor: pointer;
+      }
+
+      .toggle-btn.active {
+        background: rgba(255, 255, 255, 0.2);
+        color: #ffffff;
+      }
+
+      .toggle-btn.effective {
+        box-shadow: inset 0 0 0 1px rgba(96, 255, 154, 0.75), 0 0 0 1px rgba(42, 163, 87, 0.25);
+      }
+
+      .toggle-btn.effective::after {
+        content: "";
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-left: 0.35rem;
+        border-radius: 50%;
+        background: #5cff9a;
+        box-shadow: 0 0 8px rgba(92, 255, 154, 0.7);
+        vertical-align: middle;
+      }
+
+      .gain-box {
+        min-width: 54px;
+        text-align: right;
+        padding: 0.1rem 0.3rem;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 11px;
+        color: #d9ecff;
+      }
+
+      .info-item.is-dimmed {
+        opacity: 0.45;
+      }
+
+      .info-item.is-muted {
+        opacity: 0.35;
+      }
+
+      .info-item.is-selected {
+        background: rgba(46, 110, 64, 0.45);
+        border: 1px solid rgba(90, 200, 120, 0.35);
+      }
+
+      .object-item {
+        display: grid;
+        grid-template-columns: 18px 1fr;
+        gap: 0.45rem;
+        align-items: stretch;
+      }
+
+      .speaker-item {
+        display: grid;
+        grid-template-columns: 18px 1fr;
+        gap: 0.45rem;
+        align-items: stretch;
+        position: relative;
+      }
+
+      .speaker-item .id-strip {
+        cursor: grab;
+        user-select: none;
+      }
+
+      .speaker-item .id-strip:active {
+        cursor: grabbing;
+      }
+
+      .speaker-item.is-dragging {
+        opacity: 1;
+        background: rgba(72, 140, 92, 0.55);
+        border: 1px solid rgba(120, 225, 150, 0.65);
+      }
+
+      .id-strip {
+        background: rgba(0, 0, 0, 0.55);
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.2rem 0.1rem;
+      }
+
+      .id-strip span {
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        font-weight: 600;
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        color: #d9ecff;
+      }
+
+      .id-strip.flip span {
+        transform: rotate(180deg);
+      }
+
+      .object-content {
+        display: grid;
+        gap: 0.2rem;
+      }
+
+      .speaker-content {
+        display: grid;
+        gap: 0.2rem;
+      }
+
+      .speaker-contribution-slider {
+        width: 100%;
+        opacity: 0.9;
+      }
+
+      .speaker-contribution-value {
+        font-size: 11px;
+        color: #b9c7d8;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      .meter-fill.contribution {
+        background: linear-gradient(90deg, rgba(138, 240, 255, 0.92) 0%, rgba(255, 226, 122, 0.92) 100%);
+        box-shadow: 0 0 8px rgba(138, 240, 255, 0.24);
+      }
+
+      .editor-body {
+        display: grid;
+        gap: 0.35rem;
+      }
+
+      .editor-meta {
+        display: grid;
+        gap: 0.2rem;
+        font-size: 12px;
+        color: #d9ecff;
+      }
+
+      .editor-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.4rem;
+        align-items: center;
+      }
+
+      .gain-row {
+        grid-template-columns: auto 1fr auto;
+      }
+
+      .editor-row label {
+        font-size: 12px;
+        color: #d9ecff;
+      }
+
+      .coord-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.35rem;
+      }
+
+      .coord-grid input {
+        width: 100%;
+        box-sizing: border-box;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 6px;
+        color: #dfe8f3;
+        font-size: 11px;
+        padding: 0.15rem 0.35rem;
+        text-align: right;
+      }
+
+      .coord-grid input:focus {
+        outline: none;
+        border-color: rgba(255, 255, 255, 0.45);
+      }
+
+      .name-input {
+        width: 100%;
+        box-sizing: border-box;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 6px;
+        color: #dfe8f3;
+        font-size: 12px;
+        padding: 0.2rem 0.4rem;
+      }
+
+      .vbap-status {
+        margin-top: 0.25rem;
+        font-size: 12px;
+        color: #d9ecff;
+      }
+
+      .vbap-status.computing {
+        color: #ffbf66;
+      }
+
+      .vbap-status.ready {
+        color: #78e08f;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="logOverlay" class="collapsed">
+      <div class="log-panel-header">
+        <div class="log-panel-title" data-i18n="log.title">Logs</div>
+        <div id="logSummary" class="log-panel-summary" data-i18n="log.empty">No logs yet.</div>
+        <label class="log-panel-level">
+          <span data-i18n="log.levelLabel">Level</span>
+          <select id="logLevelSelect">
+            <option value="off" data-i18n="log.levelOption.off">Off</option>
+            <option value="error" data-i18n="log.levelOption.error">Error</option>
+            <option value="warn" data-i18n="log.levelOption.warn">Warn</option>
+            <option value="info" data-i18n="log.levelOption.info">Info</option>
+            <option value="debug" data-i18n="log.levelOption.debug">Debug</option>
+            <option value="trace" data-i18n="log.levelOption.trace">Trace</option>
+          </select>
+        </label>
+        <div class="log-panel-actions">
+          <button id="logClearBtn" type="button" class="log-panel-btn" data-i18n="log.clear">Clear</button>
+          <button id="logToggleBtn" type="button" class="log-panel-btn icon-only panel-toggle-btn" data-i18n-title="log.expand" title="Expand">▾</button>
+        </div>
+      </div>
+      <div class="log-panel-body">
+        <div id="logEmptyState" class="log-panel-empty" data-i18n="log.empty">No logs yet.</div>
+        <div id="logEntries" class="log-panel-list"></div>
+      </div>
+    </div>
+    <div id="overlay">
+      <div><strong data-i18n="app.title">Spatial Visualizer</strong></div>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div><span class="osc-status-dot" id="oscStatusDot"></span><span data-i18n="osc.label">OSC</span>: <span id="status">Initializing...</span></div>
+        <div style="display:flex;align-items:center;gap:0.35rem">
+          <button id="oscInfoBtn" type="button" class="info-icon-btn" data-i18n-title="osc.infoButton" title="OSC info">i</button>
+          <button id="oscConfigToggleBtn" type="button" class="panel-toggle-btn" data-i18n-title="osc.configTitle" title="OSC Configuration">⚙</button>
+        </div>
+      </div>
+      <div class="osc-config-form" id="oscConfigForm">
+        <div class="osc-config-row">
+          <label for="oscHostInput" data-i18n="osc.host">Host</label>
+          <input id="oscHostInput" type="text" value="127.0.0.1" spellcheck="false" />
+        </div>
+        <div class="osc-config-row">
+          <label for="oscRxPortInput" data-i18n="osc.gsrdPort">GSRD Port</label>
+          <input id="oscRxPortInput" type="number" min="1" max="65535" value="9000" />
+        </div>
+        <div class="osc-config-row">
+          <label for="oscListenPortInput" data-i18n="osc.listenPort">Listen Port</label>
+          <input id="oscListenPortInput" type="number" min="0" max="65535" value="0" />
+        </div>
+        <div class="osc-config-actions">
+          <button id="oscConfigApplyBtn" data-i18n="osc.apply" style="background:rgba(80,200,120,0.2);border:1px solid rgba(80,200,120,0.4);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Apply</button>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.25rem">
+        <div style="font-size:12px;font-weight:600" data-i18n="room.title">Room Geometry</div>
+        <div style="display:flex;align-items:center;gap:0.35rem">
+          <button id="roomGeometryInfoBtn" type="button" class="info-icon-btn" data-i18n-title="room.infoButton" title="Room Geometry info">i</button>
+          <button id="roomGeometryToggleBtn" type="button" class="panel-toggle-btn" data-i18n-title="room.title" title="Room Geometry">▸</button>
+        </div>
+      </div>
+      <div id="roomGeometrySummary" class="room-geometry-summary">
+        <div class="room-geometry-summary-row">
+          <div class="room-geometry-summary-label" data-i18n="room.summary.scale">Scale</div>
+          <div id="roomGeometrySummaryScale" class="room-geometry-summary-value">m/u: —</div>
+        </div>
+        <div class="room-geometry-summary-row">
+          <div class="room-geometry-summary-label" data-i18n="room.summary.size">Size</div>
+          <div id="roomGeometrySummarySize" class="room-geometry-summary-value">X: — | Y+: — | Y-: — | Z+: — | Z-: —</div>
+        </div>
+        <div class="room-geometry-summary-row">
+          <div class="room-geometry-summary-label" data-i18n="room.summary.ratio">Ratio</div>
+          <div id="roomGeometrySummaryRatio" class="room-geometry-summary-value">X: — | Y+: — | Y-: — | Z+: — | Z-: —</div>
+        </div>
+      </div>
+      <div id="roomGeometryForm" class="room-geometry-form">
+        <div style="margin-top:0.25rem;display:grid;grid-template-columns:3.2rem 4.8rem max-content max-content max-content max-content;gap:0.2rem 0.35rem;align-items:center">
+        <div style="font-size:11px;opacity:0.72;text-align:center" data-i18n="room.master">Master</div>
+        <div style="font-size:11px;opacity:0.72" data-i18n="room.axis">Axis</div>
+        <div style="font-size:11px;opacity:0.72" data-i18n="room.sizeMeters">Size (m)</div>
+        <div></div>
+        <div style="font-size:11px;opacity:0.72" data-i18n="room.summary.ratio">Ratio</div>
+        <div style="font-size:11px;opacity:0.72" data-i18n="room.mpu">m/u</div>
+
+        <div style="text-align:center"><input id="roomMasterWidth" type="radio" name="roomMasterAxis" value="width" /></div>
+        <label for="roomMasterWidth" style="font-size:11px;opacity:0.9" data-i18n="room.axis.width">X +/-</label>
+        <input id="roomDimWidthInput" class="delay-input" type="number" min="0.01" step="0.01" value="1.00" />
+        <div class="axis-driver">
+          <input id="roomDriverWidth" type="checkbox" aria-label="Driver width (S/R)" />
+        </div>
+        <input id="roomRatioWidthInput" class="delay-input" type="number" min="0.01" step="0.01" value="1.00" />
+        <div id="roomMasterMpuWidth" style="font-size:11px;color:#d9ecff"></div>
+
+        <div style="text-align:center"><input id="roomMasterLength" type="radio" name="roomMasterAxis" value="length" /></div>
+        <label for="roomMasterLength" style="font-size:11px;opacity:0.9" data-i18n="room.axis.length">Y+ front</label>
+        <input id="roomDimLengthInput" class="delay-input" type="number" min="0.01" step="0.01" value="2.00" />
+        <div class="axis-driver">
+          <input id="roomDriverLength" type="checkbox" aria-label="Driver length (S/R)" />
+        </div>
+        <input id="roomRatioLengthInput" class="delay-input" type="number" min="0.01" step="0.01" value="2.00" />
+        <div id="roomMasterMpuLength" style="font-size:11px;color:#d9ecff"></div>
+
+        <div style="text-align:center"><input id="roomMasterRear" type="radio" name="roomMasterAxis" value="rear" /></div>
+        <label for="roomMasterRear" style="font-size:11px;opacity:0.9" data-i18n="room.axis.rear">Y- rear</label>
+        <input id="roomDimRearInput" class="delay-input" type="number" min="0.01" step="0.01" value="1.00" title="Rear depth (m)" />
+        <div class="axis-driver">
+          <input id="roomDriverRear" type="checkbox" aria-label="Driver rear (S/R)" />
+        </div>
+        <input id="roomRatioRearInput" class="delay-input" type="number" min="0.01" step="0.01" value="1.00" />
+        <div id="roomMasterMpuRear" style="font-size:11px;color:#d9ecff"></div>
+
+        <div style="text-align:center"><input id="roomMasterHeight" type="radio" name="roomMasterAxis" value="height" /></div>
+        <label for="roomMasterHeight" style="font-size:11px;opacity:0.9" data-i18n="room.axis.height">Z+ height</label>
+        <input id="roomDimHeightInput" class="delay-input" type="number" min="0.01" step="0.01" value="1.00" />
+        <div class="axis-driver">
+          <input id="roomDriverHeight" type="checkbox" aria-label="Driver height (S/R)" />
+        </div>
+        <input id="roomRatioHeightInput" class="delay-input" type="number" min="0.01" step="0.01" value="1.00" />
+        <div id="roomMasterMpuHeight" style="font-size:11px;color:#d9ecff"></div>
+
+        <div style="text-align:center"><input id="roomMasterLower" type="radio" name="roomMasterAxis" value="lower" /></div>
+        <label for="roomMasterLower" style="font-size:11px;opacity:0.9" data-i18n="room.axis.lower">Z- lower</label>
+        <input id="roomDimLowerInput" class="delay-input" type="number" min="0.01" step="0.01" value="0.50" />
+        <div class="axis-driver">
+          <input id="roomDriverLower" type="checkbox" aria-label="Driver lower (S/R)" />
+        </div>
+        <input id="roomRatioLowerInput" class="delay-input" type="number" min="0.01" step="0.01" value="0.50" />
+        <div id="roomMasterMpuLower" style="font-size:11px;color:#d9ecff"></div>
+        </div>
+        <div style="margin-top:0.25rem;display:flex;align-items:center;gap:0.45rem">
+          <label for="roomRatioCenterBlendSlider" style="font-size:12px;white-space:nowrap;opacity:0.9" data-i18n="room.centerBlend">Y center blend</label>
+          <input id="roomRatioCenterBlendSlider" type="range" min="0" max="100" step="1" value="50" class="gain-slider" style="flex:1 1 auto;min-width:0" />
+          <span id="roomRatioCenterBlendValue" style="min-width:3.5rem;text-align:right;font-size:11px;color:#d9ecff;cursor:default" data-i18n-title="room.centerBlend.resetTitle" title="Double click to reset 50/50">50/50</span>
+        </div>
+        <div style="margin-top:0.2rem;display:flex;justify-content:flex-end;gap:0.35rem">
+          <button id="roomGeometryCancelBtn" data-i18n="common.cancel" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.5rem;cursor:pointer">Cancel</button>
+        </div>
+      </div>
+      <div class="info-section" id="displaySection">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+          <div class="info-title" style="margin:0" data-i18n="section.display">Display</div>
+          <button id="displaySectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
+        </div>
+        <div id="displaySectionContent" class="conditional-params">
+          <div style="margin-top:0.25rem;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03);display:grid;gap:0.3rem">
+            <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+              <label for="localeSelect" data-i18n="app.language" style="font-size:12px;white-space:nowrap">Language</label>
+              <select id="localeSelect" style="flex:1;min-width:0">
+                <option value="auto">Auto</option>
+                <option value="en">English</option>
+                <option value="fr">Français</option>
+                <option value="de">Deutsch</option>
+                <option value="ja">日本語</option>
+                <option value="es">Español</option>
+                <option value="it">Italiano</option>
+                <option value="pt-BR">Português (Brasil)</option>
+                <option value="zh-CN">简体中文</option>
+              </select>
+            </div>
+            <div class="inline-toggle" id="effectiveRenderSection" style="margin-top:0">
+              <div class="title-with-info" style="min-width:0">
+                <span data-i18n="effectiveRender.title">Effective render</span>
+                <button id="effectiveRenderInfoBtn" type="button" class="info-icon-btn" data-i18n-title="effectiveRender.infoButton" title="Effective render info">i</button>
+              </div>
+              <input id="effectiveRenderToggle" type="checkbox" />
+            </div>
+            <div id="trailSection" style="display:grid;gap:0.3rem">
+              <div class="inline-toggle" style="margin-top:0">
+                <div class="title-with-info" style="min-width:0">
+                  <span data-i18n="trail.title">Trails</span>
+                  <button id="trailInfoBtn" type="button" class="info-icon-btn" data-i18n-title="trail.infoButton" title="Trails info">i</button>
+                </div>
+                <input id="trailToggle" type="checkbox" checked />
+              </div>
+              <div id="trailSectionContent" class="conditional-params open">
+                <div style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label style="font-size:12px;white-space:nowrap"><span data-i18n="trail.mode">Mode</span></label>
+                    <select id="trailModeSelect" style="flex:1;min-width:0">
+                      <option value="diffuse" data-i18n="trail.mode.diffuse">Diffuse</option>
+                      <option value="line" data-i18n="trail.mode.line">Line</option>
+                    </select>
+                  </div>
+                  <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label style="font-size:12px;white-space:nowrap"><span data-i18n="trail.duration">Duration</span> <span id="trailTtlVal">7.0s</span></label>
+                    <input id="trailTtlSlider" type="range" min="1.0" max="20.0" step="0.5" value="7.0" class="gain-slider" />
+                  </div>
+                </div>
+                <div class="inline-toggle" style="margin-top:0.2rem">
+                  <div data-i18n="display.grid">Grid</div>
+                  <input id="vbapCartesianGridToggleBtn" type="checkbox" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="info-section" id="objectsSection">
+        <div class="info-title" data-i18n="section.objects">Objects</div>
+        <div class="inline-toggle" style="margin-bottom:0.35rem">
+          <div data-i18n="osc.metering">Metering</div>
+          <input id="oscMeteringToggle" type="checkbox" />
+        </div>
+        <div id="objectsList" class="info-list">No objects.</div>
+      </div>
+    </div>
+    <div id="speakersOverlay">
+      <div class="info-section" id="audioOutputSection">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+          <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
+            <div class="info-title" style="margin:0" data-i18n="section.audioOutput">Audio Output</div>
+            <div id="audioOutputSummary" style="display:none;min-width:0;flex:1 1 auto;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+          </div>
+          <button id="audioOutputSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
+        </div>
+        <div id="audioOutputSectionContent" class="conditional-params">
+          <div class="inline-toggle">
+            <div id="loudnessInfo">source loudness: — | target loudness: — | correction: —</div>
+            <input id="loudnessToggle" type="checkbox" />
+          </div>
+          <div id="audioFormatInfo">audio: — / —</div>
+          <div class="control-row" style="margin-top:0.3rem;grid-template-columns:auto minmax(0, 1fr)">
+            <label for="audioOutputDeviceSelect" style="font-size:12px;white-space:nowrap" data-i18n="audio.outputDevice">Output device</label>
+            <select id="audioOutputDeviceSelect" class="delay-input" style="width:100%;min-width:0">
+              <option value="">Default</option>
+            </select>
+          </div>
+          <div class="control-row" style="margin-top:0.3rem;grid-template-columns:auto 1fr">
+            <label for="audioSampleRateInput" style="font-size:12px;white-space:nowrap" data-i18n="audio.sampleRate">Sample rate</label>
+            <div id="audioSampleRateControl" style="position:relative;display:flex;align-items:center;gap:0.2rem;flex:1 1 auto;min-width:0">
+              <input id="audioSampleRateInput" class="delay-input" type="text" inputmode="numeric" value="0" style="flex:1 1 auto;min-width:0" />
+              <button id="audioSampleRateMenuBtn" type="button" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.1rem 0.45rem;cursor:pointer">▾</button>
+              <div id="audioSampleRateMenu" style="position:absolute;left:0;right:0;top:calc(100% + 0.2rem);display:none;z-index:20;background:rgba(10,11,16,0.96);border:1px solid rgba(255,255,255,0.2);border-radius:8px;padding:0.2rem;max-height:180px;overflow:auto"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="info-section">
+        <div class="control-row" style="margin-top:0;grid-template-columns:auto auto 1fr">
+          <label for="latencyTargetInput" style="font-size:12px;white-space:nowrap" data-i18n="audio.targetLatency">Target latency</label>
+          <input id="latencyTargetInput" class="delay-input" type="number" min="1" step="1" value="500" style="width:5.5rem" />
+          <div style="display:flex;align-items:center;gap:0.35rem;justify-content:flex-end">
+            <button id="telemetryGaugesInfoBtn" type="button" class="info-icon-btn" title="Gauges info">i</button>
+            <button id="telemetryGaugesToggleBtn" type="button" class="panel-toggle-btn" title="Show gauges">◴</button>
+          </div>
+        </div>
+        <div id="telemetryGaugesForm" class="telemetry-gauges-form">
+          <div class="meter-row">
+            <div class="meter-stack" style="grid-column: 1 / -1;">
+              <div class="meter-mini-row">
+                <div class="meter-mini-label" style="transform:translateY(-8px)" data-i18n="telemetry.raw">raw</div>
+                <div style="display:grid;gap:0.05rem;width:100%">
+                  <div class="meter-bar">
+                    <div id="latencyMeterFill" class="meter-fill latency"></div>
+                    <div id="latencyRawMinMask" class="meter-range-mask" style="left:0;width:0;display:none"></div>
+                    <div id="latencyRawMaxMask" class="meter-range-mask" style="right:0;width:0;display:none"></div>
+                    <div id="latencyRawMinMarker" class="meter-marker min"></div>
+                    <div id="latencyRawMaxMarker" class="meter-marker max"></div>
+                  </div>
+                  <div class="meter-subvalues">
+                    <span id="latencyRawMinValue">min —</span>
+                    <span id="latencyRawInfo">—</span>
+                    <span id="latencyRawMaxValue">max —</span>
+                  </div>
+                </div>
+              </div>
+              <div class="meter-mini-row">
+                <div class="meter-mini-label" style="transform:translateY(-8px)" data-i18n="telemetry.ctrl">ctrl</div>
+                <div style="display:grid;gap:0.05rem;width:100%">
+                  <div class="meter-bar">
+                    <div id="latencyCtrlMeterFill" class="meter-fill latency-ctrl"></div>
+                  </div>
+                  <div class="meter-subvalues">
+                    <span></span>
+                    <span id="latencyCtrlInfo">—</span>
+                    <span></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="meter-row" id="resampleMeterRow">
+            <div class="meter-mini-row" style="grid-column: 1 / -1;">
+              <div class="meter-mini-label" style="transform:translateY(-8px)" data-i18n="telemetry.resample">resample</div>
+              <div style="display:grid;gap:0.05rem;width:100%">
+                <div class="meter-bar resample-meter-shell">
+                  <div class="resample-meter-center"></div>
+                  <div id="resampleNegMeterFill" class="meter-fill resample-neg"></div>
+                  <div id="resamplePosMeterFill" class="meter-fill resample-pos"></div>
+                </div>
+                <div id="resampleRatioInfo" style="font-size:10px;color:#b9c7d8;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;text-align:center">
+                  —
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="inline-toggle" style="margin-top:0.35rem">
+            <div class="title-with-info" style="flex:1 1 auto;min-width:0">
+              <div data-i18n="adaptive.title">adaptive resampling</div>
+              <div style="display:flex;align-items:center;gap:0.35rem">
+                <div id="adaptiveBandIndicator" style="display:flex;align-items:center;gap:0.4rem;color:#d9ecff;font-size:12px">
+                  <span id="adaptiveBandDot" style="width:0.6rem;height:0.6rem;border-radius:999px;background:rgba(255,255,255,0.25);display:inline-block"></span>
+                  <span id="adaptiveBandText">—</span>
+                </div>
+                <button id="adaptiveResamplingInfoBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.infoButton" title="Adaptive resampling info">i</button>
+                <button id="adaptiveResamplingAdvancedToggleBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.advancedButton" title="Adaptive resampling advanced settings">⚙</button>
+              </div>
+            </div>
+            <input id="adaptiveResamplingToggle" type="checkbox" />
+          </div>
+          <div id="adaptiveResamplingAdvancedForm" class="adaptive-advanced-form">
+            <div class="control-row" style="margin-top:0">
+              <label for="adaptiveKpNearInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.kpNear">Adaptive Kp near</label>
+              <input id="adaptiveKpNearInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00001000" style="width:8rem" />
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveKpFarInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.kpFar">Adaptive Kp far</label>
+              <input id="adaptiveKpFarInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00002000" style="width:8rem" />
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveNearFarThresholdInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.threshold">Near/far threshold</label>
+              <input id="adaptiveNearFarThresholdInput" class="delay-input" type="number" min="1" step="1" value="120" style="width:8rem" />
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveHardCorrectionThresholdInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.hardThreshold">Hard correction threshold</label>
+              <input id="adaptiveHardCorrectionThresholdInput" class="delay-input" type="number" min="0" step="1" value="0" style="width:8rem" />
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveMeasurementSmoothingAlphaInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.smoothing">Smoothing alpha</label>
+              <input id="adaptiveMeasurementSmoothingAlphaInput" class="delay-input" type="number" min="0" max="1" step="0.01" value="0.15" style="width:8rem" />
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveKiInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.ki">Adaptive Ki</label>
+              <input id="adaptiveKiInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00000050" style="width:8rem" />
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveMaxAdjustInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.max">Adaptive max</label>
+              <input id="adaptiveMaxAdjustInput" class="delay-input" type="number" min="0.000001" step="0.000001" value="0.010000" style="width:8rem" />
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveMaxAdjustFarInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.maxFar">Adaptive max far</label>
+              <input id="adaptiveMaxAdjustFarInput" class="delay-input" type="number" min="0.000001" step="0.000001" value="0.020000" style="width:8rem" />
+            </div>
+            <div style="margin-top:0.3rem;display:flex;justify-content:flex-end;gap:0.35rem">
+              <button id="adaptiveResamplingAdvancedCancelBtn" data-i18n="common.cancel" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Cancel</button>
+              <button id="adaptiveResamplingAdvancedApplyBtn" data-i18n="adaptive.apply" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Apply</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="info-section" id="masterSection">
+        <div class="info-title" data-i18n="master.title">Master</div>
+        <div class="meter-row">
+          <div id="masterMeterText" class="fixed-metric">— dB</div>
+          <div class="meter-bar">
+            <div id="masterMeterFill" class="meter-fill"></div>
+          </div>
+        </div>
+        <div class="control-row">
+          <input id="masterGainSlider" class="gain-slider" type="range" min="0" max="2" step="0.01" value="1" />
+          <div id="masterGainBox" class="gain-box">0.0 dB</div>
+        </div>
+      </div>
+      <div class="info-section" id="configSection">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+          <span id="configSavedIndicator" style="font-size:12px;color:#d9ecff">—</span>
+        </div>
+      </div>
+      <div class="info-section" id="rendererSection">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+          <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
+            <div class="info-title" style="margin:0" data-i18n="section.renderer">Renderer</div>
+            <div id="rendererSummary" style="display:none;min-width:0;flex:1 1 auto;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+          </div>
+          <button id="rendererSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
+        </div>
+        <div id="rendererSectionContent" class="conditional-params">
+          <div style="margin-top:0.25rem;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03);display:grid;gap:0.3rem">
+          <div class="info-section" id="vbapSection" style="margin:0;padding:0;border:none;background:none">
+            <div id="vbapSectionContent" class="conditional-params open">
+            <div class="control-row" style="margin-top:0.25rem;grid-template-columns:1fr auto;align-items:center">
+              <div style="display:flex;align-items:center;gap:0.45rem;min-width:0">
+                <label style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">VBAP</label>
+                <div id="vbapStatus" class="vbap-status" style="margin:0;font-size:11px;min-width:0">VBAP status: —</div>
+              </div>
+              <div style="display:flex;gap:0.2rem;align-items:center">
+                <button id="vbapModeAutoBtn" type="button" class="toggle-btn" data-i18n="common.auto" style="padding:0.15rem 0.45rem;font-size:11px">Auto</button>
+                <button id="vbapModePolarBtn" type="button" class="toggle-btn" style="padding:0.15rem 0.45rem;font-size:11px">Polar</button>
+                <button id="vbapModeCartesianBtn" type="button" class="toggle-btn" style="padding:0.15rem 0.45rem;font-size:11px">Cartesian</button>
+              </div>
+            </div>
+            <div style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+              <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:start">
+                <label style="font-size:12px;white-space:nowrap;color:#ffffff">VBAP cart</label>
+                <div style="display:flex;flex-direction:column;gap:0.15rem;align-items:stretch">
+                  <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.15rem">
+                    <input id="vbapCartXSizeInput" class="delay-input" type="number" min="1" step="1" placeholder="X" />
+                    <input id="vbapCartYSizeInput" class="delay-input" type="number" min="1" step="1" placeholder="Y" />
+                    <input id="vbapCartZSizeInput" class="delay-input" type="number" min="1" step="1" placeholder="Z+" />
+                    <input id="vbapCartZNegSizeInput" class="delay-input" type="number" min="0" step="1" placeholder="Z-" />
+                  </div>
+                  <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.15rem">
+                    <div id="vbapCartXStepInfo" class="vbap-step">—</div>
+                    <div id="vbapCartYStepInfo" class="vbap-step">—</div>
+                    <div id="vbapCartZStepInfo" class="vbap-step">—</div>
+                    <div id="vbapCartZNegStepInfo" class="vbap-step">—</div>
+                  </div>
+                </div>
+              </div>
+              <div class="control-row" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:start">
+                <label style="font-size:12px;white-space:nowrap;color:#ffffff">VBAP polar</label>
+                <div style="display:flex;flex-direction:column;gap:0.15rem;align-items:stretch">
+                  <div class="vbap-polar-grid">
+                    <input id="vbapPolarAzimuthResolutionInput" class="delay-input" type="number" min="1" step="1" placeholder="az n" style="grid-column:1;grid-row:1" />
+                    <input id="vbapPolarElevationResolutionInput" class="delay-input" type="number" min="1" step="1" placeholder="el n" style="grid-column:2;grid-row:1" />
+                    <input id="vbapPolarDistanceResInput" class="delay-input" type="number" min="1" step="1" placeholder="d n" style="grid-column:3;grid-row:1" />
+                    <div id="vbapAzimuthRangeInfo" class="vbap-polar-meta" style="grid-column:1;grid-row:2">-180..180</div>
+                    <div id="vbapElevationRangeInfo" class="vbap-polar-meta" style="grid-column:2;grid-row:2">—</div>
+                    <input id="vbapPolarDistanceMaxInput" class="delay-input" type="number" min="0.01" step="0.01" placeholder="d max" style="grid-column:3;grid-row:2" />
+                  </div>
+                  <div class="vbap-grid-3">
+                    <div id="vbapPolarAzStepInfo" class="vbap-step">—</div>
+                    <div id="vbapPolarElStepInfo" class="vbap-step">—</div>
+                    <div id="vbapPolarDistStepInfo" class="vbap-step">—</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            </div>
+          </div>
+          <div class="control-row" style="margin-top:0.3rem;grid-template-columns:1fr auto;align-items:center">
+            <div class="title-with-info" style="min-width:0;font-size:12px;font-weight:600">
+              <label for="rampModeSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="audio.rampMode">Ramp mode</label>
+              <button id="rampModeInfoBtn" type="button" class="info-icon-btn" data-i18n-title="rampMode.infoButton" title="Ramp mode info">i</button>
+            </div>
+            <select id="rampModeSelect" class="delay-input" style="min-width:9rem">
+              <option value="off" data-i18n="audio.rampModeOff">Off</option>
+              <option value="frame" data-i18n="audio.rampModeFrame">Per frame</option>
+              <option value="sample" data-i18n="audio.rampModeSample">Per sample</option>
+            </select>
+          </div>
+          <div class="info-section" id="spreadSection" style="margin:0;padding:0;border:none;background:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Spread</div>
+            </div>
+            <div id="spreadSectionContent" class="conditional-params open">
+            <div id="spreadInfo">spread: —° / —°</div>
+            <div style="margin-top:0.2rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.15rem">
+              <div class="control-row" style="margin-top:0">
+                <label style="font-size:12px;white-space:nowrap">Min <span id="spreadMinVal">0°</span></label>
+                <input id="spreadMinSlider" type="range" min="0" max="180" step="1" value="0" class="gain-slider" />
+              </div>
+              <div class="control-row" style="margin-top:0.1rem">
+                <label style="font-size:12px;white-space:nowrap">Max <span id="spreadMaxVal">180°</span></label>
+                <input id="spreadMaxSlider" type="range" min="0" max="180" step="1" value="180" class="gain-slider" />
+              </div>
+            </div>
+            </div>
+          </div>
+          <div class="info-section" id="distanceDiffuseSection" style="margin:0;padding:0;border:none;background:none">
+            <div class="title-with-info" style="font-size:12px;font-weight:600;color:#ffffff">
+              <span data-i18n="distance.title">Distance Diffuse</span>
+              <div class="inline-toggle" style="display:flex;align-items:center;gap:0.35rem">
+                <button id="distanceDiffuseInfoBtn" type="button" class="info-icon-btn" title="Distance diffuse info">i</button>
+                <input id="distanceDiffuseToggle" type="checkbox" />
+              </div>
+            </div>
+            <div id="distanceDiffuseParams" class="conditional-params">
+              <div class="control-row" style="margin-top:0.2rem">
+                <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.threshold">Threshold</span> <span id="distanceDiffuseThresholdVal">1.00</span></label>
+                <input id="distanceDiffuseThresholdSlider" type="range" min="0.1" max="2.0" step="0.01" value="1.0" class="gain-slider" />
+              </div>
+              <div class="control-row" style="margin-top:0.15rem">
+                <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.curve">Curve</span> <span id="distanceDiffuseCurveVal">1.00</span></label>
+                <input id="distanceDiffuseCurveSlider" type="range" min="0.5" max="2.0" step="0.05" value="1.0" class="gain-slider" />
+              </div>
+            </div>
+          </div>
+          <div class="info-section" id="spreadFromDistanceSection" style="margin:0;padding:0;border:none;background:none">
+            <div class="title-with-info" style="font-size:12px;font-weight:600;color:#ffffff">
+              <span data-i18n="spread.distanceTitle">Spread from Distance</span>
+              <div class="inline-toggle" style="display:flex;align-items:center;gap:0.35rem">
+                <button id="spreadFromDistanceInfoBtn" type="button" class="info-icon-btn" title="Spread from distance info">i</button>
+                <input id="spreadFromDistanceToggle" type="checkbox" />
+              </div>
+            </div>
+            <div id="spreadFromDistanceParams" class="conditional-params">
+              <div class="meter-row" style="margin-top:0.2rem">
+                <label style="font-size:12px;white-space:nowrap">spread range <span id="spreadDistanceRangeVal">1.00</span></label>
+                <input id="spreadDistanceRangeSlider" type="range" min="0.1" max="3.0" step="0.01" value="1.0" class="gain-slider" />
+              </div>
+              <div class="meter-row" style="margin-top:0.15rem">
+                <label style="font-size:12px;white-space:nowrap">spread curve <span id="spreadDistanceCurveVal">1.00</span></label>
+                <input id="spreadDistanceCurveSlider" type="range" min="0.1" max="3.0" step="0.05" value="1.0" class="gain-slider" />
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>
+      </div>
+      <div class="info-section" id="speakersSection">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+          <div class="info-title" style="margin:0" data-i18n="section.speakers">Speakers</div>
+          <div style="display:flex;align-items:center;gap:0.35rem">
+            <button id="importLayoutBtn" data-i18n="config.import" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Import layout</button>
+            <button id="exportLayoutBtn" data-i18n="config.export" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Export layout</button>
+            <button id="speakerAddBtn" type="button" class="toggle-btn">+ Add</button>
+          </div>
+        </div>
+        <div id="speakersList" class="info-list">No speakers.</div>
+      </div>
+      <div class="info-section" id="speakerEditSection" style="display:none">
+        <div class="info-title" id="speakerEditTitle" data-i18n="section.speakerEditor">Speaker Editor</div>
+        <div class="editor-row" style="margin-bottom:0.35rem">
+          <label data-i18n="speaker.layout">Layout</label>
+          <div style="display:flex;gap:0.3rem;justify-content:flex-end">
+            <button id="speakerMoveUpBtn" type="button" class="toggle-btn" data-i18n="speaker.up">Up</button>
+            <button id="speakerMoveDownBtn" type="button" class="toggle-btn" data-i18n="speaker.down">Down</button>
+            <button id="speakerRemoveBtn" type="button" class="toggle-btn" data-i18n="speaker.delete">Delete</button>
+          </div>
+        </div>
+        <div id="speakerEditBody" class="editor-body" style="display:none">
+          <div class="editor-meta">
+            <div><strong data-i18n="common.name">Name:</strong></div>
+            <input id="speakerEditNameInput" class="name-input" type="text" value="" />
+            <div><strong data-i18n="speaker.xyzGsrd">XYZ (GSRD):</strong></div>
+            <div class="editor-row" style="grid-template-columns:1fr auto">
+              <strong data-i18n="common.cartesian">Cartesian:</strong>
+              <button id="speakerEditCartesianGizmoBtn" type="button" class="toggle-btn" data-i18n="speaker.edit3d">3D Edit</button>
+            </div>
+            <div class="coord-grid">
+              <input id="speakerEditXInput" type="number" step="0.001" placeholder="X" title="GSRD X (left/right)" />
+              <input id="speakerEditYInput" type="number" step="0.001" placeholder="Y" title="GSRD Y (rear/front)" />
+              <input id="speakerEditZInput" type="number" step="0.001" placeholder="Z" title="GSRD Z (down/up)" />
+            </div>
+            <div class="editor-row" style="grid-template-columns:1fr auto">
+              <strong data-i18n="common.polar">Polar:</strong>
+              <button id="speakerEditPolarGizmoBtn" type="button" class="toggle-btn" data-i18n="speaker.edit3d">3D Edit</button>
+            </div>
+            <div class="coord-grid">
+              <input id="speakerEditAzInput" type="number" step="0.1" />
+              <input id="speakerEditElInput" type="number" step="0.1" />
+              <input id="speakerEditRInput" type="number" step="0.001" min="0.01" />
+            </div>
+          </div>
+          <div class="editor-row gain-row">
+            <label for="speakerEditGainSlider" data-i18n="speaker.gain">Gain</label>
+            <input id="speakerEditGainSlider" class="gain-slider" type="range" min="0" max="2" step="0.01" value="1" />
+            <div id="speakerEditGainBox" class="gain-box">0.0 dB</div>
+          </div>
+          <div class="editor-row">
+            <label for="speakerEditDelayMsInput" data-i18n="speaker.delayMs">Delay (ms)</label>
+            <input id="speakerEditDelayMsInput" class="delay-input" type="number" min="0" step="0.1" value="0" />
+          </div>
+          <div class="editor-row">
+            <label for="speakerEditDelaySamplesInput" data-i18n="speaker.delaySamples">Delay samples</label>
+            <input id="speakerEditDelaySamplesInput" class="delay-input" type="number" min="0" step="1" value="0" />
+          </div>
+          <div class="editor-row">
+            <label data-i18n="speaker.delayTools">Delay tools</label>
+            <div style="display:flex;gap:0.3rem;justify-content:flex-end">
+              <button id="speakerEditAutoDelayBtn" type="button" class="toggle-btn" data-i18n="speaker.calcDelays">Calc delays</button>
+              <button id="speakerEditDelayToDistanceBtn" type="button" class="toggle-btn" data-i18n="speaker.delayToDist">Delay → Dist</button>
+            </div>
+          </div>
+          <div class="inline-toggle">
+            <label for="speakerEditSpatializeToggle" data-i18n="speaker.spatialize">Spatialize</label>
+            <input id="speakerEditSpatializeToggle" type="checkbox" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="save-footer">
+      <button id="saveConfigBtn" data-i18n="config.save" class="save-footer-button">Save</button>
+      <button id="reloadConfigBtn" data-i18n="config.reload" class="save-footer-button">Reload</button>
+    </div>
+
+    <div id="distanceDiffuseInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title" data-i18n="distance.infoTitle">Distance Diffuse</div>
+        <div class="info-modal-text" data-i18n-html="distance.infoBody">
+          Distance Diffuse blends each object with a mirrored version of itself (opposite horizontal
+          direction) depending on distance. Close objects become wider/more diffuse, while far
+          objects stay mostly direct.<br /><br />
+          <strong>Threshold</strong>: distance where the blend reaches 100% direct.<br />
+          <strong>Curve</strong>: transition shape (faster or slower near-field blend).
+        </div>
+        <div class="info-modal-actions">
+          <button id="distanceDiffuseInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="spreadFromDistanceInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title" data-i18n="spread.distanceInfoTitle">Spread from Distance</div>
+        <div class="info-modal-text" data-i18n-html="spread.distanceInfoBody">
+          Spread from Distance replaces object_size spread with a distance-driven spread value.<br /><br />
+          Formula: <strong>spread = (1 - distance/range)^curve</strong>, clamped to [0, 1], then mapped to the global spread min/max range.<br /><br />
+          <strong>Range</strong>: distance where spread reaches 0.<br />
+          <strong>Curve</strong>: transition shape (higher = less spread near listener, more collapse farther away).
+        </div>
+        <div class="info-modal-actions">
+          <button id="spreadFromDistanceInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="trailInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title" data-i18n="trail.infoTitle">Trails</div>
+        <div class="info-modal-text" data-i18n-html="trail.infoBody">
+          Trails show each object's recent movement history in the 3D view.<br /><br />
+          <strong>Mode</strong>: choose between a classic line or a diffuse particle trail.<br />
+          <strong>Duration</strong>: how long trail points stay visible before fading out.
+        </div>
+        <div class="info-modal-actions">
+          <button id="trailInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="effectiveRenderInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title" data-i18n="effectiveRender.infoTitle">Effective render position</div>
+        <div class="info-modal-text" data-i18n-html="effectiveRender.infoBody">
+          Shows an estimated effective render position computed from the current speaker gains.<br /><br />
+          A small marker is placed at the weighted centroid of the active speakers, using a power-style weighting based on each gain squared.<br />
+          The thin line connects the object's nominal position to this effective rendered position.
+        </div>
+        <div class="info-modal-actions">
+          <button id="effectiveRenderInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="oscInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title" data-i18n="osc.infoTitle">OSC</div>
+        <div class="info-modal-text" data-i18n-html="osc.infoBody">
+          <strong>Host</strong>: target host used for OSC communication.<br /><br />
+          <strong>GSRD Port</strong>: port where `gsrd` sends state and receives control.<br /><br />
+          <strong>Listen Port</strong>: local port used by the visualizer to receive OSC. `0` lets the system choose one automatically.
+        </div>
+        <div class="info-modal-actions">
+          <button id="oscInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="roomGeometryInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title" data-i18n="room.infoTitle">Room Geometry</div>
+        <div class="info-modal-text" data-i18n-html="room.infoBody">
+          Room geometry defines the physical room dimensions used to map normalized scene coordinates to meters.<br /><br />
+          The <strong>master axis</strong> sets the reference scale in meters per unit, and the other axes follow through their ratios.<br /><br />
+          These values affect distance-based processing and the spatial interpretation of the 3D scene.
+        </div>
+        <div class="info-modal-actions">
+          <button id="roomGeometryInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="adaptiveResamplingInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title" data-i18n="adaptive.infoTitle">Adaptive Resampling</div>
+        <div class="info-modal-text" data-i18n-html="adaptive.infoBody">
+          These parameters tune how fast the local resampler recenters the audio buffer on the requested latency target.<br /><br />
+          <strong>Kp near</strong>: proportional gain used when the buffer is close to target. Keep this conservative to avoid jitter.<br />
+          <strong>Kp far</strong>: proportional gain used when the error is large. Increase this for faster recovery after drift or disruption.<br />
+          <strong>Near/far threshold</strong>: error threshold, in milliseconds of buffer drift, where control switches from near to far gain.<br />
+          <strong>Smoothing alpha</strong>: source-side measurement smoothing used by the controller and hard correction. Lower values are calmer, higher values react faster.<br />
+          <strong>Ki</strong>: integral gain. Corrects steady-state bias and clock mismatch, but too much can make recovery sluggish or unstable.<br />
+          <strong>Adaptive max</strong>: maximum correction ratio clamp. Higher values recover faster, but can sound more aggressive.
+        </div>
+        <div class="info-modal-actions">
+          <button id="adaptiveResamplingInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="telemetryGaugesInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title" data-i18n="telemetry.infoTitle">Latency Gauges</div>
+        <div class="info-modal-text" data-i18n-html="telemetry.infoBody">
+          <strong>raw</strong>: instantaneous measured latency. The min/max markers show the recent sliding window.<br /><br />
+          <strong>ctrl</strong>: smoothed latency used internally by the adaptive controller.<br /><br />
+          <strong>resample</strong>: current adaptive resampling correction around the neutral 1.0 ratio. Left means slower, right means faster.
+        </div>
+        <div class="info-modal-actions">
+          <button id="telemetryGaugesInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="rampModeInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title" data-i18n="rampMode.infoTitle">Ramp mode</div>
+        <div class="info-modal-text" data-i18n-html="rampMode.infoBody">
+          <strong>Off</strong>: disable interpolation and jump immediately to the new target.<br /><br />
+          <strong>Per frame</strong>: apply one interpolation step per decoded audio frame. This is lighter and more stepped.<br /><br />
+          <strong>Per sample</strong>: apply one interpolation step for every rendered sample. This is the smoothest mode and matches the previous default behavior.
+        </div>
+        <div class="info-modal-actions">
+          <button id="rampModeInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

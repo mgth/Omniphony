@@ -1,0 +1,12 @@
+*.swp
+*.tmp
+*.log
+
+.DS_Store
+
+target/
+node_modules/
+dist/
+.idea/
+
+gsrd/.output.txt

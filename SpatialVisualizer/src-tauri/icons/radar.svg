@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#07131d"/>
+      <stop offset="100%" stop-color="#103149"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#67f0ff"/>
+      <stop offset="100%" stop-color="#79ff9f"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#9affb1" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#67f0ff" stop-opacity="0.05"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="54" fill="url(#bg)"/>
+  <circle cx="128" cy="128" r="90" fill="none" stroke="url(#ring)" stroke-width="10" opacity="0.95"/>
+  <circle cx="128" cy="128" r="58" fill="none" stroke="url(#ring)" stroke-width="8" opacity="0.7"/>
+  <circle cx="128" cy="128" r="26" fill="none" stroke="url(#ring)" stroke-width="7" opacity="0.55"/>
+  <path d="M128 128 L204 72 A108 108 0 0 1 184 186 Z" fill="url(#beam)"/>
+  <path d="M128 40 V216" stroke="#8be4ff" stroke-width="5" opacity="0.18"/>
+  <path d="M40 128 H216" stroke="#8be4ff" stroke-width="5" opacity="0.18"/>
+  <circle cx="164" cy="104" r="10" fill="#b8ffd1"/>
+  <circle cx="164" cy="104" r="18" fill="none" stroke="#b8ffd1" stroke-width="4" opacity="0.5"/>
+</svg>

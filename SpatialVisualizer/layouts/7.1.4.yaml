@@ -1,0 +1,67 @@
+# Immersive audio 7.1.4 Speaker Layout
+# ITU-R BS.2051-3 Configuration 4+5+0
+#
+# This is a common immersive home theater layout with:
+# - 7.1 bed layer (8 speakers including LFE)
+# - 4 height speakers at 45° elevation
+#
+# Total: 12 channels (including LFE)
+#
+# Coordinate system:
+#   Azimuth:   0° = front, -90° = left, 90° = right, ±180° = rear
+#   Elevation: 0° = horizontal, 90° = zenith, -90° = nadir
+
+speakers:
+  # Front layer
+  - name: "FL"
+    azimuth: -30.0
+    elevation: 0.0
+
+  - name: "FR"
+    azimuth: 30.0
+    elevation: 0.0
+
+  - name: "C"
+    azimuth: 0.0
+    elevation: 0.0
+
+  # LFE (Low Frequency Effects)
+  # Same position as center for VBAP purposes
+  - name: "LFE"
+    azimuth: 0.0
+    elevation: 0.0
+
+  # Side surround layer
+  - name: "SL"
+    azimuth: -90.0
+    elevation: 0.0
+
+  - name: "SR"
+    azimuth: 90.0
+    elevation: 0.0
+
+  # Rear surround layer
+  - name: "BL"
+    azimuth: -145.0
+    elevation: 0.0
+
+  - name: "BR"
+    azimuth: 145.0
+    elevation: 0.0
+
+  # Height layer (4 speakers at 45° elevation)
+  - name: "TFL"
+    azimuth: -30.0
+    elevation: 45.0
+
+  - name: "TFR"
+    azimuth: 30.0
+    elevation: 45.0
+
+  - name: "TBL"
+    azimuth: -135.0
+    elevation: 45.0
+
+  - name: "TBR"
+    azimuth: 135.0
+    elevation: 45.0

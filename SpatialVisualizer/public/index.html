@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Spatial Visualizer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        font-family: Inter, system-ui, sans-serif;
+        background: #0a0b10;
+      }
+
+      #overlay {
+        position: fixed;
+        top: 1rem;
+        left: 1rem;
+        background: rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        backdrop-filter: blur(8px);
+        font-size: 14px;
+        line-height: 1.45;
+        z-index: 2;
+        width: min(440px, 92vw);
+        height: calc(100vh - 2rem);
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      #speakersOverlay {
+        position: fixed;
+        top: 1rem;
+        right: 1rem;
+        background: rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        backdrop-filter: blur(8px);
+        font-size: 14px;
+        line-height: 1.45;
+        z-index: 2;
+        width: min(440px, 92vw);
+        height: calc(100vh - 2rem);
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      #status {
+        font-weight: 700;
+      }
+
+      #layoutSelect {
+        margin-top: 0.35rem;
+        width: 100%;
+      }
+
+      #roomRatio {
+        margin-top: 0.35rem;
+        font-size: 12px;
+        color: #d9ecff;
+      }
+
+      #spreadInfo {
+        margin-top: 0.25rem;
+        font-size: 12px;
+        color: #d9ecff;
+      }
+
+      #loudnessInfo {
+        margin-top: 0.2rem;
+        font-size: 12px;
+        color: #d9ecff;
+      }
+
+      .meter-fill.latency {
+        background: linear-gradient(90deg, #52e2a2 0%, #ffd56a 60%, #ff8a5c 82%, #ff4d4d 100%);
+        box-shadow: 0 0 6px rgba(255, 160, 90, 0.35);
+      }
+
+      .switch-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        margin-top: 0.25rem;
+      }
+
+      .inline-toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0.2rem;
+        justify-content: space-between;
+      }
+
+      .switch-row input[type="checkbox"],
+      .inline-toggle input[type="checkbox"] {
+        width: 34px;
+        height: 18px;
+        appearance: none;
+        background: rgba(255, 255, 255, 0.18);
+        border-radius: 999px;
+        position: relative;
+        outline: none;
+        cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+      }
+
+      .switch-row input[type="checkbox"]::after,
+      .inline-toggle input[type="checkbox"]::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #d9ecff;
+        transition: transform 0.2s ease;
+      }
+
+      .switch-row input[type="checkbox"]:checked,
+      .inline-toggle input[type="checkbox"]:checked {
+        background: rgba(80, 200, 120, 0.45);
+      }
+
+      .switch-row input[type="checkbox"]:checked::after,
+      .inline-toggle input[type="checkbox"]:checked::after {
+        transform: translateX(16px);
+      }
+
+      .info-section {
+        margin-top: 0.75rem;
+        padding-top: 0.5rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .info-title {
+        font-weight: 600;
+        margin-bottom: 0.35rem;
+      }
+
+      .info-list {
+        max-height: none;
+        overflow: auto;
+        font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+        font-size: 12.5px;
+        display: grid;
+        gap: 0.25rem;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+
+      .info-item {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.1rem;
+        padding: 0.25rem 0.35rem;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .info-item strong {
+        font-weight: 600;
+        color: #d9ecff;
+      }
+
+      .meter-row {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .meter-bar {
+        position: relative;
+        height: 6px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(77, 215, 255, 0.18) 0%, rgba(123, 255, 106, 0.18) 60%, rgba(255, 209, 58, 0.18) 82%, rgba(255, 93, 93, 0.18) 100%);
+        overflow: hidden;
+      }
+
+      .meter-fill {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        background: linear-gradient(90deg, #4dd7ff 0%, #7bff6a 60%, #ffd13a 82%, #ff5d5d 100%);
+        box-shadow: 0 0 8px rgba(255, 140, 80, 0.35);
+        clip-path: inset(0 calc(100% - var(--level, 0%)) 0 0);
+      }
+
+      .control-row {
+        display: grid;
+        grid-template-columns: 1fr auto auto auto;
+        gap: 0.35rem;
+        align-items: center;
+        margin-top: 0.2rem;
+      }
+
+      #masterSection .control-row {
+        grid-template-columns: 1fr auto;
+      }
+
+      .gain-slider {
+        width: 100%;
+      }
+
+      .toggle-btn {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: #dfe8f3;
+        border-radius: 6px;
+        font-size: 11px;
+        padding: 0.1rem 0.35rem;
+        cursor: pointer;
+      }
+
+      .toggle-btn.active {
+        background: rgba(255, 255, 255, 0.2);
+        color: #ffffff;
+      }
+
+      .gain-box {
+        min-width: 54px;
+        text-align: right;
+        padding: 0.1rem 0.3rem;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 11px;
+        color: #d9ecff;
+      }
+
+      .info-item.is-dimmed {
+        opacity: 0.45;
+      }
+
+      .info-item.is-muted {
+        opacity: 0.35;
+      }
+
+      .info-item.is-selected {
+        background: rgba(46, 110, 64, 0.45);
+        border: 1px solid rgba(90, 200, 120, 0.35);
+      }
+
+      .object-item {
+        display: grid;
+        grid-template-columns: 18px 1fr;
+        gap: 0.45rem;
+        align-items: stretch;
+      }
+
+      .speaker-item {
+        display: grid;
+        grid-template-columns: 1fr 18px;
+        gap: 0.45rem;
+        align-items: stretch;
+      }
+
+      .id-strip {
+        background: rgba(0, 0, 0, 0.55);
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.2rem 0.1rem;
+      }
+
+      .id-strip span {
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+        font-weight: 600;
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        color: #d9ecff;
+      }
+
+      .id-strip.flip span {
+        transform: rotate(180deg);
+      }
+
+      .object-content {
+        display: grid;
+        gap: 0.2rem;
+      }
+
+      .speaker-content {
+        display: grid;
+        gap: 0.2rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="overlay">
+      <div><strong>Spatial Visualizer</strong></div>
+      <div>WS: <span id="status">connexion...</span></div>
+      <div id="roomRatio">room_ratio: —</div>
+      <div class="inline-toggle">
+        <div id="loudnessInfo">source loudness: — | target loudness: — | correction: —</div>
+        <input id="loudnessToggle" type="checkbox" />
+      </div>
+      <div class="meter-row">
+        <div id="latencyInfo">latency: —</div>
+        <div class="meter-bar">
+          <div id="latencyMeterFill" class="meter-fill latency"></div>
+        </div>
+      </div>
+      <div id="resampleRatioInfo">resample: —</div>
+
+      <div class="info-section" id="objectsSection">
+        <div class="info-title">Objets</div>
+        <div id="objectsList" class="info-list">Aucun objet.</div>
+      </div>
+    </div>
+    <div id="speakersOverlay">
+      <label for="layoutSelect">Layout:</label>
+      <select id="layoutSelect" disabled>
+        <option>Chargement...</option>
+      </select>
+      <label for="editModeSelect">Édition:</label>
+      <select id="editModeSelect">
+        <option value="polar">Anneaux + élévation</option>
+        <option value="direct">Drag direct</option>
+        <option value="cartesian">Cartésien</option>
+      </select>
+      <div class="info-section" id="masterSection">
+        <div class="info-title">Master</div>
+        <div class="meter-row">
+          <div id="masterMeterText">— dB</div>
+          <div class="meter-bar">
+            <div id="masterMeterFill" class="meter-fill"></div>
+          </div>
+        </div>
+        <div class="control-row">
+          <input id="masterGainSlider" class="gain-slider" type="range" min="0" max="2" step="0.01" value="1" />
+          <div id="masterGainBox" class="gain-box">0.0 dB</div>
+        </div>
+      </div>
+      <div class="info-section" id="configSection">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+          <span id="configSavedIndicator" style="font-size:12px;color:#d9ecff">—</span>
+          <button id="saveConfigBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Sauvegarder</button>
+        </div>
+      </div>
+      <div class="info-section" id="spreadSection">
+        <div class="info-title">Spread</div>
+        <div id="spreadInfo">spread: —° / —°</div>
+        <div class="control-row" style="margin-top:0.25rem">
+          <label style="font-size:12px;white-space:nowrap">Min <span id="spreadMinVal">0°</span></label>
+          <input id="spreadMinSlider" type="range" min="0" max="180" step="1" value="0" class="gain-slider" />
+        </div>
+        <div class="control-row" style="margin-top:0.2rem">
+          <label style="font-size:12px;white-space:nowrap">Max <span id="spreadMaxVal">180°</span></label>
+          <input id="spreadMaxSlider" type="range" min="0" max="180" step="1" value="180" class="gain-slider" />
+        </div>
+      </div>
+      <div class="info-section" id="distanceDiffuseSection">
+        <div class="info-title">Distance Diffuse</div>
+        <div class="inline-toggle">
+          <label for="distanceDiffuseToggle">Activer</label>
+          <input id="distanceDiffuseToggle" type="checkbox" />
+        </div>
+        <div class="control-row" style="margin-top:0.3rem">
+          <label style="font-size:12px;white-space:nowrap">Seuil <span id="distanceDiffuseThresholdVal">1.00</span></label>
+          <input id="distanceDiffuseThresholdSlider" type="range" min="0.1" max="2.0" step="0.01" value="1.0" class="gain-slider" />
+        </div>
+        <div class="control-row" style="margin-top:0.2rem">
+          <label style="font-size:12px;white-space:nowrap">Courbe <span id="distanceDiffuseCurveVal">1.00</span></label>
+          <input id="distanceDiffuseCurveSlider" type="range" min="0.5" max="2.0" step="0.05" value="1.0" class="gain-slider" />
+        </div>
+      </div>
+      <div class="info-section" id="trailSection">
+        <div class="info-title">Trajectoires</div>
+        <div class="inline-toggle">
+          <label for="trailToggle">Afficher</label>
+          <input id="trailToggle" type="checkbox" checked />
+        </div>
+        <div class="control-row" style="margin-top:0.3rem">
+          <label style="font-size:12px;white-space:nowrap">Points <span id="trailLengthVal">80</span></label>
+          <input id="trailLengthSlider" type="range" min="10" max="300" step="10" value="80" class="gain-slider" />
+        </div>
+      </div>
+      <div class="info-section" id="speakersSection">
+        <div class="info-title">Speakers</div>
+        <div id="speakersList" class="info-list">Aucun speaker.</div>
+      </div>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
