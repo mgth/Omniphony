@@ -3495,7 +3495,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "spatial-visualizer"
+name = "omniphony-studio"
 version = "0.1.0"
 dependencies = [
  "image",

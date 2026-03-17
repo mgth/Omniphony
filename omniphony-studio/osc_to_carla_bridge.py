@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OSC Bridge: gsrd → Carla/SPARTA Panner
+OSC Bridge: Omniphony → Carla/SPARTA Panner
 Maps immersive object positions to Carla plugin parameters via OSC
 
 Usage:
@@ -268,13 +268,13 @@ def create_default_config():
 
 
 def main():
-    parser = argparse.ArgumentParser(description='OSC bridge: gsrd → Carla')
+    parser = argparse.ArgumentParser(description='OSC bridge: Omniphony → Carla')
     parser.add_argument('--config', default='carla_mapping.yaml',
                        help='Mapping configuration file (default: carla_mapping.yaml)')
     parser.add_argument('--create-config', action='store_true',
                        help='Create default configuration file and exit')
-    parser.add_argument('--gsrd-port', type=int, default=9000,
-                       help='Port to receive OSC from gsrd (default: 9000)')
+    parser.add_argument('--omniphony-port', type=int, default=9000,
+                       help='Port to receive OSC from Omniphony (default: 9000)')
     args = parser.parse_args()
 
     if args.create_config:
@@ -304,23 +304,23 @@ def main():
         print(f"Error loading configuration: {e}")
         return
 
-    # Create OSC dispatcher for gsrd messages
+    # Create OSC dispatcher for Omniphony messages
     dispatcher = Dispatcher()
     dispatcher.map("/omniphony/object/*/xyz", bridge.object_position_handler)
     dispatcher.map("/omniphony/spatial/frame", bridge.frame_handler)
     dispatcher.map("/omniphony/source/config", bridge.source_config_handler)
 
     # Create and start OSC server
-    server = BlockingOSCUDPServer(("127.0.0.1", args.gsrd_port), dispatcher)
+    server = BlockingOSCUDPServer(("127.0.0.1", args.omniphony_port), dispatcher)
 
     print("=" * 70)
-    print("gsrd → Carla OSC Bridge")
+    print("Omniphony → Carla OSC Bridge")
     print("=" * 70)
-    print(f"Listening for gsrd OSC: 127.0.0.1:{args.gsrd_port}")
+    print(f"Listening for Omniphony OSC: 127.0.0.1:{args.omniphony_port}")
     print(f"Sending to Carla: {carla_host}:{carla_port}")
     print()
     print("Message flow:")
-    print("  gsrd → OSC (port 9000) → This bridge → Carla OSC → SPARTA Panner")
+    print("  Omniphony → OSC (port 9000) → This bridge → Carla OSC → SPARTA Panner")
     print()
     print("Press Ctrl+C to stop")
     print("=" * 70)

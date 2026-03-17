@@ -47,7 +47,7 @@ fn spherical_to_cartesian(az_deg: f64, el_deg: f64, dist: f64) -> (f64, f64, f64
     (x, y, z)
 }
 
-fn gsrd_speaker_to_scene(az_deg: f64, el_deg: f64, dist: f64) -> (f64, f64, f64) {
+fn omniphony_speaker_to_scene(az_deg: f64, el_deg: f64, dist: f64) -> (f64, f64, f64) {
     spherical_to_cartesian(az_deg, el_deg, dist)
 }
 
@@ -338,7 +338,7 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
                 }
             }
         };
-        let (px, py, pz) = gsrd_speaker_to_scene(az, el, dist);
+        let (px, py, pz) = omniphony_speaker_to_scene(az, el, dist);
         let delay_ms = args
             .get(5)
             .copied()

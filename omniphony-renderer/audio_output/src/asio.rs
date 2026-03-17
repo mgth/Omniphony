@@ -148,7 +148,7 @@ impl AsioWriter {
 
             found_device.ok_or_else(|| {
                 anyhow!(
-                    "ASIO device '{}' not found. Use 'gsrd list-asio-devices' to see available devices.",
+                    "ASIO device '{}' not found. Use 'orender list-asio-devices' to see available devices.",
                     target_name
                 )
             })?

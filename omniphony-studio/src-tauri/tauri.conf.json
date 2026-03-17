@@ -1,6 +1,6 @@
 {
-  "identifier": "fr.gsrd.spatial-visualizer",
-  "productName": "Spatial Visualizer",
+  "identifier": "fr.omniphony.studio",
+  "productName": "Omniphony Studio",
   "version": "0.1.0",
   "build": {
     "frontendDist": "../dist",
@@ -16,7 +16,7 @@
   "app": {
     "windows": [
       {
-        "title": "Spatial Visualizer",
+        "title": "Omniphony Studio",
         "width": 1400,
         "height": 900
       }

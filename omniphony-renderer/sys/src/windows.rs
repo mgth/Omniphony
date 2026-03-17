@@ -1,22 +1,22 @@
 //! Windows Service Control Manager (SCM) integration.
 //!
-//! Allows gsrd to run as a Windows service. The full CLI command line is
+//! Allows omniphony-renderer to run as a Windows service. The full CLI command line is
 //! embedded in the service's `binPath` at registration time so that the
 //! existing Clap argument parsing works unchanged inside the service.
 //!
 //! # Service registration
 //!
 //! ```bat
-//! sc create gsrd binPath= "C:\gsrd.exe --output-backend asio \\.\pipe\input.audio"
-//! sc description gsrd "Spatial audio decoder"
-//! sc start gsrd
-//! sc stop  gsrd
+//! sc create omniphony-renderer binPath= "C:\orender.exe --output-backend asio \\.\pipe\input.audio"
+//! sc description omniphony-renderer "Spatial audio decoder"
+//! sc start omniphony-renderer
+//! sc stop  omniphony-renderer
 //! ```
 //!
 //! # Stream reload (equivalent of SIGHUP on Linux)
 //!
 //! ```bat
-//! sc control gsrd 128
+//! sc control omniphony-renderer 128
 //! ```
 //!
 //! # Service control flow
@@ -58,7 +58,7 @@ use windows_service::{
 /// `service_set_running` / `service_set_stopping` read from here.
 static STATUS_HANDLE: OnceLock<ServiceStatusHandle> = OnceLock::new();
 
-const SERVICE_NAME: &str = "gsrd";
+const SERVICE_NAME: &str = "omniphony-renderer";
 
 // ─── SCM entry point ──────────────────────────────────────────────────────────
 
@@ -210,7 +210,7 @@ pub fn try_start_service(app: fn() -> anyhow::Result<()>) -> bool {
         }
         Err(e) => {
             // Unexpected error — log and fall through to console mode.
-            eprintln!("gsrd: service_dispatcher::start error: {e}");
+            eprintln!("omniphony-renderer: service_dispatcher::start error: {e}");
             false
         }
     }

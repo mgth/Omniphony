@@ -702,7 +702,7 @@ fn run_pipewire_loop(
     let mut props = pw::properties::Properties::new();
 
     // Set node name
-    props.insert("node.name", "gsrd-vbap-renderer");
+    props.insert("node.name", "omniphony-vbap-renderer");
     props.insert("media.name", "VBAP Spatial Audio");
 
     // Set target output node if specified
@@ -743,7 +743,7 @@ fn run_pipewire_loop(
         requested_latency_frames as f64 / actual_output_rate as f64 * 1000.0
     );
 
-    let stream = pw::stream::Stream::new(&core, "gsrd-audio", props)
+    let stream = pw::stream::Stream::new(&core, "omniphony-audio", props)
         .map_err(|e| anyhow!("Failed to create stream: {:?}", e))?;
 
     // Setup state changed listener

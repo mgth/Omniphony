@@ -1450,7 +1450,7 @@ function sceneToOmniphonyCartesian(position) {
   };
 }
 
-function gsrdToSceneCartesian(position) {
+function omniphonyToSceneCartesian(position) {
   return {
     x: Number(position?.y) || 0,
     y: Number(position?.z) || 0,
@@ -1462,10 +1462,10 @@ function formatPosition(position) {
   if (!position) {
     return 'x:— y:— z:—';
   }
-  const gsrdPos = sceneToOmniphonyCartesian(position);
-  const x = Number(gsrdPos.x);
-  const y = Number(gsrdPos.y);
-  const z = Number(gsrdPos.z);
+  const omniphonyPos = sceneToOmniphonyCartesian(position);
+  const x = Number(omniphonyPos.x);
+  const y = Number(omniphonyPos.y);
+  const z = Number(omniphonyPos.z);
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
     return 'x:— y:— z:—';
   }
@@ -2223,10 +2223,10 @@ function renderSpeakerEditor() {
 
   if (speakerEditTitleEl) speakerEditTitleEl.textContent = `Speaker ${idx}`;
   if (speakerEditNameInputEl) speakerEditNameInputEl.value = String(speaker.id ?? idx);
-  const gsrdSpeakerPos = sceneToOmniphonyCartesian(speaker);
-  if (speakerEditXInputEl) speakerEditXInputEl.value = formatNumber(Number(gsrdSpeakerPos.x), 3);
-  if (speakerEditYInputEl) speakerEditYInputEl.value = formatNumber(Number(gsrdSpeakerPos.y), 3);
-  if (speakerEditZInputEl) speakerEditZInputEl.value = formatNumber(Number(gsrdSpeakerPos.z), 3);
+  const omniphonySpeakerPos = sceneToOmniphonyCartesian(speaker);
+  if (speakerEditXInputEl) speakerEditXInputEl.value = formatNumber(Number(omniphonySpeakerPos.x), 3);
+  if (speakerEditYInputEl) speakerEditYInputEl.value = formatNumber(Number(omniphonySpeakerPos.y), 3);
+  if (speakerEditZInputEl) speakerEditZInputEl.value = formatNumber(Number(omniphonySpeakerPos.z), 3);
   if (speakerEditAzInputEl) speakerEditAzInputEl.value = formatNumber(az, 1);
   if (speakerEditElInputEl) speakerEditElInputEl.value = formatNumber(el, 1);
   if (speakerEditRInputEl) speakerEditRInputEl.value = formatNumber(r, 3);
@@ -6839,7 +6839,7 @@ bindSpeakerCoordChange(speakerEditXInputEl, (idx) => {
   const gx = Number(speakerEditXInputEl?.value);
   const gy = Number(speakerEditYInputEl?.value);
   const gz = Number(speakerEditZInputEl?.value);
-  const scene = gsrdToSceneCartesian({ x: gx, y: gy, z: gz });
+  const scene = omniphonyToSceneCartesian({ x: gx, y: gy, z: gz });
   applySpeakerCartesianEdit(idx, scene.x, scene.y, scene.z, true);
 });
 
@@ -6847,7 +6847,7 @@ bindSpeakerCoordChange(speakerEditYInputEl, (idx) => {
   const gx = Number(speakerEditXInputEl?.value);
   const gy = Number(speakerEditYInputEl?.value);
   const gz = Number(speakerEditZInputEl?.value);
-  const scene = gsrdToSceneCartesian({ x: gx, y: gy, z: gz });
+  const scene = omniphonyToSceneCartesian({ x: gx, y: gy, z: gz });
   applySpeakerCartesianEdit(idx, scene.x, scene.y, scene.z, true);
 });
 
@@ -6855,7 +6855,7 @@ bindSpeakerCoordChange(speakerEditZInputEl, (idx) => {
   const gx = Number(speakerEditXInputEl?.value);
   const gy = Number(speakerEditYInputEl?.value);
   const gz = Number(speakerEditZInputEl?.value);
-  const scene = gsrdToSceneCartesian({ x: gx, y: gy, z: gz });
+  const scene = omniphonyToSceneCartesian({ x: gx, y: gy, z: gz });
   applySpeakerCartesianEdit(idx, scene.x, scene.y, scene.z, true);
 });
 
