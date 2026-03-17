@@ -1,0 +1,19 @@
+{
+  "name": "omniphony-studio",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Visualisation 3D d'objets audio spatialisés via OSC",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "three": "^0.165.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "vite": "^5"
+  }
+}

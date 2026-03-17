@@ -1,0 +1,78 @@
+[workspace]
+members = ["renderer", "audio_output", "sys", "bridge_api", "spdif"]
+resolver = "2"
+
+[package]
+name = "omniphony-renderer"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Omniphony Renderer: bridge-driven spatial audio decoding and rendering"
+repository = "https://github.com/mgth/Omniphony"
+build = "build.rs"
+authors = ["Rainbaby"]
+rust-version = "1.87.0"
+
+[[bin]]
+name = "orender"
+path = "src/main.rs"
+
+[dependencies]
+renderer = { version = "0.1.0", path = "renderer" }
+audio_output = { version = "0.1.0", path = "audio_output" }
+sys = { version = "0.1.0", path = "sys" }
+bridge_api = { version = "0.1.0", path = "bridge_api" }
+spdif = { version = "0.1.0", path = "spdif" }
+abi_stable = "0.11"
+libloading = "0.8"
+
+anyhow = "1.0.99"
+clap = { version = "4.5.45", features = ["derive"] }
+env_logger = "0.11.8"
+log = "0.4.27"
+parking_lot = "0.12"
+arc-swap = "1"
+libc = "0.2"
+flate2 = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+# Windows API for named pipe support
+# Windows Service Control Manager integration
+windows-service = "0.7"
+windows = { version = "0.54", features = [
+    "Win32_Foundation",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+] }
+
+[build-dependencies]
+anyhow = "1.0.99"
+vergen-gitcl = { version = "1.0.8", default-features = false, features = ["build"] }
+chrono = "0.4.41"
+serde_json = "1.0.142"
+
+[profile.release-deploy]
+inherits = "release"
+lto = "thin"
+strip = "symbols"
+
+[features]
+# No default features - users must explicitly choose their platform profile
+default = []
+
+# SAF-backed VBAP support (Linux and Windows)
+# Enables runtime VBAP table generation with generate-vbap command
+# Usage: cargo build --features saf_vbap
+saf_vbap = ["renderer/saf_vbap"]
+
+# ASIO audio output (Windows only, requires native Windows build)
+# Usage on Windows: cargo build --features asio
+asio = ["audio_output/asio"]
+
+# PipeWire audio output (Linux only)
+# Usage on Linux: cargo build --features pipewire
+pipewire = ["audio_output/pipewire"]
