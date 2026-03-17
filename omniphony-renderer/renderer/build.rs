@@ -23,17 +23,20 @@ fn main() -> Result<()> {
 fn configure_saf_linux(saf_root: &str) -> Result<bool> {
     let saf_lib_path = format!("{}/build/framework/libsaf.a", saf_root);
     if !std::path::Path::new(&saf_lib_path).exists() {
-        eprintln!("Warning: SAF library not found at {}", saf_lib_path);
-        eprintln!("Skipping SAF bindings generation.");
-        eprintln!("To build SAF on Linux, run:");
-        eprintln!("  cd {} && cmake -S . -B build \\", saf_root);
-        eprintln!("    -DSAF_PERFORMANCE_LIB=SAF_USE_OPEN_BLAS_AND_LAPACKE \\");
-        eprintln!("    -DSAF_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF \\");
-        eprintln!("    -DCMAKE_BUILD_TYPE=Release \\");
-        eprintln!("    -DCMAKE_C_FLAGS=\"-I/usr/include/openblas\" \\");
-        eprintln!("    -DCMAKE_CXX_FLAGS=\"-I/usr/include/openblas\" && \\");
-        eprintln!("  cd build && make -j$(nproc)");
-        return Ok(false);
+        anyhow::bail!(
+            "SAF library not found at {}.\n\
+             Build Spatial_Audio_Framework first or export SAF_ROOT to a valid SAF tree.\n\
+             Example:\n\
+               cd {} && cmake -S . -B build \\\n\
+                 -DSAF_PERFORMANCE_LIB=SAF_USE_OPEN_BLAS_AND_LAPACKE \\\n\
+                 -DSAF_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF \\\n\
+                 -DCMAKE_BUILD_TYPE=Release \\\n\
+                 -DCMAKE_C_FLAGS=\"-I/usr/include/openblas\" \\\n\
+                 -DCMAKE_CXX_FLAGS=\"-I/usr/include/openblas\" && \\\n\
+               cmake --build build -j$(nproc)",
+            saf_lib_path,
+            saf_root
+        );
     }
 
     println!(
@@ -67,21 +70,16 @@ fn configure_saf_windows(saf_root: &str) -> Result<bool> {
         .cloned();
 
     if saf_lib_path.is_none() {
-        eprintln!("Warning: SAF library not found in any of:");
+        let mut msg = String::from("SAF library not found in any of:\n");
         for path in &possible_lib_paths {
-            eprintln!("  - {}", path);
+            msg.push_str(&format!("  - {}\n", path));
         }
-        eprintln!("Skipping SAF bindings generation.");
-        eprintln!("\nTo build SAF on Windows, run:");
-        eprintln!(
-            "  cd {} && cmake -S . -B build -G \"Visual Studio 17 2022\" -A x64 `",
+        msg.push_str("\nBuild SAF first or export SAF_ROOT to a valid SAF tree.\n");
+        msg.push_str(&format!(
+            "Example:\n  cd {} && cmake -S . -B build -G \"Visual Studio 17 2022\" -A x64 ^\n    -DSAF_PERFORMANCE_LIB=SAF_USE_OPEN_BLAS_AND_LAPACKE ^\n    -DSAF_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF ^\n    -DCMAKE_BUILD_TYPE=Release\n  cmake --build build --config Release",
             saf_root
-        );
-        eprintln!("    -DSAF_PERFORMANCE_LIB=SAF_USE_OPEN_BLAS_AND_LAPACKE `");
-        eprintln!("    -DSAF_BUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF `");
-        eprintln!("    -DCMAKE_BUILD_TYPE=Release");
-        eprintln!("  cmake --build build --config Release");
-        return Ok(false);
+        ));
+        anyhow::bail!(msg);
     }
 
     let lib_dir = Path::new(saf_lib_path.as_ref().unwrap())
@@ -160,7 +158,7 @@ fn generate_saf_bindings() -> Result<()> {
     };
 
     if !saf_available {
-        return Ok(());
+        anyhow::bail!("SAF VBAP support requested but SAF could not be configured");
     }
 
     println!(
