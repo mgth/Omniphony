@@ -28,7 +28,7 @@
 //! ```no_run
 //! use omniphony_renderer::speaker_layout::SpeakerLayout;
 //!
-//! let layout = SpeakerLayout::from_file("layouts/7.1.4.yaml")?;
+//! let layout = SpeakerLayout::from_file("../layouts/7.1.4.yaml")?;
 //! println!("Loaded {} speakers", layout.num_speakers());
 //!
 //! // Get positions for VBAP
@@ -36,13 +36,14 @@
 //! ```
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
 /// A single speaker in the layout
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone)]
 pub struct Speaker {
     /// Speaker name (e.g., "FL", "FR", "C", "TFL")
     pub name: String,
@@ -57,21 +58,26 @@ pub struct Speaker {
 
     /// Distance from the listening position in metres (default: 1.0).
     /// Not used for rendering but transmitted via OSC for visualisation.
-    #[serde(default = "default_distance")]
     pub distance: f32,
+
+    /// Public coordinate source of truth for persistence and UI round-trips.
+    pub coord_mode: String,
+
+    /// Normalized Omniphony Cartesian coordinates in [-1, 1].
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 
     /// Whether this speaker participates in VBAP spatialization
     /// Set to false for LFE/subwoofers (default: true)
-    #[serde(default = "default_spatialize")]
     pub spatialize: bool,
 
     /// Per-speaker output delay in milliseconds (default: 0.0).
-    #[serde(default = "default_delay_ms")]
     pub delay_ms: f32,
 }
 
-fn default_distance() -> f32 {
-    1.0
+fn default_coord_mode() -> String {
+    "polar".to_string()
 }
 
 fn default_spatialize() -> bool {
@@ -86,17 +92,146 @@ fn default_radius_m() -> f32 {
     1.0
 }
 
+fn spherical_to_cartesian(azimuth: f32, elevation: f32, distance: f32) -> (f32, f32, f32) {
+    let az = azimuth.to_radians();
+    let el = elevation.to_radians();
+    let x = distance * el.cos() * az.cos();
+    let y = distance * el.sin();
+    let z = distance * el.cos() * az.sin();
+    (x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0), z.clamp(-1.0, 1.0))
+}
+
+fn cartesian_to_spherical(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
+    let dist = (x * x + y * y + z * z).sqrt();
+    let az = z.atan2(x).to_degrees();
+    let el = if dist > 0.0 {
+        y.atan2((x * x + z * z).sqrt()).to_degrees()
+    } else {
+        0.0
+    };
+    (az, el, dist.max(0.01))
+}
+
+fn speaker_with_distance(name: impl Into<String>, azimuth: f32, elevation: f32, distance: f32) -> Speaker {
+    Speaker::from_polar(name, azimuth, elevation, distance, true, 0.0)
+}
+
+#[derive(Deserialize)]
+struct RawSpeaker {
+    name: String,
+    azimuth: Option<f32>,
+    elevation: Option<f32>,
+    distance: Option<f32>,
+    #[serde(default = "default_coord_mode")]
+    coord_mode: String,
+    x: Option<f32>,
+    y: Option<f32>,
+    z: Option<f32>,
+    #[serde(default = "default_spatialize")]
+    spatialize: bool,
+    #[serde(default = "default_delay_ms")]
+    delay_ms: f32,
+}
+
+impl<'de> Deserialize<'de> for Speaker {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawSpeaker::deserialize(deserializer)?;
+        let coord_mode = if raw.coord_mode.eq_ignore_ascii_case("cartesian") {
+            "cartesian".to_string()
+        } else {
+            "polar".to_string()
+        };
+        let (azimuth, elevation, distance, x, y, z) = if let (Some(x), Some(y), Some(z)) = (raw.x, raw.y, raw.z) {
+            let x = x.clamp(-1.0, 1.0);
+            let y = y.clamp(-1.0, 1.0);
+            let z = z.clamp(-1.0, 1.0);
+            let (az, el, dist) = cartesian_to_spherical(x, y, z);
+            (
+                raw.azimuth.unwrap_or(az),
+                raw.elevation.unwrap_or(el),
+                raw.distance.unwrap_or(dist).max(0.01),
+                x,
+                y,
+                z,
+            )
+        } else {
+            let az = raw.azimuth.unwrap_or(0.0);
+            let el = raw.elevation.unwrap_or(0.0);
+            let dist = raw.distance.unwrap_or(1.0).max(0.01);
+            let (x, y, z) = spherical_to_cartesian(az, el, dist);
+            (az, el, dist, x, y, z)
+        };
+        Ok(Self {
+            name: raw.name,
+            azimuth,
+            elevation,
+            distance,
+            coord_mode,
+            x,
+            y,
+            z,
+            spatialize: raw.spatialize,
+            delay_ms: raw.delay_ms,
+        })
+    }
+}
+
+impl Serialize for Speaker {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let cartesian = self.coord_mode.eq_ignore_ascii_case("cartesian");
+        let field_count = if cartesian { 7 } else { 7 };
+        let mut state = serializer.serialize_struct("Speaker", field_count)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("coord_mode", if cartesian { "cartesian" } else { "polar" })?;
+        if cartesian {
+            state.serialize_field("x", &self.x)?;
+            state.serialize_field("y", &self.y)?;
+            state.serialize_field("z", &self.z)?;
+        } else {
+            state.serialize_field("azimuth", &self.azimuth)?;
+            state.serialize_field("elevation", &self.elevation)?;
+            state.serialize_field("distance", &self.distance)?;
+        }
+        state.serialize_field("spatialize", &self.spatialize)?;
+        state.serialize_field("delay_ms", &self.delay_ms)?;
+        state.end()
+    }
+}
+
 impl Speaker {
-    /// Create a new speaker (spatialize defaults to true)
-    pub fn new(name: impl Into<String>, azimuth: f32, elevation: f32) -> Self {
+    pub fn from_polar(
+        name: impl Into<String>,
+        azimuth: f32,
+        elevation: f32,
+        distance: f32,
+        spatialize: bool,
+        delay_ms: f32,
+    ) -> Self {
+        let distance = distance.max(0.01);
+        let (x, y, z) = spherical_to_cartesian(azimuth, elevation, distance);
         Self {
             name: name.into(),
             azimuth,
             elevation,
-            distance: 1.0,
-            spatialize: true,
-            delay_ms: 0.0,
+            distance,
+            coord_mode: "polar".to_string(),
+            x,
+            y,
+            z,
+            spatialize,
+            delay_ms: delay_ms.max(0.0),
         }
+    }
+
+    /// Create a new speaker (spatialize defaults to true)
+    pub fn new(name: impl Into<String>, azimuth: f32, elevation: f32) -> Self {
+        Self::from_polar(name, azimuth, elevation, 1.0, true, 0.0)
     }
 
     /// Create a new speaker with explicit spatialize flag
@@ -106,14 +241,7 @@ impl Speaker {
         elevation: f32,
         spatialize: bool,
     ) -> Self {
-        Self {
-            name: name.into(),
-            azimuth,
-            elevation,
-            distance: 1.0,
-            spatialize,
-            delay_ms: 0.0,
-        }
+        Self::from_polar(name, azimuth, elevation, 1.0, spatialize, 0.0)
     }
 
     /// Get position as [azimuth, elevation] array for VBAP
@@ -347,8 +475,8 @@ impl SpeakerLayout {
     /// ITU-R BS.775 stereo layout (±30°)
     pub fn preset_stereo() -> Result<Self> {
         Self::from_speakers(vec![
-            Speaker::new("L", -30.0, 0.0),
-            Speaker::new("R", 30.0, 0.0),
+            speaker_with_distance("L", -26.565052, 0.0, 2.236068),
+            speaker_with_distance("R", 26.565052, 0.0, 2.236068),
             Speaker::new("Top", 0.0, 90.0), // Dummy for 3D triangulation
         ])
     }
@@ -356,26 +484,26 @@ impl SpeakerLayout {
     /// ITU-R BS.775 5.1 layout
     pub fn preset_5_1() -> Result<Self> {
         Self::from_speakers(vec![
-            Speaker::new("FL", -30.0, 0.0),
-            Speaker::new("FR", 30.0, 0.0),
-            Speaker::new("C", 0.0, 0.0),
-            Speaker::new("LFE", 0.0, 0.0), // Same as center for VBAP
-            Speaker::new("BL", -110.0, 0.0),
-            Speaker::new("BR", 110.0, 0.0),
+            speaker_with_distance("FL", -26.565052, 0.0, 2.236068),
+            speaker_with_distance("FR", 26.565052, 0.0, 2.236068),
+            speaker_with_distance("C", 0.0, 0.0, 2.0),
+            speaker_with_distance("LFE", 26.565052, -12.6043825, 2.291288),
+            speaker_with_distance("BL", -153.43495, 0.0, 2.236068),
+            speaker_with_distance("BR", 153.43495, 0.0, 2.236068),
         ])
     }
 
     /// ITU-R BS.775 7.1 layout
     pub fn preset_7_1() -> Result<Self> {
         Self::from_speakers(vec![
-            Speaker::new("FL", -30.0, 0.0),
-            Speaker::new("FR", 30.0, 0.0),
-            Speaker::new("C", 0.0, 0.0),
-            Speaker::new("LFE", 0.0, 0.0),
-            Speaker::new("BL", -145.0, 0.0),
-            Speaker::new("BR", 145.0, 0.0),
-            Speaker::new("SL", -90.0, 0.0),
-            Speaker::new("SR", 90.0, 0.0),
+            speaker_with_distance("FL", -26.565052, 0.0, 2.236068),
+            speaker_with_distance("FR", 26.565052, 0.0, 2.236068),
+            speaker_with_distance("C", 0.0, 0.0, 2.0),
+            speaker_with_distance("LFE", 26.565052, -12.6043825, 2.291288),
+            speaker_with_distance("BL", -153.43495, 0.0, 2.236068),
+            speaker_with_distance("BR", 153.43495, 0.0, 2.236068),
+            speaker_with_distance("SL", -90.0, 0.0, 1.0),
+            speaker_with_distance("SR", 90.0, 0.0, 1.0),
         ])
     }
 
@@ -383,19 +511,19 @@ impl SpeakerLayout {
     pub fn preset_7_1_4() -> Result<Self> {
         Self::from_speakers(vec![
             // Bed layer (7.1)
-            Speaker::new("FL", -30.0, 0.0),
-            Speaker::new("FR", 30.0, 0.0),
-            Speaker::new("C", 0.0, 0.0),
-            Speaker::new("LFE", 0.0, 0.0),
-            Speaker::new("BL", -145.0, 0.0),
-            Speaker::new("BR", 145.0, 0.0),
-            Speaker::new("SL", -90.0, 0.0),
-            Speaker::new("SR", 90.0, 0.0),
+            speaker_with_distance("FL", -26.565052, 0.0, 2.236068),
+            speaker_with_distance("FR", 26.565052, 0.0, 2.236068),
+            speaker_with_distance("C", 0.0, 0.0, 2.0),
+            speaker_with_distance("LFE", 26.565052, -12.6043825, 2.291288),
+            speaker_with_distance("BL", -153.43495, 0.0, 2.236068),
+            speaker_with_distance("BR", 153.43495, 0.0, 2.236068),
+            speaker_with_distance("SL", -90.0, 0.0, 1.0),
+            speaker_with_distance("SR", 90.0, 0.0, 1.0),
             // Height layer (4 speakers at 45° elevation)
-            Speaker::new("TFL", -30.0, 45.0),
-            Speaker::new("TFR", 30.0, 45.0),
-            Speaker::new("TBL", -135.0, 45.0),
-            Speaker::new("TBR", 135.0, 45.0),
+            speaker_with_distance("TFL", -45.0, 35.26439, 1.7320508),
+            speaker_with_distance("TFR", 45.0, 35.26439, 1.7320508),
+            speaker_with_distance("TBL", -135.0, 35.26439, 1.7320508),
+            speaker_with_distance("TBR", 135.0, 35.26439, 1.7320508),
         ])
     }
 
@@ -403,23 +531,23 @@ impl SpeakerLayout {
     pub fn preset_9_1_6() -> Result<Self> {
         Self::from_speakers(vec![
             // Bed layer (9.1)
-            Speaker::new("FL", -30.0, 0.0),
-            Speaker::new("FR", 30.0, 0.0),
-            Speaker::new("C", 0.0, 0.0),
-            Speaker::new("LFE", 0.0, 0.0),
-            Speaker::new("BL", -135.0, 0.0),
-            Speaker::new("BR", 135.0, 0.0),
-            Speaker::new("SL", -90.0, 0.0),
-            Speaker::new("SR", 90.0, 0.0),
-            Speaker::new("FWL", -60.0, 0.0),
-            Speaker::new("FWR", 60.0, 0.0),
+            speaker_with_distance("FL", -26.565052, 0.0, 2.236068),
+            speaker_with_distance("FR", 26.565052, 0.0, 2.236068),
+            speaker_with_distance("C", 0.0, 0.0, 2.0),
+            speaker_with_distance("LFE", 26.565052, -12.6043825, 2.291288),
+            speaker_with_distance("BL", -153.43495, 0.0, 2.236068),
+            speaker_with_distance("BR", 153.43495, 0.0, 2.236068),
+            speaker_with_distance("SL", -90.0, 0.0, 1.0),
+            speaker_with_distance("SR", 90.0, 0.0, 1.0),
+            speaker_with_distance("FWL", -63.43495, 0.0, 1.118034),
+            speaker_with_distance("FWR", 63.43495, 0.0, 1.118034),
             // Height layer (6 speakers)
-            Speaker::new("TFL", -30.0, 45.0),
-            Speaker::new("TFR", 30.0, 45.0),
-            Speaker::new("TSL", -90.0, 45.0),
-            Speaker::new("TSR", 90.0, 45.0),
-            Speaker::new("TBL", -135.0, 45.0),
-            Speaker::new("TBR", 135.0, 45.0),
+            speaker_with_distance("TFL", -45.0, 35.26439, 1.7320508),
+            speaker_with_distance("TFR", 45.0, 35.26439, 1.7320508),
+            speaker_with_distance("TSL", -90.0, 45.0, 1.4142136),
+            speaker_with_distance("TSR", 90.0, 45.0, 1.4142136),
+            speaker_with_distance("TBL", -135.0, 35.26439, 1.7320508),
+            speaker_with_distance("TBR", 135.0, 35.26439, 1.7320508),
         ])
     }
 

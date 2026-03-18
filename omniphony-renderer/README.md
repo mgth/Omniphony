@@ -98,7 +98,7 @@ orender input.bin \
 orender input.bin \
   --bridge-path ./libformat_bridge.so \
   --enable-vbap \
-  --speaker-layout layouts/7.1.4.yaml \
+  --speaker-layout ../layouts/7.1.4.yaml \
   --osc \
   --osc-host 127.0.0.1 \
   --osc-port 9000
@@ -120,5 +120,5 @@ You can point to another file with `--config`, and persist the current effective
 - [BUILD.md](BUILD.md): build profiles and feature flags
 - [OSC_PROTOCOL.md](OSC_PROTOCOL.md): OSC message surface
 - [QUICKSTART.md](QUICKSTART.md): local bring-up notes
-- [layouts/README.md](layouts/README.md): speaker layout format
+- [../layouts/README.md](../layouts/README.md): speaker layout format
 - [BRIDGE_API.md](BRIDGE_API.md): runtime bridge ABI

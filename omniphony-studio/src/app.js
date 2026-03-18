@@ -25,9 +25,11 @@ const speakerEditNameInputEl = document.getElementById('speakerEditNameInput');
 const speakerEditXInputEl = document.getElementById('speakerEditXInput');
 const speakerEditYInputEl = document.getElementById('speakerEditYInput');
 const speakerEditZInputEl = document.getElementById('speakerEditZInput');
+const speakerEditCartesianModeEl = document.getElementById('speakerEditCartesianMode');
 const speakerEditAzInputEl = document.getElementById('speakerEditAzInput');
 const speakerEditElInputEl = document.getElementById('speakerEditElInput');
 const speakerEditRInputEl = document.getElementById('speakerEditRInput');
+const speakerEditPolarModeEl = document.getElementById('speakerEditPolarMode');
 const speakerEditCartesianGizmoBtnEl = document.getElementById('speakerEditCartesianGizmoBtn');
 const speakerEditPolarGizmoBtnEl = document.getElementById('speakerEditPolarGizmoBtn');
 const speakerEditGainSliderEl = document.getElementById('speakerEditGainSlider');
@@ -1458,14 +1460,117 @@ function omniphonyToSceneCartesian(position) {
   };
 }
 
+function inverseMapRoomDepth(mappedDepth) {
+  const front = Math.max(0.001, Number(roomRatio.length) || 1);
+  const rear = Math.max(0.001, Number(roomRatio.rear) || 1);
+  const blend = Math.max(0, Math.min(1, Number(roomRatio.centerBlend) || 0.5));
+  if (mappedDepth >= 0) {
+    const target = clampNumber(mappedDepth, 0, front);
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 28; i += 1) {
+      const mid = (lo + hi) * 0.5;
+      const val = depthWarpWithRatios(mid, front, rear, blend);
+      if (val < target) lo = mid;
+      else hi = mid;
+    }
+    return (lo + hi) * 0.5;
+  }
+
+  const target = clampNumber(mappedDepth, -rear, 0);
+  let lo = -1;
+  let hi = 0;
+  for (let i = 0; i < 28; i += 1) {
+    const mid = (lo + hi) * 0.5;
+    const val = depthWarpWithRatios(mid, front, rear, blend);
+    if (val < target) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) * 0.5;
+}
+
+function normalizedOmniphonyToScenePosition(position) {
+  const rawScene = omniphonyToSceneCartesian(position);
+  return mapRoomPosition(rawScene);
+}
+
+function scenePositionToNormalizedOmniphony(position) {
+  const rawScene = {
+    x: inverseMapRoomDepth(Number(position?.x) || 0),
+    y: (Number(position?.y) || 0) >= 0
+      ? (Number(position?.y) || 0) / Math.max(0.001, Number(roomRatio.height) || 1)
+      : (Number(position?.y) || 0) / Math.max(0.001, Number(roomRatio.lower) || 0.5),
+    z: (Number(position?.z) || 0) / Math.max(0.001, Number(roomRatio.width) || 1)
+  };
+  const omni = sceneToOmniphonyCartesian(rawScene);
+  return {
+    x: clampNumber(omni.x, -1, 1),
+    y: clampNumber(omni.y, -1, 1),
+    z: clampNumber(omni.z, -1, 1)
+  };
+}
+
+function getSpeakerCoordMode(speaker) {
+  return String(speaker?.coordMode || 'polar').toLowerCase() === 'cartesian' ? 'cartesian' : 'polar';
+}
+
+function setSpeakerCoordMode(index, mode) {
+  const speaker = currentLayoutSpeakers[index];
+  if (!speaker) return;
+  speaker.coordMode = mode === 'cartesian' ? 'cartesian' : 'polar';
+  hydrateSpeakerCoordinateState(speaker);
+  invoke('control_speaker_coord_mode', { id: index, value: speaker.coordMode });
+  invoke('control_speaker_x', { id: index, value: speaker.x });
+  invoke('control_speaker_y', { id: index, value: speaker.y });
+  invoke('control_speaker_z', { id: index, value: speaker.z });
+  invoke('control_speaker_az', { id: index, value: speaker.azimuthDeg });
+  invoke('control_speaker_el', { id: index, value: speaker.elevationDeg });
+  invoke('control_speaker_distance', { id: index, value: speaker.distanceM });
+  invoke('control_speakers_apply');
+  updateSpeakerVisualsFromState(index);
+  renderSpeakerEditor();
+}
+
+function hydrateSpeakerCoordinateState(speaker) {
+  if (!speaker) return null;
+
+  const mode = getSpeakerCoordMode(speaker);
+  if (mode === 'cartesian') {
+    const x = clampNumber(Number(speaker.x) || 0, -1, 1);
+    const y = clampNumber(Number(speaker.y) || 0, -1, 1);
+    const z = clampNumber(Number(speaker.z) || 0, -1, 1);
+    const scene = normalizedOmniphonyToScenePosition({ x, y, z });
+    const sph = cartesianToSpherical(scene);
+    speaker.x = x;
+    speaker.y = y;
+    speaker.z = z;
+    speaker.azimuthDeg = sph.az;
+    speaker.elevationDeg = sph.el;
+    speaker.distanceM = Math.max(0.01, sph.dist);
+  } else {
+    const az = Number.isFinite(Number(speaker.azimuthDeg)) ? Number(speaker.azimuthDeg) : 0;
+    const el = Number.isFinite(Number(speaker.elevationDeg)) ? Number(speaker.elevationDeg) : 0;
+    const dist = Math.max(0.01, Number(speaker.distanceM) || 1);
+    const scene = sphericalToCartesianDeg(az, el, dist);
+    const omni = scenePositionToNormalizedOmniphony(scene);
+    speaker.azimuthDeg = az;
+    speaker.elevationDeg = el;
+    speaker.distanceM = dist;
+    speaker.x = omni.x;
+    speaker.y = omni.y;
+    speaker.z = omni.z;
+  }
+  speaker.coordMode = mode;
+  return speaker;
+}
+
 function formatPosition(position) {
   if (!position) {
     return 'x:— y:— z:—';
   }
-  const omniphonyPos = sceneToOmniphonyCartesian(position);
-  const x = Number(omniphonyPos.x);
-  const y = Number(omniphonyPos.y);
-  const z = Number(omniphonyPos.z);
+  const x = Number(position.x);
+  const y = Number(position.y);
+  const z = Number(position.z);
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
     return 'x:— y:— z:—';
   }
@@ -1526,6 +1631,33 @@ function sanitizeLayoutExportName(name) {
   return trimmed || 'layout';
 }
 
+function serializeSpeakerForExport(speaker, index) {
+  hydrateSpeakerCoordinateState(speaker);
+  return {
+    id: String(speaker?.id ?? `spk-${index}`),
+    x: clampNumber(Number(speaker?.x) || 0, -1, 1),
+    y: clampNumber(Number(speaker?.y) || 0, -1, 1),
+    z: clampNumber(Number(speaker?.z) || 0, -1, 1),
+    azimuthDeg: Number.isFinite(Number(speaker?.azimuthDeg)) ? Number(speaker.azimuthDeg) : 0,
+    elevationDeg: Number.isFinite(Number(speaker?.elevationDeg)) ? Number(speaker.elevationDeg) : 0,
+    distanceM: Math.max(0.01, Number(speaker?.distanceM) || 1),
+    coordMode: getSpeakerCoordMode(speaker),
+    spatialize: getSpeakerSpatializeValue(speaker),
+    delay_ms: Math.max(0, Number(speaker?.delay_ms) || 0)
+  };
+}
+
+function serializeCurrentLayoutForExport() {
+  const layout = currentLayoutRef();
+  if (!layout) return null;
+  return {
+    key: String(layout.key || 'layout'),
+    name: String(layout.name || layout.key || 'layout'),
+    radius_m: Math.max(0.01, Number(layout.radius_m) || Number(metersPerUnit) || 1),
+    speakers: currentLayoutSpeakers.map((speaker, index) => serializeSpeakerForExport(speaker, index))
+  };
+}
+
 function delayMsToSamples(ms, sampleRateHz = DEFAULT_SAMPLE_RATE_HZ) {
   const msValue = Number(ms);
   if (!Number.isFinite(msValue) || msValue < 0) {
@@ -1544,11 +1676,9 @@ function samplesToDelayMs(samples, sampleRateHz = DEFAULT_SAMPLE_RATE_HZ) {
 
 function distanceMetersFromSpeaker(speaker) {
   if (!speaker) return 0;
-  const x = Number(speaker.x);
-  const y = Number(speaker.y);
-  const z = Number(speaker.z);
-  if (![x, y, z].every(Number.isFinite)) return 0;
-  return Math.sqrt(x * x + y * y + z * z);
+  const distance = Number(speaker.distanceM);
+  if (Number.isFinite(distance)) return Math.max(0, distance);
+  return 0;
 }
 
 function computeAndApplySpeakerDelays() {
@@ -2137,15 +2267,17 @@ function setSpeakerSpatializeLocal(index, spatialize) {
 function updateSpeakerVisualsFromState(index) {
   const speaker = currentLayoutSpeakers[index];
   if (!speaker) return;
+  hydrateSpeakerCoordinateState(speaker);
+  const scenePosition = normalizedOmniphonyToScenePosition(speaker);
 
   const mesh = speakerMeshes[index];
   if (mesh) {
-    mesh.position.set(Number(speaker.x) || 0, Number(speaker.y) || 0, Number(speaker.z) || 0);
+    mesh.position.set(scenePosition.x, scenePosition.y, scenePosition.z);
   }
 
   const label = speakerLabels[index];
   if (label) {
-    label.position.set((Number(speaker.x) || 0), (Number(speaker.y) || 0) + 0.12, Number(speaker.z) || 0);
+    label.position.set(scenePosition.x, scenePosition.y + 0.12, scenePosition.z);
     setLabelSpriteText(label, String(speaker.id ?? index));
   }
 
@@ -2160,14 +2292,15 @@ function updateSpeakerVisualsFromState(index) {
   }
 }
 
-function applySpeakerCartesianEdit(index, x, y, z, sendOsc = true) {
+function applySpeakerSceneCartesianEdit(index, x, y, z, sendOsc = true) {
   const speaker = currentLayoutSpeakers[index];
   if (!speaker) return;
   if (![x, y, z].every((v) => Number.isFinite(v))) return;
 
-  speaker.x = x;
-  speaker.y = y;
-  speaker.z = z;
+  const normalized = scenePositionToNormalizedOmniphony({ x, y, z });
+  speaker.x = normalized.x;
+  speaker.y = normalized.y;
+  speaker.z = normalized.z;
   const sph = cartesianToSpherical({ x, y, z });
   speaker.azimuthDeg = sph.az;
   speaker.elevationDeg = sph.el;
@@ -2175,6 +2308,10 @@ function applySpeakerCartesianEdit(index, x, y, z, sendOsc = true) {
   updateSpeakerVisualsFromState(index);
 
   if (sendOsc) {
+    invoke('control_speaker_coord_mode', { id: index, value: getSpeakerCoordMode(speaker) });
+    invoke('control_speaker_x', { id: index, value: speaker.x });
+    invoke('control_speaker_y', { id: index, value: speaker.y });
+    invoke('control_speaker_z', { id: index, value: speaker.z });
     invoke('control_speaker_az', { id: index, value: speaker.azimuthDeg });
     invoke('control_speaker_el', { id: index, value: speaker.elevationDeg });
     invoke('control_speaker_distance', { id: index, value: speaker.distanceM });
@@ -2184,11 +2321,22 @@ function applySpeakerCartesianEdit(index, x, y, z, sendOsc = true) {
   renderSpeakerEditor();
 }
 
+function applySpeakerCartesianEdit(index, x, y, z, sendOsc = true) {
+  const scene = normalizedOmniphonyToScenePosition({ x, y, z });
+  applySpeakerSceneCartesianEdit(index, scene.x, scene.y, scene.z, sendOsc);
+}
+
 function applySpeakerPolarEdit(index, az, el, r, sendOsc = true) {
   if (![az, el, r].every((v) => Number.isFinite(v))) return;
   const radius = Math.max(0.01, r);
   const cart = sphericalToCartesianDeg(az, el, radius);
-  applySpeakerCartesianEdit(index, cart.x, cart.y, cart.z, sendOsc);
+  const speaker = currentLayoutSpeakers[index];
+  if (speaker) {
+    speaker.azimuthDeg = az;
+    speaker.elevationDeg = el;
+    speaker.distanceM = radius;
+  }
+  applySpeakerSceneCartesianEdit(index, cart.x, cart.y, cart.z, sendOsc);
 }
 
 function renderSpeakerEditor() {
@@ -2213,7 +2361,7 @@ function renderSpeakerEditor() {
   if (speakerRemoveBtnEl) speakerRemoveBtnEl.disabled = currentLayoutSpeakers.length === 0;
   const gain = getBaseGain(speakerBaseGains, speakerGainCache, id);
   const delayMs = Number(speakerDelays.get(id) ?? speaker.delay_ms ?? 0);
-  const spherical = cartesianToSpherical(speaker);
+  const spherical = cartesianToSpherical(normalizedOmniphonyToScenePosition(speaker));
   const az = Number.isFinite(Number(speaker.azimuthDeg)) ? Number(speaker.azimuthDeg) : spherical.az;
   const el = Number.isFinite(Number(speaker.elevationDeg)) ? Number(speaker.elevationDeg) : spherical.el;
   const r = Number.isFinite(Number(speaker.distanceM)) ? Number(speaker.distanceM) : spherical.dist;
@@ -2223,10 +2371,11 @@ function renderSpeakerEditor() {
 
   if (speakerEditTitleEl) speakerEditTitleEl.textContent = `Speaker ${idx}`;
   if (speakerEditNameInputEl) speakerEditNameInputEl.value = String(speaker.id ?? idx);
-  const omniphonySpeakerPos = sceneToOmniphonyCartesian(speaker);
-  if (speakerEditXInputEl) speakerEditXInputEl.value = formatNumber(Number(omniphonySpeakerPos.x), 3);
-  if (speakerEditYInputEl) speakerEditYInputEl.value = formatNumber(Number(omniphonySpeakerPos.y), 3);
-  if (speakerEditZInputEl) speakerEditZInputEl.value = formatNumber(Number(omniphonySpeakerPos.z), 3);
+  if (speakerEditXInputEl) speakerEditXInputEl.value = formatNumber(Number(speaker.x), 3);
+  if (speakerEditYInputEl) speakerEditYInputEl.value = formatNumber(Number(speaker.y), 3);
+  if (speakerEditZInputEl) speakerEditZInputEl.value = formatNumber(Number(speaker.z), 3);
+  if (speakerEditCartesianModeEl) speakerEditCartesianModeEl.checked = getSpeakerCoordMode(speaker) === 'cartesian';
+  if (speakerEditPolarModeEl) speakerEditPolarModeEl.checked = getSpeakerCoordMode(speaker) === 'polar';
   if (speakerEditAzInputEl) speakerEditAzInputEl.value = formatNumber(az, 1);
   if (speakerEditElInputEl) speakerEditElInputEl.value = formatNumber(el, 1);
   if (speakerEditRInputEl) speakerEditRInputEl.value = formatNumber(r, 3);
@@ -5134,6 +5283,7 @@ function requestAddSpeaker() {
     azimuthDeg: Number(base?.azimuthDeg) || 0,
     elevationDeg: Number(base?.elevationDeg) || 0,
     distanceM: Math.max(0.01, Number(base?.distanceM) || 1),
+    coordMode: getSpeakerCoordMode(base),
     spatialize: Number(base?.spatialize ?? 1) ? 1 : 0,
     delay_ms: Math.max(0, Number(base?.delay_ms) || 0)
   };
@@ -5304,6 +5454,15 @@ document.addEventListener('dragover', (event) => {
 });
 
 function renderLayout(key) {
+  const previousLayoutKey = currentLayoutKey;
+  const previousSelectedIndex = selectedSpeakerIndex;
+  const previousSelectedSpeaker = previousSelectedIndex !== null ? currentLayoutSpeakers[previousSelectedIndex] : null;
+  const previousSelectedSpeakerId = previousSelectedSpeaker ? String(previousSelectedSpeaker.id ?? previousSelectedIndex) : null;
+  const preserveSelection = previousLayoutKey !== null && previousLayoutKey === key;
+  const previousSpeakersById = new Map(
+    currentLayoutSpeakers.map((speaker, index) => [String(speaker?.id ?? index), speaker])
+  );
+
   clearSpeakers();
   const layout = layoutsByKey.get(key);
   if (!layout) {
@@ -5324,11 +5483,52 @@ function renderLayout(key) {
   metersPerUnit = Math.max(0.01, Number(layout.radius_m) || 1.0);
   speakerDelays.clear();
   currentLayoutSpeakers.forEach((speaker, index) => {
+    const speakerId = String(speaker?.id ?? index);
+    const previousSpeaker = preserveSelection ? previousSpeakersById.get(speakerId) : null;
+    if (previousSpeaker) {
+      speaker.coordMode = getSpeakerCoordMode(previousSpeaker);
+      speaker.x = Number.isFinite(Number(previousSpeaker.x)) ? Number(previousSpeaker.x) : speaker.x;
+      speaker.y = Number.isFinite(Number(previousSpeaker.y)) ? Number(previousSpeaker.y) : speaker.y;
+      speaker.z = Number.isFinite(Number(previousSpeaker.z)) ? Number(previousSpeaker.z) : speaker.z;
+      speaker.azimuthDeg = Number.isFinite(Number(previousSpeaker.azimuthDeg))
+        ? Number(previousSpeaker.azimuthDeg)
+        : speaker.azimuthDeg;
+      speaker.elevationDeg = Number.isFinite(Number(previousSpeaker.elevationDeg))
+        ? Number(previousSpeaker.elevationDeg)
+        : speaker.elevationDeg;
+      speaker.distanceM = Number.isFinite(Number(previousSpeaker.distanceM))
+        ? Number(previousSpeaker.distanceM)
+        : speaker.distanceM;
+    }
+    hydrateSpeakerCoordinateState(speaker);
     speakerDelays.set(String(index), speaker.delay_ms ?? 0);
   });
-  selectedSpeakerIndex = null;
-  polarEditArmed = false;
-  cartesianEditArmed = false;
+  if (preserveSelection) {
+    let nextSelectedIndex = null;
+    if (previousSelectedSpeakerId !== null) {
+      const matchedIndex = currentLayoutSpeakers.findIndex(
+        (speaker, index) => String(speaker?.id ?? index) === previousSelectedSpeakerId
+      );
+      if (matchedIndex >= 0) {
+        nextSelectedIndex = matchedIndex;
+      }
+    }
+    if (nextSelectedIndex === null
+      && previousSelectedIndex !== null
+      && previousSelectedIndex >= 0
+      && previousSelectedIndex < currentLayoutSpeakers.length) {
+      nextSelectedIndex = previousSelectedIndex;
+    }
+    selectedSpeakerIndex = nextSelectedIndex;
+    if (selectedSpeakerIndex === null) {
+      polarEditArmed = false;
+      cartesianEditArmed = false;
+    }
+  } else {
+    selectedSpeakerIndex = null;
+    polarEditArmed = false;
+    cartesianEditArmed = false;
+  }
   updateSpeakerGizmo();
   updateControlsForEditMode();
   const speakerIds = getSpeakerIds();
@@ -5350,7 +5550,8 @@ function renderLayout(key) {
 
   layout.speakers.forEach((speaker, index) => {
     const mesh = new THREE.Mesh(speakerGeometry.clone(), speakerMaterial.clone());
-    mesh.position.set(speaker.x, speaker.y, speaker.z);
+    const scenePosition = normalizedOmniphonyToScenePosition(speaker);
+    mesh.position.set(scenePosition.x, scenePosition.y, scenePosition.z);
     const baseOpacity = getSpeakerBaseOpacity(speaker);
     mesh.userData.baseOpacity = baseOpacity;
     mesh.material.opacity = baseOpacity;
@@ -5358,7 +5559,7 @@ function renderLayout(key) {
     speakerMeshes.push(mesh);
 
     const label = createLabelSprite(String(speaker.id || index));
-    label.position.set(speaker.x, speaker.y + 0.12, speaker.z);
+    label.position.set(scenePosition.x, scenePosition.y + 0.12, scenePosition.z);
     scene.add(label);
     speakerLabels.push(label);
 
@@ -5474,10 +5675,12 @@ function applyRoomRatio(nextRatio) {
   speakerMeshes.forEach((mesh, index) => {
     const speaker = currentLayoutSpeakers[index];
     if (!speaker) return;
-    mesh.position.set(speaker.x, speaker.y, speaker.z);
+    hydrateSpeakerCoordinateState(speaker);
+    const scenePosition = normalizedOmniphonyToScenePosition(speaker);
+    mesh.position.set(scenePosition.x, scenePosition.y, scenePosition.z);
     const label = speakerLabels[index];
     if (label) {
-      label.position.set(speaker.x, speaker.y + 0.12, speaker.z);
+      label.position.set(scenePosition.x, scenePosition.y + 0.12, scenePosition.z);
     }
   });
 
@@ -5676,7 +5879,7 @@ function updateSpeakerDrag(event) {
     );
     const delta = tNow - dragAxisStartT;
     const pos = dragSpeakerStartPosition.clone().add(dragAxisDirection.clone().multiplyScalar(delta));
-    applySpeakerCartesianEdit(selectedSpeakerIndex, pos.x, pos.y, pos.z, false);
+    applySpeakerSceneCartesianEdit(selectedSpeakerIndex, pos.x, pos.y, pos.z, false);
     return;
   }
 
@@ -5691,16 +5894,8 @@ function updateSpeakerDrag(event) {
   }
   const speaker = currentLayoutSpeakers[selectedSpeakerIndex];
   if (speaker) {
-    speaker.x = pos.x;
-    speaker.y = pos.y;
-    speaker.z = pos.z;
-    const entry = speakerItems.get(String(selectedSpeakerIndex));
-    if (entry) {
-      entry.position.textContent = formatPosition(speaker);
-    }
+    applySpeakerSceneCartesianEdit(selectedSpeakerIndex, pos.x, pos.y, pos.z, false);
   }
-  renderSpeakerEditor();
-  updateSpeakerGizmo();
 }
 
 function endSpeakerDrag() {
@@ -5717,10 +5912,8 @@ function endSpeakerDrag() {
     const idx = selectedSpeakerIndex;
     const speaker = currentLayoutSpeakers[idx];
     if (speaker) {
-      const x = Number(speaker.x) || 0;
-      const y = Number(speaker.y) || 0;
-      const z = Number(speaker.z) || 0;
-      applySpeakerCartesianEdit(idx, x, y, z, true);
+      const scenePosition = normalizedOmniphonyToScenePosition(speaker);
+      applySpeakerSceneCartesianEdit(idx, scenePosition.x, scenePosition.y, scenePosition.z, true);
     }
   }
 }
@@ -5806,17 +5999,8 @@ renderer.domElement.addEventListener('wheel', (event) => {
   }
   const speaker = currentLayoutSpeakers[selectedSpeakerIndex];
   if (speaker) {
-    speaker.x = pos.x;
-    speaker.y = pos.y;
-    speaker.z = pos.z;
-    speaker.distanceM = dragDistance;
-    const entry = speakerItems.get(String(selectedSpeakerIndex));
-    if (entry) {
-      entry.position.textContent = formatPosition(speaker);
-    }
+    applySpeakerSceneCartesianEdit(selectedSpeakerIndex, pos.x, pos.y, pos.z, false);
   }
-  renderSpeakerEditor();
-  updateSpeakerGizmo();
   controls.enableZoom = prevZoom;
 }, { passive: false, capture: true });
 
@@ -6663,7 +6847,9 @@ if (exportLayoutBtnEl) {
       .then((path) => {
         const trimmed = typeof path === 'string' ? path.trim() : '';
         if (!trimmed) return;
-        return invoke('export_layout_to_path', { path: trimmed, key: currentLayoutKey || null })
+        const layout = serializeCurrentLayoutForExport();
+        if (!layout) return;
+        return invoke('export_layout_to_path', { path: trimmed, layout })
           .then(() => {
             pushLog('info', tf('log.layoutExported', { path: trimmed }));
           });
@@ -6685,6 +6871,8 @@ if (importLayoutBtnEl) {
         return invoke('import_layout_from_path', { path: trimmed })
           .then((payload) => {
             hydrateLayoutSelect(payload.layouts || [], payload.selectedLayoutKey);
+            configSaved = false;
+            updateConfigSavedUI();
             refreshOverlayLists();
             renderSpeakerEditor();
             pushLog('info', tf('log.layoutImported', { path: trimmed }));
@@ -6839,24 +7027,21 @@ bindSpeakerCoordChange(speakerEditXInputEl, (idx) => {
   const gx = Number(speakerEditXInputEl?.value);
   const gy = Number(speakerEditYInputEl?.value);
   const gz = Number(speakerEditZInputEl?.value);
-  const scene = omniphonyToSceneCartesian({ x: gx, y: gy, z: gz });
-  applySpeakerCartesianEdit(idx, scene.x, scene.y, scene.z, true);
+  applySpeakerCartesianEdit(idx, gx, gy, gz, true);
 });
 
 bindSpeakerCoordChange(speakerEditYInputEl, (idx) => {
   const gx = Number(speakerEditXInputEl?.value);
   const gy = Number(speakerEditYInputEl?.value);
   const gz = Number(speakerEditZInputEl?.value);
-  const scene = omniphonyToSceneCartesian({ x: gx, y: gy, z: gz });
-  applySpeakerCartesianEdit(idx, scene.x, scene.y, scene.z, true);
+  applySpeakerCartesianEdit(idx, gx, gy, gz, true);
 });
 
 bindSpeakerCoordChange(speakerEditZInputEl, (idx) => {
   const gx = Number(speakerEditXInputEl?.value);
   const gy = Number(speakerEditYInputEl?.value);
   const gz = Number(speakerEditZInputEl?.value);
-  const scene = omniphonyToSceneCartesian({ x: gx, y: gy, z: gz });
-  applySpeakerCartesianEdit(idx, scene.x, scene.y, scene.z, true);
+  applySpeakerCartesianEdit(idx, gx, gy, gz, true);
 });
 
 bindSpeakerCoordChange(speakerEditAzInputEl, (idx) => {
@@ -6889,6 +7074,20 @@ if (speakerEditSpatializeToggleEl) {
     invoke('control_speaker_spatialize', { id: index, spatialize: nextSpatialize });
     invoke('control_speakers_apply');
     renderSpeakerEditor();
+  });
+}
+
+if (speakerEditCartesianModeEl) {
+  speakerEditCartesianModeEl.addEventListener('change', () => {
+    if (selectedSpeakerIndex === null || !speakerEditCartesianModeEl.checked) return;
+    setSpeakerCoordMode(selectedSpeakerIndex, 'cartesian');
+  });
+}
+
+if (speakerEditPolarModeEl) {
+  speakerEditPolarModeEl.addEventListener('change', () => {
+    if (selectedSpeakerIndex === null || !speakerEditPolarModeEl.checked) return;
+    setSpeakerCoordMode(selectedSpeakerIndex, 'polar');
   });
 }
 

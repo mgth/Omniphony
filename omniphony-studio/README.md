@@ -13,7 +13,7 @@ Le projet est conçu pour fonctionner avec `omniphony-renderer`, qui fournit le 
 - Tant qu’il est actif, le studio envoie `/omniphony/heartbeat [listen_port]` toutes les 5 secondes vers la même destination pour maintenir l’inscription côté renderer.
 - Les positions reçues sont diffusées en WebSocket au front web.
 - Le front affiche chaque source comme une sphère dans un volume 3D normalisé `[-1, 1]`.
-- Le menu **Layout** permet de choisir la configuration d’enceintes chargée depuis `layouts/*.json` et affichée dans la scène.
+- Le menu **Layout** permet de choisir la configuration d’enceintes chargée depuis `../layouts/*.yaml` et affichée dans la scène.
 
 ## Formats OSC supportés
 

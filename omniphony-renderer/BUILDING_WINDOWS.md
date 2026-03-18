@@ -193,7 +193,7 @@ cargo build --features saf_vbap,asio --release
 orender.exe --help
 # Should show "generate-vbap" and "list-asio-devices" in the commands list
 
-orender.exe generate-vbap --speaker-layout layouts/7.1.4.yaml --output test.vbap
+orender.exe generate-vbap --speaker-layout ..\\layouts\\7.1.4.yaml --output test.vbap
 # Should generate a VBAP gain table file
 ```
 

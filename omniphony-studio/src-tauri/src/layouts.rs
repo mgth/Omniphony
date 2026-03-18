@@ -9,6 +9,14 @@ pub struct Speaker {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+    #[serde(rename = "azimuthDeg", default)]
+    pub azimuth_deg: f64,
+    #[serde(rename = "elevationDeg", default)]
+    pub elevation_deg: f64,
+    #[serde(rename = "distanceM", default = "default_distance_m")]
+    pub distance_m: f64,
+    #[serde(rename = "coordMode", default = "default_coord_mode")]
+    pub coord_mode: String,
     #[serde(default = "default_spatialize")]
     pub spatialize: u8,
     #[serde(default)]
@@ -20,6 +28,14 @@ fn default_radius_m() -> f64 {
 }
 fn default_spatialize() -> u8 {
     1
+}
+
+fn default_distance_m() -> f64 {
+    1.0
+}
+
+fn default_coord_mode() -> String {
+    "polar".to_string()
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -36,11 +52,21 @@ pub struct Layout {
 
 #[derive(Serialize)]
 struct ExportSpeaker<'a> {
-    id: &'a str,
-    x: f64,
-    y: f64,
-    z: f64,
-    spatialize: u8,
+    name: &'a str,
+    coord_mode: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    y: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    z: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    azimuth: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    elevation: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    distance: Option<f64>,
+    spatialize: bool,
     delay_ms: f64,
 }
 
@@ -49,6 +75,45 @@ struct ExportLayout<'a> {
     name: &'a str,
     radius_m: f64,
     speakers: Vec<ExportSpeaker<'a>>,
+}
+
+fn yaml_quote(value: &str) -> String {
+    format!("{:?}", value)
+}
+
+fn format_layout_as_yaml(layout: &ExportLayout<'_>) -> String {
+    let mut text = String::new();
+    text.push_str(&format!("name: {}\n", yaml_quote(layout.name)));
+    text.push_str(&format!("radius_m: {}\n", layout.radius_m));
+    text.push_str("speakers:\n");
+    for speaker in &layout.speakers {
+        text.push_str(&format!("  - name: {}\n", yaml_quote(speaker.name)));
+        text.push_str(&format!("    coord_mode: {}\n", speaker.coord_mode));
+        if let Some(x) = speaker.x {
+            text.push_str(&format!("    x: {}\n", x));
+        }
+        if let Some(y) = speaker.y {
+            text.push_str(&format!("    y: {}\n", y));
+        }
+        if let Some(z) = speaker.z {
+            text.push_str(&format!("    z: {}\n", z));
+        }
+        if let Some(azimuth) = speaker.azimuth {
+            text.push_str(&format!("    azimuth: {}\n", azimuth));
+        }
+        if let Some(elevation) = speaker.elevation {
+            text.push_str(&format!("    elevation: {}\n", elevation));
+        }
+        if let Some(distance) = speaker.distance {
+            text.push_str(&format!("    distance: {}\n", distance));
+        }
+        text.push_str(&format!(
+            "    spatialize: {}\n",
+            if speaker.spatialize { "true" } else { "false" }
+        ));
+        text.push_str(&format!("    delay_ms: {}\n", speaker.delay_ms));
+    }
+    text
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -65,6 +130,17 @@ fn spherical_to_cartesian(az_deg: f64, el_deg: f64, dist: f64) -> (f64, f64, f64
         dist * el.sin(),
         dist * el.cos() * az.sin(),
     )
+}
+
+fn cartesian_to_spherical(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
+    let dist = (x * x + y * y + z * z).sqrt();
+    let az = z.atan2(x).to_degrees();
+    let el = if dist > 0.0 {
+        y.atan2((x * x + z * z).sqrt()).to_degrees()
+    } else {
+        0.0
+    };
+    (az, el, dist)
 }
 
 // ── raw deserialization types ─────────────────────────────────────────────
@@ -94,6 +170,12 @@ struct RawSpeaker {
     #[serde(default)]
     dist: Option<f64>,
     #[serde(default)]
+    coord_mode: Option<String>,
+    #[serde(default)]
+    coordinate_mode: Option<String>,
+    #[serde(default, rename = "coordMode")]
+    coord_mode_camel: Option<String>,
+    #[serde(default)]
     delay_ms: Option<f64>,
     #[serde(default)]
     delay: Option<f64>,
@@ -122,6 +204,23 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
     };
 
     let delay_ms = raw.delay_ms.or(raw.delay).unwrap_or(0.0).max(0.0);
+    let coord_mode = raw
+        .coord_mode
+        .or(raw.coordinate_mode)
+        .or(raw.coord_mode_camel)
+        .unwrap_or_else(|| {
+            if raw.x.is_some() && raw.y.is_some() && raw.z.is_some() {
+                "cartesian".to_string()
+            } else {
+                "polar".to_string()
+            }
+        })
+        .to_ascii_lowercase();
+    let coord_mode = if coord_mode == "cartesian" {
+        "cartesian".to_string()
+    } else {
+        "polar".to_string()
+    };
     let spatialize = match raw.spatialize {
         Some(serde_json::Value::Bool(v)) => {
             if v {
@@ -148,11 +247,19 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
     };
 
     if let (Some(x), Some(y), Some(z)) = (raw.x, raw.y, raw.z) {
+        let x = clamp(x, -1.0, 1.0);
+        let y = clamp(y, -1.0, 1.0);
+        let z = clamp(z, -1.0, 1.0);
+        let (derived_az, derived_el, derived_dist) = cartesian_to_spherical(x, y, z);
         return Speaker {
             id,
-            x: clamp(x, -1.0, 1.0),
-            y: clamp(y, -1.0, 1.0),
-            z: clamp(z, -1.0, 1.0),
+            x,
+            y,
+            z,
+            azimuth_deg: raw.azimuth.or(raw.az).unwrap_or(derived_az),
+            elevation_deg: raw.elevation.or(raw.el).unwrap_or(derived_el),
+            distance_m: raw.distance.or(raw.dist).unwrap_or(derived_dist).max(0.01),
+            coord_mode,
             spatialize,
             delay_ms,
         };
@@ -160,7 +267,7 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
 
     let az = raw.azimuth.or(raw.az).unwrap_or(0.0);
     let el = raw.elevation.or(raw.el).unwrap_or(0.0);
-    let dist = raw.distance.or(raw.dist).unwrap_or(1.0);
+    let dist = raw.distance.or(raw.dist).unwrap_or(1.0).max(0.01);
     let (x, y, z) = spherical_to_cartesian(az, el, dist);
 
     Speaker {
@@ -168,6 +275,10 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
         x: clamp(x, -1.0, 1.0),
         y: clamp(y, -1.0, 1.0),
         z: clamp(z, -1.0, 1.0),
+        azimuth_deg: az,
+        elevation_deg: el,
+        distance_m: dist,
+        coord_mode,
         spatialize,
         delay_ms,
     }
@@ -402,29 +513,36 @@ pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
-    if ext != "json" {
-        return Err("only .json export is currently supported".to_string());
-    }
-
     let export = ExportLayout {
         name: &layout.name,
         radius_m: layout.radius_m.max(0.01),
         speakers: layout
             .speakers
             .iter()
-            .map(|speaker| ExportSpeaker {
-                id: &speaker.id,
-                x: speaker.x,
-                y: speaker.y,
-                z: speaker.z,
-                spatialize: speaker.spatialize,
-                delay_ms: speaker.delay_ms.max(0.0),
+            .map(|speaker| {
+                let cartesian = speaker.coord_mode.eq_ignore_ascii_case("cartesian");
+                ExportSpeaker {
+                    name: &speaker.id,
+                    coord_mode: if cartesian { "cartesian" } else { "polar" },
+                    x: if cartesian { Some(clamp(speaker.x, -1.0, 1.0)) } else { None },
+                    y: if cartesian { Some(clamp(speaker.y, -1.0, 1.0)) } else { None },
+                    z: if cartesian { Some(clamp(speaker.z, -1.0, 1.0)) } else { None },
+                    azimuth: if cartesian { None } else { Some(speaker.azimuth_deg) },
+                    elevation: if cartesian { None } else { Some(speaker.elevation_deg) },
+                    distance: if cartesian { None } else { Some(speaker.distance_m.max(0.01)) },
+                    spatialize: speaker.spatialize != 0,
+                    delay_ms: speaker.delay_ms.max(0.0),
+                }
             })
             .collect(),
     };
 
-    let text = serde_json::to_string_pretty(&export)
-        .map_err(|e| format!("failed to serialize layout: {e}"))?;
+    let text = match ext.as_str() {
+        "json" => serde_json::to_string_pretty(&export)
+            .map_err(|e| format!("failed to serialize layout: {e}"))?,
+        "yaml" | "yml" => format_layout_as_yaml(&export),
+        _ => return Err("supported export formats are .yaml, .yml and .json".to_string()),
+    };
     std::fs::write(path, text).map_err(|e| format!("failed to write layout file: {e}"))?;
     Ok(())
 }
@@ -457,9 +575,17 @@ pub fn build_live_layout_from_cache(
         .filter_map(|index| {
             speakers.get(&index).map(|speaker| Speaker {
                 id: speaker.name.clone(),
-                x: speaker.position.x,
-                y: speaker.position.y,
-                z: speaker.position.z,
+                x: clamp(speaker.x, -1.0, 1.0),
+                y: clamp(speaker.y, -1.0, 1.0),
+                z: clamp(speaker.z, -1.0, 1.0),
+                azimuth_deg: speaker.azimuth_deg,
+                elevation_deg: speaker.elevation_deg,
+                distance_m: speaker.distance_m.max(0.01),
+                coord_mode: if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
+                    "cartesian".to_string()
+                } else {
+                    "polar".to_string()
+                },
                 spatialize: speaker.spatialize,
                 delay_ms: speaker.delay_ms,
             })

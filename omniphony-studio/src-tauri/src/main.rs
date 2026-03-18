@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use app_state::AppState;
 use config::{load_config, save_config, OscConfig};
+use layouts::Layout;
 use osc_listener::{spawn_osc_task, OscControlMsg};
 use rfd::FileDialog;
 use tauri::{Manager, State};
@@ -138,15 +139,17 @@ fn pick_export_layout_path(suggested_name: Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| {
-            if s.to_ascii_lowercase().ends_with(".json") {
+            let lowered = s.to_ascii_lowercase();
+            if lowered.ends_with(".yaml") || lowered.ends_with(".yml") || lowered.ends_with(".json") {
                 s.to_string()
             } else {
-                format!("{s}.json")
+                format!("{s}.yaml")
             }
         })
-        .unwrap_or_else(|| "layout.json".to_string());
+        .unwrap_or_else(|| "layout.yaml".to_string());
 
     FileDialog::new()
+        .add_filter("Layout YAML", &["yaml", "yml"])
         .add_filter("Layout JSON", &["json"])
         .set_file_name(&file_name)
         .save_file()
@@ -154,32 +157,11 @@ fn pick_export_layout_path(suggested_name: Option<String>) -> Option<String> {
 }
 
 #[tauri::command]
-fn export_layout_to_path(
-    state: State<SharedState>,
-    path: String,
-    key: Option<String>,
-) -> Result<(), String> {
+fn export_layout_to_path(path: String, layout: Layout) -> Result<(), String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return Err("empty export path".to_string());
     }
-
-    let target_key = key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-
-    let layout = {
-        let s = state.inner.lock().unwrap();
-        let selected = target_key.or_else(|| s.selected_layout_key.clone());
-        let key = selected.ok_or_else(|| "no layout selected".to_string())?;
-        s.layouts
-            .iter()
-            .find(|layout| layout.key == key)
-            .cloned()
-            .ok_or_else(|| "layout not found".to_string())?
-    };
 
     layouts::save_layout_file(std::path::Path::new(trimmed), &layout)
 }
@@ -667,6 +649,55 @@ fn control_speaker_distance(state: State<SharedState>, id: i32, value: f32) {
 }
 
 #[tauri::command]
+fn control_speaker_x(state: State<SharedState>, id: i32, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: format!("/omniphony/control/speaker/{id}/x"),
+            value: value.clamp(-1.0, 1.0),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_speaker_y(state: State<SharedState>, id: i32, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: format!("/omniphony/control/speaker/{id}/y"),
+            value: value.clamp(-1.0, 1.0),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_speaker_z(state: State<SharedState>, id: i32, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: format!("/omniphony/control/speaker/{id}/z"),
+            value: value.clamp(-1.0, 1.0),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_speaker_coord_mode(state: State<SharedState>, id: i32, value: String) {
+    let normalized = if value.trim().eq_ignore_ascii_case("cartesian") {
+        "cartesian"
+    } else {
+        "polar"
+    };
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: format!("/omniphony/control/speaker/{id}/coord_mode"),
+            value: normalized.to_string(),
+        },
+    );
+}
+
+#[tauri::command]
 fn control_speaker_delay(state: State<SharedState>, id: i32, delay_ms: f32) {
     let v = delay_ms.max(0.0);
     send_control(
@@ -968,6 +999,10 @@ fn main() {
             control_speaker_az,
             control_speaker_el,
             control_speaker_distance,
+            control_speaker_x,
+            control_speaker_y,
+            control_speaker_z,
+            control_speaker_coord_mode,
             control_speaker_delay,
             control_speaker_spatialize,
             control_speaker_name,

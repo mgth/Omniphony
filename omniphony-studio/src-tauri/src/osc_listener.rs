@@ -524,9 +524,16 @@ fn apply_speaker_config(events: Vec<OscEvent>, app: &AppHandle, state: &Arc<Mute
                 OscEvent::ConfigSpeaker {
                     index,
                     name,
+                    coord_mode,
+                    x,
+                    y,
+                    z,
+                    azimuth_deg,
+                    elevation_deg,
+                    distance_m,
                     delay_ms,
                     spatialize,
-                    position,
+                    position: _,
                     ..
                 } => {
                     s.live_speakers.insert(
@@ -535,14 +542,13 @@ fn apply_speaker_config(events: Vec<OscEvent>, app: &AppHandle, state: &Arc<Mute
                             name,
                             delay_ms,
                             spatialize,
-                            position: crate::app_state::SourcePosition {
-                                x: position.x,
-                                y: position.y,
-                                z: position.z,
-                                generation: None,
-                                direct_speaker_index: None,
-                                name: None,
-                            },
+                            coord_mode,
+                            x,
+                            y,
+                            z,
+                            azimuth_deg,
+                            elevation_deg,
+                            distance_m,
                         },
                     );
                 }

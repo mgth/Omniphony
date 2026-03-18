@@ -5,11 +5,13 @@
 
 speakers:
   - name: "FL"
-    azimuth: -30.0
+    azimuth: -26.565052
     elevation: 0.0
+    distance: 2.236068
     spatialize: true
 
   - name: "FR"
-    azimuth: 30.0
+    azimuth: 26.565052
     elevation: 0.0
+    distance: 2.236068
     spatialize: true

@@ -151,6 +151,11 @@ pub enum OscEvent {
         elevation_deg: f64,
         #[serde(rename = "distanceM")]
         distance_m: f64,
+        #[serde(rename = "coordMode")]
+        coord_mode: String,
+        x: f64,
+        y: f64,
+        z: f64,
         #[serde(rename = "delayMs")]
         delay_ms: f64,
         spatialize: u8,
@@ -345,6 +350,15 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
             .and_then(to_number)
             .unwrap_or(0.0)
             .max(0.0);
+        let coord_mode = match raw_args.get(6) {
+            Some(rosc::OscType::String(value)) if value.eq_ignore_ascii_case("cartesian") => {
+                "cartesian".to_string()
+            }
+            _ => "polar".to_string(),
+        };
+        let x = args.get(7).copied().and_then(to_number).unwrap_or(px).clamp(-1.0, 1.0);
+        let y = args.get(8).copied().and_then(to_number).unwrap_or(py).clamp(-1.0, 1.0);
+        let z = args.get(9).copied().and_then(to_number).unwrap_or(pz).clamp(-1.0, 1.0);
 
         return Some(OscEvent::ConfigSpeaker {
             index,
@@ -352,6 +366,10 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
             azimuth_deg: az,
             elevation_deg: el,
             distance_m: dist,
+            coord_mode,
+            x,
+            y,
+            z,
             delay_ms,
             spatialize,
             position: SpeakerPosition {

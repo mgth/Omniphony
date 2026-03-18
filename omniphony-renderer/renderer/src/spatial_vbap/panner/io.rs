@@ -449,14 +449,14 @@ impl VbapPanner {
                     let spatialize = layout_data[offset] != 0;
                     offset += 1;
 
-                    speakers.push(crate::speaker_layout::Speaker {
+                    speakers.push(crate::speaker_layout::Speaker::from_polar(
                         name,
                         azimuth,
                         elevation,
-                        distance: 1.0,
+                        1.0,
                         spatialize,
-                        delay_ms: 0.0,
-                    });
+                        0.0,
+                    ));
                 }
 
                 let speaker_layout = Some(crate::speaker_layout::SpeakerLayout {
@@ -616,14 +616,14 @@ impl VbapPanner {
                     let spatialize = layout_data[offset] != 0;
                     offset += 1;
 
-                    speakers.push(crate::speaker_layout::Speaker {
+                    speakers.push(crate::speaker_layout::Speaker::from_polar(
                         name,
                         azimuth,
                         elevation,
-                        distance: 1.0,
+                        1.0,
                         spatialize,
-                        delay_ms: 0.0,
-                    });
+                        0.0,
+                    ));
                 }
 
                 let speaker_layout = Some(crate::speaker_layout::SpeakerLayout {

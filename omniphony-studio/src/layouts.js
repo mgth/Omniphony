@@ -2,18 +2,45 @@ const fs = require('fs');
 const path = require('path');
 const { sphericalToCartesian, clamp } = require('./oscParser');
 
-const LAYOUTS_DIR = path.join(__dirname, '..', 'layouts');
+const LAYOUTS_DIR = path.join(__dirname, '..', '..', 'layouts');
+
+function cartesianToSpherical(x, y, z) {
+  const dist = Math.sqrt((x * x) + (y * y) + (z * z));
+  const azimuth = (Math.atan2(z, x) * 180) / Math.PI;
+  const elevation = dist > 0 ? (Math.atan2(y, Math.sqrt((x * x) + (z * z))) * 180) / Math.PI : 0;
+  return { azimuth, elevation, distance: dist };
+}
 
 function normalizeSpeaker(speaker) {
   const spatialize = Number(speaker?.spatialize) === 0 ? 0 : 1;
+  const coordModeRaw = String(
+    speaker?.coord_mode
+    ?? speaker?.coordinate_mode
+    ?? speaker?.coordMode
+    ?? ((speaker && typeof speaker.x === 'number' && typeof speaker.y === 'number' && typeof speaker.z === 'number')
+      ? 'cartesian'
+      : 'polar')
+  ).toLowerCase();
+  const coordMode = coordModeRaw === 'cartesian' ? 'cartesian' : 'polar';
+  const delayMs = Math.max(0, Number(speaker?.delay_ms ?? speaker?.delay ?? 0) || 0);
+  const id = String(speaker.id || speaker.name || 'spk');
 
   if (speaker && typeof speaker.x === 'number' && typeof speaker.y === 'number' && typeof speaker.z === 'number') {
+    const x = clamp(Number(speaker.x) || 0, -1, 1);
+    const y = clamp(Number(speaker.y) || 0, -1, 1);
+    const z = clamp(Number(speaker.z) || 0, -1, 1);
+    const polar = cartesianToSpherical(x, y, z);
     return {
-      id: String(speaker.id || speaker.name || 'spk'),
-      x: clamp(speaker.x, -1, 1),
-      y: clamp(speaker.y, -1, 1),
-      z: clamp(speaker.z, -1, 1),
-      spatialize
+      id,
+      x,
+      y,
+      z,
+      azimuthDeg: Number(speaker.azimuth ?? speaker.az ?? speaker.azimuthDeg ?? polar.azimuth),
+      elevationDeg: Number(speaker.elevation ?? speaker.el ?? speaker.elevationDeg ?? polar.elevation),
+      distanceM: Math.max(0.01, Number(speaker.distance ?? speaker.dist ?? speaker.distanceM ?? polar.distance) || polar.distance || 1),
+      coordMode,
+      spatialize,
+      delay_ms: delayMs
     };
   }
 
@@ -23,11 +50,16 @@ function normalizeSpeaker(speaker) {
   const c = sphericalToCartesian(azimuth, elevation, distance);
 
   return {
-    id: String(speaker.id || speaker.name || 'spk'),
+    id,
     x: clamp(c.x, -1, 1),
     y: clamp(c.y, -1, 1),
     z: clamp(c.z, -1, 1),
-    spatialize
+    azimuthDeg: azimuth,
+    elevationDeg: elevation,
+    distanceM: Math.max(0.01, distance || 1),
+    coordMode,
+    spatialize,
+    delay_ms: delayMs
   };
 }
 
@@ -62,6 +94,7 @@ function parseYamlLayout(rawText) {
   const speakers = [];
   let currentSpeaker = null;
   let inSpeakersBlock = false;
+  const topLevel = {};
 
   lines.forEach((line) => {
     const withoutComment = line.replace(/\s+#.*$/, '');
@@ -77,6 +110,12 @@ function parseYamlLayout(rawText) {
     }
 
     if (!inSpeakersBlock) {
+      const separatorIndex = trimmed.indexOf(':');
+      if (separatorIndex !== -1) {
+        const key = trimmed.slice(0, separatorIndex).trim();
+        const value = trimmed.slice(separatorIndex + 1);
+        topLevel[key] = parseYamlValue(value);
+      }
       return;
     }
 
@@ -114,7 +153,10 @@ function parseYamlLayout(rawText) {
     currentSpeaker[key] = parseYamlValue(value);
   });
 
-  return { speakers };
+  return {
+    ...topLevel,
+    speakers
+  };
 }
 
 function parseLayoutFile(filePath, extension) {
@@ -159,6 +201,7 @@ function loadLayouts() {
       return {
         key: hasDuplicateStem ? `${stem}-${extensionLabel}` : stem,
         name: raw.name || (hasDuplicateStem ? `${stem} (${extensionLabel})` : stem),
+        radius_m: Math.max(0.01, Number(raw.radius_m) || 1),
         speakers
       };
     })

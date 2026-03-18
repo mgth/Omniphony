@@ -84,7 +84,7 @@ Generate a VBAP table (Linux or Windows with `saf_vbap`) and use it for playback
 ```bash
 # Generate a VBAP table
 orender generate-vbap \
-  --speaker-layout layouts/7.1.4.yaml \
+  --speaker-layout ../layouts/7.1.4.yaml \
   --output 7.1.4.vbap \
   --az-res 5 \
   --el-res 5 \

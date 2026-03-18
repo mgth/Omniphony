@@ -76,14 +76,14 @@ Use a standard speaker layout:
 ./target/release/orender input.bin \
   --bridge-path ./libformat_bridge.so \
   --enable-vbap \
-  --speaker-layout layouts/7.1.4.yaml
+  --speaker-layout ../layouts/7.1.4.yaml
 ```
 
 Or precompute a VBAP table:
 
 ```bash
 ./target/release/orender generate-vbap \
-  --speaker-layout layouts/7.1.4.yaml \
+  --speaker-layout ../layouts/7.1.4.yaml \
   --output 7.1.4.vbap \
   --az-res 2 \
   --el-res 2 \
@@ -144,7 +144,7 @@ Save the current effective configuration:
 ./target/release/orender --config ./config.yaml --save-config input.bin \
   --bridge-path ./libformat_bridge.so \
   --enable-vbap \
-  --speaker-layout layouts/7.1.4.yaml \
+  --speaker-layout ../layouts/7.1.4.yaml \
   --osc
 ```
 
@@ -154,4 +154,4 @@ Save the current effective configuration:
 - [BUILD.md](BUILD.md)
 - [BUILDING_WINDOWS.md](BUILDING_WINDOWS.md)
 - [OSC_PROTOCOL.md](OSC_PROTOCOL.md)
-- [layouts/README.md](layouts/README.md)
+- [../layouts/README.md](../layouts/README.md)

@@ -660,7 +660,7 @@ impl OscSender {
 ///
 /// Format:
 ///   `/omniphony/config/speakers`    [i count]
-///   `/omniphony/config/speaker/{i}` [s name, f azimuth_deg, f elevation_deg, f distance_m, i spatialize, f delay_ms]
+///   `/omniphony/config/speaker/{i}` [s name, f azimuth_deg, f elevation_deg, f distance_m, i spatialize, f delay_ms, s coord_mode, f x, f y, f z]
 pub fn build_speaker_config_bundle(
     layout: &crate::speaker_layout::SpeakerLayout,
 ) -> Result<Vec<u8>> {
@@ -679,6 +679,10 @@ pub fn build_speaker_config_bundle(
                 OscType::Float(speaker.distance),
                 OscType::Int(if speaker.spatialize { 1 } else { 0 }),
                 OscType::Float(speaker.delay_ms),
+                OscType::String(speaker.coord_mode.clone()),
+                OscType::Float(speaker.x),
+                OscType::Float(speaker.y),
+                OscType::Float(speaker.z),
             ],
         }));
     }
@@ -703,6 +707,10 @@ struct SpeakerPatch {
     az: Option<f32>,
     el: Option<f32>,
     distance: Option<f32>,
+    x: Option<f32>,
+    y: Option<f32>,
+    z: Option<f32>,
+    coord_mode: Option<String>,
     spatialize: Option<bool>,
     name: Option<String>,
 }
@@ -1474,14 +1482,14 @@ fn handle_control_message(
             _ => 0.0,
         };
         let layout = control.with_editable_layout(|layout| {
-            layout.speakers.push(crate::speaker_layout::Speaker {
+            layout.speakers.push(crate::speaker_layout::Speaker::from_polar(
                 name,
-                azimuth: az.clamp(-180.0, 180.0),
-                elevation: el.clamp(-90.0, 90.0),
+                az.clamp(-180.0, 180.0),
+                el.clamp(-90.0, 90.0),
                 distance,
                 spatialize,
                 delay_ms,
-            });
+            ));
             layout.clone()
         });
         if delay_ms > 0.0 {
@@ -1611,6 +1619,18 @@ fn handle_control_message(
                             patch.name = Some(trimmed.to_string());
                         }
                     }
+                } else if parts[1] == "coord_mode" {
+                    if let Some(OscType::String(mode)) = msg.args.first() {
+                        let normalized = if mode.eq_ignore_ascii_case("cartesian") {
+                            "cartesian"
+                        } else {
+                            "polar"
+                        };
+                        let patch = pending_speakers
+                            .entry(idx)
+                            .or_insert_with(SpeakerPatch::default);
+                        patch.coord_mode = Some(normalized.to_string());
+                    }
                 } else if let Some(OscType::Float(f)) = msg.args.first() {
                     let patch = pending_speakers
                         .entry(idx)
@@ -1624,6 +1644,15 @@ fn handle_control_message(
                         }
                         "distance" => {
                             patch.distance = Some(*f);
+                        }
+                        "x" => {
+                            patch.x = Some(f.clamp(-1.0, 1.0));
+                        }
+                        "y" => {
+                            patch.y = Some(f.clamp(-1.0, 1.0));
+                        }
+                        "z" => {
+                            patch.z = Some(f.clamp(-1.0, 1.0));
                         }
                         "gain" => {
                             let gain = *f;
@@ -1707,6 +1736,22 @@ fn apply_pending_speakers(
                 }
                 if let Some(dist) = patch.distance {
                     speaker.distance = dist;
+                }
+                if let Some(x) = patch.x {
+                    speaker.x = x.clamp(-1.0, 1.0);
+                }
+                if let Some(y) = patch.y {
+                    speaker.y = y.clamp(-1.0, 1.0);
+                }
+                if let Some(z) = patch.z {
+                    speaker.z = z.clamp(-1.0, 1.0);
+                }
+                if let Some(coord_mode) = &patch.coord_mode {
+                    speaker.coord_mode = if coord_mode.eq_ignore_ascii_case("cartesian") {
+                        "cartesian".to_string()
+                    } else {
+                        "polar".to_string()
+                    };
                 }
                 if let Some(spatialize) = patch.spatialize {
                     speaker.spatialize = spatialize;

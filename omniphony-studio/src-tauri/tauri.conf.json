@@ -11,7 +11,7 @@
   "bundle": {
     "active": true,
     "icon": ["icons/icon.ico", "icons/icon.png"],
-    "resources": ["../layouts/*"]
+    "resources": ["../../layouts/*"]
   },
   "app": {
     "windows": [

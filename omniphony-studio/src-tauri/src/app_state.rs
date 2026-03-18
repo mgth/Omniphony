@@ -109,7 +109,13 @@ pub struct LiveSpeakerConfig {
     pub name: String,
     pub delay_ms: f64,
     pub spatialize: u8,
-    pub position: SourcePosition,
+    pub coord_mode: String,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub azimuth_deg: f64,
+    pub elevation_deg: f64,
+    pub distance_m: f64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

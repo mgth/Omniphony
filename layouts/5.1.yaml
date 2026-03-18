@@ -6,15 +6,15 @@
 speakers:
   # Front layer
   - name: "FL"
-    azimuth: -30.0
+    azimuth: -26.565052
     elevation: 0.0
-    distance: 2.0
+    distance: 2.236068
     spatialize: true
 
   - name: "FR"
-    azimuth: 30.0
+    azimuth: 26.565052
     elevation: 0.0
-    distance: 2.0
+    distance: 2.236068
     spatialize: true
 
   - name: "C"
@@ -26,17 +26,20 @@ speakers:
   # LFE (Low Frequency Effects)
   # Excluded from VBAP - only receives bed channel
   - name: "LFE"
-    azimuth: 0.0
-    elevation: 0.0
-    spatialize: false
+    azimuth: 26.565052
+    elevation: -12.6043825
+    distance: 2.291288
+    spatialize: true
 
   # Rear surround layer
   - name: "BL"
-    azimuth: -110.0
+    azimuth: -153.43495
     elevation: 0.0
+    distance: 2.236068
     spatialize: true
 
   - name: "BR"
-    azimuth: 110.0
+    azimuth: 153.43495
     elevation: 0.0
+    distance: 2.236068
     spatialize: true
