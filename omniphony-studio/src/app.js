@@ -2122,11 +2122,43 @@ function updateObjectControlsUI() {
     entry.soloBtn.classList.toggle('active', soloTarget === id);
     updateItemClasses(entry, objectMuted.has(id), soloTarget && soloTarget !== id);
     entry.root.classList.toggle('is-selected', selectedSourceId === id);
+    entry.root.classList.toggle('has-active-trail', objectHasActiveTrail(id));
+    if (entry.topRight) {
+      entry.topRight.textContent = getObjectDominantSpeakerText(id);
+    }
     updateObjectContributionUI(entry, id);
   });
   speakerItems.forEach((entry, id) => {
     updateSpeakerContributionUI(entry, id);
   });
+}
+
+function getObjectDominantSpeakerText(id) {
+  const gains = sourceGains.get(String(id));
+  if (!Array.isArray(gains) || gains.length === 0) {
+    return '—';
+  }
+  let bestIndex = -1;
+  let bestGain = -Infinity;
+  gains.forEach((rawGain, index) => {
+    const gain = Number(rawGain);
+    if (!Number.isFinite(gain) || gain <= bestGain) {
+      return;
+    }
+    bestGain = gain;
+    bestIndex = index;
+  });
+  if (bestIndex < 0 || bestGain <= 0) {
+    return '—';
+  }
+  const speaker = currentLayoutSpeakers[bestIndex];
+  const name = String(speaker?.id ?? bestIndex);
+  return `${name} ${linearToDb(bestGain)}`;
+}
+
+function objectHasActiveTrail(id) {
+  const trail = sourceTrails.get(String(id));
+  return Boolean(trail && trail.positions.length > 0);
 }
 
 function createSpeakerItem(id, speaker) {
@@ -2457,8 +2489,18 @@ function createObjectItem(id) {
   const content = document.createElement('div');
   content.className = 'object-content';
 
+  const head = document.createElement('div');
+  head.className = 'object-head';
+
   const position = document.createElement('div');
-  content.appendChild(position);
+  head.appendChild(position);
+
+  const topRight = document.createElement('div');
+  topRight.className = 'object-topright';
+  topRight.textContent = '—';
+  head.appendChild(topRight);
+
+  content.appendChild(head);
 
   const level = document.createElement('div');
   level.className = 'meter-row';
@@ -2528,8 +2570,10 @@ function createObjectItem(id) {
 
   return {
     root,
+    idStrip,
     label: idText,
     position,
+    topRight,
     levelText,
     meterFill,
     contributionFill,
@@ -2547,6 +2591,8 @@ function updateObjectItem(entry, id, position, name) {
   }
   entry.label.textContent = getObjectDisplayName(id);
   entry.position.textContent = formatPosition(position);
+  entry.topRight.textContent = getObjectDominantSpeakerText(id);
+  entry.root.classList.toggle('has-active-trail', objectHasActiveTrail(id));
   const gainValue = getBaseGain(objectBaseGains, objectGainCache, id);
   entry.gainSlider.value = String(gainValue);
   entry.gainBox.textContent = linearToDb(gainValue);
@@ -4571,7 +4617,6 @@ function setLabelSpriteText(sprite, text) {
   if (sprite.userData.labelText === nextText) {
     return;
   }
-
   const canvas = sprite.userData.labelCanvas;
   const ctx = sprite.userData.labelCtx;
   const lines = nextText.split('\n');
@@ -5162,6 +5207,10 @@ function updateSource(id, position) {
     updateObjectPositionUI(key, raw);
     updateObjectLabelUI(key);
   }
+  const entry = objectItems.get(key);
+  if (entry) {
+    entry.root.classList.toggle('has-active-trail', objectHasActiveTrail(key));
+  }
 }
 
 function decayTrails(nowMs) {
@@ -5179,6 +5228,10 @@ function decayTrails(nowMs) {
     trail.positions = trail.positions.filter((p) => typeof p.t === 'number' && p.t >= cutoff);
     if (trail.positions.length !== before) {
       rebuildTrailGeometry(id);
+      const entry = objectItems.get(String(id));
+      if (entry) {
+        entry.root.classList.toggle('has-active-trail', trail.positions.length > 0);
+      }
     }
   });
 }
