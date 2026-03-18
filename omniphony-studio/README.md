@@ -72,6 +72,14 @@ Puis ouvrir : [http://localhost:3000](http://localhost:3000)
 node --test
 ```
 
+## Notes de dev
+
+- Vue 3D, sélection d’un HP :
+  ne pas réutiliser tel quel le matériau normal des objets pour représenter les non-contributeurs. La sphère source de base est déjà chaude/orangée, donc même une version "normale mais estompée" peut être perçue comme rouge. Si on veut distinguer les contributeurs d’un HP sélectionné, il faut soit :
+  - ne colorer que les contributeurs
+  - soit mettre les non-contributeurs dans un état vraiment neutre ou quasi invisible
+  - mais éviter de compter sur la seule baisse d’opacité du matériau source
+
 ## Messages envoyés par le studio vers le renderer
 
 | Message OSC | Fréquence | Args |

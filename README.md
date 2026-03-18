@@ -2,6 +2,8 @@
 
 Monorepo de convergence pour la suite Omniphony.
 
+![Omniphony capture](Omniphony_capture.png)
+
 Omniphony regroupe deux composants principaux :
 
 - `omniphony-renderer/` : moteur temps réel de décodage, rendu spatial et contrôle OSC

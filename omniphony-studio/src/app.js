@@ -1036,13 +1036,14 @@ function createSceneAxes() {
   const axisExtent = 0.58;
   const arrowRadius = 0.02;
   const arrowLength = 0.075;
+  const labelOffset = 0.12;
   const specs = [
-    { axis: 'x', color: 0xff6b6b, dir: new THREE.Vector3(1, 0, 0), rot: new THREE.Euler(0, 0, -Math.PI / 2) },
-    { axis: 'y', color: 0x7fff7f, dir: new THREE.Vector3(0, 1, 0), rot: new THREE.Euler(0, 0, 0) },
-    { axis: 'z', color: 0x6bb8ff, dir: new THREE.Vector3(0, 0, 1), rot: new THREE.Euler(Math.PI / 2, 0, 0) }
+    { axis: 'y', color: 0xff6b6b, dir: new THREE.Vector3(1, 0, 0), rot: new THREE.Euler(0, 0, -Math.PI / 2) },
+    { axis: 'z', color: 0x7fff7f, dir: new THREE.Vector3(0, 1, 0), rot: new THREE.Euler(0, 0, 0) },
+    { axis: 'x', color: 0x6bb8ff, dir: new THREE.Vector3(0, 0, 1), rot: new THREE.Euler(Math.PI / 2, 0, 0) }
   ];
 
-  specs.forEach(({ color, dir, rot }) => {
+  specs.forEach(({ axis, color, dir, rot }) => {
     const material = new THREE.LineBasicMaterial({
       color,
       transparent: true,
@@ -1076,6 +1077,11 @@ function createSceneAxes() {
     arrow.rotation.copy(rot);
     arrow.renderOrder = 31;
     group.add(arrow);
+
+    const label = createSmallLabelSprite(axis.toUpperCase(), `#${color.toString(16).padStart(6, '0')}`);
+    label.position.copy(dir.clone().multiplyScalar(axisExtent + arrowLength + labelOffset));
+    label.renderOrder = 32;
+    group.add(label);
   });
 
   return group;
@@ -1246,12 +1252,12 @@ Object.values(selectedSpeakerShadows).forEach((shadow) => {
 });
 
 const selectedObjectShadows = {
-  posX: createSpeakerFaceShadow(0xffa14d, 0.16),
-  negX: createSpeakerFaceShadow(0xffa14d, 0.16),
-  posY: createSpeakerFaceShadow(0xffa14d, 0.16),
-  negY: createSpeakerFaceShadow(0xffa14d, 0.16),
-  posZ: createSpeakerFaceShadow(0xffa14d, 0.16),
-  negZ: createSpeakerFaceShadow(0xffa14d, 0.16)
+  posX: createSpeakerFaceShadow(),
+  negX: createSpeakerFaceShadow(),
+  posY: createSpeakerFaceShadow(),
+  negY: createSpeakerFaceShadow(),
+  posZ: createSpeakerFaceShadow(),
+  negZ: createSpeakerFaceShadow()
 };
 
 selectedObjectShadows.posX.rotation.y = Math.PI / 2;
@@ -1424,6 +1430,8 @@ const speakerHotColor = new THREE.Color(0xff3030);
 const speakerSelectedColor = new THREE.Color(0x4dff88);
 const sourceHotColor = new THREE.Color(0xff3030);
 const sourceDefaultEmissive = new THREE.Color(0x64210c);
+const sourceNeutralEmissive = new THREE.Color(0x10161d);
+const sourceContributionEmissive = new THREE.Color(0x10311a);
 const sourceSelectedEmissive = new THREE.Color(0x9b7f22);
 const sourceOutlineColor = new THREE.Color(0xd9ecff);
 const sourceOutlineSelectedColor = new THREE.Color(0xffde8a);
@@ -4449,7 +4457,7 @@ function updateSelectedObjectFaceShadows() {
   const spanZ = Math.max(1e-6, zMax - zMin);
   const p = mesh.position;
   const eps = 0.01;
-  const baseRadius = 0.09;
+  const baseRadius = 0.08;
 
   const clampedX = clampNumber(p.x, xMin, xMax);
   const clampedY = clampNumber(p.y, yMin, yMax);
@@ -4459,8 +4467,8 @@ function updateSelectedObjectFaceShadows() {
     const t = maxDist > 1e-6 ? clampNumber(1 - (dist / maxDist), 0.08, 1) : 1;
     shadow.visible = true;
     shadow.position.set(x, y, z);
-    shadow.scale.setScalar(baseRadius * (0.7 + 0.7 * t));
-    shadow.material.opacity = 0.05 + 0.16 * t;
+    shadow.scale.setScalar(baseRadius * (0.7 + 0.6 * t));
+    shadow.material.opacity = 0.06 + 0.18 * t;
   };
 
   setShadow(selectedObjectShadows.posX, xMax - eps, clampedY, clampedZ, Math.abs(xMax - p.x), spanX);
@@ -4827,9 +4835,13 @@ function rebuildTrailGeometry(id) {
     return;
   }
   const mesh = sourceMeshes.get(id);
-  const r = mesh ? mesh.material.color.r : 0.8;
-  const g = mesh ? mesh.material.color.g : 0.4;
-  const b = mesh ? mesh.material.color.b : 0.2;
+  const isSelected = String(id) === selectedSourceId;
+  const trailColor = isSelected
+    ? new THREE.Color(0x7fff7f)
+    : (mesh ? mesh.material.color.clone() : new THREE.Color(0xcc6640));
+  const r = trailColor.r;
+  const g = trailColor.g;
+  const b = trailColor.b;
   const sourceScale = Math.max(0.0, Number(mesh?.scale.x) || 0.0);
   const mappedPositions = trail.positions.map((raw) => mapTrailRawToScene(raw));
   if (trailRenderMode === 'line') {
@@ -4997,7 +5009,10 @@ function gainToMix(gain) {
 
 function applySourceLevel(id, mesh, meter) {
   const scale = dbfsToScale(meter?.rmsDbfs, 0.5, 2.4);
-  mesh.scale.setScalar(scale);
+  mesh.userData.levelScale = scale;
+  if (selectedSpeakerIndex === null) {
+    mesh.scale.setScalar(scale);
+  }
   updateSourceDecorations(id);
 }
 
@@ -5016,26 +5031,36 @@ function getSelectedSourceGains() {
 function updateSourceColorsFromSelection() {
   sourceMeshes.forEach((mesh, id) => {
     const baseOpacity = Number(mesh.userData.baseOpacity ?? 0.7);
+    const baseScale = Math.max(0.5, Number(mesh.userData.levelScale) || 1);
     const gains = selectedSpeakerIndex !== null ? (sourceGains.get(id) || null) : null;
     const mix = gainToMix(gains?.[selectedSpeakerIndex]);
+    const hasContribution = mix > 1e-6;
+    const contributionColor = speakerSelectedColor;
 
     if (selectedSpeakerIndex !== null) {
-      mesh.material.color.copy(sourceMaterial.color).lerp(sourceHotColor, mix);
-      mesh.material.opacity = mix <= 1e-6
-        ? Math.min(baseOpacity, 0.08)
-        : Math.max(baseOpacity * (0.35 + (0.65 * mix)), 0.18);
+      mesh.visible = true;
+      mesh.material.color.copy(hasContribution ? contributionColor : sourceMaterial.color);
+      mesh.material.opacity = hasContribution
+        ? Math.max(baseOpacity * (0.35 + (0.55 * mix)), 0.24)
+        : 0.0;
+      mesh.scale.setScalar(baseScale);
     } else {
+      mesh.visible = true;
       mesh.material.color.copy(sourceMaterial.color);
       mesh.material.opacity = 0.0;
+      mesh.scale.setScalar(baseScale);
     }
 
     const outline = sourceOutlines.get(id);
     if (outline) {
+      outline.visible = true;
       outline.material.opacity = selectedSpeakerIndex !== null
         ? (mix <= 1e-6 ? 0.15 : 0.25 + (0.73 * mix))
         : 0.98;
       if (selectedSpeakerIndex !== null) {
-        outline.material.color.copy(sourceOutlineColor).lerp(sourceHotColor, mix * 0.65);
+        outline.material.color.copy(sourceOutlineColor).lerp(contributionColor, hasContribution ? mix * 0.65 : 0);
+      } else {
+        outline.material.color.copy(sourceOutlineColor);
       }
     }
   });
@@ -5046,7 +5071,16 @@ function updateSourceSelectionStyles() {
 
   sourceMeshes.forEach((mesh, id) => {
     const isSelected = id === selectedSourceId;
-    mesh.material.emissive.copy(isSelected ? sourceSelectedEmissive : sourceDefaultEmissive);
+    const gains = selectedSpeakerIndex !== null ? (sourceGains.get(id) || null) : null;
+    const mix = gainToMix(gains?.[selectedSpeakerIndex]);
+    const hasContribution = mix > 1e-6;
+    if (isSelected) {
+      mesh.material.emissive.copy(sourceSelectedEmissive);
+    } else if (selectedSpeakerIndex !== null) {
+      mesh.material.emissive.copy(hasContribution ? sourceContributionEmissive : sourceNeutralEmissive);
+    } else {
+      mesh.material.emissive.copy(sourceDefaultEmissive);
+    }
 
     const outline = sourceOutlines.get(id);
     if (outline) {
@@ -5063,6 +5097,9 @@ function updateSourceSelectionStyles() {
     }
 
     updateEffectiveRenderDecoration(id);
+    if ((sourceTrails.get(id)?.positions.length || 0) > 0) {
+      rebuildTrailGeometry(id);
+    }
   });
 }
 
@@ -5845,41 +5882,73 @@ function pointerEventToNdc(event) {
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 }
 
-function selectSourceFromPointer(event) {
-  pointerEventToNdc(event);
-
-  raycaster.setFromCamera(pointer, camera);
-  const hitTargets = [...sourceLabels.values(), ...sourceMeshes.values()];
-  const intersects = raycaster.intersectObjects(hitTargets, false);
-
-  if (intersects.length > 0) {
-    const selectedId = intersects[0].object?.userData?.sourceId || null;
-    setSelectedSource(selectedId);
-    return true;
-  }
-
-  return false;
+function getPickableSceneTargets() {
+  const sourceTargets = [
+    ...sourceLabels.values(),
+    ...sourceMeshes.values(),
+    ...sourceOutlines.values()
+  ].filter((object) => object && object.visible !== false);
+  const speakerTargets = [
+    ...speakerMeshes,
+    ...speakerLabels
+  ].filter((object) => object && object.visible !== false);
+  return [...sourceTargets, ...speakerTargets];
 }
 
-function selectSpeakerFromPointer(event) {
-  pointerEventToNdc(event);
-  raycaster.setFromCamera(pointer, camera);
-  const hitTargets = [...speakerMeshes, ...speakerLabels];
-  const intersects = raycaster.intersectObjects(hitTargets, false);
-  if (intersects.length > 0) {
-    const idx = speakerMeshes.indexOf(intersects[0].object);
-    if (idx >= 0) {
+function pickSpeakerFromIntersects(intersects) {
+  for (const hit of intersects) {
+    const object = hit.object;
+    const speakerIdx = speakerMeshes.indexOf(object);
+    if (speakerIdx >= 0) {
       setSelectedSource(null);
-      setSelectedSpeaker(idx);
+      setSelectedSpeaker(speakerIdx);
       return true;
     }
-    const labelIdx = speakerLabels.indexOf(intersects[0].object);
+
+    const labelIdx = speakerLabels.indexOf(object);
     if (labelIdx >= 0) {
       setSelectedSource(null);
       setSelectedSpeaker(labelIdx);
       return true;
     }
   }
+  return false;
+}
+
+function selectSceneItemFromPointer(event) {
+  pointerEventToNdc(event);
+  raycaster.setFromCamera(pointer, camera);
+  const intersects = raycaster.intersectObjects(getPickableSceneTargets(), false);
+
+  if (pickSpeakerFromIntersects(intersects)) {
+    return true;
+  }
+
+  for (const hit of intersects) {
+    const object = hit.object;
+    const sourceId = object?.userData?.sourceId;
+    if (sourceId !== undefined && sourceId !== null) {
+      setSelectedSource(sourceId);
+      setSelectedSpeaker(null);
+      updateControlsForEditMode();
+      return true;
+    }
+
+    const speakerIdx = speakerMeshes.indexOf(object);
+    if (speakerIdx >= 0) {
+      setSelectedSource(null);
+      setSelectedSpeaker(speakerIdx);
+      return true;
+    }
+
+    const labelIdx = speakerLabels.indexOf(object);
+    if (labelIdx >= 0) {
+      setSelectedSource(null);
+      setSelectedSpeaker(labelIdx);
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -6054,14 +6123,8 @@ renderer.domElement.addEventListener('pointerup', (event) => {
   pointerDownPosition = null;
 
   if (Math.hypot(dx, dy) <= 6) {
-    const hitSpeaker = selectSpeakerFromPointer(event);
-    if (hitSpeaker) {
-      return;
-    }
-    const hitSource = selectSourceFromPointer(event);
-    if (hitSource) {
-      setSelectedSpeaker(null);
-      updateControlsForEditMode();
+    const hitSceneItem = selectSceneItemFromPointer(event);
+    if (hitSceneItem) {
       return;
     }
     setSelectedSource(null);
