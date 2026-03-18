@@ -124,11 +124,11 @@ test('parses omniphony object xyz mapping', () => {
   assert.deepEqual(parsed, {
     type: 'update',
     id: '7',
-    position: { x: 0.3, y: 0.4, z: 0.2 }
+    position: { x: 0.2, y: 0.3, z: 0.4, coordMode: 'cartesian', azimuthDeg: undefined, elevationDeg: undefined, distanceM: undefined }
   });
 });
 
-test('parses omniphony spatial frame and switches object xyz decoding to polar', () => {
+test('parses omniphony spatial frame and preserves explicit xyz decoding', () => {
   const ctx = { omniphonyCoordinateFormat: 0 };
   const frame = parseOscMessage(msg('/omniphony/spatial/frame', [1024, 3, 1]), ctx);
   assert.deepEqual(frame, {
@@ -139,12 +139,23 @@ test('parses omniphony spatial frame and switches object xyz decoding to polar',
   });
   assert.equal(ctx.omniphonyCoordinateFormat, 1);
 
-  const parsed = parseOscMessage(msg('/omniphony/object/7/xyz', [90, 0, 1]), ctx);
+  const parsed = parseOscMessage(msg('/omniphony/object/7/xyz', [0.2, 0.3, 0.4]), ctx);
   assert.equal(parsed.type, 'update');
   assert.equal(parsed.id, '7');
-  assert.ok(Math.abs(parsed.position.x - 0) < 1e-6);
-  assert.ok(Math.abs(parsed.position.y - 0) < 1e-6);
-  assert.ok(Math.abs(parsed.position.z - 1) < 1e-6);
+  assert.deepEqual(parsed.position, { x: 0.2, y: 0.3, z: 0.4, coordMode: 'cartesian', azimuthDeg: undefined, elevationDeg: undefined, distanceM: undefined });
+});
+
+test('parses omniphony object aed in polar mode', () => {
+  const ctx = { omniphonyCoordinateFormat: 0 };
+  const frame = parseOscMessage(msg('/omniphony/spatial/frame', [1024, 3, 1]), ctx);
+  assert.equal(frame.coordinateFormat, 1);
+
+  const parsed = parseOscMessage(msg('/omniphony/object/7/aed', [90, 0, 1]), ctx);
+  assert.deepEqual(parsed, {
+    type: 'update',
+    id: '7',
+    position: { x: 0, y: 0, z: 0, coordMode: 'polar', azimuthDeg: 90, elevationDeg: 0, distanceM: 1 }
+  });
 });
 
 test('parses omniphony state messages', () => {

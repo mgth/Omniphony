@@ -640,6 +640,10 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 entry.x = position.x;
                 entry.y = position.y;
                 entry.z = position.z;
+                entry.coord_mode = Some(position.coord_mode.clone());
+                entry.azimuth_deg = position.azimuth_deg;
+                entry.elevation_deg = position.elevation_deg;
+                entry.distance_m = position.distance_m;
                 entry.generation = position.generation.or(current_generation);
                 entry.direct_speaker_index = position.direct_speaker_index;
                 if let Some(n) = name {
@@ -651,6 +655,10 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                             "x": entry.x,
                             "y": entry.y,
                             "z": entry.z,
+                            "coordMode": entry.coord_mode,
+                            "azimuthDeg": entry.azimuth_deg,
+                            "elevationDeg": entry.elevation_deg,
+                            "distanceM": entry.distance_m,
                             "generation": entry.generation,
                             "directSpeakerIndex": entry.direct_speaker_index,
                             "name": entry.name

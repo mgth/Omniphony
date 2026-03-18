@@ -19,6 +19,7 @@ pub struct ObjectMeta {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    pub coord_mode: String,
     pub direct_speaker_index: Option<u32>,
     /// Gain in dB (integer, -128 = silent).
     pub gain: i32,
@@ -44,6 +45,7 @@ struct ObjectSnapshot {
     x: f32,
     y: f32,
     z: f32,
+    coord_mode: String,
     direct_speaker_index: Option<u32>,
     gain: i32,
     priority: f32,
@@ -57,6 +59,7 @@ impl ObjectSnapshot {
             x: o.x,
             y: o.y,
             z: o.z,
+            coord_mode: o.coord_mode.clone(),
             direct_speaker_index: o.direct_speaker_index,
             gain: o.gain,
             priority: o.priority,
@@ -67,6 +70,7 @@ impl ObjectSnapshot {
     fn matches(&self, o: &ObjectMeta) -> bool {
         self.name == o.name
             && self.gain == o.gain
+            && self.coord_mode == o.coord_mode
             && self.direct_speaker_index == o.direct_speaker_index
             && (self.x - o.x).abs() < OBJECT_EPSILON
             && (self.y - o.y).abs() < OBJECT_EPSILON
@@ -392,7 +396,9 @@ impl OscSender {
     /// Send a frame of spatial object metadata via OSC.
     ///
     /// Always emits `/omniphony/spatial/frame` with the total object count.
-    /// Per-object `/omniphony/object/{id}/xyz` messages are only sent for objects
+    /// Per-object messages are emitted in the bridge native format:
+    /// `/omniphony/object/{id}/xyz` for cartesian and `/omniphony/object/{id}/aed` for polar.
+    /// They are only sent for objects
     /// whose position/gain/priority/divergence changed since the last call
     /// (epsilon-compared), or unconditionally when the object count changes.
     pub fn send_object_frame(
@@ -420,13 +426,24 @@ impl OscSender {
             .as_ref()
             .map_or(true, |prev| prev.len() != objects.len())
             || self.force_full_next.swap(false, Ordering::Relaxed);
-
         // Object list shrank: emit tombstones for stale IDs so viewers can remove them.
-        // We use the existing /xyz payload with gain=-128 (silence) and empty name
+        // We use the previous native position suffix with gain=-128 (silence) and empty name
         // for backward compatibility with current listeners.
         for stale_id in objects.len()..prev_len {
+            let suffix = self
+                .prev_objects
+                .as_ref()
+                .and_then(|prev| prev.get(stale_id))
+                .map(|obj| {
+                    if obj.coord_mode.eq_ignore_ascii_case("cartesian") {
+                        "xyz"
+                    } else {
+                        "aed"
+                    }
+                })
+                .unwrap_or(if coordinate_format == 1 { "aed" } else { "xyz" });
             let msg = OscMessage {
-                addr: format!("/omniphony/object/{}/xyz", stale_id),
+                addr: format!("/omniphony/object/{}/{}", stale_id, suffix),
                     args: vec![
                         OscType::Float(0.0),
                         OscType::Float(0.0),
@@ -449,8 +466,13 @@ impl OscSender {
                 force_full || !self.prev_objects.as_ref().unwrap()[object_id].matches(obj);
 
             if changed {
+                let suffix = if obj.coord_mode.eq_ignore_ascii_case("cartesian") {
+                    "xyz"
+                } else {
+                    "aed"
+                };
                 let msg = OscMessage {
-                    addr: format!("/omniphony/object/{}/xyz", object_id),
+                    addr: format!("/omniphony/object/{}/{}", object_id, suffix),
                     args: vec![
                         OscType::Float(obj.x),
                         OscType::Float(obj.y),

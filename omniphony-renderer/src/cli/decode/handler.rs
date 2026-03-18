@@ -208,6 +208,7 @@ fn build_virtual_bed_objects(
             x,
             y,
             z,
+            coord_mode: "cartesian".to_string(),
             direct_speaker_index: None,
             gain: 0,
             priority: 0.0,
@@ -1181,21 +1182,40 @@ impl DecodeHandler {
                     } else {
                         None
                     };
-                    let [ox, oy, oz] = direct_speaker_index
+                    let (ox, oy, oz, coord_mode) = direct_speaker_index
                         .and_then(|speaker_idx| {
                             active_layout.as_ref().and_then(|layout| {
                                 layout.speakers.get(speaker_idx as usize).map(|speaker| {
-                                    let (x, y, z) = renderer::spatial_vbap::spherical_to_adm(
-                                        speaker.azimuth,
-                                        speaker.elevation,
-                                        speaker.distance,
-                                    );
-                                    [x as f64, y as f64, z as f64]
+                                    if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
+                                        (
+                                            speaker.x as f64,
+                                            speaker.y as f64,
+                                            speaker.z as f64,
+                                            "cartesian".to_string(),
+                                        )
+                                    } else {
+                                        (
+                                            speaker.azimuth as f64,
+                                            speaker.elevation as f64,
+                                            speaker.distance as f64,
+                                            "polar".to_string(),
+                                        )
+                                    }
                                 })
                             })
                         })
                         .unwrap_or_else(|| {
-                            Self::event_pos_raw(coordinate_format, event).unwrap_or([0.0, 0.0, 0.0])
+                            let [x, y, z] =
+                                Self::event_pos_raw(coordinate_format, event).unwrap_or([0.0, 0.0, 0.0]);
+                            (
+                                x,
+                                y,
+                                z,
+                                match coordinate_format {
+                                    RCoordinateFormat::Cartesian => "cartesian".to_string(),
+                                    RCoordinateFormat::Polar => "polar".to_string(),
+                                },
+                            )
                         });
                     ObjectMeta {
                         name: self
@@ -1207,6 +1227,7 @@ impl DecodeHandler {
                         x: ox as f32,
                         y: oy as f32,
                         z: oz as f32,
+                        coord_mode,
                         direct_speaker_index,
                         gain: event.gain_db().map_or(-128, |g| g as i32),
                         // Event stream does not currently carry these fields.

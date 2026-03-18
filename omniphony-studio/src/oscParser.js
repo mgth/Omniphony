@@ -111,8 +111,13 @@ function parseOmniphonyConfigMessage(parts, args) {
   return null;
 }
 
-function parseOmniphonyObjectXyz(parts, args, context) {
-  if (!parts.includes('omniphony') || !parts.includes('object') || !parts.includes('xyz')) {
+function parseOmniphonyObjectPosition(parts, args, context) {
+  if (!parts.includes('omniphony') || !parts.includes('object')) {
+    return null;
+  }
+  const explicitCartesian = parts.includes('xyz');
+  const explicitPolar = parts.includes('aed') || parts.includes('spherical') || parts.includes('polar');
+  if (!explicitCartesian && !explicitPolar) {
     return null;
   }
 
@@ -131,18 +136,19 @@ function parseOmniphonyObjectXyz(parts, args, context) {
   const nameRaw = args[7];
   const name = typeof nameRaw === 'string' && nameRaw.trim() ? nameRaw.trim() : null;
 
-  const coordinateFormat = getOmniphonyCoordinateFormat(context);
-  const mappedPosition = coordinateFormat === 1
-    ? sphericalToCartesian(x, y, z)
-    : mapCartesianByAddress(parts, { x, y, z });
+  const coordinateFormat = explicitCartesian ? 0 : explicitPolar ? 1 : getOmniphonyCoordinateFormat(context);
 
   const result = {
     type: 'update',
     id: String(idFromAddress),
     position: {
-      x: clamp(mappedPosition.x, -1, 1),
-      y: clamp(mappedPosition.y, -1, 1),
-      z: clamp(mappedPosition.z, -1, 1)
+      x: coordinateFormat === 0 ? clamp(x, -1, 1) : 0,
+      y: coordinateFormat === 0 ? clamp(y, -1, 1) : 0,
+      z: coordinateFormat === 0 ? clamp(z, -1, 1) : 0,
+      coordMode: coordinateFormat === 0 ? 'cartesian' : 'polar',
+      azimuthDeg: coordinateFormat === 1 ? x : undefined,
+      elevationDeg: coordinateFormat === 1 ? y : undefined,
+      distanceM: coordinateFormat === 1 ? Math.max(0, z) : undefined
     }
   };
   if (name !== null) result.name = name;
@@ -517,9 +523,9 @@ function parseOscMessage(oscMsg, context = null) {
     return parsedOmniphonyConfig;
   }
 
-  const parsedOmniphonyObjectXyz = parseOmniphonyObjectXyz(parts, args, context);
-  if (parsedOmniphonyObjectXyz) {
-    return parsedOmniphonyObjectXyz;
+  const parsedOmniphonyObjectPosition = parseOmniphonyObjectPosition(parts, args, context);
+  if (parsedOmniphonyObjectPosition) {
+    return parsedOmniphonyObjectPosition;
   }
 
   const parsedOmniphonySpatialFrame = parseOmniphonySpatialFrame(parts, args, context);

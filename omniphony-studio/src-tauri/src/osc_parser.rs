@@ -87,6 +87,14 @@ pub struct Position {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+    #[serde(rename = "coordMode")]
+    pub coord_mode: String,
+    #[serde(rename = "azimuthDeg", skip_serializing_if = "Option::is_none")]
+    pub azimuth_deg: Option<f64>,
+    #[serde(rename = "elevationDeg", skip_serializing_if = "Option::is_none")]
+    pub elevation_deg: Option<f64>,
+    #[serde(rename = "distanceM", skip_serializing_if = "Option::is_none")]
+    pub distance_m: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
     #[serde(rename = "directSpeakerIndex", skip_serializing_if = "Option::is_none")]
@@ -386,13 +394,19 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
     None
 }
 
-fn parse_omniphony_object_xyz(
+fn parse_omniphony_object_position(
     parts: &[&str],
     args: &[f64],
     raw_args: &[OscType],
     coordinate_format: CoordinateFormat,
 ) -> Option<OscEvent> {
-    if !parts.contains(&"omniphony") || !parts.contains(&"object") || !parts.contains(&"xyz") {
+    if !parts.contains(&"omniphony") || !parts.contains(&"object") {
+        return None;
+    }
+    let explicit_cartesian = parts.contains(&"xyz");
+    let explicit_polar =
+        parts.contains(&"aed") || parts.contains(&"spherical") || parts.contains(&"polar");
+    if !explicit_cartesian && !explicit_polar {
         return None;
     }
 
@@ -427,18 +441,52 @@ fn parse_omniphony_object_xyz(
         .and_then(|a| unwrap_string(a))
         .filter(|s| !s.trim().is_empty());
 
-    let (mx, my, mz) = match coordinate_format {
-        // omniphony xyz: x=right, y=front, z=up → scene: x=front, y=up, z=right
-        CoordinateFormat::Cartesian => (y, z, x),
-        // In polar mode payload is [azimuth_deg, elevation_deg, distance]
-        CoordinateFormat::Polar => spherical_to_cartesian(x, y, z),
+    let payload_format = if explicit_cartesian {
+        CoordinateFormat::Cartesian
+    } else if explicit_polar {
+        CoordinateFormat::Polar
+    } else {
+        coordinate_format
     };
+
     Some(OscEvent::Update {
         id,
         position: Position {
-            x: mx,
-            y: my,
-            z: mz,
+            x: if payload_format == CoordinateFormat::Cartesian {
+                x
+            } else {
+                0.0
+            },
+            y: if payload_format == CoordinateFormat::Cartesian {
+                y
+            } else {
+                0.0
+            },
+            z: if payload_format == CoordinateFormat::Cartesian {
+                z
+            } else {
+                0.0
+            },
+            coord_mode: if payload_format == CoordinateFormat::Cartesian {
+                "cartesian".to_string()
+            } else {
+                "polar".to_string()
+            },
+            azimuth_deg: if payload_format == CoordinateFormat::Polar {
+                Some(x)
+            } else {
+                None
+            },
+            elevation_deg: if payload_format == CoordinateFormat::Polar {
+                Some(y)
+            } else {
+                None
+            },
+            distance_m: if payload_format == CoordinateFormat::Polar {
+                Some(z.max(0.0))
+            } else {
+                None
+            },
             generation,
             direct_speaker_index,
         },
@@ -789,8 +837,8 @@ pub fn parse_osc_message(
         return Some(ev);
     }
 
-    // omniphony object xyz
-    if let Some(ev) = parse_omniphony_object_xyz(&parts, &args, raw_args, coordinate_format) {
+    // omniphony object position (xyz or aed)
+    if let Some(ev) = parse_omniphony_object_position(&parts, &args, raw_args, coordinate_format) {
         return Some(ev);
     }
 
@@ -869,6 +917,26 @@ pub fn parse_osc_message(
             x,
             y,
             z,
+            coord_mode: if has_spherical {
+                "polar".to_string()
+            } else {
+                "cartesian".to_string()
+            },
+            azimuth_deg: if has_spherical {
+                Some(numeric_args[0])
+            } else {
+                None
+            },
+            elevation_deg: if has_spherical {
+                Some(numeric_args[1])
+            } else {
+                None
+            },
+            distance_m: if has_spherical {
+                Some(numeric_args[2].max(0.0))
+            } else {
+                None
+            },
             generation: None,
             direct_speaker_index: None,
         },

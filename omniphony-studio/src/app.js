@@ -1514,6 +1514,54 @@ function getSpeakerCoordMode(speaker) {
   return String(speaker?.coordMode || 'polar').toLowerCase() === 'cartesian' ? 'cartesian' : 'polar';
 }
 
+function getObjectCoordMode(position) {
+  const raw = String(position?.coordMode || '').toLowerCase();
+  if (raw === 'cartesian' || raw === 'polar') {
+    return raw;
+  }
+  if (
+    Number.isFinite(Number(position?.azimuthDeg))
+    || Number.isFinite(Number(position?.elevationDeg))
+    || Number.isFinite(Number(position?.distanceM))
+  ) {
+    return 'polar';
+  }
+  return 'cartesian';
+}
+
+function hydrateObjectCoordinateState(position) {
+  if (!position) return null;
+
+  const mode = getObjectCoordMode(position);
+  if (mode === 'cartesian') {
+    const x = clampNumber(Number(position.x) || 0, -1, 1);
+    const y = clampNumber(Number(position.y) || 0, -1, 1);
+    const z = clampNumber(Number(position.z) || 0, -1, 1);
+    const scene = normalizedOmniphonyToScenePosition({ x, y, z });
+    const sph = cartesianToSpherical(scene);
+    position.x = x;
+    position.y = y;
+    position.z = z;
+    position.azimuthDeg = sph.az;
+    position.elevationDeg = sph.el;
+    position.distanceM = Math.max(0.01, sph.dist);
+  } else {
+    const az = Number.isFinite(Number(position.azimuthDeg)) ? Number(position.azimuthDeg) : 0;
+    const el = Number.isFinite(Number(position.elevationDeg)) ? Number(position.elevationDeg) : 0;
+    const dist = Math.max(0.01, Number(position.distanceM) || 1);
+    const scene = sphericalToCartesianDeg(az, el, dist);
+    const omni = scenePositionToNormalizedOmniphony(scene);
+    position.azimuthDeg = az;
+    position.elevationDeg = el;
+    position.distanceM = dist;
+    position.x = omni.x;
+    position.y = omni.y;
+    position.z = omni.z;
+  }
+  position.coordMode = mode;
+  return position;
+}
+
 function setSpeakerCoordMode(index, mode) {
   const speaker = currentLayoutSpeakers[index];
   if (!speaker) return;
@@ -2661,16 +2709,13 @@ function applyGroupGains(group) {
   const ids = isSpeaker ? getSpeakerIds() : getObjectIds();
   const baseMap = isSpeaker ? speakerBaseGains : objectBaseGains;
   const cache = isSpeaker ? speakerGainCache : objectGainCache;
-  const mutedSet = isSpeaker ? speakerMuted : objectMuted;
 
   ids.forEach((id) => {
     const baseGain = getBaseGain(baseMap, cache, id);
-    const muted = mutedSet.has(id);
-    const effectiveGain = muted ? 0 : baseGain;
     if (isSpeaker) {
-      sendSpeakerGain(id, effectiveGain);
+      sendSpeakerGain(id, baseGain);
     } else {
-      sendObjectGain(id, effectiveGain);
+      sendObjectGain(id, baseGain);
     }
   });
 }
@@ -4647,13 +4692,14 @@ function createTrailRenderable() {
 
 function mapTrailRawToScene(raw) {
   if (raw.directSpeakerIndex !== null && raw.directSpeakerIndex !== undefined) {
-    return new THREE.Vector3(raw.x, raw.y, raw.z);
+    const speakerMesh = speakerMeshes[raw.directSpeakerIndex];
+    if (speakerMesh) {
+      return speakerMesh.position.clone();
+    }
   }
-  return new THREE.Vector3(
-    mapRoomDepth(raw.x),
-    raw.y * roomRatio.height,
-    raw.z * roomRatio.width
-  );
+  const hydrated = hydrateObjectCoordinateState({ ...raw });
+  const scene = normalizedOmniphonyToScenePosition(hydrated);
+  return new THREE.Vector3(scene.x, scene.y, scene.z);
 }
 
 function rebuildLineTrailGeometry(trail, mappedPositions, r, g, b) {
@@ -5066,21 +5112,31 @@ function updateSource(id, position) {
   const directSpeakerIndex = Number.isInteger(position?.directSpeakerIndex)
     ? position.directSpeakerIndex
     : null;
-  const raw = {
+  const raw = hydrateObjectCoordinateState({
     x: Number(position.x) || 0,
     y: Number(position.y) || 0,
     z: Number(position.z) || 0,
+    coordMode: position?.coordMode,
+    azimuthDeg: Number.isFinite(Number(position?.azimuthDeg)) ? Number(position.azimuthDeg) : undefined,
+    elevationDeg: Number.isFinite(Number(position?.elevationDeg)) ? Number(position.elevationDeg) : undefined,
+    distanceM: Number.isFinite(Number(position?.distanceM)) ? Number(position.distanceM) : undefined,
     directSpeakerIndex,
     t: now
-  };
+  });
   sourcePositionsRaw.set(String(id), raw);
   if (directSpeakerIndex !== null) {
     sourceDirectSpeakerIndices.set(String(id), directSpeakerIndex);
-    mesh.position.set(raw.x, raw.y, raw.z);
+    const speakerMesh = speakerMeshes[directSpeakerIndex];
+    if (speakerMesh) {
+      mesh.position.copy(speakerMesh.position);
+    } else {
+      const scene = normalizedOmniphonyToScenePosition(raw);
+      mesh.position.set(scene.x, scene.y, scene.z);
+    }
   } else {
     sourceDirectSpeakerIndices.delete(String(id));
-    const scaled = mapRoomPosition(raw);
-    mesh.position.set(scaled.x, scaled.y, scaled.z);
+    const scene = normalizedOmniphonyToScenePosition(raw);
+    mesh.position.set(scene.x, scene.y, scene.z);
   }
 
   const trail = sourceTrails.get(id);
@@ -5663,10 +5719,16 @@ function applyRoomRatio(nextRatio) {
     const raw = sourcePositionsRaw.get(String(id));
     if (!raw) return;
     if (raw.directSpeakerIndex !== null && raw.directSpeakerIndex !== undefined) {
-      mesh.position.set(raw.x, raw.y, raw.z);
+      const speakerMesh = speakerMeshes[raw.directSpeakerIndex];
+      if (speakerMesh) {
+        mesh.position.copy(speakerMesh.position);
+      } else {
+        const scene = normalizedOmniphonyToScenePosition(raw);
+        mesh.position.set(scene.x, scene.y, scene.z);
+      }
     } else {
-      const scaled = mapRoomPosition(raw);
-      mesh.position.set(scaled.x, scaled.y, scaled.z);
+      const scene = normalizedOmniphonyToScenePosition(raw);
+      mesh.position.set(scene.x, scene.y, scene.z);
     }
     updateSourceDecorations(id);
     rebuildTrailGeometry(id);

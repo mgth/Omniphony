@@ -8,6 +8,14 @@ pub struct SourcePosition {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+    #[serde(rename = "coordMode", skip_serializing_if = "Option::is_none")]
+    pub coord_mode: Option<String>,
+    #[serde(rename = "azimuthDeg", skip_serializing_if = "Option::is_none")]
+    pub azimuth_deg: Option<f64>,
+    #[serde(rename = "elevationDeg", skip_serializing_if = "Option::is_none")]
+    pub elevation_deg: Option<f64>,
+    #[serde(rename = "distanceM", skip_serializing_if = "Option::is_none")]
+    pub distance_m: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
     #[serde(rename = "directSpeakerIndex", skip_serializing_if = "Option::is_none")]
