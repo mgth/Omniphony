@@ -432,6 +432,15 @@ impl VbapPanner {
         let total_z_points = self.cartesian_total_z_points(z_size, z_neg_size);
         let grid_points = x_size * y_size * total_z_points;
         let mut tables = Vec::with_capacity(self.spread_tables.len());
+        let x_coords: Vec<f32> = (0..x_size)
+            .map(|xi| -1.0 + 2.0 * (xi as f32) / ((x_size - 1) as f32))
+            .collect();
+        let y_coords: Vec<f32> = (0..y_size)
+            .map(|yi| -1.0 + 2.0 * (yi as f32) / ((y_size - 1) as f32))
+            .collect();
+        let z_coords: Vec<f32> = (0..total_z_points)
+            .map(|zi| self.table_z_value(zi, z_size, z_neg_size))
+            .collect();
         #[cfg(feature = "saf_vbap")]
         let direct_layout = self
             .speaker_dirs_deg
@@ -443,12 +452,9 @@ impl VbapPanner {
             let mut table = Vec::with_capacity(grid_points * self.n_speakers);
             #[cfg(feature = "saf_vbap")]
             let spread = self.spread_tables[table_idx].spread;
-            for zi in 0..total_z_points {
-                let z = self.table_z_value(zi, z_size, z_neg_size);
-                for yi in 0..y_size {
-                    let y = -1.0 + 2.0 * (yi as f32) / ((y_size - 1) as f32);
-                    for xi in 0..x_size {
-                        let x = -1.0 + 2.0 * (xi as f32) / ((x_size - 1) as f32);
+            for &z in &z_coords {
+                for &y in &y_coords {
+                    for &x in &x_coords {
                         let (azimuth, elevation, _) = adm_to_spherical(x, y, z);
                         #[cfg(feature = "saf_vbap")]
                         let gains = direct_layout.vbap_gains(azimuth, elevation, spread)?;
@@ -467,6 +473,14 @@ impl VbapPanner {
             y_size,
             z_size,
             z_neg_size,
+            x_coords,
+            y_coords,
+            z_coords,
+            effect_space: false,
+            room_ratio: [1.0, 1.0, 1.0],
+            room_ratio_rear: 1.0,
+            room_ratio_lower: 1.0,
+            room_ratio_center_blend: 0.5,
             tables,
         })
     }
@@ -495,6 +509,37 @@ impl VbapPanner {
         let total_z_points = self.cartesian_total_z_points(z_size, z_neg_size);
         let grid_points = x_size * y_size * total_z_points;
         let mut table = Vec::with_capacity(grid_points * self.n_speakers);
+        let raw_x_coords: Vec<f32> = (0..x_size)
+            .map(|xi| -1.0 + 2.0 * (xi as f32) / ((x_size - 1) as f32))
+            .collect();
+        let raw_y_coords: Vec<f32> = (0..y_size)
+            .map(|yi| -1.0 + 2.0 * (yi as f32) / ((y_size - 1) as f32))
+            .collect();
+        let raw_z_coords: Vec<f32> = (0..total_z_points)
+            .map(|zi| self.table_z_value(zi, z_size, z_neg_size))
+            .collect();
+        let x_coords: Vec<f32> = raw_x_coords.iter().map(|x| *x * room_ratio[0]).collect();
+        let y_coords: Vec<f32> = raw_y_coords
+            .iter()
+            .map(|y| {
+                Self::map_depth_with_room_ratios(
+                    *y,
+                    room_ratio[1],
+                    room_ratio_rear,
+                    room_ratio_center_blend,
+                )
+            })
+            .collect();
+        let z_coords: Vec<f32> = raw_z_coords
+            .iter()
+            .map(|z| {
+                if *z >= 0.0 {
+                    *z * room_ratio[2]
+                } else {
+                    *z * room_ratio_lower
+                }
+            })
+            .collect();
         #[cfg(feature = "saf_vbap")]
         let direct_layout = self
             .speaker_dirs_deg
@@ -502,12 +547,9 @@ impl VbapPanner {
             .ok_or_else(|| "Direct VBAP layout unavailable (speaker_dirs_deg missing)".to_string())
             .and_then(SpartaVbapLayout::from_speaker_dirs)?;
 
-        for zi in 0..total_z_points {
-            let z = self.table_z_value(zi, z_size, z_neg_size);
-            for yi in 0..y_size {
-                let y = -1.0 + 2.0 * (yi as f32) / ((y_size - 1) as f32);
-                for xi in 0..x_size {
-                    let x = -1.0 + 2.0 * (xi as f32) / ((x_size - 1) as f32);
+        for &z in &raw_z_coords {
+            for &y in &raw_y_coords {
+                for &x in &raw_x_coords {
                     #[cfg(feature = "saf_vbap")]
                     let gains = self.compute_effect_gains_for_position_with_layout(
                         &direct_layout,
@@ -557,6 +599,14 @@ impl VbapPanner {
             y_size,
             z_size,
             z_neg_size,
+            x_coords,
+            y_coords,
+            z_coords,
+            effect_space: true,
+            room_ratio,
+            room_ratio_rear,
+            room_ratio_lower,
+            room_ratio_center_blend,
             tables: vec![table],
         })
     }
@@ -980,37 +1030,72 @@ impl VbapPanner {
             return self.get_gains_with_spread(azimuth, elevation, 0.0);
         };
 
-        let x = x.clamp(-1.0, 1.0);
-        let y = y.clamp(-1.0, 1.0);
-        let z = if self.allow_negative_z {
+        let raw_x = x.clamp(-1.0, 1.0);
+        let raw_y = y.clamp(-1.0, 1.0);
+        let raw_z = if self.allow_negative_z {
             z.clamp(-1.0, 1.0)
         } else {
             z.clamp(0.0, 1.0)
         };
 
-        let fx = (x + 1.0) * 0.5 * (cache.x_size - 1) as f32;
-        let fy = (y + 1.0) * 0.5 * (cache.y_size - 1) as f32;
-        let fz = if self.allow_negative_z && cache.z_neg_size > 0 {
-            if z < 0.0 {
-                (z + 1.0) * cache.z_neg_size as f32
+        let query_x = if cache.effect_space {
+            raw_x * cache.room_ratio[0]
+        } else {
+            raw_x
+        };
+        let query_y = if cache.effect_space {
+            Self::map_depth_with_room_ratios(
+                raw_y,
+                cache.room_ratio[1],
+                cache.room_ratio_rear,
+                cache.room_ratio_center_blend,
+            )
+        } else {
+            raw_y
+        };
+        let query_z = if cache.effect_space {
+            if raw_z >= 0.0 {
+                raw_z * cache.room_ratio[2]
             } else {
-                cache.z_neg_size as f32 + z * (cache.z_size - 1) as f32
+                raw_z * cache.room_ratio_lower
             }
         } else {
-            z * (cache.z_size - 1) as f32
+            raw_z
         };
 
-        let x0 = fx.floor() as usize;
-        let y0 = fy.floor() as usize;
-        let z0 = fz.floor() as usize;
-        let x1 = fx.ceil() as usize;
-        let y1 = fy.ceil() as usize;
-        let z1 = fz.ceil() as usize;
-        let tx = fx - x0 as f32;
-        let ty = fy - y0 as f32;
-        let tz = fz - z0 as f32;
+        let (x0, x1, tx) = Self::axis_lookup(&cache.x_coords, query_x);
+        let (y0, y1, ty) = Self::axis_lookup(&cache.y_coords, query_y);
+        let (z0, z1, tz) = Self::axis_lookup(&cache.z_coords, query_z);
 
         self.lookup_cartesian_table(cache, 0, x0, x1, tx, y0, y1, ty, z0, z1, tz)
+    }
+
+    #[inline]
+    fn axis_lookup(axis: &[f32], value: f32) -> (usize, usize, f32) {
+        debug_assert!(!axis.is_empty());
+        if axis.len() == 1 {
+            return (0, 0, 0.0);
+        }
+        if value <= axis[0] {
+            return (0, 0, 0.0);
+        }
+        let last = axis.len() - 1;
+        if value >= axis[last] {
+            return (last, last, 0.0);
+        }
+        for i in 0..last {
+            let a = axis[i];
+            let b = axis[i + 1];
+            if value >= a && value <= b {
+                let t = if (b - a).abs() <= 1e-9 {
+                    0.0
+                } else {
+                    (value - a) / (b - a)
+                };
+                return (i, i + 1, t.clamp(0.0, 1.0));
+            }
+        }
+        (last, last, 0.0)
     }
 
     #[allow(clippy::too_many_arguments)]

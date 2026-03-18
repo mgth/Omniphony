@@ -371,7 +371,14 @@ impl SpatialRenderer {
         cartesian_default_z_neg_size: usize,
     ) -> Result<Self> {
         let num_speakers = speaker_layout.num_speakers();
-        let spatializable_positions = speaker_layout.spatializable_positions().0;
+        let spatializable_positions = speaker_layout
+            .spatializable_positions_for_room(
+                room_ratio,
+                room_ratio_rear,
+                room_ratio_lower,
+                room_ratio_center_blend,
+            )
+            .0;
         let num_vbap_speakers = spatializable_positions.len();
 
         let vbap = VbapPanner::new_with_mode(

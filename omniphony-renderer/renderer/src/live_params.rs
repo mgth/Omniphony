@@ -521,8 +521,15 @@ impl RendererControl {
     pub fn prepare_topology_rebuild(&self) -> Option<TopologyRebuildPlan> {
         let rebuild = self.vbap_rebuild_params?;
         let layout = self.editable_layout();
-        let positions = layout.spatializable_positions().0;
         let live = self.live.read().unwrap();
+        let positions = layout
+            .spatializable_positions_for_room(
+                live.room_ratio,
+                live.room_ratio_rear,
+                live.room_ratio_lower,
+                live.room_ratio_center_blend,
+            )
+            .0;
 
         let table_mode = match live.vbap_table_mode {
             LiveVbapTableMode::Auto => match rebuild.preferred_table_mode {

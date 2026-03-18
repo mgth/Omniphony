@@ -125,6 +125,14 @@ struct CartesianCache {
     // Positive-Z grid point count, including zero.
     z_size: usize,
     z_neg_size: usize,
+    x_coords: Vec<f32>,
+    y_coords: Vec<f32>,
+    z_coords: Vec<f32>,
+    effect_space: bool,
+    room_ratio: [f32; 3],
+    room_ratio_rear: f32,
+    room_ratio_lower: f32,
+    room_ratio_center_blend: f32,
     // One flattened XYZ gain table per spread table.
     // Layout per table: [z][y][x][speaker]
     tables: Vec<Vec<f32>>,

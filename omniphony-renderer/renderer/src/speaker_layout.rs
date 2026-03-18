@@ -42,6 +42,28 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+fn map_depth_with_room_ratios(
+    depth: f32,
+    front_ratio: f32,
+    rear_ratio: f32,
+    center_blend: f32,
+) -> f32 {
+    let d = depth.clamp(-1.0, 1.0);
+    let blend = center_blend.clamp(0.0, 1.0);
+    let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
+    if d >= 0.0 {
+        let t = d;
+        let a = center_ratio - front_ratio;
+        let b = 2.0 * (front_ratio - center_ratio);
+        a * t * t * t + b * t * t + center_ratio * t
+    } else {
+        let t = -d;
+        let a = center_ratio - rear_ratio;
+        let b = 2.0 * (rear_ratio - center_ratio);
+        -(a * t * t * t + b * t * t + center_ratio * t)
+    }
+}
+
 /// A single speaker in the layout
 #[derive(Debug, Clone)]
 pub struct Speaker {
@@ -333,6 +355,48 @@ impl SpeakerLayout {
                 positions.push(speaker.position());
                 mapping.push(speaker_idx);
             }
+        }
+
+        (positions, mapping)
+    }
+
+    /// Get positions for speakers that participate in spatialization, with
+    /// cartesian speakers converted to directions in the same room-ratio space
+    /// as rendered objects.
+    pub fn spatializable_positions_for_room(
+        &self,
+        room_ratio: [f32; 3],
+        room_ratio_rear: f32,
+        room_ratio_lower: f32,
+        room_ratio_center_blend: f32,
+    ) -> (Vec<[f32; 2]>, Vec<usize>) {
+        let mut positions = Vec::new();
+        let mut mapping = Vec::new();
+
+        for (speaker_idx, speaker) in self.speakers.iter().enumerate() {
+            if !speaker.spatialize {
+                continue;
+            }
+            let pos = if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
+                let scaled_x = speaker.x * room_ratio[0];
+                let scaled_y = map_depth_with_room_ratios(
+                    speaker.y,
+                    room_ratio[1],
+                    room_ratio_rear,
+                    room_ratio_center_blend,
+                );
+                let scaled_z = if speaker.z >= 0.0 {
+                    speaker.z * room_ratio[2]
+                } else {
+                    speaker.z * room_ratio_lower
+                };
+                let (az, el, _) = crate::spatial_vbap::adm_to_spherical(scaled_x, scaled_y, scaled_z);
+                [az, el]
+            } else {
+                speaker.position()
+            };
+            positions.push(pos);
+            mapping.push(speaker_idx);
         }
 
         (positions, mapping)
