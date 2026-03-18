@@ -95,17 +95,20 @@ fn default_radius_m() -> f32 {
 fn spherical_to_cartesian(azimuth: f32, elevation: f32, distance: f32) -> (f32, f32, f32) {
     let az = azimuth.to_radians();
     let el = elevation.to_radians();
-    let x = distance * el.cos() * az.cos();
-    let y = distance * el.sin();
-    let z = distance * el.cos() * az.sin();
+    // Keep speaker cartesian persistence aligned with the renderer ADM convention:
+    // x = right, y = front, z = up.
+    let horizontal = distance * el.cos();
+    let x = horizontal * az.sin();
+    let y = horizontal * az.cos();
+    let z = distance * el.sin();
     (x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0), z.clamp(-1.0, 1.0))
 }
 
 fn cartesian_to_spherical(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
     let dist = (x * x + y * y + z * z).sqrt();
-    let az = z.atan2(x).to_degrees();
+    let az = x.atan2(y).to_degrees();
     let el = if dist > 0.0 {
-        y.atan2((x * x + z * z).sqrt()).to_degrees()
+        z.atan2((x * x + y * y).sqrt()).to_degrees()
     } else {
         0.0
     };
