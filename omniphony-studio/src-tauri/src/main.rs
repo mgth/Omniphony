@@ -9,6 +9,7 @@ mod osc_parser;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::{fs::File, process::Command as ProcessCommand, process::Stdio};
 
 use app_state::AppState;
 use config::{load_config, save_config, OscConfig};
@@ -153,6 +154,22 @@ fn pick_export_layout_path(suggested_name: Option<String>) -> Option<String> {
         .add_filter("Layout JSON", &["json"])
         .set_file_name(&file_name)
         .save_file()
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn pick_bridge_path() -> Option<String> {
+    FileDialog::new()
+        .set_title("Select bridge library")
+        .pick_file()
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn pick_orender_path() -> Option<String> {
+    FileDialog::new()
+        .set_title("Select orender executable")
+        .pick_file()
         .map(|path| path.to_string_lossy().to_string())
 }
 
@@ -887,6 +904,188 @@ fn control_audio_output_device(state: State<SharedState>, output_device: String)
     );
 }
 
+fn first_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|path| path.exists()).cloned()
+}
+
+fn bundled_orender_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("orender"));
+        candidates.push(resource_dir.join("orender.exe"));
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            candidates.push(exe_dir.join("orender"));
+            candidates.push(exe_dir.join("orender.exe"));
+        }
+    }
+    candidates
+}
+
+#[tauri::command]
+fn launch_orender(
+    app: tauri::AppHandle,
+    state: State<SharedState>,
+    host: String,
+    osc_rx_port: u16,
+    osc_port: u16,
+    osc_metering_enabled: bool,
+    bridge_path: Option<String>,
+    orender_path: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let studio_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "failed to resolve studio directory".to_string())?
+        .to_path_buf();
+    let repo_root = studio_dir
+        .parent()
+        .ok_or_else(|| "failed to resolve Omniphony repository root".to_string())?
+        .to_path_buf();
+    let workspace_root = repo_root
+        .parent()
+        .ok_or_else(|| "failed to resolve workspace root".to_string())?
+        .to_path_buf();
+
+    let mut cfg = load_config(&state.config_dir);
+
+    let orender_path = orender_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            cfg.orender_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.exists())
+        })
+        .or_else(|| first_existing_path(&bundled_orender_candidates(&app)))
+        .or_else(|| {
+            first_existing_path(&[
+                repo_root.join("omniphony-renderer/target/release/orender"),
+                repo_root.join("omniphony-renderer/target/debug/orender"),
+            ])
+        })
+        .or_else(|| {
+            ProcessCommand::new("which")
+                .arg("orender")
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .and_then(|out| {
+                    let resolved = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if resolved.is_empty() {
+                        None
+                    } else {
+                        Some(PathBuf::from(resolved))
+                    }
+                })
+        })
+        .ok_or_else(|| "orender binary not found".to_string())?;
+
+    let bridge_path = bridge_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .or_else(|| {
+            cfg.bridge_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.exists())
+        })
+        .or_else(|| {
+            first_existing_path(&[
+                workspace_root.join("truehd-bridge/target/release/libtruehd_bridge.so"),
+                repo_root.join("omniphony-renderer/target/release/libtruehd_bridge.so"),
+            ])
+        })
+        .ok_or_else(|| "truehd bridge not found".to_string())?;
+
+    let input_path = PathBuf::from("/tmp/truehdd");
+    if !input_path.exists() {
+        let status = ProcessCommand::new("mkfifo")
+            .arg(&input_path)
+            .status()
+            .map_err(|e| format!("failed to create input FIFO: {e}"))?;
+        if !status.success() {
+            return Err("failed to create input FIFO /tmp/truehdd".to_string());
+        }
+    }
+
+    let mut args = vec![
+        "render".to_string(),
+        input_path.display().to_string(),
+        "--continuous".to_string(),
+        "--bridge-path".to_string(),
+        bridge_path.display().to_string(),
+        "--enable-vbap".to_string(),
+        "--osc".to_string(),
+        "--osc-host".to_string(),
+        host.trim().to_string(),
+        "--osc-port".to_string(),
+        osc_rx_port.to_string(),
+        "--osc-rx-port".to_string(),
+        osc_rx_port.to_string(),
+    ];
+
+    if osc_metering_enabled {
+        args.push("--osc-metering".to_string());
+    }
+
+    if let Some(selected_layout) = state.inner.lock().unwrap().selected_layout_key.clone() {
+        let layout_path = repo_root.join("layouts").join(format!("{selected_layout}.yaml"));
+        if layout_path.exists() {
+            args.push("--speaker-layout".to_string());
+            args.push(layout_path.display().to_string());
+        }
+    }
+
+    cfg.host = host.trim().to_string();
+    cfg.osc_rx_port = osc_rx_port;
+    cfg.osc_port = osc_port;
+    cfg.osc_metering_enabled = osc_metering_enabled;
+    cfg.bridge_path = Some(bridge_path.display().to_string());
+    cfg.orender_path = Some(orender_path.display().to_string());
+    let _ = save_config(&state.config_dir, &cfg);
+
+    let log_path = PathBuf::from("/tmp/omniphony-orender.log");
+    let stdout = File::create(&log_path).map_err(|e| format!("failed to create log file: {e}"))?;
+    let stderr = stdout
+        .try_clone()
+        .map_err(|e| format!("failed to clone log file handle: {e}"))?;
+
+    ProcessCommand::new(&orender_path)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .map_err(|e| format!("failed to launch orender: {e}"))?;
+
+    Ok(serde_json::json!({
+        "command": format!("{} {}", orender_path.display(), args.join(" ")),
+        "logPath": log_path.display().to_string()
+    }))
+}
+
+#[tauri::command]
+fn stop_orender(state: State<SharedState>) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendNoArgs {
+            address: "/omniphony/control/quit".to_string(),
+        },
+    );
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -952,11 +1151,15 @@ fn main() {
             get_state,
             get_osc_config,
             save_osc_config,
+            launch_orender,
+            stop_orender,
             control_osc_metering,
             select_layout,
             import_layout_from_path,
             pick_import_layout_path,
             pick_export_layout_path,
+            pick_bridge_path,
+            pick_orender_path,
             export_layout_to_path,
             control_object_gain,
             control_speaker_gain,

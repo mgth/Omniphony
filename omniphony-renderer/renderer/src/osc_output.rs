@@ -833,6 +833,13 @@ fn handle_control_message(
         return;
     }
 
+    // ── Clean renderer shutdown ────────────────────────────────────────────
+    if addr == "/omniphony/control/quit" {
+        log::info!("OSC quit requested");
+        sys::shutdown::request_shutdown();
+        return;
+    }
+
     if addr == "/omniphony/control/log_level" {
         let Some(requested) = msg.args.first().and_then(|arg| match arg {
             OscType::String(s) => parse_runtime_log_level(s),

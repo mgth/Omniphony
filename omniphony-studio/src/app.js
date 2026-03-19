@@ -212,8 +212,11 @@ const oscConfigFormEl = document.getElementById('oscConfigForm');
 const oscHostInputEl = document.getElementById('oscHostInput');
 const oscRxPortInputEl = document.getElementById('oscRxPortInput');
 const oscListenPortInputEl = document.getElementById('oscListenPortInput');
+const oscBridgePathInputEl = document.getElementById('oscBridgePathInput');
+const oscBridgeBrowseBtnEl = document.getElementById('oscBridgeBrowseBtn');
 const oscMeteringToggleEl = document.getElementById('oscMeteringToggle');
 const oscConfigApplyBtnEl = document.getElementById('oscConfigApplyBtn');
+const oscLaunchRendererBtnEl = document.getElementById('oscLaunchRendererBtn');
 const trailModeSelectEl = document.getElementById('trailModeSelect');
 const trailTtlSliderEl = document.getElementById('trailTtlSlider');
 const trailTtlValEl = document.getElementById('trailTtlVal');
@@ -692,6 +695,9 @@ let rendererSectionOpen = false;
 let displaySectionOpen = false;
 let masterGain = 1;
 let oscStatusState = 'initializing';
+let oscConfigAutoOpenTimer = null;
+let oscLaunchPending = false;
+let oscConfiguredOrenderPath = '';
 let roomMasterAxis = 'width';
 const roomAxisDrivers = {
   width: 'size',
@@ -986,12 +992,91 @@ function renderOscStatus() {
     };
     oscStatusDotEl.style.background = colors[oscStatusState] || '#7f8a99';
   }
+  if (oscLaunchRendererBtnEl) {
+    const connected = oscStatusState === 'connected';
+    oscLaunchRendererBtnEl.textContent = connected ? 'Stop orender' : 'Launch orender';
+    oscLaunchRendererBtnEl.style.background = connected
+      ? 'rgba(255,96,96,0.18)'
+      : 'rgba(88,160,255,0.18)';
+    oscLaunchRendererBtnEl.style.borderColor = connected
+      ? 'rgba(255,96,96,0.38)'
+      : 'rgba(88,160,255,0.38)';
+    oscLaunchRendererBtnEl.style.color = connected ? '#ffe2e2' : '#d9ecff';
+  }
+}
+
+function openOscConfigPanel() {
+  if (!oscConfigFormEl) return;
+  oscConfigFormEl.classList.add('open');
+  if (oscConfigToggleBtnEl) oscConfigToggleBtnEl.textContent = '✕';
+}
+
+function closeOscConfigPanel() {
+  if (!oscConfigFormEl) return;
+  oscConfigFormEl.classList.remove('open');
+  if (oscConfigToggleBtnEl) oscConfigToggleBtnEl.textContent = '⚙';
+}
+
+function clearOscConfigAutoOpenTimer() {
+  if (oscConfigAutoOpenTimer !== null) {
+    clearTimeout(oscConfigAutoOpenTimer);
+    oscConfigAutoOpenTimer = null;
+  }
+}
+
+function scheduleOscConfigAutoOpen() {
+  clearOscConfigAutoOpenTimer();
+  oscConfigAutoOpenTimer = setTimeout(() => {
+    oscConfigAutoOpenTimer = null;
+    if (oscStatusState !== 'connected') {
+      openOscConfigPanel();
+    }
+  }, 3000);
+}
+
+function loadOscConfigIntoPanel() {
+  return invoke('get_osc_config').then((cfg) => {
+    if (oscHostInputEl) oscHostInputEl.value = cfg.host;
+    if (oscRxPortInputEl) oscRxPortInputEl.value = String(cfg.osc_rx_port);
+    if (oscListenPortInputEl) oscListenPortInputEl.value = String(cfg.osc_port);
+    if (oscBridgePathInputEl) oscBridgePathInputEl.value = String(cfg.bridge_path || '');
+    if (oscMeteringToggleEl) oscMeteringToggleEl.checked = Boolean(cfg.osc_metering_enabled);
+    oscConfiguredOrenderPath = String(cfg.orender_path || '').trim();
+    return cfg;
+  }).catch(() => null);
+}
+
+function readOscConfigForm() {
+  return {
+    host: oscHostInputEl?.value.trim() || '127.0.0.1',
+    osc_rx_port: Math.max(1, Math.min(65535, parseInt(oscRxPortInputEl?.value || '9000', 10))),
+    osc_port: Math.max(0, Math.min(65535, parseInt(oscListenPortInputEl?.value || '0', 10))),
+    osc_metering_enabled: Boolean(oscMeteringToggleEl?.checked),
+    bridge_path: (oscBridgePathInputEl?.value || '').trim() || null,
+    orender_path: oscConfiguredOrenderPath || null
+  };
 }
 
 function setOscStatus(next) {
   const changed = oscStatusState !== next;
+  const previous = oscStatusState;
   oscStatusState = next;
   renderOscStatus();
+  if (next === 'connected') {
+    clearOscConfigAutoOpenTimer();
+    if (oscLaunchPending) {
+      oscLaunchPending = false;
+      closeOscConfigPanel();
+    }
+  } else if (next === 'reconnecting') {
+    if (previous === 'initializing' || oscLaunchPending) {
+      scheduleOscConfigAutoOpen();
+    }
+  } else if (next === 'error') {
+    clearOscConfigAutoOpenTimer();
+    openOscConfigPanel();
+    oscLaunchPending = false;
+  }
   if (changed) {
     pushLog('info', tf('log.oscStatus', { status: t(`status.${next}`) }));
   }
@@ -7330,33 +7415,97 @@ if (oscConfigToggleBtnEl && oscConfigFormEl) {
     const isOpen = oscConfigFormEl.classList.toggle('open');
     oscConfigToggleBtnEl.textContent = isOpen ? '✕' : '⚙';
     if (isOpen) {
-      invoke('get_osc_config').then((cfg) => {
-        if (oscHostInputEl) oscHostInputEl.value = cfg.host;
-        if (oscRxPortInputEl) oscRxPortInputEl.value = String(cfg.osc_rx_port);
-        if (oscListenPortInputEl) oscListenPortInputEl.value = String(cfg.osc_port);
-        if (oscMeteringToggleEl) oscMeteringToggleEl.checked = Boolean(cfg.osc_metering_enabled);
-      }).catch(() => {});
+      loadOscConfigIntoPanel();
     }
   });
 }
 
 if (oscConfigApplyBtnEl) {
   oscConfigApplyBtnEl.addEventListener('click', () => {
-    const host = oscHostInputEl?.value.trim() || '127.0.0.1';
-    const osc_rx_port = Math.max(1, Math.min(65535, parseInt(oscRxPortInputEl?.value || '9000', 10)));
-    const osc_port = Math.max(0, Math.min(65535, parseInt(oscListenPortInputEl?.value || '0', 10)));
-    const osc_metering_enabled = Boolean(oscMeteringToggleEl?.checked);
-    invoke('save_osc_config', { config: { host, osc_rx_port, osc_port, osc_metering_enabled } })
+    const config = readOscConfigForm();
+    invoke('save_osc_config', { config })
       .then(() => {
-        oscMeteringEnabled = osc_metering_enabled;
+        oscMeteringEnabled = config.osc_metering_enabled;
         pushLog('info', t('log.oscConfigSaved'));
         setOscStatus('reconnecting');
-        oscConfigFormEl?.classList.remove('open');
-        if (oscConfigToggleBtnEl) oscConfigToggleBtnEl.textContent = '⚙';
+        closeOscConfigPanel();
       })
       .catch((e) => {
         console.error('[osc config]', e);
         pushLog('error', tf('log.oscConfigFailed', { error: normalizeLogError(e) }));
+      });
+  });
+}
+
+function launchOrenderFromPanel(orenderPathOverride = null) {
+  const config = readOscConfigForm();
+  const payload = {
+    host: config.host,
+    oscRxPort: config.osc_rx_port,
+    oscPort: config.osc_port,
+    oscMeteringEnabled: config.osc_metering_enabled,
+    bridgePath: config.bridge_path,
+    orenderPath: orenderPathOverride || config.orender_path
+  };
+  oscLaunchPending = true;
+  return invoke('launch_orender', payload)
+    .then((result) => {
+      oscConfiguredOrenderPath = String(payload.orenderPath || oscConfiguredOrenderPath || '').trim();
+      if (result?.command) {
+        pushLog('info', `orender launched: ${result.command}`);
+      } else {
+        pushLog('info', 'orender launched.');
+      }
+    })
+    .catch((e) => {
+      oscLaunchPending = false;
+      const message = normalizeLogError(e);
+      if (message.includes('orender binary not found')) {
+        openOscConfigPanel();
+        return invoke('pick_orender_path')
+          .then((selectedPath) => {
+            const trimmed = String(selectedPath || '').trim();
+            if (!trimmed) {
+              return;
+            }
+            oscConfiguredOrenderPath = trimmed;
+            return launchOrenderFromPanel(trimmed);
+          });
+      }
+      throw e;
+    });
+}
+
+if (oscLaunchRendererBtnEl) {
+  oscLaunchRendererBtnEl.addEventListener('click', () => {
+    if (oscStatusState === 'connected') {
+      invoke('stop_orender')
+        .then(() => {
+          pushLog('info', 'orender stop requested.');
+        })
+        .catch((e) => {
+          pushLog('error', `Failed to stop orender: ${normalizeLogError(e)}`);
+        });
+      return;
+    }
+    launchOrenderFromPanel()
+      .catch((e) => {
+        pushLog('error', `Failed to launch orender: ${normalizeLogError(e)}`);
+      });
+  });
+}
+
+if (oscBridgeBrowseBtnEl) {
+  oscBridgeBrowseBtnEl.addEventListener('click', () => {
+    invoke('pick_bridge_path')
+      .then((selectedPath) => {
+        const trimmed = String(selectedPath || '').trim();
+        if (trimmed && oscBridgePathInputEl) {
+          oscBridgePathInputEl.value = trimmed;
+        }
+      })
+      .catch((e) => {
+        pushLog('error', `Failed to select bridge: ${normalizeLogError(e)}`);
       });
   });
 }

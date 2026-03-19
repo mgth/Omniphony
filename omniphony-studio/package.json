@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "prepare-sidecar": "node scripts/prepare-sidecar.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

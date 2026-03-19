@@ -1316,8 +1316,16 @@
           <label for="oscListenPortInput" data-i18n="osc.listenPort">Listen Port</label>
           <input id="oscListenPortInput" type="number" min="0" max="65535" value="0" />
         </div>
+        <div class="osc-config-row">
+          <label for="oscBridgePathInput">Bridge</label>
+          <div style="display:flex;align-items:center;gap:0.4rem;min-width:0">
+            <input id="oscBridgePathInput" type="text" value="" spellcheck="false" placeholder="Auto-detect" style="min-width:0;flex:1 1 auto" />
+            <button id="oscBridgeBrowseBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Browse</button>
+          </div>
+        </div>
         <div class="osc-config-actions">
           <button id="oscConfigApplyBtn" data-i18n="osc.apply" style="background:rgba(80,200,120,0.2);border:1px solid rgba(80,200,120,0.4);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Apply</button>
+          <button id="oscLaunchRendererBtn" type="button" style="background:rgba(88,160,255,0.18);border:1px solid rgba(88,160,255,0.38);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Launch orender</button>
         </div>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.25rem">

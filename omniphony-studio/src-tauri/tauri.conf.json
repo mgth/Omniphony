@@ -6,11 +6,12 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && npm run prepare-sidecar"
   },
   "bundle": {
     "active": true,
     "icon": ["icons/icon.ico", "icons/icon.png"],
+    "externalBin": ["binaries/orender"],
     "resources": ["../../layouts/*"]
   },
   "app": {

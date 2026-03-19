@@ -72,6 +72,28 @@ Puis ouvrir : [http://localhost:3000](http://localhost:3000)
 node --test
 ```
 
+## Build Desktop
+
+```bash
+npm run tauri build
+```
+
+Le package embarque `orender` comme sidecar Tauri. Le script `prepare-sidecar` construit
+automatiquement `omniphony-renderer` et copie le binaire dans `src-tauri/binaries/`.
+
+### Note Arch / AppImage
+
+Sur Arch, les bundles `.deb` et `.rpm` peuvent se générer correctement alors que l’AppImage
+échoue encore au moment de `linuxdeploy` si l’environnement système n’est pas prêt.
+
+Vérifier au minimum :
+
+- `fuse2`
+- `patchelf`
+- module noyau FUSE chargé (`modprobe fuse`)
+
+L’échec AppImage n’empêche pas la génération des autres formats.
+
 ## Notes de dev
 
 - Vue 3D, sélection d’un HP :

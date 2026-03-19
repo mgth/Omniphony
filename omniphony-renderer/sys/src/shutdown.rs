@@ -319,6 +319,20 @@ impl Drop for ShutdownHandle {
 /// Sets `SHUTDOWN_REQUESTED` and signals the overlapped-I/O event so that
 /// `process_chunks_with_shutdown` wakes up immediately.
 /// Called by the Windows Service control handler on `ServiceControl::Stop`.
+#[cfg(unix)]
+pub fn request_shutdown() {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+    let fd = SIGNAL_WRITE_FD.load(Ordering::Relaxed);
+    if fd >= 0 {
+        unsafe { libc::write(fd, b"\x00".as_ptr() as *const libc::c_void, 1) };
+    }
+}
+
+/// Programmatically trigger a clean shutdown — equivalent of SIGTERM on Unix.
+///
+/// Sets `SHUTDOWN_REQUESTED` and signals the overlapped-I/O event so that
+/// `process_chunks_with_shutdown` wakes up immediately.
+/// Called by the Windows Service control handler on `ServiceControl::Stop`.
 #[cfg(windows)]
 pub fn request_shutdown() {
     SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
