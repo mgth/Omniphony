@@ -923,6 +923,26 @@ fn bundled_orender_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     candidates
 }
 
+fn bundled_layouts_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().resource_dir().ok().map(|dir| dir.join("layouts"))
+}
+
+fn default_orender_input_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        PathBuf::from(r"\\.\pipe\orender.input")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::temp_dir().join("orender.pipe")
+    }
+}
+
+fn default_orender_log_path() -> PathBuf {
+    std::env::temp_dir().join("omniphony-orender.log")
+}
+
 #[tauri::command]
 fn launch_orender(
     app: tauri::AppHandle,
@@ -971,7 +991,12 @@ fn launch_orender(
             ])
         })
         .or_else(|| {
-            ProcessCommand::new("which")
+            let lookup_cmd = if cfg!(target_os = "windows") {
+                "where"
+            } else {
+                "which"
+            };
+            ProcessCommand::new(lookup_cmd)
                 .arg("orender")
                 .output()
                 .ok()
@@ -1009,16 +1034,7 @@ fn launch_orender(
         })
         .ok_or_else(|| "truehd bridge not found".to_string())?;
 
-    let input_path = PathBuf::from("/tmp/truehdd");
-    if !input_path.exists() {
-        let status = ProcessCommand::new("mkfifo")
-            .arg(&input_path)
-            .status()
-            .map_err(|e| format!("failed to create input FIFO: {e}"))?;
-        if !status.success() {
-            return Err("failed to create input FIFO /tmp/truehdd".to_string());
-        }
-    }
+    let input_path = default_orender_input_path();
 
     let mut args = vec![
         "render".to_string(),
@@ -1041,8 +1057,15 @@ fn launch_orender(
     }
 
     if let Some(selected_layout) = state.inner.lock().unwrap().selected_layout_key.clone() {
-        let layout_path = repo_root.join("layouts").join(format!("{selected_layout}.yaml"));
-        if layout_path.exists() {
+        let layout_file = format!("{selected_layout}.yaml");
+        let layout_path = bundled_layouts_dir(&app)
+            .map(|dir| dir.join(&layout_file))
+            .filter(|path| path.exists())
+            .or_else(|| {
+                let path = repo_root.join("layouts").join(&layout_file);
+                path.exists().then_some(path)
+            });
+        if let Some(layout_path) = layout_path {
             args.push("--speaker-layout".to_string());
             args.push(layout_path.display().to_string());
         }
@@ -1056,7 +1079,7 @@ fn launch_orender(
     cfg.orender_path = Some(orender_path.display().to_string());
     let _ = save_config(&state.config_dir, &cfg);
 
-    let log_path = PathBuf::from("/tmp/omniphony-orender.log");
+    let log_path = default_orender_log_path();
     let stdout = File::create(&log_path).map_err(|e| format!("failed to create log file: {e}"))?;
     let stderr = stdout
         .try_clone()
