@@ -67,6 +67,62 @@ where
     args
 }
 
+/// Set the process token's default DACL to NULL so that all kernel objects
+/// created without an explicit security descriptor (including named pipes
+/// created by libjack during `jack_client_open`) are accessible to every
+/// user, including Session 1 interactive users.
+///
+/// Without this a service running as LocalSystem (Session 0) creates JACK
+/// client pipes whose default DACL blocks the JACK server running in
+/// Session 1, producing ERROR_ACCESS_DENIED (err = 5) when jackdmp tries
+/// to open `\\.\pipe\client_jack_orender_N`.
+#[cfg(windows)]
+fn set_null_process_dacl() {
+    use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR,
+        SetSecurityDescriptorDacl, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
+        TOKEN_DEFAULT_DACL, TOKEN_INFORMATION_CLASS,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = HANDLE::default();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_DEFAULT, &mut token) }.is_err() {
+        log::warn!("set_null_process_dacl: OpenProcessToken failed");
+        return;
+    }
+
+    let mut sd = unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() };
+    let psd = PSECURITY_DESCRIPTOR(&mut sd as *mut SECURITY_DESCRIPTOR as *mut _);
+
+    let ok = unsafe { InitializeSecurityDescriptor(psd, 1) }.is_ok()
+        && unsafe {
+            SetSecurityDescriptorDacl(psd, BOOL(1), None, BOOL(0))
+        }
+        .is_ok();
+
+    if ok {
+        // TokenDefaultDacl = 6
+        let tdd = TOKEN_DEFAULT_DACL { DefaultDacl: std::ptr::null_mut() };
+        if unsafe {
+            SetTokenInformation(
+                token,
+                TOKEN_INFORMATION_CLASS(6),
+                &tdd as *const TOKEN_DEFAULT_DACL as *mut _,
+                std::mem::size_of::<TOKEN_DEFAULT_DACL>() as u32,
+            )
+        }
+        .is_err()
+        {
+            log::warn!("set_null_process_dacl: SetTokenInformation failed");
+        }
+    } else {
+        log::warn!("set_null_process_dacl: failed to build null DACL descriptor");
+    }
+
+    unsafe { let _ = CloseHandle(token); }
+}
+
 /// Entry point when running as a Windows service (called by SCM via sys::windows).
 /// Parses args from the service's binPath and runs the render command.
 #[cfg(windows)]
@@ -74,6 +130,11 @@ fn run_as_service() -> anyhow::Result<()> {
     use clap::Parser as ClapParser;
     use cli::command::{Cli, Commands};
     use cli::decode::cmd_render;
+
+    // Allow Session 1 processes (JACK server, mpv, etc.) to connect to any
+    // kernel objects we create, including libjack's per-client named pipes.
+    set_null_process_dacl();
+
     let cli = Cli::parse_from(normalize_cli_args(std::env::args_os()));
     match cli.command {
         Commands::Render(ref args) => cmd_render(args, &cli),
