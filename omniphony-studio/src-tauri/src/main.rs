@@ -1032,7 +1032,7 @@ fn launch_orender(
                 repo_root.join("omniphony-renderer/target/release/libtruehd_bridge.so"),
             ])
         })
-        .ok_or_else(|| "truehd bridge not found".to_string())?;
+        .ok_or_else(|| "a bridge plugin is required to launch orender".to_string())?;
 
     let input_path = default_orender_input_path();
 
@@ -1085,12 +1085,22 @@ fn launch_orender(
         .try_clone()
         .map_err(|e| format!("failed to clone log file handle: {e}"))?;
 
-    ProcessCommand::new(&orender_path)
-        .args(&args)
+    #[allow(unused_mut)]
+    let mut cmd = ProcessCommand::new(&orender_path);
+    cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()
+        .stderr(Stdio::from(stderr));
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const NORMAL_PRIORITY_CLASS: u32 = 0x0000_0020;
+        cmd.creation_flags(CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS);
+    }
+
+    cmd.spawn()
         .map_err(|e| format!("failed to launch orender: {e}"))?;
 
     Ok(serde_json::json!({
