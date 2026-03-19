@@ -1077,6 +1077,27 @@ fn init_render_handler(
         ctrl.set_input_path(Some(input_path.display().to_string()));
         if let Some(backend) = args.output_backend.or_else(OutputBackend::platform_default) {
             ctrl.set_available_output_devices(list_available_output_devices(backend));
+
+            // Refresh the device list every 10 s so that drivers that appear
+            // after startup (e.g. JackRouter, which requires jackd to be
+            // running) are picked up and sent to the studio via OSC.
+            let ctrl_weak = std::sync::Arc::downgrade(&ctrl);
+            std::thread::Builder::new()
+                .name("device-list-refresh".into())
+                .spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                        if sys::ShutdownHandle::is_requested() {
+                            break;
+                        }
+                        let Some(ctrl) = ctrl_weak.upgrade() else { break };
+                        let fresh = list_available_output_devices(backend);
+                        if fresh != ctrl.available_output_devices() {
+                            ctrl.set_available_output_devices(fresh);
+                        }
+                    }
+                })
+                .ok();
         } else {
             ctrl.set_available_output_devices(Vec::new());
         }
