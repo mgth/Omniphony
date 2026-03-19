@@ -153,6 +153,10 @@ fn create_new_pipe_server_overlapped(
     wide_name: &[u16],
 ) -> Result<windows::Win32::Foundation::HANDLE> {
     use windows::Win32::Foundation::{BOOL, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
+    use windows::Win32::Security::{
+        InitializeSecurityDescriptor, SetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR,
+        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+    };
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
     use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
     use windows::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, NAMED_PIPE_MODE};
@@ -168,6 +172,31 @@ fn create_new_pipe_server_overlapped(
     const PIPE_WAIT_U32: u32 = 0x00000000;
     const PIPE_UNLIMITED_INSTANCES: u32 = 255;
 
+    // Build a null-DACL security descriptor so that any user (including
+    // interactive users in Session 1) can connect and write to the pipe,
+    // even when orender runs as a Windows service in Session 0 under
+    // LocalSystem.  A null DACL grants full access to everyone; without
+    // this the default DACL inherited from LocalSystem's token blocks
+    // unprivileged callers such as mpv running on the desktop.
+    let mut sd: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+    let psd = PSECURITY_DESCRIPTOR(&mut sd as *mut SECURITY_DESCRIPTOR as *mut _);
+    unsafe {
+        InitializeSecurityDescriptor(psd, 1) // 1 = SECURITY_DESCRIPTOR_REVISION
+            .map_err(|e| anyhow::anyhow!("InitializeSecurityDescriptor: {e}"))?;
+        SetSecurityDescriptorDacl(
+            psd,
+            BOOL(1), // bDaclPresent = TRUE
+            None,    // pDacl = NULL → null DACL, grants access to everyone
+            BOOL(0), // bDaclDefaulted = FALSE
+        )
+        .map_err(|e| anyhow::anyhow!("SetSecurityDescriptorDacl: {e}"))?;
+    }
+    let sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: psd.0,
+        bInheritHandle: BOOL(0),
+    };
+
     let handle = unsafe {
         CreateNamedPipeW(
             PCWSTR(wide_name.as_ptr()),
@@ -177,7 +206,7 @@ fn create_new_pipe_server_overlapped(
             65536,
             65536,
             0,
-            None,
+            Some(&sa),
         )
     };
 
