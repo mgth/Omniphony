@@ -1,65 +1,65 @@
 # Omniphony
 
-Monorepo de convergence pour la suite Omniphony.
+Consolidation monorepo for the Omniphony suite.
 
 ![Omniphony capture](Omniphony_capture.png)
 
-Omniphony regroupe deux composants principaux :
+Omniphony brings together two main components:
 
-- `omniphony-renderer/` : moteur temps réel de décodage, rendu spatial et contrôle OSC
-- `omniphony-studio/` : application de supervision, visualisation 3D, contrôle live et gestion de layout
+- `omniphony-renderer/`: real-time decoding, spatial rendering, and OSC control engine
+- `omniphony-studio/`: supervision app, 3D visualization, live control, and layout management
 
-Le but de ce dépôt est de faire converger progressivement les anciens projets séparés vers un dépôt unique.
+The goal of this repository is to progressively merge the former separate projects into a single codebase.
 
 ## Donations
 
-Si Omniphony t’est utile, tu peux soutenir le projet avec un don. Cela aide à maintenir et faire évoluer la suite.
+If Omniphony is useful to you, you can support the project with a donation. It helps maintain and improve the suite.
 
 [![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=YLGYPSHWTQ5UW&lc=FR&item_name=Mgth%C2%A4cy_code=EUR&bn=PP%2dDonationsBF%3abtn_donateCC_LG%2egif%3aNonHosted)
 
-## Composants
+## Components
 
 ### `omniphony-renderer`
 
-`omniphony-renderer` est le moteur principal de la suite.
+`omniphony-renderer` is the core engine of the suite.
 
-Il charge un bridge de format au runtime, décode le flux d'entrée, puis peut :
+It loads a format bridge at runtime, decodes the input stream, and can then:
 
-- envoyer l'audio décodé vers un backend temps réel
-- produire des sorties `pipewire` sur Linux ou `asio` sur Windows
-- émettre des métadonnées et du metering en OSC
-- rendre les objets vers des feeds enceintes avec VBAP
-- charger des layouts d'enceintes et des tables VBAP pré-calculées
+- send decoded audio to a real-time backend
+- provide `pipewire` outputs on Linux or `asio` on Windows
+- emit metadata and metering over OSC
+- render objects to speaker feeds with VBAP
+- load speaker layouts and precomputed VBAP tables
 
-Le projet contient aussi la pile technique du moteur :
+The project also includes the engine's supporting stack:
 
-- `renderer` : moteur VBAP, layouts, sortie OSC, config runtime
-- `audio_output` : backends PipeWire et ASIO
-- `spdif` : parsing IEC61937 / S/PDIF
-- `bridge_api` : interface ABI stable pour les bridges externes
-- `sys` : intégration plateforme, y compris le support service Windows
+- `renderer`: VBAP engine, layouts, OSC output, runtime config
+- `audio_output`: PipeWire and ASIO backends
+- `spdif`: IEC61937 / S/PDIF parsing
+- `bridge_api`: stable ABI interface for external bridges
+- `sys`: platform integration, including Windows service support
 
 ### `omniphony-studio`
 
-`omniphony-studio` est l'interface de supervision et de pilotage de la suite.
+`omniphony-studio` is the suite's supervision and control interface.
 
-Ce composant ne produit pas le rendu audio lui-même. Il se connecte au renderer via OSC pour :
+This component does not render audio by itself. It connects to the renderer over OSC to:
 
-- visualiser les objets et sources dans une scène 3D
-- suivre l'état runtime exposé par le moteur
-- recevoir les positions, niveaux et informations de layout
-- s'enregistrer automatiquement auprès du renderer
-- maintenir la session par heartbeat OSC
-- piloter certains paramètres live côté moteur
+- visualize objects and sources in a 3D scene
+- monitor runtime state exposed by the engine
+- receive positions, levels, and layout information
+- register itself automatically with the renderer
+- keep the session alive through OSC heartbeats
+- control selected live engine parameters
 
-Le studio accepte plusieurs formats OSC d'entrée, y compris :
+The studio accepts multiple OSC input formats, including:
 
-- positions cartésiennes historiques
-- positions avec identifiant dans l'adresse
-- coordonnées sphériques `azimuth/elevation/distance`
-- suppression explicite de sources
+- legacy cartesian positions
+- positions with the identifier embedded in the address
+- spherical coordinates as `azimuth/elevation/distance`
+- explicit source removal
 
-## Arborescence
+## Repository Layout
 
 - `omniphony-renderer/`
 - `omniphony-studio/`
