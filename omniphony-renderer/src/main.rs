@@ -67,60 +67,110 @@ where
     args
 }
 
-/// Set the process token's default DACL to NULL so that all kernel objects
-/// created without an explicit security descriptor (including named pipes
-/// created by libjack during `jack_client_open`) are accessible to every
-/// user, including Session 1 interactive users.
+/// Spawn a background thread that polls for JACK client named pipes created by
+/// libjack during `jack_client_open` and patches their DACL to null (world-accessible).
 ///
-/// Without this a service running as LocalSystem (Session 0) creates JACK
-/// client pipes whose default DACL blocks the JACK server running in
-/// Session 1, producing ERROR_ACCESS_DENIED (err = 5) when jackdmp tries
-/// to open `\\.\pipe\client_jack_orender_N`.
+/// When orender runs as a Windows service (Session 0 / LocalSystem), libjack
+/// calls `CreateNamedPipeW` with `NULL` lpSecurityAttributes.  Windows then
+/// applies a *hardcoded* security descriptor (LocalSystem=FULL, Admins=FULL,
+/// Everyone=READ_only) — it does NOT use the process token's default DACL.
+/// This blocks the JACK server in Session 1 from connecting (err = 5).
+///
+/// The fix: as LocalSystem we have WRITE_DAC rights on our own pipes.  We
+/// open each pipe with `WRITE_DAC` and call `SetKernelObjectSecurity` to
+/// replace the DACL with a null (world-accessible) one.
 #[cfg(windows)]
-fn set_null_process_dacl() {
-    use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE};
+fn spawn_jack_pipe_dacl_watcher() {
+    use windows::Win32::Foundation::{BOOL, CloseHandle, INVALID_HANDLE_VALUE};
     use windows::Win32::Security::{
-        InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR,
-        SetSecurityDescriptorDacl, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
-        TOKEN_DEFAULT_DACL, TOKEN_INFORMATION_CLASS,
+        DACL_SECURITY_INFORMATION, InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR,
+        SECURITY_DESCRIPTOR, SetKernelObjectSecurity, SetSecurityDescriptorDacl,
     };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows::core::PCWSTR;
 
-    let mut token = HANDLE::default();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_DEFAULT, &mut token) }.is_err() {
-        log::warn!("set_null_process_dacl: OpenProcessToken failed");
-        return;
-    }
+    std::thread::Builder::new()
+        .name("jack-pipe-dacl-watcher".into())
+        .spawn(move || {
+            // Build a null-DACL security descriptor once — reused for every patch.
+            let mut sd = unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() };
+            let psd = PSECURITY_DESCRIPTOR(&mut sd as *mut SECURITY_DESCRIPTOR as *mut _);
+            if unsafe { InitializeSecurityDescriptor(psd, 1) }.is_err() {
+                log::error!("jack-pipe-dacl-watcher: InitializeSecurityDescriptor failed");
+                return;
+            }
+            if unsafe { SetSecurityDescriptorDacl(psd, BOOL(1), None, BOOL(0)) }.is_err() {
+                log::error!("jack-pipe-dacl-watcher: SetSecurityDescriptorDacl failed");
+                return;
+            }
 
-    let mut sd = unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() };
-    let psd = PSECURITY_DESCRIPTOR(&mut sd as *mut SECURITY_DESCRIPTOR as *mut _);
+            // Track which pipe indices have already been patched this session.
+            let mut patched = [false; 16];
 
-    let ok = unsafe { InitializeSecurityDescriptor(psd, 1) }.is_ok()
-        && unsafe {
-            SetSecurityDescriptorDacl(psd, BOOL(1), None, BOOL(0))
-        }
-        .is_ok();
+            loop {
+                if sys::ShutdownHandle::is_requested() {
+                    break;
+                }
 
-    if ok {
-        // TokenDefaultDacl = 6
-        let tdd = TOKEN_DEFAULT_DACL { DefaultDacl: std::ptr::null_mut() };
-        if unsafe {
-            SetTokenInformation(
-                token,
-                TOKEN_INFORMATION_CLASS(6),
-                &tdd as *const TOKEN_DEFAULT_DACL as *mut _,
-                std::mem::size_of::<TOKEN_DEFAULT_DACL>() as u32,
-            )
-        }
-        .is_err()
-        {
-            log::warn!("set_null_process_dacl: SetTokenInformation failed");
-        }
-    } else {
-        log::warn!("set_null_process_dacl: failed to build null DACL descriptor");
-    }
+                for i in 0u32..16 {
+                    if patched[i as usize] {
+                        continue;
+                    }
 
-    unsafe { let _ = CloseHandle(token); }
+                    // Pipe name: \\.\pipe\client_jack_orender_N
+                    let name: Vec<u16> = format!("\\\\.\\pipe\\client_jack_orender_{i}\0")
+                        .encode_utf16()
+                        .collect();
+
+                    let handle = unsafe {
+                        CreateFileW(
+                            PCWSTR(name.as_ptr()),
+                            // WRITE_DAC (0x00040000) lets us call SetKernelObjectSecurity.
+                            // We do not need to read or write pipe data.
+                            0x00040000,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            None,
+                            OPEN_EXISTING,
+                            Default::default(),
+                            None,
+                        )
+                    };
+
+                    match handle {
+                        Ok(h) if h != INVALID_HANDLE_VALUE => {
+                            let res = unsafe {
+                                SetKernelObjectSecurity(h, DACL_SECURITY_INFORMATION, psd)
+                            };
+                            unsafe { let _ = CloseHandle(h); }
+                            if res.is_ok() {
+                                log::info!(
+                                    "jack-pipe-dacl-watcher: patched DACL on \
+                                     \\\\.\\pipe\\client_jack_orender_{i}"
+                                );
+                                patched[i as usize] = true;
+                            } else {
+                                log::warn!(
+                                    "jack-pipe-dacl-watcher: SetKernelObjectSecurity \
+                                     failed for index {i}: {:?}",
+                                    res
+                                );
+                            }
+                        }
+                        _ => {} // pipe not yet created — will retry
+                    }
+                }
+
+                // All 16 slots patched — nothing left to watch.
+                if patched.iter().all(|&p| p) {
+                    break;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        })
+        .ok(); // If spawn fails we continue without the watcher; JACK may not work.
 }
 
 /// Entry point when running as a Windows service (called by SCM via sys::windows).
@@ -131,9 +181,12 @@ fn run_as_service() -> anyhow::Result<()> {
     use cli::command::{Cli, Commands};
     use cli::decode::cmd_render;
 
-    // Allow Session 1 processes (JACK server, mpv, etc.) to connect to any
-    // kernel objects we create, including libjack's per-client named pipes.
-    set_null_process_dacl();
+    // Start the JACK pipe DACL watcher before entering the render loop.
+    // libjack creates client pipes (\\.\pipe\client_jack_orender_N) with a
+    // hardcoded restrictive DACL when called from a service; the watcher
+    // patches them to null (world-accessible) so jackdmp in Session 1 can
+    // connect (avoiding err = 5 / ERROR_ACCESS_DENIED).
+    spawn_jack_pipe_dacl_watcher();
 
     let cli = Cli::parse_from(normalize_cli_args(std::env::args_os()));
     match cli.command {
