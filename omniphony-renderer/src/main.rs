@@ -79,10 +79,11 @@ where
 /// libjack's `ConnectNamedPipe` wait and leave jackd with no instance to
 /// connect to (err = 121 / SEM_TIMEOUT).
 ///
-/// Instead we enumerate handles in our own process via `NtQuerySystemInformation`
-/// to find the server-side pipe handles libjack holds, then call
-/// `SetKernelObjectSecurity` directly on those handles.  No client connection
-/// is made; the pipe instance remains available for jackd.
+/// Instead we use `NtQueryInformationProcess(ProcessHandleInformation=51)` to
+/// enumerate only our own process's handles (much faster than system-wide
+/// enumeration), pre-filter with `GetFileType` to avoid calling `NtQueryObject`
+/// on handle types that can hang, and call `SetKernelObjectSecurity` directly
+/// on the server-side pipe handle libjack holds.
 #[cfg(windows)]
 fn spawn_jack_pipe_dacl_watcher() {
     use std::ffi::c_void;
@@ -91,19 +92,23 @@ fn spawn_jack_pipe_dacl_watcher() {
         DACL_SECURITY_INFORMATION, InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR,
         SECURITY_DESCRIPTOR, SetKernelObjectSecurity, SetSecurityDescriptorDacl,
     };
+    use windows::Win32::Storage::FileSystem::GetFileType;
     use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::System::Threading::GetCurrentProcess;
 
     std::thread::Builder::new()
         .name("jack-pipe-dacl-watcher".into())
         .spawn(move || {
-            // --- Resolve NT native APIs from ntdll ---
-            type NtQuerySysInfo =
-                unsafe extern "system" fn(u32, *mut c_void, u32, *mut u32) -> i32;
+            // Load NT native APIs dynamically.
+            // NtQueryInformationProcess(ProcessHandleInformation=51): returns handles
+            //   for ONE specific process only — much faster than system-wide enumeration.
+            // NtQueryObject(ObjectNameInformation=1): returns the NT path of a handle.
+            type NtQueryInfoProcess =
+                unsafe extern "system" fn(isize, u32, *mut c_void, u32, *mut u32) -> i32;
             type NtQueryObj =
                 unsafe extern "system" fn(isize, u32, *mut c_void, u32, *mut u32) -> i32;
 
-            let (nt_qsi, nt_qo): (NtQuerySysInfo, NtQueryObj) = unsafe {
+            let (nt_qip, nt_qo): (NtQueryInfoProcess, NtQueryObj) = unsafe {
                 let ntdll = match GetModuleHandleW(windows::core::w!("ntdll.dll")).ok() {
                     Some(h) => h,
                     None => {
@@ -111,9 +116,10 @@ fn spawn_jack_pipe_dacl_watcher() {
                         return;
                     }
                 };
-                let qsi = GetProcAddress(ntdll, windows::core::s!("NtQuerySystemInformation"));
+                let qip =
+                    GetProcAddress(ntdll, windows::core::s!("NtQueryInformationProcess"));
                 let qo = GetProcAddress(ntdll, windows::core::s!("NtQueryObject"));
-                match (qsi, qo) {
+                match (qip, qo) {
                     (Some(a), Some(b)) => (std::mem::transmute(a), std::mem::transmute(b)),
                     _ => {
                         log::error!("jack-pipe-dacl-watcher: NT API lookup failed");
@@ -122,7 +128,7 @@ fn spawn_jack_pipe_dacl_watcher() {
                 }
             };
 
-            // --- Build null-DACL security descriptor (reused for every patch) ---
+            // Build null-DACL security descriptor (reused for every patch).
             let mut sd = unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() };
             let psd = PSECURITY_DESCRIPTOR(&mut sd as *mut SECURITY_DESCRIPTOR as *mut _);
             if unsafe { InitializeSecurityDescriptor(psd, 1) }.is_err()
@@ -132,26 +138,33 @@ fn spawn_jack_pipe_dacl_watcher() {
                 return;
             }
 
-            // SYSTEM_HANDLE_TABLE_ENTRY_INFO (64-bit layout, size = 24 bytes):
-            //   u16 unique_process_id    (offset  0)
-            //   u16 creator_back_trace   (offset  2)
-            //   u8  object_type_index    (offset  4)
-            //   u8  handle_attributes    (offset  5)
-            //   u16 handle_value         (offset  6)
-            //   u64 object               (offset  8)  ← pointer-sized
-            //   u32 granted_access       (offset 16)
-            //   u32 _pad                 (offset 20)  ← alignment to 8
+            // PROCESS_HANDLE_TABLE_ENTRY_INFO (64-bit layout, 40 bytes):
+            //   void*  handle_value       (offset  0, 8 bytes)
+            //   usize  handle_count       (offset  8, 8 bytes)
+            //   usize  pointer_count      (offset 16, 8 bytes)
+            //   u32    granted_access     (offset 24, 4 bytes)
+            //   u32    object_type_index  (offset 28, 4 bytes)
+            //   u32    handle_attributes  (offset 32, 4 bytes)
+            //   u32    reserved           (offset 36, 4 bytes)
             #[repr(C)]
             #[derive(Copy, Clone)]
-            struct HandleEntry {
-                unique_process_id: u16,
-                _creator_back_trace: u16,
-                _object_type_index: u8,
-                _handle_attributes: u8,
-                handle_value: u16,
-                _object: u64,
+            struct ProcHandleEntry {
+                handle_value: usize,
+                _handle_count: usize,
+                _pointer_count: usize,
                 _granted_access: u32,
-                _pad: u32,
+                _object_type_index: u32,
+                _handle_attributes: u32,
+                _reserved: u32,
+            }
+
+            // PROCESS_HANDLE_SNAPSHOT_INFORMATION header (64-bit, 16 bytes):
+            //   usize  number_of_handles  (offset 0)
+            //   usize  reserved           (offset 8)
+            #[repr(C)]
+            struct ProcHandleSnap {
+                number_of_handles: usize,
+                _reserved: usize,
             }
 
             // UNICODE_STRING (64-bit): Length(u16), MaxLen(u16), pad(u32), Buffer(*u16)
@@ -163,11 +176,11 @@ fn spawn_jack_pipe_dacl_watcher() {
                 buffer: *const u16,
             }
 
-            // NT pipe path prefix we expect from NtQueryObject
+            // NT pipe path prefix returned by NtQueryObject for named pipes.
             let prefix: Vec<u16> =
                 "\\Device\\NamedPipe\\client_jack_orender_".encode_utf16().collect();
 
-            let current_pid = unsafe { GetCurrentProcessId() } as u16;
+            let proc = unsafe { GetCurrentProcess() };
             let mut patched = [false; 16];
 
             loop {
@@ -178,46 +191,59 @@ fn spawn_jack_pipe_dacl_watcher() {
                     break;
                 }
 
-                // --- Enumerate all system handles (SystemHandleInformation = 16) ---
-                let mut buf: Vec<u8> = vec![0u8; 512 * 1024];
+                // Query only our process's handles (ProcessHandleInformation = 51).
+                let mut buf: Vec<u8> = vec![0u8; 64 * 1024];
                 let mut ret_len: u32 = 0;
                 loop {
                     let s = unsafe {
-                        nt_qsi(16, buf.as_mut_ptr() as _, buf.len() as u32, &mut ret_len)
+                        nt_qip(
+                            proc.0,
+                            51, // ProcessHandleInformation
+                            buf.as_mut_ptr() as _,
+                            buf.len() as u32,
+                            &mut ret_len,
+                        )
                     };
                     if s == 0 {
                         break;
                     }
                     // STATUS_INFO_LENGTH_MISMATCH = 0xC0000004
                     if s == 0xC0000004u32 as i32 {
-                        let new_len = (ret_len as usize + 65536).max(buf.len() * 2);
+                        let new_len = (ret_len as usize + 4096).max(buf.len() * 2);
                         buf.resize(new_len, 0);
                     } else {
-                        break; // unexpected error
+                        break;
                     }
                 }
 
-                let count = unsafe { *(buf.as_ptr() as *const u32) } as usize;
-                // Safety: buffer is at least count * size_of::<HandleEntry>() bytes after the u32
-                let entries: &[HandleEntry] = unsafe {
-                    let ptr = (buf.as_ptr() as *const u32).add(1) as *const HandleEntry;
+                let snap = unsafe { &*(buf.as_ptr() as *const ProcHandleSnap) };
+                let count = snap.number_of_handles;
+                let entries: &[ProcHandleEntry] = unsafe {
+                    let ptr = buf
+                        .as_ptr()
+                        .add(std::mem::size_of::<ProcHandleSnap>())
+                        as *const ProcHandleEntry;
                     std::slice::from_raw_parts(ptr, count)
                 };
 
                 for entry in entries {
-                    if entry.unique_process_id != current_pid {
-                        continue;
-                    }
                     let handle = HANDLE(entry.handle_value as isize);
 
-                    // Query the object's name (ObjectNameInformation = 1).
-                    // We pass a u16 buffer; NtQueryObject writes UNICODE_STRING then the chars.
+                    // Pre-filter: only call NtQueryObject on pipe handles.
+                    // GetFileType on non-file handles returns FILE_TYPE_UNKNOWN (0)
+                    // and is safe to call on any handle type without hanging.
+                    // FILE_TYPE_PIPE = 3
+                    if unsafe { GetFileType(handle) }.0 != 3 {
+                        continue;
+                    }
+
+                    // Get the NT object name.  Safe to call on named pipe handles.
                     let mut name_buf = vec![0u16; 512];
                     let mut nret: u32 = 0;
                     let ns = unsafe {
                         nt_qo(
                             handle.0,
-                            1,
+                            1, // ObjectNameInformation
                             name_buf.as_mut_ptr() as _,
                             (name_buf.len() * 2) as u32,
                             &mut nret,
@@ -232,14 +258,12 @@ fn spawn_jack_pipe_dacl_watcher() {
                         continue;
                     }
                     let name_chars = us.length as usize / 2;
-                    let name =
-                        unsafe { std::slice::from_raw_parts(us.buffer, name_chars) };
+                    let name = unsafe { std::slice::from_raw_parts(us.buffer, name_chars) };
 
                     if name.len() <= prefix.len() || name[..prefix.len()] != *prefix {
                         continue;
                     }
 
-                    // Parse the trailing index digit(s)
                     let suffix = String::from_utf16_lossy(&name[prefix.len()..]);
                     let idx: usize = match suffix.parse() {
                         Ok(n) if n < 16 => n,
@@ -249,7 +273,8 @@ fn spawn_jack_pipe_dacl_watcher() {
                         continue;
                     }
 
-                    // Patch directly on the server-side handle — no client connection.
+                    // Patch directly on the server-side handle libjack holds.
+                    // No client connection is made; the pipe instance stays available.
                     let res = unsafe {
                         SetKernelObjectSecurity(handle, DACL_SECURITY_INFORMATION, psd)
                     };
@@ -269,7 +294,9 @@ fn spawn_jack_pipe_dacl_watcher() {
                     }
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                // Poll at 200 µs to catch the pipe within the narrow window
+                // between libjack's CreateNamedPipe and jackd's connect attempt.
+                std::thread::sleep(std::time::Duration::from_micros(200));
             }
         })
         .ok();
