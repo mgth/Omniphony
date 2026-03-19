@@ -225,6 +225,7 @@ const oscBridgePathInputEl = document.getElementById('oscBridgePathInput');
 const oscBridgeBrowseBtnEl = document.getElementById('oscBridgeBrowseBtn');
 const oscMeteringToggleEl = document.getElementById('oscMeteringToggle');
 const oscConfigApplyBtnEl = document.getElementById('oscConfigApplyBtn');
+const oscServiceBtnEl = document.getElementById('oscServiceBtn');
 const oscLaunchRendererBtnEl = document.getElementById('oscLaunchRendererBtn');
 const trailModeSelectEl = document.getElementById('trailModeSelect');
 const trailTtlSliderEl = document.getElementById('trailTtlSlider');
@@ -708,6 +709,10 @@ let oscStatusState = 'initializing';
 let oscConfigAutoOpenTimer = null;
 let oscLaunchPending = false;
 let oscConfiguredOrenderPath = '';
+let orenderServiceInstalled = false;
+let orenderServiceRunning = false;
+let orenderServiceManager = null;
+let orenderServicePending = false;
 let roomMasterAxis = 'width';
 const roomAxisDrivers = {
   width: 'size',
@@ -994,6 +999,21 @@ function setLatencyInstantMs(value) {
 function renderOscStatus() {
   if (statusEl) statusEl.textContent = t(`status.${oscStatusState}`);
   if (pipeStatusEl) pipeStatusEl.textContent = ` • Pipe: ${orenderInputPipe || '—'}`;
+  if (oscServiceBtnEl) {
+    oscServiceBtnEl.textContent = orenderServiceInstalled ? 'Uninstall service' : 'Install service';
+    oscServiceBtnEl.style.background = orenderServiceInstalled
+      ? 'rgba(255,96,96,0.18)'
+      : 'rgba(255,255,255,0.08)';
+    oscServiceBtnEl.style.borderColor = orenderServiceInstalled
+      ? 'rgba(255,96,96,0.38)'
+      : 'rgba(255,255,255,0.18)';
+    oscServiceBtnEl.style.color = '#d9ecff';
+    oscServiceBtnEl.disabled = orenderServicePending || oscLaunchPending;
+    oscServiceBtnEl.style.opacity = (orenderServicePending || oscLaunchPending) ? '0.6' : '1';
+    oscServiceBtnEl.style.cursor = (orenderServicePending || oscLaunchPending) ? 'default' : 'pointer';
+    const manager = orenderServiceManager ? ` (${orenderServiceManager})` : '';
+    oscServiceBtnEl.title = `${orenderServiceInstalled ? 'Uninstall' : 'Install'} service${manager}`;
+  }
   if (oscStatusDotEl) {
     const colors = {
       initializing: '#89a3ff',
@@ -1004,16 +1024,32 @@ function renderOscStatus() {
     oscStatusDotEl.style.background = colors[oscStatusState] || '#7f8a99';
   }
   if (oscLaunchRendererBtnEl) {
-    const connected = oscStatusState === 'connected';
-    oscLaunchRendererBtnEl.textContent = connected ? 'Stop orender' : 'Launch orender';
-    oscLaunchRendererBtnEl.style.background = connected
+    const running = orenderServiceInstalled ? orenderServiceRunning : oscStatusState === 'connected';
+    oscLaunchRendererBtnEl.textContent = orenderServiceInstalled
+      ? (running ? 'Stop service' : 'Start service')
+      : (running ? 'Stop orender' : 'Launch orender');
+    oscLaunchRendererBtnEl.style.background = running
       ? 'rgba(255,96,96,0.18)'
       : 'rgba(88,160,255,0.18)';
-    oscLaunchRendererBtnEl.style.borderColor = connected
+    oscLaunchRendererBtnEl.style.borderColor = running
       ? 'rgba(255,96,96,0.38)'
       : 'rgba(88,160,255,0.38)';
-    oscLaunchRendererBtnEl.style.color = connected ? '#ffe2e2' : '#d9ecff';
+    oscLaunchRendererBtnEl.style.color = running ? '#ffe2e2' : '#d9ecff';
+    oscLaunchRendererBtnEl.disabled = oscLaunchPending || orenderServicePending;
+    oscLaunchRendererBtnEl.style.opacity = (oscLaunchPending || orenderServicePending) ? '0.6' : '1';
+    oscLaunchRendererBtnEl.style.cursor = (oscLaunchPending || orenderServicePending) ? 'default' : 'pointer';
   }
+}
+
+function refreshOrenderServiceStatus() {
+  return invoke('get_orender_service_status')
+    .then((status) => {
+      orenderServiceInstalled = Boolean(status?.installed);
+      orenderServiceRunning = Boolean(status?.running);
+      orenderServiceManager = typeof status?.manager === 'string' ? status.manager : null;
+      renderOscStatus();
+      return status;
+    });
 }
 
 function openOscConfigPanel() {
@@ -1053,7 +1089,7 @@ function loadOscConfigIntoPanel() {
     if (oscBridgePathInputEl) oscBridgePathInputEl.value = String(cfg.bridge_path || '');
     if (oscMeteringToggleEl) oscMeteringToggleEl.checked = Boolean(cfg.osc_metering_enabled);
     oscConfiguredOrenderPath = String(cfg.orender_path || '').trim();
-    return cfg;
+    return refreshOrenderServiceStatus().catch(() => null).then(() => cfg);
   }).catch(() => null);
 }
 
@@ -7512,8 +7548,72 @@ function launchOrenderFromPanel(orenderPathOverride = null) {
     });
 }
 
+function installOrenderServiceFromPanel() {
+  const config = readOscConfigForm();
+  const payload = {
+    host: config.host,
+    oscRxPort: config.osc_rx_port,
+    oscPort: config.osc_port,
+    oscMeteringEnabled: config.osc_metering_enabled,
+    bridgePath: config.bridge_path,
+    orenderPath: oscConfiguredOrenderPath || config.orender_path
+  };
+  orenderServicePending = true;
+  renderOscStatus();
+  return invoke('install_orender_service', payload)
+    .then((result) => {
+      if (result?.command) {
+        pushLog('info', `orender service installed: ${result.command}`);
+      } else {
+        pushLog('info', 'orender service installed.');
+      }
+      return refreshOrenderServiceStatus();
+    })
+    .finally(() => {
+      orenderServicePending = false;
+      renderOscStatus();
+    });
+}
+
+function uninstallOrenderServiceFromPanel() {
+  orenderServicePending = true;
+  renderOscStatus();
+  return invoke('uninstall_orender_service')
+    .then(() => {
+      pushLog('info', 'orender service uninstalled.');
+      return refreshOrenderServiceStatus();
+    })
+    .finally(() => {
+      orenderServicePending = false;
+      renderOscStatus();
+    });
+}
+
 if (oscLaunchRendererBtnEl) {
   oscLaunchRendererBtnEl.addEventListener('click', () => {
+    if (oscLaunchPending || orenderServicePending) {
+      return;
+    }
+    if (orenderServiceInstalled) {
+      const command = orenderServiceRunning ? 'stop_orender_service' : 'start_orender_service';
+      const label = orenderServiceRunning ? 'stop orender service' : 'start orender service';
+      const success = orenderServiceRunning ? 'orender service stop requested.' : 'orender service start requested.';
+      orenderServicePending = true;
+      renderOscStatus();
+      invoke(command)
+        .then(() => {
+          pushLog('info', success);
+          return refreshOrenderServiceStatus();
+        })
+        .catch((e) => {
+          pushLog('error', `Failed to ${label}: ${normalizeLogError(e)}`);
+        })
+        .finally(() => {
+          orenderServicePending = false;
+          renderOscStatus();
+        });
+      return;
+    }
     if (oscStatusState === 'connected') {
       invoke('stop_orender')
         .then(() => {
@@ -7528,6 +7628,21 @@ if (oscLaunchRendererBtnEl) {
       .catch((e) => {
         pushLog('error', `Failed to launch orender: ${normalizeLogError(e)}`);
       });
+  });
+}
+
+if (oscServiceBtnEl) {
+  oscServiceBtnEl.addEventListener('click', () => {
+    if (oscLaunchPending || orenderServicePending) {
+      return;
+    }
+    const task = orenderServiceInstalled
+      ? uninstallOrenderServiceFromPanel()
+      : installOrenderServiceFromPanel();
+    task.catch((e) => {
+      const label = orenderServiceInstalled ? 'uninstall orender service' : 'install orender service';
+      pushLog('error', `Failed to ${label}: ${normalizeLogError(e)}`);
+    });
   });
 }
 
@@ -7827,6 +7942,10 @@ invoke('get_state').then((payload) => {
   console.error('[tauri] get_state failed:', e);
   pushLog('error', tf('log.stateFailed', { error: normalizeLogError(e) }));
   setOscStatus('error');
+});
+
+refreshOrenderServiceStatus().catch((e) => {
+  pushLog('warn', `Failed to query orender service status: ${normalizeLogError(e)}`);
 });
 
 invoke('get_about_info').then((payload) => {

@@ -45,6 +45,20 @@ struct AboutInfo {
     description: &'static str,
 }
 
+#[derive(serde::Serialize)]
+struct OrenderServiceStatus {
+    installed: bool,
+    running: bool,
+    manager: &'static str,
+}
+
+struct OrenderLaunchSpec {
+    orender_path: PathBuf,
+    args: Vec<String>,
+}
+
+const ORENDER_SERVICE_NAME: &str = "omniphony-renderer";
+
 // ── Tauri commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -963,17 +977,16 @@ fn default_orender_log_path() -> PathBuf {
     std::env::temp_dir().join("omniphony-orender.log")
 }
 
-#[tauri::command]
-fn launch_orender(
-    app: tauri::AppHandle,
-    state: State<SharedState>,
+fn resolve_orender_launch_spec(
+    app: &tauri::AppHandle,
+    state: &SharedState,
     host: String,
     osc_rx_port: u16,
     osc_port: u16,
     osc_metering_enabled: bool,
     bridge_path: Option<String>,
     orender_path: Option<String>,
-) -> Result<serde_json::Value, String> {
+) -> Result<OrenderLaunchSpec, String> {
     let studio_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| "failed to resolve studio directory".to_string())?
@@ -1003,7 +1016,7 @@ fn launch_orender(
                 .map(PathBuf::from)
                 .filter(|path| path.exists())
         })
-        .or_else(|| first_existing_path(&bundled_orender_candidates(&app)))
+        .or_else(|| first_existing_path(&bundled_orender_candidates(app)))
         .or_else(|| {
             first_existing_path(&[
                 repo_root.join("omniphony-renderer/target/release/orender"),
@@ -1078,7 +1091,7 @@ fn launch_orender(
 
     if let Some(selected_layout) = state.inner.lock().unwrap().selected_layout_key.clone() {
         let layout_file = format!("{selected_layout}.yaml");
-        let layout_path = bundled_layouts_dir(&app)
+        let layout_path = bundled_layouts_dir(app)
             .map(|dir| dir.join(&layout_file))
             .filter(|path| path.exists())
             .or_else(|| {
@@ -1099,6 +1112,367 @@ fn launch_orender(
     cfg.orender_path = Some(orender_path.display().to_string());
     let _ = save_config(&state.config_dir, &cfg);
 
+    Ok(OrenderLaunchSpec { orender_path, args })
+}
+
+fn run_command(mut cmd: ProcessCommand, action: &str) -> Result<String, String> {
+    let output = cmd.output().map_err(|e| format!("{action}: {e}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        Err(if detail.is_empty() {
+            format!("{action}: command failed")
+        } else {
+            format!("{action}: {detail}")
+        })
+    }
+}
+
+fn wait_for_orender_disconnect(state: &SharedState, timeout_ms: u64) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let status = state.inner.lock().unwrap().osc_status.clone();
+        if status.as_deref() != Some("connected") {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("timed out while waiting for orender to stop".to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn stop_non_service_orender_if_running(state: &SharedState) -> Result<(), String> {
+    let is_connected = state.inner.lock().unwrap().osc_status.as_deref() == Some("connected");
+    if !is_connected {
+        return Ok(());
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendNoArgs {
+            address: "/omniphony/control/quit".to_string(),
+        },
+    );
+    wait_for_orender_disconnect(state, 10_000)
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(target_os = "windows")]
+fn run_elevated_windows(program: &str, args: &[String], action: &str) -> Result<String, String> {
+    let arg_list = if args.is_empty() {
+        "@()".to_string()
+    } else {
+        format!(
+            "@({})",
+            args.iter()
+                .map(|arg| powershell_single_quote(arg))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let command = format!(
+        "$p = Start-Process -FilePath {} -ArgumentList {} -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+        powershell_single_quote(program),
+        arg_list
+    );
+    let mut cmd = ProcessCommand::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
+    run_command(cmd, action)
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_escape_arg(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            ' ' | '\t' | '\n' | '\\' | '"' | '\'' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn linux_service_unit(exec_path: &PathBuf, args: &[String]) -> String {
+    let mut exec = Vec::with_capacity(args.len() + 1);
+    exec.push(systemd_escape_arg(&exec_path.display().to_string()));
+    exec.extend(args.iter().map(|arg| systemd_escape_arg(arg)));
+    format!(
+        "[Unit]\nDescription=Omniphony Renderer\nAfter=graphical-session.target pipewire.service wireplumber.service\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={}\nRestart=on-failure\nRestartSec=2\nKillSignal=SIGINT\nTimeoutStopSec=30\n\n[Install]\nWantedBy=default.target\n",
+        exec.join(" ")
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_user_service_name() -> String {
+    format!("{ORENDER_SERVICE_NAME}.service")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_user_service_dir() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME").ok_or_else(|| "HOME is not set".to_string())?;
+    Ok(PathBuf::from(home).join(".config/systemd/user"))
+}
+
+#[cfg(target_os = "linux")]
+fn run_user_systemctl(args: &[&str], action: &str) -> Result<String, String> {
+    let mut cmd = ProcessCommand::new("systemctl");
+    cmd.arg("--user").args(args);
+    run_command(cmd, action)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_service_bin_path(exec_path: &PathBuf, args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(args.len() + 1);
+    parts.push(format!("\"{}\"", exec_path.display()));
+    for arg in args {
+        let escaped = arg.replace('"', "\\\"");
+        if escaped.contains(' ') || escaped.contains('\t') {
+            parts.push(format!("\"{}\"", escaped));
+        } else {
+            parts.push(escaped);
+        }
+    }
+    parts.join(" ")
+}
+
+#[tauri::command]
+fn get_orender_service_status() -> Result<OrenderServiceStatus, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let service_name = linux_user_service_name();
+        let output = ProcessCommand::new("systemctl")
+            .args(["--user", "show", "-p", "LoadState", "--value", &service_name])
+            .output()
+            .map_err(|e| format!("query service status: {e}"))?;
+        let load_state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let installed = output.status.success() && load_state != "not-found" && !load_state.is_empty();
+        let running = if installed {
+            ProcessCommand::new("systemctl")
+                .args(["--user", "is-active", "--quiet", &service_name])
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        return Ok(OrenderServiceStatus {
+            installed,
+            running,
+            manager: "systemd-user",
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let output = ProcessCommand::new("sc")
+            .args(["query", ORENDER_SERVICE_NAME])
+            .output()
+            .map_err(|e| format!("query service status: {e}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let missing = stdout.contains("1060") || stderr.contains("1060") || stdout.contains("does not exist");
+        let installed = output.status.success() && !missing;
+        let running = installed && stdout.contains("RUNNING");
+        return Ok(OrenderServiceStatus {
+            installed,
+            running,
+            manager: "scm",
+        });
+    }
+
+    #[allow(unreachable_code)]
+    Err("service management is not supported on this platform".to_string())
+}
+
+#[tauri::command]
+fn install_orender_service(
+    app: tauri::AppHandle,
+    state: State<SharedState>,
+    host: String,
+    osc_rx_port: u16,
+    osc_port: u16,
+    osc_metering_enabled: bool,
+    bridge_path: Option<String>,
+    orender_path: Option<String>,
+) -> Result<serde_json::Value, String> {
+    stop_non_service_orender_if_running(&state)?;
+
+    let spec = resolve_orender_launch_spec(
+        &app,
+        &state,
+        host,
+        osc_rx_port,
+        osc_port,
+        osc_metering_enabled,
+        bridge_path,
+        orender_path,
+    )?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let service_name = linux_user_service_name();
+        let unit_dir = linux_user_service_dir()?;
+        let unit_path = unit_dir.join(&service_name);
+        std::fs::create_dir_all(&unit_dir)
+            .map_err(|e| format!("install service: failed to create {}: {e}", unit_dir.display()))?;
+        std::fs::write(&unit_path, linux_service_unit(&spec.orender_path, &spec.args))
+            .map_err(|e| format!("install service: failed to write {}: {e}", unit_path.display()))?;
+        run_user_systemctl(&["daemon-reload"], "install service")?;
+        run_user_systemctl(&["enable", &service_name], "install service")?;
+        return Ok(serde_json::json!({
+            "command": format!("systemctl --user enable {service_name}")
+        }));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let bin_path = windows_service_bin_path(&spec.orender_path, &spec.args);
+        run_elevated_windows(
+            "sc.exe",
+            &[
+                "create".to_string(),
+                ORENDER_SERVICE_NAME.to_string(),
+                "binPath=".to_string(),
+                bin_path.clone(),
+                "start=".to_string(),
+                "demand".to_string(),
+                "DisplayName=".to_string(),
+                "Omniphony Renderer".to_string(),
+            ],
+            "install service",
+        )?;
+        let _ = run_elevated_windows(
+            "sc.exe",
+            &[
+                "description".to_string(),
+                ORENDER_SERVICE_NAME.to_string(),
+                "Omniphony spatial audio renderer".to_string(),
+            ],
+            "install service",
+        );
+        return Ok(serde_json::json!({
+            "command": format!("sc create {} binPath= {}", ORENDER_SERVICE_NAME, bin_path)
+        }));
+    }
+
+    #[allow(unreachable_code)]
+    Err("service management is not supported on this platform".to_string())
+}
+
+#[tauri::command]
+fn uninstall_orender_service() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let service_name = linux_user_service_name();
+        let unit_path = linux_user_service_dir()?.join(&service_name);
+        let _ = run_user_systemctl(&["stop", &service_name], "uninstall service");
+        let _ = run_user_systemctl(&["disable", &service_name], "uninstall service");
+        if unit_path.exists() {
+            std::fs::remove_file(&unit_path)
+                .map_err(|e| format!("uninstall service: failed to remove {}: {e}", unit_path.display()))?;
+        }
+        run_user_systemctl(&["daemon-reload"], "uninstall service")?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = run_elevated_windows(
+            "sc.exe",
+            &["stop".to_string(), ORENDER_SERVICE_NAME.to_string()],
+            "uninstall service",
+        );
+        run_elevated_windows(
+            "sc.exe",
+            &["delete".to_string(), ORENDER_SERVICE_NAME.to_string()],
+            "uninstall service",
+        )?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("service management is not supported on this platform".to_string())
+}
+
+#[tauri::command]
+fn start_orender_service() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let service_name = linux_user_service_name();
+        run_user_systemctl(&["start", &service_name], "start service")?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        run_elevated_windows(
+            "sc.exe",
+            &["start".to_string(), ORENDER_SERVICE_NAME.to_string()],
+            "start service",
+        )?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("service management is not supported on this platform".to_string())
+}
+
+#[tauri::command]
+fn stop_orender_service() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let service_name = linux_user_service_name();
+        run_user_systemctl(&["stop", &service_name], "stop service")?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        run_elevated_windows(
+            "sc.exe",
+            &["stop".to_string(), ORENDER_SERVICE_NAME.to_string()],
+            "stop service",
+        )?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("service management is not supported on this platform".to_string())
+}
+
+#[tauri::command]
+fn launch_orender(
+    app: tauri::AppHandle,
+    state: State<SharedState>,
+    host: String,
+    osc_rx_port: u16,
+    osc_port: u16,
+    osc_metering_enabled: bool,
+    bridge_path: Option<String>,
+    orender_path: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let spec = resolve_orender_launch_spec(
+        &app,
+        &state,
+        host,
+        osc_rx_port,
+        osc_port,
+        osc_metering_enabled,
+        bridge_path,
+        orender_path,
+    )?;
+
     let log_path = default_orender_log_path();
     let stdout = File::create(&log_path).map_err(|e| format!("failed to create log file: {e}"))?;
     let stderr = stdout
@@ -1106,8 +1480,8 @@ fn launch_orender(
         .map_err(|e| format!("failed to clone log file handle: {e}"))?;
 
     #[allow(unused_mut)]
-    let mut cmd = ProcessCommand::new(&orender_path);
-    cmd.args(&args)
+    let mut cmd = ProcessCommand::new(&spec.orender_path);
+    cmd.args(&spec.args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -1124,7 +1498,7 @@ fn launch_orender(
         .map_err(|e| format!("failed to launch orender: {e}"))?;
 
     Ok(serde_json::json!({
-        "command": format!("{} {}", orender_path.display(), args.join(" ")),
+        "command": format!("{} {}", spec.orender_path.display(), spec.args.join(" ")),
         "logPath": log_path.display().to_string()
     }))
 }
@@ -1207,6 +1581,11 @@ fn main() {
             save_osc_config,
             launch_orender,
             stop_orender,
+            get_orender_service_status,
+            install_orender_service,
+            uninstall_orender_service,
+            start_orender_service,
+            stop_orender_service,
             control_osc_metering,
             select_layout,
             import_layout_from_path,

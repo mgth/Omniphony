@@ -41,13 +41,52 @@ fn create_fifo<P: AsRef<Path>>(path: P) -> Result<()> {
 
     let path_cstr = CString::new(path.as_ref().as_os_str().as_bytes())?;
 
-    // Create FIFO with permissions 0o644 (rw-r--r--)
-    let result = unsafe { libc::mkfifo(path_cstr.as_ptr(), 0o644) };
+    // The decoder may run as a system service while mpv runs as the desktop
+    // user, so the FIFO must stay writable across users.
+    let result = unsafe { libc::mkfifo(path_cstr.as_ptr(), 0o666) };
 
     if result != 0 {
         return Err(anyhow::anyhow!(
             "Failed to create FIFO: {}",
             io::Error::last_os_error()
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_fifo_permissions<P: AsRef<Path>>(path: P) -> Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path_ref = path.as_ref();
+    if !is_fifo(path_ref)? {
+        return Ok(());
+    }
+
+    let metadata = std::fs::metadata(path_ref)?;
+    if metadata.mode() & 0o222 == 0o222 {
+        return Ok(());
+    }
+
+    let path_cstr = CString::new(path_ref.as_os_str().as_bytes())?;
+    let result = unsafe { libc::chmod(path_cstr.as_ptr(), 0o666) };
+
+    if result != 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::PermissionDenied {
+            log::warn!(
+                "Could not chmod FIFO {} to 0666 ({}); keeping existing permissions",
+                path_ref.display(),
+                err
+            );
+            return Ok(());
+        }
+        return Err(anyhow::anyhow!(
+            "Failed to chmod FIFO {}: {}",
+            path_ref.display(),
+            err
         ));
     }
 
@@ -378,11 +417,14 @@ impl InputReader {
                     // Path doesn't exist — create it as a FIFO and retry once.
                     log::info!("Creating named pipe: {}", path_str);
                     create_fifo(&input_path)?;
+                    ensure_fifo_permissions(&input_path)?;
                     log::info!("Named pipe created successfully: {}", path_str);
                     open_nonblock(&path_cstr).map_err(anyhow::Error::from)?
                 }
                 Err(e) => return Err(e.into()),
             };
+
+            ensure_fifo_permissions(&input_path)?;
 
             // Clear O_NONBLOCK now that open() has returned.
             let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };

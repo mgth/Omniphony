@@ -585,6 +585,10 @@ pub struct OutputState {
     pub output_init_failed: bool,
     /// Last audio delay written to /tmp/omniphony_delay, in ms.
     pub last_audio_delay_written_ms: Option<f32>,
+    /// Last audio delay we attempted to publish to /tmp/omniphony_delay, in ms.
+    pub last_audio_delay_attempted_ms: Option<f32>,
+    /// Throttle repeated delay-write warnings to avoid log floods.
+    pub last_audio_delay_write_error_at: Option<Instant>,
     /// Last announced output sample rate (for OSC state de-duplication).
     pub last_audio_sample_rate_hz: Option<u32>,
     /// Last announced output sample format label.
@@ -601,6 +605,8 @@ impl Default for OutputState {
             pcm_f32_buf: Vec::new(),
             output_init_failed: false,
             last_audio_delay_written_ms: None,
+            last_audio_delay_attempted_ms: None,
+            last_audio_delay_write_error_at: None,
             last_audio_sample_rate_hz: None,
             last_audio_sample_format: None,
         }
@@ -1522,16 +1528,27 @@ impl DecodeHandler {
         }) {
             let should_write = self
                 .output
-                .last_audio_delay_written_ms
+                .last_audio_delay_attempted_ms
                 .map(|prev| (total_ms - prev).abs() >= 20.0)
                 .unwrap_or(true);
             if should_write {
                 let delay_s = -(total_ms / 1000.0);
                 let delay_path = std::env::temp_dir().join("omniphony_delay");
+                self.output.last_audio_delay_attempted_ms = Some(total_ms);
                 if let Err(e) = std::fs::write(&delay_path, format!("{:.4}\n", delay_s)) {
-                    log::warn!("Could not write {}: {}", delay_path.display(), e);
+                    let now = Instant::now();
+                    let should_log = self
+                        .output
+                        .last_audio_delay_write_error_at
+                        .map(|prev| now.saturating_duration_since(prev).as_secs_f32() >= 5.0)
+                        .unwrap_or(true);
+                    if should_log {
+                        log::warn!("Could not write {}: {}", delay_path.display(), e);
+                        self.output.last_audio_delay_write_error_at = Some(now);
+                    }
                 } else {
                     self.output.last_audio_delay_written_ms = Some(total_ms);
+                    self.output.last_audio_delay_write_error_at = None;
                 }
             }
         }
