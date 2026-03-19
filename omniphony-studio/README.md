@@ -84,7 +84,7 @@ automatiquement `omniphony-renderer` et copie le binaire dans `src-tauri/binarie
 ### Note Arch / AppImage
 
 Sur Arch, les bundles `.deb` et `.rpm` peuvent se générer correctement alors que l’AppImage
-échoue encore au moment de `linuxdeploy` si l’environnement système n’est pas prêt.
+peut échouer au moment de `linuxdeploy`.
 
 Vérifier au minimum :
 
@@ -92,7 +92,14 @@ Vérifier au minimum :
 - `patchelf`
 - module noyau FUSE chargé (`modprobe fuse`)
 
-L’échec AppImage n’empêche pas la génération des autres formats.
+Avec les libs système récentes d’Arch, `linuxdeploy` peut aussi échouer pendant le `strip`
+des dépendances embarquées. Le workaround validé localement est :
+
+```bash
+npm run tauri:build:linux
+```
+
+Ce script applique `NO_STRIP=true` et permet de générer les trois formats, y compris l’AppImage.
 
 ## Notes de dev
 

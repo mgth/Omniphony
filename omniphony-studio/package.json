@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "prepare-sidecar": "node scripts/prepare-sidecar.mjs",
+    "tauri:build:linux": "NO_STRIP=true tauri build",
     "tauri": "tauri"
   },
   "dependencies": {
