@@ -1,7 +1,7 @@
 import { copyFileSync, chmodSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const studioDir = dirname(scriptDir);
@@ -10,25 +10,24 @@ const rendererDir = join(repoRoot, 'omniphony-renderer');
 const binariesDir = join(studioDir, 'src-tauri', 'binaries');
 const defaultSafRoot = join(repoRoot, '..', 'SPARTA', 'SDKs', 'Spatial_Audio_Framework');
 
-const rustInfo = execSync('rustc -vV', { encoding: 'utf8', shell: '/bin/sh' });
+const rustInfo = execFileSync('rustc', ['-vV'], { encoding: 'utf8' });
 const targetTriple = /^host:\s+(.+)$/m.exec(rustInfo)?.[1]?.trim();
 if (!targetTriple) {
   throw new Error('Failed to determine Rust host target triple');
 }
 
-const ext = process.platform === 'win32' ? '.exe' : '';
+const ext = targetTriple.includes('windows') ? '.exe' : '';
 const sidecarName = `orender-${targetTriple}${ext}`;
 const sidecarPath = join(binariesDir, sidecarName);
 const sourcePath = join(rendererDir, 'target', 'release', `orender${ext}`);
 
-execSync('cargo build --release', {
+execFileSync('cargo', ['build', '--release'], {
   cwd: rendererDir,
   stdio: 'inherit',
   env: {
     ...process.env,
     SAF_ROOT: process.env.SAF_ROOT || defaultSafRoot
-  },
-  shell: '/bin/sh'
+  }
 });
 
 if (!existsSync(sourcePath)) {
