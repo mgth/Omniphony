@@ -471,8 +471,6 @@ impl VbapPanner {
         Ok(CartesianCache {
             x_size,
             y_size,
-            z_size,
-            z_neg_size,
             x_coords,
             y_coords,
             z_coords,
@@ -597,8 +595,6 @@ impl VbapPanner {
         Ok(CartesianCache {
             x_size,
             y_size,
-            z_size,
-            z_neg_size,
             x_coords,
             y_coords,
             z_coords,

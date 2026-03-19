@@ -122,9 +122,6 @@ pub enum VbapTableMode {
 struct CartesianCache {
     x_size: usize,
     y_size: usize,
-    // Positive-Z grid point count, including zero.
-    z_size: usize,
-    z_neg_size: usize,
     x_coords: Vec<f32>,
     y_coords: Vec<f32>,
     z_coords: Vec<f32>,
