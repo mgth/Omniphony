@@ -1338,29 +1338,50 @@ fn install_orender_service(
     #[cfg(target_os = "windows")]
     {
         let bin_path = windows_service_bin_path(&spec.orender_path, &spec.args);
-        run_elevated_windows(
-            "sc.exe",
-            &[
-                "create".to_string(),
-                ORENDER_SERVICE_NAME.to_string(),
-                "binPath=".to_string(),
-                bin_path.clone(),
-                "start=".to_string(),
-                "demand".to_string(),
-                "DisplayName=".to_string(),
-                "Omniphony Renderer".to_string(),
-            ],
-            "install service",
-        )?;
-        let _ = run_elevated_windows(
-            "sc.exe",
-            &[
-                "description".to_string(),
-                ORENDER_SERVICE_NAME.to_string(),
-                "Omniphony spatial audio renderer".to_string(),
-            ],
-            "install service",
+
+        // Use a temp .ps1 script with New-Service so that the BinaryPathName
+        // (which contains embedded double-quotes) is passed directly to the
+        // CreateService Win32 API as a PS parameter, bypassing Win32
+        // command-line parsing entirely.  Start-Process -ArgumentList mangles
+        // embedded double-quotes when building sc.exe's command line, which is
+        // why the sc.exe create approach silently fails.
+        let script_path = {
+            let mut p = std::env::temp_dir();
+            p.push(format!("omniphony-install-{}.ps1", std::process::id()));
+            p
+        };
+        let script = format!(
+            "try {{\r\n\
+             New-Service -Name {name} -BinaryPathName {bin} \
+             -DisplayName {display} -StartupType Manual -ErrorAction Stop\r\n\
+             & sc.exe description {name} {desc}\r\n\
+             exit 0\r\n\
+             }} catch {{\r\n\
+             Write-Error $_\r\n\
+             exit 1\r\n\
+             }}\r\n",
+            name = powershell_single_quote(ORENDER_SERVICE_NAME),
+            bin = powershell_single_quote(&bin_path),
+            display = powershell_single_quote("Omniphony Renderer"),
+            desc = powershell_single_quote("Omniphony spatial audio renderer"),
         );
+        std::fs::write(&script_path, script)
+            .map_err(|e| format!("install service: failed to write temp script: {e}"))?;
+
+        let ps_path = script_path.display().to_string();
+        let command = format!(
+            "$p = Start-Process powershell \
+             -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',{}) \
+             -Verb RunAs -Wait -PassThru; \
+             if ($p) {{ exit $p.ExitCode }} else {{ exit 1 }}",
+            powershell_single_quote(&ps_path),
+        );
+        let mut ps_cmd = ProcessCommand::new("powershell");
+        ps_cmd.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
+        let result = run_command(ps_cmd, "install service");
+        let _ = std::fs::remove_file(&script_path);
+        result?;
+
         return Ok(serde_json::json!({
             "command": format!("sc create {} binPath= {}", ORENDER_SERVICE_NAME, bin_path)
         }));
