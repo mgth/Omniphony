@@ -11,6 +11,12 @@ Omniphony regroupe deux composants principaux :
 
 Le but de ce dépôt est de faire converger progressivement les anciens projets séparés vers un dépôt unique.
 
+## Donations
+
+Si Omniphony t’est utile, tu peux soutenir le projet avec un don. Cela aide à maintenir et faire évoluer la suite.
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=YLGYPSHWTQ5UW&lc=FR&item_name=Mgth%C2%A4cy_code=EUR&bn=PP%2dDonationsBF%3abtn_donateCC_LG%2egif%3aNonHosted)
+
 ## Composants
 
 ### `omniphony-renderer`

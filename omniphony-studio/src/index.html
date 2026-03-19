@@ -71,6 +71,57 @@
         letter-spacing: 0.12em;
       }
 
+      .about-logo-row {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+        margin-bottom: 0.8rem;
+      }
+
+      .about-logo {
+        width: 3rem;
+        height: 3rem;
+        border-radius: 0.8rem;
+        flex: 0 0 auto;
+        filter: drop-shadow(0 0 16px rgba(100, 210, 255, 0.25));
+      }
+
+      .about-heading {
+        display: flex;
+        flex-direction: column;
+        gap: 0.12rem;
+      }
+
+      .about-heading strong {
+        font-size: 1.05rem;
+        color: #edf5ff;
+      }
+
+      .about-heading span {
+        font-size: 0.74rem;
+        color: rgba(217, 236, 255, 0.7);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .about-info-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.45rem 0.8rem;
+        align-items: start;
+        font-size: 12px;
+      }
+
+      .about-info-grid dt {
+        color: rgba(217, 236, 255, 0.62);
+      }
+
+      .about-info-grid dd {
+        margin: 0;
+        color: #edf5ff;
+        word-break: break-word;
+      }
+
       #speakersOverlay {
         position: fixed;
         top: 1rem;
@@ -1299,6 +1350,7 @@
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div><span class="osc-status-dot" id="oscStatusDot"></span><span data-i18n="osc.label">OSC</span>: <span id="status">Initializing...</span></div>
         <div style="display:flex;align-items:center;gap:0.35rem">
+          <button id="aboutBtn" type="button" class="info-icon-btn" title="About">?</button>
           <button id="oscInfoBtn" type="button" class="info-icon-btn" data-i18n-title="osc.infoButton" title="OSC info">i</button>
           <button id="oscConfigToggleBtn" type="button" class="panel-toggle-btn" data-i18n-title="osc.configTitle" title="OSC Configuration">⚙</button>
         </div>
@@ -1927,6 +1979,32 @@
         </div>
         <div class="info-modal-actions">
           <button id="oscInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="aboutModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="about-logo-row">
+          <img class="about-logo" src="./omniphony-logo.svg" alt="Omniphony logo" />
+          <div class="about-heading">
+            <strong id="aboutName">Omniphony Studio</strong>
+            <span>About</span>
+          </div>
+        </div>
+        <div id="aboutDescription" class="info-modal-text">
+          3D supervision, live control and layout management for the Omniphony renderer.
+        </div>
+        <dl class="about-info-grid">
+          <dt>Version</dt>
+          <dd id="aboutVersion">0.1.0</dd>
+          <dt>License</dt>
+          <dd id="aboutLicense">GPL-3.0-only</dd>
+          <dt>Repository</dt>
+          <dd><a id="aboutRepositoryLink" href="https://github.com/mgth/Omniphony" target="_blank" rel="noreferrer">github.com/mgth/Omniphony</a></dd>
+        </dl>
+        <div class="info-modal-actions">
+          <button id="aboutCloseBtn" type="button" class="toggle-btn">Close</button>
         </div>
       </div>
     </div>

@@ -48,6 +48,14 @@ const roomGeometrySummaryEl = document.getElementById('roomGeometrySummary');
 const roomGeometrySummaryScaleEl = document.getElementById('roomGeometrySummaryScale');
 const roomGeometrySummarySizeEl = document.getElementById('roomGeometrySummarySize');
 const roomGeometrySummaryRatioEl = document.getElementById('roomGeometrySummaryRatio');
+const aboutBtnEl = document.getElementById('aboutBtn');
+const aboutModalEl = document.getElementById('aboutModal');
+const aboutCloseBtnEl = document.getElementById('aboutCloseBtn');
+const aboutNameEl = document.getElementById('aboutName');
+const aboutDescriptionEl = document.getElementById('aboutDescription');
+const aboutVersionEl = document.getElementById('aboutVersion');
+const aboutLicenseEl = document.getElementById('aboutLicense');
+const aboutRepositoryLinkEl = document.getElementById('aboutRepositoryLink');
 const oscInfoBtnEl = document.getElementById('oscInfoBtn');
 const oscInfoModalEl = document.getElementById('oscInfoModal');
 const oscInfoCloseBtnEl = document.getElementById('oscInfoCloseBtn');
@@ -3764,6 +3772,11 @@ function setOscInfoModalOpen(open) {
   oscInfoModalEl.classList.toggle('open', Boolean(open));
 }
 
+function setAboutModalOpen(open) {
+  if (!aboutModalEl) return;
+  aboutModalEl.classList.toggle('open', Boolean(open));
+}
+
 function setRoomGeometryInfoModalOpen(open) {
   if (!roomGeometryInfoModalEl) return;
   roomGeometryInfoModalEl.classList.toggle('open', Boolean(open));
@@ -6641,6 +6654,26 @@ if (oscInfoBtnEl) {
   });
 }
 
+if (aboutBtnEl) {
+  aboutBtnEl.addEventListener('click', () => {
+    setAboutModalOpen(true);
+  });
+}
+
+if (aboutCloseBtnEl) {
+  aboutCloseBtnEl.addEventListener('click', () => {
+    setAboutModalOpen(false);
+  });
+}
+
+if (aboutModalEl) {
+  aboutModalEl.addEventListener('click', (event) => {
+    if (event.target === aboutModalEl) {
+      setAboutModalOpen(false);
+    }
+  });
+}
+
 if (oscInfoCloseBtnEl) {
   oscInfoCloseBtnEl.addEventListener('click', () => {
     setOscInfoModalOpen(false);
@@ -7789,6 +7822,26 @@ invoke('get_state').then((payload) => {
   pushLog('error', tf('log.stateFailed', { error: normalizeLogError(e) }));
   setOscStatus('error');
 });
+
+invoke('get_about_info').then((payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  if (aboutNameEl && typeof payload.name === 'string') {
+    aboutNameEl.textContent = payload.name;
+  }
+  if (aboutDescriptionEl && typeof payload.description === 'string') {
+    aboutDescriptionEl.textContent = payload.description;
+  }
+  if (aboutVersionEl && typeof payload.version === 'string') {
+    aboutVersionEl.textContent = payload.version;
+  }
+  if (aboutLicenseEl && typeof payload.license === 'string') {
+    aboutLicenseEl.textContent = payload.license;
+  }
+  if (aboutRepositoryLinkEl && typeof payload.repository_url === 'string') {
+    aboutRepositoryLinkEl.href = payload.repository_url;
+    aboutRepositoryLinkEl.textContent = payload.repository_url.replace(/^https?:\/\//, '');
+  }
+}).catch(() => {});
 
 listen('layouts:update', ({ payload }) => {
   hydrateLayoutSelect(payload.layouts || [], payload.selectedLayoutKey);

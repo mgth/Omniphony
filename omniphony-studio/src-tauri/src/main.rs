@@ -36,6 +36,15 @@ fn send_control(tx: &Arc<Mutex<Option<UnboundedSender<OscControlMsg>>>>, msg: Os
     }
 }
 
+#[derive(serde::Serialize)]
+struct AboutInfo {
+    name: &'static str,
+    version: &'static str,
+    license: &'static str,
+    repository_url: &'static str,
+    description: &'static str,
+}
+
 // ── Tauri commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -47,6 +56,17 @@ fn get_state(state: State<SharedState>) -> serde_json::Value {
 #[tauri::command]
 fn get_osc_config(state: State<SharedState>) -> OscConfig {
     load_config(&state.config_dir)
+}
+
+#[tauri::command]
+fn get_about_info() -> AboutInfo {
+    AboutInfo {
+        name: "Omniphony Studio",
+        version: env!("CARGO_PKG_VERSION"),
+        license: "GPL-3.0-only",
+        repository_url: "https://github.com/mgth/Omniphony",
+        description: "3D supervision, live control and layout management for the Omniphony renderer.",
+    }
 }
 
 #[tauri::command]
@@ -1183,6 +1203,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             get_osc_config,
+            get_about_info,
             save_osc_config,
             launch_orender,
             stop_orender,
