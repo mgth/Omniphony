@@ -17,7 +17,7 @@ impl Default for AdaptiveResamplingConfig {
             kp_far: 0.00002,
             ki: 0.0000005,
             max_adjust: 0.01,
-            max_adjust_far: 0.01,
+            max_adjust_far: 0.02,
             near_far_threshold_ms: 120,
             hard_correction_threshold_ms: 0,
             measurement_smoothing_alpha: 0.15,

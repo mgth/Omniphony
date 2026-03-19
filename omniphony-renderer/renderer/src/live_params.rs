@@ -418,6 +418,8 @@ pub struct RendererControl {
 
     /// Requested output device / target name from OSC control.
     pub requested_output_device: Mutex<Option<String>>,
+    /// Actual renderer input path used for this process.
+    pub input_path: Mutex<Option<String>>,
     /// Snapshot of currently available output-device choices for the active backend.
     pub available_output_devices: Mutex<Vec<OutputDeviceOption>>,
 
@@ -469,6 +471,7 @@ impl RendererControl {
             config_dirty: AtomicBool::new(false),
             config_path: Mutex::new(None),
             requested_output_device: Mutex::new(None),
+            input_path: Mutex::new(None),
             available_output_devices: Mutex::new(Vec::new()),
             requested_output_sample_rate_hz: std::sync::atomic::AtomicU32::new(0),
             requested_adaptive_resampling: std::sync::atomic::AtomicBool::new(false),
@@ -654,6 +657,14 @@ impl RendererControl {
 
     pub fn requested_output_device(&self) -> Option<String> {
         self.requested_output_device.lock().unwrap().clone()
+    }
+
+    pub fn set_input_path(&self, input_path: Option<String>) {
+        *self.input_path.lock().unwrap() = input_path;
+    }
+
+    pub fn input_path(&self) -> Option<String> {
+        self.input_path.lock().unwrap().clone()
     }
 
     pub fn set_available_output_devices(&self, devices: Vec<OutputDeviceOption>) {

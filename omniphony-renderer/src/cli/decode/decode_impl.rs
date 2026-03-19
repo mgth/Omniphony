@@ -517,6 +517,7 @@ struct PreparedDecodeRun {
     decode_thread: std::thread::JoinHandle<Result<()>>,
     _shutdown: sys::ShutdownHandle,
     _bridge_lib: bridge_api::BridgeLibRef,
+    input_path: std::path::PathBuf,
     is_spatial_presentation: bool,
     coordinate_format: bridge_api::RCoordinateFormat,
     vbap_cartesian_defaults: bridge_api::RVbapCartesianDefaults,
@@ -666,6 +667,7 @@ fn prepare_render_run(args: &RenderArgs, cli: &Cli) -> Result<PreparedDecodeRun>
         decode_thread,
         _shutdown: shutdown,
         _bridge_lib: lib,
+        input_path: input,
         is_spatial_presentation,
         coordinate_format,
         vbap_cartesian_defaults,
@@ -676,6 +678,7 @@ fn prepare_render_run(args: &RenderArgs, cli: &Cli) -> Result<PreparedDecodeRun>
 fn init_render_handler(
     handler: &mut DecodeHandler,
     args: &RenderArgs,
+    input_path: &std::path::Path,
     config_path: &Option<std::path::PathBuf>,
     current_layout_from_config: Option<renderer::speaker_layout::SpeakerLayout>,
     vbap_cartesian_defaults: bridge_api::RVbapCartesianDefaults,
@@ -1071,6 +1074,7 @@ fn init_render_handler(
             target_os = "windows"
         ))]
         ctrl.set_requested_output_device(args.output_device.clone());
+        ctrl.set_input_path(Some(input_path.display().to_string()));
         if let Some(backend) = args.output_backend.or_else(OutputBackend::platform_default) {
             ctrl.set_available_output_devices(list_available_output_devices(backend));
         } else {
@@ -1367,6 +1371,7 @@ fn run_prepared_render(
     init_render_handler(
         &mut handler,
         &effective_args,
+        &prepared.input_path,
         config_path,
         current_layout_from_config,
         prepared.vbap_cartesian_defaults,

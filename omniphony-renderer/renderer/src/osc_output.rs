@@ -2159,6 +2159,10 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
                 control.requested_output_device().unwrap_or_default(),
             )],
         }),
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/input_pipe".to_string(),
+            args: vec![OscType::String(control.input_path().unwrap_or_default())],
+        }),
     ];
 
     if let Some(ms) = control.requested_latency_target_ms() {

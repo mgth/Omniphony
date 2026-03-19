@@ -13,6 +13,7 @@ import ptBrTranslations from './i18n/pt-BR.json';
 import zhCnTranslations from './i18n/zh-CN.json';
 
 const statusEl = document.getElementById('status');
+const pipeStatusEl = document.getElementById('pipeStatus');
 const layoutSelectEl = document.getElementById('layoutSelect');
 const speakersListEl = document.getElementById('speakersList');
 const objectsListEl = document.getElementById('objectsList');
@@ -653,7 +654,7 @@ let configSaved = null;
 let loudnessEnabled = null;
 let loudnessSource = null;
 let loudnessGain = null;
-let adaptiveResamplingEnabled = null;
+let adaptiveResamplingEnabled = false;
 let adaptiveResamplingKpNear = 0.00001;
 let adaptiveResamplingKpFar = 0.00002;
 let adaptiveResamplingKi = 0.0000005;
@@ -674,6 +675,7 @@ let audioSampleRate = null;
 let rampMode = 'sample';
 let audioOutputDevice = null;
 let audioOutputDevices = [];
+let orenderInputPipe = null;
 let audioSampleFormat = null;
 let oscMeteringEnabled = false;
 let audioOutputDeviceEditing = false;
@@ -991,6 +993,7 @@ function setLatencyInstantMs(value) {
 
 function renderOscStatus() {
   if (statusEl) statusEl.textContent = t(`status.${oscStatusState}`);
+  if (pipeStatusEl) pipeStatusEl.textContent = ` • Pipe: ${orenderInputPipe || '—'}`;
   if (oscStatusDotEl) {
     const colors = {
       initializing: '#89a3ff',
@@ -7789,6 +7792,9 @@ function applyInitState(payload) {
   if (typeof payload.audioSampleFormat === 'string') {
     audioSampleFormat = payload.audioSampleFormat.trim() || null;
   }
+  if (typeof payload.orenderInputPipe === 'string') {
+    orenderInputPipe = payload.orenderInputPipe.trim() || null;
+  }
   if (typeof payload.oscStatus === 'string') {
     const s = payload.oscStatus;
     if (s === 'initializing' || s === 'connected' || s === 'reconnecting' || s === 'error') {
@@ -8253,6 +8259,11 @@ listen('audio:output_devices', ({ payload }) => {
 listen('audio:sample_format', ({ payload }) => {
   audioSampleFormat = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
   updateAudioFormatDisplay();
+});
+
+listen('state:input_pipe', ({ payload }) => {
+  orenderInputPipe = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
+  renderOscStatus();
 });
 
 listen('source:remove', ({ payload }) => {

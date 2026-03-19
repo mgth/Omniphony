@@ -258,6 +258,8 @@ pub enum OscEvent {
     StateAudioOutputDevices { values: Vec<String> },
     #[serde(rename = "state:audio:sample_format")]
     StateAudioSampleFormat { value: String },
+    #[serde(rename = "state:input_pipe")]
+    StateInputPipe { value: String },
     #[serde(rename = "state:osc:metering")]
     StateOscMetering { enabled: bool },
     #[serde(rename = "state:log_level")]
@@ -735,6 +737,10 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             }
             _ => None,
         },
+        (3, "input_pipe") => {
+            let value = raw_args.first().and_then(unwrap_string)?;
+            Some(OscEvent::StateInputPipe { value })
+        }
         (4, "osc") if parts[3] == "metering" => Some(OscEvent::StateOscMetering {
             enabled: to_number(args[0])? != 0.0,
         }),

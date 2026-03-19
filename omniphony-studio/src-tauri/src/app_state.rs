@@ -208,6 +208,8 @@ pub struct AppState {
     pub audio_output_devices: Vec<OutputDeviceOption>,
     #[serde(rename = "audioSampleFormat")]
     pub audio_sample_format: Option<String>,
+    #[serde(rename = "orenderInputPipe")]
+    pub orender_input_pipe: Option<String>,
     #[serde(rename = "oscStatus")]
     pub osc_status: Option<String>,
     #[serde(rename = "oscMeteringEnabled")]
@@ -270,7 +272,7 @@ impl Default for AppState {
             vbap_polar: VbapPolar::default(),
             vbap_mode: VbapMode::default(),
             vbap_allow_negative_z: None,
-            adaptive_resampling: None,
+            adaptive_resampling: Some(0),
             adaptive_resampling_kp_near: Some(0.00001),
             adaptive_resampling_kp_far: Some(0.00002),
             adaptive_resampling_ki: Some(0.0000005),
@@ -292,6 +294,7 @@ impl Default for AppState {
             audio_output_device: None,
             audio_output_devices: Vec::new(),
             audio_sample_format: None,
+            orender_input_pipe: None,
             osc_status: Some("initializing".to_string()),
             osc_metering_enabled: Some(0),
             log_level: Some("info".to_string()),
