@@ -3,7 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Spatial Visualizer</title>
+    <title>Omniphony Studio</title>
+    <link rel="icon" type="image/svg+xml" href="./omniphony-logo.svg" />
     <style>
       :root {
         color-scheme: dark;
@@ -33,6 +34,41 @@
         display: flex;
         flex-direction: column;
         gap: 0.4rem;
+      }
+
+      .app-brand {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        min-width: 0;
+      }
+
+      .app-brand-logo {
+        width: 1.8rem;
+        height: 1.8rem;
+        flex: 0 0 auto;
+        border-radius: 0.45rem;
+        filter: drop-shadow(0 0 10px rgba(100, 210, 255, 0.2));
+      }
+
+      .app-brand-title {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.05rem;
+      }
+
+      .app-brand-title strong {
+        display: block;
+        font-size: 1rem;
+        letter-spacing: 0.01em;
+      }
+
+      .app-brand-subtitle {
+        font-size: 0.7rem;
+        color: rgba(217, 236, 255, 0.7);
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
       }
 
       #speakersOverlay {
@@ -1253,7 +1289,13 @@
       </div>
     </div>
     <div id="overlay">
-      <div><strong data-i18n="app.title">Spatial Visualizer</strong></div>
+      <div class="app-brand">
+        <img class="app-brand-logo" src="./omniphony-logo.svg" alt="Omniphony logo" />
+        <div class="app-brand-title">
+          <strong data-i18n="app.title">Omniphony Studio</strong>
+          <div class="app-brand-subtitle">Spatial Control</div>
+        </div>
+      </div>
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div><span class="osc-status-dot" id="oscStatusDot"></span><span data-i18n="osc.label">OSC</span>: <span id="status">Initializing...</span></div>
         <div style="display:flex;align-items:center;gap:0.35rem">

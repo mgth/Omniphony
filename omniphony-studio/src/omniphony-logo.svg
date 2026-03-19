@@ -1,0 +1,1511 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="1024"
+   height="1024"
+   viewBox="0 0 1024 1024"
+   version="1.1"
+   id="svg30"
+   sodipodi:docname="logo.svg"
+   inkscape:version="1.4.3 (0d15f75042, 2025-12-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview30"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showguides="true"
+     inkscape:zoom="0.38623299"
+     inkscape:cx="638.21581"
+     inkscape:cy="554.06971"
+     inkscape:window-width="2648"
+     inkscape:window-height="1418"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg30" />
+  <defs
+     id="defs3">
+    <radialGradient
+       id="bg"
+       cx="512"
+       cy="512"
+       r="716.79999"
+       fx="512"
+       fy="512"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="translate(-1e-4,10e-5)">
+      <stop
+         offset="0%"
+         stop-color="#0D1A36"
+         id="stop1" />
+      <stop
+         offset="100%"
+         stop-color="#050914"
+         id="stop2" />
+    </radialGradient>
+    <filter
+       id="glow"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2" />
+      <feMerge
+         id="feMerge3">
+        <feMergeNode
+           in="b"
+           id="feMergeNode2" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3" />
+      </feMerge>
+    </filter>
+    <filter
+       id="glow-3"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-6" />
+      <feMerge
+         id="feMerge3-7">
+        <feMergeNode
+           in="b"
+           id="feMergeNode2-5" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3-3" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter4"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur1" />
+      <feMerge
+         id="feMerge4">
+        <feMergeNode
+           in="b"
+           id="feMergeNode1" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode4" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter6"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur4" />
+      <feMerge
+         id="feMerge6">
+        <feMergeNode
+           in="b"
+           id="feMergeNode5" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode6" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter8"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur6" />
+      <feMerge
+         id="feMerge8">
+        <feMergeNode
+           in="b"
+           id="feMergeNode7" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode8" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter10"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur8" />
+      <feMerge
+         id="feMerge10">
+        <feMergeNode
+           in="b"
+           id="feMergeNode9" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode10" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter12"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur10" />
+      <feMerge
+         id="feMerge12">
+        <feMergeNode
+           in="b"
+           id="feMergeNode11" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode12" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter14"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur12" />
+      <feMerge
+         id="feMerge14">
+        <feMergeNode
+           in="b"
+           id="feMergeNode13" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode14" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter16"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur14" />
+      <feMerge
+         id="feMerge16">
+        <feMergeNode
+           in="b"
+           id="feMergeNode15" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode16" />
+      </feMerge>
+    </filter>
+    <filter
+       id="glow-3-6"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-6-0" />
+      <feMerge
+         id="feMerge3-7-6">
+        <feMergeNode
+           in="b"
+           id="feMergeNode2-5-2" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3-3-6" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter2"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur1-1" />
+      <feMerge
+         id="feMerge2">
+        <feMergeNode
+           in="b"
+           id="feMergeNode1-8" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode2-7" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter4-9"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-2" />
+      <feMerge
+         id="feMerge4-0">
+        <feMergeNode
+           in="b"
+           id="feMergeNode3-2" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode4-3" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter6-7"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur4-5" />
+      <feMerge
+         id="feMerge6-9">
+        <feMergeNode
+           in="b"
+           id="feMergeNode5-2" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode6-2" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter8-8"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur6-9" />
+      <feMerge
+         id="feMerge8-7">
+        <feMergeNode
+           in="b"
+           id="feMergeNode7-3" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode8-6" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter10-1"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur8-2" />
+      <feMerge
+         id="feMerge10-9">
+        <feMergeNode
+           in="b"
+           id="feMergeNode9-3" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode10-1" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter12-9"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur10-4" />
+      <feMerge
+         id="feMerge12-7">
+        <feMergeNode
+           in="b"
+           id="feMergeNode11-8" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode12-4" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter14-5"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur12-0" />
+      <feMerge
+         id="feMerge14-3">
+        <feMergeNode
+           in="b"
+           id="feMergeNode13-6" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode14-1" />
+      </feMerge>
+    </filter>
+    <filter
+       id="glow-3-6-7"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-6-0-6" />
+      <feMerge
+         id="feMerge3-7-6-5">
+        <feMergeNode
+           in="b"
+           id="feMergeNode2-5-2-6" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3-3-6-9" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter2-3"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur1-7" />
+      <feMerge
+         id="feMerge2-4">
+        <feMergeNode
+           in="b"
+           id="feMergeNode1-5" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode2-2" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter4-5"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-4" />
+      <feMerge
+         id="feMerge4-7">
+        <feMergeNode
+           in="b"
+           id="feMergeNode3-4" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode4-4" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter6-3"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur4-0" />
+      <feMerge
+         id="feMerge6-7">
+        <feMergeNode
+           in="b"
+           id="feMergeNode5-8" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode6-6" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter8-88"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur6-4" />
+      <feMerge
+         id="feMerge8-3">
+        <feMergeNode
+           in="b"
+           id="feMergeNode7-1" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode8-4" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter10-9"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur8-20" />
+      <feMerge
+         id="feMerge10-6">
+        <feMergeNode
+           in="b"
+           id="feMergeNode9-8" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode10-9" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter12-2"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur10-6" />
+      <feMerge
+         id="feMerge12-6">
+        <feMergeNode
+           in="b"
+           id="feMergeNode11-4" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode12-9" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter14-50"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur12-4" />
+      <feMerge
+         id="feMerge14-8">
+        <feMergeNode
+           in="b"
+           id="feMergeNode13-7" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode14-17" />
+      </feMerge>
+    </filter>
+    <filter
+       id="glow-3-9"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-6-4" />
+      <feMerge
+         id="feMerge3-7-9">
+        <feMergeNode
+           in="b"
+           id="feMergeNode2-5-0" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3-3-9" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter2-1"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur1-77" />
+      <feMerge
+         id="feMerge2-1">
+        <feMergeNode
+           in="b"
+           id="feMergeNode1-1" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode2-59" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter4-7"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-7" />
+      <feMerge
+         id="feMerge4-6">
+        <feMergeNode
+           in="b"
+           id="feMergeNode3-7" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode4-36" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter6-5"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur4-6" />
+      <feMerge
+         id="feMerge6-3">
+        <feMergeNode
+           in="b"
+           id="feMergeNode5-9" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode6-4" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter8-81"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur6-2" />
+      <feMerge
+         id="feMerge8-9">
+        <feMergeNode
+           in="b"
+           id="feMergeNode7-39" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode8-0" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter10-8"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur8-8" />
+      <feMerge
+         id="feMerge10-5">
+        <feMergeNode
+           in="b"
+           id="feMergeNode9-0" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode10-96" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter12-3"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur10-8" />
+      <feMerge
+         id="feMerge12-5">
+        <feMergeNode
+           in="b"
+           id="feMergeNode11-6" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode12-1" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter14-1"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur12-5" />
+      <feMerge
+         id="feMerge14-9">
+        <feMergeNode
+           in="b"
+           id="feMergeNode13-8" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode14-4" />
+      </feMerge>
+    </filter>
+    <filter
+       id="glow-3-9-6"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-6-4-3" />
+      <feMerge
+         id="feMerge3-7-9-1">
+        <feMergeNode
+           in="b"
+           id="feMergeNode2-5-0-7" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3-3-9-5" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter2-9"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur1-6" />
+      <feMerge
+         id="feMerge2-2">
+        <feMergeNode
+           in="b"
+           id="feMergeNode1-17" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode2-8" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter4-57"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-41" />
+      <feMerge
+         id="feMerge4-8">
+        <feMergeNode
+           in="b"
+           id="feMergeNode3-5" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode4-9" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter6-75"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur4-3" />
+      <feMerge
+         id="feMerge6-8">
+        <feMergeNode
+           in="b"
+           id="feMergeNode5-83" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode6-1" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter8-89"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur6-6" />
+      <feMerge
+         id="feMerge8-4">
+        <feMergeNode
+           in="b"
+           id="feMergeNode7-33" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode8-3" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter10-86"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur8-0" />
+      <feMerge
+         id="feMerge10-4">
+        <feMergeNode
+           in="b"
+           id="feMergeNode9-88" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode10-8" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter12-97"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur10-7" />
+      <feMerge
+         id="feMerge12-64">
+        <feMergeNode
+           in="b"
+           id="feMergeNode11-3" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode12-0" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter14-3"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur12-09" />
+      <feMerge
+         id="feMerge14-2">
+        <feMergeNode
+           in="b"
+           id="feMergeNode13-5" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode14-40" />
+      </feMerge>
+    </filter>
+    <filter
+       id="glow-3-9-5"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-6-4-4" />
+      <feMerge
+         id="feMerge3-7-9-8">
+        <feMergeNode
+           in="b"
+           id="feMergeNode2-5-0-1" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3-3-9-2" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter2-8"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur1-9" />
+      <feMerge
+         id="feMerge2-3">
+        <feMergeNode
+           in="b"
+           id="feMergeNode1-6" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode2-80" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter4-2"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-1" />
+      <feMerge
+         id="feMerge4-05">
+        <feMergeNode
+           in="b"
+           id="feMergeNode3-1" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode4-1" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter6-0"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur4-8" />
+      <feMerge
+         id="feMerge6-5">
+        <feMergeNode
+           in="b"
+           id="feMergeNode5-0" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode6-64" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter8-6"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur6-25" />
+      <feMerge
+         id="feMerge8-8">
+        <feMergeNode
+           in="b"
+           id="feMergeNode7-6" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode8-2" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter10-84"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur8-7" />
+      <feMerge
+         id="feMerge10-2">
+        <feMergeNode
+           in="b"
+           id="feMergeNode9-4" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode10-0" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter12-6"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur10-2" />
+      <feMerge
+         id="feMerge12-9">
+        <feMergeNode
+           in="b"
+           id="feMergeNode11-9" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode12-08" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter14-13"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur12-1" />
+      <feMerge
+         id="feMerge14-1">
+        <feMergeNode
+           in="b"
+           id="feMergeNode13-0" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode14-3" />
+      </feMerge>
+    </filter>
+    <filter
+       id="glow-3-9-8"
+       x="-0.061728868"
+       y="-0.07188371"
+       width="1.1234539"
+       height="1.1437878">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-6-4-0" />
+      <feMerge
+         id="feMerge3-7-9-5">
+        <feMergeNode
+           in="b"
+           id="feMergeNode2-5-0-6" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3-3-9-6" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter2-4"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur1-0" />
+      <feMerge
+         id="feMerge2-0">
+        <feMergeNode
+           in="b"
+           id="feMergeNode1-4" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode2-6" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter4-26"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-75" />
+      <feMerge
+         id="feMerge4-69">
+        <feMergeNode
+           in="b"
+           id="feMergeNode3-8" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode4-7" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter6-2"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur4-82" />
+      <feMerge
+         id="feMerge6-99">
+        <feMergeNode
+           in="b"
+           id="feMergeNode5-6" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode6-0" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter8-2"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur6-7" />
+      <feMerge
+         id="feMerge8-6">
+        <feMergeNode
+           in="b"
+           id="feMergeNode7-13" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode8-21" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter10-5"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur8-9" />
+      <feMerge
+         id="feMerge10-91">
+        <feMergeNode
+           in="b"
+           id="feMergeNode9-49" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode10-10" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter12-7"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur10-5" />
+      <feMerge
+         id="feMerge12-8">
+        <feMergeNode
+           in="b"
+           id="feMergeNode11-7" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode12-04" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter14-8"
+       x="-0.22105263"
+       y="-0.22105263"
+       width="1.4421053"
+       height="1.4421053">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur12-04" />
+      <feMerge
+         id="feMerge14-29">
+        <feMergeNode
+           in="b"
+           id="feMergeNode13-61" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode14-0" />
+      </feMerge>
+    </filter>
+    <filter
+       id="glow-3-9-8-0"
+       x="-0.061728868"
+       y="-0.07188371"
+       width="1.1234539"
+       height="1.1437878">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-6-4-0-4" />
+      <feMerge
+         id="feMerge3-7-9-5-0">
+        <feMergeNode
+           in="b"
+           id="feMergeNode2-5-0-6-9" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3-3-9-6-1" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter2-96"
+       x="-0.061728869"
+       y="-0.071883708"
+       width="1.1234539"
+       height="1.1437877">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur1-2" />
+      <feMerge
+         id="feMerge2-5">
+        <feMergeNode
+           in="b"
+           id="feMergeNode1-44" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode2-9" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter4-93"
+       x="-0.061728869"
+       y="-0.071883708"
+       width="1.1234539"
+       height="1.1437877">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur2-60" />
+      <feMerge
+         id="feMerge4-5">
+        <feMergeNode
+           in="b"
+           id="feMergeNode3-0" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode4-2" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter6-9"
+       x="-0.061728869"
+       y="-0.071883708"
+       width="1.1234539"
+       height="1.1437877">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur4-4" />
+      <feMerge
+         id="feMerge6-35">
+        <feMergeNode
+           in="b"
+           id="feMergeNode5-1" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode6-7" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter8-4"
+       x="-0.061728869"
+       y="-0.071883708"
+       width="1.1234539"
+       height="1.1437877">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur6-3" />
+      <feMerge
+         id="feMerge8-1">
+        <feMergeNode
+           in="b"
+           id="feMergeNode7-4" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode8-69" />
+      </feMerge>
+    </filter>
+    <filter
+       id="filter10-4"
+       x="-0.061728869"
+       y="-0.071883708"
+       width="1.1234539"
+       height="1.1437877">
+      <feGaussianBlur
+         stdDeviation="7"
+         result="b"
+         id="feGaussianBlur8-22" />
+      <feMerge
+         id="feMerge10-64">
+        <feMergeNode
+           in="b"
+           id="feMergeNode9-1" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode10-2" />
+      </feMerge>
+    </filter>
+  </defs>
+  <rect
+     x="2783.7324"
+     y="-6.9637804"
+     width="1024"
+     height="2117.0386"
+     fill="#8fd8ff"
+     id="rect4"
+     style="opacity:0.11;stroke-width:2.04951" />
+  <rect
+     width="1024"
+     height="1024"
+     fill="url(#bg)"
+     id="rect3"
+     style="fill:url(#bg)"
+     x="0"
+     y="0" />
+  <path
+     d="m 514.82554,275.5504 c 24,0 42,18 70,14 30,-6 46,18 76,30 30,14 66,10 84,36 18,26 4,50 24,78 22,28 56,50 52,84 -4,36 -40,50 -50,82 -10,32 4,68 -20,90 -26,24 -60,18 -88,38 -30,22 -40,62 -76,66 -36,4 -56,-28 -88,-24 -34,4 -56,38 -90,32 -32,-8 -48,-42 -76,-58 -30,-18 -72,-14 -92,-42 -20,-28 -4,-62 -14,-94 -10,-34 -44,-60 -40,-96 6,-36 44,-52 56,-80 12,-30 -2,-68 26,-90 26,-22 62,-18 92,-36 30,-18 50,-48 86,-44 32,6 50,14 68,14 z"
+     stroke="#56c9ff"
+     stroke-width="28"
+     id="path26-1-0-0"
+     style="opacity:0.672771;fill:none;stroke-linecap:round;stroke-linejoin:round;filter:url(#glow-3-9-8)"
+     transform="matrix(-1.1136785,0,0,-1.1395021,1082.8165,1206.3553)" />
+  <g
+     id="g31"
+     transform="matrix(1.9100991,0,0,1.9301399,-508.51317,-357.49787)"
+     style="opacity:0.672771">
+    <path
+       d="m 505.51645,209.55371 c 30,0 50,22 84,16 36,-6 56,22 92,36 38,16 80,12 102,44 22,32 4,62 30,96 26,34 68,62 64,102 -4,44 -46,62 -58,100 -12,38 6,82 -22,108 -30,28 -72,22 -104,46 -34,26 -46,74 -86,78 -42,4 -66,-34 -104,-30 -40,4 -64,46 -104,38 -38,-8 -56,-48 -90,-68 -36,-22 -86,-16 -110,-50 -24,-34 -4,-72 -18,-110 -14,-40 -56,-70 -50,-114 6,-44 52,-64 68,-100 16,-38 -2,-82 30,-108 32,-28 76,-24 110,-46 34,-22 56,-58 98,-52 38,6 50,14 68,14 z"
+       stroke="#25aeff"
+       stroke-width="20"
+       opacity="0.48"
+       id="path25-9-3-2"
+       style="fill:none;stroke-linecap:round;stroke-linejoin:round;filter:url(#glow-3-9-8)"
+       transform="matrix(-0.59278695,0,0,-0.59278695,833.68779,812.82418)" />
+    <path
+       d="m 501.28505,316.39338 c 20,0 34,14 56,10 24,-4 38,14 62,24 24,12 54,10 68,30 16,20 4,40 20,62 18,24 46,40 42,68 -4,28 -32,40 -40,66 -10,26 2,56 -16,72 -20,18 -48,14 -70,30 -24,16 -32,48 -60,52 -28,4 -44,-22 -70,-18 -28,4 -46,32 -74,28 -26,-6 -38,-32 -62,-46 -24,-14 -56,-12 -72,-34 -16,-22 -4,-50 -10,-76 -8,-26 -34,-46 -30,-74 4,-28 32,-40 40,-64 10,-22 0,-52 22,-68 22,-16 48,-14 72,-28 24,-14 40,-38 68,-34 26,4 40,0 54,0 z"
+       stroke="#86dcff"
+       stroke-width="18"
+       opacity="0.95"
+       id="path27-2-4-5"
+       style="fill:none;stroke-linecap:round;stroke-linejoin:round;filter:url(#glow-3-9-8)"
+       transform="matrix(-0.59278695,0,0,-0.59278695,833.68779,812.82418)" />
+    <path
+       d="m 502.97761,354.31404 c 16,0 28,12 46,8 20,-2 32,12 50,20 20,10 44,8 56,26 12,16 4,32 16,50 14,18 36,32 34,54 -2,24 -26,32 -32,54 -8,22 2,46 -12,60 -16,14 -38,10 -56,22 -20,14 -26,40 -50,42 -22,4 -36,-18 -58,-16 -22,4 -38,26 -62,22 -22,-4 -32,-24 -50,-36 -20,-12 -46,-10 -58,-28 -12,-18 -2,-42 -6,-64 -6,-22 -26,-38 -22,-62 4,-22 28,-32 36,-50 8,-20 0,-44 18,-58 16,-14 40,-12 58,-22 18,-10 32,-28 56,-26 18,4 28,4 36,4 z"
+       stroke="#b5eeff"
+       stroke-width="12"
+       id="path28-7-4-5"
+       style="fill:none;stroke-linecap:round;stroke-linejoin:round;filter:url(#glow-3-9-8)"
+       transform="matrix(-0.59278695,0,0,-0.59278695,833.68779,812.82418)" />
+    <path
+       d="m 504.67017,376.61817 c 12,0 22,8 36,6 16,-2 26,10 42,16 16,8 36,8 46,22 10,14 2,28 12,42 12,16 30,26 28,46 -2,18 -20,26 -26,44 -6,18 2,38 -10,48 -12,12 -30,8 -44,18 -16,10 -20,30 -40,32 -18,2 -30,-14 -48,-12 -18,2 -32,20 -50,18 -18,-4 -26,-20 -42,-28 -16,-10 -38,-10 -48,-24 -10,-14 -2,-34 -4,-52 -4,-18 -20,-32 -16,-50 2,-18 22,-26 28,-42 8,-16 2,-36 16,-46 14,-12 32,-10 48,-18 16,-10 28,-24 46,-22 14,2 22,2 26,2 z"
+       stroke="#e4faff"
+       stroke-width="7"
+       id="path29-0-4-2"
+       style="fill:none;stroke-linecap:round;stroke-linejoin:round;filter:url(#glow-3-9-8)"
+       transform="matrix(-0.59278695,0,0,-0.59278695,833.68779,812.82418)" />
+  </g>
+  <rect
+     style="opacity:1;fill:#9dcfff;fill-opacity:1;stroke-width:0.976176"
+     id="rect31"
+     width="560.27301"
+     height="878.96454"
+     x="236.18068"
+     y="74.087074"
+     ry="43.023918" />
+  <g
+     id="g40"
+     transform="translate(-1.9707015e-5,-37.56073)">
+    <ellipse
+       style="fill:#000000;fill-opacity:0.736574;stroke:#000000;stroke-width:64.0458;stroke-opacity:1"
+       id="path40-8"
+       cx="516.3172"
+       cy="-678.54382"
+       rx="208.28738"
+       ry="208.37822"
+       transform="scale(1,-1)" />
+    <ellipse
+       style="fill:#000000;fill-opacity:0.736574;stroke:#000000;stroke-width:22.699;stroke-opacity:1"
+       id="path40-83"
+       cx="516.3172"
+       cy="-680.50818"
+       rx="73.791565"
+       ry="73.882408"
+       transform="scale(1,-1)" />
+  </g>
+  <!-- fond -->
+  <!-- pellicule plein fond, verticale -->
+  <rect
+     x="-987.06427"
+     y="-988.17682"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect5"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <rect
+     x="-987.06427"
+     y="-161.20859"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect9"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <rect
+     x="-186.82555"
+     y="-982.9223"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect15"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <rect
+     x="-186.82555"
+     y="-155.95407"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect19"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <rect
+     x="-186.82555"
+     y="-776.18024"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect16"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <rect
+     x="-186.82555"
+     y="-569.43817"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect17"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <rect
+     x="-186.82555"
+     y="-362.69608"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect18"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <rect
+     x="-987.06427"
+     y="-574.69269"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect7"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <rect
+     x="-987.06427"
+     y="-367.95059"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect8"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <rect
+     x="-987.06427"
+     y="-781.43475"
+     width="142.22221"
+     height="115.77555"
+     rx="24.380953"
+     id="rect6"
+     style="fill:#ffffff;fill-opacity:1;stroke-width:2.04951"
+     transform="scale(-1)" />
+  <g
+     id="g41"
+     transform="matrix(0.98667642,0,0,0.98327882,6.8791738,-7.400586)">
+    <ellipse
+       style="opacity:1;fill:#000000;fill-opacity:0.736574;stroke:#000000;stroke-width:22.699;stroke-opacity:1"
+       id="path40"
+       cx="516.3172"
+       cy="252.15088"
+       rx="73.791565"
+       ry="73.882408" />
+    <ellipse
+       style="fill:#000000;fill-opacity:0.736574;stroke:#000000;stroke-width:12.45;stroke-opacity:1"
+       id="path40-83-3"
+       cx="516.3172"
+       cy="-252.15088"
+       rx="39.828182"
+       ry="41.179924"
+       transform="scale(1,-1)" />
+  </g>
+</svg>
