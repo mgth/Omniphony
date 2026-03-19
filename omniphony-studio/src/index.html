@@ -144,29 +144,35 @@
       #logOverlay {
         position: fixed;
         top: 0.9rem;
-        left: 50%;
-        transform: translateX(-50%);
+        left: calc(min(440px, 92vw) + 4rem + 2px);
+        right: calc(min(440px, 92vw) + 4rem + 2px);
+        transform: none;
         z-index: 3;
-        width: min(760px, calc(100vw - 31rem));
-        min-width: min(360px, calc(100vw - 2rem));
-        max-width: calc(100vw - 2rem);
+        width: auto;
+        min-width: 0;
+        max-width: none;
         display: flex;
         flex-direction: column;
         gap: 0.4rem;
-        background: rgba(8, 11, 18, 0.42);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 14px;
-        backdrop-filter: blur(10px);
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
         color: #d9ecff;
         overflow: hidden;
       }
 
       #logOverlay.collapsed {
-        padding: 0.45rem 0.7rem;
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        backdrop-filter: none;
+        box-shadow: none;
+        padding: 0;
       }
 
       #logOverlay.expanded {
+        background: rgba(8, 11, 18, 0.42);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 14px;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
         padding: 0.55rem 0.75rem 0.7rem;
       }
 
@@ -176,6 +182,12 @@
         align-items: center;
         gap: 0.65rem;
         min-height: 1.5rem;
+      }
+
+      #logOverlay.collapsed .log-panel-header {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 0.45rem;
+        min-height: 0;
       }
 
       .log-panel-title {
@@ -193,6 +205,12 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+
+      #logOverlay.collapsed .log-panel-summary {
+        font-size: 13px;
+        color: rgba(237, 245, 255, 0.92);
+        text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
       }
 
       .log-panel-actions {
@@ -239,6 +257,30 @@
       .log-panel-btn.icon-only {
         padding: 0;
         width: 1.9rem;
+      }
+
+      #logOverlay.collapsed .log-panel-title,
+      #logOverlay.collapsed .log-panel-level,
+      #logOverlay.collapsed #logClearBtn {
+        display: none;
+      }
+
+      #logOverlay.collapsed .log-panel-actions {
+        justify-self: end;
+      }
+
+      #logOverlay.collapsed .log-panel-btn.icon-only {
+        min-width: 1.6rem;
+        width: 1.6rem;
+        height: 1.6rem;
+        border: 0;
+        background: transparent;
+        color: rgba(237, 245, 255, 0.9);
+        box-shadow: none;
+      }
+
+      #logOverlay.collapsed .log-panel-btn.icon-only:hover {
+        background: rgba(255, 255, 255, 0.08);
       }
 
       .log-panel-body {
