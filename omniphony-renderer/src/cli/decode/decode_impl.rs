@@ -6,9 +6,8 @@ use crate::cli::command::{
 };
 use anyhow::Result;
 #[cfg(target_os = "linux")]
-use audio_output::pipewire::{
-    PipewireAdaptiveResamplingConfig, PipewireBufferConfig, list_pipewire_output_devices,
-};
+use audio_output::pipewire::{PipewireBufferConfig, list_pipewire_output_devices};
+use audio_output::AdaptiveResamplingConfig;
 use log::Level;
 use renderer::live_params::OutputDeviceOption;
 use renderer::metering::AudioMeter;
@@ -693,7 +692,7 @@ fn init_render_handler(
     {
         handler.runtime.output_device = args.output_device.clone();
         let defaults = PipewireBufferConfig::default();
-        let adaptive_defaults = PipewireAdaptiveResamplingConfig::default();
+        let adaptive_defaults = AdaptiveResamplingConfig::default();
         let render_cfg = config_path
             .as_deref()
             .map(renderer::config::Config::load_or_default)
@@ -704,7 +703,7 @@ fn init_render_handler(
             max_latency_ms: args.pw_max_latency.unwrap_or(latency_ms * 2),
             quantum_frames: args.pw_quantum.unwrap_or(defaults.quantum_frames),
         };
-        handler.runtime.pw_adaptive_config = PipewireAdaptiveResamplingConfig {
+        handler.runtime.adaptive_resampling_config = AdaptiveResamplingConfig {
             kp_near: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_kp_near)
@@ -750,6 +749,51 @@ fn init_render_handler(
     #[cfg(target_os = "windows")]
     {
         handler.runtime.output_device = args.output_device.clone();
+        let adaptive_defaults = AdaptiveResamplingConfig::default();
+        let render_cfg = config_path
+            .as_deref()
+            .map(renderer::config::Config::load_or_default)
+            .and_then(|cfg| cfg.render);
+        handler.runtime.adaptive_resampling_config = AdaptiveResamplingConfig {
+            kp_near: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_kp_near)
+                .map(|v| v as f64)
+                .unwrap_or(adaptive_defaults.kp_near),
+            kp_far: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_kp_far)
+                .map(|v| v as f64)
+                .unwrap_or(adaptive_defaults.kp_far),
+            ki: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_ki)
+                .map(|v| v as f64)
+                .unwrap_or(adaptive_defaults.ki),
+            max_adjust: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_max_adjust)
+                .map(|v| v as f64)
+                .unwrap_or(adaptive_defaults.max_adjust),
+            max_adjust_far: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_max_adjust_far)
+                .map(|v| v as f64)
+                .unwrap_or(adaptive_defaults.max_adjust_far),
+            near_far_threshold_ms: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_near_far_threshold_ms)
+                .unwrap_or(adaptive_defaults.near_far_threshold_ms),
+            hard_correction_threshold_ms: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_hard_correction_threshold_ms)
+                .unwrap_or(adaptive_defaults.hard_correction_threshold_ms),
+            measurement_smoothing_alpha: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_measurement_smoothing_alpha)
+                .map(|v| v as f64)
+                .unwrap_or(adaptive_defaults.measurement_smoothing_alpha),
+        };
     }
 
     // Set output sample rate (works for both Linux PipeWire and Windows ASIO)
@@ -1088,7 +1132,7 @@ fn init_render_handler(
         #[cfg(target_os = "linux")]
         {
             let defaults = PipewireBufferConfig::default();
-            let adaptive = &handler.runtime.pw_adaptive_config;
+            let adaptive = &handler.runtime.adaptive_resampling_config;
             ctrl.set_requested_latency_target_ms(Some(
                 args.pw_latency.unwrap_or(defaults.latency_ms),
             ));
@@ -1110,6 +1154,21 @@ fn init_render_handler(
         #[cfg(target_os = "windows")]
         {
             ctrl.set_requested_latency_target_ms(Some(handler.runtime.asio_target_latency_ms));
+            let adaptive = &handler.runtime.adaptive_resampling_config;
+            ctrl.set_requested_adaptive_resampling_kp_near(adaptive.kp_near as f32);
+            ctrl.set_requested_adaptive_resampling_kp_far(adaptive.kp_far as f32);
+            ctrl.set_requested_adaptive_resampling_ki(adaptive.ki as f32);
+            ctrl.set_requested_adaptive_resampling_max_adjust(adaptive.max_adjust as f32);
+            ctrl.set_requested_adaptive_resampling_max_adjust_far(adaptive.max_adjust_far as f32);
+            ctrl.set_requested_adaptive_resampling_near_far_threshold_ms(
+                adaptive.near_far_threshold_ms,
+            );
+            ctrl.set_requested_adaptive_resampling_hard_correction_threshold_ms(
+                adaptive.hard_correction_threshold_ms,
+            );
+            ctrl.set_requested_adaptive_resampling_measurement_smoothing_alpha(
+                adaptive.measurement_smoothing_alpha as f32,
+            );
         }
         // Pass the config path so the save-config OSC handler can persist params.
         if let Some(path) = config_path {

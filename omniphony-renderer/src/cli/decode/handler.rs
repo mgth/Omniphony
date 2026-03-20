@@ -2,8 +2,7 @@ use super::output::{AudioSamples, AudioWriter};
 use crate::cli::command::OutputBackend;
 use crate::events::{Configuration, Event};
 #[cfg(target_os = "linux")]
-use audio_output::pipewire::{PipewireAdaptiveResamplingConfig, PipewireBufferConfig};
-#[cfg(target_os = "windows")]
+use audio_output::pipewire::PipewireBufferConfig;
 use audio_output::AdaptiveResamplingConfig;
 use bridge_api::{RChannelLabel, RCoordinateFormat, RDecodedFrame, RMetadataFrame};
 
@@ -490,10 +489,7 @@ pub struct RuntimeOutputState {
     pub output_device: Option<String>,
     #[cfg(target_os = "linux")]
     pub pw_buffer_config: PipewireBufferConfig,
-    #[cfg(target_os = "linux")]
-    pub pw_adaptive_config: PipewireAdaptiveResamplingConfig,
-    #[cfg(target_os = "windows")]
-    pub asio_adaptive_config: AdaptiveResamplingConfig,
+    pub adaptive_resampling_config: AdaptiveResamplingConfig,
     #[cfg(target_os = "windows")]
     pub asio_target_latency_ms: u32,
     /// Works for both ASIO (Windows) and PipeWire (Linux)
@@ -511,10 +507,7 @@ impl Default for RuntimeOutputState {
             output_device: None,
             #[cfg(target_os = "linux")]
             pw_buffer_config: PipewireBufferConfig::default(),
-            #[cfg(target_os = "linux")]
-            pw_adaptive_config: PipewireAdaptiveResamplingConfig::default(),
-            #[cfg(target_os = "windows")]
-            asio_adaptive_config: AdaptiveResamplingConfig::default(),
+            adaptive_resampling_config: AdaptiveResamplingConfig::default(),
             #[cfg(target_os = "windows")]
             asio_target_latency_ms: 220,
             output_sample_rate: None,
@@ -912,20 +905,20 @@ impl DecodeHandler {
             }
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let _ = output_backend;
 
         Ok(())
     }
 
     fn sync_requested_adaptive_tuning(&mut self, output_backend: OutputBackend) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             let requested = self
                 .spatial_renderer
                 .as_ref()
                 .map(|r| r.renderer_control())
-                .map(|control| PipewireAdaptiveResamplingConfig {
+                .map(|control| AdaptiveResamplingConfig {
                     kp_near: control.requested_adaptive_resampling_kp_near(),
                     kp_far: control.requested_adaptive_resampling_kp_far(),
                     ki: control.requested_adaptive_resampling_ki(),
@@ -938,44 +931,51 @@ impl DecodeHandler {
                     measurement_smoothing_alpha: control
                         .requested_adaptive_resampling_measurement_smoothing_alpha(),
                 })
-                .unwrap_or_else(|| self.runtime.pw_adaptive_config.clone());
+                .unwrap_or_else(|| self.runtime.adaptive_resampling_config.clone());
 
-            if requested.kp_near == self.runtime.pw_adaptive_config.kp_near
-                && requested.kp_far == self.runtime.pw_adaptive_config.kp_far
-                && requested.ki == self.runtime.pw_adaptive_config.ki
-                && requested.max_adjust == self.runtime.pw_adaptive_config.max_adjust
-                && requested.max_adjust_far == self.runtime.pw_adaptive_config.max_adjust_far
+            if requested.kp_near == self.runtime.adaptive_resampling_config.kp_near
+                && requested.kp_far == self.runtime.adaptive_resampling_config.kp_far
+                && requested.ki == self.runtime.adaptive_resampling_config.ki
+                && requested.max_adjust == self.runtime.adaptive_resampling_config.max_adjust
+                && requested.max_adjust_far == self.runtime.adaptive_resampling_config.max_adjust_far
                 && requested.near_far_threshold_ms
-                    == self.runtime.pw_adaptive_config.near_far_threshold_ms
+                    == self.runtime.adaptive_resampling_config.near_far_threshold_ms
                 && requested.hard_correction_threshold_ms
-                    == self.runtime.pw_adaptive_config.hard_correction_threshold_ms
+                    == self.runtime.adaptive_resampling_config.hard_correction_threshold_ms
                 && requested.measurement_smoothing_alpha
-                    == self.runtime.pw_adaptive_config.measurement_smoothing_alpha
+                    == self.runtime.adaptive_resampling_config.measurement_smoothing_alpha
             {
                 return Ok(());
             }
 
-            self.runtime.pw_adaptive_config = requested;
+            self.runtime.adaptive_resampling_config = requested;
             log::info!(
                 "Applying adaptive resampling tuning: kp_near={:.8}, kp_far={:.8}, ki={:.8}, max_adjust={:.6}, max_adjust_far={:.6}, near_far_threshold_ms={}, hard_correction_threshold_ms={}, measurement_smoothing_alpha={:.3}",
-                self.runtime.pw_adaptive_config.kp_near,
-                self.runtime.pw_adaptive_config.kp_far,
-                self.runtime.pw_adaptive_config.ki,
-                self.runtime.pw_adaptive_config.max_adjust,
-                self.runtime.pw_adaptive_config.max_adjust_far,
-                self.runtime.pw_adaptive_config.near_far_threshold_ms,
-                self.runtime.pw_adaptive_config.hard_correction_threshold_ms,
-                self.runtime.pw_adaptive_config.measurement_smoothing_alpha
+                self.runtime.adaptive_resampling_config.kp_near,
+                self.runtime.adaptive_resampling_config.kp_far,
+                self.runtime.adaptive_resampling_config.ki,
+                self.runtime.adaptive_resampling_config.max_adjust,
+                self.runtime.adaptive_resampling_config.max_adjust_far,
+                self.runtime.adaptive_resampling_config.near_far_threshold_ms,
+                self.runtime.adaptive_resampling_config.hard_correction_threshold_ms,
+                self.runtime.adaptive_resampling_config.measurement_smoothing_alpha
             );
 
+            #[cfg(target_os = "linux")]
             if let OutputBackend::Pipewire = output_backend {
+                if let Some(mut writer) = self.output.invalidate_writer() {
+                    let _ = writer.flush();
+                }
+            }
+            #[cfg(target_os = "windows")]
+            if let OutputBackend::Asio = output_backend {
                 if let Some(mut writer) = self.output.invalidate_writer() {
                     let _ = writer.flush();
                 }
             }
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let _ = output_backend;
 
         Ok(())
@@ -1492,7 +1492,7 @@ impl DecodeHandler {
                         self.runtime.enable_adaptive_resampling,
                         self.runtime.output_sample_rate,
                         self.runtime.pw_buffer_config.clone(),
-                        self.runtime.pw_adaptive_config.clone(),
+                        self.runtime.adaptive_resampling_config.clone(),
                     )?)
                 } else {
                     Ok(AudioWriter::create_pipewire(
@@ -1502,7 +1502,7 @@ impl DecodeHandler {
                         self.runtime.enable_adaptive_resampling,
                         self.runtime.output_sample_rate,
                         self.runtime.pw_buffer_config.clone(),
-                        self.runtime.pw_adaptive_config.clone(),
+                        self.runtime.adaptive_resampling_config.clone(),
                     )?)
                 }
             }
@@ -1516,7 +1516,7 @@ impl DecodeHandler {
                     self.runtime.output_device.clone(),
                     self.runtime.asio_target_latency_ms,
                     self.runtime.enable_adaptive_resampling,
-                    self.runtime.asio_adaptive_config.clone(),
+                    self.runtime.adaptive_resampling_config.clone(),
                 )?)
             }
             OutputBackend::Unsupported => Err(anyhow!("No supported realtime output backend")),
