@@ -516,7 +516,7 @@ impl OscSender {
     pub fn send_meter_bundle(
         &self,
         snapshot: &crate::metering::MeterSnapshot,
-        object_gains: &[(usize, Vec<f32>)],
+        object_gains: &[(usize, crate::spatial_vbap::Gains)],
         latency_instant_ms: Option<f32>,
         latency_control_ms: Option<f32>,
         latency_target_ms: Option<f32>,
@@ -525,7 +525,8 @@ impl OscSender {
     ) -> Result<()> {
         // Build an indexable lookup table once (avoids per-frame HashMap hashing).
         let max_gain_id = object_gains.iter().map(|(idx, _)| *idx).max().unwrap_or(0);
-        let mut gains_by_id: Vec<Option<&Vec<f32>>> = vec![None; max_gain_id.saturating_add(1)];
+        let mut gains_by_id: Vec<Option<&crate::spatial_vbap::Gains>> =
+            vec![None; max_gain_id.saturating_add(1)];
         for (idx, g) in object_gains {
             if *idx < gains_by_id.len() {
                 gains_by_id[*idx] = Some(g);
@@ -1490,6 +1491,7 @@ fn handle_control_message(
                         .entry(idx)
                         .or_default()
                         .gain = gain;
+                    control.mark_object_params_dirty();
                     set_dirty(control, socket, clients);
                     broadcast_float(
                         socket,
@@ -1515,6 +1517,7 @@ fn handle_control_message(
                         .entry(idx)
                         .or_default()
                         .muted = muted;
+                    control.mark_object_params_dirty();
                     set_dirty(control, socket, clients);
                     broadcast_int(
                         socket,
@@ -1579,6 +1582,7 @@ fn handle_control_message(
                 .entry(idx)
                 .or_default()
                 .delay_ms = delay_ms;
+            control.mark_speaker_params_dirty();
         }
         broadcast_speaker_config(socket, clients, &layout);
         set_dirty(control, socket, clients);
@@ -1607,6 +1611,7 @@ fn handle_control_message(
             let mut live = control.live.write().unwrap();
             remap_live_speakers_remove(&mut live.speakers, remove_idx);
         }
+        control.mark_speaker_params_dirty();
         set_dirty(control, socket, clients);
         trigger_layout_recompute(control, socket, clients);
         return;
@@ -1640,6 +1645,7 @@ fn handle_control_message(
             let mut live = control.live.write().unwrap();
             remap_live_speakers_move(&mut live.speakers, from_idx, to_idx);
         }
+        control.mark_speaker_params_dirty();
         set_dirty(control, socket, clients);
         trigger_layout_recompute(control, socket, clients);
         return;
@@ -1666,6 +1672,7 @@ fn handle_control_message(
                             .entry(idx)
                             .or_default()
                             .muted = muted;
+                        control.mark_speaker_params_dirty();
                         set_dirty(control, socket, clients);
                         broadcast_int(
                             socket,
@@ -1742,6 +1749,7 @@ fn handle_control_message(
                                 .entry(idx)
                                 .or_default()
                                 .gain = gain;
+                            control.mark_speaker_params_dirty();
                             set_dirty(control, socket, clients);
                             broadcast_float(
                                 socket,
@@ -1760,6 +1768,7 @@ fn handle_control_message(
                                 .entry(idx)
                                 .or_default()
                                 .delay_ms = delay_ms;
+                            control.mark_speaker_params_dirty();
                             control.with_editable_layout(|layout| {
                                 if let Some(spk) = layout.speakers.get_mut(idx) {
                                     spk.delay_ms = delay_ms;

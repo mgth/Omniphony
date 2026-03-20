@@ -68,7 +68,7 @@ use crate::live_params::{
     LiveParams, LiveVbapTableMode, RampMode, RenderTopology, RendererControl, VbapBackendMode,
 };
 use crate::spatial_vbap::VbapTableMode;
-use crate::spatial_vbap::{DistanceModel, VbapPanner, adm_to_spherical};
+use crate::spatial_vbap::{DistanceModel, Gains, VbapPanner, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use std::sync::Arc;
@@ -80,7 +80,7 @@ pub struct RenderedFrame {
     /// VBAP gains at the final sample for each rendered object channel.
     /// `(channel_idx, gains)` — `gains[speaker_idx]` is the gain applied to that speaker.
     /// Ordered by `channel_idx`. Empty if no objects were spatialized this frame.
-    pub object_gains: Vec<(usize, Vec<f32>)>,
+    pub object_gains: Vec<(usize, Gains)>,
 }
 
 /// Format-agnostic spatial metadata for one audio channel (bed or object).
@@ -342,8 +342,8 @@ pub struct SpatialRenderer {
     spread_resolution: f32,
 
     /// Bed channel IDs in PCM order (e.g. [3, 0, 1, 2, ...]).
-    /// Set once via configure_beds() when the first metadata arrives.
-    bed_indices: std::sync::Mutex<Vec<usize>>,
+    /// Updated when format metadata changes and read lock-free in the audio thread.
+    bed_indices: arc_swap::ArcSwap<Vec<usize>>,
 
     /// Flag for first render (for detailed logging)
     first_render: std::sync::atomic::AtomicBool,
@@ -385,6 +385,12 @@ pub struct SpatialRenderer {
 
     /// Scratch snapshot of live per-speaker params, indexed by output speaker.
     speaker_params_buf: Vec<crate::live_params::SpeakerLiveParams>,
+
+    /// Last integrated generation for per-object live params.
+    object_params_generation_seen: u64,
+
+    /// Last integrated generation for per-speaker live params.
+    speaker_params_generation_seen: u64,
 
     /// Scratch routing gains for bed channels.
     ///
@@ -921,7 +927,7 @@ impl SpatialRenderer {
         Self {
             num_speakers,
             spread_resolution,
-            bed_indices: std::sync::Mutex::new(Vec::new()),
+            bed_indices: arc_swap::ArcSwap::new(std::sync::Arc::new(Vec::new())),
             first_render: std::sync::atomic::AtomicBool::new(true),
             frame_counter: std::sync::atomic::AtomicU64::new(0),
             channel_states: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -935,6 +941,8 @@ impl SpatialRenderer {
             speaker_gains_buf: vec![0.0f32; num_speakers],
             object_params_buf: Vec::new(),
             speaker_params_buf: vec![crate::live_params::SpeakerLiveParams::default(); num_speakers],
+            object_params_generation_seen: 0,
+            speaker_params_generation_seen: 0,
             bed_routing_gains_buf: vec![0.0f32; num_speakers],
             delay_lines: {
                 let max_delay = (0.1 * sample_rate as f32) as usize; // 100 ms
@@ -989,7 +997,8 @@ impl SpatialRenderer {
     /// Must be called once when the first metadata arrives, before any call to `render_frame`.
     /// The mapping is stable for the lifetime of the stream.
     pub fn configure_beds(&self, bed_indices: &[usize]) {
-        *self.bed_indices.lock().unwrap() = bed_indices.to_vec();
+        self.bed_indices
+            .store(std::sync::Arc::new(bed_indices.to_vec()));
         log::debug!("Renderer bed_indices configured: {:?}", bed_indices);
     }
 
@@ -1117,37 +1126,58 @@ impl SpatialRenderer {
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
         let live = {
             let g = self.control.live.read().unwrap();
-            if self.object_params_buf.len() < input_channel_count {
+            let object_params_generation = self
+                .control
+                .object_params_generation
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let speaker_params_generation = self
+                .control
+                .speaker_params_generation
+                .load(std::sync::atomic::Ordering::Relaxed);
+
+            if self.object_params_generation_seen != object_params_generation {
+                if self.object_params_buf.len() < input_channel_count {
+                    self.object_params_buf.resize(
+                        input_channel_count,
+                        crate::live_params::ObjectLiveParams::default(),
+                    );
+                }
+                for params in self.object_params_buf.iter_mut().take(input_channel_count) {
+                    *params = crate::live_params::ObjectLiveParams::default();
+                }
+                for (&idx, params) in &g.objects {
+                    if idx >= self.object_params_buf.len() {
+                        self.object_params_buf.resize(
+                            idx + 1,
+                            crate::live_params::ObjectLiveParams::default(),
+                        );
+                    }
+                    self.object_params_buf[idx] = params.clone();
+                }
+                self.object_params_generation_seen = object_params_generation;
+            } else if self.object_params_buf.len() < input_channel_count {
                 self.object_params_buf.resize(
                     input_channel_count,
                     crate::live_params::ObjectLiveParams::default(),
                 );
             }
-            for params in self.object_params_buf.iter_mut().take(input_channel_count) {
-                *params = crate::live_params::ObjectLiveParams::default();
-            }
-            for (&idx, params) in &g.objects {
-                if idx >= self.object_params_buf.len() {
-                    self.object_params_buf.resize(
-                        idx + 1,
-                        crate::live_params::ObjectLiveParams::default(),
+
+            if self.speaker_params_generation_seen != speaker_params_generation {
+                if self.speaker_params_buf.len() < self.num_speakers {
+                    self.speaker_params_buf.resize(
+                        self.num_speakers,
+                        crate::live_params::SpeakerLiveParams::default(),
                     );
                 }
-                self.object_params_buf[idx] = params.clone();
-            }
-            if self.speaker_params_buf.len() < self.num_speakers {
-                self.speaker_params_buf.resize(
-                    self.num_speakers,
-                    crate::live_params::SpeakerLiveParams::default(),
-                );
-            }
-            for params in self.speaker_params_buf.iter_mut().take(self.num_speakers) {
-                *params = crate::live_params::SpeakerLiveParams::default();
-            }
-            for (&idx, params) in &g.speakers {
-                if idx < self.speaker_params_buf.len() {
-                    self.speaker_params_buf[idx] = params.clone();
+                for params in self.speaker_params_buf.iter_mut().take(self.num_speakers) {
+                    *params = crate::live_params::SpeakerLiveParams::default();
                 }
+                for (&idx, params) in &g.speakers {
+                    if idx < self.speaker_params_buf.len() {
+                        self.speaker_params_buf[idx] = params.clone();
+                    }
+                }
+                self.speaker_params_generation_seen = speaker_params_generation;
             }
             LiveSnapshot {
                 master_gain: g.master_gain,
@@ -1186,8 +1216,8 @@ impl SpatialRenderer {
             0
         };
 
-        // Snapshot bed_indices once for this frame (stable after configure_beds).
-        let bed_indices = self.bed_indices.lock().unwrap().clone();
+        // Snapshot bed_indices once for this frame via ArcSwap: no mutex and no Vec clone.
+        let bed_indices = self.bed_indices.load_full();
         let active_layout = &topology.speaker_layout;
         let active_bed_to_speaker_mapping = &topology.bed_to_speaker_mapping;
         let active_vbap_to_speaker_mapping = &topology.vbap_to_speaker_mapping;
@@ -1199,7 +1229,7 @@ impl SpatialRenderer {
         output.resize(required, 0.0);
 
         // Collect VBAP gains at the final sample for each object channel (for monitoring).
-        let mut object_gains_out: Vec<(usize, Vec<f32>)> =
+        let mut object_gains_out: Vec<(usize, Gains)> =
             Vec::with_capacity(input_channel_count);
 
         // Beds always come FIRST in PCM data, then objects.
@@ -1296,7 +1326,11 @@ impl SpatialRenderer {
                     }
                 }
 
-                object_gains_out.push((input_channel_idx, self.bed_routing_gains_buf.clone()));
+                let mut gains = Gains::zeroed(self.num_speakers);
+                for (speaker_idx, &gain) in self.bed_routing_gains_buf.iter().enumerate() {
+                    gains.set(speaker_idx, gain);
+                }
+                object_gains_out.push((input_channel_idx, gains));
 
                 if is_first {
                     let speaker_name = active_layout.speakers[speaker_idx].name.as_str();
@@ -1565,13 +1599,16 @@ impl SpatialRenderer {
                     }
 
                     if let Some(mapping) = active_vbap_to_speaker_mapping {
-                        let mut gains = vec![0.0f32; self.num_speakers];
+                        let mut gains = Gains::zeroed(self.num_speakers);
                         for (vbap_idx, &gain) in final_gains.iter().enumerate() {
-                            gains[mapping[vbap_idx]] = gain;
+                            gains.set(mapping[vbap_idx], gain);
                         }
                         object_gains_out.push((input_channel_idx, gains));
                     } else {
-                        let gains: Vec<f32> = final_gains.iter().copied().collect();
+                        let mut gains = Gains::zeroed(self.num_speakers);
+                        for (speaker_idx, &gain) in final_gains.iter().enumerate() {
+                            gains.set(speaker_idx, gain);
+                        }
                         object_gains_out.push((input_channel_idx, gains));
                     }
                     continue;
@@ -1605,9 +1642,9 @@ impl SpatialRenderer {
                         }
                         // At the last sample, collect gains for the caller (monitoring/OSC).
                         if sample_idx == sample_length - 1 {
-                            let mut gains = vec![0.0f32; self.num_speakers];
+                            let mut gains = Gains::zeroed(self.num_speakers);
                             for (vbap_idx, &gain) in final_gains.iter().enumerate() {
-                                gains[mapping[vbap_idx]] = gain;
+                                gains.set(mapping[vbap_idx], gain);
                             }
                             object_gains_out.push((input_channel_idx, gains));
                         }
@@ -1618,8 +1655,7 @@ impl SpatialRenderer {
                         }
                         // At the last sample, collect gains for the caller (monitoring/OSC).
                         if sample_idx == sample_length - 1 {
-                            let gains: Vec<f32> = final_gains.iter().copied().collect();
-                            object_gains_out.push((input_channel_idx, gains));
+                            object_gains_out.push((input_channel_idx, final_gains.clone()));
                         }
                     }
                 }

@@ -415,6 +415,12 @@ pub struct RendererControl {
     /// Reset to `false` by a successful `/omniphony/control/save_config`.
     pub config_dirty: AtomicBool,
 
+    /// Bumped whenever per-object live params change.
+    pub object_params_generation: std::sync::atomic::AtomicU64,
+
+    /// Bumped whenever per-speaker live params change.
+    pub speaker_params_generation: std::sync::atomic::AtomicU64,
+
     /// Path of the active config file, used by the save-config handler.
     /// Set after construction via `set_config_path()`.
     pub config_path: Mutex<Option<PathBuf>>,
@@ -478,6 +484,8 @@ impl RendererControl {
             vbap_rebuild_params,
             recomputing: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
+            object_params_generation: std::sync::atomic::AtomicU64::new(1),
+            speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             config_path: Mutex::new(None),
             requested_output_device: Mutex::new(None),
             input_path: Mutex::new(None),
@@ -529,6 +537,16 @@ impl RendererControl {
 
     pub fn publish_topology(&self, topology: RenderTopology) {
         self.topology.store(Arc::new(topology));
+    }
+
+    pub fn mark_object_params_dirty(&self) {
+        self.object_params_generation
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn mark_speaker_params_dirty(&self) {
+        self.speaker_params_generation
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     #[cfg(feature = "saf_vbap")]
