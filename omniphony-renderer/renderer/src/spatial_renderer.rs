@@ -167,7 +167,7 @@ impl RenderGainCache {
         &self,
         topology_identity: usize,
         rendering_position: [f64; 3],
-        live: &LiveSnapshot,
+        live: &LiveSnapshot<'_>,
         distance_model: crate::spatial_vbap::DistanceModel,
     ) -> bool {
         self.valid
@@ -193,7 +193,7 @@ impl RenderGainCache {
         &mut self,
         topology_identity: usize,
         rendering_position: [f64; 3],
-        live: &LiveSnapshot,
+        live: &LiveSnapshot<'_>,
         distance_model: crate::spatial_vbap::DistanceModel,
     ) {
         self.topology_identity = topology_identity;
@@ -313,9 +313,9 @@ fn map_depth_with_room_ratios(
 /// Holding this snapshot (rather than keeping the `RwLock` locked) allows the
 /// OSC listener to write new values at any time without blocking the render
 /// thread between samples.
-struct LiveSnapshot {
+struct LiveSnapshot<'a> {
     master_gain: f32,
-    objects: std::collections::HashMap<usize, crate::live_params::ObjectLiveParams>,
+    object_params: &'a [crate::live_params::ObjectLiveParams],
     spread_min: f32,
     spread_max: f32,
     spread_from_distance: bool,
@@ -323,7 +323,7 @@ struct LiveSnapshot {
     spread_distance_curve: f32,
     ramp_mode: RampMode,
     use_loudness: bool,
-    speakers: std::collections::HashMap<usize, crate::live_params::SpeakerLiveParams>,
+    speaker_params: &'a [crate::live_params::SpeakerLiveParams],
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -379,6 +379,12 @@ pub struct SpatialRenderer {
 
     /// Per-speaker gain scratch buffer — pre-allocated once, reused every frame.
     speaker_gains_buf: Vec<f32>,
+
+    /// Scratch snapshot of live per-object params, indexed by input channel.
+    object_params_buf: Vec<crate::live_params::ObjectLiveParams>,
+
+    /// Scratch snapshot of live per-speaker params, indexed by output speaker.
+    speaker_params_buf: Vec<crate::live_params::SpeakerLiveParams>,
 
     /// Scratch routing gains for bed channels.
     ///
@@ -927,6 +933,8 @@ impl SpatialRenderer {
             current_auto_gain: std::sync::atomic::AtomicU32::new(1.0_f32.to_bits()),
             control,
             speaker_gains_buf: vec![0.0f32; num_speakers],
+            object_params_buf: Vec::new(),
+            speaker_params_buf: vec![crate::live_params::SpeakerLiveParams::default(); num_speakers],
             bed_routing_gains_buf: vec![0.0f32; num_speakers],
             delay_lines: {
                 let max_delay = (0.1 * sample_rate as f32) as usize; // 100 ms
@@ -1109,9 +1117,41 @@ impl SpatialRenderer {
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
         let live = {
             let g = self.control.live.read().unwrap();
+            if self.object_params_buf.len() < input_channel_count {
+                self.object_params_buf.resize(
+                    input_channel_count,
+                    crate::live_params::ObjectLiveParams::default(),
+                );
+            }
+            for params in self.object_params_buf.iter_mut().take(input_channel_count) {
+                *params = crate::live_params::ObjectLiveParams::default();
+            }
+            for (&idx, params) in &g.objects {
+                if idx >= self.object_params_buf.len() {
+                    self.object_params_buf.resize(
+                        idx + 1,
+                        crate::live_params::ObjectLiveParams::default(),
+                    );
+                }
+                self.object_params_buf[idx] = params.clone();
+            }
+            if self.speaker_params_buf.len() < self.num_speakers {
+                self.speaker_params_buf.resize(
+                    self.num_speakers,
+                    crate::live_params::SpeakerLiveParams::default(),
+                );
+            }
+            for params in self.speaker_params_buf.iter_mut().take(self.num_speakers) {
+                *params = crate::live_params::SpeakerLiveParams::default();
+            }
+            for (&idx, params) in &g.speakers {
+                if idx < self.speaker_params_buf.len() {
+                    self.speaker_params_buf[idx] = params.clone();
+                }
+            }
             LiveSnapshot {
                 master_gain: g.master_gain,
-                objects: g.objects.clone(),
+                object_params: &self.object_params_buf[..input_channel_count],
                 spread_min: g.spread_min,
                 spread_max: g.spread_max,
                 spread_from_distance: g.spread_from_distance,
@@ -1119,7 +1159,7 @@ impl SpatialRenderer {
                 spread_distance_curve: g.spread_distance_curve,
                 ramp_mode: g.ramp_mode,
                 use_loudness: g.use_loudness,
-                speakers: g.speakers.clone(),
+                speaker_params: &self.speaker_params_buf[..self.num_speakers],
                 room_ratio: g.room_ratio,
                 room_ratio_rear: g.room_ratio_rear,
                 room_ratio_lower: g.room_ratio_lower,
@@ -1201,7 +1241,8 @@ impl SpatialRenderer {
         for input_channel_idx in 0..input_channel_count {
             // Per-channel live gain + mute (applies to beds and objects).
             // Mute is independent of gain: unmuting restores the stored gain.
-            let obj_gain = match live.objects.get(&input_channel_idx) {
+            let obj_params = live.object_params.get(input_channel_idx);
+            let obj_gain = match obj_params {
                 Some(o) if o.muted => 0.0,
                 Some(o) => o.gain,
                 None => 1.0,
@@ -1620,8 +1661,8 @@ impl SpatialRenderer {
             .iter_mut()
             .enumerate()
             .for_each(|(idx, g)| {
-                let sp = live.speakers.get(&idx);
-                *g = if sp.map_or(false, |s| s.muted) {
+                let sp = live.speaker_params.get(idx);
+                *g = if sp.is_some_and(|s| s.muted) {
                     0.0
                 } else {
                     total_gain * sp.map_or(1.0, |s| s.gain)
@@ -1629,7 +1670,7 @@ impl SpatialRenderer {
             });
         for (idx, dl) in self.delay_lines.iter_mut().enumerate() {
             dl.set_target_ms(
-                live.speakers.get(&idx).map_or(0.0, |s| s.delay_ms),
+                live.speaker_params.get(idx).map_or(0.0, |s| s.delay_ms),
                 self.sample_rate,
             );
         }
