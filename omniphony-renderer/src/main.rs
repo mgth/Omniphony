@@ -67,87 +67,6 @@ where
     args
 }
 
-/// Pre-create JACK client named pipe instances with a null DACL before libjack
-/// does, establishing a world-accessible device-object security descriptor.
-///
-/// Windows sets a named pipe's device-object security descriptor from the FIRST
-/// `CreateNamedPipeW` call for each pipe name.  By pre-creating with null DACL,
-/// all subsequent instances — including those libjack creates with `NULL`
-/// lpSecurityAttributes — use the already-established null-DACL descriptor.
-/// jackd in Session 1 can then connect without ACCESS_DENIED (err = 5).
-///
-/// The returned `Vec<HANDLE>` keeps the pre-created instances alive for the
-/// service lifetime.  Because `ConnectNamedPipe` is never called on them,
-/// jackd will not accidentally connect to our dummy instances; it will connect
-/// to libjack's listening instances instead.
-///
-/// Pipe parameters must match what libjack uses (PIPE_ACCESS_INBOUND |
-/// FILE_FLAG_OVERLAPPED, PIPE_TYPE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES)
-/// so that libjack's subsequent `CreateNamedPipeW` call succeeds.
-#[cfg(windows)]
-fn pre_create_jack_client_pipes() -> Vec<windows::Win32::Foundation::HANDLE> {
-    use windows::Win32::Foundation::BOOL;
-    use windows::Win32::Security::{
-        InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-        SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl,
-    };
-    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
-    use windows::Win32::System::Pipes::{CreateNamedPipeW, NAMED_PIPE_MODE};
-    use windows::core::PCWSTR;
-
-    // Match libjack's CreateNamedPipeW parameters exactly.
-    // All instances of a named pipe must use the same access/type flags.
-    const PIPE_ACCESS_INBOUND: u32 = 0x0000_0001;
-    const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
-    const PIPE_TYPE_BYTE: u32 = 0x0000_0000;
-    const PIPE_WAIT: u32 = 0x0000_0000;
-    const PIPE_UNLIMITED_INSTANCES: u32 = 255;
-
-    let mut sd = unsafe { std::mem::zeroed::<SECURITY_DESCRIPTOR>() };
-    let psd = PSECURITY_DESCRIPTOR(&mut sd as *mut SECURITY_DESCRIPTOR as *mut _);
-    if unsafe { InitializeSecurityDescriptor(psd, 1) }.is_err()
-        || unsafe { SetSecurityDescriptorDacl(psd, BOOL(1), None, BOOL(0)) }.is_err()
-    {
-        log::warn!("pre_create_jack_client_pipes: failed to build null DACL SD");
-        return Vec::new();
-    }
-    let sa = SECURITY_ATTRIBUTES {
-        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: psd.0,
-        bInheritHandle: BOOL(0),
-    };
-
-    let mut handles = Vec::new();
-    for i in 0u32..16 {
-        let name: Vec<u16> = format!("\\\\.\\pipe\\client_jack_orender_{i}\0")
-            .encode_utf16()
-            .collect();
-        let h = unsafe {
-            CreateNamedPipeW(
-                PCWSTR(name.as_ptr()),
-                FILE_FLAGS_AND_ATTRIBUTES(PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED),
-                NAMED_PIPE_MODE(PIPE_TYPE_BYTE | PIPE_WAIT),
-                PIPE_UNLIMITED_INSTANCES,
-                65536,
-                65536,
-                0,
-                Some(&sa),
-            )
-        };
-        use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
-        if h != INVALID_HANDLE_VALUE {
-            log::info!("pre_create_jack_client_pipes: seeded client_jack_orender_{i}");
-            handles.push(h);
-        } else {
-            log::debug!(
-                "pre_create_jack_client_pipes: client_jack_orender_{i} failed: {:?}",
-                windows::core::Error::from_win32()
-            );
-        }
-    }
-    handles
-}
-
 /// Entry point when running as a Windows service (called by SCM via sys::windows).
 /// Parses args from the service's binPath and runs the render command.
 #[cfg(windows)]
@@ -155,13 +74,6 @@ fn run_as_service() -> anyhow::Result<()> {
     use clap::Parser as ClapParser;
     use cli::command::{Cli, Commands};
     use cli::decode::cmd_render;
-
-    // Pre-create JACK client pipe names with a null DACL so that libjack's
-    // subsequent CreateNamedPipeW calls inherit the world-accessible device-
-    // object security descriptor we established.  jackd in Session 1 can then
-    // connect without ACCESS_DENIED (err = 5).  Handles kept alive for the
-    // service lifetime; ConnectNamedPipe is never called on them.
-    let _jack_pipe_guards = pre_create_jack_client_pipes();
 
     let cli = Cli::parse_from(normalize_cli_args(std::env::args_os()));
     match cli.command {
