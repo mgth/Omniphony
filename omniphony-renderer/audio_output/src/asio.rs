@@ -32,7 +32,8 @@ const RESAMPLER_CHUNK_SIZE: usize = 1024; // Input chunk size for resampler
 
 pub struct AsioWriter {
     sample_buffer: Arc<ArrayQueue<f32>>,
-    sample_rate: u32,
+    input_sample_rate: u32,
+    _output_sample_rate: u32,
     channel_count: u32,        // Number of audio channels we're producing
     device_channel_count: u32, // Number of channels the ASIO device expects
     stream_ready: Arc<AtomicBool>,
@@ -266,23 +267,24 @@ impl AsioWriter {
 
         // Calculate max ratio for adaptive adjustments
         // Allow small adjustments around the base resample ratio
-        let max_resample_ratio = resample_ratio
-            * (1.0
-                + adaptive_config
-                    .max_adjust
-                    .max(adaptive_config.max_adjust_far)
-                    .max(0.000001));
+        // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
+        let max_resample_ratio_relative = 1.0
+            + adaptive_config
+                .max_adjust
+                .max(adaptive_config.max_adjust_far)
+                .max(0.000001);
+        let max_resample_ratio_abs = resample_ratio * max_resample_ratio_relative;
 
         log::debug!(
             "Initializing resampler: base_ratio={:.4}, max_ratio={:.4}, chunk_size={}",
             resample_ratio,
-            max_resample_ratio,
+            max_resample_ratio_abs,
             RESAMPLER_CHUNK_SIZE
         );
 
         let mut resampler = SincFixedIn::<f32>::new(
             resample_ratio,
-            max_resample_ratio,
+            max_resample_ratio_relative,
             params,
             RESAMPLER_CHUNK_SIZE,
             channel_count as usize,
@@ -340,13 +342,29 @@ impl AsioWriter {
                 }
 
                 // 1. Check buffer fill & Calculate Rate
-                let available_samples = buffer_clone.len(); // Total i32 samples (frames * channels)
+                let available_samples = buffer_clone.len(); // Input-domain samples (frames * channels)
+                let output_fifo_input_domain_samples = if resample_ratio > 0.0 {
+                    ((output_fifo.len() as f64) / resample_ratio).round() as usize
+                } else {
+                    output_fifo.len()
+                };
+                let total_available_input_domain =
+                    available_samples.saturating_add(output_fifo_input_domain_samples);
                 // data.len() is in device-channel domain; convert it to rendered-audio samples
                 // before comparing against the renderer/ring buffer fill level.
                 let callback_frames = data.len() / device_channel_count_for_callback as usize;
                 let callback_audio_samples = callback_frames * channel_count as usize;
-                let control_available =
-                    available_samples.saturating_sub(callback_audio_samples / 2);
+                // Ring-buffer occupancy is tracked in input-domain samples, while the
+                // ASIO callback consumes output-domain samples after local resampling.
+                // Convert the callback midpoint estimate back to input-domain samples
+                // before comparing against the input-domain fill level.
+                let callback_input_domain_samples = if resample_ratio > 0.0 {
+                    ((callback_audio_samples as f64) / resample_ratio).round() as usize
+                } else {
+                    callback_audio_samples
+                };
+                let control_available = total_available_input_domain
+                    .saturating_sub(callback_input_domain_samples / 2);
                 let smoothed_control_available = apply_ema(
                     &mut controller_state.smoothed_control_available,
                     control_available as f64,
@@ -356,7 +374,7 @@ impl AsioWriter {
                 .round() as usize;
                 let smoothed_total_available = apply_ema(
                     &mut controller_state.smoothed_total_available,
-                    available_samples as f64,
+                    total_available_input_domain as f64,
                     measurement_smoothing_alpha,
                 )
                 .max(0.0)
@@ -615,7 +633,8 @@ impl AsioWriter {
 
         Ok(Self {
             sample_buffer,
-            sample_rate: output_sample_rate,
+            input_sample_rate,
+            _output_sample_rate: output_sample_rate,
             channel_count,
             device_channel_count: device_channel_count as u32,
             stream_ready,
@@ -696,7 +715,9 @@ impl AsioWriter {
     }
 
     pub fn total_audio_delay_ms(&self) -> f32 {
-        (self.target_buffer_fill as f32 / self.channel_count as f32 / self.sample_rate as f32)
+        (self.target_buffer_fill as f32
+            / self.channel_count as f32
+            / self.input_sample_rate as f32)
             * 1000.0
     }
 
