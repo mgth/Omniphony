@@ -76,14 +76,18 @@ if not exist "%JACKD_EXE%" (
     exit /b 1
 )
 
-:: Vérification que nssm est accessible
-where %NSSM_EXE% >nul 2>&1
-if %ERRORLEVEL% neq 0 (
-    echo ERREUR : nssm.exe introuvable dans le PATH.
-    echo Telechargez NSSM depuis https://nssm.cc/download ^(version 64-bit^)
-    echo et placez nssm.exe dans un repertoire du PATH ^(ex: C:\Windows\System32^).
-    pause
-    exit /b 1
+:: Recherche nssm.exe : d'abord dans le répertoire du script, puis dans le PATH
+if exist "%~dp0nssm.exe" (
+    set NSSM_EXE=%~dp0nssm.exe
+) else (
+    where nssm.exe >nul 2>&1
+    if %ERRORLEVEL% neq 0 (
+        echo ERREUR : nssm.exe introuvable.
+        echo Telechargez NSSM depuis https://nssm.cc/download ^(version 64-bit^)
+        echo et placez nssm.exe dans le meme repertoire que ce script ou dans le PATH.
+        pause
+        exit /b 1
+    )
 )
 
 :: Supprimer l'ancienne instance du service si elle existe
