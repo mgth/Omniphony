@@ -226,6 +226,7 @@ const oscBridgeBrowseBtnEl = document.getElementById('oscBridgeBrowseBtn');
 const oscMeteringToggleEl = document.getElementById('oscMeteringToggle');
 const oscConfigApplyBtnEl = document.getElementById('oscConfigApplyBtn');
 const oscServiceBtnEl = document.getElementById('oscServiceBtn');
+const oscRestartServiceBtnEl = document.getElementById('oscRestartServiceBtn');
 const oscLaunchRendererBtnEl = document.getElementById('oscLaunchRendererBtn');
 const trailModeSelectEl = document.getElementById('trailModeSelect');
 const trailTtlSliderEl = document.getElementById('trailTtlSlider');
@@ -678,6 +679,7 @@ let audioOutputDevice = null;
 let audioOutputDevices = [];
 let orenderInputPipe = null;
 let audioSampleFormat = null;
+let audioError = null;
 let oscMeteringEnabled = false;
 let audioOutputDeviceEditing = false;
 let audioSampleRateEditing = false;
@@ -709,6 +711,7 @@ let oscStatusState = 'initializing';
 let oscConfigAutoOpenTimer = null;
 let oscLaunchPending = false;
 let oscConfiguredOrenderPath = '';
+let oscConfigBaselineKey = '';
 let orenderServiceInstalled = false;
 let orenderServiceRunning = false;
 let orenderServiceManager = null;
@@ -1014,6 +1017,15 @@ function renderOscStatus() {
     const manager = orenderServiceManager ? ` (${orenderServiceManager})` : '';
     oscServiceBtnEl.title = `${orenderServiceInstalled ? 'Uninstall' : 'Install'} service${manager}`;
   }
+  if (oscRestartServiceBtnEl) {
+    const enabled = orenderServiceInstalled && !orenderServicePending && !oscLaunchPending;
+    oscRestartServiceBtnEl.disabled = !enabled;
+    oscRestartServiceBtnEl.style.opacity = enabled ? '1' : '0.45';
+    oscRestartServiceBtnEl.style.cursor = enabled ? 'pointer' : 'default';
+    oscRestartServiceBtnEl.title = orenderServiceInstalled
+      ? 'Restart service'
+      : 'Install service first';
+  }
   if (oscStatusDotEl) {
     const colors = {
       initializing: '#89a3ff',
@@ -1039,6 +1051,7 @@ function renderOscStatus() {
     oscLaunchRendererBtnEl.style.opacity = (oscLaunchPending || orenderServicePending) ? '0.6' : '1';
     oscLaunchRendererBtnEl.style.cursor = (oscLaunchPending || orenderServicePending) ? 'default' : 'pointer';
   }
+  renderOscConfigApplyButton();
 }
 
 function refreshOrenderServiceStatus() {
@@ -1089,6 +1102,8 @@ function loadOscConfigIntoPanel() {
     if (oscBridgePathInputEl) oscBridgePathInputEl.value = String(cfg.bridge_path || '');
     if (oscMeteringToggleEl) oscMeteringToggleEl.checked = Boolean(cfg.osc_metering_enabled);
     oscConfiguredOrenderPath = String(cfg.orender_path || '').trim();
+    oscConfigBaselineKey = oscConfigStateKey();
+    renderOscConfigApplyButton();
     return refreshOrenderServiceStatus().catch(() => null).then(() => cfg);
   }).catch(() => null);
 }
@@ -1102,6 +1117,19 @@ function readOscConfigForm() {
     bridge_path: (oscBridgePathInputEl?.value || '').trim() || null,
     orender_path: oscConfiguredOrenderPath || null
   };
+}
+
+function oscConfigStateKey() {
+  return JSON.stringify(readOscConfigForm());
+}
+
+function renderOscConfigApplyButton() {
+  if (!oscConfigApplyBtnEl) return;
+  const dirty = oscConfigStateKey() !== oscConfigBaselineKey;
+  const enabled = dirty && !oscLaunchPending && !orenderServicePending;
+  oscConfigApplyBtnEl.disabled = !enabled;
+  oscConfigApplyBtnEl.style.opacity = enabled ? '1' : '0.45';
+  oscConfigApplyBtnEl.style.cursor = enabled ? 'pointer' : 'default';
 }
 
 function setOscStatus(next) {
@@ -3979,7 +4007,8 @@ function renderAudioFormatDisplay() {
   if (audioFormatInfoEl) {
     const rateText = audioSampleRate ? `${audioSampleRate} Hz` : '—';
     const fmtText = audioSampleFormat || '—';
-    audioFormatInfoEl.textContent = tf('status.audioFormat', { rate: rateText, format: fmtText });
+    const baseText = tf('status.audioFormat', { rate: rateText, format: fmtText });
+    audioFormatInfoEl.textContent = audioError ? `${baseText} • Error: ${audioError}` : baseText;
   }
   if (audioOutputDeviceSelectEl) {
     const options = [{ value: '', label: t('status.defaultOutputDevice') }, ...audioOutputDevices];
@@ -4012,11 +4041,12 @@ function renderAudioFormatDisplay() {
     const deviceText = deviceValue ? (deviceEntry?.label || deviceValue) : t('status.defaultOutputDevice');
     const rateText = audioSampleRate ? `${audioSampleRate} Hz` : '—';
     const fmtText = audioSampleFormat || '—';
-    audioOutputSummaryEl.textContent = tf('audio.summary', {
+    const summary = tf('audio.summary', {
       device: deviceText,
       rate: rateText,
       format: fmtText
     });
+    audioOutputSummaryEl.textContent = audioError ? `${summary} • Error: ${audioError}` : summary;
   }
 }
 
@@ -7501,10 +7531,13 @@ if (oscConfigToggleBtnEl && oscConfigFormEl) {
 
 if (oscConfigApplyBtnEl) {
   oscConfigApplyBtnEl.addEventListener('click', () => {
+    if (oscConfigApplyBtnEl.disabled) return;
     const config = readOscConfigForm();
     invoke('save_osc_config', { config })
       .then(() => {
         oscMeteringEnabled = config.osc_metering_enabled;
+        oscConfigBaselineKey = oscConfigStateKey();
+        renderOscConfigApplyButton();
         pushLog('info', t('log.oscConfigSaved'));
         setOscStatus('reconnecting');
         closeOscConfigPanel();
@@ -7515,6 +7548,14 @@ if (oscConfigApplyBtnEl) {
       });
   });
 }
+
+[oscHostInputEl, oscRxPortInputEl, oscListenPortInputEl, oscBridgePathInputEl, oscMeteringToggleEl]
+  .filter(Boolean)
+  .forEach((el) => {
+    el.addEventListener(el === oscMeteringToggleEl ? 'change' : 'input', () => {
+      renderOscConfigApplyButton();
+    });
+  });
 
 function launchOrenderFromPanel(orenderPathOverride = null) {
   const config = readOscConfigForm();
@@ -7596,6 +7637,20 @@ function uninstallOrenderServiceFromPanel() {
     });
 }
 
+function restartOrenderServiceFromPanel() {
+  orenderServicePending = true;
+  renderOscStatus();
+  return invoke('restart_orender_service')
+    .then(() => {
+      pushLog('info', 'orender service restart requested.');
+      return refreshOrenderServiceStatus();
+    })
+    .finally(() => {
+      orenderServicePending = false;
+      renderOscStatus();
+    });
+}
+
 if (oscLaunchRendererBtnEl) {
   oscLaunchRendererBtnEl.addEventListener('click', () => {
     if (oscLaunchPending || orenderServicePending) {
@@ -7649,6 +7704,17 @@ if (oscServiceBtnEl) {
     task.catch((e) => {
       const label = orenderServiceInstalled ? 'uninstall orender service' : 'install orender service';
       pushLog('error', `Failed to ${label}: ${normalizeLogError(e)}`);
+    });
+  });
+}
+
+if (oscRestartServiceBtnEl) {
+  oscRestartServiceBtnEl.addEventListener('click', () => {
+    if (oscLaunchPending || orenderServicePending || !orenderServiceInstalled) {
+      return;
+    }
+    restartOrenderServiceFromPanel().catch((e) => {
+      pushLog('error', `Failed to restart orender service: ${normalizeLogError(e)}`);
     });
   });
 }
@@ -7913,6 +7979,9 @@ function applyInitState(payload) {
   }
   if (typeof payload.audioSampleFormat === 'string') {
     audioSampleFormat = payload.audioSampleFormat.trim() || null;
+  }
+  if (typeof payload.audioError === 'string') {
+    audioError = payload.audioError.trim() || null;
   }
   if (typeof payload.orenderInputPipe === 'string') {
     orenderInputPipe = payload.orenderInputPipe.trim() || null;
@@ -8384,6 +8453,11 @@ listen('audio:output_devices', ({ payload }) => {
 
 listen('audio:sample_format', ({ payload }) => {
   audioSampleFormat = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
+  updateAudioFormatDisplay();
+});
+
+listen('audio:error', ({ payload }) => {
+  audioError = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
   updateAudioFormatDisplay();
 });
 

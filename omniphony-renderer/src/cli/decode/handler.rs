@@ -1379,8 +1379,14 @@ impl DecodeHandler {
                         self.output.audio_writer = Some(writer);
                         self.output.bootstrap_frames_seen = 0;
                         self.output.bootstrap_started_at = None;
+                        if let Some(ref control) = self.spatial_renderer.as_ref().map(|r| r.renderer_control()) {
+                            control.set_audio_error(None);
+                        }
                     }
                     Err(e) => {
+                        if let Some(ref control) = self.spatial_renderer.as_ref().map(|r| r.renderer_control()) {
+                            control.set_audio_error(Some(e.to_string()));
+                        }
                         log::warn!("Output backend initialization failed, waiting for a valid config: {}", e);
                         self.output.output_init_failed = true;
                     }
@@ -1411,8 +1417,14 @@ impl DecodeHandler {
                 match self.build_audio_writer(output_backend, effective_sample_rate, channel_count, None) {
                     Ok(writer) => {
                         self.output.audio_writer = Some(writer);
+                        if let Some(ref control) = self.spatial_renderer.as_ref().map(|r| r.renderer_control()) {
+                            control.set_audio_error(None);
+                        }
                     }
                     Err(e) => {
+                        if let Some(ref control) = self.spatial_renderer.as_ref().map(|r| r.renderer_control()) {
+                            control.set_audio_error(Some(e.to_string()));
+                        }
                         log::warn!("Output backend initialization failed, waiting for a valid config: {}", e);
                         self.output.output_init_failed = true;
                     }

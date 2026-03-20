@@ -1483,6 +1483,36 @@ fn stop_orender_service() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn restart_orender_service() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let service_name = linux_user_service_name();
+        run_user_systemctl(&["restart", &service_name], "restart service")?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let command = format!(
+            "$p = Start-Process -FilePath powershell -ArgumentList @('-NoProfile','-NonInteractive','-Command',{}) -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+            powershell_single_quote(
+                &format!(
+                    "Restart-Service -Name '{}' -Force -ErrorAction Stop",
+                    ORENDER_SERVICE_NAME
+                )
+            )
+        );
+        let mut cmd = ProcessCommand::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
+        run_command(cmd, "restart service")?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("service management is not supported on this platform".to_string())
+}
+
+#[tauri::command]
 fn launch_orender(
     app: tauri::AppHandle,
     state: State<SharedState>,
@@ -1617,6 +1647,7 @@ fn main() {
             uninstall_orender_service,
             start_orender_service,
             stop_orender_service,
+            restart_orender_service,
             control_osc_metering,
             select_layout,
             import_layout_from_path,

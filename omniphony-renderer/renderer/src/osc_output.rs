@@ -579,7 +579,8 @@ impl OscSender {
 
         // Current audio output format state (sample rate + sample format).
         if let Some(ref control) = self.control {
-            let (rate_opt, fmt) = control.audio_state();
+            let (current_rate_opt, fmt) = control.audio_state();
+            let rate_opt = current_rate_opt.or_else(|| control.requested_output_sample_rate());
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/audio/output_device".to_string(),
                 args: vec![OscType::String(
@@ -596,6 +597,12 @@ impl OscSender {
                 messages.push(OscPacket::Message(OscMessage {
                     addr: "/omniphony/state/audio/sample_format".to_string(),
                     args: vec![OscType::String(fmt)],
+                }));
+            }
+            if let Some(error) = control.audio_error() {
+                messages.push(OscPacket::Message(OscMessage {
+                    addr: "/omniphony/state/audio/error".to_string(),
+                    args: vec![OscType::String(error)],
                 }));
             }
         }
@@ -639,6 +646,11 @@ impl OscSender {
             .as_ref()
             .and_then(|control| serde_json::to_string(&control.available_output_devices()).ok())
             .unwrap_or_else(|| "[]".to_string());
+        let announced_rate = self
+            .control
+            .as_ref()
+            .and_then(|control| control.requested_output_sample_rate())
+            .unwrap_or(sample_rate_hz);
         let bundle = OscPacket::Bundle(OscBundle {
             timetag: OscTime {
                 seconds: 0,
@@ -660,11 +672,20 @@ impl OscSender {
                 }),
                 OscPacket::Message(OscMessage {
                     addr: "/omniphony/state/audio/sample_rate".to_string(),
-                    args: vec![OscType::Int(sample_rate_hz as i32)],
+                    args: vec![OscType::Int(announced_rate as i32)],
                 }),
                 OscPacket::Message(OscMessage {
                     addr: "/omniphony/state/audio/sample_format".to_string(),
                     args: vec![OscType::String(sample_format.to_string())],
+                }),
+                OscPacket::Message(OscMessage {
+                    addr: "/omniphony/state/audio/error".to_string(),
+                    args: vec![OscType::String(
+                        self.control
+                            .as_ref()
+                            .and_then(|control| control.audio_error())
+                            .unwrap_or_default(),
+                    )],
                 }),
             ],
         });
@@ -2253,7 +2274,8 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
 
     // Current audio output format state.
     {
-        let (rate_opt, fmt) = control.audio_state();
+        let (current_rate_opt, fmt) = control.audio_state();
+        let rate_opt = current_rate_opt.or_else(|| control.requested_output_sample_rate());
         if let Some(rate) = rate_opt {
             all_messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/audio/sample_rate".to_string(),
@@ -2264,6 +2286,12 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
             all_messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/audio/sample_format".to_string(),
                 args: vec![OscType::String(fmt)],
+            }));
+        }
+        if let Some(error) = control.audio_error() {
+            all_messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/audio/error".to_string(),
+                args: vec![OscType::String(error)],
             }));
         }
     }

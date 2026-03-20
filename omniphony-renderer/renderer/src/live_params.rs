@@ -451,6 +451,8 @@ pub struct RendererControl {
 
     /// Current active sample format label (e.g. `f32le`, `s24le`).
     pub current_sample_format: Mutex<String>,
+    /// Last audio output initialization/runtime error, if any.
+    pub current_audio_error: Mutex<Option<String>>,
 }
 
 impl RendererControl {
@@ -496,6 +498,7 @@ impl RendererControl {
                 std::sync::atomic::AtomicU32::new(0),
             current_output_sample_rate_hz: std::sync::atomic::AtomicU32::new(0),
             current_sample_format: Mutex::new("unknown".to_string()),
+            current_audio_error: Mutex::new(None),
         })
     }
 
@@ -832,6 +835,10 @@ impl RendererControl {
         *self.current_sample_format.lock().unwrap() = sample_format.into();
     }
 
+    pub fn set_audio_error(&self, error: Option<String>) {
+        *self.current_audio_error.lock().unwrap() = error;
+    }
+
     pub fn audio_state(&self) -> (Option<u32>, String) {
         let rate = match self.current_output_sample_rate_hz.load(Ordering::Relaxed) {
             0 => None,
@@ -839,5 +846,9 @@ impl RendererControl {
         };
         let format = self.current_sample_format.lock().unwrap().clone();
         (rate, format)
+    }
+
+    pub fn audio_error(&self) -> Option<String> {
+        self.current_audio_error.lock().unwrap().clone()
     }
 }

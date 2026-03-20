@@ -53,7 +53,7 @@
   "osc.omniphonyPort": "Omniphony 端口",
   "osc.listenPort": "监听端口",
   "osc.metering": "计量",
-  "osc.apply": "应用",
+  "osc.connect": "连接",
   "common.on": "开",
   "common.off": "关",
   "room.title": "房间几何",

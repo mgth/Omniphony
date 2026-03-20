@@ -258,6 +258,8 @@ pub enum OscEvent {
     StateAudioOutputDevices { values: Vec<String> },
     #[serde(rename = "state:audio:sample_format")]
     StateAudioSampleFormat { value: String },
+    #[serde(rename = "state:audio:error")]
+    StateAudioError { value: String },
     #[serde(rename = "state:input_pipe")]
     StateInputPipe { value: String },
     #[serde(rename = "state:osc:metering")]
@@ -734,6 +736,10 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             "sample_format" => {
                 let value = raw_args.first().and_then(unwrap_string)?;
                 Some(OscEvent::StateAudioSampleFormat { value })
+            }
+            "error" => {
+                let value = raw_args.first().and_then(unwrap_string)?;
+                Some(OscEvent::StateAudioError { value })
             }
             _ => None,
         },

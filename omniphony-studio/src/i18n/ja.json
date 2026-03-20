@@ -53,7 +53,7 @@
   "osc.omniphonyPort": "Omniphonyポート",
   "osc.listenPort": "受信ポート",
   "osc.metering": "メータリング",
-  "osc.apply": "適用",
+  "osc.connect": "接続",
   "common.on": "オン",
   "common.off": "オフ",
   "room.title": "ルームジオメトリ",

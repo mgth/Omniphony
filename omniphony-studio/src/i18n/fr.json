@@ -53,7 +53,7 @@
   "osc.omniphonyPort": "Port Omniphony",
   "osc.listenPort": "Port d'écoute",
   "osc.metering": "Mesure",
-  "osc.apply": "Appliquer",
+  "osc.connect": "Connecter",
   "common.on": "on",
   "common.off": "off",
   "room.title": "Géométrie de la pièce",

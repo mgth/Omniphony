@@ -1118,6 +1118,17 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateAudioError { value } => {
+                s.audio_error = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.clone())
+                };
+                (
+                    Some(("audio:error", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
             OscEvent::StateInputPipe { value } => {
                 s.orender_input_pipe = if value.trim().is_empty() {
                     None

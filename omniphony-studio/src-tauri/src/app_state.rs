@@ -208,6 +208,8 @@ pub struct AppState {
     pub audio_output_devices: Vec<OutputDeviceOption>,
     #[serde(rename = "audioSampleFormat")]
     pub audio_sample_format: Option<String>,
+    #[serde(rename = "audioError")]
+    pub audio_error: Option<String>,
     #[serde(rename = "orenderInputPipe")]
     pub orender_input_pipe: Option<String>,
     #[serde(rename = "oscStatus")]
@@ -294,6 +296,7 @@ impl Default for AppState {
             audio_output_device: None,
             audio_output_devices: Vec::new(),
             audio_sample_format: None,
+            audio_error: None,
             orender_input_pipe: None,
             osc_status: Some("initializing".to_string()),
             osc_metering_enabled: Some(0),
