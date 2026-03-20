@@ -32,8 +32,9 @@
 ::
 :: Paramètres jackd :
 ::   -R          : mode temps réel (priorité élevée)
-::   -r 96000    : fréquence d'échantillonnage forcée à 96 kHz
 ::   -d net      : driver NetJACK2 (audio par réseau)
+::                 Note: la fréquence d'échantillonnage est imposée par le master
+::                 NetJACK2 — le slave (jackd) la suit automatiquement.
 ::   -n client   : nom du nœud NetJACK2
 ::   -C 16       : 16 canaux d'entrée (capture)
 ::   -P 16       : 16 canaux de sortie (playback)
@@ -102,7 +103,7 @@ if %ERRORLEVEL% equ 0 (
 echo Installation du service jackd...
 
 %NSSM_EXE% install %SERVICE_NAME% "%JACKD_EXE%"
-%NSSM_EXE% set %SERVICE_NAME% AppParameters "-R -r 96000 -d net -n client -C 16 -P 16 -l 2"
+%NSSM_EXE% set %SERVICE_NAME% AppParameters "-R -d net -n client -C 16 -P 16 -l 2"
 %NSSM_EXE% set %SERVICE_NAME% ObjectName LocalSystem
 %NSSM_EXE% set %SERVICE_NAME% Start SERVICE_AUTO_START
 %NSSM_EXE% set %SERVICE_NAME% DisplayName "JACK2 NetJACK Client"
