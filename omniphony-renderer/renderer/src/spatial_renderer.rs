@@ -304,6 +304,14 @@ pub struct SpatialRenderer {
     /// Per-speaker gain scratch buffer — pre-allocated once, reused every frame.
     speaker_gains_buf: Vec<f32>,
 
+    /// Scratch routing gains for bed channels.
+    ///
+    /// Keep this as a reusable full speaker-domain buffer instead of collapsing beds
+    /// back to a hardcoded one-speaker fast path. Bed routing is expected to evolve
+    /// beyond strict 1:1 mapping so we can simulate missing or non-standard speakers
+    /// without changing the downstream mix model again.
+    bed_routing_gains_buf: Vec<f32>,
+
     /// Per-speaker delay lines — one per speaker, fixed 100 ms capacity.
     /// Owned exclusively by the render thread; no locking required.
     delay_lines: Vec<crate::delay_line::DelayLine>,
@@ -843,6 +851,7 @@ impl SpatialRenderer {
             current_auto_gain: std::sync::atomic::AtomicU32::new(1.0_f32.to_bits()),
             control,
             speaker_gains_buf: vec![0.0f32; num_speakers],
+            bed_routing_gains_buf: vec![0.0f32; num_speakers],
             delay_lines: {
                 let max_delay = (0.1 * sample_rate as f32) as usize; // 100 ms
                 (0..num_speakers)
@@ -1148,13 +1157,22 @@ impl SpatialRenderer {
                     }
                 };
 
-                // Mix bed samples directly to target speaker with metadata gain + live gain.
+                self.bed_routing_gains_buf.fill(0.0);
+                self.bed_routing_gains_buf[speaker_idx] = 1.0;
+
+                // Mix bed samples through the same per-speaker gain accumulation model
+                // used for objects, but with a one-hot routing table.
                 for sample_idx in 0..sample_length {
                     let sample = input_pcm[sample_idx * input_channel_count + input_channel_idx]
                         * gain_linear
                         * obj_gain;
-                    output[sample_idx * self.num_speakers + speaker_idx] += sample;
+                    let out_base = sample_idx * self.num_speakers;
+                    for (speaker_idx, &gain) in self.bed_routing_gains_buf.iter().enumerate() {
+                        output[out_base + speaker_idx] += sample * gain;
+                    }
                 }
+
+                object_gains_out.push((input_channel_idx, self.bed_routing_gains_buf.clone()));
 
                 if is_first {
                     let speaker_name = active_layout.speakers[speaker_idx].name.as_str();
