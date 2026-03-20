@@ -107,8 +107,20 @@ echo Installation du service jackd...
 %NSSM_EXE% set %SERVICE_NAME% Start SERVICE_AUTO_START
 %NSSM_EXE% set %SERVICE_NAME% DisplayName "JACK2 NetJACK Client"
 %NSSM_EXE% set %SERVICE_NAME% Description "JACK2 en mode NetJACK2 (driver reseau). Tourne en Session 0 aux cotes d'orender pour eviter l'isolation inter-sessions Windows."
+
+:: Redémarre automatiquement jackd quelle que soit la cause d'arrêt
 %NSSM_EXE% set %SERVICE_NAME% AppExit Default Restart
 %NSSM_EXE% set %SERVICE_NAME% AppRestartDelay 5000
+
+:: Désactive le throttle NSSM (par défaut il ralentit les redémarrages après
+:: plusieurs échecs consécutifs, ce qui peut laisser le service en état "paused")
+%NSSM_EXE% set %SERVICE_NAME% AppThrottle 0
+
+:: Journalisation dans %TEMP% pour diagnostiquer les échecs de démarrage
+%NSSM_EXE% set %SERVICE_NAME% AppStdout "%TEMP%\jackd-service.log"
+%NSSM_EXE% set %SERVICE_NAME% AppStderr "%TEMP%\jackd-service.log"
+%NSSM_EXE% set %SERVICE_NAME% AppStdoutCreationDisposition 4
+%NSSM_EXE% set %SERVICE_NAME% AppStderrCreationDisposition 4
 
 if %ERRORLEVEL% neq 0 (
     echo ERREUR lors de la configuration du service.
@@ -123,11 +135,13 @@ if %ERRORLEVEL% equ 0 (
     echo.
     echo Service "%SERVICE_NAME%" installe et demarre avec succes.
     echo jackd demarrera automatiquement au prochain boot.
+    echo Logs : %TEMP%\jackd-service.log
 ) else (
     echo.
     echo AVERTISSEMENT : Le service a ete installe mais n'a pas pu demarrer.
     echo Verifiez que le master NetJACK2 est accessible sur le reseau.
     echo jackd reessaiera automatiquement toutes les 5 secondes.
+    echo Logs : %TEMP%\jackd-service.log
 )
 
 pause
