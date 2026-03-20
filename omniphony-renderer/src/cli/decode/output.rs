@@ -103,6 +103,7 @@ impl AudioWriter {
         sample_rate: u32,
         channel_count: u32,
         device_name: Option<String>,
+        target_latency_ms: u32,
         enable_adaptive_resampling: bool,
         adaptive_config: AdaptiveResamplingConfig,
     ) -> Result<Self> {
@@ -111,6 +112,7 @@ impl AudioWriter {
             sample_rate,
             channel_count,
             device_name,
+            target_latency_ms,
             enable_adaptive_resampling,
             adaptive_config,
         )?;

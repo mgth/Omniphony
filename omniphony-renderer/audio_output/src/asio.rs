@@ -23,7 +23,7 @@ const BUFFER_SIZE: usize = 48000 * 16 * 4;
 
 // Adaptive rate matching constants (time-domain targets).
 const MIN_BUFFER_MS: u32 = 25;
-const TARGET_BUFFER_MS: u32 = 220;
+const DEFAULT_TARGET_BUFFER_MS: u32 = 220;
 const MAX_BUFFER_MS: u32 = 250;
 const MAX_INTEGRAL_TERM: f64 = 0.0002;
 
@@ -79,6 +79,7 @@ impl AsioWriter {
         sample_rate: u32,
         channel_count: u32,
         output_device: Option<String>,
+        target_latency_ms: u32,
         enable_adaptive_resampling: bool,
         adaptive_config: AdaptiveResamplingConfig,
     ) -> Result<Self> {
@@ -88,6 +89,7 @@ impl AsioWriter {
             channel_count,
             output_device,
             None,
+            target_latency_ms,
             enable_adaptive_resampling,
             adaptive_config,
         )
@@ -99,6 +101,7 @@ impl AsioWriter {
         channel_count: u32,
         output_device: Option<String>,
         _channel_names: Option<Vec<String>>,
+        target_latency_ms: u32,
         enable_adaptive_resampling: bool,
         adaptive_config: AdaptiveResamplingConfig,
     ) -> Result<Self> {
@@ -123,9 +126,16 @@ impl AsioWriter {
         // Ring-buffer thresholds in INPUT-domain samples (same domain as buffer_clone.len()).
         let samples_per_ms =
             (input_sample_rate as usize).saturating_mul(channel_count as usize) / 1000;
+        let target_buffer_ms = if target_latency_ms == 0 {
+            DEFAULT_TARGET_BUFFER_MS
+        } else {
+            target_latency_ms
+        };
+        let max_buffer_ms = MAX_BUFFER_MS.max(target_buffer_ms.saturating_mul(2));
         let min_buffer_fill = (samples_per_ms * MIN_BUFFER_MS as usize).max(channel_count as usize);
-        let target_buffer_fill = (samples_per_ms * TARGET_BUFFER_MS as usize).max(min_buffer_fill);
-        let max_buffer_fill = (samples_per_ms * MAX_BUFFER_MS as usize)
+        let target_buffer_fill =
+            (samples_per_ms * target_buffer_ms as usize).max(min_buffer_fill);
+        let max_buffer_fill = (samples_per_ms * max_buffer_ms as usize)
             .max(target_buffer_fill + channel_count as usize);
 
         // Initialize CPAL ASIO host

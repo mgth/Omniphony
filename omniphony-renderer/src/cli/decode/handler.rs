@@ -494,6 +494,8 @@ pub struct RuntimeOutputState {
     pub pw_adaptive_config: PipewireAdaptiveResamplingConfig,
     #[cfg(target_os = "windows")]
     pub asio_adaptive_config: AdaptiveResamplingConfig,
+    #[cfg(target_os = "windows")]
+    pub asio_target_latency_ms: u32,
     /// Works for both ASIO (Windows) and PipeWire (Linux)
     pub output_sample_rate: Option<u32>,
     pub enable_adaptive_resampling: bool,
@@ -513,6 +515,8 @@ impl Default for RuntimeOutputState {
             pw_adaptive_config: PipewireAdaptiveResamplingConfig::default(),
             #[cfg(target_os = "windows")]
             asio_adaptive_config: AdaptiveResamplingConfig::default(),
+            #[cfg(target_os = "windows")]
+            asio_target_latency_ms: 220,
             output_sample_rate: None,
             enable_adaptive_resampling: false,
         }
@@ -881,6 +885,29 @@ impl DecodeHandler {
             if let OutputBackend::Pipewire = output_backend {
                 if let Some(mut writer) = self.output.invalidate_writer() {
                     let _ = writer.flush();
+                }
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let requested = self
+                .spatial_renderer
+                .as_ref()
+                .and_then(|r| r.renderer_control().requested_latency_target_ms())
+                .unwrap_or(self.runtime.asio_target_latency_ms);
+
+            if requested != self.runtime.asio_target_latency_ms {
+                self.runtime.asio_target_latency_ms = requested.max(1);
+                log::info!(
+                    "Applying requested ASIO latency target: {} ms",
+                    self.runtime.asio_target_latency_ms
+                );
+
+                if let OutputBackend::Asio = output_backend {
+                    if let Some(mut writer) = self.output.invalidate_writer() {
+                        let _ = writer.flush();
+                    }
                 }
             }
         }
@@ -1487,6 +1514,7 @@ impl DecodeHandler {
                     effective_sample_rate,
                     channel_count as u32,
                     self.runtime.output_device.clone(),
+                    self.runtime.asio_target_latency_ms,
                     self.runtime.enable_adaptive_resampling,
                     self.runtime.asio_adaptive_config.clone(),
                 )?)

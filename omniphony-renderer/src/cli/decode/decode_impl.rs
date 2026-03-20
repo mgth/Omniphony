@@ -1107,6 +1107,10 @@ fn init_render_handler(
                 adaptive.measurement_smoothing_alpha as f32,
             );
         }
+        #[cfg(target_os = "windows")]
+        {
+            ctrl.set_requested_latency_target_ms(Some(handler.runtime.asio_target_latency_ms));
+        }
         // Pass the config path so the save-config OSC handler can persist params.
         if let Some(path) = config_path {
             ctrl.set_config_path(path.clone());
