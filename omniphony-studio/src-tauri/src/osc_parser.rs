@@ -230,6 +230,8 @@ pub enum OscEvent {
     StateSpreadDistanceRange { value: f64 },
     #[serde(rename = "state:spread:distance_curve")]
     StateSpreadDistanceCurve { value: f64 },
+    #[serde(rename = "state:distance_model")]
+    StateDistanceModel { value: String },
     #[serde(rename = "state:loudness")]
     StateLoudness { enabled: bool },
     #[serde(rename = "state:loudness:source")]
@@ -578,6 +580,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         }),
         (3, "gain") => Some(OscEvent::StateMasterGain {
             value: to_number(args[0])?,
+        }),
+        (3, "distance_model") => Some(OscEvent::StateDistanceModel {
+            value: raw_args.first().and_then(unwrap_string)?,
         }),
         (3, "loudness") => Some(OscEvent::StateLoudness {
             enabled: to_number(args[0])? != 0.0,

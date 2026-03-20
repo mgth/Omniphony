@@ -9,7 +9,7 @@ pub enum DistanceModel {
 
 impl Default for DistanceModel {
     fn default() -> Self {
-        DistanceModel::Linear
+        DistanceModel::None
     }
 }
 

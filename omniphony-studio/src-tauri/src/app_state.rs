@@ -76,6 +76,11 @@ pub struct DistanceDiffuse {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct DistanceModelState {
+    pub value: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct VbapCartesian {
     #[serde(rename = "xSize")]
     pub x_size: Option<u32>,
@@ -156,6 +161,8 @@ pub struct AppState {
     pub master_gain: Option<f64>,
     #[serde(rename = "distanceDiffuse")]
     pub distance_diffuse: DistanceDiffuse,
+    #[serde(rename = "distanceModel")]
+    pub distance_model: DistanceModelState,
     #[serde(rename = "vbapCartesian")]
     pub vbap_cartesian: VbapCartesian,
     #[serde(rename = "vbapPolar")]
@@ -270,6 +277,7 @@ impl Default for AppState {
             loudness_gain: None,
             master_gain: None,
             distance_diffuse: DistanceDiffuse::default(),
+            distance_model: DistanceModelState::default(),
             vbap_cartesian: VbapCartesian::default(),
             vbap_polar: VbapPolar::default(),
             vbap_mode: VbapMode::default(),

@@ -22,6 +22,7 @@ const masterGainSliderEl = document.getElementById('masterGainSlider');
 const masterGainBoxEl = document.getElementById('masterGainBox');
 const masterMeterTextEl = document.getElementById('masterMeterText');
 const masterMeterFillEl = document.getElementById('masterMeterFill');
+const distanceModelSelectEl = document.getElementById('distanceModelSelect');
 const editModeSelectEl = document.getElementById('editModeSelect');
 const distanceDiffuseToggleEl = document.getElementById('distanceDiffuseToggle');
 const distanceDiffuseThresholdSliderEl = document.getElementById('distanceDiffuseThresholdSlider');
@@ -157,6 +158,7 @@ roomGroup.add(screenMesh);
 const roomRatio = { width: 1, length: 2, height: 1 };
 const spreadState = { min: null, max: null };
 const distanceDiffuseState = { enabled: null, threshold: null, curve: null };
+let distanceModel = 'none';
 let configSaved = null;
 let loudnessEnabled = null;
 let loudnessSource = null;
@@ -340,6 +342,7 @@ let dirtyRoomRatio = false;
 let dirtySpread = false;
 let dirtyDialogNorm = false;
 let dirtyDistanceDiffuse = false;
+let dirtyDistanceModel = false;
 let dirtyConfigSaved = false;
 let dirtyLatency = false;
 let dirtyResample = false;
@@ -521,6 +524,11 @@ function flushUI() {
   if (dirtyDistanceDiffuse) {
     renderDistanceDiffuseUI();
     dirtyDistanceDiffuse = false;
+  }
+
+  if (dirtyDistanceModel) {
+    renderDistanceModelUI();
+    dirtyDistanceModel = false;
   }
 
   if (dirtyConfigSaved) {
@@ -1186,6 +1194,18 @@ function renderMasterGainUI() {
 
 function updateMasterGainUI() {
   dirtyMasterGain = true;
+  scheduleUIFlush();
+}
+
+function renderDistanceModelUI() {
+  if (!distanceModelSelectEl) return;
+  distanceModelSelectEl.value = ['none', 'linear', 'quadratic', 'inverse-square'].includes(distanceModel)
+    ? distanceModel
+    : 'none';
+}
+
+function updateDistanceModelUI() {
+  dirtyDistanceModel = true;
   scheduleUIFlush();
 }
 
@@ -2356,6 +2376,20 @@ if (spreadMaxSliderEl) {
   });
 }
 
+if (distanceModelSelectEl) {
+  distanceModelSelectEl.addEventListener('change', () => {
+    const value = String(distanceModelSelectEl.value || '').trim().toLowerCase();
+    if (!['none', 'linear', 'quadratic', 'inverse-square'].includes(value)) {
+      return;
+    }
+    distanceModel = value;
+    updateDistanceModelUI();
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'control:distance_model', value }));
+    }
+  });
+}
+
 if (distanceDiffuseToggleEl) {
   distanceDiffuseToggleEl.addEventListener('change', () => {
     const enabled = distanceDiffuseToggleEl.checked;
@@ -2521,6 +2555,13 @@ ws.onmessage = (event) => {
       masterGain = payload.masterGain;
     }
     updateMasterGainUI();
+    if (typeof payload.distanceModel === 'string') {
+      const value = payload.distanceModel.trim().toLowerCase();
+      if (['none', 'linear', 'quadratic', 'inverse-square'].includes(value)) {
+        distanceModel = value;
+      }
+    }
+    updateDistanceModelUI();
     if (payload.distanceDiffuse) {
       if (typeof payload.distanceDiffuse.enabled === 'boolean') {
         distanceDiffuseState.enabled = payload.distanceDiffuse.enabled;
@@ -2645,6 +2686,14 @@ ws.onmessage = (event) => {
   if (payload.type === 'master:gain') {
     masterGain = Number(payload.value);
     updateMasterGainUI();
+  }
+
+  if (payload.type === 'distance_model') {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    if (['none', 'linear', 'quadratic', 'inverse-square'].includes(value)) {
+      distanceModel = value;
+      updateDistanceModelUI();
+    }
   }
 
   if (payload.type === 'distance_diffuse:enabled') {

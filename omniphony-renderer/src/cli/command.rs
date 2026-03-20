@@ -255,7 +255,7 @@ pub struct RenderArgs {
     pub no_vbap_allow_negative_z: bool,
 
     /// Distance attenuation model (none, linear, quadratic, inverse-square)
-    #[arg(long, value_name = "MODEL", default_value = "linear")]
+    #[arg(long, value_name = "MODEL", default_value = "none")]
     pub vbap_distance_model: String,
 
     /// Calculate spread from distance (1.0 at distance=0, 0.0 at distance>=1.0)

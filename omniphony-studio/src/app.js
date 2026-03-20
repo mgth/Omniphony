@@ -157,6 +157,7 @@ const resamplePosMeterFillEl = document.getElementById('resamplePosMeterFill');
 const audioFormatInfoEl = document.getElementById('audioFormatInfo');
 const audioOutputDeviceSelectEl = document.getElementById('audioOutputDeviceSelect');
 const rampModeSelectEl = document.getElementById('rampModeSelect');
+const distanceModelSelectEl = document.getElementById('distanceModelSelect');
 const rampModeInfoBtnEl = document.getElementById('rampModeInfoBtn');
 const rampModeInfoModalEl = document.getElementById('rampModeInfoModal');
 const rampModeInfoCloseBtnEl = document.getElementById('rampModeInfoCloseBtn');
@@ -652,6 +653,7 @@ const vbapPolarState = { azimuthResolution: null, elevationResolution: null, dis
 const vbapModeState = { selection: null, effectiveMode: null };
 let vbapAllowNegativeZ = null;
 const distanceDiffuseState = { enabled: null, threshold: null, curve: null };
+let distanceModel = 'none';
 let configSaved = null;
 let loudnessEnabled = null;
 let loudnessSource = null;
@@ -1539,6 +1541,7 @@ let dirtyVbapPolar = false;
 let dirtyLoudness = false;
 let dirtyAdaptiveResampling = false;
 let dirtyDistanceDiffuse = false;
+let dirtyDistanceModel = false;
 let dirtyConfigSaved = false;
 let dirtyLatency = false;
 let dirtyResample = false;
@@ -2188,6 +2191,11 @@ function flushUI() {
   if (dirtyDistanceDiffuse) {
     renderDistanceDiffuseUI();
     dirtyDistanceDiffuse = false;
+  }
+
+  if (dirtyDistanceModel) {
+    renderDistanceModelUI();
+    dirtyDistanceModel = false;
   }
 
   if (dirtyConfigSaved) {
@@ -3698,6 +3706,18 @@ function updateLoudnessDisplay() {
   scheduleUIFlush();
 }
 
+function renderDistanceModelUI() {
+  if (!distanceModelSelectEl) return;
+  distanceModelSelectEl.value = ['none', 'linear', 'quadratic', 'inverse-square'].includes(distanceModel)
+    ? distanceModel
+    : 'none';
+}
+
+function updateDistanceModelUI() {
+  dirtyDistanceModel = true;
+  scheduleUIFlush();
+}
+
 function renderAdaptiveResamplingUI() {
   if (!adaptiveResamplingToggleEl) return;
   adaptiveResamplingToggleEl.checked = adaptiveResamplingEnabled === true;
@@ -4922,18 +4942,39 @@ function mapTrailRawToScene(raw) {
   return new THREE.Vector3(scene.x, scene.y, scene.z);
 }
 
-function rebuildLineTrailGeometry(trail, mappedPositions, r, g, b) {
+function trailPointColorFromRaw(raw, fallbackColor) {
+  const rgb = Array.isArray(raw?.trailColor) ? raw.trailColor : null;
+  if (rgb && rgb.length >= 3) {
+    return new THREE.Color(
+      Math.min(1, Math.max(0, Number(rgb[0]) || 0)),
+      Math.min(1, Math.max(0, Number(rgb[1]) || 0)),
+      Math.min(1, Math.max(0, Number(rgb[2]) || 0))
+    );
+  }
+  return fallbackColor.clone();
+}
+
+function captureTrailPointColor(mesh) {
+  const color = mesh?.material?.color;
+  if (!color) {
+    return [sourceMaterial.color.r, sourceMaterial.color.g, sourceMaterial.color.b];
+  }
+  return [color.r, color.g, color.b];
+}
+
+function rebuildLineTrailGeometry(trail, mappedPositions, pointColors) {
   const positions = new Float32Array(mappedPositions.length * 3);
   const colors = new Float32Array(mappedPositions.length * 3);
   for (let i = 0; i < mappedPositions.length; i++) {
     const point = mappedPositions[i];
     const t = mappedPositions.length > 1 ? i / (mappedPositions.length - 1) : 1;
+    const color = pointColors[i];
     positions[i * 3] = point.x;
     positions[i * 3 + 1] = point.y;
     positions[i * 3 + 2] = point.z;
-    colors[i * 3] = r * (0.2 + 0.8 * t);
-    colors[i * 3 + 1] = g * (0.2 + 0.8 * t);
-    colors[i * 3 + 2] = b * (0.2 + 0.8 * t);
+    colors[i * 3] = color.r * (0.2 + 0.8 * t);
+    colors[i * 3 + 1] = color.g * (0.2 + 0.8 * t);
+    colors[i * 3 + 2] = color.b * (0.2 + 0.8 * t);
   }
   trail.line.geometry.dispose();
   const geometry = new THREE.BufferGeometry();
@@ -4942,25 +4983,28 @@ function rebuildLineTrailGeometry(trail, mappedPositions, r, g, b) {
   trail.line.geometry = geometry;
 }
 
-function rebuildDiffuseTrailGeometry(trail, mappedPositions, r, g, b, sourceScale) {
+function rebuildDiffuseTrailGeometry(trail, mappedPositions, pointColors, sourceScale) {
   const count = mappedPositions.length;
   const loudnessFactor = Math.pow(sourceScale, 1.8);
 
   const expanded = [];
   for (let i = 0; i < mappedPositions.length; i++) {
     const current = mappedPositions[i];
+    const currentColor = pointColors[i];
     const baseT = count > 1 ? i / (count - 1) : 1;
-    expanded.push({ position: current, t: baseT });
+    expanded.push({ position: current, color: currentColor, t: baseT });
     if (i >= mappedPositions.length - 1) {
       continue;
     }
     const next = mappedPositions[i + 1];
+    const nextColor = pointColors[i + 1];
     const distance = current.distanceTo(next);
     const subdivisions = Math.max(2, Math.min(10, Math.ceil(distance / 0.06)));
     for (let step = 1; step < subdivisions; step += 1) {
       const localT = step / subdivisions;
       expanded.push({
         position: current.clone().lerp(next, localT),
+        color: currentColor.clone().lerp(nextColor, localT),
         t: (i + localT) / (count - 1)
       });
     }
@@ -4972,14 +5016,15 @@ function rebuildDiffuseTrailGeometry(trail, mappedPositions, r, g, b, sourceScal
   const alphas = new Float32Array(expanded.length);
   for (let i = 0; i < expanded.length; i++) {
     const point = expanded[i];
+    const color = point.color;
     positions[i * 3] = point.position.x;
     positions[i * 3 + 1] = point.position.y;
     positions[i * 3 + 2] = point.position.z;
     const t = point.t;
     const glow = 0.22 + (0.78 * t);
-    colors[i * 3] = (r * 0.35 + 0.18) * glow;
-    colors[i * 3 + 1] = (g * 0.65 + 0.45) * glow;
-    colors[i * 3 + 2] = (b * 0.85 + 0.95) * glow;
+    colors[i * 3] = (color.r * 0.35 + 0.18) * glow;
+    colors[i * 3 + 1] = (color.g * 0.65 + 0.45) * glow;
+    colors[i * 3 + 2] = (color.b * 0.85 + 0.95) * glow;
     sizes[i] = (6 + (20 * t)) * loudnessFactor;
     alphas[i] = 0.05 + (0.2 * t * t);
   }
@@ -5002,20 +5047,15 @@ function rebuildTrailGeometry(id) {
     return;
   }
   const mesh = sourceMeshes.get(id);
-  const isSelected = String(id) === selectedSourceId;
-  const trailColor = isSelected
-    ? new THREE.Color(0x7fff7f)
-    : (mesh ? mesh.material.color.clone() : new THREE.Color(0xcc6640));
-  const r = trailColor.r;
-  const g = trailColor.g;
-  const b = trailColor.b;
+  const fallbackColor = mesh ? mesh.material.color.clone() : new THREE.Color(0xcc6640);
   const sourceScale = Math.max(0.0, Number(mesh?.scale.x) || 0.0);
   const mappedPositions = trail.positions.map((raw) => mapTrailRawToScene(raw));
+  const pointColors = trail.positions.map((raw) => trailPointColorFromRaw(raw, fallbackColor));
   if (trailRenderMode === 'line') {
-    rebuildLineTrailGeometry(trail, mappedPositions, r, g, b);
+    rebuildLineTrailGeometry(trail, mappedPositions, pointColors);
     return;
   }
-  rebuildDiffuseTrailGeometry(trail, mappedPositions, r, g, b, sourceScale);
+  rebuildDiffuseTrailGeometry(trail, mappedPositions, pointColors, sourceScale);
 }
 
 function createSourceOutline() {
@@ -5390,7 +5430,10 @@ function updateSource(id, position) {
 
   const trail = sourceTrails.get(id);
   if (trail && !skipTrail) {
-    trail.positions.push(raw);
+    trail.positions.push({
+      ...raw,
+      trailColor: captureTrailPointColor(mesh)
+    });
     if (trailsEnabled) {
       rebuildTrailGeometry(id);
     }
@@ -6495,6 +6538,20 @@ if (spreadDistanceCurveSliderEl) {
     renderVbapStatus();
     updateSpreadDisplay();
     invoke('control_spread_distance_curve', { value: spreadState.distanceCurve });
+  });
+}
+
+if (distanceModelSelectEl) {
+  distanceModelSelectEl.addEventListener('change', () => {
+    const value = String(distanceModelSelectEl.value || '').trim().toLowerCase();
+    if (!['none', 'linear', 'quadratic', 'inverse-square'].includes(value)) {
+      return;
+    }
+    distanceModel = value;
+    updateDistanceModelUI();
+    vbapRecomputing = true;
+    renderVbapStatus();
+    invoke('control_distance_model', { value });
   });
 }
 
@@ -7895,6 +7952,13 @@ function applyInitState(payload) {
     masterGain = payload.masterGain;
   }
   updateMasterGainUI();
+  if (payload.distanceModel && typeof payload.distanceModel.value === 'string') {
+    const value = payload.distanceModel.value.trim().toLowerCase();
+    if (['none', 'linear', 'quadratic', 'inverse-square'].includes(value)) {
+      distanceModel = value;
+    }
+  }
+  updateDistanceModelUI();
   if (payload.distanceDiffuse) {
     if (typeof payload.distanceDiffuse.enabled === 'boolean') {
       distanceDiffuseState.enabled = payload.distanceDiffuse.enabled;
@@ -8319,6 +8383,15 @@ listen('loudness:gain', ({ payload }) => {
 listen('master:gain', ({ payload }) => {
   masterGain = Number(payload.value);
   updateMasterGainUI();
+});
+
+listen('distance_model', ({ payload }) => {
+  const value = String(payload?.value ?? '').trim().toLowerCase();
+  if (!['none', 'linear', 'quadratic', 'inverse-square'].includes(value)) {
+    return;
+  }
+  distanceModel = value;
+  updateDistanceModelUI();
 });
 
 listen('distance_diffuse:enabled', ({ payload }) => {

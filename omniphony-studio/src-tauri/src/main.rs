@@ -465,6 +465,24 @@ fn control_spread_distance_curve(state: State<SharedState>, value: f32) {
 }
 
 #[tauri::command]
+fn control_distance_model(state: State<SharedState>, value: String) {
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(
+        normalized.as_str(),
+        "none" | "linear" | "quadratic" | "inverse-square"
+    ) {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/distance_model".to_string(),
+            value: normalized,
+        },
+    );
+}
+
+#[tauri::command]
 fn control_vbap_cart_x_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
@@ -1677,6 +1695,7 @@ fn main() {
             control_spread_from_distance,
             control_spread_distance_range,
             control_spread_distance_curve,
+            control_distance_model,
             control_vbap_cart_x_size,
             control_vbap_cart_y_size,
             control_vbap_cart_z_size,

@@ -151,7 +151,7 @@ fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderAr
             None => {}
         }
     }
-    if args.vbap_distance_model == "linear" {
+    if args.vbap_distance_model == "none" {
         if let Some(ref v) = cfg.vbap_distance_model {
             args.vbap_distance_model = v.clone();
         }
@@ -368,7 +368,7 @@ fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<renderer::config:
         } else {
             None
         },
-        vbap_distance_model: if args.vbap_distance_model != "linear" {
+        vbap_distance_model: if args.vbap_distance_model != "none" {
             Some(args.vbap_distance_model.clone())
         } else {
             None

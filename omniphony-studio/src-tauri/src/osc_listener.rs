@@ -991,6 +991,14 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
 
+            OscEvent::StateDistanceModel { value } => {
+                s.distance_model.value = Some(value.clone());
+                (
+                    Some(("distance_model", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+
             OscEvent::StateLoudness { enabled } => {
                 s.loudness = Some(if enabled { 1 } else { 0 });
                 (

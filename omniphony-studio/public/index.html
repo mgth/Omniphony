@@ -354,6 +354,18 @@
           <button id="saveConfigBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Sauvegarder</button>
         </div>
       </div>
+      <div class="info-section" id="rendererSection">
+        <div class="info-title">Renderer</div>
+        <div class="control-row">
+          <label for="distanceModelSelect" style="font-size:12px;white-space:nowrap">Distance model</label>
+          <select id="distanceModelSelect">
+            <option value="none">None</option>
+            <option value="linear">Linear</option>
+            <option value="quadratic">Quadratic</option>
+            <option value="inverse-square">Inverse-square</option>
+          </select>
+        </div>
+      </div>
       <div class="info-section" id="spreadSection">
         <div class="info-title">Spread</div>
         <div id="spreadInfo">spread: —° / —°</div>

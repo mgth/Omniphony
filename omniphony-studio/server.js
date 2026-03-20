@@ -83,6 +83,7 @@ const state = {
   speakerMutes: {},
   roomRatio: { width: 1, length: 2, height: 1 },
   spread: { min: null, max: null },
+  distanceModel: null,
   loudness: null,
   loudnessSource: null,
   loudnessGain: null,
@@ -272,6 +273,14 @@ function handleParsedOsc(parsed) {
     state.spread.max = parsed.value;
     broadcast({
       type: 'spread:max',
+      value: parsed.value
+    });
+  }
+
+  if (parsed.type === 'state:distance_model') {
+    state.distanceModel = parsed.value;
+    broadcast({
+      type: 'distance_model',
       value: parsed.value
     });
   }
@@ -606,6 +615,14 @@ wss.on('connection', (ws) => {
         sendOmniphonyFloatControl('/omniphony/control/spread/max', clamped);
       }
 
+      if (payload?.type === 'control:distance_model') {
+        const value = String(payload.value ?? '').trim().toLowerCase();
+        if (!['none', 'linear', 'quadratic', 'inverse-square'].includes(value)) {
+          return;
+        }
+        sendOmniphonyStringControl('/omniphony/control/distance_model', value);
+      }
+
       if (payload?.type === 'control:distance_diffuse:enabled') {
         const enable = Number(payload.enable);
         if (!Number.isFinite(enable)) return;
@@ -676,6 +693,7 @@ wss.on('connection', (ws) => {
       speakerMutes: state.speakerMutes,
       roomRatio: state.roomRatio,
       spread: state.spread,
+      distanceModel: state.distanceModel,
       loudness: state.loudness,
       loudnessSource: state.loudnessSource,
       loudnessGain: state.loudnessGain,

@@ -1414,7 +1414,7 @@ impl DecodeHandler {
                     );
                 }
 
-                match self.build_audio_writer(output_backend, effective_sample_rate, channel_count, None) {
+                match self.build_audio_writer(output_backend, sample_rate, channel_count, None) {
                     Ok(writer) => {
                         self.output.audio_writer = Some(writer);
                         if let Some(ref control) = self.spatial_renderer.as_ref().map(|r| r.renderer_control()) {

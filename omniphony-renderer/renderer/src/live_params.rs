@@ -196,6 +196,9 @@ pub struct LiveParams {
     /// Apply dialogue normalisation gain stored in the renderer.
     pub use_loudness: bool,
 
+    /// Distance attenuation model currently applied by the renderer.
+    pub distance_model: crate::spatial_vbap::DistanceModel,
+
     /// Per-speaker live parameters: gain, mute, delay.
     /// Absent entries use `SpeakerLiveParams::default()` (gain=1.0, muted=false, delay=0 ms).
     pub speakers: HashMap<usize, SpeakerLiveParams>,
@@ -628,7 +631,7 @@ impl RendererControl {
             distance_max,
             table_mode,
             allow_negative_z: rebuild.allow_negative_z,
-            distance_model: rebuild.distance_model,
+            distance_model: live.distance_model,
             spread_min: live.spread_min,
             spread_max: live.spread_max,
             spread_from_distance: live.spread_from_distance,

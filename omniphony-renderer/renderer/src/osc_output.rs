@@ -3,6 +3,7 @@ use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 use log::LevelFilter;
 use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1349,6 +1350,24 @@ fn handle_control_message(
         return;
     }
 
+    // ── Distance attenuation model: /omniphony/control/distance_model s ────
+    if addr == "/omniphony/control/distance_model" {
+        if let Some(OscType::String(model)) = msg.args.first() {
+            if let Ok(model) = crate::spatial_vbap::DistanceModel::from_str(model) {
+                control.live.write().unwrap().distance_model = model;
+                set_dirty(control, socket, clients);
+                broadcast_string(
+                    socket,
+                    clients,
+                    "/omniphony/state/distance_model",
+                    &model.to_string(),
+                );
+                trigger_layout_recompute(control, socket, clients);
+            }
+        }
+        return;
+    }
+
     // ── Room ratio: /omniphony/control/room_ratio w l h ────────────────────────
     if addr == "/omniphony/control/room_ratio" {
         if msg.args.len() >= 3 {
@@ -2071,6 +2090,10 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
             args: vec![OscType::Int(if live.use_loudness { 1 } else { 0 })],
         }),
         OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/distance_model".to_string(),
+            args: vec![OscType::String(live.distance_model.to_string())],
+        }),
+        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/room_ratio".to_string(),
 
             args: vec![
@@ -2507,6 +2530,13 @@ fn save_live_config(
         None
     };
     render.use_loudness = if live.use_loudness { Some(true) } else { None };
+    render.vbap_distance_model = if live.distance_model
+        != crate::spatial_vbap::DistanceModel::None
+    {
+        Some(live.distance_model.to_string())
+    } else {
+        None
+    };
     let [w, l, h] = live.room_ratio;
     let w = round6(w);
     let l = round6(l);
