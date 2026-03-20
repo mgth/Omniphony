@@ -1531,6 +1531,18 @@ fn restart_orender_service() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn restart_pipewire_services() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        run_user_systemctl(&["restart", "pipewire", "wireplumber"], "restart pipewire")?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("PipeWire restart is only supported on Linux".to_string())
+}
+
+#[tauri::command]
 fn launch_orender(
     app: tauri::AppHandle,
     state: State<SharedState>,
@@ -1666,6 +1678,7 @@ fn main() {
             start_orender_service,
             stop_orender_service,
             restart_orender_service,
+            restart_pipewire_services,
             control_osc_metering,
             select_layout,
             import_layout_from_path,

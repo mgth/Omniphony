@@ -314,6 +314,7 @@ impl PipewireWriter {
         let buffer_clone = sample_buffer.clone();
         let stream_ready = Arc::new(AtomicBool::new(false));
         let ready_clone = stream_ready.clone();
+        let ready_for_thread_cleanup = stream_ready.clone();
         let current_rate_adjust = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let rate_adjust_clone = current_rate_adjust.clone();
         let current_adaptive_band = Arc::new(AtomicU8::new(0));
@@ -361,6 +362,7 @@ impl PipewireWriter {
             ) {
                 log::error!("PipeWire thread error: {}", e);
             }
+            ready_for_thread_cleanup.store(false, Ordering::Relaxed);
             log::debug!("PipeWire thread exited");
         });
 
@@ -748,6 +750,9 @@ fn run_pipewire_loop(
 
     // Setup state changed listener
     let ready_for_state = stream_ready.clone();
+    let flush_for_state = flush_requested.clone();
+    let graph_latency_for_state = graph_latency_ms_out.clone();
+    let control_latency_for_state = control_latency_ms_out.clone();
     let _state_listener = stream
         .add_local_listener_with_user_data(())
         .state_changed(move |_, _, old, new| {
@@ -755,6 +760,17 @@ fn run_pipewire_loop(
             if new == pw::stream::StreamState::Streaming {
                 ready_for_state.store(true, Ordering::Relaxed);
                 log::info!("PipeWire stream is now STREAMING");
+            } else {
+                let was_ready = ready_for_state.swap(false, Ordering::Relaxed);
+                graph_latency_for_state.store(0u32, Ordering::Relaxed);
+                control_latency_for_state.store(0u32, Ordering::Relaxed);
+                if was_ready {
+                    flush_for_state.store(true, Ordering::Relaxed);
+                    log::warn!(
+                        "PipeWire stream left STREAMING ({:?}); pausing writes and scheduling buffer flush on recovery",
+                        new
+                    );
+                }
             }
         })
         .register()

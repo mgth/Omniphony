@@ -228,6 +228,7 @@ const oscMeteringToggleEl = document.getElementById('oscMeteringToggle');
 const oscConfigApplyBtnEl = document.getElementById('oscConfigApplyBtn');
 const oscServiceBtnEl = document.getElementById('oscServiceBtn');
 const oscRestartServiceBtnEl = document.getElementById('oscRestartServiceBtn');
+const oscRestartPipewireBtnEl = document.getElementById('oscRestartPipewireBtn');
 const oscLaunchRendererBtnEl = document.getElementById('oscLaunchRendererBtn');
 const trailModeSelectEl = document.getElementById('trailModeSelect');
 const trailTtlSliderEl = document.getElementById('trailTtlSlider');
@@ -718,6 +719,7 @@ let orenderServiceInstalled = false;
 let orenderServiceRunning = false;
 let orenderServiceManager = null;
 let orenderServicePending = false;
+const isLinux = typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('linux');
 let roomMasterAxis = 'width';
 const roomAxisDrivers = {
   width: 'size',
@@ -1027,6 +1029,16 @@ function renderOscStatus() {
     oscRestartServiceBtnEl.title = orenderServiceInstalled
       ? 'Restart service'
       : 'Install service first';
+  }
+  if (oscRestartPipewireBtnEl) {
+    const enabled = isLinux && !orenderServicePending && !oscLaunchPending;
+    oscRestartPipewireBtnEl.style.display = isLinux ? '' : 'none';
+    oscRestartPipewireBtnEl.disabled = !enabled;
+    oscRestartPipewireBtnEl.style.opacity = enabled ? '1' : '0.45';
+    oscRestartPipewireBtnEl.style.cursor = enabled ? 'pointer' : 'default';
+    oscRestartPipewireBtnEl.title = isLinux
+      ? 'Restart PipeWire and WirePlumber'
+      : 'Only available on Linux';
   }
   if (oscStatusDotEl) {
     const colors = {
@@ -4765,78 +4777,91 @@ function updateSectionProportions() {
   }
 }
 
-function createLabelSprite(text) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 96;
-  const ctx = canvas.getContext('2d');
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.minFilter = THREE.LinearFilter;
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
-  const sprite = new THREE.Sprite(material);
-  sprite.scale.set(0.42, 0.16, 1);
-  sprite.userData.labelCanvas = canvas;
-  sprite.userData.labelCtx = ctx;
-  sprite.userData.labelTexture = texture;
-  sprite.userData.labelText = '';
-  sprite.userData.labelColor = '#ffffff';
-  setLabelSpriteText(sprite, text);
-  return sprite;
+function escapeSvgText(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
 }
 
-function createSmallLabelSprite(text, color = '#d9ecff') {
-  const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 64;
-  const ctx = canvas.getContext('2d');
+function buildLabelSvgDataUrl(text, color, width, height, isLarge) {
+  const lines = String(text ?? '').split('\n');
+  const fontSize = isLarge ? 36 : 28;
+  const baseFontSize = isLarge ? 24 : 18;
+  const lineHeight = isLarge ? 24 : 18;
+  let textMarkup = '';
 
-  const texture = new THREE.CanvasTexture(canvas);
+  if (lines.length <= 1) {
+    textMarkup = `<text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-size="${fontSize}" font-weight="700">${escapeSvgText(lines[0] || '')}</text>`;
+  } else {
+    const totalHeight = lineHeight * (lines.length - 1);
+    const startY = (height / 2) - (totalHeight / 2);
+    textMarkup = lines.map((line, index) => {
+      const weight = index === 0 ? 700 : 600;
+      const y = startY + (index * lineHeight);
+      return `<text x="50%" y="${y}" text-anchor="middle" dominant-baseline="middle" font-size="${baseFontSize}" font-weight="${weight}">${escapeSvgText(line)}</text>`;
+    }).join('');
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><g fill="${escapeSvgText(color || '#ffffff')}" font-family="sans-serif">${textMarkup}</g></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function createLabelSpriteBase(width, height, scaleX, scaleY, color, text) {
+  const image = new Image();
+  const texture = new THREE.Texture(image);
   texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
   const sprite = new THREE.Sprite(material);
-  sprite.scale.set(0.25, 0.12, 1);
-  sprite.userData.labelCanvas = canvas;
-  sprite.userData.labelCtx = ctx;
+  sprite.scale.set(scaleX, scaleY, 1);
+  sprite.userData.labelImage = image;
   sprite.userData.labelTexture = texture;
   sprite.userData.labelText = '';
   sprite.userData.labelColor = color;
+  sprite.userData.labelWidth = width;
+  sprite.userData.labelHeight = height;
   setLabelSpriteText(sprite, text);
   return sprite;
 }
 
+function createLabelSprite(text) {
+  return createLabelSpriteBase(256, 96, 0.42, 0.16, '#ffffff', text);
+}
+
+function createSmallLabelSprite(text, color = '#d9ecff') {
+  return createLabelSpriteBase(128, 64, 0.25, 0.12, color, text);
+}
+
 function setLabelSpriteText(sprite, text) {
-  if (!sprite?.userData?.labelCanvas || !sprite.userData.labelCtx) {
+  if (!sprite?.userData?.labelTexture || !sprite.userData.labelImage) {
     return;
   }
   const nextText = String(text ?? '');
   if (sprite.userData.labelText === nextText) {
     return;
   }
-  const canvas = sprite.userData.labelCanvas;
-  const ctx = sprite.userData.labelCtx;
-  const lines = nextText.split('\n');
-  const isLargeCanvas = canvas.width >= 200;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = sprite.userData.labelColor || '#ffffff';
-  if (lines.length <= 1) {
-    ctx.font = isLargeCanvas ? 'bold 36px sans-serif' : 'bold 28px sans-serif';
-    ctx.fillText(nextText, canvas.width / 2, canvas.height / 2);
-  } else {
-    const lineHeight = isLargeCanvas ? 24 : 18;
-    const baseFont = isLargeCanvas ? 24 : 18;
-    const totalHeight = lineHeight * (lines.length - 1);
-    const startY = (canvas.height / 2) - (totalHeight / 2);
-    lines.forEach((line, index) => {
-      ctx.font = `${index === 0 ? 'bold' : '600'} ${baseFont}px sans-serif`;
-      ctx.fillText(line, canvas.width / 2, startY + (index * lineHeight));
-    });
-  }
+  const width = Number(sprite.userData.labelWidth) || 128;
+  const height = Number(sprite.userData.labelHeight) || 64;
+  const isLargeCanvas = width >= 200;
+  const image = sprite.userData.labelImage;
+  image.onload = () => {
+    if (sprite.userData.labelImage === image && sprite.userData.labelTexture) {
+      sprite.userData.labelTexture.needsUpdate = true;
+    }
+  };
+  image.src = buildLabelSvgDataUrl(
+    nextText,
+    sprite.userData.labelColor || '#ffffff',
+    width,
+    height,
+    isLargeCanvas
+  );
   sprite.userData.labelText = nextText;
-  if (sprite.userData.labelTexture) {
-    sprite.userData.labelTexture.needsUpdate = true;
-  }
 }
 
 function updateSpeakerLabelsFromSelection() {
@@ -7708,6 +7733,20 @@ function restartOrenderServiceFromPanel() {
     });
 }
 
+function restartPipewireFromPanel() {
+  orenderServicePending = true;
+  renderOscStatus();
+  return invoke('restart_pipewire_services')
+    .then(() => {
+      pushLog('info', 'PipeWire restart requested.');
+      return refreshOrenderServiceStatus().catch(() => {});
+    })
+    .finally(() => {
+      orenderServicePending = false;
+      renderOscStatus();
+    });
+}
+
 if (oscLaunchRendererBtnEl) {
   oscLaunchRendererBtnEl.addEventListener('click', () => {
     if (oscLaunchPending || orenderServicePending) {
@@ -7772,6 +7811,17 @@ if (oscRestartServiceBtnEl) {
     }
     restartOrenderServiceFromPanel().catch((e) => {
       pushLog('error', `Failed to restart orender service: ${normalizeLogError(e)}`);
+    });
+  });
+}
+
+if (oscRestartPipewireBtnEl) {
+  oscRestartPipewireBtnEl.addEventListener('click', () => {
+    if (!isLinux || oscLaunchPending || orenderServicePending) {
+      return;
+    }
+    restartPipewireFromPanel().catch((e) => {
+      pushLog('error', `Failed to restart PipeWire: ${normalizeLogError(e)}`);
     });
   });
 }
