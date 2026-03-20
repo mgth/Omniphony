@@ -1077,6 +1077,7 @@ fn init_render_handler(
         ctrl.set_input_path(Some(input_path.display().to_string()));
         if let Some(backend) = args.output_backend.or_else(OutputBackend::platform_default) {
             ctrl.set_available_output_devices(list_available_output_devices(backend));
+            ctrl.set_device_list_fetcher(move || list_available_output_devices(backend));
         } else {
             ctrl.set_available_output_devices(Vec::new());
         }

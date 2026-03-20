@@ -861,6 +861,15 @@ fn handle_control_message(
         return;
     }
 
+    if addr == "/omniphony/control/audio/output_devices/refresh" {
+        if let Some(devices) = control.refresh_available_output_devices() {
+            let json = serde_json::to_string(&devices).unwrap_or_else(|_| "[]".to_string());
+            broadcast_string(socket, clients, "/omniphony/state/audio/output_devices", &json);
+            log::info!("OSC: output_devices/refresh → {} device(s)", devices.len());
+        }
+        return;
+    }
+
     if addr == "/omniphony/control/audio/output_device" {
         let requested = msg.args.first().and_then(|arg| match arg {
             OscType::String(s) => {

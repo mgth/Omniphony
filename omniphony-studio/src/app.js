@@ -7133,6 +7133,13 @@ if (audioOutputDeviceSelectEl) {
   });
 }
 
+const refreshOutputDevicesBtnEl = document.getElementById('refreshOutputDevicesBtn');
+if (refreshOutputDevicesBtnEl) {
+  refreshOutputDevicesBtnEl.addEventListener('click', () => {
+    invoke('refresh_output_devices');
+  });
+}
+
 if (rampModeSelectEl) {
   rampModeSelectEl.addEventListener('change', () => {
     applyRampModeNow();

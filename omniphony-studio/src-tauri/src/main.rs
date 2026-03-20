@@ -938,6 +938,16 @@ fn control_audio_output_device(state: State<SharedState>, output_device: String)
     );
 }
 
+#[tauri::command]
+fn refresh_output_devices(state: State<SharedState>) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendNoArgs {
+            address: "/omniphony/control/audio/output_devices/refresh".to_string(),
+        },
+    );
+}
+
 fn first_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates.iter().find(|path| path.exists()).cloned()
 }
@@ -1672,6 +1682,7 @@ fn main() {
             control_log_level,
             control_ramp_mode,
             control_audio_output_device,
+            refresh_output_devices,
             control_export_layout,
             control_audio_sample_rate,
         ])

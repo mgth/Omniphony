@@ -1592,9 +1592,12 @@
           <div id="audioFormatInfo">audio: — / —</div>
           <div class="control-row" style="margin-top:0.3rem;grid-template-columns:auto minmax(0, 1fr)">
             <label for="audioOutputDeviceSelect" style="font-size:12px;white-space:nowrap" data-i18n="audio.outputDevice">Output device</label>
-            <select id="audioOutputDeviceSelect" class="delay-input" style="width:100%;min-width:0">
-              <option value="">Default</option>
-            </select>
+            <div style="display:flex;align-items:center;gap:0.3rem;min-width:0">
+              <select id="audioOutputDeviceSelect" class="delay-input" style="flex:1 1 auto;min-width:0">
+                <option value="">Default</option>
+              </select>
+              <button id="refreshOutputDevicesBtn" type="button" title="Refresh device list" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.1rem 0.45rem;cursor:pointer;flex-shrink:0">↺</button>
+            </div>
           </div>
           <div class="control-row" style="margin-top:0.3rem;grid-template-columns:auto 1fr">
             <label for="audioSampleRateInput" style="font-size:12px;white-space:nowrap" data-i18n="audio.sampleRate">Sample rate</label>

@@ -423,6 +423,10 @@ pub struct RendererControl {
     /// Snapshot of currently available output-device choices for the active backend.
     pub available_output_devices: Mutex<Vec<OutputDeviceOption>>,
 
+    /// Callback that queries the audio backend for the live device list.
+    /// Set by the CLI layer after renderer init; called by the OSC refresh handler.
+    pub device_list_fetcher: Mutex<Option<Box<dyn Fn() -> Vec<OutputDeviceOption> + Send + Sync>>>,
+
     /// Requested output sample rate from OSC control (`None` encoded as 0).
     pub requested_output_sample_rate_hz: std::sync::atomic::AtomicU32,
     /// Requested adaptive-resampling state from OSC control.
@@ -473,6 +477,7 @@ impl RendererControl {
             requested_output_device: Mutex::new(None),
             input_path: Mutex::new(None),
             available_output_devices: Mutex::new(Vec::new()),
+            device_list_fetcher: Mutex::new(None),
             requested_output_sample_rate_hz: std::sync::atomic::AtomicU32::new(0),
             requested_adaptive_resampling: std::sync::atomic::AtomicBool::new(false),
             requested_ramp_mode: Mutex::new(RampMode::Sample),
@@ -673,6 +678,24 @@ impl RendererControl {
 
     pub fn available_output_devices(&self) -> Vec<OutputDeviceOption> {
         self.available_output_devices.lock().unwrap().clone()
+    }
+
+    pub fn set_device_list_fetcher(
+        &self,
+        fetcher: impl Fn() -> Vec<OutputDeviceOption> + Send + Sync + 'static,
+    ) {
+        *self.device_list_fetcher.lock().unwrap() = Some(Box::new(fetcher));
+    }
+
+    /// Query the audio backend live for the current device list, update the
+    /// cache, and return the new list. Returns `None` if no fetcher is set.
+    pub fn refresh_available_output_devices(&self) -> Option<Vec<OutputDeviceOption>> {
+        let fetcher = self.device_list_fetcher.lock().unwrap();
+        fetcher.as_ref().map(|f| {
+            let devices = f();
+            *self.available_output_devices.lock().unwrap() = devices.clone();
+            devices
+        })
     }
 
     pub fn requested_output_sample_rate(&self) -> Option<u32> {
