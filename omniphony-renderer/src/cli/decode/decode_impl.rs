@@ -122,6 +122,11 @@ fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderAr
             args.vbap_distance_max = v;
         }
     }
+    if !args.vbap_position_interpolation && !args.no_vbap_position_interpolation {
+        args.vbap_position_interpolation = cfg.vbap_position_interpolation.unwrap_or(true);
+    } else if args.no_vbap_position_interpolation {
+        args.vbap_position_interpolation = false;
+    }
     if args.vbap_table_mode == VbapTableModeArg::Polar {
         if let Some(ref v) = cfg.vbap_table_mode {
             args.vbap_table_mode = if v.eq_ignore_ascii_case("cartesian") {
@@ -350,6 +355,11 @@ fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<renderer::config:
             Some(args.vbap_distance_max)
         } else {
             None
+        },
+        vbap_position_interpolation: if args.vbap_position_interpolation {
+            None
+        } else {
+            Some(false)
         },
         vbap_table_mode: if args.vbap_table_mode != VbapTableModeArg::Polar {
             Some(format!("{:?}", args.vbap_table_mode).to_lowercase())
@@ -959,6 +969,7 @@ fn init_render_handler(
                 layout,
                 48000, // Sample rate (standard for this presentation)
                 vbap_allow_negative_z,
+                args.vbap_position_interpolation,
                 distance_model,
                 args.vbap_distance_max,
                 args.spread_from_distance,
@@ -1013,6 +1024,7 @@ fn init_render_handler(
                     args.vbap_distance_max,
                     vbap_table_mode,
                     vbap_allow_negative_z,
+                    args.vbap_position_interpolation,
                     distance_model,
                     args.spread_from_distance,
                     args.spread_distance_range,

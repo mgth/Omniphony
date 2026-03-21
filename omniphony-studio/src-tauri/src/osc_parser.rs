@@ -248,6 +248,8 @@ pub enum OscEvent {
     StateLatencyControl { value: f64 },
     #[serde(rename = "state:latency:target")]
     StateLatencyTarget { value: f64 },
+    #[serde(rename = "state:render_time_ms")]
+    StateRenderTimeMs { value: f64 },
     #[serde(rename = "state:resample_ratio")]
     StateResampleRatio { value: f64 },
     #[serde(rename = "state:audio:sample_rate")]
@@ -296,6 +298,8 @@ pub enum OscEvent {
     StateVbapPolarDistanceRes { value: u32 },
     #[serde(rename = "state:vbap:polar:distance_max")]
     StateVbapPolarDistanceMax { value: f64 },
+    #[serde(rename = "state:vbap:position_interpolation")]
+    StateVbapPositionInterpolation { enabled: bool },
     #[serde(rename = "state:vbap:allow_negative_z")]
     StateVbapAllowNegativeZ { enabled: bool },
     #[serde(rename = "state:speakers:recomputing")]
@@ -569,6 +573,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (3, "latency_target") => Some(OscEvent::StateLatencyTarget {
             value: to_number(args[0])?,
         }),
+        (3, "render_time_ms") => Some(OscEvent::StateRenderTimeMs {
+            value: to_number(args[0])?,
+        }),
         (3, "resample_ratio") => Some(OscEvent::StateResampleRatio {
             value: to_number(args[0])?,
         }),
@@ -659,6 +666,11 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (4, "vbap") if parts[3] == "effective_mode" => {
             let value = raw_args.first().and_then(unwrap_string)?;
             Some(OscEvent::StateVbapEffectiveMode { value })
+        }
+        (4, "vbap") if parts[3] == "position_interpolation" => {
+            Some(OscEvent::StateVbapPositionInterpolation {
+                enabled: to_number(args[0])? != 0.0,
+            })
         }
         (5, "vbap") if parts[3] == "polar" => {
             match parts[4] {

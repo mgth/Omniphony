@@ -48,6 +48,8 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vbap_distance_max: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub vbap_position_interpolation: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub vbap_table_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vbap_cart_x_size: Option<usize>,

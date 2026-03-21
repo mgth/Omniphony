@@ -193,6 +193,9 @@ pub struct LiveParams {
     /// Maximum distance covered by polar VBAP precomputed table.
     pub vbap_polar_distance_max: f32,
 
+    /// Interpolate between neighbouring VBAP table positions during lookup.
+    pub vbap_position_interpolation: bool,
+
     /// Apply dialogue normalisation gain stored in the renderer.
     pub use_loudness: bool,
 
@@ -259,6 +262,7 @@ pub struct VbapRebuildParams {
     pub el_res_deg: i32,
     pub spread_resolution: f32,
     pub distance_max: f32,
+    pub position_interpolation: bool,
     pub table_mode: VbapTableMode,
     pub preferred_table_mode: VbapBackendMode,
     pub cartesian_default_x_size: usize,
@@ -331,6 +335,7 @@ pub struct TopologyRebuildPlan {
     pub elevation_resolution: i32,
     pub distance_res: f32,
     pub distance_max: f32,
+    pub position_interpolation: bool,
     pub table_mode: VbapTableMode,
     pub allow_negative_z: bool,
     pub distance_model: crate::spatial_vbap::DistanceModel,
@@ -360,6 +365,7 @@ impl TopologyRebuildPlan {
         )
         .map_err(|e| anyhow::anyhow!("Failed to create VBAP panner: {}", e))?
         .with_negative_z(self.allow_negative_z)
+        .with_position_interpolation(self.position_interpolation)
         .precompute_effect_tables(
             self.distance_res,
             self.distance_max,
@@ -647,6 +653,7 @@ impl RendererControl {
             elevation_resolution,
             distance_res,
             distance_max,
+            position_interpolation: live.vbap_position_interpolation,
             table_mode,
             allow_negative_z: rebuild.allow_negative_z,
             distance_model: live.distance_model,

@@ -1612,48 +1612,35 @@
         </div>
       </div>
       <div class="info-section">
-        <div class="control-row" style="margin-top:0;grid-template-columns:auto auto 1fr">
-          <label for="latencyTargetInput" style="font-size:12px;white-space:nowrap" data-i18n="audio.targetLatency">Target latency</label>
-          <input id="latencyTargetInput" class="delay-input" type="number" min="1" step="1" value="500" style="width:5.5rem" />
-          <div style="display:flex;align-items:center;gap:0.35rem;justify-content:flex-end">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:0.5rem">
+          <div style="display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto;column-gap:0.5rem;row-gap:0.05rem;align-items:start;min-width:0;flex:1 1 auto">
+            <div class="info-title" style="margin:0;grid-column:1;grid-row:1">Latency</div>
+            <div class="meter-bar" style="grid-column:2;grid-row:1;align-self:center;overflow:visible">
+              <div id="latencyMeterFill" class="meter-fill latency"></div>
+              <div id="latencyRawMinMask" class="meter-range-mask" style="left:0;width:0;display:none"></div>
+              <div id="latencyRawMaxMask" class="meter-range-mask" style="right:0;width:0;display:none"></div>
+              <div id="latencyRawMinMarker" class="meter-marker min"></div>
+              <div id="latencyCtrlMarker" class="meter-marker" style="background:#58a0ff;top:-4px;bottom:-4px"></div>
+              <div id="latencyRawMaxMarker" class="meter-marker max"></div>
+            </div>
+            <div style="grid-column:2;grid-row:2;min-width:0">
+              <div class="meter-subvalues">
+                <span id="latencyRawMinValue">min —</span>
+                <span id="latencyRawInfo">—</span>
+                <span id="latencyRawMaxValue">max —</span>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.35rem;justify-content:flex-end;flex:0 0 auto">
             <button id="telemetryGaugesInfoBtn" type="button" class="info-icon-btn" title="Gauges info">i</button>
             <button id="telemetryGaugesToggleBtn" type="button" class="panel-toggle-btn" title="Show gauges">◴</button>
           </div>
         </div>
         <div id="telemetryGaugesForm" class="telemetry-gauges-form">
-          <div class="meter-row">
-            <div class="meter-stack" style="grid-column: 1 / -1;">
-              <div class="meter-mini-row">
-                <div class="meter-mini-label" style="transform:translateY(-8px)" data-i18n="telemetry.raw">raw</div>
-                <div style="display:grid;gap:0.05rem;width:100%">
-                  <div class="meter-bar">
-                    <div id="latencyMeterFill" class="meter-fill latency"></div>
-                    <div id="latencyRawMinMask" class="meter-range-mask" style="left:0;width:0;display:none"></div>
-                    <div id="latencyRawMaxMask" class="meter-range-mask" style="right:0;width:0;display:none"></div>
-                    <div id="latencyRawMinMarker" class="meter-marker min"></div>
-                    <div id="latencyRawMaxMarker" class="meter-marker max"></div>
-                  </div>
-                  <div class="meter-subvalues">
-                    <span id="latencyRawMinValue">min —</span>
-                    <span id="latencyRawInfo">—</span>
-                    <span id="latencyRawMaxValue">max —</span>
-                  </div>
-                </div>
-              </div>
-              <div class="meter-mini-row">
-                <div class="meter-mini-label" style="transform:translateY(-8px)" data-i18n="telemetry.ctrl">ctrl</div>
-                <div style="display:grid;gap:0.05rem;width:100%">
-                  <div class="meter-bar">
-                    <div id="latencyCtrlMeterFill" class="meter-fill latency-ctrl"></div>
-                  </div>
-                  <div class="meter-subvalues">
-                    <span></span>
-                    <span id="latencyCtrlInfo">—</span>
-                    <span></span>
-                  </div>
-                </div>
-              </div>
-            </div>
+          <div class="control-row" style="margin-top:0;grid-template-columns:auto auto 1fr">
+            <label for="latencyTargetInput" style="font-size:12px;white-space:nowrap" data-i18n="audio.targetLatency">Target latency</label>
+            <input id="latencyTargetInput" class="delay-input" type="number" min="1" step="1" value="500" style="width:5.5rem" />
+            <div></div>
           </div>
           <div class="meter-row" id="resampleMeterRow">
             <div class="meter-mini-row" style="grid-column: 1 / -1;">
@@ -1743,12 +1730,24 @@
         </div>
       </div>
       <div class="info-section" id="rendererSection">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-          <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
+        <div style="display:grid;gap:0.2rem">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+            <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
             <div class="info-title" style="margin:0" data-i18n="section.renderer">Renderer</div>
-            <div id="rendererSummary" style="display:none;min-width:0;flex:1 1 auto;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+            <div id="rendererRenderTimeWrap" style="display:none;align-items:center;gap:0.35rem;min-width:0;flex:0 0 auto">
+              <div class="meter-bar" style="width:72px;min-width:72px">
+                <div id="rendererRenderTimeFill" class="meter-fill latency-ctrl"></div>
+                <div id="rendererRenderTimeMinMarker" class="meter-marker min"></div>
+                <div id="rendererRenderTimeMaxMarker" class="meter-marker max"></div>
+                </div>
+                <div id="rendererRenderTimeValue" style="font-size:11px;color:#d9ecff;white-space:nowrap">—</div>
+              </div>
+            </div>
+            <button id="rendererSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
           </div>
-          <button id="rendererSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
+          <div style="display:flex;justify-content:flex-end;min-width:0">
+            <div id="rendererSummary" style="display:none;min-width:0;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+          </div>
         </div>
         <div id="rendererSectionContent" class="conditional-params">
           <div style="margin-top:0.25rem;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03);display:grid;gap:0.3rem">
@@ -1801,6 +1800,13 @@
                   </div>
                 </div>
               </div>
+              <div class="inline-toggle" style="margin-top:0.1rem;display:flex;align-items:center;gap:0.35rem">
+                <div class="title-with-info" style="min-width:0">
+                  <span style="font-size:12px;white-space:nowrap;color:#ffffff">Position interpolation</span>
+                  <button id="vbapPositionInterpolationInfoBtn" type="button" class="info-icon-btn" title="VBAP position interpolation info">i</button>
+                </div>
+                <input id="vbapPositionInterpolationToggleEl" type="checkbox" />
+              </div>
             </div>
             </div>
           </div>
@@ -1813,6 +1819,15 @@
               <option value="off" data-i18n="audio.rampModeOff">Off</option>
               <option value="frame" data-i18n="audio.rampModeFrame">Per frame</option>
               <option value="sample" data-i18n="audio.rampModeSample">Per sample</option>
+            </select>
+          </div>
+          <div class="control-row" style="margin-top:0.2rem;grid-template-columns:1fr auto;align-items:center">
+            <label for="distanceModelSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">Distance model</label>
+            <select id="distanceModelSelect" class="delay-input" style="min-width:11rem">
+              <option value="none">None</option>
+              <option value="linear">Linear</option>
+              <option value="quadratic">Quadratic</option>
+              <option value="inverse-square">Inverse-square</option>
             </select>
           </div>
           <div class="info-section" id="spreadSection" style="margin:0;padding:0;border:none;background:none">
@@ -2113,6 +2128,19 @@
         </div>
         <div class="info-modal-actions">
           <button id="rampModeInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="vbapPositionInterpolationInfoModal" class="info-modal" aria-hidden="true">
+      <div class="info-modal-card">
+        <div class="info-modal-title">VBAP position interpolation</div>
+        <div class="info-modal-text">
+          <strong>On</strong>: interpolate between neighbouring VBAP table cells for smoother spatial motion and lookup continuity.<br /><br />
+          <strong>Off</strong>: use nearest-cell lookup. This is cheaper and more deterministic, but movement can become more stepped.
+        </div>
+        <div class="info-modal-actions">
+          <button id="vbapPositionInterpolationInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
         </div>
       </div>
     </div>

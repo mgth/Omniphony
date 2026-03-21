@@ -224,6 +224,15 @@ pub struct RenderArgs {
     )]
     pub vbap_distance_max: f32,
 
+    /// Interpolate between neighbouring VBAP table positions during lookup.
+    /// Disable this to use nearest-cell lookup for lower CPU cost.
+    #[arg(long, conflicts_with = "no_vbap_position_interpolation")]
+    pub vbap_position_interpolation: bool,
+
+    /// Disable interpolation between neighbouring VBAP table positions.
+    #[arg(long, conflicts_with = "vbap_position_interpolation")]
+    pub no_vbap_position_interpolation: bool,
+
     /// VBAP pre-computed table mode.
     /// - `polar`: pre-compute gains over azimuth/elevation (current behavior)
     /// - `cartesian`: pre-compute gains over x/y/z ADM grid

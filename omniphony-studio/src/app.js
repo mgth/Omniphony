@@ -99,6 +99,11 @@ const audioOutputSummaryEl = document.getElementById('audioOutputSummary');
 const rendererSectionToggleBtnEl = document.getElementById('rendererSectionToggleBtn');
 const rendererSectionContentEl = document.getElementById('rendererSectionContent');
 const rendererSummaryEl = document.getElementById('rendererSummary');
+const rendererRenderTimeWrapEl = document.getElementById('rendererRenderTimeWrap');
+const rendererRenderTimeFillEl = document.getElementById('rendererRenderTimeFill');
+const rendererRenderTimeMinMarkerEl = document.getElementById('rendererRenderTimeMinMarker');
+const rendererRenderTimeMaxMarkerEl = document.getElementById('rendererRenderTimeMaxMarker');
+const rendererRenderTimeValueEl = document.getElementById('rendererRenderTimeValue');
 const vbapSectionContentEl = document.getElementById('vbapSectionContent');
 const spreadSectionContentEl = document.getElementById('spreadSectionContent');
 const vbapStatusEl = document.getElementById('vbapStatus');
@@ -114,6 +119,7 @@ const vbapPolarAzimuthResolutionInputEl = document.getElementById('vbapPolarAzim
 const vbapPolarElevationResolutionInputEl = document.getElementById('vbapPolarElevationResolutionInput');
 const vbapPolarDistanceResInputEl = document.getElementById('vbapPolarDistanceResInput');
 const vbapPolarDistanceMaxInputEl = document.getElementById('vbapPolarDistanceMaxInput');
+const vbapPositionInterpolationToggleEl = document.getElementById('vbapPositionInterpolationToggleEl');
 const vbapCartXStepInfoEl = document.getElementById('vbapCartXStepInfo');
 const vbapCartYStepInfoEl = document.getElementById('vbapCartYStepInfo');
 const vbapCartZStepInfoEl = document.getElementById('vbapCartZStepInfo');
@@ -161,6 +167,9 @@ const distanceModelSelectEl = document.getElementById('distanceModelSelect');
 const rampModeInfoBtnEl = document.getElementById('rampModeInfoBtn');
 const rampModeInfoModalEl = document.getElementById('rampModeInfoModal');
 const rampModeInfoCloseBtnEl = document.getElementById('rampModeInfoCloseBtn');
+const vbapPositionInterpolationInfoBtnEl = document.getElementById('vbapPositionInterpolationInfoBtn');
+const vbapPositionInterpolationInfoModalEl = document.getElementById('vbapPositionInterpolationInfoModal');
+const vbapPositionInterpolationInfoCloseBtnEl = document.getElementById('vbapPositionInterpolationInfoCloseBtn');
 const audioSampleRateControlEl = document.getElementById('audioSampleRateControl');
 const audioSampleRateInputEl = document.getElementById('audioSampleRateInput');
 const audioSampleRateMenuBtnEl = document.getElementById('audioSampleRateMenuBtn');
@@ -180,8 +189,8 @@ const spreadDistanceCurveValEl = document.getElementById('spreadDistanceCurveVal
 const latencyMeterFillEl = document.getElementById('latencyMeterFill');
 const latencyRawMinMaskEl = document.getElementById('latencyRawMinMask');
 const latencyRawMaxMaskEl = document.getElementById('latencyRawMaxMask');
-const latencyCtrlMeterFillEl = document.getElementById('latencyCtrlMeterFill');
 const latencyRawMinMarkerEl = document.getElementById('latencyRawMinMarker');
+const latencyCtrlMarkerEl = document.getElementById('latencyCtrlMarker');
 const latencyRawMaxMarkerEl = document.getElementById('latencyRawMaxMarker');
 const latencyRawMinValueEl = document.getElementById('latencyRawMinValue');
 const latencyRawMaxValueEl = document.getElementById('latencyRawMaxValue');
@@ -456,12 +465,15 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.update();
 
-const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+const ambient = new THREE.AmbientLight(0xffffff, 0.78);
 scene.add(ambient);
 
-const directional = new THREE.DirectionalLight(0xffffff, 1);
+const directional = new THREE.DirectionalLight(0xffffff, 1.15);
 directional.position.set(3, 4, 2);
 scene.add(directional);
+
+const hemisphere = new THREE.HemisphereLight(0xeaf6ff, 0x1a1d24, 0.55);
+scene.add(hemisphere);
 
 const roomGroup = new THREE.Group();
 scene.add(roomGroup);
@@ -469,6 +481,10 @@ const roomDimensionGroup = new THREE.Group();
 scene.add(roomDimensionGroup);
 const brassempouyAnchor = new THREE.Group();
 roomGroup.add(brassempouyAnchor);
+
+const brassempouyFill = new THREE.PointLight(0xfff4dc, 0.9, 2.2, 2);
+brassempouyFill.position.set(-0.18, 0.42, 0.22);
+brassempouyAnchor.add(brassempouyFill);
 
 const roomGeometry = new THREE.BoxGeometry(2, 1, 2);
 const room = new THREE.Mesh(
@@ -610,7 +626,7 @@ roomDimensionGroup.visible = false;
 let metersPerUnit = 1.0;
 const spreadState = { min: null, max: null, fromDistance: null, distanceRange: null, distanceCurve: null };
 
-const BRASSEMPOUY_TARGET_MAX_DIMENSION = 0.28;
+const BRASSEMPOUY_TARGET_MAX_DIMENSION = 0.34;
 const brassempouyAssetUrl = new URL('../assets/la_dame_de_brassempouy_centered.glb', import.meta.url);
 const gltfLoader = new GLTFLoader();
 const brassempouyBounds = new THREE.Box3();
@@ -627,6 +643,12 @@ gltfLoader.load(
       node.castShadow = false;
       node.receiveShadow = false;
       node.frustumCulled = false;
+      if (node.material && 'roughness' in node.material) {
+        node.material.roughness = Math.min(0.92, Number(node.material.roughness) || 0.92);
+      }
+      if (node.material && 'metalness' in node.material) {
+        node.material.metalness = 0.0;
+      }
     });
 
     brassempouyBounds.setFromObject(model);
@@ -652,6 +674,7 @@ gltfLoader.load(
 const vbapCartesianState = { xSize: null, ySize: null, zSize: null, zNegSize: 0 };
 const vbapPolarState = { azimuthResolution: null, elevationResolution: null, distanceRes: null, distanceMax: null };
 const vbapModeState = { selection: null, effectiveMode: null };
+let vbapPositionInterpolation = null;
 let vbapAllowNegativeZ = null;
 const distanceDiffuseState = { enabled: null, threshold: null, curve: null };
 let distanceModel = 'none';
@@ -674,6 +697,8 @@ let latencyMs = null;
 let latencyInstantMs = null;
 let latencyControlMs = null;
 let latencyTargetMs = null;
+let renderTimeMs = null;
+let renderTimeWindow = [];
 let latencyRawWindow = [];
 let resampleRatio = null;
 let audioSampleRate = null;
@@ -734,6 +759,7 @@ let vbapCartesianFaceGridEnabled = false;
 let roomGeometryApplyTimer = null;
 let latencyTargetApplyTimer = null;
 const LATENCY_RAW_WINDOW_MS = 4000;
+const RENDER_TIME_WINDOW_MS = 1000;
 
 const vbapCartesianFaceGridMaterial = new THREE.LineBasicMaterial({
   color: 0x66d8ff,
@@ -1000,6 +1026,20 @@ function setLatencyInstantMs(value) {
   const cutoff = now - LATENCY_RAW_WINDOW_MS;
   while (latencyRawWindow.length > 0 && latencyRawWindow[0].t < cutoff) {
     latencyRawWindow.shift();
+  }
+}
+
+function setRenderTimeMs(value) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) {
+    return;
+  }
+  renderTimeMs = next;
+  const now = performance.now();
+  renderTimeWindow.push({ t: now, v: next });
+  const cutoff = now - RENDER_TIME_WINDOW_MS;
+  while (renderTimeWindow.length > 0 && renderTimeWindow[0].t < cutoff) {
+    renderTimeWindow.shift();
   }
 }
 
@@ -1556,6 +1596,7 @@ let dirtyDistanceDiffuse = false;
 let dirtyDistanceModel = false;
 let dirtyConfigSaved = false;
 let dirtyLatency = false;
+let dirtyRenderTime = false;
 let dirtyResample = false;
 let dirtyAudioFormat = false;
 let dirtyMasterGain = false;
@@ -2219,6 +2260,11 @@ function flushUI() {
     renderLatencyDisplay();
     renderLatencyMeterUI();
     dirtyLatency = false;
+  }
+
+  if (dirtyRenderTime) {
+    renderRenderTimeUI();
+    dirtyRenderTime = false;
   }
 
   if (dirtyResample) {
@@ -3685,6 +3731,16 @@ function updateVbapPolar() {
   scheduleUIFlush();
 }
 
+function renderVbapPositionInterpolation() {
+  if (!vbapPositionInterpolationToggleEl) return;
+  vbapPositionInterpolationToggleEl.checked = vbapPositionInterpolation !== false;
+}
+
+function updateVbapPositionInterpolation() {
+  dirtyVbapPolar = true;
+  scheduleUIFlush();
+}
+
 function renderLoudnessDisplay() {
   if (!loudnessInfoEl) return;
   const enabledText = loudnessEnabled === null ? '—' : loudnessEnabled ? t('loudness.on') : t('loudness.off');
@@ -3896,6 +3952,11 @@ function setRampModeInfoModalOpen(open) {
   rampModeInfoModalEl.classList.toggle('open', Boolean(open));
 }
 
+function setVbapPositionInterpolationInfoModalOpen(open) {
+  if (!vbapPositionInterpolationInfoModalEl) return;
+  vbapPositionInterpolationInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
 function setAdaptiveResamplingAdvancedOpen(open) {
   adaptiveResamplingAdvancedOpen = Boolean(open);
   if (adaptiveResamplingAdvancedFormEl) {
@@ -3976,10 +4037,13 @@ function renderLatencyDisplay() {
   if (!latencyRawInfoEl && !latencyCtrlInfoEl && !latencyInfoEl) return;
   const instantText = latencyInstantMs === null ? '—' : `${formatNumber(latencyInstantMs, 0)} ms`;
   const controlText = latencyControlMs === null ? '—' : `${formatNumber(latencyControlMs, 0)} ms`;
-  if (latencyRawInfoEl && latencyCtrlInfoEl) {
-    latencyRawInfoEl.textContent = instantText;
+  if (latencyRawInfoEl) {
+    latencyRawInfoEl.textContent = controlText;
+  }
+  if (latencyCtrlInfoEl) {
     latencyCtrlInfoEl.textContent = controlText;
-  } else {
+  }
+  if (!latencyRawInfoEl && latencyInfoEl) {
     latencyInfoEl.textContent = tf('status.latencyFallback', { raw: instantText, ctrl: controlText });
   }
   if (latencyTargetInputEl && !latencyTargetEditing && !latencyTargetDirty) {
@@ -4176,19 +4240,71 @@ function renderLatencyMeterUI() {
   if (latencyRawMaxValueEl) {
     latencyRawMaxValueEl.textContent = tf('status.maxValue', { value: rawMax === null ? '—' : formatNumber(rawMax, 0) });
   }
-  if (latencyCtrlMeterFillEl) {
+  if (latencyCtrlMarkerEl) {
     const ctrl = latencyControlMs ?? latencyTargetMs ?? latencyMs;
     if (ctrl === null) {
-      latencyCtrlMeterFillEl.style.setProperty('--level', '0%');
+      latencyCtrlMarkerEl.style.display = 'none';
     } else {
       const percent = Math.min(100, (Math.max(0, Number(ctrl)) / maxMs) * 100);
-      latencyCtrlMeterFillEl.style.setProperty('--level', `${percent.toFixed(1)}%`);
+      latencyCtrlMarkerEl.style.display = '';
+      latencyCtrlMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
     }
   }
 }
 
 function updateLatencyMeterUI() {
   dirtyLatency = true;
+  scheduleUIFlush();
+}
+
+function renderRenderTimeUI() {
+  const visible = oscMeteringEnabled === true;
+  const maxMs = 0.05;
+  if (rendererRenderTimeWrapEl) {
+    rendererRenderTimeWrapEl.style.display = visible ? 'flex' : 'none';
+  }
+  if (!visible) {
+    return;
+  }
+  const windowMin =
+    renderTimeWindow.length > 0 ? Math.min(...renderTimeWindow.map((entry) => entry.v)) : null;
+  const windowMax =
+    renderTimeWindow.length > 0 ? Math.max(...renderTimeWindow.map((entry) => entry.v)) : null;
+  if (rendererRenderTimeValueEl) {
+    rendererRenderTimeValueEl.textContent = windowMin === null || windowMax === null
+      ? '—'
+      : `min ${formatNumber(windowMin, 4)} | max ${formatNumber(windowMax, 4)} ms/frame`;
+  }
+  if (rendererRenderTimeFillEl) {
+    if (renderTimeMs === null) {
+      rendererRenderTimeFillEl.style.setProperty('--level', '0%');
+    } else {
+      const percent = Math.min(100, (Math.max(0, Number(renderTimeMs)) / maxMs) * 100);
+      rendererRenderTimeFillEl.style.setProperty('--level', `${percent.toFixed(1)}%`);
+    }
+  }
+  if (rendererRenderTimeMinMarkerEl) {
+    if (windowMin === null) {
+      rendererRenderTimeMinMarkerEl.style.display = 'none';
+    } else {
+      const percent = Math.min(100, (Math.max(0, windowMin) / maxMs) * 100);
+      rendererRenderTimeMinMarkerEl.style.display = '';
+      rendererRenderTimeMinMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
+    }
+  }
+  if (rendererRenderTimeMaxMarkerEl) {
+    if (windowMax === null) {
+      rendererRenderTimeMaxMarkerEl.style.display = 'none';
+    } else {
+      const percent = Math.min(100, (Math.max(0, windowMax) / maxMs) * 100);
+      rendererRenderTimeMaxMarkerEl.style.display = '';
+      rendererRenderTimeMaxMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
+    }
+  }
+}
+
+function updateRenderTimeUI() {
+  dirtyRenderTime = true;
   scheduleUIFlush();
 }
 
@@ -6690,6 +6806,17 @@ if (vbapPolarDistanceMaxInputEl) {
   });
 }
 
+if (vbapPositionInterpolationToggleEl) {
+  vbapPositionInterpolationToggleEl.addEventListener('change', () => {
+    const enabled = vbapPositionInterpolationToggleEl.checked;
+    vbapPositionInterpolation = enabled;
+    vbapRecomputing = true;
+    renderVbapStatus();
+    updateVbapPositionInterpolation();
+    invoke('control_vbap_position_interpolation', { enable: enabled ? 1 : 0 });
+  });
+}
+
 if (distanceDiffuseToggleEl) {
   distanceDiffuseToggleEl.addEventListener('change', () => {
     const enabled = distanceDiffuseToggleEl.checked;
@@ -6915,6 +7042,26 @@ if (rampModeInfoModalEl) {
   rampModeInfoModalEl.addEventListener('click', (event) => {
     if (event.target === rampModeInfoModalEl) {
       setRampModeInfoModalOpen(false);
+    }
+  });
+}
+
+if (vbapPositionInterpolationInfoBtnEl) {
+  vbapPositionInterpolationInfoBtnEl.addEventListener('click', () => {
+    setVbapPositionInterpolationInfoModalOpen(true);
+  });
+}
+
+if (vbapPositionInterpolationInfoCloseBtnEl) {
+  vbapPositionInterpolationInfoCloseBtnEl.addEventListener('click', () => {
+    setVbapPositionInterpolationInfoModalOpen(false);
+  });
+}
+
+if (vbapPositionInterpolationInfoModalEl) {
+  vbapPositionInterpolationInfoModalEl.addEventListener('click', (event) => {
+    if (event.target === vbapPositionInterpolationInfoModalEl) {
+      setVbapPositionInterpolationInfoModalOpen(false);
     }
   });
 }
@@ -7979,15 +8126,23 @@ function applyInitState(payload) {
     if (typeof payload.vbapPolar.distanceMax === 'number') {
       vbapPolarState.distanceMax = payload.vbapPolar.distanceMax > 0 ? payload.vbapPolar.distanceMax : null;
     }
+    if (typeof payload.vbapPolar.positionInterpolation === 'boolean') {
+      vbapPositionInterpolation = payload.vbapPolar.positionInterpolation;
+    }
   }
   if (typeof payload.vbapAllowNegativeZ === 'boolean') {
     vbapAllowNegativeZ = payload.vbapAllowNegativeZ;
   }
   updateVbapPolar();
+  updateVbapPositionInterpolation();
   if (typeof payload.vbapRecomputing === 'boolean') {
     vbapRecomputing = payload.vbapRecomputing;
   }
   renderVbapStatus();
+  if (typeof payload.renderTimeMs === 'number') {
+    setRenderTimeMs(payload.renderTimeMs);
+  }
+  updateRenderTimeUI();
   if (typeof payload.loudness === 'number') {
     loudnessEnabled = payload.loudness !== 0;
   }
@@ -8248,6 +8403,7 @@ listen('speaker:meter', ({ payload }) => {
 listen('osc:metering', ({ payload }) => {
   oscMeteringEnabled = Number(payload?.enabled) !== 0;
   if (oscMeteringToggleEl) oscMeteringToggleEl.checked = oscMeteringEnabled;
+  updateRenderTimeUI();
 });
 
 listen('object:gain', ({ payload }) => {
@@ -8410,9 +8566,25 @@ listen('vbap:polar:distance_max', ({ payload }) => {
   updateVbapPolar();
 });
 
+listen('vbap:position_interpolation', ({ payload }) => {
+  vbapPositionInterpolation = payload.enabled === true;
+  updateVbapPositionInterpolation();
+});
+
 listen('vbap:allow_negative_z', ({ payload }) => {
   vbapAllowNegativeZ = payload.enabled === true;
   updateVbapPolar();
+});
+
+listen('render:time_ms', ({ payload }) => {
+  const value = Number(payload?.value);
+  if (Number.isFinite(value)) {
+    setRenderTimeMs(value);
+  } else {
+    renderTimeMs = null;
+    renderTimeWindow = [];
+  }
+  updateRenderTimeUI();
 });
 
 listen('loudness', ({ payload }) => {

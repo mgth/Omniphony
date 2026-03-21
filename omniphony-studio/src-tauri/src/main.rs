@@ -586,6 +586,17 @@ fn control_vbap_polar_distance_max(state: State<SharedState>, value: f32) {
 }
 
 #[tauri::command]
+fn control_vbap_position_interpolation(state: State<SharedState>, enable: i32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/vbap/position_interpolation".to_string(),
+            value: if enable != 0 { 1 } else { 0 },
+        },
+    );
+}
+
+#[tauri::command]
 fn control_distance_diffuse_enabled(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,
@@ -1718,6 +1729,7 @@ fn main() {
             control_vbap_polar_elevation_resolution,
             control_vbap_polar_distance_res,
             control_vbap_polar_distance_max,
+            control_vbap_position_interpolation,
             control_distance_diffuse_enabled,
             control_distance_diffuse_threshold,
             control_distance_diffuse_curve,

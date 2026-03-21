@@ -253,6 +253,7 @@ pub struct VbapPanner {
     n_el: usize,
     table_mode: VbapTableMode,
     allow_negative_z: bool,
+    position_interpolation: bool,
     cartesian_cache: Option<CartesianCache>,
     polar_distance_cache: Option<PolarDistanceCache>,
     precomputed_effects: bool,

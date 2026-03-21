@@ -442,6 +442,7 @@ impl SpatialRenderer {
         distance_max: f32,
         table_mode: VbapTableMode,
         allow_negative_z: bool,
+        vbap_position_interpolation: bool,
         distance_model: DistanceModel,
         spread_from_distance: bool,
         spread_distance_range: f32,
@@ -485,7 +486,8 @@ impl SpatialRenderer {
             table_mode,
         )
         .map_err(|e| anyhow::anyhow!("Failed to create VBAP panner: {}", e))?
-        .with_negative_z(allow_negative_z);
+        .with_negative_z(allow_negative_z)
+        .with_position_interpolation(vbap_position_interpolation);
         let distance_step = if spread_resolution > 0.0 {
             spread_resolution
         } else {
@@ -543,6 +545,7 @@ impl SpatialRenderer {
             distance_step,
             distance_max,
             allow_negative_z,
+            vbap_position_interpolation,
             cartesian_default_x_size,
             cartesian_default_y_size,
             cartesian_default_z_size,
@@ -577,6 +580,7 @@ impl SpatialRenderer {
                 el_res_deg,
                 spread_resolution,
                 distance_max,
+                position_interpolation: vbap_position_interpolation,
                 table_mode,
                 preferred_table_mode,
                 cartesian_default_x_size,
@@ -629,6 +633,7 @@ impl SpatialRenderer {
         speaker_layout: SpeakerLayout,
         sample_rate: u32,
         allow_negative_z: bool,
+        vbap_position_interpolation: bool,
         distance_model: DistanceModel,
         distance_max: f32,
         spread_from_distance: bool,
@@ -661,6 +666,7 @@ impl SpatialRenderer {
         let vbap = Arc::into_inner(vbap)
             .ok_or_else(|| anyhow::anyhow!("VBAP arc unexpectedly shared during construction"))?
             .with_negative_z(allow_negative_z)
+            .with_position_interpolation(vbap_position_interpolation)
             .precompute_effect_tables(
                 distance_step,
                 distance_max,
@@ -712,6 +718,7 @@ impl SpatialRenderer {
             distance_step,
             distance_max,
             allow_negative_z,
+            vbap.position_interpolation(),
             match vbap.table_mode() {
                 VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
                 VbapTableMode::Polar => 1,
@@ -753,6 +760,7 @@ impl SpatialRenderer {
             el_res_deg: vbap.elevation_resolution(),
             spread_resolution,
             distance_max,
+            position_interpolation: vbap.position_interpolation(),
             table_mode: vbap.table_mode(),
             preferred_table_mode: VbapBackendMode::from_table_mode(vbap.table_mode()),
             cartesian_default_x_size: match vbap.table_mode() {
@@ -805,6 +813,7 @@ impl SpatialRenderer {
         distance_res: f32,
         distance_max: f32,
         allow_negative_z: bool,
+        vbap_position_interpolation: bool,
         cartesian_default_x_size: usize,
         cartesian_default_y_size: usize,
         cartesian_default_z_size: usize,
@@ -851,6 +860,14 @@ impl SpatialRenderer {
         log::info!("Room ratio lower (z<0): {}", room_ratio_lower);
         log::info!("Room ratio center blend: {}", room_ratio_center_blend);
         log::info!("Ramp mode: {}", ramp_mode.as_str());
+        log::info!(
+            "VBAP position interpolation: {}",
+            if vbap_position_interpolation {
+                "enabled"
+            } else {
+                "disabled (nearest-cell lookup)"
+            }
+        );
         let master_gain = 10.0_f32.powf(master_gain_db / 20.0);
         log::info!(
             "Master gain: {:.1} dB (linear: {:.4}), auto-gain: {}",
@@ -896,6 +913,7 @@ impl SpatialRenderer {
                 .round() as i32),
             vbap_polar_distance_res: (distance_max / distance_res.max(0.01)).round() as i32,
             vbap_polar_distance_max: distance_max.max(0.01),
+            vbap_position_interpolation,
             use_loudness,
             distance_model,
             speakers: speaker_live,

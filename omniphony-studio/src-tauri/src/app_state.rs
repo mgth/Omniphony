@@ -102,6 +102,8 @@ pub struct VbapPolar {
     pub distance_res: Option<u32>,
     #[serde(rename = "distanceMax")]
     pub distance_max: Option<f64>,
+    #[serde(rename = "positionInterpolation")]
+    pub position_interpolation: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -203,6 +205,8 @@ pub struct AppState {
     pub latency_control_ms: Option<i64>,
     #[serde(rename = "latencyTargetMs")]
     pub latency_target_ms: Option<i64>,
+    #[serde(rename = "renderTimeMs")]
+    pub render_time_ms: Option<f64>,
     #[serde(rename = "resampleRatio")]
     pub resample_ratio: Option<f64>,
     #[serde(rename = "audioSampleRate")]
@@ -298,6 +302,7 @@ impl Default for AppState {
             latency_instant_ms: None,
             latency_control_ms: None,
             latency_target_ms: None,
+            render_time_ms: None,
             resample_ratio: None,
             audio_sample_rate: None,
             ramp_mode: Some("sample".to_string()),

@@ -725,6 +725,7 @@ impl VbapPanner {
             n_el,
             table_mode: VbapTableMode::Polar,
             allow_negative_z: true,
+            position_interpolation: true,
             cartesian_cache: None,
             polar_distance_cache: None,
             precomputed_effects: false,

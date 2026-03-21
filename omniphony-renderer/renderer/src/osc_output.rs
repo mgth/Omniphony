@@ -517,6 +517,7 @@ impl OscSender {
         &self,
         snapshot: &crate::metering::MeterSnapshot,
         object_gains: &[(usize, crate::spatial_vbap::Gains)],
+        render_time_ms: Option<f32>,
         latency_instant_ms: Option<f32>,
         latency_control_ms: Option<f32>,
         latency_target_ms: Option<f32>,
@@ -543,6 +544,12 @@ impl OscSender {
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/latency".to_string(),
                 args: vec![OscType::Float(ms)],
+            }));
+        }
+        if let Some(ms) = render_time_ms {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/render_time_ms".to_string(),
+                args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
         if let Some(ms) = latency_instant_ms {
@@ -1259,6 +1266,23 @@ fn handle_control_message(
                 );
                 trigger_layout_recompute(control, socket, clients);
             }
+        }
+        return;
+    }
+
+    // ── VBAP position interpolation toggle ─────────────────────────────────
+    if addr == "/omniphony/control/vbap/position_interpolation" {
+        if let Some(OscType::Int(i)) = msg.args.first() {
+            let enabled = *i != 0;
+            control.live.write().unwrap().vbap_position_interpolation = enabled;
+            set_dirty(control, socket, clients);
+            broadcast_int(
+                socket,
+                clients,
+                "/omniphony/state/vbap/position_interpolation",
+                if enabled { 1 } else { 0 },
+            );
+            trigger_layout_recompute(control, socket, clients);
         }
         return;
     }
@@ -2051,6 +2075,14 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
             args: vec![OscType::String(live.vbap_table_mode.as_str().to_string())],
         }),
         OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/vbap/position_interpolation".to_string(),
+            args: vec![OscType::Int(if live.vbap_position_interpolation {
+                1
+            } else {
+                0
+            })],
+        }),
+        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/vbap/effective_mode".to_string(),
             args: vec![OscType::String(effective_mode.to_string())],
         }),
@@ -2498,6 +2530,11 @@ fn save_live_config(
         Some(live.vbap_polar_distance_max.max(0.01))
     } else {
         None
+    };
+    render.vbap_position_interpolation = if live.vbap_position_interpolation {
+        None
+    } else {
+        Some(false)
     };
     render.vbap_table_mode = match live.vbap_table_mode {
         crate::live_params::LiveVbapTableMode::Auto => None,

@@ -1647,12 +1647,14 @@ impl DecodeHandler {
                     // Donate the previous frame's buffer so render_frame can reuse its
                     // allocation without a new heap alloc (buffer donation pattern).
                     let donated_buf = std::mem::take(&mut self.output.render_buf);
+                    let render_started_at = Instant::now();
                     let rendered = renderer.render_frame(
                         &pcm_data_f32,
                         channel_count,
                         &pending_events,
                         donated_buf,
                     )?;
+                    let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
 
                     let num_speakers = renderer.num_speakers();
 
@@ -1676,6 +1678,7 @@ impl DecodeHandler {
                         if let Err(e) = osc_sender.send_meter_bundle(
                             &snapshot,
                             &rendered.object_gains,
+                            Some(render_time_ms),
                             current_latency_instant_ms,
                             current_latency_control_ms,
                             current_latency_target_ms,
@@ -1768,12 +1771,14 @@ impl DecodeHandler {
                     }
 
                     let donated_buf = std::mem::take(&mut self.output.render_buf);
+                    let render_started_at = Instant::now();
                     let rendered = renderer.render_frame(
                         &pcm_data_f32,
                         channel_count,
                         &virtual_events,
                         donated_buf,
                     )?;
+                    let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
                     let num_speakers = renderer.num_speakers();
 
                     // Meter speaker levels and emit the OSC meter bundle.
@@ -1796,6 +1801,7 @@ impl DecodeHandler {
                         if let Err(e) = osc_sender.send_meter_bundle(
                             &snapshot,
                             &rendered.object_gains,
+                            Some(render_time_ms),
                             current_latency_instant_ms,
                             current_latency_control_ms,
                             current_latency_target_ms,

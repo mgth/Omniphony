@@ -267,6 +267,7 @@ impl VbapPanner {
             n_el,
             table_mode: VbapTableMode::Polar,
             allow_negative_z: true,
+            position_interpolation: true,
             cartesian_cache: None,
             polar_distance_cache: None,
             precomputed_effects: false,
@@ -304,6 +305,15 @@ impl VbapPanner {
 
     pub fn allow_negative_z(&self) -> bool {
         self.allow_negative_z
+    }
+
+    pub fn with_position_interpolation(mut self, enabled: bool) -> Self {
+        self.position_interpolation = enabled;
+        self
+    }
+
+    pub fn position_interpolation(&self) -> bool {
+        self.position_interpolation
     }
 
     pub fn with_table_mode(mut self, table_mode: VbapTableMode) -> Result<Self, String> {
@@ -1063,6 +1073,16 @@ impl VbapPanner {
         let (y0, y1, ty) = Self::axis_lookup(&cache.y_coords, query_y);
         let (z0, z1, tz) = Self::axis_lookup(&cache.z_coords, query_z);
 
+        if !self.position_interpolation {
+            return self.lookup_cartesian_nearest(
+                cache,
+                0,
+                Self::nearest_idx(x0, x1, tx),
+                Self::nearest_idx(y0, y1, ty),
+                Self::nearest_idx(z0, z1, tz),
+            );
+        }
+
         self.lookup_cartesian_table(cache, 0, x0, x1, tx, y0, y1, ty, z0, z1, tz)
     }
 
@@ -1092,6 +1112,25 @@ impl VbapPanner {
             }
         }
         (last, last, 0.0)
+    }
+
+    #[inline]
+    fn nearest_idx(i0: usize, i1: usize, t: f32) -> usize {
+        if i0 == i1 || t < 0.5 { i0 } else { i1 }
+    }
+
+    #[inline]
+    fn lookup_cartesian_nearest(
+        &self,
+        cache: &CartesianCache,
+        table_idx: usize,
+        x: usize,
+        y: usize,
+        z: usize,
+    ) -> Gains {
+        let table = &cache.tables[table_idx];
+        let offset = ((z * cache.y_size + y) * cache.x_size + x) * self.n_speakers;
+        Gains::from_slice(&table[offset..offset + self.n_speakers])
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1164,6 +1203,15 @@ impl VbapPanner {
         let idx = |d: usize, el: usize, az: usize| -> usize {
             ((d * self.n_el + el) * self.n_az + az) * self.n_speakers
         };
+
+        if !self.position_interpolation {
+            let az = Self::nearest_idx(az0, az1, azt);
+            let el = Self::nearest_idx(el0, el1, elt);
+            let d = Self::nearest_idx(d0, d1, dt);
+            return Gains::from_slice(
+                &cache.table[idx(d, el, az)..idx(d, el, az) + self.n_speakers],
+            );
+        }
 
         let mut out = Gains::new(self.n_speakers);
         for s in 0..self.n_speakers {

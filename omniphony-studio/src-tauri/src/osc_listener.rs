@@ -1072,6 +1072,13 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateRenderTimeMs { value } => {
+                s.render_time_ms = Some(value);
+                (
+                    Some(("render:time_ms", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
 
             OscEvent::StateResampleRatio { value } => {
                 s.resample_ratio = Some(value);
@@ -1272,6 +1279,16 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     Some((
                         "vbap:polar:distance_max",
                         serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateVbapPositionInterpolation { enabled } => {
+                s.vbap_polar.position_interpolation = Some(enabled);
+                (
+                    Some((
+                        "vbap:position_interpolation",
+                        serde_json::json!({ "enabled": enabled }),
                     )),
                     removed_ids,
                 )
