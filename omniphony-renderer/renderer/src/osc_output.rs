@@ -517,7 +517,9 @@ impl OscSender {
         &self,
         snapshot: &crate::metering::MeterSnapshot,
         object_gains: &[(usize, crate::spatial_vbap::Gains)],
+        decode_time_ms: Option<f32>,
         render_time_ms: Option<f32>,
+        write_time_ms: Option<f32>,
         latency_instant_ms: Option<f32>,
         latency_control_ms: Option<f32>,
         latency_target_ms: Option<f32>,
@@ -546,9 +548,21 @@ impl OscSender {
                 args: vec![OscType::Float(ms)],
             }));
         }
+        if let Some(ms) = decode_time_ms {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/decode_time_ms".to_string(),
+                args: vec![OscType::Float(ms.max(0.0))],
+            }));
+        }
         if let Some(ms) = render_time_ms {
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/render_time_ms".to_string(),
+                args: vec![OscType::Float(ms.max(0.0))],
+            }));
+        }
+        if let Some(ms) = write_time_ms {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/write_time_ms".to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
@@ -644,6 +658,43 @@ impl OscSender {
         });
 
         let bytes = rosc::encoder::encode(&bundle)?;
+        self.send_to_metering_clients(&bytes);
+        Ok(())
+    }
+
+    pub fn send_timing_update(
+        &self,
+        decode_time_ms: Option<f32>,
+        render_time_ms: Option<f32>,
+        write_time_ms: Option<f32>,
+    ) -> Result<()> {
+        let mut messages = Vec::new();
+        if let Some(ms) = decode_time_ms {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/decode_time_ms".to_string(),
+                args: vec![OscType::Float(ms.max(0.0))],
+            }));
+        }
+        if let Some(ms) = render_time_ms {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/render_time_ms".to_string(),
+                args: vec![OscType::Float(ms.max(0.0))],
+            }));
+        }
+        if let Some(ms) = write_time_ms {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/write_time_ms".to_string(),
+                args: vec![OscType::Float(ms.max(0.0))],
+            }));
+        }
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let packet = OscPacket::Bundle(OscBundle {
+            timetag: OscTime::from((0, 1)),
+            content: messages,
+        });
+        let bytes = rosc::encoder::encode(&packet)?;
         self.send_to_metering_clients(&bytes);
         Ok(())
     }

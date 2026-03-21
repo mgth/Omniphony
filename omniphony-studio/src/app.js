@@ -100,10 +100,18 @@ const rendererSectionToggleBtnEl = document.getElementById('rendererSectionToggl
 const rendererSectionContentEl = document.getElementById('rendererSectionContent');
 const rendererSummaryEl = document.getElementById('rendererSummary');
 const rendererRenderTimeWrapEl = document.getElementById('rendererRenderTimeWrap');
+const rendererDecodeTimeFillEl = document.getElementById('rendererDecodeTimeFill');
+const rendererDecodeTimeMinMarkerEl = document.getElementById('rendererDecodeTimeMinMarker');
+const rendererDecodeTimeMaxMarkerEl = document.getElementById('rendererDecodeTimeMaxMarker');
+const rendererDecodeTimeValueEl = document.getElementById('rendererDecodeTimeValue');
 const rendererRenderTimeFillEl = document.getElementById('rendererRenderTimeFill');
 const rendererRenderTimeMinMarkerEl = document.getElementById('rendererRenderTimeMinMarker');
 const rendererRenderTimeMaxMarkerEl = document.getElementById('rendererRenderTimeMaxMarker');
 const rendererRenderTimeValueEl = document.getElementById('rendererRenderTimeValue');
+const rendererWriteTimeFillEl = document.getElementById('rendererWriteTimeFill');
+const rendererWriteTimeMinMarkerEl = document.getElementById('rendererWriteTimeMinMarker');
+const rendererWriteTimeMaxMarkerEl = document.getElementById('rendererWriteTimeMaxMarker');
+const rendererWriteTimeValueEl = document.getElementById('rendererWriteTimeValue');
 const vbapSectionContentEl = document.getElementById('vbapSectionContent');
 const spreadSectionContentEl = document.getElementById('spreadSectionContent');
 const vbapStatusEl = document.getElementById('vbapStatus');
@@ -697,8 +705,12 @@ let latencyMs = null;
 let latencyInstantMs = null;
 let latencyControlMs = null;
 let latencyTargetMs = null;
+let decodeTimeMs = null;
+let decodeTimeWindow = [];
 let renderTimeMs = null;
 let renderTimeWindow = [];
+let writeTimeMs = null;
+let writeTimeWindow = [];
 let latencyRawWindow = [];
 let resampleRatio = null;
 let audioSampleRate = null;
@@ -759,7 +771,7 @@ let vbapCartesianFaceGridEnabled = false;
 let roomGeometryApplyTimer = null;
 let latencyTargetApplyTimer = null;
 const LATENCY_RAW_WINDOW_MS = 4000;
-const RENDER_TIME_WINDOW_MS = 1000;
+const RENDER_TIME_WINDOW_MS = 5000;
 
 const vbapCartesianFaceGridMaterial = new THREE.LineBasicMaterial({
   color: 0x66d8ff,
@@ -1040,6 +1052,34 @@ function setRenderTimeMs(value) {
   const cutoff = now - RENDER_TIME_WINDOW_MS;
   while (renderTimeWindow.length > 0 && renderTimeWindow[0].t < cutoff) {
     renderTimeWindow.shift();
+  }
+}
+
+function setDecodeTimeMs(value) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) {
+    return;
+  }
+  decodeTimeMs = next;
+  const now = performance.now();
+  decodeTimeWindow.push({ t: now, v: next });
+  const cutoff = now - RENDER_TIME_WINDOW_MS;
+  while (decodeTimeWindow.length > 0 && decodeTimeWindow[0].t < cutoff) {
+    decodeTimeWindow.shift();
+  }
+}
+
+function setWriteTimeMs(value) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) {
+    return;
+  }
+  writeTimeMs = next;
+  const now = performance.now();
+  writeTimeWindow.push({ t: now, v: next });
+  const cutoff = now - RENDER_TIME_WINDOW_MS;
+  while (writeTimeWindow.length > 0 && writeTimeWindow[0].t < cutoff) {
+    writeTimeWindow.shift();
   }
 }
 
@@ -4259,48 +4299,86 @@ function updateLatencyMeterUI() {
 
 function renderRenderTimeUI() {
   const visible = oscMeteringEnabled === true;
-  const maxMs = 0.05;
+  const renderTimingSeries = [
+    {
+      current: decodeTimeMs,
+      window: decodeTimeWindow,
+      fillEl: rendererDecodeTimeFillEl,
+      minMarkerEl: rendererDecodeTimeMinMarkerEl,
+      maxMarkerEl: rendererDecodeTimeMaxMarkerEl,
+      valueEl: rendererDecodeTimeValueEl
+    },
+    {
+      current: renderTimeMs,
+      window: renderTimeWindow,
+      fillEl: rendererRenderTimeFillEl,
+      minMarkerEl: rendererRenderTimeMinMarkerEl,
+      maxMarkerEl: rendererRenderTimeMaxMarkerEl,
+      valueEl: rendererRenderTimeValueEl
+    },
+    {
+      current: writeTimeMs,
+      window: writeTimeWindow,
+      fillEl: rendererWriteTimeFillEl,
+      minMarkerEl: rendererWriteTimeMinMarkerEl,
+      maxMarkerEl: rendererWriteTimeMaxMarkerEl,
+      valueEl: rendererWriteTimeValueEl
+    }
+  ];
+  const observedMaxMs = renderTimingSeries.reduce((max, { window, current }) => {
+    let nextMax = max;
+    for (const entry of window) {
+      if (entry.v > nextMax) {
+        nextMax = entry.v;
+      }
+    }
+    if (current !== null && Number(current) > nextMax) {
+      nextMax = Number(current);
+    }
+    return nextMax;
+  }, 0);
+  const maxMs = Math.max(0.01, observedMaxMs * 1.15);
   if (rendererRenderTimeWrapEl) {
     rendererRenderTimeWrapEl.style.display = visible ? 'flex' : 'none';
   }
   if (!visible) {
     return;
   }
-  const windowMin =
-    renderTimeWindow.length > 0 ? Math.min(...renderTimeWindow.map((entry) => entry.v)) : null;
-  const windowMax =
-    renderTimeWindow.length > 0 ? Math.max(...renderTimeWindow.map((entry) => entry.v)) : null;
-  if (rendererRenderTimeValueEl) {
-    rendererRenderTimeValueEl.textContent = windowMin === null || windowMax === null
-      ? '—'
-      : `min ${formatNumber(windowMin, 4)} | max ${formatNumber(windowMax, 4)} ms/frame`;
-  }
-  if (rendererRenderTimeFillEl) {
-    if (renderTimeMs === null) {
-      rendererRenderTimeFillEl.style.setProperty('--level', '0%');
-    } else {
-      const percent = Math.min(100, (Math.max(0, Number(renderTimeMs)) / maxMs) * 100);
-      rendererRenderTimeFillEl.style.setProperty('--level', `${percent.toFixed(1)}%`);
+  renderTimingSeries.forEach(({ current, window, fillEl, minMarkerEl, maxMarkerEl, valueEl }) => {
+    const windowMin = window.length > 0 ? Math.min(...window.map((entry) => entry.v)) : null;
+    const windowMax = window.length > 0 ? Math.max(...window.map((entry) => entry.v)) : null;
+    if (valueEl) {
+      valueEl.textContent = windowMin === null || windowMax === null
+        ? '—'
+        : `${formatNumber(windowMin, 4)} / ${formatNumber(windowMax, 4)} ms`;
     }
-  }
-  if (rendererRenderTimeMinMarkerEl) {
-    if (windowMin === null) {
-      rendererRenderTimeMinMarkerEl.style.display = 'none';
-    } else {
-      const percent = Math.min(100, (Math.max(0, windowMin) / maxMs) * 100);
-      rendererRenderTimeMinMarkerEl.style.display = '';
-      rendererRenderTimeMinMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
+    if (fillEl) {
+      if (current === null) {
+        fillEl.style.setProperty('--level', '0%');
+      } else {
+        const percent = Math.min(100, (Math.max(0, Number(current)) / maxMs) * 100);
+        fillEl.style.setProperty('--level', `${percent.toFixed(1)}%`);
+      }
     }
-  }
-  if (rendererRenderTimeMaxMarkerEl) {
-    if (windowMax === null) {
-      rendererRenderTimeMaxMarkerEl.style.display = 'none';
-    } else {
-      const percent = Math.min(100, (Math.max(0, windowMax) / maxMs) * 100);
-      rendererRenderTimeMaxMarkerEl.style.display = '';
-      rendererRenderTimeMaxMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
+    if (minMarkerEl) {
+      if (windowMin === null) {
+        minMarkerEl.style.display = 'none';
+      } else {
+        const percent = Math.min(100, (Math.max(0, windowMin) / maxMs) * 100);
+        minMarkerEl.style.display = '';
+        minMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
+      }
     }
-  }
+    if (maxMarkerEl) {
+      if (windowMax === null) {
+        maxMarkerEl.style.display = 'none';
+      } else {
+        const percent = Math.min(100, (Math.max(0, windowMax) / maxMs) * 100);
+        maxMarkerEl.style.display = '';
+        maxMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
+      }
+    }
+  });
 }
 
 function updateRenderTimeUI() {
@@ -8142,6 +8220,12 @@ function applyInitState(payload) {
   if (typeof payload.renderTimeMs === 'number') {
     setRenderTimeMs(payload.renderTimeMs);
   }
+  if (typeof payload.decodeTimeMs === 'number') {
+    setDecodeTimeMs(payload.decodeTimeMs);
+  }
+  if (typeof payload.writeTimeMs === 'number') {
+    setWriteTimeMs(payload.writeTimeMs);
+  }
   updateRenderTimeUI();
   if (typeof payload.loudness === 'number') {
     loudnessEnabled = payload.loudness !== 0;
@@ -8403,6 +8487,14 @@ listen('speaker:meter', ({ payload }) => {
 listen('osc:metering', ({ payload }) => {
   oscMeteringEnabled = Number(payload?.enabled) !== 0;
   if (oscMeteringToggleEl) oscMeteringToggleEl.checked = oscMeteringEnabled;
+  if (!oscMeteringEnabled) {
+    decodeTimeMs = null;
+    decodeTimeWindow = [];
+    renderTimeMs = null;
+    renderTimeWindow = [];
+    writeTimeMs = null;
+    writeTimeWindow = [];
+  }
   updateRenderTimeUI();
 });
 
@@ -8576,6 +8668,17 @@ listen('vbap:allow_negative_z', ({ payload }) => {
   updateVbapPolar();
 });
 
+listen('decode:time_ms', ({ payload }) => {
+  const value = Number(payload?.value);
+  if (Number.isFinite(value)) {
+    setDecodeTimeMs(value);
+  } else {
+    decodeTimeMs = null;
+    decodeTimeWindow = [];
+  }
+  updateRenderTimeUI();
+});
+
 listen('render:time_ms', ({ payload }) => {
   const value = Number(payload?.value);
   if (Number.isFinite(value)) {
@@ -8583,6 +8686,17 @@ listen('render:time_ms', ({ payload }) => {
   } else {
     renderTimeMs = null;
     renderTimeWindow = [];
+  }
+  updateRenderTimeUI();
+});
+
+listen('write:time_ms', ({ payload }) => {
+  const value = Number(payload?.value);
+  if (Number.isFinite(value)) {
+    setWriteTimeMs(value);
+  } else {
+    writeTimeMs = null;
+    writeTimeWindow = [];
   }
   updateRenderTimeUI();
 });

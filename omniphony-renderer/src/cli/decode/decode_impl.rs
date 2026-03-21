@@ -1,4 +1,4 @@
-use super::decoder_thread::{DecoderMessage, DecoderThreadConfig, spawn_decoder_thread};
+use super::decoder_thread::{DecodedAudioData, DecoderMessage, DecoderThreadConfig, spawn_decoder_thread};
 use super::handler::{DecodeHandler, FrameHandlerContext, WriterState};
 use crate::bridge_loader::{LoadedBridge, resolve_bridge_path};
 use crate::cli::command::{
@@ -1287,9 +1287,10 @@ struct DecodeRunContext<'a> {
 
 fn handle_audio_message(
     handler: &mut DecodeHandler,
-    frame: bridge_api::RDecodedFrame,
+    decoded: DecodedAudioData,
     ctx: &DecodeRunContext<'_>,
 ) -> Result<()> {
+    let frame = decoded.frame;
     // Check if substream info changed and handle it before processing the frame.
     if frame.is_new_segment {
         // Store the current sample position as the start of the new segment.
@@ -1310,6 +1311,7 @@ fn handle_audio_message(
         state: ctx.state,
         bed_conform: ctx.args.bed_conform,
         use_loudness: ctx.args.use_loudness,
+        decode_time_ms: decoded.decode_time_ms,
     };
     handler.handle_decoded_frame(frame, &ctx)
 }

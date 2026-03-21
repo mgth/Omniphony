@@ -248,8 +248,12 @@ pub enum OscEvent {
     StateLatencyControl { value: f64 },
     #[serde(rename = "state:latency:target")]
     StateLatencyTarget { value: f64 },
+    #[serde(rename = "state:decode_time_ms")]
+    StateDecodeTimeMs { value: f64 },
     #[serde(rename = "state:render_time_ms")]
     StateRenderTimeMs { value: f64 },
+    #[serde(rename = "state:write_time_ms")]
+    StateWriteTimeMs { value: f64 },
     #[serde(rename = "state:resample_ratio")]
     StateResampleRatio { value: f64 },
     #[serde(rename = "state:audio:sample_rate")]
@@ -573,7 +577,13 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (3, "latency_target") => Some(OscEvent::StateLatencyTarget {
             value: to_number(args[0])?,
         }),
+        (3, "decode_time_ms") => Some(OscEvent::StateDecodeTimeMs {
+            value: to_number(args[0])?,
+        }),
         (3, "render_time_ms") => Some(OscEvent::StateRenderTimeMs {
+            value: to_number(args[0])?,
+        }),
+        (3, "write_time_ms") => Some(OscEvent::StateWriteTimeMs {
             value: to_number(args[0])?,
         }),
         (3, "resample_ratio") => Some(OscEvent::StateResampleRatio {

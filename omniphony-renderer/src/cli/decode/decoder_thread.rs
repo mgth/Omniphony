@@ -28,9 +28,14 @@ fn monotonic_usec_now() -> u64 {
 }
 
 /// Messages sent from decoder thread to handler
+pub struct DecodedAudioData {
+    pub frame: bridge_api::RDecodedFrame,
+    pub decode_time_ms: f32,
+}
+
 pub enum DecoderMessage {
     /// A fully decoded audio frame (PCM + metadata + dialogue level).
-    AudioData(bridge_api::RDecodedFrame),
+    AudioData(DecodedAudioData),
     /// Request to flush audio buffers (after seek/decoder reset).
     FlushRequest,
     /// Stream ended — reset handler state (for continuous mode).
@@ -159,8 +164,10 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                 };
 
                 for (transport, data_type, payload) in packets {
+                    let decode_started_at = Instant::now();
                     let result =
                         bridge.push_packet(payload.as_slice().into(), transport, data_type);
+                    let decode_time_ms = decode_started_at.elapsed().as_secs_f32() * 1000.0;
 
                     if result.did_reset {
                         if strict_mode && !result.error_message.is_empty() {
@@ -180,9 +187,17 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         }
                     }
 
+                    let frame_count_in_packet = result.frames.len().max(1) as f32;
+                    let per_frame_decode_time_ms = decode_time_ms / frame_count_in_packet;
                     for frame in result.frames {
                         frame_count += 1;
-                        if tx.send(Ok(DecoderMessage::AudioData(frame))).is_err() {
+                        if tx
+                            .send(Ok(DecoderMessage::AudioData(DecodedAudioData {
+                                frame,
+                                decode_time_ms: per_frame_decode_time_ms,
+                            })))
+                            .is_err()
+                        {
                             return Ok(false);
                         }
                     }

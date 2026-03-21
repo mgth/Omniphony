@@ -1072,10 +1072,24 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateDecodeTimeMs { value } => {
+                s.decode_time_ms = Some(value);
+                (
+                    Some(("decode:time_ms", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
             OscEvent::StateRenderTimeMs { value } => {
                 s.render_time_ms = Some(value);
                 (
                     Some(("render:time_ms", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateWriteTimeMs { value } => {
+                s.write_time_ms = Some(value);
+                (
+                    Some(("write:time_ms", serde_json::json!({ "value": value }))),
                     removed_ids,
                 )
             }

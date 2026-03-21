@@ -664,6 +664,7 @@ pub struct FrameHandlerContext<'a> {
     pub state: &'a WriterState,
     pub bed_conform: bool,
     pub use_loudness: bool,
+    pub decode_time_ms: f32,
 }
 
 impl DecodeHandler {
@@ -1088,9 +1089,9 @@ impl DecodeHandler {
         self.publish_audio_state_if_changed(ctx.output_backend, sample_rate);
 
         if ctx.bed_conform && self.spatial.has_objects {
-            self.write_audio_samples_bed_conform(&frame)?;
+            self.write_audio_samples_bed_conform(&frame, ctx.decode_time_ms)?;
         } else {
-            self.write_audio_samples(&frame)?;
+            self.write_audio_samples(&frame, ctx.decode_time_ms)?;
         }
 
         Ok(())
@@ -1523,7 +1524,7 @@ impl DecodeHandler {
         }
     }
 
-    fn write_audio_samples(&mut self, frame: &RDecodedFrame) -> Result<()> {
+    fn write_audio_samples(&mut self, frame: &RDecodedFrame, decode_time_ms: f32) -> Result<()> {
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
 
@@ -1672,13 +1673,15 @@ impl DecodeHandler {
                     } else {
                         None
                     };
-                    if let (Some(snapshot), Some(osc_sender)) =
+                    let sent_meter_bundle = if let (Some(snapshot), Some(osc_sender)) =
                         (meter_snapshot, &self.telemetry.osc_sender)
                     {
                         if let Err(e) = osc_sender.send_meter_bundle(
                             &snapshot,
                             &rendered.object_gains,
+                            Some(decode_time_ms),
                             Some(render_time_ms),
+                            None,
                             current_latency_instant_ms,
                             current_latency_control_ms,
                             current_latency_target_ms,
@@ -1686,8 +1689,13 @@ impl DecodeHandler {
                             current_adaptive_band,
                         ) {
                             log::warn!("Failed to send meter OSC bundle: {}", e);
+                            false
+                        } else {
+                            true
                         }
-                    }
+                    } else {
+                        false
+                    };
 
                     log::trace!(
                         "Writing {} samples ({} sample_count × {} speakers) to streaming output",
@@ -1699,11 +1707,22 @@ impl DecodeHandler {
                     // Wrap in AudioSamples without moving ownership so we can reclaim
                     // the Vec after the write (write_pcm_samples takes &AudioSamples).
                     let samples_audio = AudioSamples::F32(rendered.samples);
+                    let write_started_at = Instant::now();
                     self.output
                         .audio_writer
                         .as_mut()
                         .expect("audio_writer present")
                         .write_pcm_samples(&samples_audio, num_speakers)?;
+                    let write_time_ms = write_started_at.elapsed().as_secs_f32() * 1000.0;
+                    if sent_meter_bundle {
+                        if let Some(osc_sender) = &self.telemetry.osc_sender {
+                            if let Err(e) =
+                                osc_sender.send_timing_update(None, None, Some(write_time_ms))
+                            {
+                                log::warn!("Failed to send write timing OSC update: {}", e);
+                            }
+                        }
+                    }
                     // Reclaim the Vec for the next frame (no allocation needed).
                     self.output.render_buf = match samples_audio {
                         AudioSamples::F32(v) => v,
@@ -1795,13 +1814,15 @@ impl DecodeHandler {
                     } else {
                         None
                     };
-                    if let (Some(snapshot), Some(osc_sender)) =
+                    let sent_meter_bundle = if let (Some(snapshot), Some(osc_sender)) =
                         (meter_snapshot, &self.telemetry.osc_sender)
                     {
                         if let Err(e) = osc_sender.send_meter_bundle(
                             &snapshot,
                             &rendered.object_gains,
+                            Some(decode_time_ms),
                             Some(render_time_ms),
+                            None,
                             current_latency_instant_ms,
                             current_latency_control_ms,
                             current_latency_target_ms,
@@ -1809,15 +1830,31 @@ impl DecodeHandler {
                             current_adaptive_band,
                         ) {
                             log::warn!("Failed to send meter OSC bundle: {}", e);
+                            false
+                        } else {
+                            true
                         }
-                    }
+                    } else {
+                        false
+                    };
 
                     let samples_audio = AudioSamples::F32(rendered.samples);
+                    let write_started_at = Instant::now();
                     self.output
                         .audio_writer
                         .as_mut()
                         .expect("audio_writer present")
                         .write_pcm_samples(&samples_audio, num_speakers)?;
+                    let write_time_ms = write_started_at.elapsed().as_secs_f32() * 1000.0;
+                    if sent_meter_bundle {
+                        if let Some(osc_sender) = &self.telemetry.osc_sender {
+                            if let Err(e) =
+                                osc_sender.send_timing_update(None, None, Some(write_time_ms))
+                            {
+                                log::warn!("Failed to send write timing OSC update: {}", e);
+                            }
+                        }
+                    }
                     self.output.render_buf = match samples_audio {
                         AudioSamples::F32(v) => v,
                         _ => unreachable!(),
@@ -1876,7 +1913,11 @@ impl DecodeHandler {
         Ok(())
     }
 
-    fn write_audio_samples_bed_conform(&mut self, frame: &RDecodedFrame) -> Result<()> {
+    fn write_audio_samples_bed_conform(
+        &mut self,
+        frame: &RDecodedFrame,
+        _decode_time_ms: f32,
+    ) -> Result<()> {
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
 

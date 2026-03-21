@@ -1734,14 +1734,41 @@
           <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
             <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
             <div class="info-title" style="margin:0" data-i18n="section.renderer">Renderer</div>
-            <div id="rendererRenderTimeWrap" style="display:none;align-items:center;gap:0.35rem;min-width:0;flex:0 0 auto">
-              <div class="meter-bar" style="width:72px;min-width:72px">
-                <div id="rendererRenderTimeFill" class="meter-fill latency-ctrl"></div>
-                <div id="rendererRenderTimeMinMarker" class="meter-marker min"></div>
-                <div id="rendererRenderTimeMaxMarker" class="meter-marker max"></div>
+            <div id="rendererRenderTimeWrap" style="display:none;align-items:center;gap:0.5rem;min-width:0;flex:0 0 auto">
+              <div style="display:grid;gap:0.08rem;min-width:0">
+                <div style="display:flex;align-items:center;gap:0.28rem;min-width:0">
+                  <div style="font-size:10px;color:#8fb6d8;white-space:nowrap">dec</div>
+                  <div class="meter-bar" style="width:58px;min-width:58px">
+                    <div id="rendererDecodeTimeFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(140,214,255,0.95), rgba(104,170,255,0.95))"></div>
+                    <div id="rendererDecodeTimeMinMarker" class="meter-marker min"></div>
+                    <div id="rendererDecodeTimeMaxMarker" class="meter-marker max"></div>
+                  </div>
                 </div>
-                <div id="rendererRenderTimeValue" style="font-size:11px;color:#d9ecff;white-space:nowrap">—</div>
+                <div id="rendererDecodeTimeValue" style="font-size:10px;color:#d9ecff;white-space:nowrap">—</div>
               </div>
+              <div style="display:grid;gap:0.08rem;min-width:0">
+                <div style="display:flex;align-items:center;gap:0.28rem;min-width:0">
+                  <div style="font-size:10px;color:#8fb6d8;white-space:nowrap">rnd</div>
+                  <div class="meter-bar" style="width:58px;min-width:58px">
+                    <div id="rendererRenderTimeFill" class="meter-fill latency-ctrl"></div>
+                    <div id="rendererRenderTimeMinMarker" class="meter-marker min"></div>
+                    <div id="rendererRenderTimeMaxMarker" class="meter-marker max"></div>
+                  </div>
+                </div>
+                <div id="rendererRenderTimeValue" style="font-size:10px;color:#d9ecff;white-space:nowrap">—</div>
+              </div>
+              <div style="display:grid;gap:0.08rem;min-width:0">
+                <div style="display:flex;align-items:center;gap:0.28rem;min-width:0">
+                  <div style="font-size:10px;color:#8fb6d8;white-space:nowrap">wri</div>
+                  <div class="meter-bar" style="width:58px;min-width:58px">
+                    <div id="rendererWriteTimeFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(180,255,184,0.95), rgba(80,218,120,0.95))"></div>
+                    <div id="rendererWriteTimeMinMarker" class="meter-marker min"></div>
+                    <div id="rendererWriteTimeMaxMarker" class="meter-marker max"></div>
+                  </div>
+                </div>
+                <div id="rendererWriteTimeValue" style="font-size:10px;color:#d9ecff;white-space:nowrap">—</div>
+              </div>
+            </div>
             </div>
             <button id="rendererSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
           </div>
