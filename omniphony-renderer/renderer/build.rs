@@ -1,6 +1,8 @@
 use anyhow::Result;
 #[cfg(feature = "saf_vbap")]
 use std::env;
+#[cfg(feature = "saf_vbap")]
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
     #[cfg(feature = "saf_vbap")]
@@ -130,17 +132,44 @@ fn configure_saf_windows(saf_root: &str) -> Result<bool> {
 
 /// Generate Rust bindings for SAF's `saf_vbap` module.
 #[cfg(feature = "saf_vbap")]
+fn candidate_saf_roots(manifest_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        manifest_dir.join("../../SPARTA/SDKs/Spatial_Audio_Framework"),
+        manifest_dir.join("../../../SPARTA/SDKs/Spatial_Audio_Framework"),
+        manifest_dir.join("../../../../SPARTA/SDKs/Spatial_Audio_Framework"),
+    ]
+}
+
+#[cfg(feature = "saf_vbap")]
+fn resolve_saf_root(manifest_dir: &Path) -> Result<PathBuf> {
+    if let Ok(saf_root) = env::var("SAF_ROOT") {
+        return Ok(PathBuf::from(saf_root));
+    }
+
+    let candidates = candidate_saf_roots(manifest_dir);
+    for candidate in &candidates {
+        let canonical = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+        if canonical.join("build/framework/libsaf.a").exists() {
+            return Ok(canonical);
+        }
+    }
+
+    let mut msg = String::from("SAF_ROOT is not set and SAF library was not found in any known location.\n");
+    msg.push_str("Checked:\n");
+    for candidate in &candidates {
+        let canonical = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+        msg.push_str(&format!("  - {}\n", canonical.display()));
+    }
+    msg.push_str("\nExport SAF_ROOT to a valid Spatial_Audio_Framework tree or build SAF in one of the locations above.");
+    anyhow::bail!(msg);
+}
+
+#[cfg(feature = "saf_vbap")]
 fn generate_saf_bindings() -> Result<()> {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let saf_root = env::var("SAF_ROOT").unwrap_or_else(|_| {
-        let default =
-            std::path::Path::new(&manifest_dir).join("../../SPARTA/SDKs/Spatial_Audio_Framework");
-        default
-            .canonicalize()
-            .unwrap_or(default)
-            .to_string_lossy()
-            .into_owned()
-    });
+    let manifest_dir = Path::new(&manifest_dir);
+    let saf_root = resolve_saf_root(manifest_dir)?;
+    let saf_root = saf_root.to_string_lossy().into_owned();
     let saf_root = saf_root.as_str();
     println!("cargo:rerun-if-env-changed=SAF_ROOT");
     let saf_include = format!("{}/framework/include", saf_root);
