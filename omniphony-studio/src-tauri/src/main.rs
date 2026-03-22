@@ -298,6 +298,47 @@ fn control_adaptive_resampling(state: State<SharedState>, enable: i32) {
 }
 
 #[tauri::command]
+fn control_adaptive_resampling_enable_far_mode(state: State<SharedState>, enable: i32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/adaptive_resampling/enable_far_mode".to_string(),
+            value: if enable != 0 { 1 } else { 0 },
+        },
+    );
+}
+
+#[tauri::command]
+fn control_adaptive_resampling_force_silence_in_far_mode(
+    state: State<SharedState>,
+    enable: i32,
+) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/adaptive_resampling/force_silence_in_far_mode"
+                .to_string(),
+            value: if enable != 0 { 1 } else { 0 },
+        },
+    );
+}
+
+#[tauri::command]
+fn control_adaptive_resampling_far_mode_return_fade_in_ms(
+    state: State<SharedState>,
+    value: i32,
+) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/adaptive_resampling/far_mode_return_fade_in_ms"
+                .to_string(),
+            value: value.max(0),
+        },
+    );
+}
+
+#[tauri::command]
 fn control_latency_target(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
@@ -364,6 +405,21 @@ fn control_adaptive_resampling_max_adjust_far(state: State<SharedState>, value: 
 }
 
 #[tauri::command]
+fn control_adaptive_resampling_update_interval_callbacks(
+    state: State<SharedState>,
+    value: i32,
+) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/adaptive_resampling/update_interval_callbacks"
+                .to_string(),
+            value: value.max(1),
+        },
+    );
+}
+
+#[tauri::command]
 fn control_adaptive_resampling_near_far_threshold_ms(
     state: State<SharedState>,
     value: i32,
@@ -373,20 +429,6 @@ fn control_adaptive_resampling_near_far_threshold_ms(
         OscControlMsg::SendInt {
             address: "/omniphony/control/adaptive_resampling/near_far_threshold_ms".to_string(),
             value: value.max(1),
-        },
-    );
-}
-
-#[tauri::command]
-fn control_adaptive_resampling_hard_correction_threshold_ms(
-    state: State<SharedState>,
-    value: i32,
-) {
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendInt {
-            address: "/omniphony/control/adaptive_resampling/hard_correction_threshold_ms".to_string(),
-            value: value.max(0),
         },
     );
 }
@@ -1705,14 +1747,17 @@ fn main() {
             control_master_gain,
             control_loudness,
             control_adaptive_resampling,
+            control_adaptive_resampling_enable_far_mode,
+            control_adaptive_resampling_force_silence_in_far_mode,
+            control_adaptive_resampling_far_mode_return_fade_in_ms,
             control_latency_target,
             control_adaptive_resampling_kp_near,
             control_adaptive_resampling_kp_far,
             control_adaptive_resampling_ki,
             control_adaptive_resampling_max_adjust,
             control_adaptive_resampling_max_adjust_far,
+            control_adaptive_resampling_update_interval_callbacks,
             control_adaptive_resampling_near_far_threshold_ms,
-            control_adaptive_resampling_hard_correction_threshold_ms,
             control_adaptive_resampling_measurement_smoothing_alpha,
             control_spread_min,
             control_spread_max,

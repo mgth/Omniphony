@@ -625,6 +625,8 @@ pub struct DecodeSessionState {
     pub decoded_frames: u64,
     pub decoded_samples: u64,
     pub final_sample_rate: u32,
+    pub last_frame_received_at: Option<Instant>,
+    pub last_frame_sample_count: Option<u32>,
 }
 
 impl Default for DecodeSessionState {
@@ -633,6 +635,8 @@ impl Default for DecodeSessionState {
             decoded_frames: 0,
             decoded_samples: 0,
             final_sample_rate: 48000,
+            last_frame_received_at: None,
+            last_frame_sample_count: None,
         }
     }
 }
@@ -665,6 +669,7 @@ pub struct FrameHandlerContext<'a> {
     pub bed_conform: bool,
     pub use_loudness: bool,
     pub decode_time_ms: f32,
+    pub queue_delay_ms: f32,
 }
 
 impl DecodeHandler {
@@ -920,29 +925,47 @@ impl DecodeHandler {
                 .as_ref()
                 .map(|r| r.renderer_control())
                 .map(|control| AdaptiveResamplingConfig {
+                    enable_far_mode: control.requested_adaptive_resampling_enable_far_mode(),
+                    force_silence_in_far_mode: control
+                        .requested_adaptive_resampling_force_silence_in_far_mode(),
+                    far_mode_return_fade_in_ms: control
+                        .requested_adaptive_resampling_far_mode_return_fade_in_ms(),
                     kp_near: control.requested_adaptive_resampling_kp_near(),
                     kp_far: control.requested_adaptive_resampling_kp_far(),
                     ki: control.requested_adaptive_resampling_ki(),
                     max_adjust: control.requested_adaptive_resampling_max_adjust(),
                     max_adjust_far: control.requested_adaptive_resampling_max_adjust_far(),
+                    update_interval_callbacks: control
+                        .requested_adaptive_resampling_update_interval_callbacks()
+                        .max(1),
                     near_far_threshold_ms: control
                         .requested_adaptive_resampling_near_far_threshold_ms(),
-                    hard_correction_threshold_ms: control
-                        .requested_adaptive_resampling_hard_correction_threshold_ms(),
                     measurement_smoothing_alpha: control
                         .requested_adaptive_resampling_measurement_smoothing_alpha(),
                 })
                 .unwrap_or_else(|| self.runtime.adaptive_resampling_config.clone());
 
-            if requested.kp_near == self.runtime.adaptive_resampling_config.kp_near
+            if requested.enable_far_mode
+                == self.runtime.adaptive_resampling_config.enable_far_mode
+                && requested.force_silence_in_far_mode
+                    == self
+                        .runtime
+                        .adaptive_resampling_config
+                        .force_silence_in_far_mode
+                && requested.far_mode_return_fade_in_ms
+                    == self
+                        .runtime
+                        .adaptive_resampling_config
+                        .far_mode_return_fade_in_ms
+                && requested.kp_near == self.runtime.adaptive_resampling_config.kp_near
                 && requested.kp_far == self.runtime.adaptive_resampling_config.kp_far
                 && requested.ki == self.runtime.adaptive_resampling_config.ki
                 && requested.max_adjust == self.runtime.adaptive_resampling_config.max_adjust
                 && requested.max_adjust_far == self.runtime.adaptive_resampling_config.max_adjust_far
+                && requested.update_interval_callbacks
+                    == self.runtime.adaptive_resampling_config.update_interval_callbacks
                 && requested.near_far_threshold_ms
                     == self.runtime.adaptive_resampling_config.near_far_threshold_ms
-                && requested.hard_correction_threshold_ms
-                    == self.runtime.adaptive_resampling_config.hard_correction_threshold_ms
                 && requested.measurement_smoothing_alpha
                     == self.runtime.adaptive_resampling_config.measurement_smoothing_alpha
             {
@@ -951,14 +974,21 @@ impl DecodeHandler {
 
             self.runtime.adaptive_resampling_config = requested;
             log::info!(
-                "Applying adaptive resampling tuning: kp_near={:.8}, kp_far={:.8}, ki={:.8}, max_adjust={:.6}, max_adjust_far={:.6}, near_far_threshold_ms={}, hard_correction_threshold_ms={}, measurement_smoothing_alpha={:.3}",
+                "Applying adaptive resampling tuning: far_mode={}, far_silence={}, far_return_fade_in_ms={}, kp_near={:.8}, kp_far={:.8}, ki={:.8}, max_adjust={:.6}, max_adjust_far={:.6}, update_interval_callbacks={}, near_far_threshold_ms={}, measurement_smoothing_alpha={:.3}",
+                self.runtime.adaptive_resampling_config.enable_far_mode,
+                self.runtime
+                    .adaptive_resampling_config
+                    .force_silence_in_far_mode,
+                self.runtime
+                    .adaptive_resampling_config
+                    .far_mode_return_fade_in_ms,
                 self.runtime.adaptive_resampling_config.kp_near,
                 self.runtime.adaptive_resampling_config.kp_far,
                 self.runtime.adaptive_resampling_config.ki,
                 self.runtime.adaptive_resampling_config.max_adjust,
                 self.runtime.adaptive_resampling_config.max_adjust_far,
+                self.runtime.adaptive_resampling_config.update_interval_callbacks,
                 self.runtime.adaptive_resampling_config.near_far_threshold_ms,
-                self.runtime.adaptive_resampling_config.hard_correction_threshold_ms,
                 self.runtime.adaptive_resampling_config.measurement_smoothing_alpha
             );
 
@@ -1028,9 +1058,53 @@ impl DecodeHandler {
         frame: RDecodedFrame,
         ctx: &FrameHandlerContext,
     ) -> Result<()> {
+        let now = Instant::now();
         let sample_rate = frame.sampling_frequency;
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
+        let sample_count_u32 = frame.sample_count;
+        let metadata_count = frame.metadata.len();
+
+        if let Some(prev_at) = self.session.last_frame_received_at {
+            let wall_gap_ms = now.saturating_duration_since(prev_at).as_secs_f64() * 1000.0;
+            let frame_duration_ms =
+                sample_count as f64 / sample_rate.max(1) as f64 * 1000.0;
+            let sample_count_changed = self
+                .session
+                .last_frame_sample_count
+                .is_some_and(|prev| prev != sample_count_u32);
+            let severe_gap_ms = (frame_duration_ms * 20.0).max(100.0);
+            let suspicious_metadata_change = metadata_count > 0 && sample_count_changed;
+            if wall_gap_ms > severe_gap_ms || suspicious_metadata_change {
+                log::warn!(
+                    "Decoded frame cadence anomaly: samples={} ch={} sr={} metadata={} decode_ms={:.3} queue_ms={:.3} wall_gap_ms={:.3} frame_ms={:.3} prev_samples={:?}",
+                    sample_count,
+                    channel_count,
+                    sample_rate,
+                    metadata_count,
+                    ctx.decode_time_ms,
+                    ctx.queue_delay_ms,
+                    wall_gap_ms,
+                    frame_duration_ms,
+                    self.session.last_frame_sample_count
+                );
+            } else if wall_gap_ms > (frame_duration_ms * 1.5).max(15.0) {
+                log::debug!(
+                    "Decoded frame burst cadence: samples={} ch={} sr={} metadata={} decode_ms={:.3} queue_ms={:.3} wall_gap_ms={:.3} frame_ms={:.3} prev_samples={:?}",
+                    sample_count,
+                    channel_count,
+                    sample_rate,
+                    metadata_count,
+                    ctx.decode_time_ms,
+                    ctx.queue_delay_ms,
+                    wall_gap_ms,
+                    frame_duration_ms,
+                    self.session.last_frame_sample_count
+                );
+            }
+        }
+        self.session.last_frame_received_at = Some(now);
+        self.session.last_frame_sample_count = Some(sample_count_u32);
 
         self.session.decoded_frames += 1u64;
         self.session.final_sample_rate = sample_rate;
@@ -1527,6 +1601,8 @@ impl DecodeHandler {
     fn write_audio_samples(&mut self, frame: &RDecodedFrame, decode_time_ms: f32) -> Result<()> {
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
+        let frame_duration_ms =
+            sample_count as f32 / frame.sampling_frequency.max(1) as f32 * 1000.0;
 
         // Read latency and resample ratio before acquiring mutable borrow on audio_writer.
         // Expose comparable total delays for telemetry:
@@ -1563,11 +1639,19 @@ impl DecodeHandler {
         // fall back to measured delay when target is unavailable.
         // TODO: find a cleaner IPC mechanism to communicate latency to the player
         // instead of writing to a temp file (e.g. OSC, named pipe, shared memory).
+        let freeze_delay_sync = current_latency_control_ms
+            .zip(current_latency_target_ms)
+            .map(|(control_ms, target_ms)| control_ms + 40.0 < target_ms)
+            .unwrap_or(false)
+            || current_resample_ratio
+                .map(|ratio| (ratio - 1.0).abs() >= 0.03)
+                .unwrap_or(false)
+            || matches!(current_adaptive_band, Some("hard"));
         if let Some(total_ms) = self.output.audio_writer.as_ref().and_then(|w| {
             w.total_audio_delay_ms()
                 .or_else(|| w.measured_audio_delay_ms())
         }) {
-            let should_write = self
+            let should_write = !freeze_delay_sync && self
                 .output
                 .last_audio_delay_attempted_ms
                 .map(|prev| (total_ms - prev).abs() >= 20.0)
@@ -1591,6 +1675,14 @@ impl DecodeHandler {
                     self.output.last_audio_delay_written_ms = Some(total_ms);
                     self.output.last_audio_delay_write_error_at = None;
                 }
+            } else if freeze_delay_sync {
+                log::trace!(
+                    "Freezing omniphony_delay update during audio recovery: control_ms={:?} target_ms={:?} ratio={:?} band={:?}",
+                    current_latency_control_ms,
+                    current_latency_target_ms,
+                    current_resample_ratio,
+                    current_adaptive_band
+                );
             }
         }
 
@@ -1682,6 +1774,7 @@ impl DecodeHandler {
                             Some(decode_time_ms),
                             Some(render_time_ms),
                             None,
+                            Some(frame_duration_ms),
                             current_latency_instant_ms,
                             current_latency_control_ms,
                             current_latency_target_ms,
@@ -1823,6 +1916,7 @@ impl DecodeHandler {
                             Some(decode_time_ms),
                             Some(render_time_ms),
                             None,
+                            Some(frame_duration_ms),
                             current_latency_instant_ms,
                             current_latency_control_ms,
                             current_latency_target_ms,

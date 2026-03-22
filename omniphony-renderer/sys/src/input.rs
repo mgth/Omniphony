@@ -463,8 +463,10 @@ impl InputReader {
 
             let file = unsafe { File::from_raw_fd(raw_fd) };
 
+            let is_named_pipe = is_fifo(&input_path)?;
+
             // Detect if this is a FIFO and drain if requested
-            if drain_pipe && is_fifo(&input_path)? {
+            if drain_pipe && is_named_pipe {
                 let drained = drain_fd(&file)?;
                 if drained > 0 {
                     log::info!(
@@ -483,7 +485,7 @@ impl InputReader {
 
             return Ok(Self {
                 reader: Box::new(BufReader::new(file)),
-                is_pipe: false,
+                is_pipe: is_named_pipe,
                 data_fd: Some(data_fd),
             });
         }

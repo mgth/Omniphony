@@ -520,6 +520,7 @@ impl OscSender {
         decode_time_ms: Option<f32>,
         render_time_ms: Option<f32>,
         write_time_ms: Option<f32>,
+        frame_duration_ms: Option<f32>,
         latency_instant_ms: Option<f32>,
         latency_control_ms: Option<f32>,
         latency_target_ms: Option<f32>,
@@ -563,6 +564,12 @@ impl OscSender {
         if let Some(ms) = write_time_ms {
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/write_time_ms".to_string(),
+                args: vec![OscType::Float(ms.max(0.0))],
+            }));
+        }
+        if let Some(ms) = frame_duration_ms {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/frame_duration_ms".to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
@@ -1027,6 +1034,57 @@ fn handle_control_message(
         return;
     }
 
+    if addr == "/omniphony/control/adaptive_resampling/enable_far_mode" {
+        let enabled = match msg.args.first() {
+            Some(OscType::Int(i)) => *i != 0,
+            Some(OscType::Float(f)) => *f != 0.0,
+            _ => return,
+        };
+        control.set_requested_adaptive_resampling_enable_far_mode(enabled);
+        set_dirty(control, socket, clients);
+        broadcast_int(
+            socket,
+            clients,
+            "/omniphony/state/adaptive_resampling/enable_far_mode",
+            if enabled { 1 } else { 0 },
+        );
+        return;
+    }
+
+    if addr == "/omniphony/control/adaptive_resampling/force_silence_in_far_mode" {
+        let enabled = match msg.args.first() {
+            Some(OscType::Int(i)) => *i != 0,
+            Some(OscType::Float(f)) => *f != 0.0,
+            _ => return,
+        };
+        control.set_requested_adaptive_resampling_force_silence_in_far_mode(enabled);
+        set_dirty(control, socket, clients);
+        broadcast_int(
+            socket,
+            clients,
+            "/omniphony/state/adaptive_resampling/force_silence_in_far_mode",
+            if enabled { 1 } else { 0 },
+        );
+        return;
+    }
+
+    if addr == "/omniphony/control/adaptive_resampling/far_mode_return_fade_in_ms" {
+        let value = match msg.args.first() {
+            Some(OscType::Int(i)) if *i >= 0 => *i as u32,
+            Some(OscType::Float(f)) if *f >= 0.0 => *f as u32,
+            _ => return,
+        };
+        control.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(value);
+        set_dirty(control, socket, clients);
+        broadcast_float(
+            socket,
+            clients,
+            "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms",
+            value as f32,
+        );
+        return;
+    }
+
     if addr == "/omniphony/control/adaptive_resampling/kp_near" {
         let value = match msg.args.first() {
             Some(OscType::Float(f)) if *f > 0.0 => *f,
@@ -1107,6 +1165,23 @@ fn handle_control_message(
         return;
     }
 
+    if addr == "/omniphony/control/adaptive_resampling/update_interval_callbacks" {
+        let value = match msg.args.first() {
+            Some(OscType::Int(i)) if *i > 0 => *i as u32,
+            Some(OscType::Float(f)) if *f > 0.0 => *f as u32,
+            _ => return,
+        };
+        control.set_requested_adaptive_resampling_update_interval_callbacks(value);
+        set_dirty(control, socket, clients);
+        broadcast_float(
+            socket,
+            clients,
+            "/omniphony/state/adaptive_resampling/update_interval_callbacks",
+            value as f32,
+        );
+        return;
+    }
+
     if addr == "/omniphony/control/adaptive_resampling/near_far_threshold_ms" {
         let value = match msg.args.first() {
             Some(OscType::Int(i)) if *i > 0 => *i as u32,
@@ -1119,23 +1194,6 @@ fn handle_control_message(
             socket,
             clients,
             "/omniphony/state/adaptive_resampling/near_far_threshold_ms",
-            value as f32,
-        );
-        return;
-    }
-
-    if addr == "/omniphony/control/adaptive_resampling/hard_correction_threshold_ms" {
-        let value = match msg.args.first() {
-            Some(OscType::Int(i)) if *i >= 0 => *i as u32,
-            Some(OscType::Float(f)) if *f >= 0.0 => *f as u32,
-            _ => return,
-        };
-        control.set_requested_adaptive_resampling_hard_correction_threshold_ms(value);
-        set_dirty(control, socket, clients);
-        broadcast_float(
-            socket,
-            clients,
-            "/omniphony/state/adaptive_resampling/hard_correction_threshold_ms",
             value as f32,
         );
         return;
@@ -2244,6 +2302,16 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
             })],
         }),
         OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/adaptive_resampling/enable_far_mode".to_string(),
+            args: vec![OscType::Int(
+                if control.requested_adaptive_resampling_enable_far_mode() {
+                    1
+                } else {
+                    0
+                },
+            )],
+        }),
+        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/adaptive_resampling/kp_near".to_string(),
             args: vec![OscType::Float(
                 control.requested_adaptive_resampling_kp_near() as f32,
@@ -2274,21 +2342,37 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
             )],
         }),
         OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/adaptive_resampling/update_interval_callbacks".to_string(),
+            args: vec![OscType::Float(
+                control.requested_adaptive_resampling_update_interval_callbacks() as f32,
+            )],
+        }),
+        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/adaptive_resampling/near_far_threshold_ms".to_string(),
             args: vec![OscType::Float(
                 control.requested_adaptive_resampling_near_far_threshold_ms() as f32,
             )],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/hard_correction_threshold_ms".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_hard_correction_threshold_ms() as f32,
-            )],
-        }),
-        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/adaptive_resampling/measurement_smoothing_alpha".to_string(),
             args: vec![OscType::Float(
                 control.requested_adaptive_resampling_measurement_smoothing_alpha() as f32,
+            )],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/adaptive_resampling/force_silence_in_far_mode".to_string(),
+            args: vec![OscType::Int(
+                if control.requested_adaptive_resampling_force_silence_in_far_mode() {
+                    1
+                } else {
+                    0
+                },
+            )],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms".to_string(),
+            args: vec![OscType::Float(
+                control.requested_adaptive_resampling_far_mode_return_fade_in_ms() as f32,
             )],
         }),
         OscPacket::Message(OscMessage {
@@ -2672,6 +2756,12 @@ fn save_live_config(
     } else {
         Some(false)
     };
+    render.adaptive_resampling_enable_far_mode =
+        Some(control.requested_adaptive_resampling_enable_far_mode());
+    render.adaptive_resampling_force_silence_in_far_mode =
+        Some(control.requested_adaptive_resampling_force_silence_in_far_mode());
+    render.adaptive_resampling_far_mode_return_fade_in_ms =
+        Some(control.requested_adaptive_resampling_far_mode_return_fade_in_ms());
     render.pw_latency = control.requested_latency_target_ms();
     render.adaptive_resampling_kp_near =
         Some(control.requested_adaptive_resampling_kp_near() as f32);
@@ -2681,10 +2771,10 @@ fn save_live_config(
         Some(control.requested_adaptive_resampling_max_adjust() as f32);
     render.adaptive_resampling_max_adjust_far =
         Some(control.requested_adaptive_resampling_max_adjust_far() as f32);
+    render.adaptive_resampling_update_interval_callbacks =
+        Some(control.requested_adaptive_resampling_update_interval_callbacks());
     render.adaptive_resampling_near_far_threshold_ms =
         Some(control.requested_adaptive_resampling_near_far_threshold_ms());
-    render.adaptive_resampling_hard_correction_threshold_ms =
-        Some(control.requested_adaptive_resampling_hard_correction_threshold_ms());
     render.adaptive_resampling_measurement_smoothing_alpha =
         Some(control.requested_adaptive_resampling_measurement_smoothing_alpha() as f32);
 

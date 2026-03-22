@@ -472,13 +472,17 @@ fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<renderer::config:
         } else {
             None
         },
+        adaptive_resampling_enable_far_mode: None,
+        adaptive_resampling_force_silence_in_far_mode: None,
+        adaptive_resampling_far_mode_return_fade_in_ms: None,
         adaptive_resampling_kp_near: None,
         adaptive_resampling_kp_far: None,
         adaptive_resampling_ki: None,
         adaptive_resampling_max_adjust: None,
         adaptive_resampling_max_adjust_far: None,
+        adaptive_resampling_update_interval_callbacks:
+            args.adaptive_resampling_update_interval_callbacks,
         adaptive_resampling_near_far_threshold_ms: None,
-        adaptive_resampling_hard_correction_threshold_ms: None,
         adaptive_resampling_measurement_smoothing_alpha: None,
         output_sample_rate: args.output_sample_rate,
         ramp_mode: if args.ramp_mode != RampModeArg::Sample {
@@ -714,6 +718,18 @@ fn init_render_handler(
             quantum_frames: args.pw_quantum.unwrap_or(defaults.quantum_frames),
         };
         handler.runtime.adaptive_resampling_config = AdaptiveResamplingConfig {
+            enable_far_mode: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_enable_far_mode)
+                .unwrap_or(adaptive_defaults.enable_far_mode),
+            force_silence_in_far_mode: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_force_silence_in_far_mode)
+                .unwrap_or(adaptive_defaults.force_silence_in_far_mode),
+            far_mode_return_fade_in_ms: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_far_mode_return_fade_in_ms)
+                .unwrap_or(adaptive_defaults.far_mode_return_fade_in_ms),
             kp_near: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_kp_near)
@@ -739,14 +755,19 @@ fn init_render_handler(
                 .and_then(|cfg| cfg.adaptive_resampling_max_adjust_far)
                 .map(|v| v as f64)
                 .unwrap_or(adaptive_defaults.max_adjust_far),
+            update_interval_callbacks: args
+                .adaptive_resampling_update_interval_callbacks
+                .or_else(|| {
+                    render_cfg
+                        .as_ref()
+                        .and_then(|cfg| cfg.adaptive_resampling_update_interval_callbacks)
+                })
+                .unwrap_or(adaptive_defaults.update_interval_callbacks)
+                .max(1),
             near_far_threshold_ms: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_near_far_threshold_ms)
                 .unwrap_or(adaptive_defaults.near_far_threshold_ms),
-            hard_correction_threshold_ms: render_cfg
-                .as_ref()
-                .and_then(|cfg| cfg.adaptive_resampling_hard_correction_threshold_ms)
-                .unwrap_or(adaptive_defaults.hard_correction_threshold_ms),
             measurement_smoothing_alpha: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_measurement_smoothing_alpha)
@@ -765,6 +786,18 @@ fn init_render_handler(
             .map(renderer::config::Config::load_or_default)
             .and_then(|cfg| cfg.render);
         handler.runtime.adaptive_resampling_config = AdaptiveResamplingConfig {
+            enable_far_mode: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_enable_far_mode)
+                .unwrap_or(adaptive_defaults.enable_far_mode),
+            force_silence_in_far_mode: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_force_silence_in_far_mode)
+                .unwrap_or(adaptive_defaults.force_silence_in_far_mode),
+            far_mode_return_fade_in_ms: render_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.adaptive_resampling_far_mode_return_fade_in_ms)
+                .unwrap_or(adaptive_defaults.far_mode_return_fade_in_ms),
             kp_near: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_kp_near)
@@ -790,14 +823,19 @@ fn init_render_handler(
                 .and_then(|cfg| cfg.adaptive_resampling_max_adjust_far)
                 .map(|v| v as f64)
                 .unwrap_or(adaptive_defaults.max_adjust_far),
+            update_interval_callbacks: args
+                .adaptive_resampling_update_interval_callbacks
+                .or_else(|| {
+                    render_cfg
+                        .as_ref()
+                        .and_then(|cfg| cfg.adaptive_resampling_update_interval_callbacks)
+                })
+                .unwrap_or(adaptive_defaults.update_interval_callbacks)
+                .max(1),
             near_far_threshold_ms: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_near_far_threshold_ms)
                 .unwrap_or(adaptive_defaults.near_far_threshold_ms),
-            hard_correction_threshold_ms: render_cfg
-                .as_ref()
-                .and_then(|cfg| cfg.adaptive_resampling_hard_correction_threshold_ms)
-                .unwrap_or(adaptive_defaults.hard_correction_threshold_ms),
             measurement_smoothing_alpha: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_measurement_smoothing_alpha)
@@ -1139,6 +1177,21 @@ fn init_render_handler(
         }
         ctrl.set_requested_output_sample_rate(args.output_sample_rate);
         ctrl.set_requested_adaptive_resampling(args.enable_adaptive_resampling);
+        ctrl.set_requested_adaptive_resampling_enable_far_mode(
+            handler.runtime.adaptive_resampling_config.enable_far_mode,
+        );
+        ctrl.set_requested_adaptive_resampling_force_silence_in_far_mode(
+            handler
+                .runtime
+                .adaptive_resampling_config
+                .force_silence_in_far_mode,
+        );
+        ctrl.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(
+            handler
+                .runtime
+                .adaptive_resampling_config
+                .far_mode_return_fade_in_ms,
+        );
         ctrl.set_requested_ramp_mode(args.ramp_mode.into());
         ctrl.live.write().unwrap().ramp_mode = args.ramp_mode.into();
         #[cfg(target_os = "linux")]
@@ -1148,16 +1201,22 @@ fn init_render_handler(
             ctrl.set_requested_latency_target_ms(Some(
                 args.pw_latency.unwrap_or(defaults.latency_ms),
             ));
+            ctrl.set_requested_adaptive_resampling_force_silence_in_far_mode(
+                adaptive.force_silence_in_far_mode,
+            );
+            ctrl.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(
+                adaptive.far_mode_return_fade_in_ms,
+            );
             ctrl.set_requested_adaptive_resampling_kp_near(adaptive.kp_near as f32);
             ctrl.set_requested_adaptive_resampling_kp_far(adaptive.kp_far as f32);
             ctrl.set_requested_adaptive_resampling_ki(adaptive.ki as f32);
             ctrl.set_requested_adaptive_resampling_max_adjust(adaptive.max_adjust as f32);
             ctrl.set_requested_adaptive_resampling_max_adjust_far(adaptive.max_adjust_far as f32);
+            ctrl.set_requested_adaptive_resampling_update_interval_callbacks(
+                adaptive.update_interval_callbacks,
+            );
             ctrl.set_requested_adaptive_resampling_near_far_threshold_ms(
                 adaptive.near_far_threshold_ms,
-            );
-            ctrl.set_requested_adaptive_resampling_hard_correction_threshold_ms(
-                adaptive.hard_correction_threshold_ms,
             );
             ctrl.set_requested_adaptive_resampling_measurement_smoothing_alpha(
                 adaptive.measurement_smoothing_alpha as f32,
@@ -1167,16 +1226,22 @@ fn init_render_handler(
         {
             ctrl.set_requested_latency_target_ms(Some(handler.runtime.asio_target_latency_ms));
             let adaptive = &handler.runtime.adaptive_resampling_config;
+            ctrl.set_requested_adaptive_resampling_force_silence_in_far_mode(
+                adaptive.force_silence_in_far_mode,
+            );
+            ctrl.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(
+                adaptive.far_mode_return_fade_in_ms,
+            );
             ctrl.set_requested_adaptive_resampling_kp_near(adaptive.kp_near as f32);
             ctrl.set_requested_adaptive_resampling_kp_far(adaptive.kp_far as f32);
             ctrl.set_requested_adaptive_resampling_ki(adaptive.ki as f32);
             ctrl.set_requested_adaptive_resampling_max_adjust(adaptive.max_adjust as f32);
             ctrl.set_requested_adaptive_resampling_max_adjust_far(adaptive.max_adjust_far as f32);
+            ctrl.set_requested_adaptive_resampling_update_interval_callbacks(
+                adaptive.update_interval_callbacks,
+            );
             ctrl.set_requested_adaptive_resampling_near_far_threshold_ms(
                 adaptive.near_far_threshold_ms,
-            );
-            ctrl.set_requested_adaptive_resampling_hard_correction_threshold_ms(
-                adaptive.hard_correction_threshold_ms,
             );
             ctrl.set_requested_adaptive_resampling_measurement_smoothing_alpha(
                 adaptive.measurement_smoothing_alpha as f32,
@@ -1312,6 +1377,7 @@ fn handle_audio_message(
         bed_conform: ctx.args.bed_conform,
         use_loudness: ctx.args.use_loudness,
         decode_time_ms: decoded.decode_time_ms,
+        queue_delay_ms: decoded.sent_at.elapsed().as_secs_f32() * 1000.0,
     };
     handler.handle_decoded_frame(frame, &ctx)
 }

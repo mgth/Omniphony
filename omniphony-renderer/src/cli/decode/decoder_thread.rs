@@ -4,10 +4,8 @@ use spdif::SpdifParser;
 use std::io;
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use sys::InputReader;
-
-const PIPE_STREAM_GAP_RESET_THRESHOLD: Duration = Duration::from_millis(500);
 
 /// Returns the current CLOCK_MONOTONIC timestamp in microseconds.
 /// Used for systemd RELOADING=1 notifications (MONOTONIC_USEC is required by
@@ -31,6 +29,7 @@ fn monotonic_usec_now() -> u64 {
 pub struct DecodedAudioData {
     pub frame: bridge_api::RDecodedFrame,
     pub decode_time_ms: f32,
+    pub sent_at: Instant,
 }
 
 pub enum DecoderMessage {
@@ -118,37 +117,32 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                 }
 
                 let now = Instant::now();
+                let chunk_gap_ms = last_chunk_at
+                    .map(|last| now.saturating_duration_since(last).as_secs_f64() * 1000.0);
                 if continuous && is_pipe_input {
-                    if let Some(last) = last_chunk_at {
-                        let gap = now.saturating_duration_since(last);
-                        if gap >= PIPE_STREAM_GAP_RESET_THRESHOLD && frame_count > 0 {
-                            log::info!(
-                                "Detected input gap of {:.0} ms on pipe, treating next data as a new stream",
-                                gap.as_secs_f64() * 1000.0
-                            );
-                            if tx.send(Ok(DecoderMessage::StreamEnd)).is_err() {
-                                log::warn!("Failed to send StreamEnd message, receiver closed");
-                                return Ok(false);
-                            }
-                            bridge.reset();
-                            is_spdif = None;
-                            spdif_parser = SpdifParser::new();
-                        }
-                    }
                     last_chunk_at = Some(now);
                 }
 
-                // Detect transport format on the first chunk.
+                let chunk_contains_spdif_sync = chunk.windows(4).any(|w| {
+                    u16::from_le_bytes([w[0], w[1]]) == 0xF872
+                        && u16::from_le_bytes([w[2], w[3]]) == 0x4E1F
+                });
+
+                // Detect transport format on the first chunk. Do not require the
+                // syncword to be at offset 0: named pipes can reconnect or resume
+                // mid-burst, and the parser can resynchronise from the next marker.
                 if is_spdif.is_none() && chunk.len() >= 4 {
-                    if u16::from_le_bytes([chunk[0], chunk[1]]) == 0xF872
-                        && u16::from_le_bytes([chunk[2], chunk[3]]) == 0x4E1F
-                    {
+                    if chunk_contains_spdif_sync {
                         is_spdif = Some(true);
                         log::info!("Detected S/PDIF encapsulated stream");
                     } else {
                         is_spdif = Some(false);
                         log::info!("Detected raw stream");
                     }
+                } else if is_spdif == Some(false) && chunk_contains_spdif_sync {
+                    log::warn!("Recovered S/PDIF sync after raw detection; switching parser back to IEC61937 mode");
+                    is_spdif = Some(true);
+                    spdif_parser.reset();
                 }
 
                 // Collect input units: unwrapped IEC 61937 packets or the raw chunk.
@@ -163,11 +157,89 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     vec![(RInputTransport::Raw, 0, chunk.to_vec())]
                 };
 
+                let mut frames_emitted = 0usize;
+                let mut emitted_samples_total = 0u32;
+                let packet_count = packets.len();
                 for (transport, data_type, payload) in packets {
                     let decode_started_at = Instant::now();
                     let result =
                         bridge.push_packet(payload.as_slice().into(), transport, data_type);
                     let decode_time_ms = decode_started_at.elapsed().as_secs_f32() * 1000.0;
+                    let payload_len = payload.len();
+                    let emitted_frames = result.frames.len();
+                    let emitted_samples: u32 =
+                        result.frames.iter().map(|frame| frame.sample_count).sum();
+                    let metadata_frames = result
+                        .frames
+                        .iter()
+                        .filter(|frame| !frame.metadata.is_empty())
+                        .count();
+                    let metadata_payloads: usize = result
+                        .frames
+                        .iter()
+                        .map(|frame| frame.metadata.len())
+                        .sum();
+                    let metadata_summary = result
+                        .frames
+                        .iter()
+                        .flat_map(|frame| frame.metadata.iter())
+                        .map(|meta| {
+                            let event_count = meta.events.len();
+                            let min_event_sample_pos =
+                                meta.events.iter().map(|event| event.sample_pos).min();
+                            let max_event_sample_pos =
+                                meta.events.iter().map(|event| event.sample_pos).max();
+                            let min_event_id = meta.events.iter().map(|event| event.id).min();
+                            let max_event_id = meta.events.iter().map(|event| event.id).max();
+                            format!(
+                                "meta[pos={} ramp={} events={} ev_pos={:?}..{:?} ev_id={:?}..{:?}]",
+                                meta.sample_pos,
+                                meta.ramp_duration,
+                                event_count,
+                                min_event_sample_pos,
+                                max_event_sample_pos,
+                                min_event_id,
+                                max_event_id
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let new_segment_frames = result
+                        .frames
+                        .iter()
+                        .filter(|frame| frame.is_new_segment)
+                        .count();
+                    let sample_count_min = result.frames.iter().map(|frame| frame.sample_count).min();
+                    let sample_count_max = result.frames.iter().map(|frame| frame.sample_count).max();
+
+                    if matches!(transport, RInputTransport::Iec61937) {
+                        let should_warn = result.did_reset
+                            || !result.error_message.is_empty()
+                            || (metadata_frames > 0 && emitted_frames == 0)
+                            || new_segment_frames > 0
+                            || emitted_frames == 0;
+                        if should_warn {
+                            sys::live_log::emit_external_record(
+                                log::Level::Warn,
+                                "orender::bridge",
+                                &format!(
+                                    "Bridge packet result: payload_bytes={} data_type=0x{:02X} frames={} samples={} sample_count_range={:?}..{:?} metadata_frames={} metadata_payloads={} new_segment_frames={} did_reset={} error={} {}",
+                                    payload_len,
+                                    data_type,
+                                    emitted_frames,
+                                    emitted_samples,
+                                    sample_count_min,
+                                    sample_count_max,
+                                    metadata_frames,
+                                    metadata_payloads,
+                                    new_segment_frames,
+                                    result.did_reset,
+                                    result.error_message,
+                                    metadata_summary
+                                ),
+                            );
+                        }
+                    }
 
                     if result.did_reset {
                         if strict_mode && !result.error_message.is_empty() {
@@ -189,17 +261,55 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
 
                     let frame_count_in_packet = result.frames.len().max(1) as f32;
                     let per_frame_decode_time_ms = decode_time_ms / frame_count_in_packet;
+                    let frames_in_packet = result.frames.len();
+                    frames_emitted += frames_in_packet;
+                    emitted_samples_total =
+                        emitted_samples_total.saturating_add(emitted_samples);
                     for frame in result.frames {
                         frame_count += 1;
+                        let sent_at = Instant::now();
                         if tx
                             .send(Ok(DecoderMessage::AudioData(DecodedAudioData {
                                 frame,
                                 decode_time_ms: per_frame_decode_time_ms,
+                                sent_at,
                             })))
                             .is_err()
                         {
                             return Ok(false);
                         }
+                        let send_block_ms = sent_at.elapsed().as_secs_f64() * 1000.0;
+                        if send_block_ms > 5.0 {
+                            log::warn!(
+                                "Decoder channel backpressure: send_block_ms={:.3} frames_in_packet={} payload_bytes={} transport={:?}",
+                                send_block_ms,
+                                frames_in_packet,
+                                payload_len,
+                                transport
+                            );
+                        }
+                    }
+                }
+
+                if let Some(gap_ms) = chunk_gap_ms.filter(|gap_ms| *gap_ms > 10.0) {
+                    let emitted_duration_ms =
+                        emitted_samples_total as f64 / 48_000.0f64 * 1000.0f64;
+                    let gap_over_emitted_ms = (gap_ms - emitted_duration_ms).max(0.0);
+                    if gap_over_emitted_ms >= 20.0 || gap_ms >= 60.0 {
+                        sys::live_log::emit_external_record(
+                            log::Level::Warn,
+                            "orender::cli::decode::decoder_thread",
+                            &format!(
+                                "Decoder input chunk gap: gap_ms={:.3} chunk_bytes={} packets={} emitted_frames={} emitted_ms={:.3} gap_over_emitted_ms={:.3} spdif={}",
+                                gap_ms,
+                                chunk.len(),
+                                packet_count,
+                                frames_emitted,
+                                emitted_duration_ms,
+                                gap_over_emitted_ms,
+                                is_spdif.unwrap_or(false)
+                            ),
+                        );
                     }
                 }
 

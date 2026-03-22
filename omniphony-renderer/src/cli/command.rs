@@ -396,6 +396,11 @@ pub struct RenderArgs {
     /// Override config file 'enable_adaptive_resampling' setting to false.
     #[arg(long, conflicts_with = "enable_adaptive_resampling")]
     pub disable_adaptive_resampling: bool,
+
+    /// Recompute adaptive resampling every N audio callbacks.
+    /// Lower values react faster but can make the control loop more nervous.
+    #[arg(long, value_name = "CALLBACKS")]
+    pub adaptive_resampling_update_interval_callbacks: Option<u32>,
 }
 
 #[cfg(feature = "saf_vbap")]

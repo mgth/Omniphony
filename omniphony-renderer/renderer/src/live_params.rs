@@ -446,6 +446,11 @@ pub struct RendererControl {
     pub requested_output_sample_rate_hz: std::sync::atomic::AtomicU32,
     /// Requested adaptive-resampling state from OSC control.
     pub requested_adaptive_resampling: std::sync::atomic::AtomicBool,
+    pub requested_adaptive_resampling_enable_far_mode: std::sync::atomic::AtomicBool,
+    pub requested_adaptive_resampling_force_silence_in_far_mode:
+        std::sync::atomic::AtomicBool,
+    pub requested_adaptive_resampling_far_mode_return_fade_in_ms:
+        std::sync::atomic::AtomicU32,
     /// Requested ramp mode from OSC control.
     pub requested_ramp_mode: Mutex<RampMode>,
     /// Requested output latency target in milliseconds from OSC control (`None` encoded as 0).
@@ -456,8 +461,8 @@ pub struct RendererControl {
     pub requested_adaptive_resampling_ki_bits: std::sync::atomic::AtomicU32,
     pub requested_adaptive_resampling_max_adjust_bits: std::sync::atomic::AtomicU32,
     pub requested_adaptive_resampling_max_adjust_far_bits: std::sync::atomic::AtomicU32,
+    pub requested_adaptive_resampling_update_interval_callbacks: std::sync::atomic::AtomicU32,
     pub requested_adaptive_resampling_near_far_threshold_ms: std::sync::atomic::AtomicU32,
-    pub requested_adaptive_resampling_hard_correction_threshold_ms: std::sync::atomic::AtomicU32,
     pub requested_adaptive_resampling_measurement_smoothing_alpha_bits:
         std::sync::atomic::AtomicU32,
 
@@ -499,6 +504,11 @@ impl RendererControl {
             device_list_fetcher: Mutex::new(None),
             requested_output_sample_rate_hz: std::sync::atomic::AtomicU32::new(0),
             requested_adaptive_resampling: std::sync::atomic::AtomicBool::new(false),
+            requested_adaptive_resampling_enable_far_mode: std::sync::atomic::AtomicBool::new(true),
+            requested_adaptive_resampling_force_silence_in_far_mode:
+                std::sync::atomic::AtomicBool::new(false),
+            requested_adaptive_resampling_far_mode_return_fade_in_ms:
+                std::sync::atomic::AtomicU32::new(0),
             requested_ramp_mode: Mutex::new(RampMode::Sample),
             requested_latency_target_ms: std::sync::atomic::AtomicU32::new(0),
             requested_adaptive_resampling_kp_near_bits: std::sync::atomic::AtomicU32::new(0),
@@ -506,11 +516,11 @@ impl RendererControl {
             requested_adaptive_resampling_ki_bits: std::sync::atomic::AtomicU32::new(0),
             requested_adaptive_resampling_max_adjust_bits: std::sync::atomic::AtomicU32::new(0),
             requested_adaptive_resampling_max_adjust_far_bits: std::sync::atomic::AtomicU32::new(0),
+            requested_adaptive_resampling_update_interval_callbacks:
+                std::sync::atomic::AtomicU32::new(0),
             requested_adaptive_resampling_near_far_threshold_ms: std::sync::atomic::AtomicU32::new(
                 0,
             ),
-            requested_adaptive_resampling_hard_correction_threshold_ms:
-                std::sync::atomic::AtomicU32::new(0),
             requested_adaptive_resampling_measurement_smoothing_alpha_bits:
                 std::sync::atomic::AtomicU32::new(0),
             current_output_sample_rate_hz: std::sync::atomic::AtomicU32::new(0),
@@ -745,6 +755,36 @@ impl RendererControl {
         self.requested_adaptive_resampling.load(Ordering::Relaxed)
     }
 
+    pub fn set_requested_adaptive_resampling_enable_far_mode(&self, enabled: bool) {
+        self.requested_adaptive_resampling_enable_far_mode
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn requested_adaptive_resampling_enable_far_mode(&self) -> bool {
+        self.requested_adaptive_resampling_enable_far_mode
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn set_requested_adaptive_resampling_force_silence_in_far_mode(&self, enabled: bool) {
+        self.requested_adaptive_resampling_force_silence_in_far_mode
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn requested_adaptive_resampling_force_silence_in_far_mode(&self) -> bool {
+        self.requested_adaptive_resampling_force_silence_in_far_mode
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn set_requested_adaptive_resampling_far_mode_return_fade_in_ms(&self, value: u32) {
+        self.requested_adaptive_resampling_far_mode_return_fade_in_ms
+            .store(value, Ordering::Relaxed);
+    }
+
+    pub fn requested_adaptive_resampling_far_mode_return_fade_in_ms(&self) -> u32 {
+        self.requested_adaptive_resampling_far_mode_return_fade_in_ms
+            .load(Ordering::Relaxed)
+    }
+
     pub fn set_requested_ramp_mode(&self, mode: RampMode) {
         *self.requested_ramp_mode.lock().unwrap() = mode;
     }
@@ -825,6 +865,16 @@ impl RendererControl {
         ) as f64
     }
 
+    pub fn set_requested_adaptive_resampling_update_interval_callbacks(&self, value: u32) {
+        self.requested_adaptive_resampling_update_interval_callbacks
+            .store(value, Ordering::Relaxed);
+    }
+
+    pub fn requested_adaptive_resampling_update_interval_callbacks(&self) -> u32 {
+        self.requested_adaptive_resampling_update_interval_callbacks
+            .load(Ordering::Relaxed)
+    }
+
     pub fn set_requested_adaptive_resampling_near_far_threshold_ms(&self, value: u32) {
         self.requested_adaptive_resampling_near_far_threshold_ms
             .store(value, Ordering::Relaxed);
@@ -832,16 +882,6 @@ impl RendererControl {
 
     pub fn requested_adaptive_resampling_near_far_threshold_ms(&self) -> u32 {
         self.requested_adaptive_resampling_near_far_threshold_ms
-            .load(Ordering::Relaxed)
-    }
-
-    pub fn set_requested_adaptive_resampling_hard_correction_threshold_ms(&self, value: u32) {
-        self.requested_adaptive_resampling_hard_correction_threshold_ms
-            .store(value, Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling_hard_correction_threshold_ms(&self) -> u32 {
-        self.requested_adaptive_resampling_hard_correction_threshold_ms
             .load(Ordering::Relaxed)
     }
 

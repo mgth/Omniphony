@@ -99,19 +99,17 @@ const audioOutputSummaryEl = document.getElementById('audioOutputSummary');
 const rendererSectionToggleBtnEl = document.getElementById('rendererSectionToggleBtn');
 const rendererSectionContentEl = document.getElementById('rendererSectionContent');
 const rendererSummaryEl = document.getElementById('rendererSummary');
-const rendererRenderTimeWrapEl = document.getElementById('rendererRenderTimeWrap');
-const rendererDecodeTimeFillEl = document.getElementById('rendererDecodeTimeFill');
-const rendererDecodeTimeMinMarkerEl = document.getElementById('rendererDecodeTimeMinMarker');
-const rendererDecodeTimeMaxMarkerEl = document.getElementById('rendererDecodeTimeMaxMarker');
-const rendererDecodeTimeValueEl = document.getElementById('rendererDecodeTimeValue');
-const rendererRenderTimeFillEl = document.getElementById('rendererRenderTimeFill');
-const rendererRenderTimeMinMarkerEl = document.getElementById('rendererRenderTimeMinMarker');
-const rendererRenderTimeMaxMarkerEl = document.getElementById('rendererRenderTimeMaxMarker');
-const rendererRenderTimeValueEl = document.getElementById('rendererRenderTimeValue');
-const rendererWriteTimeFillEl = document.getElementById('rendererWriteTimeFill');
-const rendererWriteTimeMinMarkerEl = document.getElementById('rendererWriteTimeMinMarker');
-const rendererWriteTimeMaxMarkerEl = document.getElementById('rendererWriteTimeMaxMarker');
-const rendererWriteTimeValueEl = document.getElementById('rendererWriteTimeValue');
+const rendererPerfWrapEl = document.getElementById('rendererPerfWrap');
+const rendererPerfDecodeFillEl = document.getElementById('rendererPerfDecodeFill');
+const rendererPerfRenderFillEl = document.getElementById('rendererPerfRenderFill');
+const rendererPerfWriteFillEl = document.getElementById('rendererPerfWriteFill');
+const rendererPerfDecodeMaxMarkerEl = document.getElementById('rendererPerfDecodeMaxMarker');
+const rendererPerfRenderMaxMarkerEl = document.getElementById('rendererPerfRenderMaxMarker');
+const rendererPerfWriteMaxMarkerEl = document.getElementById('rendererPerfWriteMaxMarker');
+const rendererPerfDecodeValueEl = document.getElementById('rendererPerfDecodeValue');
+const rendererPerfRenderValueEl = document.getElementById('rendererPerfRenderValue');
+const rendererPerfWriteValueEl = document.getElementById('rendererPerfWriteValue');
+const rendererPerfFrameValueEl = document.getElementById('rendererPerfFrameValue');
 const vbapSectionContentEl = document.getElementById('vbapSectionContent');
 const spreadSectionContentEl = document.getElementById('spreadSectionContent');
 const vbapStatusEl = document.getElementById('vbapStatus');
@@ -147,8 +145,13 @@ const adaptiveKpFarInputEl = document.getElementById('adaptiveKpFarInput');
 const adaptiveKiInputEl = document.getElementById('adaptiveKiInput');
 const adaptiveMaxAdjustInputEl = document.getElementById('adaptiveMaxAdjustInput');
 const adaptiveMaxAdjustFarInputEl = document.getElementById('adaptiveMaxAdjustFarInput');
+const adaptiveMaxFarRowEl = document.getElementById('adaptiveMaxFarRow');
+const adaptiveMaxFarSymbolEl = document.getElementById('adaptiveMaxFarSymbol');
+const adaptiveKpFarRowEl = document.getElementById('adaptiveKpFarRow');
+const adaptiveNearFarThresholdRowEl = document.getElementById('adaptiveNearFarThresholdRow');
+const adaptiveNearFarThresholdSymbolEl = document.getElementById('adaptiveNearFarThresholdSymbol');
 const adaptiveNearFarThresholdInputEl = document.getElementById('adaptiveNearFarThresholdInput');
-const adaptiveHardCorrectionThresholdInputEl = document.getElementById('adaptiveHardCorrectionThresholdInput');
+const adaptiveUpdateIntervalCallbacksInputEl = document.getElementById('adaptiveUpdateIntervalCallbacksInput');
 const adaptiveMeasurementSmoothingAlphaInputEl = document.getElementById('adaptiveMeasurementSmoothingAlphaInput');
 const adaptiveResamplingAdvancedApplyBtnEl = document.getElementById('adaptiveResamplingAdvancedApplyBtn');
 const adaptiveResamplingAdvancedCancelBtnEl = document.getElementById('adaptiveResamplingAdvancedCancelBtn');
@@ -168,6 +171,10 @@ const resampleRatioInfoEl = document.getElementById('resampleRatioInfo');
 const resampleMeterRowEl = document.getElementById('resampleMeterRow');
 const resampleNegMeterFillEl = document.getElementById('resampleNegMeterFill');
 const resamplePosMeterFillEl = document.getElementById('resamplePosMeterFill');
+const resampleNegFarMarkerEl = document.getElementById('resampleNegFarMarker');
+const resamplePosFarMarkerEl = document.getElementById('resamplePosFarMarker');
+const resampleNegNearMarkerEl = document.getElementById('resampleNegNearMarker');
+const resamplePosNearMarkerEl = document.getElementById('resamplePosNearMarker');
 const audioFormatInfoEl = document.getElementById('audioFormatInfo');
 const audioOutputDeviceSelectEl = document.getElementById('audioOutputDeviceSelect');
 const rampModeSelectEl = document.getElementById('rampModeSelect');
@@ -184,6 +191,11 @@ const audioSampleRateMenuBtnEl = document.getElementById('audioSampleRateMenuBtn
 const audioSampleRateMenuEl = document.getElementById('audioSampleRateMenu');
 const loudnessToggleEl = document.getElementById('loudnessToggle');
 const adaptiveResamplingToggleEl = document.getElementById('adaptiveResamplingToggle');
+const adaptiveFarModeToggleEl = document.getElementById('adaptiveFarModeToggle');
+const adaptiveFarSilenceToggleEl = document.getElementById('adaptiveFarSilenceToggle');
+const adaptiveFarSilenceRowEl = document.getElementById('adaptiveFarSilenceRow');
+const adaptiveFarFadeRowEl = document.getElementById('adaptiveFarFadeRow');
+const adaptiveFarFadeInMsInputEl = document.getElementById('adaptiveFarFadeInMsInput');
 const spreadMinSliderEl = document.getElementById('spreadMinSlider');
 const spreadMaxSliderEl = document.getElementById('spreadMaxSlider');
 const spreadMinValEl = document.getElementById('spreadMinVal');
@@ -200,6 +212,9 @@ const latencyRawMaxMaskEl = document.getElementById('latencyRawMaxMask');
 const latencyRawMinMarkerEl = document.getElementById('latencyRawMinMarker');
 const latencyCtrlMarkerEl = document.getElementById('latencyCtrlMarker');
 const latencyRawMaxMarkerEl = document.getElementById('latencyRawMaxMarker');
+const latencyTargetMarkerEl = document.getElementById('latencyTargetMarker');
+const latencyNearLowMarkerEl = document.getElementById('latencyNearLowMarker');
+const latencyNearHighMarkerEl = document.getElementById('latencyNearHighMarker');
 const latencyRawMinValueEl = document.getElementById('latencyRawMinValue');
 const latencyRawMaxValueEl = document.getElementById('latencyRawMaxValue');
 const masterGainSliderEl = document.getElementById('masterGainSlider');
@@ -255,6 +270,7 @@ const logSummaryEl = document.getElementById('logSummary');
 const logEntriesEl = document.getElementById('logEntries');
 const logEmptyStateEl = document.getElementById('logEmptyState');
 const logToggleBtnEl = document.getElementById('logToggleBtn');
+const logCopyBtnEl = document.getElementById('logCopyBtn');
 const logClearBtnEl = document.getElementById('logClearBtn');
 const logLevelSelectEl = document.getElementById('logLevelSelect');
 
@@ -375,6 +391,43 @@ function formatLogTime(date) {
     minute: '2-digit',
     second: '2-digit'
   }).format(date);
+}
+
+function formatLogTimestampForExport(date) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function serializeLogsForClipboard() {
+  return logState.entries
+    .map((entry) => `[${formatLogTimestampForExport(entry.timestamp)}] ${String(entry.level || 'info').toUpperCase()} ${entry.message}`)
+    .join('\n');
+}
+
+async function copyLogsToClipboard() {
+  if (!logState.entries.length) {
+    pushLog('warn', t('log.copyEmpty'));
+    return;
+  }
+  const text = serializeLogsForClipboard();
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    pushLog('info', tf('log.copySuccess', { count: logState.entries.length }));
+  } catch (error) {
+    pushLog('error', tf('log.copyFailed', { error: normalizeLogError(error) }));
+  }
 }
 
 function setLogExpanded(next) {
@@ -691,13 +744,16 @@ let loudnessEnabled = null;
 let loudnessSource = null;
 let loudnessGain = null;
 let adaptiveResamplingEnabled = false;
+let adaptiveResamplingEnableFarMode = true;
+let adaptiveResamplingForceSilenceInFarMode = false;
+let adaptiveResamplingFarModeReturnFadeInMs = 0;
 let adaptiveResamplingKpNear = 0.00001;
 let adaptiveResamplingKpFar = 0.00002;
 let adaptiveResamplingKi = 0.0000005;
 let adaptiveResamplingMaxAdjust = 0.01;
 let adaptiveResamplingMaxAdjustFar = 0.02;
 let adaptiveResamplingNearFarThresholdMs = 120;
-let adaptiveResamplingHardCorrectionThresholdMs = 0;
+let adaptiveResamplingUpdateIntervalCallbacks = 10;
 let adaptiveResamplingMeasurementSmoothingAlpha = 0.15;
 let adaptiveResamplingBand = null;
 let vbapRecomputing = null;
@@ -711,6 +767,7 @@ let renderTimeMs = null;
 let renderTimeWindow = [];
 let writeTimeMs = null;
 let writeTimeWindow = [];
+let frameDurationMs = null;
 let latencyRawWindow = [];
 let resampleRatio = null;
 let audioSampleRate = null;
@@ -737,10 +794,12 @@ let adaptiveMaxAdjustFarEditing = false;
 let adaptiveMaxAdjustFarDirty = false;
 let adaptiveNearFarThresholdEditing = false;
 let adaptiveNearFarThresholdDirty = false;
-let adaptiveHardCorrectionThresholdEditing = false;
-let adaptiveHardCorrectionThresholdDirty = false;
+let adaptiveUpdateIntervalCallbacksEditing = false;
+let adaptiveUpdateIntervalCallbacksDirty = false;
 let adaptiveMeasurementSmoothingAlphaEditing = false;
 let adaptiveMeasurementSmoothingAlphaDirty = false;
+let adaptiveFarFadeInMsEditing = false;
+let adaptiveFarFadeInMsDirty = false;
 let adaptiveResamplingAdvancedOpen = false;
 let telemetryGaugesOpen = false;
 let audioOutputSectionOpen = false;
@@ -1081,6 +1140,14 @@ function setWriteTimeMs(value) {
   while (writeTimeWindow.length > 0 && writeTimeWindow[0].t < cutoff) {
     writeTimeWindow.shift();
   }
+}
+
+function setFrameDurationMs(value) {
+  const next = Number(value);
+  if (!Number.isFinite(next) || next <= 0) {
+    return;
+  }
+  frameDurationMs = next;
 }
 
 function renderOscStatus() {
@@ -3828,7 +3895,52 @@ function updateDistanceModelUI() {
 
 function renderAdaptiveResamplingUI() {
   if (!adaptiveResamplingToggleEl) return;
+  const farModeEnabled = adaptiveResamplingEnableFarMode === true;
   adaptiveResamplingToggleEl.checked = adaptiveResamplingEnabled === true;
+  if (adaptiveFarModeToggleEl) {
+    adaptiveFarModeToggleEl.checked = adaptiveResamplingEnableFarMode === true;
+  }
+  if (adaptiveFarSilenceToggleEl) {
+    adaptiveFarSilenceToggleEl.checked = adaptiveResamplingForceSilenceInFarMode === true;
+    adaptiveFarSilenceToggleEl.disabled = !farModeEnabled;
+  }
+  if (adaptiveFarSilenceRowEl) {
+    adaptiveFarSilenceRowEl.classList.toggle('adaptive-param-disabled', !farModeEnabled);
+  }
+  const farSilenceEnabled = farModeEnabled && adaptiveResamplingForceSilenceInFarMode === true;
+  if (adaptiveFarFadeRowEl) {
+    adaptiveFarFadeRowEl.classList.toggle('adaptive-param-disabled', !farSilenceEnabled);
+  }
+  if (adaptiveFarFadeInMsInputEl) {
+    adaptiveFarFadeInMsInputEl.disabled = !farSilenceEnabled;
+  }
+  if (adaptiveKpFarInputEl) {
+    adaptiveKpFarInputEl.disabled = !farModeEnabled;
+  }
+  if (adaptiveMaxAdjustFarInputEl) {
+    adaptiveMaxAdjustFarInputEl.disabled = !farModeEnabled;
+  }
+  if (adaptiveNearFarThresholdInputEl) {
+    adaptiveNearFarThresholdInputEl.disabled = !farModeEnabled;
+  }
+  if (adaptiveMaxFarRowEl) {
+    adaptiveMaxFarRowEl.classList.toggle('adaptive-param-disabled', !farModeEnabled);
+  }
+  if (adaptiveKpFarRowEl) {
+    adaptiveKpFarRowEl.classList.toggle('adaptive-param-disabled', !farModeEnabled);
+  }
+  if (adaptiveNearFarThresholdRowEl) {
+    adaptiveNearFarThresholdRowEl.classList.toggle('adaptive-param-disabled', !farModeEnabled);
+  }
+  if (adaptiveMaxFarSymbolEl) {
+    adaptiveMaxFarSymbolEl.style.opacity = farModeEnabled ? '1' : '0.42';
+  }
+  if (adaptiveNearFarThresholdSymbolEl) {
+    adaptiveNearFarThresholdSymbolEl.style.opacity = farModeEnabled ? '1' : '0.42';
+  }
+  if (adaptiveFarFadeInMsInputEl && !adaptiveFarFadeInMsEditing && !adaptiveFarFadeInMsDirty) {
+    adaptiveFarFadeInMsInputEl.value = String(Math.max(0, Math.round(adaptiveResamplingFarModeReturnFadeInMs ?? 0)));
+  }
   if (adaptiveKpNearInputEl && !adaptiveKpNearEditing && !adaptiveKpNearDirty) {
     adaptiveKpNearInputEl.value = adaptiveResamplingKpNear === null ? '' : Number(adaptiveResamplingKpNear).toFixed(8);
   }
@@ -3847,8 +3959,8 @@ function renderAdaptiveResamplingUI() {
   if (adaptiveNearFarThresholdInputEl && !adaptiveNearFarThresholdEditing && !adaptiveNearFarThresholdDirty) {
     adaptiveNearFarThresholdInputEl.value = adaptiveResamplingNearFarThresholdMs === null ? '' : String(Math.max(1, Math.round(adaptiveResamplingNearFarThresholdMs)));
   }
-  if (adaptiveHardCorrectionThresholdInputEl && !adaptiveHardCorrectionThresholdEditing && !adaptiveHardCorrectionThresholdDirty) {
-    adaptiveHardCorrectionThresholdInputEl.value = adaptiveResamplingHardCorrectionThresholdMs === null ? '' : String(Math.max(0, Math.round(adaptiveResamplingHardCorrectionThresholdMs)));
+  if (adaptiveUpdateIntervalCallbacksInputEl && !adaptiveUpdateIntervalCallbacksEditing && !adaptiveUpdateIntervalCallbacksDirty) {
+    adaptiveUpdateIntervalCallbacksInputEl.value = adaptiveResamplingUpdateIntervalCallbacks === null ? '' : String(Math.max(1, Math.round(adaptiveResamplingUpdateIntervalCallbacks)));
   }
   if (adaptiveMeasurementSmoothingAlphaInputEl && !adaptiveMeasurementSmoothingAlphaEditing && !adaptiveMeasurementSmoothingAlphaDirty) {
     adaptiveMeasurementSmoothingAlphaInputEl.value =
@@ -3875,8 +3987,9 @@ function renderAdaptiveResamplingUI() {
     adaptiveMaxAdjustDirty ||
     adaptiveMaxAdjustFarDirty ||
     adaptiveNearFarThresholdDirty ||
-    adaptiveHardCorrectionThresholdDirty ||
-    adaptiveMeasurementSmoothingAlphaDirty;
+    adaptiveUpdateIntervalCallbacksDirty ||
+    adaptiveMeasurementSmoothingAlphaDirty ||
+    adaptiveFarFadeInMsDirty;
   if (adaptiveResamplingAdvancedApplyBtnEl) {
     adaptiveResamplingAdvancedApplyBtnEl.disabled = !adaptiveDirty;
     adaptiveResamplingAdvancedApplyBtnEl.style.opacity = adaptiveDirty ? '1' : '0.45';
@@ -3908,10 +4021,12 @@ function resetAdaptiveResamplingAdvancedDirtyState() {
   adaptiveMaxAdjustFarEditing = false;
   adaptiveNearFarThresholdDirty = false;
   adaptiveNearFarThresholdEditing = false;
-  adaptiveHardCorrectionThresholdDirty = false;
-  adaptiveHardCorrectionThresholdEditing = false;
+  adaptiveUpdateIntervalCallbacksDirty = false;
+  adaptiveUpdateIntervalCallbacksEditing = false;
   adaptiveMeasurementSmoothingAlphaDirty = false;
   adaptiveMeasurementSmoothingAlphaEditing = false;
+  adaptiveFarFadeInMsDirty = false;
+  adaptiveFarFadeInMsEditing = false;
 }
 
 function renderDistanceDiffuseUI() {
@@ -4078,7 +4193,7 @@ function renderLatencyDisplay() {
   const instantText = latencyInstantMs === null ? '—' : `${formatNumber(latencyInstantMs, 0)} ms`;
   const controlText = latencyControlMs === null ? '—' : `${formatNumber(latencyControlMs, 0)} ms`;
   if (latencyRawInfoEl) {
-    latencyRawInfoEl.textContent = controlText;
+    latencyRawInfoEl.textContent = instantText;
   }
   if (latencyCtrlInfoEl) {
     latencyCtrlInfoEl.textContent = controlText;
@@ -4106,31 +4221,59 @@ function renderResampleRatioDisplay() {
   }
   resampleRatioInfoEl.style.display = '';
   if (resampleMeterRowEl) resampleMeterRowEl.style.display = '';
+  const farModeEnabled = adaptiveResamplingEnableFarMode === true;
   if (resampleRatio === null) {
     resampleRatioInfoEl.textContent = '—';
     if (resampleNegMeterFillEl) resampleNegMeterFillEl.style.clipPath = 'inset(0 50% 0 50%)';
     if (resamplePosMeterFillEl) resamplePosMeterFillEl.style.clipPath = 'inset(0 50% 0 50%)';
+    if (resampleNegFarMarkerEl) resampleNegFarMarkerEl.style.display = 'none';
+    if (resamplePosFarMarkerEl) resamplePosFarMarkerEl.style.display = 'none';
+    if (resampleNegNearMarkerEl) resampleNegNearMarkerEl.style.display = 'none';
+    if (resamplePosNearMarkerEl) resamplePosNearMarkerEl.style.display = 'none';
     return;
   }
-  // Express as ppm deviation from nominal (1.0)
+
   const ppm = Math.round((resampleRatio - 1.0) * 1e6);
   const sign = ppm >= 0 ? '+' : '';
   resampleRatioInfoEl.textContent = `${sign}${ppm} ppm`;
-  const maxPpm = 20000;
-  const magnitude = Math.min(50, (Math.abs(ppm) / maxPpm) * 50);
+  const farBound = Math.max(0.000001, Number(adaptiveResamplingMaxAdjustFar) || 0.000001);
+  const nearBound = Math.max(0, Math.min(farBound, Number(adaptiveResamplingMaxAdjust) || 0));
+  const deviation = Number(resampleRatio) - 1.0;
+  const normalizedMagnitude = Math.min(1, Math.abs(deviation) / farBound);
+  const magnitude = normalizedMagnitude * 50;
   if (resampleNegMeterFillEl) {
-    if (ppm < 0) {
+    if (deviation < 0) {
       resampleNegMeterFillEl.style.clipPath = `inset(0 50% 0 ${Number((50 - magnitude).toFixed(1))}%)`;
     } else {
       resampleNegMeterFillEl.style.clipPath = 'inset(0 50% 0 50%)';
     }
   }
   if (resamplePosMeterFillEl) {
-    if (ppm > 0) {
+    if (deviation > 0) {
       resamplePosMeterFillEl.style.clipPath = `inset(0 ${Number((50 - magnitude).toFixed(1))}% 0 50%)`;
     } else {
       resamplePosMeterFillEl.style.clipPath = 'inset(0 50% 0 50%)';
     }
+  }
+  const nearPercent = 50 + (nearBound / farBound) * 50;
+  const negNearPercent = 50 - (nearBound / farBound) * 50;
+  if (resampleNegFarMarkerEl) {
+    resampleNegFarMarkerEl.style.display = '';
+    resampleNegFarMarkerEl.style.left = 'calc(0% - 1px)';
+    resampleNegFarMarkerEl.style.opacity = farModeEnabled ? '1' : '0.28';
+  }
+  if (resamplePosFarMarkerEl) {
+    resamplePosFarMarkerEl.style.display = '';
+    resamplePosFarMarkerEl.style.left = 'calc(100% - 1px)';
+    resamplePosFarMarkerEl.style.opacity = farModeEnabled ? '1' : '0.28';
+  }
+  if (resampleNegNearMarkerEl) {
+    resampleNegNearMarkerEl.style.display = '';
+    resampleNegNearMarkerEl.style.left = `calc(${negNearPercent.toFixed(1)}% - 1px)`;
+  }
+  if (resamplePosNearMarkerEl) {
+    resamplePosNearMarkerEl.style.display = '';
+    resamplePosNearMarkerEl.style.left = `calc(${nearPercent.toFixed(1)}% - 1px)`;
   }
 }
 
@@ -4225,6 +4368,18 @@ function updateAudioFormatDisplay() {
 
 function renderLatencyMeterUI() {
   const maxMs = 2000;
+  const farModeEnabled = adaptiveResamplingEnableFarMode === true;
+  const setThresholdDot = (el, valueMs) => {
+    if (!el) return;
+    if (valueMs === null || !Number.isFinite(valueMs)) {
+      el.style.display = 'none';
+      return;
+    }
+    const clamped = Math.min(maxMs, Math.max(0, Number(valueMs)));
+    const percent = (clamped / maxMs) * 100;
+    el.style.display = '';
+    el.style.left = `calc(${percent.toFixed(1)}% - 2px)`;
+  };
   if (latencyMeterFillEl) {
     const raw = latencyInstantMs ?? latencyTargetMs ?? latencyMs;
     if (raw === null) {
@@ -4290,6 +4445,34 @@ function renderLatencyMeterUI() {
       latencyCtrlMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
     }
   }
+  if (latencyTargetMarkerEl) {
+    const target = latencyTargetMs ?? latencyMs;
+    if (target === null) {
+      latencyTargetMarkerEl.style.display = 'none';
+    } else {
+      const percent = Math.min(100, (Math.max(0, Number(target)) / maxMs) * 100);
+      latencyTargetMarkerEl.style.display = '';
+      latencyTargetMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 2px)`;
+    }
+  }
+  const target = latencyTargetMs ?? latencyMs;
+  const nearThreshold = Number(adaptiveResamplingNearFarThresholdMs);
+  if (target === null || !Number.isFinite(Number(target))) {
+    setThresholdDot(latencyNearLowMarkerEl, null);
+    setThresholdDot(latencyNearHighMarkerEl, null);
+  } else {
+    const targetMs = Number(target);
+    setThresholdDot(
+      latencyNearLowMarkerEl,
+      Number.isFinite(nearThreshold) ? targetMs - nearThreshold : null
+    );
+    setThresholdDot(
+      latencyNearHighMarkerEl,
+      Number.isFinite(nearThreshold) ? targetMs + nearThreshold : null
+    );
+  }
+  if (latencyNearLowMarkerEl) latencyNearLowMarkerEl.style.opacity = farModeEnabled ? '1' : '0.28';
+  if (latencyNearHighMarkerEl) latencyNearHighMarkerEl.style.opacity = farModeEnabled ? '1' : '0.28';
 }
 
 function updateLatencyMeterUI() {
@@ -4299,86 +4482,51 @@ function updateLatencyMeterUI() {
 
 function renderRenderTimeUI() {
   const visible = oscMeteringEnabled === true;
-  const renderTimingSeries = [
-    {
-      current: decodeTimeMs,
-      window: decodeTimeWindow,
-      fillEl: rendererDecodeTimeFillEl,
-      minMarkerEl: rendererDecodeTimeMinMarkerEl,
-      maxMarkerEl: rendererDecodeTimeMaxMarkerEl,
-      valueEl: rendererDecodeTimeValueEl
-    },
-    {
-      current: renderTimeMs,
-      window: renderTimeWindow,
-      fillEl: rendererRenderTimeFillEl,
-      minMarkerEl: rendererRenderTimeMinMarkerEl,
-      maxMarkerEl: rendererRenderTimeMaxMarkerEl,
-      valueEl: rendererRenderTimeValueEl
-    },
-    {
-      current: writeTimeMs,
-      window: writeTimeWindow,
-      fillEl: rendererWriteTimeFillEl,
-      minMarkerEl: rendererWriteTimeMinMarkerEl,
-      maxMarkerEl: rendererWriteTimeMaxMarkerEl,
-      valueEl: rendererWriteTimeValueEl
-    }
-  ];
-  const observedMaxMs = renderTimingSeries.reduce((max, { window, current }) => {
-    let nextMax = max;
-    for (const entry of window) {
-      if (entry.v > nextMax) {
-        nextMax = entry.v;
-      }
-    }
-    if (current !== null && Number(current) > nextMax) {
-      nextMax = Number(current);
-    }
-    return nextMax;
-  }, 0);
-  const maxMs = Math.max(0.01, observedMaxMs * 1.15);
-  if (rendererRenderTimeWrapEl) {
-    rendererRenderTimeWrapEl.style.display = visible ? 'flex' : 'none';
+  if (rendererPerfWrapEl) {
+    rendererPerfWrapEl.style.display = visible ? 'block' : 'none';
   }
   if (!visible) {
     return;
   }
-  renderTimingSeries.forEach(({ current, window, fillEl, minMarkerEl, maxMarkerEl, valueEl }) => {
-    const windowMin = window.length > 0 ? Math.min(...window.map((entry) => entry.v)) : null;
-    const windowMax = window.length > 0 ? Math.max(...window.map((entry) => entry.v)) : null;
-    if (valueEl) {
-      valueEl.textContent = windowMin === null || windowMax === null
-        ? '—'
-        : `${formatNumber(windowMin, 4)} / ${formatNumber(windowMax, 4)} ms`;
+  const dec = Math.max(0, Number(decodeTimeMs) || 0);
+  const rnd = Math.max(0, Number(renderTimeMs) || 0);
+  const wri = Math.max(0, Number(writeTimeMs) || 0);
+  const decMax = decodeTimeWindow.length > 0 ? Math.max(...decodeTimeWindow.map((entry) => entry.v)) : null;
+  const rndMax = renderTimeWindow.length > 0 ? Math.max(...renderTimeWindow.map((entry) => entry.v)) : null;
+  const wriMax = writeTimeWindow.length > 0 ? Math.max(...writeTimeWindow.map((entry) => entry.v)) : null;
+  const frameBudgetMs = Number(frameDurationMs);
+  const scaleMs = Number.isFinite(frameBudgetMs) && frameBudgetMs > 0
+    ? frameBudgetMs
+    : Math.max(0.01, dec + rnd + wri, (decMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0));
+  const setSegment = (el, startMs, endMs) => {
+    if (!el) return;
+    const left = Math.min(100, Math.max(0, (startMs / scaleMs) * 100));
+    const right = Math.min(100, Math.max(0, 100 - ((endMs / scaleMs) * 100)));
+    el.style.clipPath = `inset(0 ${right.toFixed(1)}% 0 ${left.toFixed(1)}%)`;
+  };
+  const setMarker = (el, valueMs) => {
+    if (!el) return;
+    if (valueMs === null || !Number.isFinite(valueMs)) {
+      el.style.display = 'none';
+      return;
     }
-    if (fillEl) {
-      if (current === null) {
-        fillEl.style.setProperty('--level', '0%');
-      } else {
-        const percent = Math.min(100, (Math.max(0, Number(current)) / maxMs) * 100);
-        fillEl.style.setProperty('--level', `${percent.toFixed(1)}%`);
-      }
-    }
-    if (minMarkerEl) {
-      if (windowMin === null) {
-        minMarkerEl.style.display = 'none';
-      } else {
-        const percent = Math.min(100, (Math.max(0, windowMin) / maxMs) * 100);
-        minMarkerEl.style.display = '';
-        minMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
-      }
-    }
-    if (maxMarkerEl) {
-      if (windowMax === null) {
-        maxMarkerEl.style.display = 'none';
-      } else {
-        const percent = Math.min(100, (Math.max(0, windowMax) / maxMs) * 100);
-        maxMarkerEl.style.display = '';
-        maxMarkerEl.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
-      }
-    }
-  });
+    const percent = Math.min(100, Math.max(0, (valueMs / scaleMs) * 100));
+    el.style.display = '';
+    el.style.left = `calc(${percent.toFixed(1)}% - 1px)`;
+  };
+
+  setSegment(rendererPerfDecodeFillEl, 0, dec);
+  setSegment(rendererPerfRenderFillEl, dec, dec + rnd);
+  setSegment(rendererPerfWriteFillEl, dec + rnd, dec + rnd + wri);
+
+  setMarker(rendererPerfDecodeMaxMarkerEl, decMax);
+  setMarker(rendererPerfRenderMaxMarkerEl, decMax === null && rndMax === null ? null : (decMax ?? 0) + (rndMax ?? 0));
+  setMarker(rendererPerfWriteMaxMarkerEl, decMax === null && rndMax === null && wriMax === null ? null : (decMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0));
+
+  if (rendererPerfDecodeValueEl) rendererPerfDecodeValueEl.textContent = `decode ${decodeTimeMs === null ? '—' : `${formatNumber(dec, 3)} ms`}`;
+  if (rendererPerfRenderValueEl) rendererPerfRenderValueEl.textContent = `render ${renderTimeMs === null ? '—' : `${formatNumber(rnd, 3)} ms`}`;
+  if (rendererPerfWriteValueEl) rendererPerfWriteValueEl.textContent = `write ${writeTimeMs === null ? '—' : `${formatNumber(wri, 3)} ms`}`;
+  if (rendererPerfFrameValueEl) rendererPerfFrameValueEl.textContent = `frame ${frameDurationMs === null ? '—' : `${formatNumber(frameBudgetMs, 3)} ms`}`;
 }
 
 function updateRenderTimeUI() {
@@ -6647,6 +6795,36 @@ if (adaptiveResamplingToggleEl) {
   });
 }
 
+if (adaptiveFarModeToggleEl) {
+  adaptiveFarModeToggleEl.addEventListener('change', () => {
+    const enable = adaptiveFarModeToggleEl.checked ? 1 : 0;
+    adaptiveResamplingEnableFarMode = enable === 1;
+    updateAdaptiveResamplingUI();
+    invoke('control_adaptive_resampling_enable_far_mode', { enable });
+  });
+}
+
+if (adaptiveFarSilenceToggleEl) {
+  adaptiveFarSilenceToggleEl.addEventListener('change', () => {
+    const enable = adaptiveFarSilenceToggleEl.checked ? 1 : 0;
+    adaptiveResamplingForceSilenceInFarMode = enable === 1;
+    updateAdaptiveResamplingUI();
+    invoke('control_adaptive_resampling_force_silence_in_far_mode', { enable });
+  });
+}
+
+if (adaptiveFarFadeInMsInputEl) {
+  adaptiveFarFadeInMsInputEl.addEventListener('focus', () => {
+    adaptiveFarFadeInMsEditing = true;
+    adaptiveFarFadeInMsInputEl.select();
+  });
+  adaptiveFarFadeInMsInputEl.addEventListener('input', () => {
+    adaptiveFarFadeInMsEditing = true;
+    adaptiveFarFadeInMsDirty = true;
+    updateAdaptiveResamplingUI();
+  });
+}
+
 if (adaptiveResamplingAdvancedApplyBtnEl) {
   adaptiveResamplingAdvancedApplyBtnEl.addEventListener('click', () => {
     if (adaptiveResamplingAdvancedApplyBtnEl.disabled) return;
@@ -6656,8 +6834,9 @@ if (adaptiveResamplingAdvancedApplyBtnEl) {
     const maxAdjust = Math.max(0.000001, Number(adaptiveMaxAdjustInputEl?.value) || 0);
     const maxAdjustFar = Math.max(0.000001, Number(adaptiveMaxAdjustFarInputEl?.value) || 0);
     const nearFarThresholdMs = Math.max(1, Math.round(Number(adaptiveNearFarThresholdInputEl?.value) || 0));
-    const hardCorrectionThresholdMs = Math.max(0, Math.round(Number(adaptiveHardCorrectionThresholdInputEl?.value) || 0));
+    const updateIntervalCallbacks = Math.max(1, Math.round(Number(adaptiveUpdateIntervalCallbacksInputEl?.value) || 0));
     const measurementSmoothingAlpha = Math.min(1, Math.max(0, Number(adaptiveMeasurementSmoothingAlphaInputEl?.value) || 0));
+    const farModeReturnFadeInMs = Math.max(0, Math.round(Number(adaptiveFarFadeInMsInputEl?.value) || 0));
 
     adaptiveResamplingKpNear = kpNear;
     adaptiveResamplingKpFar = kpFar;
@@ -6665,8 +6844,9 @@ if (adaptiveResamplingAdvancedApplyBtnEl) {
     adaptiveResamplingMaxAdjust = maxAdjust;
     adaptiveResamplingMaxAdjustFar = maxAdjustFar;
     adaptiveResamplingNearFarThresholdMs = nearFarThresholdMs;
-    adaptiveResamplingHardCorrectionThresholdMs = hardCorrectionThresholdMs;
+    adaptiveResamplingUpdateIntervalCallbacks = updateIntervalCallbacks;
     adaptiveResamplingMeasurementSmoothingAlpha = measurementSmoothingAlpha;
+    adaptiveResamplingFarModeReturnFadeInMs = farModeReturnFadeInMs;
     updateAdaptiveResamplingUI();
 
     invoke('control_adaptive_resampling_kp_near', { value: kpNear });
@@ -6675,8 +6855,9 @@ if (adaptiveResamplingAdvancedApplyBtnEl) {
     invoke('control_adaptive_resampling_max_adjust', { value: maxAdjust });
     invoke('control_adaptive_resampling_max_adjust_far', { value: maxAdjustFar });
     invoke('control_adaptive_resampling_near_far_threshold_ms', { value: nearFarThresholdMs });
-    invoke('control_adaptive_resampling_hard_correction_threshold_ms', { value: hardCorrectionThresholdMs });
+    invoke('control_adaptive_resampling_update_interval_callbacks', { value: updateIntervalCallbacks });
     invoke('control_adaptive_resampling_measurement_smoothing_alpha', { value: measurementSmoothingAlpha });
+    invoke('control_adaptive_resampling_far_mode_return_fade_in_ms', { value: farModeReturnFadeInMs });
 
     resetAdaptiveResamplingAdvancedDirtyState();
     updateAdaptiveResamplingUI();
@@ -7315,6 +7496,12 @@ if (logClearBtnEl) {
   });
 }
 
+if (logCopyBtnEl) {
+  logCopyBtnEl.addEventListener('click', () => {
+    copyLogsToClipboard();
+  });
+}
+
 if (logLevelSelectEl) {
   logLevelSelectEl.addEventListener('change', () => {
     const value = normalizeLogLevel(logLevelSelectEl.value);
@@ -7414,14 +7601,14 @@ if (adaptiveNearFarThresholdInputEl) {
   });
 }
 
-if (adaptiveHardCorrectionThresholdInputEl) {
-  adaptiveHardCorrectionThresholdInputEl.addEventListener('focus', () => {
-    adaptiveHardCorrectionThresholdEditing = true;
-    adaptiveHardCorrectionThresholdInputEl.select();
+if (adaptiveUpdateIntervalCallbacksInputEl) {
+  adaptiveUpdateIntervalCallbacksInputEl.addEventListener('focus', () => {
+    adaptiveUpdateIntervalCallbacksEditing = true;
+    adaptiveUpdateIntervalCallbacksInputEl.select();
   });
-  adaptiveHardCorrectionThresholdInputEl.addEventListener('input', () => {
-    adaptiveHardCorrectionThresholdEditing = true;
-    adaptiveHardCorrectionThresholdDirty = true;
+  adaptiveUpdateIntervalCallbacksInputEl.addEventListener('input', () => {
+    adaptiveUpdateIntervalCallbacksEditing = true;
+    adaptiveUpdateIntervalCallbacksDirty = true;
     updateAdaptiveResamplingUI();
   });
 }
@@ -8263,6 +8450,17 @@ function applyInitState(payload) {
   if (typeof payload.adaptiveResampling === 'number') {
     adaptiveResamplingEnabled = payload.adaptiveResampling !== 0;
   }
+  if (typeof payload.adaptiveResamplingEnableFarMode === 'number') {
+    adaptiveResamplingEnableFarMode = payload.adaptiveResamplingEnableFarMode !== 0;
+  }
+  if (typeof payload.adaptiveResamplingForceSilenceInFarMode === 'number') {
+    adaptiveResamplingForceSilenceInFarMode =
+      payload.adaptiveResamplingForceSilenceInFarMode !== 0;
+  }
+  if (typeof payload.adaptiveResamplingFarModeReturnFadeInMs === 'number') {
+    adaptiveResamplingFarModeReturnFadeInMs =
+      payload.adaptiveResamplingFarModeReturnFadeInMs;
+  }
   if (typeof payload.adaptiveResamplingKpNear === 'number') {
     adaptiveResamplingKpNear = payload.adaptiveResamplingKpNear;
   }
@@ -8281,8 +8479,8 @@ function applyInitState(payload) {
   if (typeof payload.adaptiveResamplingNearFarThresholdMs === 'number') {
     adaptiveResamplingNearFarThresholdMs = payload.adaptiveResamplingNearFarThresholdMs;
   }
-  if (typeof payload.adaptiveResamplingHardCorrectionThresholdMs === 'number') {
-    adaptiveResamplingHardCorrectionThresholdMs = payload.adaptiveResamplingHardCorrectionThresholdMs;
+  if (typeof payload.adaptiveResamplingUpdateIntervalCallbacks === 'number') {
+    adaptiveResamplingUpdateIntervalCallbacks = payload.adaptiveResamplingUpdateIntervalCallbacks;
   }
   if (typeof payload.adaptiveResamplingMeasurementSmoothingAlpha === 'number') {
     adaptiveResamplingMeasurementSmoothingAlpha = payload.adaptiveResamplingMeasurementSmoothingAlpha;
@@ -8306,6 +8504,18 @@ function applyInitState(payload) {
   }
   if (typeof payload.latencyTargetMs === 'number') {
     latencyTargetMs = payload.latencyTargetMs;
+  }
+  if (typeof payload.decodeTimeMs === 'number') {
+    decodeTimeMs = payload.decodeTimeMs;
+  }
+  if (typeof payload.renderTimeMs === 'number') {
+    renderTimeMs = payload.renderTimeMs;
+  }
+  if (typeof payload.writeTimeMs === 'number') {
+    writeTimeMs = payload.writeTimeMs;
+  }
+  if (typeof payload.frameDurationMs === 'number') {
+    frameDurationMs = payload.frameDurationMs;
   }
   if (typeof payload.resampleRatio === 'number') {
     resampleRatio = payload.resampleRatio;
@@ -8701,6 +8911,16 @@ listen('write:time_ms', ({ payload }) => {
   updateRenderTimeUI();
 });
 
+listen('frame:duration_ms', ({ payload }) => {
+  const value = Number(payload?.value);
+  if (Number.isFinite(value)) {
+    setFrameDurationMs(value);
+  } else {
+    frameDurationMs = null;
+  }
+  updateRenderTimeUI();
+});
+
 listen('loudness', ({ payload }) => {
   loudnessEnabled = Number(payload.enabled) !== 0;
   updateLoudnessDisplay();
@@ -8750,6 +8970,21 @@ listen('adaptive_resampling', ({ payload }) => {
   updateAdaptiveResamplingUI();
 });
 
+listen('adaptive_resampling:enable_far_mode', ({ payload }) => {
+  adaptiveResamplingEnableFarMode = Number(payload.enabled) !== 0;
+  updateAdaptiveResamplingUI();
+});
+
+listen('adaptive_resampling:force_silence_in_far_mode', ({ payload }) => {
+  adaptiveResamplingForceSilenceInFarMode = Number(payload.enabled) !== 0;
+  updateAdaptiveResamplingUI();
+});
+
+listen('adaptive_resampling:far_mode_return_fade_in_ms', ({ payload }) => {
+  adaptiveResamplingFarModeReturnFadeInMs = Number(payload.value) || 0;
+  updateAdaptiveResamplingUI();
+});
+
 listen('adaptive_resampling:kp_near', ({ payload }) => {
   adaptiveResamplingKpNear = Number(payload.value);
   updateAdaptiveResamplingUI();
@@ -8780,8 +9015,8 @@ listen('adaptive_resampling:near_far_threshold_ms', ({ payload }) => {
   updateAdaptiveResamplingUI();
 });
 
-listen('adaptive_resampling:hard_correction_threshold_ms', ({ payload }) => {
-  adaptiveResamplingHardCorrectionThresholdMs = Number(payload.value);
+listen('adaptive_resampling:update_interval_callbacks', ({ payload }) => {
+  adaptiveResamplingUpdateIntervalCallbacks = Number(payload.value);
   updateAdaptiveResamplingUI();
 });
 

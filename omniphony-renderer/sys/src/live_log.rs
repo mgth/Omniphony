@@ -59,6 +59,33 @@ impl DynamicLogger {
         });
     }
 
+    fn push_external_record(&self, level: Level, target: &str, message: &str) {
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let mut records = self.records.lock().unwrap();
+        if records.len() >= LOG_BUFFER_CAPACITY {
+            records.pop_front();
+        }
+        records.push_back(BufferedLogRecord {
+            seq,
+            level: level.as_str().to_ascii_lowercase(),
+            target: target.to_string(),
+            message: message.to_string(),
+        });
+    }
+
+    fn emit_external_record(&self, level: Level, target: &str, message: &str) {
+        if self.accepts(level) {
+            let args = format_args!("{message}");
+            let record = Record::builder()
+                .args(args)
+                .level(level)
+                .target(target)
+                .build();
+            self.inner.log(&record);
+        }
+        self.push_external_record(level, target, message);
+    }
+
     fn records_since(&self, last_seq: u64) -> Vec<BufferedLogRecord> {
         let records = self.records.lock().unwrap();
         records
@@ -174,4 +201,10 @@ pub fn records_since(last_seq: u64) -> Vec<BufferedLogRecord> {
         .get()
         .map(|logger| logger.records_since(last_seq))
         .unwrap_or_default()
+}
+
+pub fn emit_external_record(level: Level, target: &str, message: &str) {
+    if let Some(logger) = LOGGER.get() {
+        logger.emit_external_record(level, target, message);
+    }
 }

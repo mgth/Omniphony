@@ -254,6 +254,8 @@ pub enum OscEvent {
     StateRenderTimeMs { value: f64 },
     #[serde(rename = "state:write_time_ms")]
     StateWriteTimeMs { value: f64 },
+    #[serde(rename = "state:frame_duration_ms")]
+    StateFrameDurationMs { value: f64 },
     #[serde(rename = "state:resample_ratio")]
     StateResampleRatio { value: f64 },
     #[serde(rename = "state:audio:sample_rate")]
@@ -310,6 +312,12 @@ pub enum OscEvent {
     StateSpeakersRecomputing { enabled: bool },
     #[serde(rename = "state:adaptive_resampling")]
     StateAdaptiveResampling { enabled: bool },
+    #[serde(rename = "state:adaptive_resampling:enable_far_mode")]
+    StateAdaptiveResamplingEnableFarMode { enabled: bool },
+    #[serde(rename = "state:adaptive_resampling:force_silence_in_far_mode")]
+    StateAdaptiveResamplingForceSilenceInFarMode { enabled: bool },
+    #[serde(rename = "state:adaptive_resampling:far_mode_return_fade_in_ms")]
+    StateAdaptiveResamplingFarModeReturnFadeInMs { value: f64 },
     #[serde(rename = "state:adaptive_resampling:kp_near")]
     StateAdaptiveResamplingKpNear { value: f64 },
     #[serde(rename = "state:adaptive_resampling:kp_far")]
@@ -320,10 +328,10 @@ pub enum OscEvent {
     StateAdaptiveResamplingMaxAdjust { value: f64 },
     #[serde(rename = "state:adaptive_resampling:max_adjust_far")]
     StateAdaptiveResamplingMaxAdjustFar { value: f64 },
+    #[serde(rename = "state:adaptive_resampling:update_interval_callbacks")]
+    StateAdaptiveResamplingUpdateIntervalCallbacks { value: f64 },
     #[serde(rename = "state:adaptive_resampling:near_far_threshold_ms")]
     StateAdaptiveResamplingNearFarThresholdMs { value: f64 },
-    #[serde(rename = "state:adaptive_resampling:hard_correction_threshold_ms")]
-    StateAdaptiveResamplingHardCorrectionThresholdMs { value: f64 },
     #[serde(rename = "state:adaptive_resampling:measurement_smoothing_alpha")]
     StateAdaptiveResamplingMeasurementSmoothingAlpha { value: f64 },
     #[serde(rename = "state:adaptive_resampling:band")]
@@ -586,6 +594,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (3, "write_time_ms") => Some(OscEvent::StateWriteTimeMs {
             value: to_number(args[0])?,
         }),
+        (3, "frame_duration_ms") => Some(OscEvent::StateFrameDurationMs {
+            value: to_number(args[0])?,
+        }),
         (3, "resample_ratio") => Some(OscEvent::StateResampleRatio {
             value: to_number(args[0])?,
         }),
@@ -711,6 +722,19 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             enabled: to_number(args[0])? != 0.0,
         }),
         (4, "adaptive_resampling") => match parts[3] {
+            "enable_far_mode" => Some(OscEvent::StateAdaptiveResamplingEnableFarMode {
+                enabled: to_number(args[0])? != 0.0,
+            }),
+            "force_silence_in_far_mode" => {
+                Some(OscEvent::StateAdaptiveResamplingForceSilenceInFarMode {
+                    enabled: to_number(args[0])? != 0.0,
+                })
+            }
+            "far_mode_return_fade_in_ms" => {
+                Some(OscEvent::StateAdaptiveResamplingFarModeReturnFadeInMs {
+                    value: to_number(args[0])?,
+                })
+            }
             "kp_near" => Some(OscEvent::StateAdaptiveResamplingKpNear {
                 value: to_number(args[0])?,
             }),
@@ -726,13 +750,13 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             "max_adjust_far" => Some(OscEvent::StateAdaptiveResamplingMaxAdjustFar {
                 value: to_number(args[0])?,
             }),
+            "update_interval_callbacks" => Some(
+                OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks {
+                    value: to_number(args[0])?,
+                },
+            ),
             "near_far_threshold_ms" => {
                 Some(OscEvent::StateAdaptiveResamplingNearFarThresholdMs {
-                    value: to_number(args[0])?,
-                })
-            }
-            "hard_correction_threshold_ms" => {
-                Some(OscEvent::StateAdaptiveResamplingHardCorrectionThresholdMs {
                     value: to_number(args[0])?,
                 })
             }

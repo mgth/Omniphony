@@ -1093,6 +1093,13 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateFrameDurationMs { value } => {
+                s.frame_duration_ms = Some(value);
+                (
+                    Some(("frame:duration_ms", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
 
             OscEvent::StateResampleRatio { value } => {
                 s.resample_ratio = Some(value);
@@ -1334,6 +1341,40 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateAdaptiveResamplingEnableFarMode { enabled } => {
+                s.adaptive_resampling_enable_far_mode = Some(if enabled { 1 } else { 0 });
+                (
+                    Some((
+                        "adaptive_resampling:enable_far_mode",
+                        serde_json::json!({ "enabled": s.adaptive_resampling_enable_far_mode }),
+                    )),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateAdaptiveResamplingForceSilenceInFarMode { enabled } => {
+                s.adaptive_resampling_force_silence_in_far_mode = Some(if enabled { 1 } else { 0 });
+                (
+                    Some((
+                        "adaptive_resampling:force_silence_in_far_mode",
+                        serde_json::json!({
+                            "enabled": s.adaptive_resampling_force_silence_in_far_mode
+                        }),
+                    )),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateAdaptiveResamplingFarModeReturnFadeInMs { value } => {
+                s.adaptive_resampling_far_mode_return_fade_in_ms = Some(value.round() as i64);
+                (
+                    Some((
+                        "adaptive_resampling:far_mode_return_fade_in_ms",
+                        serde_json::json!({
+                            "value": s.adaptive_resampling_far_mode_return_fade_in_ms
+                        }),
+                    )),
+                    removed_ids,
+                )
+            }
             OscEvent::StateAdaptiveResamplingKpNear { value } => {
                 s.adaptive_resampling_kp_near = Some(value);
                 (
@@ -1384,22 +1425,22 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks { value } => {
+                s.adaptive_resampling_update_interval_callbacks = Some(value.round() as i64);
+                (
+                    Some((
+                        "adaptive_resampling:update_interval_callbacks",
+                        serde_json::json!({ "value": s.adaptive_resampling_update_interval_callbacks }),
+                    )),
+                    removed_ids,
+                )
+            }
             OscEvent::StateAdaptiveResamplingNearFarThresholdMs { value } => {
                 s.adaptive_resampling_near_far_threshold_ms = Some(value.round() as i64);
                 (
                     Some((
                         "adaptive_resampling:near_far_threshold_ms",
                         serde_json::json!({ "value": s.adaptive_resampling_near_far_threshold_ms }),
-                    )),
-                    removed_ids,
-                )
-            }
-            OscEvent::StateAdaptiveResamplingHardCorrectionThresholdMs { value } => {
-                s.adaptive_resampling_hard_correction_threshold_ms = Some(value.round() as i64);
-                (
-                    Some((
-                        "adaptive_resampling:hard_correction_threshold_ms",
-                        serde_json::json!({ "value": s.adaptive_resampling_hard_correction_threshold_ms }),
                     )),
                     removed_ids,
                 )

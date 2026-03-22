@@ -14,8 +14,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::{
-    ADAPTIVE_BAND_HARD, AdaptiveControllerState, AdaptiveResamplingConfig, adaptive_band_name,
-    apply_ema, compute_adaptive_step,
+    AdaptiveControllerState, AdaptiveResamplingConfig, adaptive_band_name, apply_ema,
+    compute_adaptive_step,
 };
 
 // Buffer size: 4 seconds of audio at 48kHz, 16 channels
@@ -318,15 +318,13 @@ impl AsioWriter {
         let mut callback_count = 0u64;
         let mut playback_started = false;
         let mut underrun_warned = false;
+        let mut far_mode_was_muted = false;
+        let mut far_mode_fade_remaining_frames = 0usize;
+        let mut far_mode_fade_total_frames = 0usize;
         let near_far_threshold_samples =
             (adaptive_config.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
         let measurement_smoothing_alpha =
             adaptive_config.measurement_smoothing_alpha.clamp(0.0, 1.0);
-        let hard_correction_threshold_samples =
-            (adaptive_config.hard_correction_threshold_ms as usize).saturating_mul(samples_per_ms);
-        let hard_correction_release_margin = hard_correction_threshold_samples / 2;
-        let hard_correction_max_step = hard_correction_threshold_samples / 2;
-        let mut hard_correction_mode: i8 = 0;
 
         let device_channel_count_for_callback = device_channel_count;
         let adaptive_resampling_enabled = enable_adaptive_resampling;
@@ -377,6 +375,7 @@ impl AsioWriter {
                     .saturating_sub(callback_input_domain_samples / 2);
                 let smoothed_control_available = apply_ema(
                     &mut controller_state.smoothed_control_available,
+                    &mut controller_state.control_ema_initialized,
                     control_available as f64,
                     measurement_smoothing_alpha,
                 )
@@ -384,12 +383,16 @@ impl AsioWriter {
                 .round() as usize;
                 let smoothed_total_available = apply_ema(
                     &mut controller_state.smoothed_total_available,
+                    &mut controller_state.total_ema_initialized,
                     total_available_input_domain as f64,
                     measurement_smoothing_alpha,
                 )
                 .max(0.0)
                 .round() as usize;
-                let measured_latency_ms = (smoothed_total_available as f32
+                // Expose "raw" latency as the instantaneous midpoint estimate used
+                // by the controller, so Studio can show min/max around the same
+                // quantity that the smoothed control marker is derived from.
+                let measured_latency_ms = (control_available as f32
                     / channel_count as f32
                     / input_sample_rate as f32)
                     * 1000.0;
@@ -402,81 +405,14 @@ impl AsioWriter {
                 control_latency_ms_bits_clone
                     .store(control_latency_ms.to_bits(), Ordering::Relaxed);
 
-                let mut hard_zero_fill = false;
-                if adaptive_resampling_enabled && hard_correction_threshold_samples > 0 {
-                    if hard_correction_mode < 0 {
-                        if smoothed_control_available.saturating_add(hard_correction_release_margin)
-                            >= target_buffer_fill
-                        {
-                            hard_correction_mode = 0;
-                        } else {
-                            controller_state.accumulated_drift = 0.0;
-                            current_rate_adjust_clone.store(1.0f32.to_bits(), Ordering::Relaxed);
-                            current_adaptive_band_clone.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                            hard_zero_fill = true;
-                        }
-                    } else if hard_correction_mode > 0 {
-                        let desired_keep =
-                            target_buffer_fill.saturating_add(hard_correction_release_margin);
-                        if smoothed_total_available <= desired_keep {
-                            hard_correction_mode = 0;
-                        } else {
-                            let mut to_drop = smoothed_total_available.saturating_sub(desired_keep);
-                            to_drop = to_drop.min(hard_correction_max_step.max(channel_count as usize));
-                            let fifo_drop = to_drop.min(output_fifo.len());
-                            if fifo_drop > 0 {
-                                output_fifo.drain(0..fifo_drop);
-                                to_drop = to_drop.saturating_sub(fifo_drop);
-                            }
-                            let ring_drop = (to_drop / channel_count as usize) * channel_count as usize;
-                            for _ in 0..ring_drop {
-                                let _ = buffer_clone.pop();
-                            }
-                            controller_state.accumulated_drift = 0.0;
-                            current_adaptive_band_clone.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                        }
-                    } else if smoothed_control_available
-                        .saturating_add(hard_correction_threshold_samples)
-                        < target_buffer_fill
-                    {
-                        hard_correction_mode = -1;
-                        controller_state.accumulated_drift = 0.0;
-                        current_rate_adjust_clone.store(1.0f32.to_bits(), Ordering::Relaxed);
-                        current_adaptive_band_clone.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                        hard_zero_fill = true;
-                    } else if smoothed_total_available
-                        > target_buffer_fill.saturating_add(hard_correction_threshold_samples)
-                    {
-                        hard_correction_mode = 1;
-                        let mut to_drop = smoothed_total_available.saturating_sub(
-                            target_buffer_fill.saturating_add(hard_correction_release_margin),
-                        );
-                        to_drop = to_drop.min(hard_correction_max_step.max(channel_count as usize));
-                        let fifo_drop = to_drop.min(output_fifo.len());
-                        if fifo_drop > 0 {
-                            output_fifo.drain(0..fifo_drop);
-                            to_drop = to_drop.saturating_sub(fifo_drop);
-                        }
-                        let ring_drop = (to_drop / channel_count as usize) * channel_count as usize;
-                        for _ in 0..ring_drop {
-                            let _ = buffer_clone.pop();
-                        }
-                        controller_state.accumulated_drift = 0.0;
-                        current_adaptive_band_clone.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                    }
-                }
-
-                if hard_zero_fill {
-                    data.fill(0.0);
-                    return;
-                }
-
                 // Adaptive rate logic (PI Controller)
                 // Adjusts the resampling ratio around the base ratio to maintain buffer level
                 // Only active if adaptive resampling is enabled
                 if adaptive_resampling_enabled {
                     // Only adjust rate if we have started playback and have enough data
-                    if playback_started && callback_count % 10 == 0 {
+                    let adaptive_update_interval =
+                        adaptive_config.update_interval_callbacks.max(1) as u64;
+                    if playback_started && callback_count % adaptive_update_interval == 0 {
                         let step = compute_adaptive_step(
                             &mut controller_state,
                             &adaptive_config,
@@ -579,6 +515,21 @@ impl AsioWriter {
                 }
 
                 // 3. Fill ASIO callback buffer from FIFO
+                let mute_far_output = adaptive_resampling_enabled
+                    && adaptive_config.force_silence_in_far_mode
+                    && current_adaptive_band_clone.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR;
+                if mute_far_output {
+                    far_mode_was_muted = true;
+                    far_mode_fade_remaining_frames = 0;
+                    far_mode_fade_total_frames = 0;
+                } else if far_mode_was_muted {
+                    far_mode_was_muted = false;
+                    far_mode_fade_total_frames =
+                        ((output_sample_rate as u64
+                            * adaptive_config.far_mode_return_fade_in_ms as u64)
+                            / 1000) as usize;
+                    far_mode_fade_remaining_frames = far_mode_fade_total_frames;
+                }
                 if output_fifo.len() >= audio_samples_needed {
                     // We have enough data
                         if !playback_started {
@@ -610,6 +561,29 @@ impl AsioWriter {
                         }
                         // Remaining device channels (if any) stay at 0.0
                     }
+                    if mute_far_output {
+                        data.fill(0.0);
+                    } else if far_mode_fade_remaining_frames > 0
+                        && far_mode_fade_total_frames > 0
+                    {
+                        for frame_idx in 0..output_frames_needed {
+                            let fade_done = far_mode_fade_total_frames
+                                .saturating_sub(far_mode_fade_remaining_frames);
+                            let gain = fade_done as f32 / far_mode_fade_total_frames as f32;
+                            let frame_start =
+                                frame_idx * device_channel_count_for_callback as usize;
+                            let frame_end =
+                                frame_start + device_channel_count_for_callback as usize;
+                            for sample in &mut data[frame_start..frame_end] {
+                                *sample *= gain;
+                            }
+                            far_mode_fade_remaining_frames =
+                                far_mode_fade_remaining_frames.saturating_sub(1);
+                            if far_mode_fade_remaining_frames == 0 {
+                                break;
+                            }
+                        }
+                    }
 
                 } else {
                     // Underrun
@@ -631,6 +605,29 @@ impl AsioWriter {
                     // Silence remaining
                     for sample in data.iter_mut().skip(available) {
                         *sample = 0.0;
+                    }
+                    if mute_far_output {
+                        data.fill(0.0);
+                    } else if far_mode_fade_remaining_frames > 0
+                        && far_mode_fade_total_frames > 0
+                    {
+                        for frame_idx in 0..output_frames_needed {
+                            let fade_done = far_mode_fade_total_frames
+                                .saturating_sub(far_mode_fade_remaining_frames);
+                            let gain = fade_done as f32 / far_mode_fade_total_frames as f32;
+                            let frame_start =
+                                frame_idx * device_channel_count_for_callback as usize;
+                            let frame_end =
+                                frame_start + device_channel_count_for_callback as usize;
+                            for sample in &mut data[frame_start..frame_end] {
+                                *sample *= gain;
+                            }
+                            far_mode_fade_remaining_frames =
+                                far_mode_fade_remaining_frames.saturating_sub(1);
+                            if far_mode_fade_remaining_frames == 0 {
+                                break;
+                            }
+                        }
                     }
                 }
             },
