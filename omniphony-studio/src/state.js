@@ -1,0 +1,262 @@
+/**
+ * Shared application state.
+ *
+ * All Maps/Sets are exported directly (mutable by reference).
+ * Primitive values are grouped in the `app` and `dirty` objects so that
+ * mutations from any module are visible everywhere.
+ */
+
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------------------
+// Source / speaker data maps
+// ---------------------------------------------------------------------------
+
+export const sourceMeshes = new Map();
+export const sourceLabels = new Map();
+export const sourceOutlines = new Map();
+export const sourceLevels = new Map();
+export const speakerLevels = new Map();
+export const sourceLevelLastSeen = new Map();
+export const speakerLevelLastSeen = new Map();
+export const sourceGains = new Map();
+export const speakerGainCache = new Map();
+export const objectGainCache = new Map();
+export const speakerBaseGains = new Map();
+export const objectBaseGains = new Map();
+export const speakerDelays = new Map();
+export const speakerMuted = new Set();
+export const objectMuted = new Set();
+export const speakerItems = new Map();
+export const objectItems = new Map();
+export const speakerManualMuted = new Set();
+export const objectManualMuted = new Set();
+export const sourceNames = new Map();
+export const sourcePositionsRaw = new Map();
+export const sourceDirectSpeakerIndices = new Map();
+export const sourceTrails = new Map();
+export const sourceEffectiveMarkers = new Map();
+export const sourceEffectiveLines = new Map();
+export const layoutsByKey = new Map();
+
+// Speaker meshes/labels are arrays (indexed by speaker slot)
+export const speakerMeshes = [];
+export const speakerLabels = [];
+
+// ---------------------------------------------------------------------------
+// UI item registries
+// ---------------------------------------------------------------------------
+
+export const speakerReorderAnimations = new WeakMap();
+
+// ---------------------------------------------------------------------------
+// Dirty flags (UI flush batching)
+// ---------------------------------------------------------------------------
+
+export const dirtyObjectMeters = new Set();
+export const dirtySpeakerMeters = new Set();
+export const dirtyObjectPositions = new Set();
+export const dirtyObjectLabels = new Set();
+
+export const dirty = {
+  masterMeter: false,
+  roomRatio: false,
+  spread: false,
+  vbapMode: false,
+  vbapCartesian: false,
+  vbapPolar: false,
+  loudness: false,
+  adaptiveResampling: false,
+  distanceDiffuse: false,
+  distanceModel: false,
+  configSaved: false,
+  latency: false,
+  renderTime: false,
+  resample: false,
+  audioFormat: false,
+  masterGain: false
+};
+
+// ---------------------------------------------------------------------------
+// Application state (primitive values)
+// ---------------------------------------------------------------------------
+
+export const app = {
+  // Room geometry
+  roomRatio: { width: 1, length: 2, height: 1, rear: 1, lower: 0.5, centerBlend: 0.5 },
+  roomMasterAxis: 'width',
+  roomAxisDrivers: {
+    width: 'size',
+    length: 'size',
+    height: 'size',
+    rear: 'size',
+    lower: 'size'
+  },
+  roomGeometryExpanded: false,
+  roomGeometryBaselineKey: '',
+  roomGeometryApplyTimer: null,
+  metersPerUnit: 1.0,
+
+  // VBAP
+  vbapCartesianState: { xSize: null, ySize: null, zSize: null, zNegSize: 0 },
+  vbapPolarState: { azimuthResolution: null, elevationResolution: null, distanceRes: null, distanceMax: null },
+  vbapModeState: { selection: null, effectiveMode: null },
+  vbapPositionInterpolation: null,
+  vbapAllowNegativeZ: null,
+  vbapRecomputing: null,
+  vbapCartesianFaceGridEnabled: false,
+
+  // Spread
+  spreadState: { min: null, max: null, fromDistance: null, distanceRange: null, distanceCurve: null },
+
+  // Distance diffuse
+  distanceDiffuseState: { enabled: null, threshold: null, curve: null },
+  distanceModel: 'none',
+
+  // Master
+  masterGain: 1,
+
+  // Loudness
+  loudnessEnabled: null,
+  loudnessSource: null,
+  loudnessGain: null,
+
+  // Config
+  configSaved: null,
+
+  // Adaptive resampling
+  adaptiveResamplingEnabled: false,
+  adaptiveResamplingEnableFarMode: true,
+  adaptiveResamplingForceSilenceInFarMode: false,
+  adaptiveResamplingHardRecoverInFarMode: false,
+  adaptiveResamplingFarModeReturnFadeInMs: 0,
+  adaptiveResamplingKpNear: 0.00001,
+  adaptiveResamplingKpFar: 0.00002,
+  adaptiveResamplingKi: 0.0000005,
+  adaptiveResamplingMaxAdjust: 0.01,
+  adaptiveResamplingMaxAdjustFar: 0.02,
+  adaptiveResamplingNearFarThresholdMs: 120,
+  adaptiveResamplingUpdateIntervalCallbacks: 10,
+  adaptiveResamplingMeasurementSmoothingAlpha: 0.15,
+  adaptiveResamplingBand: null,
+
+  // Latency & performance
+  latencyMs: null,
+  latencyInstantMs: null,
+  latencyControlMs: null,
+  latencyTargetMs: null,
+  decodeTimeMs: null,
+  decodeTimeWindow: [],
+  renderTimeMs: null,
+  renderTimeWindow: [],
+  writeTimeMs: null,
+  writeTimeWindow: [],
+  frameDurationMs: null,
+  latencyRawWindow: [],
+  resampleRatio: null,
+  latencyTargetApplyTimer: null,
+
+  // Audio
+  audioSampleRate: null,
+  rampMode: 'sample',
+  audioOutputDevice: null,
+  audioOutputDevices: [],
+  orenderInputPipe: null,
+  audioSampleFormat: null,
+  audioError: null,
+
+  // OSC
+  oscMeteringEnabled: false,
+  oscStatusState: 'initializing',
+  oscConfigAutoOpenTimer: null,
+  oscLaunchPending: false,
+  oscConfiguredOrenderPath: '',
+  oscConfigBaselineKey: '',
+  orenderServiceInstalled: false,
+  orenderServiceRunning: false,
+  orenderServiceManager: null,
+  orenderServicePending: false,
+
+  // Editing state
+  audioOutputDeviceEditing: false,
+  audioSampleRateEditing: false,
+  latencyTargetEditing: false,
+  latencyTargetDirty: false,
+  adaptiveKpNearEditing: false,
+  adaptiveKpNearDirty: false,
+  adaptiveKpFarEditing: false,
+  adaptiveKpFarDirty: false,
+  adaptiveKiEditing: false,
+  adaptiveKiDirty: false,
+  adaptiveMaxAdjustEditing: false,
+  adaptiveMaxAdjustDirty: false,
+  adaptiveMaxAdjustFarEditing: false,
+  adaptiveMaxAdjustFarDirty: false,
+  adaptiveNearFarThresholdEditing: false,
+  adaptiveNearFarThresholdDirty: false,
+  adaptiveUpdateIntervalCallbacksEditing: false,
+  adaptiveUpdateIntervalCallbacksDirty: false,
+  adaptiveMeasurementSmoothingAlphaEditing: false,
+  adaptiveMeasurementSmoothingAlphaDirty: false,
+  adaptiveFarFadeInMsEditing: false,
+  adaptiveFarFadeInMsDirty: false,
+  adaptiveResamplingAdvancedOpen: false,
+  telemetryGaugesOpen: false,
+  audioOutputSectionOpen: false,
+  rendererSectionOpen: false,
+  displaySectionOpen: false,
+
+  // Selection & drag
+  selectedSourceId: null,
+  selectedSpeakerIndex: null,
+  draggedSpeakerIndex: null,
+  draggedSpeakerInitialIndex: null,
+  draggedSpeakerDidDrop: false,
+  draggedSpeakerRoot: null,
+  polarEditArmed: false,
+  cartesianEditArmed: false,
+  activeEditMode: 'polar',
+  isDraggingSpeaker: false,
+  dragMode: null,
+  dragAxis: null,
+  dragAxisOrigin: new THREE.Vector3(),
+  dragAxisDirection: new THREE.Vector3(1, 0, 0),
+  dragSpeakerStartPosition: new THREE.Vector3(),
+  dragAxisStartT: 0,
+  dragAzimuthDeg: 0,
+  dragElevationDeg: 0,
+  dragDistance: 1,
+  dragAzimuthDelta: 1,
+  dragElevationDelta: 1,
+  pointerDownPosition: null,
+  draggingPointerId: null,
+
+  // Trail
+  trailsEnabled: true,
+  trailRenderMode: 'diffuse',
+  trailPointTtlMs: 7000,
+  effectiveRenderEnabled: false,
+  lastTrailDecayAt: 0,
+
+  // Layout
+  currentLayoutKey: null,
+  currentLayoutSpeakers: [],
+
+  // UI flush
+  uiFlushScheduled: false,
+
+  // Meter decay
+  lastMeterDecayAt: 0
+};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+export const METER_DECAY_START_MS = 250;
+export const METER_DECAY_DB_PER_SEC = 45;
+export const DEFAULT_SAMPLE_RATE_HZ = 48000;
+export const LATENCY_RAW_WINDOW_MS = 4000;
+export const RENDER_TIME_WINDOW_MS = 5000;
+export const AUDIO_SAMPLE_RATE_PRESETS = [0, 32000, 44100, 48000, 88200, 96000, 176400, 192000];
+export const isLinux = typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('linux');

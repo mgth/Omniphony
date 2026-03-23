@@ -1,0 +1,156 @@
+/**
+ * Modal dialog and accordion section toggle helpers.
+ */
+
+import { app } from './state.js';
+
+// ---------------------------------------------------------------------------
+// DOM refs (queried once at module load)
+// ---------------------------------------------------------------------------
+
+const trailInfoModalEl = document.getElementById('trailInfoModal');
+const effectiveRenderInfoModalEl = document.getElementById('effectiveRenderInfoModal');
+const oscInfoModalEl = document.getElementById('oscInfoModal');
+const aboutModalEl = document.getElementById('aboutModal');
+const roomGeometryInfoModalEl = document.getElementById('roomGeometryInfoModal');
+const adaptiveResamplingInfoModalEl = document.getElementById('adaptiveResamplingInfoModal');
+const telemetryGaugesInfoModalEl = document.getElementById('telemetryGaugesInfoModal');
+const rampModeInfoModalEl = document.getElementById('rampModeInfoModal');
+const vbapPositionInterpolationInfoModalEl = document.getElementById('vbapPositionInterpolationInfoModal');
+const adaptiveResamplingAdvancedFormEl = document.getElementById('adaptiveResamplingAdvancedForm');
+const adaptiveResamplingAdvancedToggleBtnEl = document.getElementById('adaptiveResamplingAdvancedToggleBtn');
+const telemetryGaugesFormEl = document.getElementById('telemetryGaugesForm');
+const telemetryGaugesToggleBtnEl = document.getElementById('telemetryGaugesToggleBtn');
+const displaySectionContentEl = document.getElementById('displaySectionContent');
+const displaySectionToggleBtnEl = document.getElementById('displaySectionToggleBtn');
+const audioOutputSectionContentEl = document.getElementById('audioOutputSectionContent');
+const audioOutputSummaryEl = document.getElementById('audioOutputSummary');
+const audioOutputSectionToggleBtnEl = document.getElementById('audioOutputSectionToggleBtn');
+const rendererSectionContentEl = document.getElementById('rendererSectionContent');
+const rendererSummaryEl = document.getElementById('rendererSummary');
+const rendererSectionToggleBtnEl = document.getElementById('rendererSectionToggleBtn');
+const spreadFromDistanceInfoModalEl = document.getElementById('spreadFromDistanceInfoModal');
+const distanceDiffuseInfoModalEl = document.getElementById('distanceDiffuseInfoModal');
+
+// ---------------------------------------------------------------------------
+// Simple info modals
+// ---------------------------------------------------------------------------
+
+export function setTrailInfoModalOpen(open) {
+  if (!trailInfoModalEl) return;
+  trailInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setEffectiveRenderInfoModalOpen(open) {
+  if (!effectiveRenderInfoModalEl) return;
+  effectiveRenderInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setOscInfoModalOpen(open) {
+  if (!oscInfoModalEl) return;
+  oscInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setAboutModalOpen(open) {
+  if (!aboutModalEl) return;
+  aboutModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setRoomGeometryInfoModalOpen(open) {
+  if (!roomGeometryInfoModalEl) return;
+  roomGeometryInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setAdaptiveResamplingInfoModalOpen(open) {
+  if (!adaptiveResamplingInfoModalEl) return;
+  adaptiveResamplingInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setTelemetryGaugesInfoModalOpen(open) {
+  if (!telemetryGaugesInfoModalEl) return;
+  telemetryGaugesInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setRampModeInfoModalOpen(open) {
+  if (!rampModeInfoModalEl) return;
+  rampModeInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setVbapPositionInterpolationInfoModalOpen(open) {
+  if (!vbapPositionInterpolationInfoModalEl) return;
+  vbapPositionInterpolationInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setSpreadFromDistanceInfoModalOpen(open) {
+  if (!spreadFromDistanceInfoModalEl) return;
+  spreadFromDistanceInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+export function setDistanceDiffuseInfoModalOpen(open) {
+  if (!distanceDiffuseInfoModalEl) return;
+  distanceDiffuseInfoModalEl.classList.toggle('open', Boolean(open));
+}
+
+// ---------------------------------------------------------------------------
+// Accordion sections (update shared state)
+// ---------------------------------------------------------------------------
+
+export function setAdaptiveResamplingAdvancedOpen(open) {
+  app.adaptiveResamplingAdvancedOpen = Boolean(open);
+  if (adaptiveResamplingAdvancedFormEl) {
+    adaptiveResamplingAdvancedFormEl.classList.toggle('open', app.adaptiveResamplingAdvancedOpen);
+  }
+  if (adaptiveResamplingAdvancedToggleBtnEl) {
+    adaptiveResamplingAdvancedToggleBtnEl.style.background = app.adaptiveResamplingAdvancedOpen
+      ? 'rgba(255, 255, 255, 0.18)'
+      : 'rgba(255, 255, 255, 0.08)';
+  }
+}
+
+export function setTelemetryGaugesOpen(open) {
+  app.telemetryGaugesOpen = Boolean(open);
+  if (telemetryGaugesFormEl) {
+    telemetryGaugesFormEl.classList.toggle('open', app.telemetryGaugesOpen);
+  }
+  if (telemetryGaugesToggleBtnEl) {
+    telemetryGaugesToggleBtnEl.style.background = app.telemetryGaugesOpen
+      ? 'rgba(255, 255, 255, 0.18)'
+      : 'rgba(255, 255, 255, 0.08)';
+  }
+}
+
+export function setDisplaySectionOpen(open) {
+  app.displaySectionOpen = Boolean(open);
+  if (displaySectionContentEl) {
+    displaySectionContentEl.classList.toggle('open', app.displaySectionOpen);
+  }
+  if (displaySectionToggleBtnEl) {
+    displaySectionToggleBtnEl.textContent = app.displaySectionOpen ? '▾' : '▸';
+  }
+}
+
+export function setAudioOutputSectionOpen(open) {
+  app.audioOutputSectionOpen = Boolean(open);
+  if (audioOutputSectionContentEl) {
+    audioOutputSectionContentEl.classList.toggle('open', app.audioOutputSectionOpen);
+  }
+  if (audioOutputSummaryEl) {
+    audioOutputSummaryEl.style.display = app.audioOutputSectionOpen ? 'none' : 'block';
+  }
+  if (audioOutputSectionToggleBtnEl) {
+    audioOutputSectionToggleBtnEl.textContent = app.audioOutputSectionOpen ? '▾' : '▸';
+  }
+}
+
+export function setRendererSectionOpen(open) {
+  app.rendererSectionOpen = Boolean(open);
+  if (rendererSectionContentEl) {
+    rendererSectionContentEl.classList.toggle('open', app.rendererSectionOpen);
+  }
+  if (rendererSummaryEl) {
+    rendererSummaryEl.style.display = app.rendererSectionOpen ? 'none' : 'block';
+  }
+  if (rendererSectionToggleBtnEl) {
+    rendererSectionToggleBtnEl.textContent = app.rendererSectionOpen ? '▾' : '▸';
+  }
+}
