@@ -4,7 +4,8 @@ use super::decoder_thread::{
 use super::handler::{DecodeHandler, FrameHandlerContext, WriterState};
 use crate::bridge_loader::{LoadedBridge, resolve_bridge_path};
 use crate::cli::command::{
-    Cli, LogFormat, LogLevel, OutputBackend, RampModeArg, RenderArgs, VbapTableModeArg,
+    Cli, LogFormat, LogLevel, OutputBackend, RampModeArg, RenderArgSources, RenderArgs,
+    VbapTableModeArg,
 };
 use crate::runtime_osc::{OscSender, build_speaker_config_bundle};
 use anyhow::Result;
@@ -47,7 +48,11 @@ fn list_available_output_devices(_backend: OutputBackend) -> Vec<OutputDeviceOpt
     Vec::new()
 }
 
-fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderArgs) {
+fn merge_render_config(
+    cfg: &renderer::config::RenderConfig,
+    args: &mut RenderArgs,
+    arg_sources: &RenderArgSources<'_>,
+) {
     use std::str::FromStr;
 
     // --- Option fields: fill only when None ---
@@ -60,7 +65,7 @@ fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderAr
     if args.output_sample_rate.is_none() {
         args.output_sample_rate = cfg.output_sample_rate;
     }
-    if args.ramp_mode == RampModeArg::Sample {
+    if !arg_sources.is_explicit("ramp_mode") {
         if let Some(ref v) = cfg.ramp_mode {
             if let Some(mode) = renderer::live_params::RampMode::from_str(v) {
                 args.ramp_mode = match mode {
@@ -76,59 +81,61 @@ fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderAr
     }
     // --- Fields with defaults: apply config only when value equals the clap default ---
     // (If the user explicitly passes the default value, config is ignored — acceptable edge case.)
-    if args.output_backend.is_none() {
+    if !arg_sources.is_explicit("output_backend") {
         if let Some(ref s) = cfg.output_backend {
             if let Ok(f) = OutputBackend::from_str(s) {
                 args.output_backend = Some(f);
             }
         }
     }
-    if args.presentation == "best" {
+    if !arg_sources.is_explicit("presentation") {
         if let Some(p) = cfg.presentation {
             args.presentation = p.to_string();
         }
     }
-    if args.osc_host == "127.0.0.1" {
+    if !arg_sources.is_explicit("osc_host") {
         if let Some(ref h) = cfg.osc_host {
             args.osc_host = h.clone();
         }
     }
-    if args.osc_port == 9000 {
+    if !arg_sources.is_explicit("osc_port") {
         if let Some(p) = cfg.osc_port {
             args.osc_port = p;
         }
     }
-    if args.vbap_azimuth_resolution == 360 {
+    if !arg_sources.is_explicit("vbap_azimuth_resolution") {
         if let Some(v) = cfg.vbap_azimuth_resolution {
             args.vbap_azimuth_resolution = v;
         }
     }
-    if args.vbap_elevation_resolution == 180 {
+    if !arg_sources.is_explicit("vbap_elevation_resolution") {
         if let Some(v) = cfg.vbap_elevation_resolution {
             args.vbap_elevation_resolution = v;
         }
     }
-    if args.vbap_spread == 0.0 {
+    if !arg_sources.is_explicit("vbap_spread") {
         if let Some(v) = cfg.vbap_spread {
             args.vbap_spread = v;
         }
     }
-    if args.vbap_distance_res == 8 {
+    if !arg_sources.is_explicit("vbap_distance_res") {
         if let Some(v) = cfg.vbap_distance_res {
             args.vbap_distance_res = v;
         }
     }
-    if (args.vbap_distance_max - 2.0).abs() < f32::EPSILON {
+    if !arg_sources.is_explicit("vbap_distance_max") {
         if let Some(v) = cfg.vbap_distance_max {
             args.vbap_distance_max = v;
         }
     }
-    if !args.vbap_position_interpolation && !args.no_vbap_position_interpolation {
+    if !arg_sources.is_explicit("vbap_position_interpolation")
+        && !arg_sources.is_explicit("no_vbap_position_interpolation")
+    {
         args.vbap_position_interpolation = cfg.vbap_position_interpolation.unwrap_or(true);
     } else if args.no_vbap_position_interpolation {
         args.vbap_position_interpolation = false;
     }
-    if args.vbap_table_mode == VbapTableModeArg::Polar {
+    if !arg_sources.is_explicit("vbap_table_mode") {
         if let Some(ref v) = cfg.vbap_table_mode {
             args.vbap_table_mode = if v.eq_ignore_ascii_case("cartesian") {
                 VbapTableModeArg::Cartesian
@@ -149,24 +156,26 @@ fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderAr
     if args.vbap_cart_z_neg_size.is_none() {
         args.vbap_cart_z_neg_size = cfg.vbap_cart_z_neg_size;
     }
-    if !args.vbap_allow_negative_z && !args.no_vbap_allow_negative_z {
+    if !arg_sources.is_explicit("vbap_allow_negative_z")
+        && !arg_sources.is_explicit("no_vbap_allow_negative_z")
+    {
         match cfg.vbap_allow_negative_z {
             Some(true) => args.vbap_allow_negative_z = true,
             Some(false) => args.no_vbap_allow_negative_z = true,
             None => {}
         }
     }
-    if args.vbap_distance_model == "none" {
+    if !arg_sources.is_explicit("vbap_distance_model") {
         if let Some(ref v) = cfg.vbap_distance_model {
             args.vbap_distance_model = v.clone();
         }
     }
-    if args.master_gain == 0.0 {
+    if !arg_sources.is_explicit("master_gain") {
         if let Some(v) = cfg.master_gain {
             args.master_gain = v;
         }
     }
-    if args.room_ratio == "1.0,2.0,1.0" {
+    if !arg_sources.is_explicit("room_ratio") {
         if let Some(ref v) = cfg.room_ratio {
             args.room_ratio = v.clone();
         }
@@ -180,22 +189,22 @@ fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderAr
     if args.room_ratio_center_blend.is_none() {
         args.room_ratio_center_blend = cfg.room_ratio_center_blend;
     }
-    if args.spread_distance_range == 1.0 {
+    if !arg_sources.is_explicit("spread_distance_range") {
         if let Some(v) = cfg.spread_distance_range {
             args.spread_distance_range = v;
         }
     }
-    if args.spread_distance_curve == 1.0 {
+    if !arg_sources.is_explicit("spread_distance_curve") {
         if let Some(v) = cfg.spread_distance_curve {
             args.spread_distance_curve = v;
         }
     }
-    if args.vbap_spread_min == 0.0 {
+    if !arg_sources.is_explicit("vbap_spread_min") {
         if let Some(v) = cfg.vbap_spread_min {
             args.vbap_spread_min = v;
         }
     }
-    if args.vbap_spread_max == 1.0 {
+    if !arg_sources.is_explicit("vbap_spread_max") {
         if let Some(v) = cfg.vbap_spread_max {
             args.vbap_spread_max = v;
         }
@@ -215,72 +224,76 @@ fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderAr
 
     // --- Bool fields: CLI enable/disable flags override config; absent → use config ---
     // enable_vbap
-    if !args.enable_vbap && !args.disable_vbap {
+    if !arg_sources.is_explicit("enable_vbap") && !arg_sources.is_explicit("disable_vbap") {
         args.enable_vbap = cfg.enable_vbap.unwrap_or(false);
     } else if args.disable_vbap {
         args.enable_vbap = false;
     }
     // osc
-    if !args.osc && !args.no_osc {
+    if !arg_sources.is_explicit("osc") && !arg_sources.is_explicit("no_osc") {
         args.osc = cfg.osc.unwrap_or(false);
     } else if args.no_osc {
         args.osc = false;
     }
     // osc_rx_port (config can override the default 9000)
-    if args.osc_rx_port == 9000 {
+    if !arg_sources.is_explicit("osc_rx_port") {
         if let Some(p) = cfg.osc_rx_port {
             args.osc_rx_port = p;
         }
     }
     // continuous
-    if !args.continuous && !args.no_continuous {
+    if !arg_sources.is_explicit("continuous") && !arg_sources.is_explicit("no_continuous") {
         args.continuous = cfg.continuous.unwrap_or(false);
     } else if args.no_continuous {
         args.continuous = false;
     }
     // use_loudness
-    if !args.use_loudness && !args.no_loudness {
+    if !arg_sources.is_explicit("use_loudness") && !arg_sources.is_explicit("no_loudness") {
         args.use_loudness = cfg.use_loudness.unwrap_or(false);
     } else if args.no_loudness {
         args.use_loudness = false;
     }
     // auto_gain
-    if !args.auto_gain && !args.no_auto_gain {
+    if !arg_sources.is_explicit("auto_gain") && !arg_sources.is_explicit("no_auto_gain") {
         args.auto_gain = cfg.auto_gain.unwrap_or(false);
     } else if args.no_auto_gain {
         args.auto_gain = false;
     }
     // bed_conform
-    if !args.bed_conform && !args.no_bed_conform {
+    if !arg_sources.is_explicit("bed_conform") && !arg_sources.is_explicit("no_bed_conform") {
         args.bed_conform = cfg.bed_conform.unwrap_or(false);
     } else if args.no_bed_conform {
         args.bed_conform = false;
     }
     // enable_adaptive_resampling
-    if !args.enable_adaptive_resampling && !args.disable_adaptive_resampling {
+    if !arg_sources.is_explicit("enable_adaptive_resampling")
+        && !arg_sources.is_explicit("disable_adaptive_resampling")
+    {
         args.enable_adaptive_resampling = cfg.enable_adaptive_resampling.unwrap_or(false);
     } else if args.disable_adaptive_resampling {
         args.enable_adaptive_resampling = false;
     }
     // spread_from_distance
-    if !args.spread_from_distance && !args.no_spread_from_distance {
+    if !arg_sources.is_explicit("spread_from_distance")
+        && !arg_sources.is_explicit("no_spread_from_distance")
+    {
         args.spread_from_distance = cfg.spread_from_distance.unwrap_or(false);
     } else if args.no_spread_from_distance {
         args.spread_from_distance = false;
     }
     // distance_diffuse (bool flag — no --no- override needed, just the flag)
-    if !args.distance_diffuse {
+    if !arg_sources.is_explicit("distance_diffuse") {
         args.distance_diffuse = cfg.distance_diffuse.unwrap_or(false);
     }
     if args.no_vbap_allow_negative_z {
         args.vbap_allow_negative_z = false;
     }
-    if args.distance_diffuse_threshold == 1.0 {
+    if !arg_sources.is_explicit("distance_diffuse_threshold") {
         if let Some(v) = cfg.distance_diffuse_threshold {
             args.distance_diffuse_threshold = v;
         }
     }
-    if args.distance_diffuse_curve == 1.0 {
+    if !arg_sources.is_explicit("distance_diffuse_curve") {
         if let Some(v) = cfg.distance_diffuse_curve {
             args.distance_diffuse_curve = v;
         }
@@ -533,6 +546,7 @@ struct PreparedDecodeRun {
 fn resolve_effective_decode_args(
     args: &RenderArgs,
     cli: &Cli,
+    arg_sources: &RenderArgSources<'_>,
 ) -> (
     Option<std::path::PathBuf>,
     RenderArgs,
@@ -549,14 +563,14 @@ fn resolve_effective_decode_args(
         .unwrap_or_default();
 
     let mut effective = args.clone();
-    let vbap_table_mode_explicit = args.vbap_table_mode != VbapTableModeArg::Polar
+    let vbap_table_mode_explicit = arg_sources.is_explicit("vbap_table_mode")
         || cfg
             .render
             .as_ref()
             .and_then(|rc| rc.vbap_table_mode.as_ref())
             .is_some();
     if let Some(rc) = &cfg.render {
-        merge_render_config(rc, &mut effective);
+        merge_render_config(rc, &mut effective, arg_sources);
     }
 
     let current_layout = cfg.render.and_then(|rc| rc.current_layout);
@@ -1410,10 +1424,10 @@ fn complete_render_run(
     }
 }
 
-pub fn cmd_render(args: &RenderArgs, cli: &Cli) -> Result<()> {
+pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'_>) -> Result<()> {
     loop {
         let (config_path, effective_args, current_layout_from_config, vbap_table_mode_explicit) =
-            resolve_effective_decode_args(args, cli);
+            resolve_effective_decode_args(args, cli, arg_sources);
         let args = &effective_args;
 
         if maybe_save_effective_config(cli, args, &config_path)? {
