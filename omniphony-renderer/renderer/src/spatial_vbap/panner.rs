@@ -261,6 +261,10 @@ pub struct VbapPanner {
     speaker_dirs_deg: Option<Vec<[f32; 2]>>,
 }
 
+pub(crate) mod gain_source;
+#[cfg(feature = "saf_vbap")]
+pub(crate) mod saf_backend;
+
 mod io;
 mod runtime;
 

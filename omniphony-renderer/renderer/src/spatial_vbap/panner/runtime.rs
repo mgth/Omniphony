@@ -1,124 +1,37 @@
 use super::*;
 
-#[cfg(feature = "saf_vbap")]
-struct SpartaVbapLayout {
-    n_speakers: usize,
-    n_faces: c_int,
-    ls_groups: *mut c_int,
-    layout_inv_mtx: *mut f32,
-}
-
-#[cfg(feature = "saf_vbap")]
-impl SpartaVbapLayout {
-    // SAF vbap3D expects spread in degrees (0 = VBAP, >0 = MDAP).
-    // We keep orender's public spread model normalized in [0, 1] and map it here.
-    const NORMALIZED_SPREAD_MAX_DEG: f32 = 180.0;
-
-    #[inline]
-    fn normalized_spread_to_degrees(spread: f32) -> f32 {
-        spread.clamp(0.0, 1.0) * Self::NORMALIZED_SPREAD_MAX_DEG
-    }
-
-    fn from_speaker_dirs(speaker_dirs_deg: &[[f32; 2]]) -> Result<Self, String> {
-        let n_speakers = speaker_dirs_deg.len();
-        let mut ls_dirs = Vec::with_capacity(n_speakers * 2);
-        for &[az, el] in speaker_dirs_deg {
-            ls_dirs.push(az);
-            ls_dirs.push(el);
-        }
-
-        let mut u_spkr: *mut f32 = std::ptr::null_mut();
-        let mut num_vert: c_int = 0;
-        let mut ls_groups: *mut c_int = std::ptr::null_mut();
-        let mut n_faces: c_int = 0;
-
-        unsafe {
-            saf_ffi::findLsTriplets(
-                ls_dirs.as_mut_ptr(),
-                n_speakers as c_int,
-                1,
-                &mut u_spkr,
-                &mut num_vert,
-                &mut ls_groups,
-                &mut n_faces,
-            );
-        }
-
-        if num_vert <= 0 || n_faces <= 0 || u_spkr.is_null() || ls_groups.is_null() {
-            if !u_spkr.is_null() {
-                unsafe { libc::free(u_spkr as *mut libc::c_void) };
-            }
-            if !ls_groups.is_null() {
-                unsafe { libc::free(ls_groups as *mut libc::c_void) };
-            }
-            return Err("findLsTriplets failed".to_string());
-        }
-
-        let mut layout_inv_mtx: *mut f32 = std::ptr::null_mut();
-        unsafe {
-            saf_ffi::invertLsMtx3D(u_spkr, ls_groups, n_faces, &mut layout_inv_mtx);
-            libc::free(u_spkr as *mut libc::c_void);
-        }
-
-        if layout_inv_mtx.is_null() {
-            unsafe { libc::free(ls_groups as *mut libc::c_void) };
-            return Err("invertLsMtx3D failed".to_string());
-        }
-
-        Ok(Self {
-            n_speakers,
-            n_faces,
-            ls_groups,
-            layout_inv_mtx,
-        })
-    }
-
-    fn vbap_gains(
-        &self,
-        azimuth_deg: f32,
-        elevation_deg: f32,
-        spread: f32,
-    ) -> Result<Gains, String> {
-        let mut src_dirs = [azimuth_deg, elevation_deg];
-        let spread_deg = Self::normalized_spread_to_degrees(spread);
-        let mut gain_mtx: *mut f32 = std::ptr::null_mut();
-        unsafe {
-            saf_ffi::vbap3D(
-                src_dirs.as_mut_ptr(),
-                1,
-                self.n_speakers as c_int,
-                self.ls_groups,
-                self.n_faces,
-                spread_deg,
-                self.layout_inv_mtx,
-                &mut gain_mtx,
-            );
-        }
-
-        if gain_mtx.is_null() {
-            return Err("vbap3D failed".to_string());
-        }
-
-        let gains = unsafe { std::slice::from_raw_parts(gain_mtx, self.n_speakers) };
-        let out = Gains::from_slice(gains);
-        unsafe { libc::free(gain_mtx as *mut libc::c_void) };
-        Ok(out)
-    }
-}
-
-#[cfg(feature = "saf_vbap")]
-impl Drop for SpartaVbapLayout {
-    fn drop(&mut self) {
-        if !self.ls_groups.is_null() {
-            unsafe { libc::free(self.ls_groups as *mut libc::c_void) };
-        }
-        if !self.layout_inv_mtx.is_null() {
-            unsafe { libc::free(self.layout_inv_mtx as *mut libc::c_void) };
-        }
-    }
-}
-
 impl VbapPanner {
+    // ── Gain source factory ─────────────────────────────────────────────────
+
+    /// Build the appropriate [`VbapGainSource`] for this panner's feature set.
+    ///
+    /// - With `saf_vbap`: creates a [`SpartaVbapLayout`] from the stored speaker
+    ///   directions (exact FFI triangulation).
+    /// - Without `saf_vbap`: creates a [`TableGainSource`] that interpolates from
+    ///   the pre-computed polar spread tables.
+    fn make_gain_source(
+        &self,
+    ) -> Result<Box<dyn gain_source::VbapGainSource + '_>, String> {
+        #[cfg(feature = "saf_vbap")]
+        {
+            let dirs = self
+                .speaker_dirs_deg
+                .as_deref()
+                .ok_or_else(|| {
+                    "Direct VBAP layout unavailable (speaker_dirs_deg missing)".to_string()
+                })?;
+            Ok(Box::new(saf_backend::SpartaVbapLayout::from_speaker_dirs(
+                dirs,
+            )?))
+        }
+        #[cfg(not(feature = "saf_vbap"))]
+        {
+            Ok(Box::new(gain_source::TableGainSource::new(self)))
+        }
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
     #[inline]
     fn map_depth_with_room_ratios(
         depth: f32,
@@ -133,8 +46,7 @@ impl VbapPanner {
             let t = d;
             let a = center_ratio - front_ratio;
             let b = 2.0 * (front_ratio - center_ratio);
-            let mapped = a * t * t * t + b * t * t + center_ratio * t;
-            mapped
+            a * t * t * t + b * t * t + center_ratio * t
         } else {
             let t = -d;
             let a = center_ratio - rear_ratio;
@@ -202,30 +114,11 @@ impl VbapPanner {
         self.n_gtable = self.n_az * self.n_el;
     }
 
-    /// Create a new VBAP panner with the specified speaker layout
+    // ── Constructors ────────────────────────────────────────────────────────
+
+    /// Create a new VBAP panner with the specified speaker layout.
     ///
-    /// # Arguments
-    ///
-    /// * `speaker_dirs_deg` - Speaker positions as [azimuth, elevation] in degrees
-    ///   - Azimuth: 0° = front, -90° = left, 90° = right, ±180° = rear
-    ///   - Elevation: 0° = horizontal, 90° = zenith, -90° = nadir
-    /// * `az_res_deg` - Azimuth resolution in degrees (1-10 recommended)
-    /// * `el_res_deg` - Elevation resolution in degrees (1-10 recommended)
-    /// * `spread` - Spreading coefficient (0.0 = point source, 1.0 = maximum spread)
-    ///
-    /// # Returns
-    ///
-    /// A new `VbapPanner` instance with pre-computed gain tables
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Speaker count is less than 3
-    /// - Resolution is invalid (must be divisor of 360 for azimuth, 180 for elevation)
-    /// - VBAP triangulation fails (speakers not in convex hull)
-    ///
-    /// **Note:** This method requires the `saf_vbap` feature to be enabled.
-    /// Without it, use `load_from_file()` to load pre-generated VBAP tables.
+    /// Requires the `saf_vbap` feature for triangulation via SAF FFI.
     #[cfg(feature = "saf_vbap")]
     pub fn new(
         speaker_dirs_deg: &[[f32; 2]],
@@ -247,7 +140,7 @@ impl VbapPanner {
             return Err("Elevation resolution must be between 1 and 180 degrees".to_string());
         }
 
-        let layout = SpartaVbapLayout::from_speaker_dirs(speaker_dirs_deg)?;
+        let layout = saf_backend::SpartaVbapLayout::from_speaker_dirs(speaker_dirs_deg)?;
         let n_az = ((360.0 / az_res_deg as f32) + 1.5) as usize;
         let n_el = ((180.0 / el_res_deg as f32) + 1.5) as usize;
         let spread_table = SpreadTable {
@@ -287,6 +180,8 @@ impl VbapPanner {
         let p = Self::new(speaker_dirs_deg, az_res_deg, el_res_deg, spread)?;
         p.with_table_mode(table_mode)
     }
+
+    // ── Builder methods ─────────────────────────────────────────────────────
 
     pub fn table_mode(&self) -> VbapTableMode {
         self.table_mode
@@ -352,6 +247,7 @@ impl VbapPanner {
         self.precomputed_effects
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn precompute_effect_tables(
         mut self,
         distance_step: f32,
@@ -428,6 +324,8 @@ impl VbapPanner {
         Ok(self)
     }
 
+    // ── Table generation ────────────────────────────────────────────────────
+
     fn build_cartesian_cache(
         &self,
         x_size: usize,
@@ -447,26 +345,18 @@ impl VbapPanner {
         let z_coords: Vec<f32> = (0..total_z_points)
             .map(|zi| self.table_z_value(zi, z_size, z_neg_size))
             .collect();
-        #[cfg(feature = "saf_vbap")]
-        let direct_layout = self
-            .speaker_dirs_deg
-            .as_deref()
-            .ok_or_else(|| "Direct VBAP layout unavailable (speaker_dirs_deg missing)".to_string())
-            .and_then(SpartaVbapLayout::from_speaker_dirs)?;
+
+        let gain_source = self.make_gain_source()?;
 
         for table_idx in 0..self.spread_tables.len() {
             let mut table = Vec::with_capacity(grid_points * self.n_speakers);
-            #[cfg(feature = "saf_vbap")]
             let spread = self.spread_tables[table_idx].spread;
             for &z in &z_coords {
                 for &y in &y_coords {
                     for &x in &x_coords {
                         let (azimuth, elevation, _) = adm_to_spherical(x, y, z);
-                        #[cfg(feature = "saf_vbap")]
-                        let gains = direct_layout.vbap_gains(azimuth, elevation, spread)?;
-                        #[cfg(not(feature = "saf_vbap"))]
                         let gains =
-                            self.get_gains_with_spread_from_table(azimuth, elevation, table_idx);
+                            gain_source.compute_gains(azimuth, elevation, spread)?;
                         table.extend_from_slice(&gains[..]);
                     }
                 }
@@ -544,19 +434,14 @@ impl VbapPanner {
                 }
             })
             .collect();
-        #[cfg(feature = "saf_vbap")]
-        let direct_layout = self
-            .speaker_dirs_deg
-            .as_deref()
-            .ok_or_else(|| "Direct VBAP layout unavailable (speaker_dirs_deg missing)".to_string())
-            .and_then(SpartaVbapLayout::from_speaker_dirs)?;
+
+        let gain_source = self.make_gain_source()?;
 
         for &z in &raw_z_coords {
             for &y in &raw_y_coords {
                 for &x in &raw_x_coords {
-                    #[cfg(feature = "saf_vbap")]
-                    let gains = self.compute_effect_gains_for_position_with_layout(
-                        &direct_layout,
+                    let gains = self.compute_effect_gains(
+                        &*gain_source,
                         x,
                         y,
                         z,
@@ -574,25 +459,6 @@ impl VbapPanner {
                         room_ratio_lower,
                         room_ratio_center_blend,
                     )?;
-                    #[cfg(not(feature = "saf_vbap"))]
-                    let gains = self.compute_effect_gains_for_position(
-                        x,
-                        y,
-                        z,
-                        spread_min,
-                        spread_max,
-                        distance_model,
-                        spread_from_distance,
-                        spread_distance_range,
-                        spread_distance_curve,
-                        distance_diffuse,
-                        distance_diffuse_threshold,
-                        distance_diffuse_curve,
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                    );
                     table.extend_from_slice(&gains[..]);
                 }
             }
@@ -635,12 +501,8 @@ impl VbapPanner {
         let max_dist = distance_max.max(1e-6);
         let d_size = ((max_dist / distance_step).ceil() as usize) + 1;
         let mut table = Vec::with_capacity(d_size * self.n_el * self.n_az * self.n_speakers);
-        #[cfg(feature = "saf_vbap")]
-        let direct_layout = self
-            .speaker_dirs_deg
-            .as_deref()
-            .ok_or_else(|| "Direct VBAP layout unavailable (speaker_dirs_deg missing)".to_string())
-            .and_then(SpartaVbapLayout::from_speaker_dirs)?;
+
+        let gain_source = self.make_gain_source()?;
 
         for di in 0..d_size {
             let d = (di as f32 * distance_step).min(max_dist);
@@ -649,9 +511,8 @@ impl VbapPanner {
                 for az in 0..self.n_az {
                     let azimuth = (az as f32 * self.az_res_deg as f32) - 180.0;
                     let (x, y, z) = spherical_to_adm(azimuth, elevation, d);
-                    #[cfg(feature = "saf_vbap")]
-                    let gains = self.compute_effect_gains_for_position_with_layout(
-                        &direct_layout,
+                    let gains = self.compute_effect_gains(
+                        &*gain_source,
                         x,
                         y,
                         z,
@@ -669,25 +530,6 @@ impl VbapPanner {
                         room_ratio_lower,
                         room_ratio_center_blend,
                     )?;
-                    #[cfg(not(feature = "saf_vbap"))]
-                    let gains = self.compute_effect_gains_for_position(
-                        x,
-                        y,
-                        z,
-                        spread_min,
-                        spread_max,
-                        distance_model,
-                        spread_from_distance,
-                        spread_distance_range,
-                        spread_distance_curve,
-                        distance_diffuse,
-                        distance_diffuse_threshold,
-                        distance_diffuse_curve,
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                    );
                     table.extend_from_slice(&gains[..]);
                 }
             }
@@ -701,91 +543,18 @@ impl VbapPanner {
         })
     }
 
+    // ── Unified effect gains computation ────────────────────────────────────
+
+    /// Compute VBAP gains for a position with all effects applied (spread,
+    /// distance model, diffuse blending, room ratio scaling).
+    ///
+    /// This replaces the former pair of `compute_effect_gains_for_position`
+    /// (non-SAF) and `compute_effect_gains_for_position_with_layout` (SAF)
+    /// by delegating gain lookup to the [`VbapGainSource`] trait.
     #[allow(clippy::too_many_arguments)]
-    #[cfg(not(feature = "saf_vbap"))]
-    fn compute_effect_gains_for_position(
+    fn compute_effect_gains(
         &self,
-        x: f32,
-        y: f32,
-        z: f32,
-        spread_min: f32,
-        spread_max: f32,
-        distance_model: DistanceModel,
-        spread_from_distance: bool,
-        spread_distance_range: f32,
-        spread_distance_curve: f32,
-        distance_diffuse: bool,
-        distance_diffuse_threshold: f32,
-        distance_diffuse_curve: f32,
-        room_ratio: [f32; 3],
-        room_ratio_rear: f32,
-        room_ratio_lower: f32,
-        room_ratio_center_blend: f32,
-    ) -> Gains {
-        let scaled_x = x * room_ratio[0];
-        let scaled_y = Self::map_depth_with_room_ratios(
-            y,
-            room_ratio[1],
-            room_ratio_rear,
-            room_ratio_center_blend,
-        );
-        let scaled_z = if z >= 0.0 {
-            z * room_ratio[2]
-        } else {
-            z * room_ratio_lower
-        };
-        let (azimuth, elevation, distance) = adm_to_spherical(scaled_x, scaled_y, scaled_z);
-        let spread = if spread_from_distance {
-            let normalized = 1.0 - (distance / spread_distance_range.max(1e-6));
-            let t = normalized
-                .clamp(0.0, 1.0)
-                .powf(spread_distance_curve.max(0.0));
-            (spread_min + t * (spread_max - spread_min)).clamp(0.0, 1.0)
-        } else {
-            spread_min.clamp(0.0, 1.0)
-        };
-
-        let direct = self.get_gains_with_spread(azimuth, elevation, spread);
-        let directional = if distance_diffuse {
-            let mirror = self.get_gains_with_spread(-azimuth, elevation, spread);
-            let raw_distance = (x * x + y * y + z * z).sqrt();
-            let t = (raw_distance / distance_diffuse_threshold.max(1e-6))
-                .min(1.0)
-                .powf(distance_diffuse_curve);
-            let alpha = 0.5 + 0.5 * t;
-            let w_direct = alpha.sqrt();
-            let w_mirror = (1.0 - alpha).sqrt();
-            let mut blended = Gains::zeroed(self.n_speakers);
-            let mut e_direct = 0.0f32;
-            let mut e_blended = 0.0f32;
-            for i in 0..self.n_speakers {
-                let g = w_direct * direct[i] + w_mirror * mirror[i];
-                blended.set(i, g);
-                e_direct += direct[i] * direct[i];
-                e_blended += g * g;
-            }
-            if e_blended > 1e-12 && e_direct > 0.0 {
-                let scale = (e_direct / e_blended).sqrt();
-                for i in 0..self.n_speakers {
-                    blended.set(i, blended[i] * scale);
-                }
-            }
-            blended
-        } else {
-            direct
-        };
-
-        VbapPanner::apply_gain(
-            &directional,
-            calculate_distance_attenuation(distance, distance_model),
-        )
-    }
-
-    #[cfg(feature = "saf_vbap")]
-    #[allow(clippy::too_many_arguments)]
-    fn compute_effect_gains_for_position_with_layout(
-        &self,
-        layout: &SpartaVbapLayout,
+        gain_source: &dyn gain_source::VbapGainSource,
         x: f32,
         y: f32,
         z: f32,
@@ -826,9 +595,9 @@ impl VbapPanner {
             spread_min.clamp(0.0, 1.0)
         };
 
-        let direct = layout.vbap_gains(azimuth, elevation, spread)?;
+        let direct = gain_source.compute_gains(azimuth, elevation, spread)?;
         let directional = if distance_diffuse {
-            let mirror = layout.vbap_gains(-azimuth, elevation, spread)?;
+            let mirror = gain_source.compute_gains(-azimuth, elevation, spread)?;
             let raw_distance = (x * x + y * y + z * z).sqrt();
             let t = (raw_distance / distance_diffuse_threshold.max(1e-6))
                 .min(1.0)
@@ -862,22 +631,8 @@ impl VbapPanner {
         ))
     }
 
-    /// Get VBAP gains for a sound source from cartesian coordinates
-    ///
-    /// # Arguments
-    ///
-    /// * `x`:
-    /// * `y`:
-    /// * `z`:
-    /// * `spread`:
-    ///
-    /// returns: Vec<f32, Global>
-    ///
-    /// # Examples
-    ///
-    /// ```
-    ///
-    /// ```
+    // ── Runtime lookup ──────────────────────────────────────────────────────
+
     pub fn get_gains_cartesian_spread_from_distance(
         &self,
         x: f32,
@@ -888,11 +643,8 @@ impl VbapPanner {
         spread_distance_curve: f32,
     ) -> Gains {
         let z = if self.allow_negative_z { z } else { z.max(0.0) };
-        // Convert rendering position to spherical
         let (final_azimuth, final_elevation, final_distance) = adm_to_spherical(x, y, z);
 
-        // Calculate spread from distance using configurable range and curve
-        // spread = (1.0 - distance/range)^curve, clamped to [0, 1]
         let normalized = 1.0 - (final_distance / spread_distance_range);
         let spread = normalized.max(0.0).min(1.0).powf(spread_distance_curve);
 
@@ -935,30 +687,7 @@ impl VbapPanner {
         )
     }
 
-    /// Get VBAP gains with dynamic spread (interpolated between pre-computed tables)
-    ///
-    /// # Arguments
-    ///
-    /// * `azimuth_deg` - Source azimuth in degrees
-    /// * `elevation_deg` - Source elevation in degrees
-    /// * `spread` - Spread coefficient (0.0 - 1.0, from object spread metadata)
-    ///
-    /// # Returns
-    ///
-    /// A vector of gains interpolated between the two closest spread tables
-    ///
-    /// # Behavior
-    ///
-    /// - Direct `saf_vbap` mode uses `vbap3D` with continuous spread
-    /// - Non-saf_vbap mode interpolates from preloaded tables
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// // With sp_res=0.25, tables at [0.0, 0.25, 0.5, 0.75, 1.0]
-    /// // spread=0.6 → interpolate between table 0.5 (40%) and table 0.75 (60%)
-    /// let gains = panner.get_gains_with_spread(45.0, 0.0, 0.6);
-    /// ```
+    /// Get VBAP gains with dynamic spread (interpolated between pre-computed tables).
     pub fn get_gains_with_spread(
         &self,
         azimuth_deg: f32,
@@ -967,7 +696,6 @@ impl VbapPanner {
     ) -> Gains {
         #[cfg(feature = "saf_vbap")]
         // Direct vbap3D is only used as a last-resort path while spread tables are absent.
-        // In normal runtime, we always use precomputed tables/caches.
         if self
             .spread_tables
             .first()
@@ -975,7 +703,7 @@ impl VbapPanner {
             .unwrap_or(false)
         {
             if let Some(dirs) = self.speaker_dirs_deg.as_deref() {
-                let layout = SpartaVbapLayout::from_speaker_dirs(dirs)
+                let layout = saf_backend::SpartaVbapLayout::from_speaker_dirs(dirs)
                     .expect("failed to initialize direct VBAP layout");
                 return layout
                     .vbap_gains(azimuth_deg, elevation_deg, spread)
@@ -992,38 +720,18 @@ impl VbapPanner {
         let offset10 = (el0_idx * self.n_az + az1_idx) * self.n_speakers;
         let offset11 = (el1_idx * self.n_az + az1_idx) * self.n_speakers;
 
-        //       return self.get_gains_from_table(offset00, offset00, offset00, offset00, 0.0, 0.0, 0);
-
-        // If spread exactly matches a table, use it directly
         if sp0_idx == sp1_idx {
             return self
                 .get_gains_from_4(offset00, offset01, offset10, offset11, azt, elt, sp0_idx);
         }
 
-        // Get gains from both tables
         let g0 = self.get_gains_from_4(offset00, offset01, offset10, offset11, azt, elt, sp0_idx);
         let g1 = self.get_gains_from_4(offset00, offset01, offset10, offset11, azt, elt, sp1_idx);
 
         self.interpol(&g0, &g1, spt)
     }
 
-    #[cfg(not(feature = "saf_vbap"))]
-    fn get_gains_with_spread_from_table(
-        &self,
-        azimuth_deg: f32,
-        elevation_deg: f32,
-        table_idx: usize,
-    ) -> Gains {
-        let (az0_idx, az1_idx, azt) = self.get_azimuth_idx(azimuth_deg);
-        let (el0_idx, el1_idx, elt) = self.get_elevation_idx(elevation_deg);
-
-        let offset00 = (el0_idx * self.n_az + az0_idx) * self.n_speakers;
-        let offset01 = (el1_idx * self.n_az + az0_idx) * self.n_speakers;
-        let offset10 = (el0_idx * self.n_az + az1_idx) * self.n_speakers;
-        let offset11 = (el1_idx * self.n_az + az1_idx) * self.n_speakers;
-
-        self.get_gains_from_4(offset00, offset01, offset10, offset11, azt, elt, table_idx)
-    }
+    // ── Cache lookups ───────────────────────────────────────────────────────
 
     fn get_gains_from_cartesian_cache(&self, x: f32, y: f32, z: f32) -> Gains {
         let Some(cache) = self.cartesian_cache.as_ref() else {
@@ -1231,6 +939,8 @@ impl VbapPanner {
         out
     }
 
+    // ── Interpolation helpers ───────────────────────────────────────────────
+
     fn apply_gain(gains: &Gains, gain: f32) -> Gains {
         let mut gains_out = Gains::new(gains.len);
         for i in 0..gains.len {
@@ -1239,7 +949,6 @@ impl VbapPanner {
         gains_out
     }
 
-    // Linear interpolation
     fn interpol(&self, gains_low: &Gains, gains_high: &Gains, t: f32) -> Gains {
         let mut gains_interp = Gains::new(self.n_speakers);
         for i in 0..self.n_speakers {
@@ -1248,9 +957,7 @@ impl VbapPanner {
         gains_interp
     }
 
-    /// Get gains from a specific spread table (internal helper)
     fn get_gains_from_1(&self, offset: usize, table_idx: usize) -> Gains {
-        // Extract gains from specified table
         Gains::from_slice(&self.spread_tables[table_idx].gtable[offset..offset + self.n_speakers])
     }
 
@@ -1261,7 +968,6 @@ impl VbapPanner {
         t: f32,
         table_idx: usize,
     ) -> Gains {
-        // Extract gains from specified table
         let gains0 = self.get_gains_from_1(offset00, table_idx);
         let gains1 = self.get_gains_from_1(offset01, table_idx);
 
@@ -1278,12 +984,13 @@ impl VbapPanner {
         elt: f32,
         table_idx: usize,
     ) -> Gains {
-        // Extract gains from specified table
         let gains_left = self.get_gains_from_2(offset00, offset01, elt, table_idx);
         let gains_right = self.get_gains_from_2(offset10, offset11, elt, table_idx);
 
         self.interpol(&gains_left, &gains_right, azt)
     }
+
+    // ── Index computation ───────────────────────────────────────────────────
 
     fn get_azimuth_idx(&self, azimuth_deg: f32) -> (usize, usize, f32) {
         let az = (azimuth_deg + 180.0) / self.az_res_deg as f32;
@@ -1319,10 +1026,8 @@ impl VbapPanner {
             return (0, 0, 0.0);
         }
 
-        // Clamp spread to valid range
         let spread_clamped = spread.clamp(0.0, 1.0);
         let max = self.spread_tables.len() - 1;
-        // Find the two tables to interpolate between
         let sp = spread_clamped / self.spread_resolution;
         let sp0_idx = (sp.floor() as usize).min(max);
         let sp1_idx = (sp.ceil() as usize).min(max);
@@ -1331,20 +1036,9 @@ impl VbapPanner {
         (sp0_idx, sp1_idx, spt)
     }
 
-    /// Get VBAP gains for a sound source at the specified direction
-    ///
-    /// # Arguments
-    ///
-    /// * `azimuth_deg` - Source azimuth in degrees (0° = front, ±180° = rear)
-    /// * `elevation_deg` - Source elevation in degrees (0° = horizontal, 90° = zenith)
-    ///
-    /// # Returns
-    ///
-    /// A vector of gains (one per speaker), normalized so that sum(gains²) = 1
-    ///
-    /// # Performance
-    ///
-    /// This is an O(1) lookup operation using the pre-computed gain table
+    // ── Public gain accessors ───────────────────────────────────────────────
+
+    /// Get VBAP gains for a sound source at the specified direction (no spread).
     pub fn get_gains(&self, azimuth_deg: f32, elevation_deg: f32) -> Gains {
         #[cfg(feature = "saf_vbap")]
         if self
@@ -1356,9 +1050,6 @@ impl VbapPanner {
             return self.get_gains_with_spread(azimuth_deg, elevation_deg, 0.0);
         }
 
-        //        return self.get_gains_with_spread(azimuth_deg, elevation_deg, 0.0);
-
-        // Wrap azimuth to [-180, 180]
         let mut az = azimuth_deg;
         while az < -180.0 {
             az += 360.0;
@@ -1367,11 +1058,8 @@ impl VbapPanner {
             az -= 360.0;
         }
 
-        // Clamp elevation to the configured table range.
         let el = elevation_deg.clamp(self.elevation_min(), 90.0);
 
-        // Convert to grid indices (with wrapping/clamping)
-        // SAF uses: azimuth from -180 to +180, elevation from -90 to +90
         let az_idx = ((az + 180.0) / self.az_res_deg as f32).round() as usize % self.n_az;
         let el_idx = (if self.allow_negative_z || self.uses_full_elevation_grid() {
             ((el + 90.0) / self.el_res_deg as f32).round() as usize
@@ -1380,43 +1068,28 @@ impl VbapPanner {
         })
         .min(self.n_el - 1);
 
-        // Calculate offset into flattened gain table
-        // Layout: source_index = el_idx * n_az + az_idx (SAF indexing: i*N_azi + j)
-        // Gain offset: source_index * n_speakers
         let source_idx = el_idx * self.n_az + az_idx;
         let offset = source_idx * self.n_speakers;
 
-        // Extract gains for all speakers from first (or only) spread table
         Gains::from_slice(&self.spread_tables[0].gtable[offset..offset + self.n_speakers])
     }
 
-    /// Get the number of speakers in the layout
     pub fn num_speakers(&self) -> usize {
         self.n_speakers
     }
 
-    /// Get the number of triangles found during VBAP triangulation
-    ///
-    /// This can be useful for debugging speaker layouts. A typical 7.1.4 layout
-    /// will have around 20-30 triangles.
     pub fn num_triangles(&self) -> usize {
         self.n_triangles
     }
 
-    /// Get the azimuth resolution in degrees
     pub fn azimuth_resolution(&self) -> i32 {
         self.az_res_deg
     }
 
-    /// Get the elevation resolution in degrees
     pub fn elevation_resolution(&self) -> i32 {
         self.el_res_deg
     }
 
-    /// Get the spread resolution
-    ///
-    /// Returns 0.0 for single-table mode, or the step between spread tables
-    /// for multi-spread mode (e.g., 0.25 for tables at 0.0, 0.25, 0.5, 0.75, 1.0)
     pub fn spread_resolution(&self) -> f32 {
         self.spread_resolution
     }
