@@ -1,6 +1,7 @@
 pub mod control;
 pub mod adaptive_runtime;
 pub mod resampler_fifo;
+pub mod ring_buffer_io;
 
 #[derive(Debug, Clone)]
 pub struct AdaptiveResamplingConfig {

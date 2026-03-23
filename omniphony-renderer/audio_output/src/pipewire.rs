@@ -24,6 +24,7 @@ use crate::{
         output_to_input_domain_samples, postprocess_interleaved_output, update_far_mode_state,
         update_latency_metrics, zero_pad_tail,
     },
+    ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
 };
 
@@ -423,73 +424,35 @@ impl PipewireWriter {
 
         let max_buffer_fill = self.max_buffer_samples;
         let buffer_before = self.sample_buffer.len();
-
-        let mut sample_idx = 0;
-        let mut wait_count = 0;
-        let mut last_log_time = std::time::Instant::now();
-
-        while sample_idx < samples.len() {
-            // Check buffer fill level
-            let buffer_level = self.sample_buffer.len();
-
-            // If buffer is too full, wait for it to drain
-            if buffer_level >= max_buffer_fill {
-                if wait_count == 0 {
-                    log::trace!(
-                        "Buffer nearly full ({} samples / {} max), waiting for playback to catch up...",
-                        buffer_level,
-                        max_buffer_fill
-                    );
-                }
-                wait_count += 1;
-                thread::sleep(Duration::from_millis(10));
-
-                // Log periodically while waiting
-                if last_log_time.elapsed().as_secs() >= 2 {
-                    log::warn!(
-                        "Still waiting for buffer to drain: {} samples, waited {}ms",
-                        buffer_level,
-                        wait_count * 10
-                    );
-                    last_log_time = std::time::Instant::now();
-                }
-
-                // Safety timeout to prevent infinite loop and memory accumulation
-                if wait_count > 200 {
-                    // 2 seconds max wait instead of 5
-                    log::warn!(
-                        "Buffer drain timeout after 2s - dropping {} remaining samples to prevent OOM",
-                        samples.len() - sample_idx
-                    );
-                    break;
-                }
-                continue;
-            }
-
-            // Push samples one by one until buffer is full or we've pushed everything
-            while sample_idx < samples.len() && self.sample_buffer.len() < max_buffer_fill {
-                if self.sample_buffer.push(samples[sample_idx]).is_ok() {
-                    sample_idx += 1;
-                } else {
-                    // Buffer full, will wait on next iteration
-                    break;
-                }
-            }
+        let report = push_samples_with_backpressure(
+            &self.sample_buffer,
+            samples,
+            max_buffer_fill,
+            10,
+            200,
+        );
+        if report.timed_out {
+            log::warn!(
+                "Buffer drain timeout after 2s - dropping {} remaining samples to prevent OOM",
+                samples.len().saturating_sub(report.pushed_samples)
+            );
         }
 
         // Only log if we had to wait (indicates potential issues)
-        if wait_count > 0 {
+        if report.wait_count > 0 {
             log::trace!(
                 "Buffer drain wait: {} waits ({}ms), pushed {} samples",
-                wait_count,
-                wait_count * 10,
-                sample_idx
+                report.wait_count,
+                report.wait_count * 10,
+                report.pushed_samples
             );
         }
 
         self.bootstrap_write_calls = self.bootstrap_write_calls.saturating_add(1);
-        self.bootstrap_written_samples = self.bootstrap_written_samples.saturating_add(sample_idx);
-        if sample_idx > 0 {
+        self.bootstrap_written_samples = self
+            .bootstrap_written_samples
+            .saturating_add(report.pushed_samples);
+        if report.pushed_samples > 0 {
             self.last_write_ms
                 .store(wallclock_millis(), Ordering::Relaxed);
         }
@@ -497,7 +460,7 @@ impl PipewireWriter {
             log::info!(
                 "PipeWire bootstrap write #{}: pushed {} / {} samples, ring {} -> {}, elapsed {:.0} ms",
                 self.bootstrap_write_calls,
-                sample_idx,
+                report.pushed_samples,
                 samples.len(),
                 buffer_before,
                 self.sample_buffer.len(),
@@ -509,32 +472,19 @@ impl PipewireWriter {
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        let timeout = Duration::from_secs(5);
-        let start = std::time::Instant::now();
-        let mut last_level = self.sample_buffer.len();
-        let mut last_change = start;
-
-        while !self.sample_buffer.is_empty() {
-            if start.elapsed() > timeout {
-                log::warn!(
-                    "Flush timeout - {} samples remaining",
-                    self.sample_buffer.len()
-                );
-                while self.sample_buffer.pop().is_some() {}
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-            let current = self.sample_buffer.len();
-            if current < last_level {
-                last_level = current;
-                last_change = std::time::Instant::now();
-            } else if last_change.elapsed() > Duration::from_millis(500) {
-                // Buffer stalled — likely in recovery mode (callback not consuming).
-                // Drain immediately rather than spinning until timeout.
-                log::debug!("Flush: buffer stalled at {} samples, draining", current);
-                while self.sample_buffer.pop().is_some() {}
-                break;
-            }
+        let report = flush_ring_buffer(
+            &self.sample_buffer,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            Some(Duration::from_millis(500)),
+        );
+        if report.timed_out {
+            log::warn!("Flush timeout - {} samples remaining", report.remaining_samples);
+        } else if report.stalled {
+            log::debug!(
+                "Flush: buffer stalled at {} samples, draining",
+                report.remaining_samples
+            );
         }
 
         log::debug!("PipeWire buffer flushed");

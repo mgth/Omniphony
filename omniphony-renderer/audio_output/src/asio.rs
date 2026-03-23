@@ -21,6 +21,7 @@ use crate::{
         postprocess_interleaved_output, update_far_mode_state, update_latency_metrics,
         zero_pad_tail,
     },
+    ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
 };
 
@@ -501,48 +502,26 @@ impl AsioWriter {
     }
 
     pub fn write_samples(&mut self, samples: &[f32]) -> Result<()> {
-        // Same logic as PipewireWriter
-        let mut sample_idx = 0;
-        let mut wait_count = 0;
-        let _last_log_time = std::time::Instant::now();
-
-        while sample_idx < samples.len() {
-            let buffer_level = self.sample_buffer.len();
-
-            if buffer_level >= self.max_buffer_fill {
-                if wait_count == 0 {
-                    // log::debug!("Buffer full, waiting...");
-                }
-                wait_count += 1;
-                thread::sleep(Duration::from_millis(10));
-
-                if wait_count > 200 {
-                    log::warn!("Buffer drain timeout");
-                    break;
-                }
-                continue;
-            }
-
-            while sample_idx < samples.len() && self.sample_buffer.len() < self.max_buffer_fill {
-                if self.sample_buffer.push(samples[sample_idx]).is_ok() {
-                    sample_idx += 1;
-                } else {
-                    break;
-                }
-            }
+        let report = push_samples_with_backpressure(
+            &self.sample_buffer,
+            samples,
+            self.max_buffer_fill,
+            10,
+            200,
+        );
+        if report.timed_out {
+            log::warn!("Buffer drain timeout");
         }
         Ok(())
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        let timeout = Duration::from_secs(5);
-        let start = std::time::Instant::now();
-        while !self.sample_buffer.is_empty() {
-            if start.elapsed() > timeout {
-                break;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
+        let _ = flush_ring_buffer(
+            &self.sample_buffer,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            None,
+        );
         Ok(())
     }
 
