@@ -1,6 +1,7 @@
 mod decode_impl;
 pub mod decoder_thread;
 pub mod handler;
+mod output_runtime_sync;
 pub mod output;
 
 // Re-export the main render function
