@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::live_params::RendererControl;
+use renderer::live_params::RendererControl;
 
 /// Timeout after which a registered client (one that must heartbeat) is considered dead.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -538,8 +538,8 @@ impl OscSender {
     ///   `/omniphony/meter/object/{idx}/gains`  [f g0, f g1, ..., f gN]
     pub fn send_meter_bundle(
         &self,
-        snapshot: &crate::metering::MeterSnapshot,
-        object_gains: &[(usize, crate::spatial_vbap::Gains)],
+        snapshot: &renderer::metering::MeterSnapshot,
+        object_gains: &[(usize, renderer::spatial_vbap::Gains)],
         decode_time_ms: Option<f32>,
         render_time_ms: Option<f32>,
         write_time_ms: Option<f32>,
@@ -552,7 +552,7 @@ impl OscSender {
     ) -> Result<()> {
         // Build an indexable lookup table once (avoids per-frame HashMap hashing).
         let max_gain_id = object_gains.iter().map(|(idx, _)| *idx).max().unwrap_or(0);
-        let mut gains_by_id: Vec<Option<&crate::spatial_vbap::Gains>> =
+        let mut gains_by_id: Vec<Option<&renderer::spatial_vbap::Gains>> =
             vec![None; max_gain_id.saturating_add(1)];
         for (idx, g) in object_gains {
             if *idx < gains_by_id.len() {
@@ -795,7 +795,7 @@ impl OscSender {
 ///   `/omniphony/config/speakers`    [i count]
 ///   `/omniphony/config/speaker/{i}` [s name, f azimuth_deg, f elevation_deg, f distance_m, i spatialize, f delay_ms, s coord_mode, f x, f y, f z]
 pub fn build_speaker_config_bundle(
-    layout: &crate::speaker_layout::SpeakerLayout,
+    layout: &renderer::speaker_layout::SpeakerLayout,
 ) -> Result<Vec<u8>> {
     let mut messages = Vec::with_capacity(1 + layout.num_speakers());
     messages.push(OscPacket::Message(OscMessage {
@@ -851,7 +851,7 @@ struct SpeakerPatch {
 fn broadcast_speaker_config(
     socket: &UdpSocket,
     clients: &Mutex<OscClients>,
-    layout: &crate::speaker_layout::SpeakerLayout,
+    layout: &renderer::speaker_layout::SpeakerLayout,
 ) {
     match build_speaker_config_bundle(layout) {
         Ok(bytes) => send_raw(socket, clients, &bytes),
@@ -860,7 +860,7 @@ fn broadcast_speaker_config(
 }
 
 fn remap_live_speakers_remove(
-    speakers: &mut std::collections::HashMap<usize, crate::live_params::SpeakerLiveParams>,
+    speakers: &mut std::collections::HashMap<usize, renderer::live_params::SpeakerLiveParams>,
     remove_idx: usize,
 ) {
     let mut next = std::collections::HashMap::new();
@@ -875,7 +875,7 @@ fn remap_live_speakers_remove(
 }
 
 fn remap_live_speakers_move(
-    speakers: &mut std::collections::HashMap<usize, crate::live_params::SpeakerLiveParams>,
+    speakers: &mut std::collections::HashMap<usize, renderer::live_params::SpeakerLiveParams>,
     from: usize,
     to: usize,
 ) {
@@ -1017,7 +1017,7 @@ fn handle_control_message(
 
     if addr == "/omniphony/control/ramp_mode" {
         let Some(mode) = msg.args.first().and_then(|arg| match arg {
-            OscType::String(s) => crate::live_params::RampMode::from_str(s),
+            OscType::String(s) => renderer::live_params::RampMode::from_str(s),
             _ => None,
         }) else {
             return;
@@ -1480,7 +1480,7 @@ fn handle_control_message(
     // ── VBAP table mode: /omniphony/control/vbap/table_mode [s auto|polar|cartesian] ──
     if addr == "/omniphony/control/vbap/table_mode" {
         if let Some(OscType::String(mode)) = msg.args.first() {
-            if let Some(mode) = crate::live_params::LiveVbapTableMode::from_str(mode) {
+            if let Some(mode) = renderer::live_params::LiveVbapTableMode::from_str(mode) {
                 control.live.write().unwrap().vbap_table_mode = mode;
                 set_dirty(control, socket, clients);
                 broadcast_string(
@@ -1613,7 +1613,7 @@ fn handle_control_message(
     // ── Distance attenuation model: /omniphony/control/distance_model s ────
     if addr == "/omniphony/control/distance_model" {
         if let Some(OscType::String(model)) = msg.args.first() {
-            if let Ok(model) = crate::spatial_vbap::DistanceModel::from_str(model) {
+            if let Ok(model) = renderer::spatial_vbap::DistanceModel::from_str(model) {
                 control.live.write().unwrap().distance_model = model;
                 set_dirty(control, socket, clients);
                 broadcast_string(
@@ -1839,7 +1839,7 @@ fn handle_control_message(
         let layout = control.with_editable_layout(|layout| {
             layout
                 .speakers
-                .push(crate::speaker_layout::Speaker::from_polar(
+                .push(renderer::speaker_layout::Speaker::from_polar(
                     name,
                     az.clamp(-180.0, 180.0),
                     el.clamp(-90.0, 90.0),
@@ -2211,8 +2211,8 @@ fn trigger_layout_recompute(
                         log::info!("VBAP updated with new speaker layout");
                         let effective_mode = match control_clone.active_topology().vbap.table_mode()
                         {
-                            crate::spatial_vbap::VbapTableMode::Polar => "polar",
-                            crate::spatial_vbap::VbapTableMode::Cartesian { .. } => "cartesian",
+                            renderer::spatial_vbap::VbapTableMode::Polar => "polar",
+                            renderer::spatial_vbap::VbapTableMode::Cartesian { .. } => "cartesian",
                         };
                         broadcast_string(
                             &socket_clone,
@@ -2280,8 +2280,8 @@ fn build_live_state_bundle(
     let radius_m = control.editable_layout().radius_m;
     let active_topology = control.active_topology();
     let effective_mode = match active_topology.vbap.table_mode() {
-        crate::spatial_vbap::VbapTableMode::Polar => "polar",
-        crate::spatial_vbap::VbapTableMode::Cartesian { .. } => "cartesian",
+        renderer::spatial_vbap::VbapTableMode::Polar => "polar",
+        renderer::spatial_vbap::VbapTableMode::Cartesian { .. } => "cartesian",
     };
 
     let mut messages = vec![
@@ -2742,7 +2742,7 @@ fn save_live_config(
     let live = control.live.read().unwrap();
 
     // Load existing config to preserve non-live-tunable fields.
-    let mut config = crate::config::Config::load_or_default(&path);
+    let mut config = renderer::config::Config::load_or_default(&path);
     let render = config.render.get_or_insert_with(Default::default);
     // Persist current speaker layout directly in config; stop persisting file link.
     let mut layout_snapshot = control.editable_layout();
@@ -2799,16 +2799,16 @@ fn save_live_config(
         Some(false)
     };
     render.vbap_table_mode = match live.vbap_table_mode {
-        crate::live_params::LiveVbapTableMode::Auto => None,
-        crate::live_params::LiveVbapTableMode::Polar => Some("polar".to_string()),
-        crate::live_params::LiveVbapTableMode::Cartesian => Some("cartesian".to_string()),
+        renderer::live_params::LiveVbapTableMode::Auto => None,
+        renderer::live_params::LiveVbapTableMode::Polar => Some("polar".to_string()),
+        renderer::live_params::LiveVbapTableMode::Cartesian => Some("cartesian".to_string()),
     };
     let effective_cartesian = match live.vbap_table_mode {
-        crate::live_params::LiveVbapTableMode::Cartesian => true,
-        crate::live_params::LiveVbapTableMode::Polar => false,
-        crate::live_params::LiveVbapTableMode::Auto => matches!(
+        renderer::live_params::LiveVbapTableMode::Cartesian => true,
+        renderer::live_params::LiveVbapTableMode::Polar => false,
+        renderer::live_params::LiveVbapTableMode::Auto => matches!(
             control.vbap_rebuild_params.map(|p| p.preferred_table_mode),
-            Some(crate::live_params::VbapBackendMode::Cartesian)
+            Some(renderer::live_params::VbapBackendMode::Cartesian)
         ),
     };
     if effective_cartesian {
@@ -2838,12 +2838,12 @@ fn save_live_config(
         None
     };
     render.use_loudness = if live.use_loudness { Some(true) } else { None };
-    render.vbap_distance_model = if live.distance_model != crate::spatial_vbap::DistanceModel::None
-    {
-        Some(live.distance_model.to_string())
-    } else {
-        None
-    };
+    render.vbap_distance_model =
+        if live.distance_model != renderer::spatial_vbap::DistanceModel::None {
+            Some(live.distance_model.to_string())
+        } else {
+            None
+        };
     let [w, l, h] = live.room_ratio;
     let w = round6(w);
     let l = round6(l);
@@ -2872,7 +2872,7 @@ fn save_live_config(
         None
     };
     render.ramp_mode = match control.requested_ramp_mode() {
-        crate::live_params::RampMode::Sample => None,
+        renderer::live_params::RampMode::Sample => None,
         mode => Some(mode.as_str().to_string()),
     };
     if let Some(audio_control) = audio_control {
@@ -2918,7 +2918,7 @@ fn save_live_config(
     }
 }
 
-fn default_layout_export_name(layout: &crate::speaker_layout::SpeakerLayout) -> String {
+fn default_layout_export_name(layout: &renderer::speaker_layout::SpeakerLayout) -> String {
     let mut a: usize = 0;
     let mut b: usize = 0;
     let mut c: usize = 0;

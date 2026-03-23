@@ -6,6 +6,7 @@ use crate::bridge_loader::{LoadedBridge, resolve_bridge_path};
 use crate::cli::command::{
     Cli, LogFormat, LogLevel, OutputBackend, RampModeArg, RenderArgs, VbapTableModeArg,
 };
+use crate::runtime_osc::{OscSender, build_speaker_config_bundle};
 use anyhow::Result;
 use audio_output::AdaptiveResamplingConfig;
 #[cfg(target_os = "linux")]
@@ -1128,7 +1129,7 @@ fn init_render_handler(
         use std::net::SocketAddrV4;
         use std::str::FromStr;
         let osc_addr = SocketAddrV4::from_str(&format!("{}:{}", args.osc_host, args.osc_port))?;
-        match renderer::osc_output::OscSender::new(osc_addr) {
+        match OscSender::new(osc_addr) {
             Ok(sender) => {
                 log::info!("OSC output enabled: {}:{}", args.osc_host, args.osc_port);
                 handler.telemetry.osc_sender = Some(sender);
@@ -1208,7 +1209,7 @@ fn init_render_handler(
         (&handler.spatial_renderer, &handler.telemetry.osc_sender)
     {
         let layout = renderer.speaker_layout();
-        let config_bytes = renderer::osc_output::build_speaker_config_bundle(&layout)?;
+        let config_bytes = build_speaker_config_bundle(&layout)?;
         sender.start_listener(args.osc_rx_port, config_bytes)?;
     }
 

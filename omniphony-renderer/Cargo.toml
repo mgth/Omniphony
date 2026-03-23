@@ -34,6 +34,8 @@ parking_lot = "0.12"
 arc-swap = "1"
 libc = "0.2"
 flate2 = "1.0"
+rosc = "0.10"
+serde_json = "1.0"
 
 [target.'cfg(windows)'.dependencies]
 # Windows API for named pipe support

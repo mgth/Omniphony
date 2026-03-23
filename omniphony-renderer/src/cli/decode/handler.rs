@@ -1,6 +1,7 @@
 use super::output::{AudioSamples, AudioWriter};
 use crate::cli::command::OutputBackend;
 use crate::events::{Configuration, Event};
+use crate::runtime_osc::{ObjectMeta, OscSender};
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
 use audio_output::{AdaptiveResamplingConfig, AudioControl};
@@ -9,7 +10,6 @@ use bridge_api::{RChannelLabel, RCoordinateFormat, RDecodedFrame, RMetadataFrame
 use anyhow::{Result, anyhow};
 use log::Level;
 use renderer::metering::AudioMeter;
-use renderer::osc_output::{ObjectMeta, OscSender};
 use renderer::speaker_layout::SpeakerLayout;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
