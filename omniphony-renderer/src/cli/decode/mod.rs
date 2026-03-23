@@ -5,6 +5,8 @@ mod output_runtime_sync;
 pub mod output;
 mod sample_write;
 mod spatial_metadata;
+pub mod state;
+mod virtual_bed;
 mod writer_lifecycle;
 
 // Re-export the main render function

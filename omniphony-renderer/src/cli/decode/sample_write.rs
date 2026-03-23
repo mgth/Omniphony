@@ -1,9 +1,10 @@
-use super::handler::{BedChannelMapper, ChannelCountCalculator, DecodeSessionState, OutputState, SpatialState, TelemetryState};
+use super::handler::{BedChannelMapper, ChannelCountCalculator};
+use super::state::{DecodeSessionState, OutputState, SpatialState, TelemetryState};
+use super::virtual_bed::{build_virtual_bed_events, build_virtual_bed_objects};
 use super::output::AudioSamples;
 use anyhow::Result;
 use bridge_api::RChannelLabel;
 use bridge_api::RDecodedFrame;
-use crate::runtime_osc::ObjectMeta;
 use std::time::Instant;
 
 pub struct SampleWriteCoordinator<'a> {
@@ -446,102 +447,6 @@ impl<'a> SampleWriteCoordinator<'a> {
     }
 }
 
-fn build_virtual_bed_events(
-    channel_labels: &[RChannelLabel],
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
-) -> Option<Vec<renderer::spatial_renderer::SpatialChannelEvent>> {
-    let has_back = channel_labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
-    let use_7_1 = has_back;
-
-    let mut events: Vec<renderer::spatial_renderer::SpatialChannelEvent> =
-        Vec::with_capacity(channel_labels.len());
-
-    for (channel_idx, label) in channel_labels.iter().enumerate() {
-        let (_name, az_deg, el_deg, dist_m) = match resolve_virtual_bed_pose(*label, use_7_1) {
-            Some(v) => v,
-            None => continue,
-        };
-
-        let (sx, sy, sz) = renderer::spatial_vbap::spherical_to_adm(az_deg, el_deg, dist_m);
-        let (x, y, z) = super::handler::inverse_room_ratio_map_for_virtual_object(
-            sx,
-            sy,
-            sz,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-        );
-        events.push(renderer::spatial_renderer::SpatialChannelEvent {
-            channel_idx,
-            is_bed: false,
-            gain_db: Some(0),
-            ramp_length: Some(0),
-            spread: None,
-            position: Some([x as f64, y as f64, z as f64]),
-            sample_pos: Some(0),
-        });
-    }
-
-    if events.is_empty() {
-        None
-    } else {
-        Some(events)
-    }
-}
-
-fn build_virtual_bed_objects(
-    channel_labels: &[RChannelLabel],
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
-) -> Option<Vec<ObjectMeta>> {
-    let has_back = channel_labels
-        .iter()
-        .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
-    let use_7_1 = has_back;
-
-    let mut objects: Vec<ObjectMeta> = Vec::with_capacity(channel_labels.len());
-    for label in channel_labels {
-        let (name, az_deg, el_deg, dist_m) = match resolve_virtual_bed_pose(*label, use_7_1) {
-            Some(v) => v,
-            None => continue,
-        };
-        let (sx, sy, sz) = renderer::spatial_vbap::spherical_to_adm(az_deg, el_deg, dist_m);
-        let (x, y, z) = super::handler::inverse_room_ratio_map_for_virtual_object(
-            sx,
-            sy,
-            sz,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-        );
-        objects.push(ObjectMeta {
-            name,
-            x,
-            y,
-            z,
-            coord_mode: "cartesian".to_string(),
-            direct_speaker_index: None,
-            gain: 0,
-            priority: 0.0,
-            divergence: 0.0,
-        });
-    }
-    if objects.is_empty() {
-        None
-    } else {
-        Some(objects)
-    }
-}
-
 #[inline]
 fn fill_pcm_f32_reuse(out: &mut Vec<f32>, pcm: &[i32]) {
     const SCALE: f32 = 8_388_608.0;
@@ -550,11 +455,4 @@ fn fill_pcm_f32_reuse(out: &mut Vec<f32>, pcm: &[i32]) {
     for &s in pcm {
         out.push(s as f32 / SCALE);
     }
-}
-
-fn resolve_virtual_bed_pose(
-    label: RChannelLabel,
-    use_7_1: bool,
-) -> Option<(String, f32, f32, f32)> {
-    super::handler::resolve_virtual_bed_pose(label, use_7_1)
 }

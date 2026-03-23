@@ -1,7 +1,8 @@
 use super::decoder_thread::{
     DecodedAudioData, DecoderMessage, DecoderThreadConfig, spawn_decoder_thread,
 };
-use super::handler::{DecodeHandler, FrameHandlerContext, WriterState};
+use super::handler::DecodeHandler;
+use super::state::{FrameHandlerContext, WriterState};
 use crate::bridge_loader::{LoadedBridge, resolve_bridge_path};
 use crate::cli::command::{
     Cli, LogFormat, LogLevel, OutputBackend, RampModeArg, RenderArgSources, RenderArgs,

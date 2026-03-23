@@ -1,4 +1,4 @@
-use super::handler::{OutputState, RuntimeOutputState};
+use super::state::{OutputState, RuntimeOutputState};
 use crate::cli::command::OutputBackend;
 use anyhow::Result;
 use audio_output::{AdaptiveResamplingConfig, AudioControl};
