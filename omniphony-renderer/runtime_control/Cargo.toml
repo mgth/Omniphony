@@ -1,0 +1,13 @@
+[package]
+name = "runtime_control"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.99"
+audio_output = { path = "../audio_output" }
+log = "0.4.27"
+renderer = { path = "../renderer" }
+rosc = "0.10"
+serde_json = "1.0"
+sys = { path = "../sys" }

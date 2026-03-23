@@ -1,6 +1,20 @@
 use rosc::{OscMessage, OscType};
+use std::collections::HashMap;
 
 use crate::context::RuntimeControlContext;
+
+#[derive(Debug, Clone, Default)]
+pub struct SpeakerPatch {
+    pub az: Option<f32>,
+    pub el: Option<f32>,
+    pub distance: Option<f32>,
+    pub x: Option<f32>,
+    pub y: Option<f32>,
+    pub z: Option<f32>,
+    pub coord_mode: Option<String>,
+    pub spatialize: Option<bool>,
+    pub name: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub enum BroadcastValue {
@@ -20,6 +34,7 @@ pub struct BroadcastUpdate {
 pub struct ControlEffects {
     pub mark_dirty: bool,
     pub trigger_layout_recompute: bool,
+    pub speaker_layout_broadcast: Option<renderer::speaker_layout::SpeakerLayout>,
     pub broadcasts: Vec<BroadcastUpdate>,
     pub log_message: Option<String>,
 }
@@ -62,6 +77,97 @@ fn parse_f32_arg(arg: Option<&OscType>) -> Option<f32> {
         Some(OscType::Int(i)) => Some(*i as f32),
         _ => None,
     }
+}
+
+fn remap_live_speakers_remove(
+    speakers: &mut std::collections::HashMap<usize, renderer::live_params::SpeakerLiveParams>,
+    remove_idx: usize,
+) {
+    let mut next = std::collections::HashMap::new();
+    for (idx, params) in speakers.drain() {
+        if idx == remove_idx {
+            continue;
+        }
+        let mapped = if idx > remove_idx { idx - 1 } else { idx };
+        next.insert(mapped, params);
+    }
+    *speakers = next;
+}
+
+fn remap_live_speakers_move(
+    speakers: &mut std::collections::HashMap<usize, renderer::live_params::SpeakerLiveParams>,
+    from: usize,
+    to: usize,
+) {
+    if from == to {
+        return;
+    }
+    let moved = speakers.remove(&from);
+    let mut next = std::collections::HashMap::new();
+    for (idx, params) in speakers.drain() {
+        let mapped = if from < to {
+            if idx > from && idx <= to {
+                idx - 1
+            } else {
+                idx
+            }
+        } else if idx >= to && idx < from {
+            idx + 1
+        } else {
+            idx
+        };
+        next.insert(mapped, params);
+    }
+    if let Some(params) = moved {
+        next.insert(to, params);
+    }
+    *speakers = next;
+}
+
+fn apply_pending_speakers(
+    pending: &mut HashMap<usize, SpeakerPatch>,
+    ctx: &RuntimeControlContext,
+) -> renderer::speaker_layout::SpeakerLayout {
+    let layout = ctx.renderer.with_editable_layout(|layout| {
+        for (idx, patch) in pending.iter() {
+            if let Some(speaker) = layout.speakers.get_mut(*idx) {
+                if let Some(az) = patch.az {
+                    speaker.azimuth = az;
+                }
+                if let Some(el) = patch.el {
+                    speaker.elevation = el;
+                }
+                if let Some(dist) = patch.distance {
+                    speaker.distance = dist;
+                }
+                if let Some(x) = patch.x {
+                    speaker.x = x.clamp(-1.0, 1.0);
+                }
+                if let Some(y) = patch.y {
+                    speaker.y = y.clamp(-1.0, 1.0);
+                }
+                if let Some(z) = patch.z {
+                    speaker.z = z.clamp(-1.0, 1.0);
+                }
+                if let Some(coord_mode) = &patch.coord_mode {
+                    speaker.coord_mode = if coord_mode.eq_ignore_ascii_case("cartesian") {
+                        "cartesian".to_string()
+                    } else {
+                        "polar".to_string()
+                    };
+                }
+                if let Some(spatialize) = patch.spatialize {
+                    speaker.spatialize = spatialize;
+                }
+                if let Some(name) = &patch.name {
+                    speaker.name = name.clone();
+                }
+            }
+        }
+        layout.clone()
+    });
+    pending.clear();
+    layout
 }
 
 pub fn apply_simple_osc_control(
@@ -726,6 +832,247 @@ pub fn apply_simple_osc_control(
             }
             return Some(effects);
         }
+    }
+
+    None
+}
+
+pub fn apply_speaker_osc_control(
+    msg: &OscMessage,
+    ctx: &RuntimeControlContext,
+    pending_speakers: &mut HashMap<usize, SpeakerPatch>,
+) -> Option<ControlEffects> {
+    let addr = msg.addr.as_str();
+    let mut effects = ControlEffects::default();
+
+    if addr == "/omniphony/control/speakers/add" {
+        pending_speakers.clear();
+        let idx = ctx.renderer.editable_layout().speakers.len();
+        let default_name = format!("spk-{}", idx);
+        let name = match msg.args.first() {
+            Some(OscType::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+            _ => default_name,
+        };
+        let az = parse_f32_arg(msg.args.get(1)).unwrap_or(0.0);
+        let el = parse_f32_arg(msg.args.get(2)).unwrap_or(0.0);
+        let distance = parse_f32_arg(msg.args.get(3)).unwrap_or(1.0).max(0.01);
+        let spatialize = parse_bool_arg(msg.args.get(4)).unwrap_or(true);
+        let delay_ms = parse_f32_arg(msg.args.get(5)).unwrap_or(0.0).max(0.0);
+        let layout = ctx.renderer.with_editable_layout(|layout| {
+            layout
+                .speakers
+                .push(renderer::speaker_layout::Speaker::from_polar(
+                    name,
+                    az.clamp(-180.0, 180.0),
+                    el.clamp(-90.0, 90.0),
+                    distance,
+                    spatialize,
+                    delay_ms,
+                ));
+            layout.clone()
+        });
+        if delay_ms > 0.0 {
+            ctx.renderer
+                .live
+                .write()
+                .unwrap()
+                .speakers
+                .entry(idx)
+                .or_default()
+                .delay_ms = delay_ms;
+            ctx.renderer.mark_speaker_params_dirty();
+        }
+        effects.mark_dirty = true;
+        effects.trigger_layout_recompute = true;
+        effects.speaker_layout_broadcast = Some(layout);
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/speakers/remove" {
+        pending_speakers.clear();
+        let remove_idx = match msg.args.first() {
+            Some(OscType::Int(v)) if *v >= 0 => *v as usize,
+            Some(OscType::Float(v)) if *v >= 0.0 => *v as usize,
+            _ => return Some(effects),
+        };
+        let Some(layout) = ctx.renderer.with_editable_layout(|layout| {
+            if remove_idx >= layout.speakers.len() {
+                return None;
+            }
+            layout.speakers.remove(remove_idx);
+            Some(layout.clone())
+        }) else {
+            return Some(effects);
+        };
+        {
+            let mut live = ctx.renderer.live.write().unwrap();
+            remap_live_speakers_remove(&mut live.speakers, remove_idx);
+        }
+        ctx.renderer.mark_speaker_params_dirty();
+        effects.mark_dirty = true;
+        effects.trigger_layout_recompute = true;
+        effects.speaker_layout_broadcast = Some(layout);
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/speakers/move" {
+        pending_speakers.clear();
+        let from_idx = match msg.args.first() {
+            Some(OscType::Int(v)) if *v >= 0 => *v as usize,
+            Some(OscType::Float(v)) if *v >= 0.0 => *v as usize,
+            _ => return Some(effects),
+        };
+        let to_idx = match msg.args.get(1) {
+            Some(OscType::Int(v)) if *v >= 0 => *v as usize,
+            Some(OscType::Float(v)) if *v >= 0.0 => *v as usize,
+            _ => return Some(effects),
+        };
+        let Some(layout) = ctx.renderer.with_editable_layout(|layout| {
+            let len = layout.speakers.len();
+            if from_idx >= len || to_idx >= len || from_idx == to_idx {
+                return None;
+            }
+            let speaker = layout.speakers.remove(from_idx);
+            layout.speakers.insert(to_idx, speaker);
+            Some(layout.clone())
+        }) else {
+            return Some(effects);
+        };
+        {
+            let mut live = ctx.renderer.live.write().unwrap();
+            remap_live_speakers_move(&mut live.speakers, from_idx, to_idx);
+        }
+        ctx.renderer.mark_speaker_params_dirty();
+        effects.mark_dirty = true;
+        effects.trigger_layout_recompute = true;
+        effects.speaker_layout_broadcast = Some(layout);
+        return Some(effects);
+    }
+
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/speaker/") {
+        let parts: Vec<&str> = rest.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            return Some(effects);
+        }
+        let Ok(idx) = parts[0].parse::<usize>() else {
+            return Some(effects);
+        };
+        let field = parts[1];
+        if field == "mute" {
+            if let Some(muted) = parse_bool_arg(msg.args.first()) {
+                ctx.renderer
+                    .live
+                    .write()
+                    .unwrap()
+                    .speakers
+                    .entry(idx)
+                    .or_default()
+                    .muted = muted;
+                ctx.renderer.mark_speaker_params_dirty();
+                effects.mark_dirty = true;
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: format!("/omniphony/state/speaker/{}/mute", idx),
+                    value: BroadcastValue::Int(if muted { 1 } else { 0 }),
+                });
+                effects.log_message = Some(format!("OSC: speaker[{}] mute → {}", idx, muted));
+            }
+            return Some(effects);
+        }
+        if field == "spatialize" {
+            if let Some(spatialize) = parse_bool_arg(msg.args.first()) {
+                let patch = pending_speakers.entry(idx).or_default();
+                patch.spatialize = Some(spatialize);
+            }
+            return Some(effects);
+        }
+        if field == "name" {
+            if let Some(OscType::String(name)) = msg.args.first() {
+                let trimmed = name.trim();
+                if !trimmed.is_empty() {
+                    let patch = pending_speakers.entry(idx).or_default();
+                    patch.name = Some(trimmed.to_string());
+                }
+            }
+            return Some(effects);
+        }
+        if field == "coord_mode" {
+            if let Some(OscType::String(mode)) = msg.args.first() {
+                let normalized = if mode.eq_ignore_ascii_case("cartesian") {
+                    "cartesian"
+                } else {
+                    "polar"
+                };
+                let patch = pending_speakers.entry(idx).or_default();
+                patch.coord_mode = Some(normalized.to_string());
+            }
+            return Some(effects);
+        }
+        if let Some(f) = parse_f32_arg(msg.args.first()) {
+            let patch = pending_speakers.entry(idx).or_default();
+            match field {
+                "az" => patch.az = Some(f),
+                "el" => patch.el = Some(f),
+                "distance" => patch.distance = Some(f),
+                "x" => patch.x = Some(f.clamp(-1.0, 1.0)),
+                "y" => patch.y = Some(f.clamp(-1.0, 1.0)),
+                "z" => patch.z = Some(f.clamp(-1.0, 1.0)),
+                "gain" => {
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .speakers
+                        .entry(idx)
+                        .or_default()
+                        .gain = f;
+                    ctx.renderer.mark_speaker_params_dirty();
+                    effects.mark_dirty = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: format!("/omniphony/state/speaker/{}/gain", idx),
+                        value: BroadcastValue::Float(f),
+                    });
+                }
+                "delay" => {
+                    let delay_ms = f.max(0.0);
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .speakers
+                        .entry(idx)
+                        .or_default()
+                        .delay_ms = delay_ms;
+                    ctx.renderer.mark_speaker_params_dirty();
+                    ctx.renderer.with_editable_layout(|layout| {
+                        if let Some(spk) = layout.speakers.get_mut(idx) {
+                            spk.delay_ms = delay_ms;
+                        }
+                    });
+                    effects.mark_dirty = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: format!("/omniphony/state/speaker/{}/delay", idx),
+                        value: BroadcastValue::Float(delay_ms),
+                    });
+                    effects.log_message =
+                        Some(format!("OSC: speaker[{}] delay → {:.2} ms", idx, delay_ms));
+                }
+                _ => {}
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/speakers/apply" {
+        let layout = apply_pending_speakers(pending_speakers, ctx);
+        effects.mark_dirty = true;
+        effects.trigger_layout_recompute = true;
+        effects.speaker_layout_broadcast = Some(layout);
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/speakers/reset" {
+        pending_speakers.clear();
+        return Some(effects);
     }
 
     None

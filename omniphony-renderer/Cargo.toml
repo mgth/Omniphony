@@ -1,5 +1,5 @@
 [workspace]
-members = ["renderer", "audio_output", "sys", "bridge_api", "spdif"]
+members = ["renderer", "audio_output", "sys", "bridge_api", "spdif", "runtime_control"]
 resolver = "2"
 
 [package]
@@ -23,6 +23,7 @@ audio_output = { version = "0.1.0", path = "audio_output" }
 sys = { version = "0.1.0", path = "sys" }
 bridge_api = { version = "0.1.0", path = "bridge_api" }
 spdif = { version = "0.1.0", path = "spdif" }
+runtime_control = { version = "0.1.0", path = "runtime_control" }
 abi_stable = "0.11"
 libloading = "0.8"
 
