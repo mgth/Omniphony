@@ -154,8 +154,8 @@ fn create_new_pipe_server_overlapped(
 ) -> Result<windows::Win32::Foundation::HANDLE> {
     use windows::Win32::Foundation::{BOOL, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::Security::{
-        InitializeSecurityDescriptor, SetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR,
-        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+        InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl,
     };
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
     use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
@@ -294,7 +294,9 @@ fn create_new_pipe_server_overlapped(
                     )
                     .into())
                 } else {
-                    Err(anyhow::anyhow!("ConnectNamedPipe completion failed: WIN32={err}"))
+                    Err(anyhow::anyhow!(
+                        "ConnectNamedPipe completion failed: WIN32={err}"
+                    ))
                 }
             }
         }

@@ -127,10 +127,7 @@ pub struct RenderArgs {
     /// Output device or target name.
     /// PipeWire: node target name (e.g. "omniphony_router")
     /// ASIO: device name as listed by `orender list-asio-devices`
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "windows"
-    ))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[arg(
         long,
         value_name = "NAME",

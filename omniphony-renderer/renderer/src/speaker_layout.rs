@@ -137,7 +137,12 @@ fn cartesian_to_spherical(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
     (az, el, dist.max(0.01))
 }
 
-fn speaker_with_distance(name: impl Into<String>, azimuth: f32, elevation: f32, distance: f32) -> Speaker {
+fn speaker_with_distance(
+    name: impl Into<String>,
+    azimuth: f32,
+    elevation: f32,
+    distance: f32,
+) -> Speaker {
     Speaker::from_polar(name, azimuth, elevation, distance, true, 0.0)
 }
 
@@ -169,26 +174,27 @@ impl<'de> Deserialize<'de> for Speaker {
         } else {
             "polar".to_string()
         };
-        let (azimuth, elevation, distance, x, y, z) = if let (Some(x), Some(y), Some(z)) = (raw.x, raw.y, raw.z) {
-            let x = x.clamp(-1.0, 1.0);
-            let y = y.clamp(-1.0, 1.0);
-            let z = z.clamp(-1.0, 1.0);
-            let (az, el, dist) = cartesian_to_spherical(x, y, z);
-            (
-                raw.azimuth.unwrap_or(az),
-                raw.elevation.unwrap_or(el),
-                raw.distance.unwrap_or(dist).max(0.01),
-                x,
-                y,
-                z,
-            )
-        } else {
-            let az = raw.azimuth.unwrap_or(0.0);
-            let el = raw.elevation.unwrap_or(0.0);
-            let dist = raw.distance.unwrap_or(1.0).max(0.01);
-            let (x, y, z) = spherical_to_cartesian(az, el, dist);
-            (az, el, dist, x, y, z)
-        };
+        let (azimuth, elevation, distance, x, y, z) =
+            if let (Some(x), Some(y), Some(z)) = (raw.x, raw.y, raw.z) {
+                let x = x.clamp(-1.0, 1.0);
+                let y = y.clamp(-1.0, 1.0);
+                let z = z.clamp(-1.0, 1.0);
+                let (az, el, dist) = cartesian_to_spherical(x, y, z);
+                (
+                    raw.azimuth.unwrap_or(az),
+                    raw.elevation.unwrap_or(el),
+                    raw.distance.unwrap_or(dist).max(0.01),
+                    x,
+                    y,
+                    z,
+                )
+            } else {
+                let az = raw.azimuth.unwrap_or(0.0);
+                let el = raw.elevation.unwrap_or(0.0);
+                let dist = raw.distance.unwrap_or(1.0).max(0.01);
+                let (x, y, z) = spherical_to_cartesian(az, el, dist);
+                (az, el, dist, x, y, z)
+            };
         Ok(Self {
             name: raw.name,
             azimuth,
@@ -390,7 +396,8 @@ impl SpeakerLayout {
                 } else {
                     speaker.z * room_ratio_lower
                 };
-                let (az, el, _) = crate::spatial_vbap::adm_to_spherical(scaled_x, scaled_y, scaled_z);
+                let (az, el, _) =
+                    crate::spatial_vbap::adm_to_spherical(scaled_x, scaled_y, scaled_z);
                 [az, el]
             } else {
                 speaker.position()

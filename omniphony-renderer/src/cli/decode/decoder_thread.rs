@@ -140,7 +140,9 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         log::info!("Detected raw stream");
                     }
                 } else if is_spdif == Some(false) && chunk_contains_spdif_sync {
-                    log::warn!("Recovered S/PDIF sync after raw detection; switching parser back to IEC61937 mode");
+                    log::warn!(
+                        "Recovered S/PDIF sync after raw detection; switching parser back to IEC61937 mode"
+                    );
                     is_spdif = Some(true);
                     spdif_parser.reset();
                 }
@@ -174,11 +176,8 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         .iter()
                         .filter(|frame| !frame.metadata.is_empty())
                         .count();
-                    let metadata_payloads: usize = result
-                        .frames
-                        .iter()
-                        .map(|frame| frame.metadata.len())
-                        .sum();
+                    let metadata_payloads: usize =
+                        result.frames.iter().map(|frame| frame.metadata.len()).sum();
                     let metadata_summary = result
                         .frames
                         .iter()
@@ -209,8 +208,10 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         .iter()
                         .filter(|frame| frame.is_new_segment)
                         .count();
-                    let sample_count_min = result.frames.iter().map(|frame| frame.sample_count).min();
-                    let sample_count_max = result.frames.iter().map(|frame| frame.sample_count).max();
+                    let sample_count_min =
+                        result.frames.iter().map(|frame| frame.sample_count).min();
+                    let sample_count_max =
+                        result.frames.iter().map(|frame| frame.sample_count).max();
 
                     if matches!(transport, RInputTransport::Iec61937) {
                         let should_warn = result.did_reset
@@ -263,8 +264,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     let per_frame_decode_time_ms = decode_time_ms / frame_count_in_packet;
                     let frames_in_packet = result.frames.len();
                     frames_emitted += frames_in_packet;
-                    emitted_samples_total =
-                        emitted_samples_total.saturating_add(emitted_samples);
+                    emitted_samples_total = emitted_samples_total.saturating_add(emitted_samples);
                     for frame in result.frames {
                         frame_count += 1;
                         let sent_at = Instant::now();

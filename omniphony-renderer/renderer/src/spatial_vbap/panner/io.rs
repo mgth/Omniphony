@@ -450,12 +450,7 @@ impl VbapPanner {
                     offset += 1;
 
                     speakers.push(crate::speaker_layout::Speaker::from_polar(
-                        name,
-                        azimuth,
-                        elevation,
-                        1.0,
-                        spatialize,
-                        0.0,
+                        name, azimuth, elevation, 1.0, spatialize, 0.0,
                     ));
                 }
 
@@ -617,12 +612,7 @@ impl VbapPanner {
                     offset += 1;
 
                     speakers.push(crate::speaker_layout::Speaker::from_polar(
-                        name,
-                        azimuth,
-                        elevation,
-                        1.0,
-                        spatialize,
-                        0.0,
+                        name, azimuth, elevation, 1.0, spatialize, 0.0,
                     ));
                 }
 

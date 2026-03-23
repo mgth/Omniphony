@@ -83,7 +83,11 @@ pub struct RenderConfig {
     pub osc_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub osc_port: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none", alias = "sink", alias = "asio_device_name")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "sink",
+        alias = "asio_device_name"
+    )]
     pub output_device: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pw_latency: Option<u32>,

@@ -124,10 +124,7 @@ impl AudioWriter {
         samples: &AudioSamples,
         _channel_count: usize,
     ) -> Result<()> {
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "windows"
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let _ = samples;
 
         match self {
