@@ -1363,6 +1363,18 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateAdaptiveResamplingHardRecoverInFarMode { enabled } => {
+                s.adaptive_resampling_hard_recover_in_far_mode = Some(if enabled { 1 } else { 0 });
+                (
+                    Some((
+                        "adaptive_resampling:hard_recover_in_far_mode",
+                        serde_json::json!({
+                            "enabled": s.adaptive_resampling_hard_recover_in_far_mode
+                        }),
+                    )),
+                    removed_ids,
+                )
+            }
             OscEvent::StateAdaptiveResamplingFarModeReturnFadeInMs { value } => {
                 s.adaptive_resampling_far_mode_return_fade_in_ms = Some(value.round() as i64);
                 (

@@ -193,7 +193,9 @@ const loudnessToggleEl = document.getElementById('loudnessToggle');
 const adaptiveResamplingToggleEl = document.getElementById('adaptiveResamplingToggle');
 const adaptiveFarModeToggleEl = document.getElementById('adaptiveFarModeToggle');
 const adaptiveFarSilenceToggleEl = document.getElementById('adaptiveFarSilenceToggle');
+const adaptiveFarHardRecoverToggleEl = document.getElementById('adaptiveFarHardRecoverToggle');
 const adaptiveFarSilenceRowEl = document.getElementById('adaptiveFarSilenceRow');
+const adaptiveFarHardRecoverRowEl = document.getElementById('adaptiveFarHardRecoverRow');
 const adaptiveFarFadeRowEl = document.getElementById('adaptiveFarFadeRow');
 const adaptiveFarFadeInMsInputEl = document.getElementById('adaptiveFarFadeInMsInput');
 const spreadMinSliderEl = document.getElementById('spreadMinSlider');
@@ -746,6 +748,7 @@ let loudnessGain = null;
 let adaptiveResamplingEnabled = false;
 let adaptiveResamplingEnableFarMode = true;
 let adaptiveResamplingForceSilenceInFarMode = false;
+let adaptiveResamplingHardRecoverInFarMode = false;
 let adaptiveResamplingFarModeReturnFadeInMs = 0;
 let adaptiveResamplingKpNear = 0.00001;
 let adaptiveResamplingKpFar = 0.00002;
@@ -3908,6 +3911,13 @@ function renderAdaptiveResamplingUI() {
     adaptiveFarSilenceRowEl.classList.toggle('adaptive-param-disabled', !farModeEnabled);
   }
   const farSilenceEnabled = farModeEnabled && adaptiveResamplingForceSilenceInFarMode === true;
+  if (adaptiveFarHardRecoverToggleEl) {
+    adaptiveFarHardRecoverToggleEl.checked = adaptiveResamplingHardRecoverInFarMode === true;
+    adaptiveFarHardRecoverToggleEl.disabled = !farSilenceEnabled;
+  }
+  if (adaptiveFarHardRecoverRowEl) {
+    adaptiveFarHardRecoverRowEl.classList.toggle('adaptive-param-disabled', !farSilenceEnabled);
+  }
   if (adaptiveFarFadeRowEl) {
     adaptiveFarFadeRowEl.classList.toggle('adaptive-param-disabled', !farSilenceEnabled);
   }
@@ -6813,6 +6823,15 @@ if (adaptiveFarSilenceToggleEl) {
   });
 }
 
+if (adaptiveFarHardRecoverToggleEl) {
+  adaptiveFarHardRecoverToggleEl.addEventListener('change', () => {
+    const enable = adaptiveFarHardRecoverToggleEl.checked ? 1 : 0;
+    adaptiveResamplingHardRecoverInFarMode = enable === 1;
+    updateAdaptiveResamplingUI();
+    invoke('control_adaptive_resampling_hard_recover_in_far_mode', { enable });
+  });
+}
+
 if (adaptiveFarFadeInMsInputEl) {
   adaptiveFarFadeInMsInputEl.addEventListener('focus', () => {
     adaptiveFarFadeInMsEditing = true;
@@ -6829,20 +6848,18 @@ if (adaptiveResamplingAdvancedApplyBtnEl) {
   adaptiveResamplingAdvancedApplyBtnEl.addEventListener('click', () => {
     if (adaptiveResamplingAdvancedApplyBtnEl.disabled) return;
     const kpNear = Math.max(0.00000001, Number(adaptiveKpNearInputEl?.value) || 0);
-    const kpFar = Math.max(0.00000001, Number(adaptiveKpFarInputEl?.value) || 0);
     const ki = Math.max(0.00000001, Number(adaptiveKiInputEl?.value) || 0);
     const maxAdjust = Math.max(0.000001, Number(adaptiveMaxAdjustInputEl?.value) || 0);
-    const maxAdjustFar = Math.max(0.000001, Number(adaptiveMaxAdjustFarInputEl?.value) || 0);
     const nearFarThresholdMs = Math.max(1, Math.round(Number(adaptiveNearFarThresholdInputEl?.value) || 0));
     const updateIntervalCallbacks = Math.max(1, Math.round(Number(adaptiveUpdateIntervalCallbacksInputEl?.value) || 0));
     const measurementSmoothingAlpha = Math.min(1, Math.max(0, Number(adaptiveMeasurementSmoothingAlphaInputEl?.value) || 0));
     const farModeReturnFadeInMs = Math.max(0, Math.round(Number(adaptiveFarFadeInMsInputEl?.value) || 0));
 
     adaptiveResamplingKpNear = kpNear;
-    adaptiveResamplingKpFar = kpFar;
+    adaptiveResamplingKpFar = kpNear;
     adaptiveResamplingKi = ki;
     adaptiveResamplingMaxAdjust = maxAdjust;
-    adaptiveResamplingMaxAdjustFar = maxAdjustFar;
+    adaptiveResamplingMaxAdjustFar = maxAdjust;
     adaptiveResamplingNearFarThresholdMs = nearFarThresholdMs;
     adaptiveResamplingUpdateIntervalCallbacks = updateIntervalCallbacks;
     adaptiveResamplingMeasurementSmoothingAlpha = measurementSmoothingAlpha;
@@ -6850,10 +6867,8 @@ if (adaptiveResamplingAdvancedApplyBtnEl) {
     updateAdaptiveResamplingUI();
 
     invoke('control_adaptive_resampling_kp_near', { value: kpNear });
-    invoke('control_adaptive_resampling_kp_far', { value: kpFar });
     invoke('control_adaptive_resampling_ki', { value: ki });
     invoke('control_adaptive_resampling_max_adjust', { value: maxAdjust });
-    invoke('control_adaptive_resampling_max_adjust_far', { value: maxAdjustFar });
     invoke('control_adaptive_resampling_near_far_threshold_ms', { value: nearFarThresholdMs });
     invoke('control_adaptive_resampling_update_interval_callbacks', { value: updateIntervalCallbacks });
     invoke('control_adaptive_resampling_measurement_smoothing_alpha', { value: measurementSmoothingAlpha });
@@ -8457,6 +8472,10 @@ function applyInitState(payload) {
     adaptiveResamplingForceSilenceInFarMode =
       payload.adaptiveResamplingForceSilenceInFarMode !== 0;
   }
+  if (typeof payload.adaptiveResamplingHardRecoverInFarMode === 'number') {
+    adaptiveResamplingHardRecoverInFarMode =
+      payload.adaptiveResamplingHardRecoverInFarMode !== 0;
+  }
   if (typeof payload.adaptiveResamplingFarModeReturnFadeInMs === 'number') {
     adaptiveResamplingFarModeReturnFadeInMs =
       payload.adaptiveResamplingFarModeReturnFadeInMs;
@@ -8977,6 +8996,11 @@ listen('adaptive_resampling:enable_far_mode', ({ payload }) => {
 
 listen('adaptive_resampling:force_silence_in_far_mode', ({ payload }) => {
   adaptiveResamplingForceSilenceInFarMode = Number(payload.enabled) !== 0;
+  updateAdaptiveResamplingUI();
+});
+
+listen('adaptive_resampling:hard_recover_in_far_mode', ({ payload }) => {
+  adaptiveResamplingHardRecoverInFarMode = Number(payload.enabled) !== 0;
   updateAdaptiveResamplingUI();
 });
 

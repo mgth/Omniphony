@@ -324,6 +324,21 @@ fn control_adaptive_resampling_force_silence_in_far_mode(
 }
 
 #[tauri::command]
+fn control_adaptive_resampling_hard_recover_in_far_mode(
+    state: State<SharedState>,
+    enable: i32,
+) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/adaptive_resampling/hard_recover_in_far_mode"
+                .to_string(),
+            value: if enable != 0 { 1 } else { 0 },
+        },
+    );
+}
+
+#[tauri::command]
 fn control_adaptive_resampling_far_mode_return_fade_in_ms(
     state: State<SharedState>,
     value: i32,
@@ -1749,6 +1764,7 @@ fn main() {
             control_adaptive_resampling,
             control_adaptive_resampling_enable_far_mode,
             control_adaptive_resampling_force_silence_in_far_mode,
+            control_adaptive_resampling_hard_recover_in_far_mode,
             control_adaptive_resampling_far_mode_return_fade_in_ms,
             control_latency_target,
             control_adaptive_resampling_kp_near,

@@ -1068,6 +1068,23 @@ fn handle_control_message(
         return;
     }
 
+    if addr == "/omniphony/control/adaptive_resampling/hard_recover_in_far_mode" {
+        let enabled = match msg.args.first() {
+            Some(OscType::Int(i)) => *i != 0,
+            Some(OscType::Float(f)) => *f != 0.0,
+            _ => return,
+        };
+        control.set_requested_adaptive_resampling_hard_recover_in_far_mode(enabled);
+        set_dirty(control, socket, clients);
+        broadcast_int(
+            socket,
+            clients,
+            "/omniphony/state/adaptive_resampling/hard_recover_in_far_mode",
+            if enabled { 1 } else { 0 },
+        );
+        return;
+    }
+
     if addr == "/omniphony/control/adaptive_resampling/far_mode_return_fade_in_ms" {
         let value = match msg.args.first() {
             Some(OscType::Int(i)) if *i >= 0 => *i as u32,
@@ -2370,6 +2387,16 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
             )],
         }),
         OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/adaptive_resampling/hard_recover_in_far_mode".to_string(),
+            args: vec![OscType::Int(
+                if control.requested_adaptive_resampling_hard_recover_in_far_mode() {
+                    1
+                } else {
+                    0
+                },
+            )],
+        }),
+        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms".to_string(),
             args: vec![OscType::Float(
                 control.requested_adaptive_resampling_far_mode_return_fade_in_ms() as f32,
@@ -2760,6 +2787,8 @@ fn save_live_config(
         Some(control.requested_adaptive_resampling_enable_far_mode());
     render.adaptive_resampling_force_silence_in_far_mode =
         Some(control.requested_adaptive_resampling_force_silence_in_far_mode());
+    render.adaptive_resampling_hard_recover_in_far_mode =
+        Some(control.requested_adaptive_resampling_hard_recover_in_far_mode());
     render.adaptive_resampling_far_mode_return_fade_in_ms =
         Some(control.requested_adaptive_resampling_far_mode_return_fade_in_ms());
     render.pw_latency = control.requested_latency_target_ms();

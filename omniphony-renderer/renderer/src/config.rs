@@ -112,6 +112,8 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_force_silence_in_far_mode: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_resampling_hard_recover_in_far_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_far_mode_return_fade_in_ms: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_kp_near: Option<f32>,

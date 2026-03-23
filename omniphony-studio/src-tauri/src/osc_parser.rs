@@ -316,6 +316,8 @@ pub enum OscEvent {
     StateAdaptiveResamplingEnableFarMode { enabled: bool },
     #[serde(rename = "state:adaptive_resampling:force_silence_in_far_mode")]
     StateAdaptiveResamplingForceSilenceInFarMode { enabled: bool },
+    #[serde(rename = "state:adaptive_resampling:hard_recover_in_far_mode")]
+    StateAdaptiveResamplingHardRecoverInFarMode { enabled: bool },
     #[serde(rename = "state:adaptive_resampling:far_mode_return_fade_in_ms")]
     StateAdaptiveResamplingFarModeReturnFadeInMs { value: f64 },
     #[serde(rename = "state:adaptive_resampling:kp_near")]
@@ -727,6 +729,11 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             }),
             "force_silence_in_far_mode" => {
                 Some(OscEvent::StateAdaptiveResamplingForceSilenceInFarMode {
+                    enabled: to_number(args[0])? != 0.0,
+                })
+            }
+            "hard_recover_in_far_mode" => {
+                Some(OscEvent::StateAdaptiveResamplingHardRecoverInFarMode {
                     enabled: to_number(args[0])? != 0.0,
                 })
             }

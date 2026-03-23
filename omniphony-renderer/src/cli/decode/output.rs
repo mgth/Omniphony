@@ -271,15 +271,4 @@ impl AudioWriter {
             AudioWriter::Unsupported => None,
         }
     }
-
-    /// Signal the audio backend to discard buffered audio and re-enter prefill.
-    pub fn request_flush(&self) {
-        match self {
-            #[cfg(target_os = "linux")]
-            AudioWriter::Pipewire(pw) => pw.request_flush(),
-            #[cfg(target_os = "windows")]
-            AudioWriter::Asio(asio) => asio.request_flush(),
-            AudioWriter::Unsupported => {}
-        }
-    }
 }

@@ -924,24 +924,29 @@ impl DecodeHandler {
                 .spatial_renderer
                 .as_ref()
                 .map(|r| r.renderer_control())
-                .map(|control| AdaptiveResamplingConfig {
-                    enable_far_mode: control.requested_adaptive_resampling_enable_far_mode(),
-                    force_silence_in_far_mode: control
-                        .requested_adaptive_resampling_force_silence_in_far_mode(),
-                    far_mode_return_fade_in_ms: control
-                        .requested_adaptive_resampling_far_mode_return_fade_in_ms(),
-                    kp_near: control.requested_adaptive_resampling_kp_near(),
-                    kp_far: control.requested_adaptive_resampling_kp_far(),
-                    ki: control.requested_adaptive_resampling_ki(),
-                    max_adjust: control.requested_adaptive_resampling_max_adjust(),
-                    max_adjust_far: control.requested_adaptive_resampling_max_adjust_far(),
-                    update_interval_callbacks: control
-                        .requested_adaptive_resampling_update_interval_callbacks()
-                        .max(1),
-                    near_far_threshold_ms: control
-                        .requested_adaptive_resampling_near_far_threshold_ms(),
-                    measurement_smoothing_alpha: control
-                        .requested_adaptive_resampling_measurement_smoothing_alpha(),
+                .map(|control| {
+                    let kp = control.requested_adaptive_resampling_kp_near();
+                    let max_adjust = control.requested_adaptive_resampling_max_adjust();
+                    AdaptiveResamplingConfig {
+                        enable_far_mode: control.requested_adaptive_resampling_enable_far_mode(),
+                        force_silence_in_far_mode: control
+                            .requested_adaptive_resampling_force_silence_in_far_mode(),
+                        hard_recover_in_far_mode: true,
+                        far_mode_return_fade_in_ms: control
+                            .requested_adaptive_resampling_far_mode_return_fade_in_ms(),
+                        kp_near: kp,
+                        kp_far: kp,
+                        ki: control.requested_adaptive_resampling_ki(),
+                        max_adjust,
+                        max_adjust_far: max_adjust,
+                        update_interval_callbacks: control
+                            .requested_adaptive_resampling_update_interval_callbacks()
+                            .max(1),
+                        near_far_threshold_ms: control
+                            .requested_adaptive_resampling_near_far_threshold_ms(),
+                        measurement_smoothing_alpha: control
+                            .requested_adaptive_resampling_measurement_smoothing_alpha(),
+                    }
                 })
                 .unwrap_or_else(|| self.runtime.adaptive_resampling_config.clone());
 
@@ -958,10 +963,8 @@ impl DecodeHandler {
                         .adaptive_resampling_config
                         .far_mode_return_fade_in_ms
                 && requested.kp_near == self.runtime.adaptive_resampling_config.kp_near
-                && requested.kp_far == self.runtime.adaptive_resampling_config.kp_far
                 && requested.ki == self.runtime.adaptive_resampling_config.ki
                 && requested.max_adjust == self.runtime.adaptive_resampling_config.max_adjust
-                && requested.max_adjust_far == self.runtime.adaptive_resampling_config.max_adjust_far
                 && requested.update_interval_callbacks
                     == self.runtime.adaptive_resampling_config.update_interval_callbacks
                 && requested.near_far_threshold_ms
@@ -974,7 +977,7 @@ impl DecodeHandler {
 
             self.runtime.adaptive_resampling_config = requested;
             log::info!(
-                "Applying adaptive resampling tuning: far_mode={}, far_silence={}, far_return_fade_in_ms={}, kp_near={:.8}, kp_far={:.8}, ki={:.8}, max_adjust={:.6}, max_adjust_far={:.6}, update_interval_callbacks={}, near_far_threshold_ms={}, measurement_smoothing_alpha={:.3}",
+                "Applying adaptive resampling tuning: far_mode={}, far_silence={}, hard_recover=forced, far_return_fade_in_ms={}, kp={:.8}, ki={:.8}, max_adjust={:.6}, update_interval_callbacks={}, far_threshold_ms={}, measurement_smoothing_alpha={:.3}",
                 self.runtime.adaptive_resampling_config.enable_far_mode,
                 self.runtime
                     .adaptive_resampling_config
@@ -983,10 +986,8 @@ impl DecodeHandler {
                     .adaptive_resampling_config
                     .far_mode_return_fade_in_ms,
                 self.runtime.adaptive_resampling_config.kp_near,
-                self.runtime.adaptive_resampling_config.kp_far,
                 self.runtime.adaptive_resampling_config.ki,
                 self.runtime.adaptive_resampling_config.max_adjust,
-                self.runtime.adaptive_resampling_config.max_adjust_far,
                 self.runtime.adaptive_resampling_config.update_interval_callbacks,
                 self.runtime.adaptive_resampling_config.near_far_threshold_ms,
                 self.runtime.adaptive_resampling_config.measurement_smoothing_alpha
@@ -2090,9 +2091,6 @@ impl DecodeHandler {
 
     pub fn handle_decoder_flush_request(&mut self) {
         log::info!("Received flush request after decoder reset");
-        if let Some(ref writer) = self.output.audio_writer {
-            writer.request_flush();
-        }
         self.reset_spatial_state_for_segment();
     }
 }

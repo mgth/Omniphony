@@ -474,6 +474,7 @@ fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<renderer::config:
         },
         adaptive_resampling_enable_far_mode: None,
         adaptive_resampling_force_silence_in_far_mode: None,
+        adaptive_resampling_hard_recover_in_far_mode: None,
         adaptive_resampling_far_mode_return_fade_in_ms: None,
         adaptive_resampling_kp_near: None,
         adaptive_resampling_kp_far: None,
@@ -726,6 +727,7 @@ fn init_render_handler(
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_force_silence_in_far_mode)
                 .unwrap_or(adaptive_defaults.force_silence_in_far_mode),
+            hard_recover_in_far_mode: true,
             far_mode_return_fade_in_ms: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_far_mode_return_fade_in_ms)
@@ -737,9 +739,9 @@ fn init_render_handler(
                 .unwrap_or(adaptive_defaults.kp_near),
             kp_far: render_cfg
                 .as_ref()
-                .and_then(|cfg| cfg.adaptive_resampling_kp_far)
+                .and_then(|cfg| cfg.adaptive_resampling_kp_near)
                 .map(|v| v as f64)
-                .unwrap_or(adaptive_defaults.kp_far),
+                .unwrap_or(adaptive_defaults.kp_near),
             ki: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_ki)
@@ -752,9 +754,9 @@ fn init_render_handler(
                 .unwrap_or(adaptive_defaults.max_adjust),
             max_adjust_far: render_cfg
                 .as_ref()
-                .and_then(|cfg| cfg.adaptive_resampling_max_adjust_far)
+                .and_then(|cfg| cfg.adaptive_resampling_max_adjust)
                 .map(|v| v as f64)
-                .unwrap_or(adaptive_defaults.max_adjust_far),
+                .unwrap_or(adaptive_defaults.max_adjust),
             update_interval_callbacks: args
                 .adaptive_resampling_update_interval_callbacks
                 .or_else(|| {
@@ -794,6 +796,7 @@ fn init_render_handler(
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_force_silence_in_far_mode)
                 .unwrap_or(adaptive_defaults.force_silence_in_far_mode),
+            hard_recover_in_far_mode: true,
             far_mode_return_fade_in_ms: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_far_mode_return_fade_in_ms)
@@ -805,9 +808,9 @@ fn init_render_handler(
                 .unwrap_or(adaptive_defaults.kp_near),
             kp_far: render_cfg
                 .as_ref()
-                .and_then(|cfg| cfg.adaptive_resampling_kp_far)
+                .and_then(|cfg| cfg.adaptive_resampling_kp_near)
                 .map(|v| v as f64)
-                .unwrap_or(adaptive_defaults.kp_far),
+                .unwrap_or(adaptive_defaults.kp_near),
             ki: render_cfg
                 .as_ref()
                 .and_then(|cfg| cfg.adaptive_resampling_ki)
@@ -820,9 +823,9 @@ fn init_render_handler(
                 .unwrap_or(adaptive_defaults.max_adjust),
             max_adjust_far: render_cfg
                 .as_ref()
-                .and_then(|cfg| cfg.adaptive_resampling_max_adjust_far)
+                .and_then(|cfg| cfg.adaptive_resampling_max_adjust)
                 .map(|v| v as f64)
-                .unwrap_or(adaptive_defaults.max_adjust_far),
+                .unwrap_or(adaptive_defaults.max_adjust),
             update_interval_callbacks: args
                 .adaptive_resampling_update_interval_callbacks
                 .or_else(|| {
@@ -1186,6 +1189,12 @@ fn init_render_handler(
                 .adaptive_resampling_config
                 .force_silence_in_far_mode,
         );
+        ctrl.set_requested_adaptive_resampling_hard_recover_in_far_mode(
+            handler
+                .runtime
+                .adaptive_resampling_config
+                .hard_recover_in_far_mode,
+        );
         ctrl.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(
             handler
                 .runtime
@@ -1203,6 +1212,9 @@ fn init_render_handler(
             ));
             ctrl.set_requested_adaptive_resampling_force_silence_in_far_mode(
                 adaptive.force_silence_in_far_mode,
+            );
+            ctrl.set_requested_adaptive_resampling_hard_recover_in_far_mode(
+                adaptive.hard_recover_in_far_mode,
             );
             ctrl.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(
                 adaptive.far_mode_return_fade_in_ms,
@@ -1228,6 +1240,9 @@ fn init_render_handler(
             let adaptive = &handler.runtime.adaptive_resampling_config;
             ctrl.set_requested_adaptive_resampling_force_silence_in_far_mode(
                 adaptive.force_silence_in_far_mode,
+            );
+            ctrl.set_requested_adaptive_resampling_hard_recover_in_far_mode(
+                adaptive.hard_recover_in_far_mode,
             );
             ctrl.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(
                 adaptive.far_mode_return_fade_in_ms,

@@ -179,6 +179,8 @@ pub struct AppState {
     pub adaptive_resampling_enable_far_mode: Option<u8>,
     #[serde(rename = "adaptiveResamplingForceSilenceInFarMode")]
     pub adaptive_resampling_force_silence_in_far_mode: Option<u8>,
+    #[serde(rename = "adaptiveResamplingHardRecoverInFarMode")]
+    pub adaptive_resampling_hard_recover_in_far_mode: Option<u8>,
     #[serde(rename = "adaptiveResamplingFarModeReturnFadeInMs")]
     pub adaptive_resampling_far_mode_return_fade_in_ms: Option<i64>,
     #[serde(rename = "adaptiveResamplingKpNear")]
@@ -301,6 +303,7 @@ impl Default for AppState {
             adaptive_resampling: Some(0),
             adaptive_resampling_enable_far_mode: Some(1),
             adaptive_resampling_force_silence_in_far_mode: Some(0),
+            adaptive_resampling_hard_recover_in_far_mode: Some(0),
             adaptive_resampling_far_mode_return_fade_in_ms: Some(0),
             adaptive_resampling_kp_near: Some(0.00001),
             adaptive_resampling_kp_far: Some(0.00002),

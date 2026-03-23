@@ -1659,14 +1659,12 @@
           </div>
           <div class="meter-row" id="resampleMeterRow">
             <div class="meter-mini-row" style="grid-column: 1 / -1;">
-              <div class="meter-mini-label" style="transform:translateY(-8px)" data-i18n="telemetry.resample">resample</div>
+              <div class="meter-mini-label" style="transform:translateY(-8px)" data-i18n="telemetry.resample">Resample</div>
               <div style="display:grid;gap:0.05rem;width:100%">
                 <div class="meter-bar resample-meter-shell">
                   <div class="resample-meter-center"></div>
                   <div id="resampleNegMeterFill" class="meter-fill resample-neg"></div>
                   <div id="resamplePosMeterFill" class="meter-fill resample-pos"></div>
-                  <div id="resampleNegFarMarker" class="meter-marker max" style="background:#ff8b4a"></div>
-                  <div id="resamplePosFarMarker" class="meter-marker max" style="background:#ff8b4a"></div>
                   <div id="resampleNegNearMarker" class="meter-marker min" style="background:#ffd54a"></div>
                   <div id="resamplePosNearMarker" class="meter-marker min" style="background:#ffd54a"></div>
                 </div>
@@ -1678,14 +1676,14 @@
           </div>
           <div class="inline-toggle" style="margin-top:0.35rem">
             <div class="title-with-info" style="flex:1 1 auto;min-width:0">
-              <div data-i18n="adaptive.title">adaptive resampling</div>
+              <div data-i18n="adaptive.title">Adaptive Resampling</div>
               <div style="display:flex;align-items:center;gap:0.35rem">
                 <div id="adaptiveBandIndicator" style="display:flex;align-items:center;gap:0.4rem;color:#d9ecff;font-size:12px">
                   <span id="adaptiveBandDot" style="width:0.6rem;height:0.6rem;border-radius:999px;background:rgba(255,255,255,0.25);display:inline-block"></span>
                   <span id="adaptiveBandText">—</span>
                 </div>
-                <button id="adaptiveResamplingInfoBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.infoButton" title="Adaptive resampling info">i</button>
-                <button id="adaptiveResamplingAdvancedToggleBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.advancedButton" title="Adaptive resampling advanced settings">⚙</button>
+                <button id="adaptiveResamplingInfoBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.infoButton" title="Adaptive Resampling Info">i</button>
+                <button id="adaptiveResamplingAdvancedToggleBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.advancedButton" title="Adaptive Resampling Advanced Settings">⚙</button>
               </div>
             </div>
             <input id="adaptiveResamplingToggle" type="checkbox" />
@@ -1695,15 +1693,15 @@
               <div style="grid-column:1 / -1;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8fa6bd">Correction</div>
             </div>
             <div class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveFarModeToggle" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.farMode">far PI mode</label>
+              <label for="adaptiveFarModeToggle" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.farMode">Far PI Mode</label>
               <input id="adaptiveFarModeToggle" type="checkbox" />
             </div>
             <div id="adaptiveFarSilenceRow" class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveFarSilenceToggle" style="font-size:12px;white-space:nowrap">silence in far mode</label>
+              <label for="adaptiveFarSilenceToggle" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.silenceFar">Silence in Far Mode</label>
               <input id="adaptiveFarSilenceToggle" type="checkbox" />
             </div>
             <div id="adaptiveFarFadeRow" class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveFarFadeInMsInput" style="font-size:12px;white-space:nowrap">fade in on near return</label>
+              <label for="adaptiveFarFadeInMsInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.fadeNearReturn">Fade-In on Near Return</label>
               <input id="adaptiveFarFadeInMsInput" class="delay-input" type="number" min="0" step="1" value="0" style="width:8rem" />
             </div>
             <div class="control-row" style="margin-top:0.2rem">
@@ -1717,20 +1715,9 @@
                 <span aria-hidden="true" title="Resample gauge near max marker" style="display:inline-block;width:2px;height:12px;border-radius:999px;background:#ffd54a;box-shadow:0 0 0 1px rgba(255,255,255,0.08)"></span>
               </div>
             </div>
-            <div id="adaptiveMaxFarRow" class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveMaxAdjustFarInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.maxFar">Adaptive max far</label>
-              <div style="display:flex;align-items:center;gap:0.35rem">
-                <input id="adaptiveMaxAdjustFarInput" class="delay-input" type="number" min="0.000001" step="0.000001" value="0.020000" style="width:8rem" />
-                <span id="adaptiveMaxFarSymbol" aria-hidden="true" title="Resample gauge far max marker" style="display:inline-block;width:2px;height:12px;border-radius:999px;background:#ff8b4a;box-shadow:0 0 0 1px rgba(255,255,255,0.08)"></span>
-              </div>
-            </div>
             <div class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveKpNearInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.kpNear">Adaptive Kp near</label>
+              <label for="adaptiveKpNearInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.kpNear">Adaptive KP</label>
               <input id="adaptiveKpNearInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00001000" style="width:8rem" />
-            </div>
-            <div id="adaptiveKpFarRow" class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveKpFarInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.kpFar">Adaptive Kp far</label>
-              <input id="adaptiveKpFarInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00002000" style="width:8rem" />
             </div>
             <div class="control-row" style="margin-top:0.2rem">
               <label for="adaptiveKiInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.ki">Adaptive Ki</label>
@@ -1740,7 +1727,7 @@
               <div style="grid-column:1 / -1;margin-top:0.15rem;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8fa6bd">Thresholds</div>
             </div>
             <div id="adaptiveNearFarThresholdRow" class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveNearFarThresholdInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.threshold">Near/far threshold</label>
+              <label for="adaptiveNearFarThresholdInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.threshold">Far Threshold</label>
               <div style="display:flex;align-items:center;gap:0.35rem">
                 <input id="adaptiveNearFarThresholdInput" class="delay-input" type="number" min="1" step="1" value="120" style="width:8rem" />
                 <span id="adaptiveNearFarThresholdSymbol" aria-hidden="true" title="Latency gauge far threshold marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#ffb84a;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
@@ -2149,12 +2136,11 @@
         <div class="info-modal-title" data-i18n="adaptive.infoTitle">Adaptive Resampling</div>
         <div class="info-modal-text" data-i18n-html="adaptive.infoBody">
           These parameters tune how fast the local resampler recenters the audio buffer on the requested latency target.<br /><br />
-          <strong>Kp near</strong>: proportional gain used when the buffer is close to target. Keep this conservative to avoid jitter.<br />
-          <strong>Kp far</strong>: proportional gain used when the error is large. Increase this for faster recovery after drift or disruption.<br />
-          <strong>Near/far threshold</strong>: error threshold, in milliseconds of buffer drift, where control switches from near to far gain.<br />
-          <strong>Smoothing alpha</strong>: source-side measurement smoothing used by the controller. Lower values are calmer, higher values react faster.<br />
-          <strong>Ki</strong>: integral gain. Corrects steady-state bias and clock mismatch, but too much can make recovery sluggish or unstable.<br />
-          <strong>Adaptive max</strong>: maximum correction ratio clamp. Higher values recover faster, but can sound more aggressive.
+          <strong>Adaptive KP</strong>: proportional gain used by the PI controller. Keep it conservative to avoid jitter.<br />
+          <strong>Far Threshold</strong>: error threshold, in milliseconds of buffer drift, where the controller enters far mode and uses hard recovery.<br />
+          <strong>Smoothing Alpha</strong>: source-side measurement smoothing used by the controller. Lower values are calmer, higher values react faster.<br />
+          <strong>Adaptive Ki</strong>: integral gain. Corrects steady-state bias and clock mismatch, but too much can make recovery sluggish or unstable.<br />
+          <strong>Adaptive Max</strong>: maximum correction ratio clamp. Higher values recover faster, but can sound more aggressive.
         </div>
         <div class="info-modal-actions">
           <button id="adaptiveResamplingInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>

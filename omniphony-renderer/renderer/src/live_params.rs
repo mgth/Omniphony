@@ -449,6 +449,8 @@ pub struct RendererControl {
     pub requested_adaptive_resampling_enable_far_mode: std::sync::atomic::AtomicBool,
     pub requested_adaptive_resampling_force_silence_in_far_mode:
         std::sync::atomic::AtomicBool,
+    pub requested_adaptive_resampling_hard_recover_in_far_mode:
+        std::sync::atomic::AtomicBool,
     pub requested_adaptive_resampling_far_mode_return_fade_in_ms:
         std::sync::atomic::AtomicU32,
     /// Requested ramp mode from OSC control.
@@ -506,6 +508,8 @@ impl RendererControl {
             requested_adaptive_resampling: std::sync::atomic::AtomicBool::new(false),
             requested_adaptive_resampling_enable_far_mode: std::sync::atomic::AtomicBool::new(true),
             requested_adaptive_resampling_force_silence_in_far_mode:
+                std::sync::atomic::AtomicBool::new(false),
+            requested_adaptive_resampling_hard_recover_in_far_mode:
                 std::sync::atomic::AtomicBool::new(false),
             requested_adaptive_resampling_far_mode_return_fade_in_ms:
                 std::sync::atomic::AtomicU32::new(0),
@@ -772,6 +776,16 @@ impl RendererControl {
 
     pub fn requested_adaptive_resampling_force_silence_in_far_mode(&self) -> bool {
         self.requested_adaptive_resampling_force_silence_in_far_mode
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn set_requested_adaptive_resampling_hard_recover_in_far_mode(&self, enabled: bool) {
+        self.requested_adaptive_resampling_hard_recover_in_far_mode
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn requested_adaptive_resampling_hard_recover_in_far_mode(&self) -> bool {
+        self.requested_adaptive_resampling_hard_recover_in_far_mode
             .load(Ordering::Relaxed)
     }
 

@@ -2,6 +2,7 @@
 pub struct AdaptiveResamplingConfig {
     pub enable_far_mode: bool,
     pub force_silence_in_far_mode: bool,
+    pub hard_recover_in_far_mode: bool,
     pub far_mode_return_fade_in_ms: u32,
     pub kp_near: f64,
     pub kp_far: f64,
@@ -18,6 +19,7 @@ impl Default for AdaptiveResamplingConfig {
         Self {
             enable_far_mode: true,
             force_silence_in_far_mode: false,
+            hard_recover_in_far_mode: false,
             far_mode_return_fade_in_ms: 0,
             kp_near: 0.00001,
             kp_far: 0.00002,
