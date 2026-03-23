@@ -143,7 +143,9 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
     let done = Rc::new(Cell::new(false));
     let collected = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
 
-    let pending = core.sync(0).map_err(|e| anyhow!("PipeWire sync failed: {e:?}"))?;
+    let pending = core
+        .sync(0)
+        .map_err(|e| anyhow!("PipeWire sync failed: {e:?}"))?;
 
     let done_clone = Rc::clone(&done);
     let loop_clone = mainloop.clone();
@@ -191,7 +193,7 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
                 .filter(|v| !v.is_empty())
                 .unwrap_or(value);
 
-        collected_clone
+            collected_clone
                 .borrow_mut()
                 .push((value.to_string(), label.to_string()));
         })
@@ -570,12 +572,6 @@ impl PipewireWriter {
         ring_ms + self.quantum_ms
     }
 
-    /// Ring-buffer-only latency in ms (excludes PipeWire graph delay).
-    fn ring_latency_ms(&self) -> f32 {
-        let fill_frames = self.sample_buffer.len() / self.channel_count as usize;
-        fill_frames as f32 / self.sample_rate as f32 * 1000.0
-    }
-
     /// Current rate-adjust factor applied by the PI controller.
     /// Returns `None` when adaptive resampling is disabled.
     /// Value is near 1.0; deviation from 1.0 represents clock drift correction
@@ -669,7 +665,6 @@ fn run_pipewire_loop(
     graph_latency_ms_out: Arc<AtomicU32>,
     control_latency_ms_out: Arc<AtomicU32>,
 ) -> Result<()> {
-
     // Determine actual output rate and resampling ratio
     let actual_output_rate = output_sample_rate.unwrap_or(sample_rate);
     let resample_ratio = actual_output_rate as f64 / sample_rate as f64;
