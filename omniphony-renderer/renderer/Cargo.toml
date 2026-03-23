@@ -20,6 +20,7 @@ parking_lot = "0.12"
 flate2 = "1.0"
 rosc = "0.10"
 sys = { path = "../sys" }
+audio_output = { path = "../audio_output" }
 
 [build-dependencies]
 anyhow = "1"

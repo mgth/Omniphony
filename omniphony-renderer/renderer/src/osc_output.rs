@@ -1,6 +1,7 @@
 use anyhow::Result;
-use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
+use audio_output::AudioControl;
 use log::LevelFilter;
+use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 use std::str::FromStr;
@@ -91,6 +92,8 @@ pub struct OscSender {
     /// Shared live parameters + pending VBAP swap.
     /// Set by `attach_renderer_control` before `start_listener` is called.
     control: Option<Arc<RendererControl>>,
+    /// Shared audio runtime control for output-device and adaptive-resampling state.
+    audio_control: Option<Arc<AudioControl>>,
     /// Previous frame's object snapshots for delta detection.
     prev_objects: Option<Vec<ObjectSnapshot>>,
     /// Force next send_object_frame call to emit all objects.
@@ -115,6 +118,7 @@ impl OscSender {
             socket: Arc::new(socket),
             clients: Arc::new(Mutex::new(clients)),
             control: None,
+            audio_control: None,
             prev_objects: None,
             force_full_next: Arc::new(AtomicBool::new(true)),
             content_generation: 0,
@@ -125,6 +129,10 @@ impl OscSender {
     /// and trigger VBAP recomputes.  Must be called **before** `start_listener`.
     pub fn attach_renderer_control(&mut self, control: Arc<RendererControl>) {
         self.control = Some(control);
+    }
+
+    pub fn attach_audio_control(&mut self, control: Arc<AudioControl>) {
+        self.audio_control = Some(control);
     }
 
     /// Start the OSC registration listener on `rx_port`.
@@ -139,6 +147,7 @@ impl OscSender {
         let clients = Arc::clone(&self.clients);
         let config = Arc::new(config_bundle_bytes);
         let control = self.control.clone();
+        let audio_control = self.audio_control.clone();
         let force_full_next = Arc::clone(&self.force_full_next);
 
         std::thread::Builder::new()
@@ -197,7 +206,8 @@ impl OscSender {
                                     }
                                     // Send live-state bundle (gain, spread, etc.).
                                     if let Some(ref ctrl) = control {
-                                        let state_bytes = build_live_state_bundle(ctrl);
+                                        let state_bytes =
+                                            build_live_state_bundle(ctrl, audio_control.as_ref());
                                         if let Err(e) = socket.send_to(&state_bytes, client) {
                                             log::warn!(
                                                 "Failed to send live state to {}: {}",
@@ -262,6 +272,7 @@ impl OscSender {
                                             &msg,
                                             src,
                                             ctrl,
+                                            audio_control.as_ref(),
                                             &mut pending_speakers,
                                             &socket,
                                             &clients,
@@ -297,7 +308,9 @@ impl OscSender {
     }
 
     fn send_to_metering_clients(&self, bytes: &[u8]) {
-        send_raw_filtered(&self.socket, &self.clients, bytes, |client| client.metering_enabled);
+        send_raw_filtered(&self.socket, &self.clients, bytes, |client| {
+            client.metering_enabled
+        });
     }
 
     pub fn has_osc_clients(&self) -> bool {
@@ -344,14 +357,24 @@ impl OscSender {
         let clients = &self.clients;
 
         if let Some(dl) = live.dialogue_level {
-            broadcast_int(socket, clients, "/omniphony/state/loudness/source", dl as i32);
+            broadcast_int(
+                socket,
+                clients,
+                "/omniphony/state/loudness/source",
+                dl as i32,
+            );
         }
 
         let gain_linear: f32 = match (live.use_loudness, live.dialogue_level) {
             (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
             _ => 1.0,
         };
-        broadcast_float(socket, clients, "/omniphony/state/loudness/gain", gain_linear);
+        broadcast_float(
+            socket,
+            clients,
+            "/omniphony/state/loudness/gain",
+            gain_linear,
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -445,19 +468,19 @@ impl OscSender {
                 .unwrap_or(if coordinate_format == 1 { "aed" } else { "xyz" });
             let msg = OscMessage {
                 addr: format!("/omniphony/object/{}/{}", stale_id, suffix),
-                    args: vec![
-                        OscType::Float(0.0),
-                        OscType::Float(0.0),
-                        OscType::Float(0.0),
-                        OscType::Int(-1),
+                args: vec![
+                    OscType::Float(0.0),
+                    OscType::Float(0.0),
+                    OscType::Float(0.0),
+                    OscType::Int(-1),
                     OscType::Int(-128),
-                        OscType::Float(0.0),
-                        OscType::Float(0.0),
-                        OscType::Int(ramp_duration as i32),
-                        OscType::Long(self.content_generation as i64),
-                        OscType::String(String::new()),
-                    ],
-                };
+                    OscType::Float(0.0),
+                    OscType::Float(0.0),
+                    OscType::Int(ramp_duration as i32),
+                    OscType::Long(self.content_generation as i64),
+                    OscType::String(String::new()),
+                ],
+            };
             let bytes = rosc::encoder::encode(&OscPacket::Message(msg))?;
             self.send_to_all(&bytes);
         }
@@ -608,7 +631,7 @@ impl OscSender {
         }
 
         // Current audio output format state (sample rate + sample format).
-        if let Some(ref control) = self.control {
+        if let Some(ref control) = self.audio_control {
             let (current_rate_opt, fmt) = control.audio_state();
             let rate_opt = current_rate_opt.or_else(|| control.requested_output_sample_rate());
             messages.push(OscPacket::Message(OscMessage {
@@ -708,13 +731,23 @@ impl OscSender {
 
     /// Send current audio output format state.
     pub fn send_audio_state(&self, sample_rate_hz: u32, sample_format: &str) -> Result<()> {
+        let requested_output_device = self
+            .audio_control
+            .as_ref()
+            .and_then(|control| control.requested_output_device())
+            .unwrap_or_default();
+        let audio_error = self
+            .audio_control
+            .as_ref()
+            .and_then(|control| control.audio_error())
+            .unwrap_or_default();
         let output_devices_json = self
-            .control
+            .audio_control
             .as_ref()
             .and_then(|control| serde_json::to_string(&control.available_output_devices()).ok())
             .unwrap_or_else(|| "[]".to_string());
         let announced_rate = self
-            .control
+            .audio_control
             .as_ref()
             .and_then(|control| control.requested_output_sample_rate())
             .unwrap_or(sample_rate_hz);
@@ -730,12 +763,7 @@ impl OscSender {
                 }),
                 OscPacket::Message(OscMessage {
                     addr: "/omniphony/state/audio/output_device".to_string(),
-                    args: vec![OscType::String(
-                        self.control
-                            .as_ref()
-                            .and_then(|control| control.requested_output_device())
-                            .unwrap_or_default(),
-                    )],
+                    args: vec![OscType::String(requested_output_device)],
                 }),
                 OscPacket::Message(OscMessage {
                     addr: "/omniphony/state/audio/sample_rate".to_string(),
@@ -747,12 +775,7 @@ impl OscSender {
                 }),
                 OscPacket::Message(OscMessage {
                     addr: "/omniphony/state/audio/error".to_string(),
-                    args: vec![OscType::String(
-                        self.control
-                            .as_ref()
-                            .and_then(|control| control.audio_error())
-                            .unwrap_or_default(),
-                    )],
+                    args: vec![OscType::String(audio_error)],
                 }),
             ],
         });
@@ -886,6 +909,7 @@ fn handle_control_message(
     msg: &OscMessage,
     src: SocketAddr,
     control: &Arc<RendererControl>,
+    audio_control: Option<&Arc<AudioControl>>,
     pending_speakers: &mut HashMap<usize, SpeakerPatch>,
     socket: &Arc<UdpSocket>,
     clients: &Arc<Mutex<OscClients>>,
@@ -910,7 +934,7 @@ fn handle_control_message(
 
     // ── Save config ──────────────────────────────────────────────────────────
     if addr == "/omniphony/control/save_config" {
-        save_live_config(control, socket, clients);
+        save_live_config(control, audio_control, socket, clients);
         return;
     }
 
@@ -950,9 +974,16 @@ fn handle_control_message(
     }
 
     if addr == "/omniphony/control/audio/output_devices/refresh" {
-        if let Some(devices) = control.refresh_available_output_devices() {
+        if let Some(devices) =
+            audio_control.and_then(|audio_control| audio_control.refresh_available_output_devices())
+        {
             let json = serde_json::to_string(&devices).unwrap_or_else(|_| "[]".to_string());
-            broadcast_string(socket, clients, "/omniphony/state/audio/output_devices", &json);
+            broadcast_string(
+                socket,
+                clients,
+                "/omniphony/state/audio/output_devices",
+                &json,
+            );
             log::info!("OSC: output_devices/refresh → {} device(s)", devices.len());
         }
         return;
@@ -970,7 +1001,10 @@ fn handle_control_message(
             }
             _ => None,
         });
-        control.set_requested_output_device(requested.clone());
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_output_device(requested.clone());
         set_dirty(control, socket, clients);
         broadcast_string(
             socket,
@@ -1004,7 +1038,10 @@ fn handle_control_message(
             Some(OscType::Int(_)) | Some(OscType::Float(_)) => None,
             _ => None,
         };
-        control.set_requested_output_sample_rate(requested_hz);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_output_sample_rate(requested_hz);
         set_dirty(control, socket, clients);
         let announced = requested_hz.unwrap_or(0);
         broadcast_int(
@@ -1023,7 +1060,10 @@ fn handle_control_message(
             Some(OscType::Float(f)) => *f != 0.0,
             _ => return,
         };
-        control.set_requested_adaptive_resampling(enabled);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling(enabled);
         set_dirty(control, socket, clients);
         broadcast_int(
             socket,
@@ -1040,7 +1080,10 @@ fn handle_control_message(
             Some(OscType::Float(f)) => *f != 0.0,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_enable_far_mode(enabled);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_enable_far_mode(enabled);
         set_dirty(control, socket, clients);
         broadcast_int(
             socket,
@@ -1057,7 +1100,10 @@ fn handle_control_message(
             Some(OscType::Float(f)) => *f != 0.0,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_force_silence_in_far_mode(enabled);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_force_silence_in_far_mode(enabled);
         set_dirty(control, socket, clients);
         broadcast_int(
             socket,
@@ -1074,7 +1120,10 @@ fn handle_control_message(
             Some(OscType::Float(f)) => *f != 0.0,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_hard_recover_in_far_mode(enabled);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_hard_recover_in_far_mode(enabled);
         set_dirty(control, socket, clients);
         broadcast_int(
             socket,
@@ -1091,7 +1140,10 @@ fn handle_control_message(
             Some(OscType::Float(f)) if *f >= 0.0 => *f as u32,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(value);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(value);
         set_dirty(control, socket, clients);
         broadcast_float(
             socket,
@@ -1108,7 +1160,10 @@ fn handle_control_message(
             Some(OscType::Int(i)) if *i > 0 => *i as f32,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_kp_near(value);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_kp_near(value);
         set_dirty(control, socket, clients);
         broadcast_float(
             socket,
@@ -1125,7 +1180,10 @@ fn handle_control_message(
             Some(OscType::Int(i)) if *i > 0 => *i as f32,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_kp_far(value);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_kp_far(value);
         set_dirty(control, socket, clients);
         broadcast_float(
             socket,
@@ -1142,9 +1200,17 @@ fn handle_control_message(
             Some(OscType::Int(i)) if *i > 0 => *i as f32,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_ki(value);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_ki(value);
         set_dirty(control, socket, clients);
-        broadcast_float(socket, clients, "/omniphony/state/adaptive_resampling/ki", value);
+        broadcast_float(
+            socket,
+            clients,
+            "/omniphony/state/adaptive_resampling/ki",
+            value,
+        );
         return;
     }
 
@@ -1154,7 +1220,10 @@ fn handle_control_message(
             Some(OscType::Int(i)) if *i > 0 => *i as f32,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_max_adjust(value);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_max_adjust(value);
         set_dirty(control, socket, clients);
         broadcast_float(
             socket,
@@ -1171,7 +1240,10 @@ fn handle_control_message(
             Some(OscType::Int(i)) if *i > 0 => *i as f32,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_max_adjust_far(value);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_max_adjust_far(value);
         set_dirty(control, socket, clients);
         broadcast_float(
             socket,
@@ -1188,7 +1260,10 @@ fn handle_control_message(
             Some(OscType::Float(f)) if *f > 0.0 => *f as u32,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_update_interval_callbacks(value);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_update_interval_callbacks(value);
         set_dirty(control, socket, clients);
         broadcast_float(
             socket,
@@ -1205,7 +1280,10 @@ fn handle_control_message(
             Some(OscType::Float(f)) if *f > 0.0 => *f as u32,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_near_far_threshold_ms(value);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_near_far_threshold_ms(value);
         set_dirty(control, socket, clients);
         broadcast_float(
             socket,
@@ -1222,7 +1300,10 @@ fn handle_control_message(
             Some(OscType::Int(i)) if *i >= 0 && *i <= 1 => *i as f32,
             _ => return,
         };
-        control.set_requested_adaptive_resampling_measurement_smoothing_alpha(value);
+        let Some(audio_control) = audio_control else {
+            return;
+        };
+        audio_control.set_requested_adaptive_resampling_measurement_smoothing_alpha(value);
         set_dirty(control, socket, clients);
         broadcast_float(
             socket,
@@ -1241,9 +1322,17 @@ fn handle_control_message(
             _ => None,
         };
         if let Some(ms) = latency_ms {
-            control.set_requested_latency_target_ms(Some(ms));
+            let Some(audio_control) = audio_control else {
+                return;
+            };
+            audio_control.set_requested_latency_target_ms(Some(ms));
             set_dirty(control, socket, clients);
-            broadcast_float(socket, clients, "/omniphony/state/latency_target", ms as f32);
+            broadcast_float(
+                socket,
+                clients,
+                "/omniphony/state/latency_target",
+                ms as f32,
+            );
         }
         return;
     }
@@ -1325,7 +1414,12 @@ fn handle_control_message(
         if let Some(OscType::Float(f)) = msg.args.first() {
             control.live.write().unwrap().spread_distance_range = *f;
             set_dirty(control, socket, clients);
-            broadcast_float(socket, clients, "/omniphony/state/spread/distance_range", *f);
+            broadcast_float(
+                socket,
+                clients,
+                "/omniphony/state/spread/distance_range",
+                *f,
+            );
             trigger_layout_recompute(control, socket, clients);
         }
         return;
@@ -1336,7 +1430,12 @@ fn handle_control_message(
         if let Some(OscType::Float(f)) = msg.args.first() {
             control.live.write().unwrap().spread_distance_curve = *f;
             set_dirty(control, socket, clients);
-            broadcast_float(socket, clients, "/omniphony/state/spread/distance_curve", *f);
+            broadcast_float(
+                socket,
+                clients,
+                "/omniphony/state/spread/distance_curve",
+                *f,
+            );
             trigger_layout_recompute(control, socket, clients);
         }
         return;
@@ -1451,7 +1550,12 @@ fn handle_control_message(
                 if let Some(res) = res {
                     control.live.write().unwrap().vbap_polar_distance_res = res;
                     set_dirty(control, socket, clients);
-                    broadcast_int(socket, clients, "/omniphony/state/vbap/polar/distance_res", res);
+                    broadcast_int(
+                        socket,
+                        clients,
+                        "/omniphony/state/vbap/polar/distance_res",
+                        res,
+                    );
                     trigger_layout_recompute(control, socket, clients);
                 }
             }
@@ -1496,7 +1600,12 @@ fn handle_control_message(
                 (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
                 _ => 1.0,
             };
-            broadcast_float(socket, clients, "/omniphony/state/loudness/gain", gain_linear);
+            broadcast_float(
+                socket,
+                clients,
+                "/omniphony/state/loudness/gain",
+                gain_linear,
+            );
         }
         return;
     }
@@ -1578,7 +1687,12 @@ fn handle_control_message(
             let v = f.clamp(0.0, 1.0);
             control.live.write().unwrap().room_ratio_center_blend = v;
             set_dirty(control, socket, clients);
-            broadcast_float(socket, clients, "/omniphony/state/room_ratio_center_blend", v);
+            broadcast_float(
+                socket,
+                clients,
+                "/omniphony/state/room_ratio_center_blend",
+                v,
+            );
             log::info!("OSC: room_ratio_center_blend → {}", v);
             trigger_layout_recompute(control, socket, clients);
         }
@@ -1608,7 +1722,12 @@ fn handle_control_message(
                     let v = f.max(1e-6);
                     control.live.write().unwrap().distance_diffuse_threshold = v;
                     set_dirty(control, socket, clients);
-                    broadcast_float(socket, clients, "/omniphony/state/distance_diffuse/threshold", v);
+                    broadcast_float(
+                        socket,
+                        clients,
+                        "/omniphony/state/distance_diffuse/threshold",
+                        v,
+                    );
                     trigger_layout_recompute(control, socket, clients);
                 }
                 return;
@@ -1618,7 +1737,12 @@ fn handle_control_message(
                     let v = f.max(0.0);
                     control.live.write().unwrap().distance_diffuse_curve = v;
                     set_dirty(control, socket, clients);
-                    broadcast_float(socket, clients, "/omniphony/state/distance_diffuse/curve", v);
+                    broadcast_float(
+                        socket,
+                        clients,
+                        "/omniphony/state/distance_diffuse/curve",
+                        v,
+                    );
                     trigger_layout_recompute(control, socket, clients);
                 }
                 return;
@@ -1713,14 +1837,16 @@ fn handle_control_message(
             _ => 0.0,
         };
         let layout = control.with_editable_layout(|layout| {
-            layout.speakers.push(crate::speaker_layout::Speaker::from_polar(
-                name,
-                az.clamp(-180.0, 180.0),
-                el.clamp(-90.0, 90.0),
-                distance,
-                spatialize,
-                delay_ms,
-            ));
+            layout
+                .speakers
+                .push(crate::speaker_layout::Speaker::from_polar(
+                    name,
+                    az.clamp(-180.0, 180.0),
+                    el.clamp(-90.0, 90.0),
+                    distance,
+                    spatialize,
+                    delay_ms,
+                ));
             layout.clone()
         });
         if delay_ms > 0.0 {
@@ -2146,7 +2272,10 @@ fn trigger_layout_recompute(
 
 /// Build an OSC bundle describing the current `LiveParams` state, to be sent
 /// to a newly registered client so it can initialise its UI.
-fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
+fn build_live_state_bundle(
+    control: &Arc<RendererControl>,
+    audio_control: Option<&Arc<AudioControl>>,
+) -> Vec<u8> {
     let live = control.live.read().unwrap();
     let radius_m = control.editable_layout().radius_m;
     let active_topology = control.active_topology();
@@ -2311,121 +2440,110 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
             args: vec![OscType::Float(radius_m)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling".to_string(),
-            args: vec![OscType::Int(if control.requested_adaptive_resampling() {
-                1
-            } else {
-                0
-            })],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/enable_far_mode".to_string(),
-            args: vec![OscType::Int(
-                if control.requested_adaptive_resampling_enable_far_mode() {
-                    1
-                } else {
-                    0
-                },
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/kp_near".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_kp_near() as f32,
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/kp_far".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_kp_far() as f32,
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/ki".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_ki() as f32
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/max_adjust".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_max_adjust() as f32,
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/max_adjust_far".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_max_adjust_far() as f32,
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/update_interval_callbacks".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_update_interval_callbacks() as f32,
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/near_far_threshold_ms".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_near_far_threshold_ms() as f32,
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/measurement_smoothing_alpha".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_measurement_smoothing_alpha() as f32,
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/force_silence_in_far_mode".to_string(),
-            args: vec![OscType::Int(
-                if control.requested_adaptive_resampling_force_silence_in_far_mode() {
-                    1
-                } else {
-                    0
-                },
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/hard_recover_in_far_mode".to_string(),
-            args: vec![OscType::Int(
-                if control.requested_adaptive_resampling_hard_recover_in_far_mode() {
-                    1
-                } else {
-                    0
-                },
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms".to_string(),
-            args: vec![OscType::Float(
-                control.requested_adaptive_resampling_far_mode_return_fade_in_ms() as f32,
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/audio/output_devices".to_string(),
-            args: vec![OscType::String(
-                serde_json::to_string(&control.available_output_devices())
-                    .unwrap_or_else(|_| "[]".to_string()),
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/audio/output_device".to_string(),
-            args: vec![OscType::String(
-                control.requested_output_device().unwrap_or_default(),
-            )],
-        }),
-        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/input_pipe".to_string(),
             args: vec![OscType::String(control.input_path().unwrap_or_default())],
         }),
     ];
 
-    if let Some(ms) = control.requested_latency_target_ms() {
-        messages.push(OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/latency_target".to_string(),
-            args: vec![OscType::Float(ms as f32)],
-        }));
+    if let Some(audio_control) = audio_control {
+        let requested = audio_control.requested_snapshot();
+        messages.extend([
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling".to_string(),
+                args: vec![OscType::Int(if requested.adaptive_enabled { 1 } else { 0 })],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/enable_far_mode".to_string(),
+                args: vec![OscType::Int(if requested.adaptive.enable_far_mode {
+                    1
+                } else {
+                    0
+                })],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/kp_near".to_string(),
+                args: vec![OscType::Float(requested.adaptive.kp_near as f32)],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/kp_far".to_string(),
+                args: vec![OscType::Float(requested.adaptive.kp_far as f32)],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/ki".to_string(),
+                args: vec![OscType::Float(requested.adaptive.ki as f32)],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/max_adjust".to_string(),
+                args: vec![OscType::Float(requested.adaptive.max_adjust as f32)],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/max_adjust_far".to_string(),
+                args: vec![OscType::Float(requested.adaptive.max_adjust_far as f32)],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/update_interval_callbacks".to_string(),
+                args: vec![OscType::Float(
+                    requested.adaptive.update_interval_callbacks as f32,
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/near_far_threshold_ms".to_string(),
+                args: vec![OscType::Float(
+                    requested.adaptive.near_far_threshold_ms as f32,
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/measurement_smoothing_alpha"
+                    .to_string(),
+                args: vec![OscType::Float(
+                    requested.adaptive.measurement_smoothing_alpha as f32,
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/force_silence_in_far_mode".to_string(),
+                args: vec![OscType::Int(
+                    if requested.adaptive.force_silence_in_far_mode {
+                        1
+                    } else {
+                        0
+                    },
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/hard_recover_in_far_mode".to_string(),
+                args: vec![OscType::Int(
+                    if requested.adaptive.hard_recover_in_far_mode {
+                        1
+                    } else {
+                        0
+                    },
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms".to_string(),
+                args: vec![OscType::Float(
+                    requested.adaptive.far_mode_return_fade_in_ms as f32,
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/audio/output_devices".to_string(),
+                args: vec![OscType::String(
+                    serde_json::to_string(&audio_control.available_output_devices())
+                        .unwrap_or_else(|_| "[]".to_string()),
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/audio/output_device".to_string(),
+                args: vec![OscType::String(requested.output_device.unwrap_or_default())],
+            }),
+        ]);
+
+        if let Some(ms) = requested.latency_target_ms {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/latency_target".to_string(),
+                args: vec![OscType::Float(ms as f32)],
+            }));
+        }
     }
 
     let mut all_messages = messages;
@@ -2499,9 +2617,9 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
     }
 
     // Current audio output format state.
-    {
-        let (current_rate_opt, fmt) = control.audio_state();
-        let rate_opt = current_rate_opt.or_else(|| control.requested_output_sample_rate());
+    if let Some(audio_control) = audio_control {
+        let (current_rate_opt, fmt) = audio_control.audio_state();
+        let rate_opt = current_rate_opt.or_else(|| audio_control.requested_output_sample_rate());
         if let Some(rate) = rate_opt {
             all_messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/audio/sample_rate".to_string(),
@@ -2514,7 +2632,7 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
                 args: vec![OscType::String(fmt)],
             }));
         }
-        if let Some(error) = control.audio_error() {
+        if let Some(error) = audio_control.audio_error() {
             all_messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/audio/error".to_string(),
                 args: vec![OscType::String(error)],
@@ -2538,12 +2656,7 @@ fn build_live_state_bundle(control: &Arc<RendererControl>) -> Vec<u8> {
 // -------------------------------------------------------------------------
 
 /// Send a single-float OSC message to all live clients (no pruning).
-fn broadcast_float(
-    socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
-    addr: &str,
-    value: f32,
-) {
+fn broadcast_float(socket: &UdpSocket, clients: &Mutex<OscClients>, addr: &str, value: f32) {
     let msg = OscMessage {
         addr: addr.to_string(),
         args: vec![OscType::Float(value)],
@@ -2554,12 +2667,7 @@ fn broadcast_float(
 }
 
 /// Send a single-int OSC message to all live clients (no pruning).
-fn broadcast_int(
-    socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
-    addr: &str,
-    value: i32,
-) {
+fn broadcast_int(socket: &UdpSocket, clients: &Mutex<OscClients>, addr: &str, value: i32) {
     let msg = OscMessage {
         addr: addr.to_string(),
         args: vec![OscType::Int(value)],
@@ -2588,12 +2696,7 @@ fn broadcast_fff(
 }
 
 /// Send a single-string OSC message to all live clients (no pruning).
-fn broadcast_string(
-    socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
-    addr: &str,
-    value: &str,
-) {
+fn broadcast_string(socket: &UdpSocket, clients: &Mutex<OscClients>, addr: &str, value: &str) {
     let packet = OscPacket::Message(OscMessage {
         addr: addr.to_string(),
         args: vec![OscType::String(value.to_string())],
@@ -2604,11 +2707,7 @@ fn broadcast_string(
 }
 
 /// Mark live params as dirty (changed since last save) and broadcast the state.
-fn set_dirty(
-    control: &Arc<RendererControl>,
-    socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
-) {
+fn set_dirty(control: &Arc<RendererControl>, socket: &UdpSocket, clients: &Mutex<OscClients>) {
     control.mark_dirty();
     broadcast_int(socket, clients, "/omniphony/state/config/saved", 0);
 }
@@ -2618,6 +2717,7 @@ fn set_dirty(
 /// Broadcasts `/omniphony/state/config/saved 1` on success; logs error and stays dirty on failure.
 fn save_live_config(
     control: &Arc<RendererControl>,
+    audio_control: Option<&Arc<AudioControl>>,
     socket: &UdpSocket,
     clients: &Mutex<OscClients>,
 ) {
@@ -2738,8 +2838,7 @@ fn save_live_config(
         None
     };
     render.use_loudness = if live.use_loudness { Some(true) } else { None };
-    render.vbap_distance_model = if live.distance_model
-        != crate::spatial_vbap::DistanceModel::None
+    render.vbap_distance_model = if live.distance_model != crate::spatial_vbap::DistanceModel::None
     {
         Some(live.distance_model.to_string())
     } else {
@@ -2772,40 +2871,35 @@ fn save_live_config(
     } else {
         None
     };
-    render.output_device = control.requested_output_device();
-    render.output_sample_rate = control.requested_output_sample_rate();
     render.ramp_mode = match control.requested_ramp_mode() {
         crate::live_params::RampMode::Sample => None,
         mode => Some(mode.as_str().to_string()),
     };
-    render.enable_adaptive_resampling = if control.requested_adaptive_resampling() {
-        Some(true)
-    } else {
-        Some(false)
-    };
-    render.adaptive_resampling_enable_far_mode =
-        Some(control.requested_adaptive_resampling_enable_far_mode());
-    render.adaptive_resampling_force_silence_in_far_mode =
-        Some(control.requested_adaptive_resampling_force_silence_in_far_mode());
-    render.adaptive_resampling_hard_recover_in_far_mode =
-        Some(control.requested_adaptive_resampling_hard_recover_in_far_mode());
-    render.adaptive_resampling_far_mode_return_fade_in_ms =
-        Some(control.requested_adaptive_resampling_far_mode_return_fade_in_ms());
-    render.pw_latency = control.requested_latency_target_ms();
-    render.adaptive_resampling_kp_near =
-        Some(control.requested_adaptive_resampling_kp_near() as f32);
-    render.adaptive_resampling_kp_far = Some(control.requested_adaptive_resampling_kp_far() as f32);
-    render.adaptive_resampling_ki = Some(control.requested_adaptive_resampling_ki() as f32);
-    render.adaptive_resampling_max_adjust =
-        Some(control.requested_adaptive_resampling_max_adjust() as f32);
-    render.adaptive_resampling_max_adjust_far =
-        Some(control.requested_adaptive_resampling_max_adjust_far() as f32);
-    render.adaptive_resampling_update_interval_callbacks =
-        Some(control.requested_adaptive_resampling_update_interval_callbacks());
-    render.adaptive_resampling_near_far_threshold_ms =
-        Some(control.requested_adaptive_resampling_near_far_threshold_ms());
-    render.adaptive_resampling_measurement_smoothing_alpha =
-        Some(control.requested_adaptive_resampling_measurement_smoothing_alpha() as f32);
+    if let Some(audio_control) = audio_control {
+        let requested = audio_control.requested_snapshot();
+        render.output_device = requested.output_device;
+        render.output_sample_rate = requested.output_sample_rate_hz;
+        render.enable_adaptive_resampling = Some(requested.adaptive_enabled);
+        render.adaptive_resampling_enable_far_mode = Some(requested.adaptive.enable_far_mode);
+        render.adaptive_resampling_force_silence_in_far_mode =
+            Some(requested.adaptive.force_silence_in_far_mode);
+        render.adaptive_resampling_hard_recover_in_far_mode =
+            Some(requested.adaptive.hard_recover_in_far_mode);
+        render.adaptive_resampling_far_mode_return_fade_in_ms =
+            Some(requested.adaptive.far_mode_return_fade_in_ms);
+        render.pw_latency = requested.latency_target_ms;
+        render.adaptive_resampling_kp_near = Some(requested.adaptive.kp_near as f32);
+        render.adaptive_resampling_kp_far = Some(requested.adaptive.kp_far as f32);
+        render.adaptive_resampling_ki = Some(requested.adaptive.ki as f32);
+        render.adaptive_resampling_max_adjust = Some(requested.adaptive.max_adjust as f32);
+        render.adaptive_resampling_max_adjust_far = Some(requested.adaptive.max_adjust_far as f32);
+        render.adaptive_resampling_update_interval_callbacks =
+            Some(requested.adaptive.update_interval_callbacks);
+        render.adaptive_resampling_near_far_threshold_ms =
+            Some(requested.adaptive.near_far_threshold_ms);
+        render.adaptive_resampling_measurement_smoothing_alpha =
+            Some(requested.adaptive.measurement_smoothing_alpha as f32);
+    }
 
     drop(live);
 
@@ -2814,7 +2908,7 @@ fn save_live_config(
             control.mark_clean();
             broadcast_int(socket, clients, "/omniphony/state/config/saved", 1);
             // Push a full state snapshot so UIs match what has just been persisted.
-            let state_bytes = build_live_state_bundle(control);
+            let state_bytes = build_live_state_bundle(control, audio_control);
             send_raw(socket, clients, &state_bytes);
             log::info!("OSC: config saved to {}", path.display());
         }
@@ -2959,11 +3053,7 @@ fn flush_pending_logs(socket: &UdpSocket, clients: &Mutex<OscClients>, last_seq:
 }
 
 /// Send raw bytes to all currently-known live clients without pruning.
-fn send_raw(
-    socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
-    bytes: &[u8],
-) {
+fn send_raw(socket: &UdpSocket, clients: &Mutex<OscClients>, bytes: &[u8]) {
     send_raw_filtered(socket, clients, bytes, |_| true);
 }
 

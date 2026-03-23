@@ -1,16 +1,19 @@
-use super::decoder_thread::{DecodedAudioData, DecoderMessage, DecoderThreadConfig, spawn_decoder_thread};
+use super::decoder_thread::{
+    DecodedAudioData, DecoderMessage, DecoderThreadConfig, spawn_decoder_thread,
+};
 use super::handler::{DecodeHandler, FrameHandlerContext, WriterState};
 use crate::bridge_loader::{LoadedBridge, resolve_bridge_path};
 use crate::cli::command::{
     Cli, LogFormat, LogLevel, OutputBackend, RampModeArg, RenderArgs, VbapTableModeArg,
 };
 use anyhow::Result;
+use audio_output::AdaptiveResamplingConfig;
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::{PipewireBufferConfig, list_pipewire_output_devices};
-use audio_output::AdaptiveResamplingConfig;
+use audio_output::{AudioControl, OutputDeviceOption, RequestedAudioOutputConfig};
 use log::Level;
-use renderer::live_params::OutputDeviceOption;
 use renderer::metering::AudioMeter;
+use std::sync::Arc;
 use std::sync::mpsc;
 
 #[cfg(target_os = "windows")]
@@ -38,10 +41,7 @@ fn list_available_output_devices(backend: OutputBackend) -> Vec<OutputDeviceOpti
     }
 }
 
-#[cfg(not(any(
-    target_os = "windows",
-    target_os = "linux"
-)))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn list_available_output_devices(_backend: OutputBackend) -> Vec<OutputDeviceOption> {
     Vec::new()
 }
@@ -205,10 +205,7 @@ fn merge_render_config(cfg: &renderer::config::RenderConfig, args: &mut RenderAr
     if args.pw_latency.is_none() {
         args.pw_latency = cfg.pw_latency;
     }
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "windows"
-    ))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     if args.output_device.is_none() {
         if let Some(ref s) = cfg.output_device {
             args.output_device = Some(s.clone());
@@ -413,17 +410,11 @@ fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<renderer::config:
             None
         },
         output_device: {
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "windows"
-            ))]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             {
                 args.output_device.clone()
             }
-            #[cfg(not(any(
-                target_os = "linux",
-                target_os = "windows"
-            )))]
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             {
                 None
             }
@@ -481,8 +472,8 @@ fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<renderer::config:
         adaptive_resampling_ki: None,
         adaptive_resampling_max_adjust: None,
         adaptive_resampling_max_adjust_far: None,
-        adaptive_resampling_update_interval_callbacks:
-            args.adaptive_resampling_update_interval_callbacks,
+        adaptive_resampling_update_interval_callbacks: args
+            .adaptive_resampling_update_interval_callbacks,
         adaptive_resampling_near_far_threshold_ms: None,
         adaptive_resampling_measurement_smoothing_alpha: None,
         output_sample_rate: args.output_sample_rate,
@@ -1166,108 +1157,49 @@ fn init_render_handler(
     // Wire the renderer control into the OSC sender so the listener can read/write live params.
     if let Some(renderer) = &handler.spatial_renderer {
         let ctrl = renderer.renderer_control();
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "windows"
-        ))]
-        ctrl.set_requested_output_device(args.output_device.clone());
         ctrl.set_input_path(Some(input_path.display().to_string()));
-        if let Some(backend) = args.output_backend.or_else(OutputBackend::platform_default) {
-            ctrl.set_available_output_devices(list_available_output_devices(backend));
-            ctrl.set_device_list_fetcher(move || list_available_output_devices(backend));
-        } else {
-            ctrl.set_available_output_devices(Vec::new());
-        }
-        ctrl.set_requested_output_sample_rate(args.output_sample_rate);
-        ctrl.set_requested_adaptive_resampling(args.enable_adaptive_resampling);
-        ctrl.set_requested_adaptive_resampling_enable_far_mode(
-            handler.runtime.adaptive_resampling_config.enable_far_mode,
-        );
-        ctrl.set_requested_adaptive_resampling_force_silence_in_far_mode(
-            handler
-                .runtime
-                .adaptive_resampling_config
-                .force_silence_in_far_mode,
-        );
-        ctrl.set_requested_adaptive_resampling_hard_recover_in_far_mode(
-            handler
-                .runtime
-                .adaptive_resampling_config
-                .hard_recover_in_far_mode,
-        );
-        ctrl.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(
-            handler
-                .runtime
-                .adaptive_resampling_config
-                .far_mode_return_fade_in_ms,
-        );
         ctrl.set_requested_ramp_mode(args.ramp_mode.into());
         ctrl.live.write().unwrap().ramp_mode = args.ramp_mode.into();
-        #[cfg(target_os = "linux")]
-        {
-            let defaults = PipewireBufferConfig::default();
-            let adaptive = &handler.runtime.adaptive_resampling_config;
-            ctrl.set_requested_latency_target_ms(Some(
-                args.pw_latency.unwrap_or(defaults.latency_ms),
-            ));
-            ctrl.set_requested_adaptive_resampling_force_silence_in_far_mode(
-                adaptive.force_silence_in_far_mode,
-            );
-            ctrl.set_requested_adaptive_resampling_hard_recover_in_far_mode(
-                adaptive.hard_recover_in_far_mode,
-            );
-            ctrl.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(
-                adaptive.far_mode_return_fade_in_ms,
-            );
-            ctrl.set_requested_adaptive_resampling_kp_near(adaptive.kp_near as f32);
-            ctrl.set_requested_adaptive_resampling_kp_far(adaptive.kp_far as f32);
-            ctrl.set_requested_adaptive_resampling_ki(adaptive.ki as f32);
-            ctrl.set_requested_adaptive_resampling_max_adjust(adaptive.max_adjust as f32);
-            ctrl.set_requested_adaptive_resampling_max_adjust_far(adaptive.max_adjust_far as f32);
-            ctrl.set_requested_adaptive_resampling_update_interval_callbacks(
-                adaptive.update_interval_callbacks,
-            );
-            ctrl.set_requested_adaptive_resampling_near_far_threshold_ms(
-                adaptive.near_far_threshold_ms,
-            );
-            ctrl.set_requested_adaptive_resampling_measurement_smoothing_alpha(
-                adaptive.measurement_smoothing_alpha as f32,
-            );
+
+        let requested_latency_target_ms = {
+            #[cfg(target_os = "linux")]
+            {
+                let defaults = PipewireBufferConfig::default();
+                Some(args.pw_latency.unwrap_or(defaults.latency_ms))
+            }
+            #[cfg(target_os = "windows")]
+            {
+                Some(handler.runtime.asio_target_latency_ms)
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            {
+                None
+            }
+        };
+
+        let audio_control = Arc::new(AudioControl::new(RequestedAudioOutputConfig {
+            output_device: args.output_device.clone(),
+            output_sample_rate_hz: args.output_sample_rate,
+            latency_target_ms: requested_latency_target_ms,
+            adaptive_enabled: args.enable_adaptive_resampling,
+            adaptive: handler.runtime.adaptive_resampling_config.clone(),
+        }));
+
+        if let Some(backend) = args.output_backend.or_else(OutputBackend::platform_default) {
+            audio_control.set_available_output_devices(list_available_output_devices(backend));
+            audio_control.set_device_list_fetcher(move || list_available_output_devices(backend));
+        } else {
+            audio_control.set_available_output_devices(Vec::new());
         }
-        #[cfg(target_os = "windows")]
-        {
-            ctrl.set_requested_latency_target_ms(Some(handler.runtime.asio_target_latency_ms));
-            let adaptive = &handler.runtime.adaptive_resampling_config;
-            ctrl.set_requested_adaptive_resampling_force_silence_in_far_mode(
-                adaptive.force_silence_in_far_mode,
-            );
-            ctrl.set_requested_adaptive_resampling_hard_recover_in_far_mode(
-                adaptive.hard_recover_in_far_mode,
-            );
-            ctrl.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(
-                adaptive.far_mode_return_fade_in_ms,
-            );
-            ctrl.set_requested_adaptive_resampling_kp_near(adaptive.kp_near as f32);
-            ctrl.set_requested_adaptive_resampling_kp_far(adaptive.kp_far as f32);
-            ctrl.set_requested_adaptive_resampling_ki(adaptive.ki as f32);
-            ctrl.set_requested_adaptive_resampling_max_adjust(adaptive.max_adjust as f32);
-            ctrl.set_requested_adaptive_resampling_max_adjust_far(adaptive.max_adjust_far as f32);
-            ctrl.set_requested_adaptive_resampling_update_interval_callbacks(
-                adaptive.update_interval_callbacks,
-            );
-            ctrl.set_requested_adaptive_resampling_near_far_threshold_ms(
-                adaptive.near_far_threshold_ms,
-            );
-            ctrl.set_requested_adaptive_resampling_measurement_smoothing_alpha(
-                adaptive.measurement_smoothing_alpha as f32,
-            );
-        }
+
+        handler.audio_control = Some(Arc::clone(&audio_control));
         // Pass the config path so the save-config OSC handler can persist params.
         if let Some(path) = config_path {
             ctrl.set_config_path(path.clone());
         }
         if let Some(sender) = &mut handler.telemetry.osc_sender {
             sender.attach_renderer_control(ctrl);
+            sender.attach_audio_control(audio_control);
         }
     }
 
@@ -1330,6 +1262,7 @@ fn handle_stream_end(handler: &mut DecodeHandler, args: &RenderArgs) -> Result<(
 
     // Preserve some state before resetting handler
     let spatial_renderer = handler.spatial_renderer.take();
+    let audio_control = handler.audio_control.take();
     let osc_sender = handler.telemetry.osc_sender.take();
     let audio_meter = handler.telemetry.audio_meter.take();
     let runtime = handler.runtime.clone();
@@ -1339,6 +1272,7 @@ fn handle_stream_end(handler: &mut DecodeHandler, args: &RenderArgs) -> Result<(
 
     // Restore preserved state (bridge lives in decoder thread — no restore needed).
     handler.spatial_renderer = spatial_renderer;
+    handler.audio_control = audio_control;
     // Preserve OSC sender and meter across resets so that:
     //   - the listener thread keeps running on the same port,
     //   - registered clients remain in the client list, and

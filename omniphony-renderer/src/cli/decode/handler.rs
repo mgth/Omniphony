@@ -3,7 +3,7 @@ use crate::cli::command::OutputBackend;
 use crate::events::{Configuration, Event};
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
-use audio_output::AdaptiveResamplingConfig;
+use audio_output::{AdaptiveResamplingConfig, AudioControl};
 use bridge_api::{RChannelLabel, RCoordinateFormat, RDecodedFrame, RMetadataFrame};
 
 use anyhow::{Result, anyhow};
@@ -12,6 +12,7 @@ use renderer::metering::AudioMeter;
 use renderer::osc_output::{ObjectMeta, OscSender};
 use renderer::speaker_layout::SpeakerLayout;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -482,10 +483,7 @@ pub struct WriterState {
 
 #[derive(Clone)]
 pub struct RuntimeOutputState {
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "windows"
-    ))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub output_device: Option<String>,
     #[cfg(target_os = "linux")]
     pub pw_buffer_config: PipewireBufferConfig,
@@ -500,10 +498,7 @@ pub struct RuntimeOutputState {
 impl Default for RuntimeOutputState {
     fn default() -> Self {
         Self {
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "windows"
-            ))]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             output_device: None,
             #[cfg(target_os = "linux")]
             pw_buffer_config: PipewireBufferConfig::default(),
@@ -620,7 +615,6 @@ impl OutputState {
     }
 }
 
-
 pub struct DecodeSessionState {
     pub decoded_frames: u64,
     pub decoded_samples: u64,
@@ -648,6 +642,7 @@ pub struct DecodeHandler {
     pub spatial: SpatialState,
     pub session: DecodeSessionState,
     pub spatial_renderer: Option<renderer::spatial_renderer::SpatialRenderer>,
+    pub audio_control: Option<Arc<AudioControl>>,
 }
 
 impl Default for DecodeHandler {
@@ -659,6 +654,7 @@ impl Default for DecodeHandler {
             spatial: SpatialState::default(),
             session: DecodeSessionState::default(),
             spatial_renderer: None,
+            audio_control: None,
         }
     }
 }
@@ -730,10 +726,10 @@ impl DecodeHandler {
 
     fn sync_requested_output_sample_rate(&mut self, output_backend: OutputBackend) -> Result<()> {
         let requested = self
-            .spatial_renderer
+            .audio_control
             .as_ref()
-            .map(|r| r.renderer_control().requested_output_sample_rate())
-            .unwrap_or(self.runtime.output_sample_rate);
+            .and_then(|control| control.requested_output_sample_rate())
+            .or(self.runtime.output_sample_rate);
 
         if requested == self.runtime.output_sample_rate {
             return Ok(());
@@ -768,61 +764,55 @@ impl DecodeHandler {
     }
 
     fn sync_requested_output_device(&mut self, output_backend: OutputBackend) -> Result<()> {
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "windows"
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = output_backend;
             return Ok(());
         }
 
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "windows"
-        ))]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
-        let requested = self
-            .spatial_renderer
-            .as_ref()
-            .map(|r| r.renderer_control().requested_output_device())
-            .unwrap_or_else(|| self.runtime.output_device.clone());
+            let requested = self
+                .audio_control
+                .as_ref()
+                .and_then(|control| control.requested_output_device())
+                .or_else(|| self.runtime.output_device.clone());
 
-        if requested == self.runtime.output_device {
-            return Ok(());
-        }
-
-        self.runtime.output_device = requested.clone();
-        log::info!(
-            "Applying requested output device: {}",
-            requested.unwrap_or_else(|| "default".to_string())
-        );
-
-        match output_backend {
-            #[cfg(target_os = "linux")]
-            OutputBackend::Pipewire => {
-                if let Some(mut writer) = self.output.invalidate_writer() {
-                    let _ = writer.flush();
-                }
+            if requested == self.runtime.output_device {
+                return Ok(());
             }
-            #[cfg(target_os = "windows")]
-            OutputBackend::Asio => {
-                if let Some(mut writer) = self.output.invalidate_writer() {
-                    let _ = writer.flush();
-                }
-            }
-            _ => {}
-        }
 
-        Ok(())
+            self.runtime.output_device = requested.clone();
+            log::info!(
+                "Applying requested output device: {}",
+                requested.unwrap_or_else(|| "default".to_string())
+            );
+
+            match output_backend {
+                #[cfg(target_os = "linux")]
+                OutputBackend::Pipewire => {
+                    if let Some(mut writer) = self.output.invalidate_writer() {
+                        let _ = writer.flush();
+                    }
+                }
+                #[cfg(target_os = "windows")]
+                OutputBackend::Asio => {
+                    if let Some(mut writer) = self.output.invalidate_writer() {
+                        let _ = writer.flush();
+                    }
+                }
+                _ => {}
+            }
+
+            Ok(())
         }
     }
 
     fn sync_requested_adaptive_resampling(&mut self, output_backend: OutputBackend) -> Result<()> {
         let requested = self
-            .spatial_renderer
+            .audio_control
             .as_ref()
-            .map(|r| r.renderer_control().requested_adaptive_resampling())
+            .map(|control| control.requested_adaptive_resampling())
             .unwrap_or(self.runtime.enable_adaptive_resampling);
 
         if requested == self.runtime.enable_adaptive_resampling {
@@ -859,9 +849,9 @@ impl DecodeHandler {
         #[cfg(target_os = "linux")]
         {
             let requested = self
-                .spatial_renderer
+                .audio_control
                 .as_ref()
-                .and_then(|r| r.renderer_control().requested_latency_target_ms())
+                .and_then(|control| control.requested_latency_target_ms())
                 .unwrap_or(self.runtime.pw_buffer_config.latency_ms);
 
             if requested == self.runtime.pw_buffer_config.latency_ms {
@@ -891,9 +881,9 @@ impl DecodeHandler {
         #[cfg(target_os = "windows")]
         {
             let requested = self
-                .spatial_renderer
+                .audio_control
                 .as_ref()
-                .and_then(|r| r.renderer_control().requested_latency_target_ms())
+                .and_then(|control| control.requested_latency_target_ms())
                 .unwrap_or(self.runtime.asio_target_latency_ms);
 
             if requested != self.runtime.asio_target_latency_ms {
@@ -921,9 +911,8 @@ impl DecodeHandler {
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             let requested = self
-                .spatial_renderer
+                .audio_control
                 .as_ref()
-                .map(|r| r.renderer_control())
                 .map(|control| {
                     let kp = control.requested_adaptive_resampling_kp_near();
                     let max_adjust = control.requested_adaptive_resampling_max_adjust();
@@ -950,8 +939,7 @@ impl DecodeHandler {
                 })
                 .unwrap_or_else(|| self.runtime.adaptive_resampling_config.clone());
 
-            if requested.enable_far_mode
-                == self.runtime.adaptive_resampling_config.enable_far_mode
+            if requested.enable_far_mode == self.runtime.adaptive_resampling_config.enable_far_mode
                 && requested.force_silence_in_far_mode
                     == self
                         .runtime
@@ -966,11 +954,20 @@ impl DecodeHandler {
                 && requested.ki == self.runtime.adaptive_resampling_config.ki
                 && requested.max_adjust == self.runtime.adaptive_resampling_config.max_adjust
                 && requested.update_interval_callbacks
-                    == self.runtime.adaptive_resampling_config.update_interval_callbacks
+                    == self
+                        .runtime
+                        .adaptive_resampling_config
+                        .update_interval_callbacks
                 && requested.near_far_threshold_ms
-                    == self.runtime.adaptive_resampling_config.near_far_threshold_ms
+                    == self
+                        .runtime
+                        .adaptive_resampling_config
+                        .near_far_threshold_ms
                 && requested.measurement_smoothing_alpha
-                    == self.runtime.adaptive_resampling_config.measurement_smoothing_alpha
+                    == self
+                        .runtime
+                        .adaptive_resampling_config
+                        .measurement_smoothing_alpha
             {
                 return Ok(());
             }
@@ -988,9 +985,15 @@ impl DecodeHandler {
                 self.runtime.adaptive_resampling_config.kp_near,
                 self.runtime.adaptive_resampling_config.ki,
                 self.runtime.adaptive_resampling_config.max_adjust,
-                self.runtime.adaptive_resampling_config.update_interval_callbacks,
-                self.runtime.adaptive_resampling_config.near_far_threshold_ms,
-                self.runtime.adaptive_resampling_config.measurement_smoothing_alpha
+                self.runtime
+                    .adaptive_resampling_config
+                    .update_interval_callbacks,
+                self.runtime
+                    .adaptive_resampling_config
+                    .near_far_threshold_ms,
+                self.runtime
+                    .adaptive_resampling_config
+                    .measurement_smoothing_alpha
             );
 
             #[cfg(target_os = "linux")]
@@ -1033,8 +1036,7 @@ impl DecodeHandler {
         self.output.last_audio_sample_rate_hz = Some(effective_rate);
         self.output.last_audio_sample_format = Some(sample_format.to_string());
 
-        if let Some(ref renderer) = self.spatial_renderer {
-            let control = renderer.renderer_control();
+        if let Some(ref control) = self.audio_control {
             control.set_audio_state(effective_rate, sample_format);
         }
         if self
@@ -1068,8 +1070,7 @@ impl DecodeHandler {
 
         if let Some(prev_at) = self.session.last_frame_received_at {
             let wall_gap_ms = now.saturating_duration_since(prev_at).as_secs_f64() * 1000.0;
-            let frame_duration_ms =
-                sample_count as f64 / sample_rate.max(1) as f64 * 1000.0;
+            let frame_duration_ms = sample_count as f64 / sample_rate.max(1) as f64 * 1000.0;
             let sample_count_changed = self
                 .session
                 .last_frame_sample_count
@@ -1314,8 +1315,8 @@ impl DecodeHandler {
                             })
                         })
                         .unwrap_or_else(|| {
-                            let [x, y, z] =
-                                Self::event_pos_raw(coordinate_format, event).unwrap_or([0.0, 0.0, 0.0]);
+                            let [x, y, z] = Self::event_pos_raw(coordinate_format, event)
+                                .unwrap_or([0.0, 0.0, 0.0]);
                             (
                                 x,
                                 y,
@@ -1413,10 +1414,7 @@ impl DecodeHandler {
         sample_rate: u32,
         channel_count: usize,
     ) -> Result<()> {
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "windows"
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let _ = (output_backend, sample_rate, channel_count);
 
         if self.output.audio_writer.is_none() && !self.output.output_init_failed {
@@ -1477,20 +1475,28 @@ impl DecodeHandler {
                 } else {
                     None
                 };
-                match self.build_audio_writer(output_backend, sample_rate, channel_count, speaker_names) {
+                match self.build_audio_writer(
+                    output_backend,
+                    sample_rate,
+                    channel_count,
+                    speaker_names,
+                ) {
                     Ok(writer) => {
                         self.output.audio_writer = Some(writer);
                         self.output.bootstrap_frames_seen = 0;
                         self.output.bootstrap_started_at = None;
-                        if let Some(ref control) = self.spatial_renderer.as_ref().map(|r| r.renderer_control()) {
+                        if let Some(ref control) = self.audio_control {
                             control.set_audio_error(None);
                         }
                     }
                     Err(e) => {
-                        if let Some(ref control) = self.spatial_renderer.as_ref().map(|r| r.renderer_control()) {
+                        if let Some(ref control) = self.audio_control {
                             control.set_audio_error(Some(e.to_string()));
                         }
-                        log::warn!("Output backend initialization failed, waiting for a valid config: {}", e);
+                        log::warn!(
+                            "Output backend initialization failed, waiting for a valid config: {}",
+                            e
+                        );
                         self.output.output_init_failed = true;
                     }
                 }
@@ -1520,15 +1526,18 @@ impl DecodeHandler {
                 match self.build_audio_writer(output_backend, sample_rate, channel_count, None) {
                     Ok(writer) => {
                         self.output.audio_writer = Some(writer);
-                        if let Some(ref control) = self.spatial_renderer.as_ref().map(|r| r.renderer_control()) {
+                        if let Some(ref control) = self.audio_control {
                             control.set_audio_error(None);
                         }
                     }
                     Err(e) => {
-                        if let Some(ref control) = self.spatial_renderer.as_ref().map(|r| r.renderer_control()) {
+                        if let Some(ref control) = self.audio_control {
                             control.set_audio_error(Some(e.to_string()));
                         }
-                        log::warn!("Output backend initialization failed, waiting for a valid config: {}", e);
+                        log::warn!(
+                            "Output backend initialization failed, waiting for a valid config: {}",
+                            e
+                        );
                         self.output.output_init_failed = true;
                     }
                 }
@@ -1543,17 +1552,10 @@ impl DecodeHandler {
         output_backend: OutputBackend,
         sample_rate: u32,
         channel_count: usize,
-        #[cfg(target_os = "linux")] pipewire_channel_names: Option<
-            Vec<String>,
-        >,
-        #[cfg(not(target_os = "linux"))] _pipewire_channel_names: Option<
-            Vec<String>,
-        >,
+        #[cfg(target_os = "linux")] pipewire_channel_names: Option<Vec<String>>,
+        #[cfg(not(target_os = "linux"))] _pipewire_channel_names: Option<Vec<String>>,
     ) -> Result<AudioWriter> {
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "windows"
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let _ = (output_backend, sample_rate, channel_count);
 
         match output_backend {
@@ -1652,11 +1654,12 @@ impl DecodeHandler {
             w.total_audio_delay_ms()
                 .or_else(|| w.measured_audio_delay_ms())
         }) {
-            let should_write = !freeze_delay_sync && self
-                .output
-                .last_audio_delay_attempted_ms
-                .map(|prev| (total_ms - prev).abs() >= 20.0)
-                .unwrap_or(true);
+            let should_write = !freeze_delay_sync
+                && self
+                    .output
+                    .last_audio_delay_attempted_ms
+                    .map(|prev| (total_ms - prev).abs() >= 20.0)
+                    .unwrap_or(true);
             if should_write {
                 let delay_s = -(total_ms / 1000.0);
                 let delay_path = std::env::temp_dir().join("omniphony_delay");
@@ -1728,11 +1731,11 @@ impl DecodeHandler {
                         .is_some_and(|sender| sender.has_metering_clients())
                     {
                         if let Some(ref mut meter) = self.telemetry.audio_meter {
-                        meter.update_channel_count(channel_count);
-                        for chunk in pcm_data_f32.chunks_exact(channel_count) {
-                            meter.process_objects(chunk, channel_count);
+                            meter.update_channel_count(channel_count);
+                            for chunk in pcm_data_f32.chunks_exact(channel_count) {
+                                meter.process_objects(chunk, channel_count);
+                            }
                         }
-                    }
                     }
 
                     // Render using VBAP. Pending metadata events (if any) are applied
@@ -1876,11 +1879,11 @@ impl DecodeHandler {
                         .is_some_and(|sender| sender.has_metering_clients())
                     {
                         if let Some(ref mut meter) = self.telemetry.audio_meter {
-                        meter.update_channel_count(channel_count);
-                        for chunk in pcm_data_f32.chunks_exact(channel_count) {
-                            meter.process_objects(chunk, channel_count);
+                            meter.update_channel_count(channel_count);
+                            for chunk in pcm_data_f32.chunks_exact(channel_count) {
+                                meter.process_objects(chunk, channel_count);
+                            }
                         }
-                    }
                     }
 
                     let donated_buf = std::mem::take(&mut self.output.render_buf);
@@ -1976,8 +1979,7 @@ impl DecodeHandler {
                                 .session
                                 .decoded_samples
                                 .saturating_sub(sample_count as u64);
-                            if let Err(e) =
-                                osc_sender.send_object_frame(sample_pos, 0, 0, &objects)
+                            if let Err(e) = osc_sender.send_object_frame(sample_pos, 0, 0, &objects)
                             {
                                 log::warn!("Failed to send OSC virtual bed frame: {}", e);
                             }
