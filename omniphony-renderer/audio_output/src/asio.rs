@@ -14,8 +14,14 @@ use std::thread;
 use std::time::Duration;
 
 use crate::{
-    AdaptiveControllerState, AdaptiveResamplingConfig, adaptive_band_name, apply_ema,
-    compute_adaptive_step,
+    AdaptiveResamplingConfig, adaptive_band_name, compute_adaptive_step,
+    adaptive_runtime::{
+        AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
+        compute_hard_recover_plan, note_refill_or_underrun, output_to_input_domain_samples,
+        postprocess_interleaved_output, update_far_mode_state, update_latency_metrics,
+        zero_pad_tail,
+    },
+    resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
 };
 
 // Buffer size: 4 seconds of audio at 48kHz, 16 channels
@@ -25,11 +31,6 @@ const BUFFER_SIZE: usize = 48000 * 16 * 4;
 const MIN_BUFFER_MS: u32 = 25;
 const DEFAULT_TARGET_BUFFER_MS: u32 = 220;
 const MAX_BUFFER_MS: u32 = 250;
-const MAX_INTEGRAL_TERM: f64 = 0.0002;
-
-// Rubato constants
-const RESAMPLER_CHUNK_SIZE: usize = 1024; // Input chunk size for resampler
-
 pub struct AsioWriter {
     sample_buffer: Arc<ArrayQueue<f32>>,
     input_sample_rate: u32,
@@ -62,26 +63,6 @@ pub fn list_asio_devices() -> Result<Vec<String>> {
 }
 
 impl AsioWriter {
-    fn align_samples_to_audio_frame(samples: usize, channel_count: usize) -> usize {
-        if channel_count == 0 {
-            samples
-        } else {
-            samples - (samples % channel_count)
-        }
-    }
-
-    fn discard_input_samples(buffer: &ArrayQueue<f32>, samples_to_discard: usize) -> usize {
-        let mut dropped = 0usize;
-        while dropped < samples_to_discard {
-            if buffer.pop().is_some() {
-                dropped += 1;
-            } else {
-                break;
-            }
-        }
-        dropped
-    }
-
     pub fn list_asio_devices() -> Result<()> {
         println!("Available ASIO Devices:");
         let devices = list_asio_devices()?;
@@ -150,8 +131,7 @@ impl AsioWriter {
         };
         let max_buffer_ms = MAX_BUFFER_MS.max(target_buffer_ms.saturating_mul(2));
         let min_buffer_fill = (samples_per_ms * MIN_BUFFER_MS as usize).max(channel_count as usize);
-        let target_buffer_fill =
-            (samples_per_ms * target_buffer_ms as usize).max(min_buffer_fill);
+        let target_buffer_fill = (samples_per_ms * target_buffer_ms as usize).max(min_buffer_fill);
         let max_buffer_fill = (samples_per_ms * max_buffer_ms as usize)
             .max(target_buffer_fill + channel_count as usize);
 
@@ -318,25 +298,8 @@ impl AsioWriter {
         )
         .map_err(|e| anyhow!("Failed to create resampler: {:?}", e))?;
 
-        // Intermediate buffers
-        // Stores input for resampler (planar)
-        let mut resampler_input: Vec<Vec<f32>> =
-            vec![vec![0.0; RESAMPLER_CHUNK_SIZE]; channel_count as usize];
-        // Stores accumulated input samples count
-        let mut input_frames_collected = 0;
-
-        // FIFO for resampled output waiting to be consumed by ASIO callback
-        // Interleaved f32 samples
-        let mut output_fifo: Vec<f32> =
-            Vec::with_capacity(RESAMPLER_CHUNK_SIZE * channel_count as usize * 4);
-
-        // Control loop state
-        let mut controller_state = AdaptiveControllerState::default();
-        let mut callback_count = 0u64;
-        let mut underrun_warned = false;
-        let mut far_mode_was_muted = false;
-        let mut far_mode_fade_remaining_frames = 0usize;
-        let mut far_mode_fade_total_frames = 0usize;
+        let mut resampler_fifo = ResamplerFifoEngine::new(channel_count as usize);
+        let mut runtime_state = AdaptiveRuntimeState::new(1.0);
         let near_far_threshold_samples =
             (adaptive_config.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
         let measurement_smoothing_alpha =
@@ -350,17 +313,12 @@ impl AsioWriter {
         let stream = device.build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                callback_count += 1;
+                let callback_count = runtime_state.advance_callback();
 
                 // 1. Check buffer fill & Calculate Rate
                 let available_samples = buffer_clone.len(); // Input-domain samples (frames * channels)
-                let output_fifo_input_domain_samples = if resample_ratio > 0.0 {
-                    ((output_fifo.len() as f64) / resample_ratio).round() as usize
-                } else {
-                    output_fifo.len()
-                };
-                let total_available_input_domain =
-                    available_samples.saturating_add(output_fifo_input_domain_samples);
+                let output_fifo_input_domain_samples =
+                    output_to_input_domain_samples(resampler_fifo.output_len(), resample_ratio);
                 // data.len() is in device-channel domain; convert it to rendered-audio samples
                 // before comparing against the renderer/ring buffer fill level.
                 let callback_frames = data.len() / device_channel_count_for_callback as usize;
@@ -374,39 +332,20 @@ impl AsioWriter {
                 } else {
                     callback_audio_samples
                 };
-                let control_available = total_available_input_domain
-                    .saturating_sub(callback_input_domain_samples / 2);
-                let smoothed_control_available = apply_ema(
-                    &mut controller_state.smoothed_control_available,
-                    &mut controller_state.control_ema_initialized,
-                    control_available as f64,
+                let metrics = update_latency_metrics(
+                    &mut runtime_state,
+                    available_samples,
+                    output_fifo_input_domain_samples,
+                    callback_input_domain_samples,
+                    channel_count as usize,
+                    input_sample_rate,
+                    0.0,
                     measurement_smoothing_alpha,
-                )
-                .max(0.0)
-                .round() as usize;
-                let smoothed_total_available = apply_ema(
-                    &mut controller_state.smoothed_total_available,
-                    &mut controller_state.total_ema_initialized,
-                    total_available_input_domain as f64,
-                    measurement_smoothing_alpha,
-                )
-                .max(0.0)
-                .round() as usize;
-                // Expose "raw" latency as the instantaneous midpoint estimate used
-                // by the controller, so Studio can show min/max around the same
-                // quantity that the smoothed control marker is derived from.
-                let measured_latency_ms = (control_available as f32
-                    / channel_count as f32
-                    / input_sample_rate as f32)
-                    * 1000.0;
-                let control_latency_ms = (smoothed_control_available as f32
-                    / channel_count as f32
-                    / input_sample_rate as f32)
-                    * 1000.0;
-                measured_latency_ms_bits_clone
-                    .store(measured_latency_ms.to_bits(), Ordering::Relaxed);
-                control_latency_ms_bits_clone
-                    .store(control_latency_ms.to_bits(), Ordering::Relaxed);
+                    LatencyMetricTargets {
+                        measured_latency_ms_bits: &measured_latency_ms_bits_clone,
+                        control_latency_ms_bits: &control_latency_ms_bits_clone,
+                    },
+                );
 
                 // Adaptive rate logic (PI Controller)
                 // Adjusts the resampling ratio around the base ratio to maintain buffer level
@@ -416,12 +355,12 @@ impl AsioWriter {
                     let adaptive_update_interval =
                         adaptive_config.update_interval_callbacks.max(1) as u64;
                     if callback_count % adaptive_update_interval == 0
-                        && total_available_input_domain >= channel_count as usize
+                        && metrics.total_available_input_domain >= channel_count as usize
                     {
                         let step = compute_adaptive_step(
-                            &mut controller_state,
+                            &mut runtime_state.controller_state,
                             &adaptive_config,
-                            smoothed_control_available,
+                            metrics.smoothed_control_available,
                             target_buffer_fill,
                             near_far_threshold_samples,
                             resample_ratio,
@@ -440,7 +379,7 @@ impl AsioWriter {
                         if callback_count % 100 == 0 {
                             log::debug!(
                                 "ASIO Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
-                                smoothed_control_available,
+                                metrics.smoothed_control_available,
                                 target_buffer_fill,
                                 step.drift,
                                 step.current_ratio,
@@ -460,155 +399,43 @@ impl AsioWriter {
                 // output_fifo contains frames * channel_count
                 let output_frames_needed = data.len() / device_channel_count_for_callback as usize;
                 let audio_samples_needed = output_frames_needed * channel_count as usize;
-
-                while output_fifo.len() < audio_samples_needed {
-                    // We need to run the resampler
-                    // Do we have enough input for a chunk?
-                    // 2.1 Fill input buffer from ringbuffer
-                    while input_frames_collected < RESAMPLER_CHUNK_SIZE {
-                        // Try to pop one frame (all channels)
-                        let mut frame_complete = true;
-
-                        // Check if we have a full frame available in ringbuffer
-                        if buffer_clone.len() >= channel_count as usize {
-                            for ch in 0..channel_count as usize {
-                                if let Some(sample_f32) = buffer_clone.pop() {
-                                    // Already in f32 format [-1.0, 1.0]
-                                    resampler_input[ch][input_frames_collected] = sample_f32;
-                                } else {
-                                    frame_complete = false;
-                                    break;
-                                }
-                            }
-                        } else {
-                            frame_complete = false;
-                        }
-
-                        if frame_complete {
-                            input_frames_collected += 1;
-                        } else {
-                            // Not enough data in input buffer to fill a resampler chunk
-                            // If playback hasn't started, wait.
-                            // If it has, this is an underrun condition.
-                            break;
-                        }
-                    }
-
-                    // 2.2 Run Resampler if input is full
-                    if input_frames_collected == RESAMPLER_CHUNK_SIZE {
-                        match resampler.process(&resampler_input, None) {
-                            Ok(output_planar) => {
-                                // Interleave and push to FIFO
-                                let output_frames = output_planar[0].len();
-                                for i in 0..output_frames {
-                                    for ch in 0..channel_count as usize {
-                                        output_fifo.push(output_planar[ch][i]);
-                                    }
-                                }
-                                // Reset input counter
-                                input_frames_collected = 0;
-                            },
-                            Err(e) => {
-                                log::error!("Resampler error: {}", e);
-                                break;
-                            }
-                        }
-                    } else {
-                        // Cannot fill resampler chunk, underrun
-                        break;
-                    }
+                if let Err(e) =
+                    resampler_fifo.ensure_output_samples(&buffer_clone, &mut resampler, audio_samples_needed)
+                {
+                    log::error!("Resampler error: {}", e);
                 }
 
                 // 3. Fill ASIO callback buffer from FIFO
-                let mute_far_output = adaptive_resampling_enabled
-                    && adaptive_config.force_silence_in_far_mode
-                    && current_adaptive_band_clone.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR;
-                let hard_recover_far =
-                    mute_far_output && adaptive_config.hard_recover_in_far_mode;
-                if mute_far_output {
-                    far_mode_was_muted = true;
-                    far_mode_fade_remaining_frames = 0;
-                    far_mode_fade_total_frames = 0;
-                } else if far_mode_was_muted {
-                    far_mode_was_muted = false;
-                    far_mode_fade_total_frames =
-                        ((output_sample_rate as u64
-                            * adaptive_config.far_mode_return_fade_in_ms as u64)
-                            / 1000) as usize;
-                    far_mode_fade_remaining_frames = far_mode_fade_total_frames;
-                }
-                if hard_recover_far {
-                    let desired_consume_input_samples = (callback_input_domain_samples as i64
-                        + control_available as i64
-                        - target_buffer_fill as i64)
-                        .max(0) as usize;
-                    let desired_consume_input_samples = Self::align_samples_to_audio_frame(
-                        desired_consume_input_samples,
+                let far_decision: FarModeDecision = update_far_mode_state(
+                    &mut runtime_state,
+                    &adaptive_config,
+                    adaptive_resampling_enabled,
+                    current_adaptive_band_clone.load(Ordering::Relaxed) == crate::ADAPTIVE_BAND_FAR,
+                    output_sample_rate,
+                );
+                if far_decision.hard_recover_far {
+                    let plan = compute_hard_recover_plan(
+                        callback_input_domain_samples,
+                        metrics.control_available,
+                        target_buffer_fill,
+                        resample_ratio,
                         channel_count as usize,
                     );
-                    let desired_output_consume_samples = ((desired_consume_input_samples as f64)
-                        * resample_ratio)
-                        .round() as usize;
-                    let desired_output_consume_samples = Self::align_samples_to_audio_frame(
-                        desired_output_consume_samples,
-                        channel_count as usize,
-                    );
-
-                    while output_fifo.len() < desired_output_consume_samples {
-                        while input_frames_collected < RESAMPLER_CHUNK_SIZE {
-                            let mut frame_complete = true;
-                            if buffer_clone.len() >= channel_count as usize {
-                                for ch in 0..channel_count as usize {
-                                    if let Some(sample_f32) = buffer_clone.pop() {
-                                        resampler_input[ch][input_frames_collected] = sample_f32;
-                                    } else {
-                                        frame_complete = false;
-                                        break;
-                                    }
-                                }
-                            } else {
-                                frame_complete = false;
-                            }
-
-                            if frame_complete {
-                                input_frames_collected += 1;
-                            } else {
-                                break;
-                            }
-                        }
-
-                        if input_frames_collected == RESAMPLER_CHUNK_SIZE {
-                            match resampler.process(&resampler_input, None) {
-                                Ok(output_planar) => {
-                                    let output_frames = output_planar[0].len();
-                                    for i in 0..output_frames {
-                                        for ch in 0..channel_count as usize {
-                                            output_fifo.push(output_planar[ch][i]);
-                                        }
-                                    }
-                                    input_frames_collected = 0;
-                                }
-                                Err(e) => {
-                                    log::error!("Resampler error: {}", e);
-                                    break;
-                                }
-                            }
-                        } else {
-                            break;
-                        }
+                    if let Err(e) = resampler_fifo.ensure_output_samples(
+                        &buffer_clone,
+                        &mut resampler,
+                        plan.desired_consume_output_samples,
+                    ) {
+                        log::error!("Resampler error: {}", e);
                     }
-
-                    let discard_count = desired_output_consume_samples.min(output_fifo.len());
-                    output_fifo.drain(0..discard_count);
+                    resampler_fifo.discard_samples(plan.desired_consume_output_samples);
                     data.fill(0.0);
-                } else if output_fifo.len() >= audio_samples_needed {
+                } else if resampler_fifo.output_len() >= audio_samples_needed {
                     // We have enough data
                     // Map audio channels to device channels
                     // If device has more channels than audio, extra channels are zeroed
                     data.fill(0.0); // Zero all channels first
-
-                    let audio_iter = output_fifo.drain(0..audio_samples_needed);
-                    let audio_samples: Vec<f32> = audio_iter.collect();
+                    let audio_samples = resampler_fifo.drain_to_vec(audio_samples_needed);
 
                     // Interleave into device buffer: frame by frame
                     for frame_idx in 0..output_frames_needed {
@@ -621,74 +448,31 @@ impl AsioWriter {
                         }
                         // Remaining device channels (if any) stay at 0.0
                     }
-                    if mute_far_output {
-                        data.fill(0.0);
-                    } else if far_mode_fade_remaining_frames > 0
-                        && far_mode_fade_total_frames > 0
-                    {
-                        for frame_idx in 0..output_frames_needed {
-                            let fade_done = far_mode_fade_total_frames
-                                .saturating_sub(far_mode_fade_remaining_frames);
-                            let gain = fade_done as f32 / far_mode_fade_total_frames as f32;
-                            let frame_start =
-                                frame_idx * device_channel_count_for_callback as usize;
-                            let frame_end =
-                                frame_start + device_channel_count_for_callback as usize;
-                            for sample in &mut data[frame_start..frame_end] {
-                                *sample *= gain;
-                            }
-                            far_mode_fade_remaining_frames =
-                                far_mode_fade_remaining_frames.saturating_sub(1);
-                            if far_mode_fade_remaining_frames == 0 {
-                                break;
-                            }
-                        }
-                    }
+                    postprocess_interleaved_output(
+                        data,
+                        device_channel_count_for_callback as usize,
+                        far_decision.mute_far_output,
+                        &mut runtime_state,
+                    );
 
                 } else {
                     // Underrun
-                    if !underrun_warned {
-                        log::warn!(
-                            "ASIO Underrun! output_fifo={}, needed={} (frames={})",
-                            output_fifo.len(),
-                            audio_samples_needed,
-                            output_frames_needed
-                        );
-                        underrun_warned = true;
-                    }
+                    note_refill_or_underrun(
+                        &mut runtime_state,
+                        "ASIO underrun",
+                        "ASIO underrun",
+                        resampler_fifo.output_len(),
+                        audio_samples_needed,
+                    );
                     // Fill what we have, silence rest
-                    let available = output_fifo.len();
-                    let drain_iter = output_fifo.drain(..);
-                    for (dest, src) in data.iter_mut().zip(drain_iter) {
-                        *dest = src;
-                    }
-                    // Silence remaining
-                    for sample in data.iter_mut().skip(available) {
-                        *sample = 0.0;
-                    }
-                    if mute_far_output {
-                        data.fill(0.0);
-                    } else if far_mode_fade_remaining_frames > 0
-                        && far_mode_fade_total_frames > 0
-                    {
-                        for frame_idx in 0..output_frames_needed {
-                            let fade_done = far_mode_fade_total_frames
-                                .saturating_sub(far_mode_fade_remaining_frames);
-                            let gain = fade_done as f32 / far_mode_fade_total_frames as f32;
-                            let frame_start =
-                                frame_idx * device_channel_count_for_callback as usize;
-                            let frame_end =
-                                frame_start + device_channel_count_for_callback as usize;
-                            for sample in &mut data[frame_start..frame_end] {
-                                *sample *= gain;
-                            }
-                            far_mode_fade_remaining_frames =
-                                far_mode_fade_remaining_frames.saturating_sub(1);
-                            if far_mode_fade_remaining_frames == 0 {
-                                break;
-                            }
-                        }
-                    }
+                    let copied = resampler_fifo.drain_into_slice(data);
+                    zero_pad_tail(data, copied);
+                    postprocess_interleaved_output(
+                        data,
+                        device_channel_count_for_callback as usize,
+                        far_decision.mute_far_output,
+                        &mut runtime_state,
+                    );
                 }
             },
             err_fn,
@@ -781,9 +565,7 @@ impl AsioWriter {
     }
 
     pub fn total_audio_delay_ms(&self) -> f32 {
-        (self.target_buffer_fill as f32
-            / self.channel_count as f32
-            / self.input_sample_rate as f32)
+        (self.target_buffer_fill as f32 / self.channel_count as f32 / self.input_sample_rate as f32)
             * 1000.0
     }
 

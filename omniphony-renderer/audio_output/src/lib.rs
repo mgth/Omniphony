@@ -1,4 +1,6 @@
 pub mod control;
+pub mod adaptive_runtime;
+pub mod resampler_fifo;
 
 #[derive(Debug, Clone)]
 pub struct AdaptiveResamplingConfig {
