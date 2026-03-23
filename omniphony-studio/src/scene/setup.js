@@ -228,4 +228,4 @@ roomDimensionGroup.visible = false;
 // ---------------------------------------------------------------------------
 
 export const BRASSEMPOUY_TARGET_MAX_DIMENSION = 0.34;
-export const brassempouyAssetUrl = new URL('../assets/la_dame_de_brassempouy_centered.glb', import.meta.url);
+export const brassempouyAssetUrl = new URL('../../assets/la_dame_de_brassempouy_centered.glb', import.meta.url);
