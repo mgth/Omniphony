@@ -1,11 +1,11 @@
 use std::net::UdpSocket;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use audio_output::AudioControl;
 use renderer::live_params::RendererControl;
 
-use super::OscClients;
+use super::client_registry::OscClientRegistry;
 use super::transport::{broadcast_int, send_raw};
 
 pub(crate) fn build_live_state_bundle(
@@ -19,7 +19,7 @@ pub(crate) fn save_live_config(
     control: &Arc<RendererControl>,
     audio_control: Option<&Arc<AudioControl>>,
     socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
+    clients: &OscClientRegistry,
 ) {
     match runtime_control::persist::save_live_config(control, audio_control) {
         Ok(result) => {

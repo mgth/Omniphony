@@ -1,11 +1,9 @@
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
-use std::sync::Mutex;
-use std::time::Instant;
 
 use anyhow::Result;
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 
-use super::{CLIENT_TIMEOUT, OscClientState, OscClients};
+use super::client_registry::OscClientRegistry;
 
 pub(crate) fn build_speaker_config_bundle(
     layout: &renderer::speaker_layout::SpeakerLayout,
@@ -44,7 +42,7 @@ pub(crate) fn build_speaker_config_bundle(
 
 pub(crate) fn broadcast_speaker_config(
     socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
+    clients: &OscClientRegistry,
     layout: &renderer::speaker_layout::SpeakerLayout,
 ) {
     match build_speaker_config_bundle(layout) {
@@ -55,7 +53,7 @@ pub(crate) fn broadcast_speaker_config(
 
 pub(crate) fn broadcast_float(
     socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
+    clients: &OscClientRegistry,
     addr: &str,
     value: f32,
 ) {
@@ -70,7 +68,7 @@ pub(crate) fn broadcast_float(
 
 pub(crate) fn broadcast_int(
     socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
+    clients: &OscClientRegistry,
     addr: &str,
     value: i32,
 ) {
@@ -85,7 +83,7 @@ pub(crate) fn broadcast_int(
 
 pub(crate) fn broadcast_fff(
     socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
+    clients: &OscClientRegistry,
     addr: &str,
     a: f32,
     b: f32,
@@ -102,7 +100,7 @@ pub(crate) fn broadcast_fff(
 
 pub(crate) fn broadcast_string(
     socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
+    clients: &OscClientRegistry,
     addr: &str,
     value: &str,
 ) {
@@ -143,7 +141,7 @@ pub(crate) fn send_buffered_logs_to_client(socket: &UdpSocket, client: SocketAdd
 
 pub(crate) fn flush_pending_logs(
     socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
+    clients: &OscClientRegistry,
     last_seq: &mut u64,
 ) {
     let records = sys::live_log::records_since(*last_seq);
@@ -160,38 +158,19 @@ pub(crate) fn flush_pending_logs(
     }
 }
 
-pub(crate) fn send_raw(socket: &UdpSocket, clients: &Mutex<OscClients>, bytes: &[u8]) {
+pub(crate) fn send_raw(socket: &UdpSocket, clients: &OscClientRegistry, bytes: &[u8]) {
     send_raw_filtered(socket, clients, bytes, |_| true);
 }
 
 pub(crate) fn send_raw_filtered<F>(
     socket: &UdpSocket,
-    clients: &Mutex<OscClients>,
+    clients: &OscClientRegistry,
     bytes: &[u8],
     predicate: F,
 ) where
-    F: Fn(&OscClientState) -> bool,
+    F: Fn(&super::client_registry::OscClientState) -> bool,
 {
-    let mut clients_locked = clients.lock().unwrap();
-    let now = Instant::now();
-    clients_locked.retain(|addr, client| match client.last_seen {
-        None => true,
-        Some(t) => {
-            if now.duration_since(t) >= CLIENT_TIMEOUT {
-                log::info!("OSC client timed out, removing: {}", addr);
-                false
-            } else {
-                true
-            }
-        }
-    });
-    for (addr, client) in clients_locked.iter() {
-        if predicate(client) {
-            if let Err(e) = socket.send_to(bytes, *addr) {
-                log::warn!("OSC broadcast error to {}: {}", addr, e);
-            }
-        }
-    }
+    clients.send_filtered(socket, bytes, predicate);
 }
 
 pub(crate) fn send_metering_state(socket: &UdpSocket, client: SocketAddr, enabled: bool) {

@@ -1,14 +1,14 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use renderer::live_params::RendererControl;
 
-use super::OscClients;
+use super::client_registry::OscClientRegistry;
 use super::transport::{broadcast_fff, broadcast_int, broadcast_string};
 
 pub(crate) fn trigger_layout_recompute(
     control: &Arc<RendererControl>,
     socket: &Arc<std::net::UdpSocket>,
-    clients: &Arc<Mutex<OscClients>>,
+    clients: &Arc<OscClientRegistry>,
 ) {
     #[cfg(not(feature = "saf_vbap"))]
     {
