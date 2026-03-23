@@ -6,18 +6,20 @@ use crate::context::RuntimeControlContext;
 pub enum BroadcastValue {
     Int(i32),
     Float(f32),
+    Fff(f32, f32, f32),
     String(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct BroadcastUpdate {
-    pub addr: &'static str,
+    pub addr: String,
     pub value: BroadcastValue,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ControlEffects {
     pub mark_dirty: bool,
+    pub trigger_layout_recompute: bool,
     pub broadcasts: Vec<BroadcastUpdate>,
     pub log_message: Option<String>,
 }
@@ -33,8 +35,8 @@ fn parse_bool_arg(arg: Option<&OscType>) -> Option<bool> {
 fn parse_positive_u32_arg(arg: Option<&OscType>) -> Option<u32> {
     match arg {
         Some(OscType::Int(i)) if *i > 0 => Some(*i as u32),
-        Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u32),
-        _ => None,
+                    Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u32),
+            _ => None,
     }
 }
 
@@ -54,6 +56,14 @@ fn parse_positive_f32_arg(arg: Option<&OscType>) -> Option<f32> {
     }
 }
 
+fn parse_f32_arg(arg: Option<&OscType>) -> Option<f32> {
+    match arg {
+        Some(OscType::Float(f)) => Some(*f),
+        Some(OscType::Int(i)) => Some(*i as f32),
+        _ => None,
+    }
+}
+
 pub fn apply_simple_osc_control(
     msg: &OscMessage,
     ctx: &RuntimeControlContext,
@@ -66,7 +76,7 @@ pub fn apply_simple_osc_control(
             if let Some(devices) = audio.refresh_available_output_devices() {
                 let json = serde_json::to_string(&devices).unwrap_or_else(|_| "[]".to_string());
                 effects.broadcasts.push(BroadcastUpdate {
-                    addr: "/omniphony/state/audio/output_devices",
+                    addr: "/omniphony/state/audio/output_devices".to_string(),
                     value: BroadcastValue::String(json),
                 });
                 effects.log_message =
@@ -92,7 +102,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_output_device(requested.clone());
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/audio/output_device",
+                addr: "/omniphony/state/audio/output_device".to_string(),
                 value: BroadcastValue::String(requested.unwrap_or_default()),
             });
         }
@@ -110,7 +120,7 @@ pub fn apply_simple_osc_control(
         ctx.renderer.live.write().unwrap().ramp_mode = mode;
         effects.mark_dirty = true;
         effects.broadcasts.push(BroadcastUpdate {
-            addr: "/omniphony/state/ramp_mode",
+            addr: "/omniphony/state/ramp_mode".to_string(),
             value: BroadcastValue::String(mode.as_str().to_string()),
         });
         effects.log_message = Some(format!("OSC: ramp_mode → {}", mode.as_str()));
@@ -128,7 +138,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_output_sample_rate(requested_hz);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/audio/sample_rate",
+                addr: "/omniphony/state/audio/sample_rate".to_string(),
                 value: BroadcastValue::Int(requested_hz.unwrap_or(0) as i32),
             });
         }
@@ -141,7 +151,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling(enabled);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling",
+                addr: "/omniphony/state/adaptive_resampling".to_string(),
                 value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
             });
         }
@@ -154,7 +164,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_enable_far_mode(enabled);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/enable_far_mode",
+                addr: "/omniphony/state/adaptive_resampling/enable_far_mode".to_string(),
                 value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
             });
         }
@@ -167,7 +177,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_force_silence_in_far_mode(enabled);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/force_silence_in_far_mode",
+                addr: "/omniphony/state/adaptive_resampling/force_silence_in_far_mode".to_string(),
                 value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
             });
         }
@@ -180,7 +190,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_hard_recover_in_far_mode(enabled);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/hard_recover_in_far_mode",
+                addr: "/omniphony/state/adaptive_resampling/hard_recover_in_far_mode".to_string(),
                 value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
             });
         }
@@ -193,7 +203,8 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms",
+                addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms"
+                    .to_string(),
                 value: BroadcastValue::Float(value as f32),
             });
         }
@@ -206,7 +217,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_kp_near(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/kp_near",
+                addr: "/omniphony/state/adaptive_resampling/kp_near".to_string(),
                 value: BroadcastValue::Float(value),
             });
         }
@@ -219,7 +230,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_kp_far(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/kp_far",
+                addr: "/omniphony/state/adaptive_resampling/kp_far".to_string(),
                 value: BroadcastValue::Float(value),
             });
         }
@@ -232,7 +243,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_ki(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/ki",
+                addr: "/omniphony/state/adaptive_resampling/ki".to_string(),
                 value: BroadcastValue::Float(value),
             });
         }
@@ -245,7 +256,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_max_adjust(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/max_adjust",
+                addr: "/omniphony/state/adaptive_resampling/max_adjust".to_string(),
                 value: BroadcastValue::Float(value),
             });
         }
@@ -258,7 +269,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_max_adjust_far(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/max_adjust_far",
+                addr: "/omniphony/state/adaptive_resampling/max_adjust_far".to_string(),
                 value: BroadcastValue::Float(value),
             });
         }
@@ -271,7 +282,8 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_update_interval_callbacks(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/update_interval_callbacks",
+                addr: "/omniphony/state/adaptive_resampling/update_interval_callbacks"
+                    .to_string(),
                 value: BroadcastValue::Float(value as f32),
             });
         }
@@ -284,7 +296,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_near_far_threshold_ms(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/near_far_threshold_ms",
+                addr: "/omniphony/state/adaptive_resampling/near_far_threshold_ms".to_string(),
                 value: BroadcastValue::Float(value as f32),
             });
         }
@@ -301,7 +313,8 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_measurement_smoothing_alpha(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/measurement_smoothing_alpha",
+                addr: "/omniphony/state/adaptive_resampling/measurement_smoothing_alpha"
+                    .to_string(),
                 value: BroadcastValue::Float(value),
             });
         }
@@ -314,11 +327,405 @@ pub fn apply_simple_osc_control(
             audio.set_requested_latency_target_ms(Some(latency_ms));
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/latency_target",
+                addr: "/omniphony/state/latency_target".to_string(),
                 value: BroadcastValue::Float(latency_ms as f32),
             });
         }
         return Some(effects);
+    }
+
+    if addr == "/omniphony/control/layout/radius_m" {
+        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
+            ctx.renderer.with_editable_layout(|layout| layout.radius_m = v);
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/layout/radius_m".to_string(),
+                value: BroadcastValue::Float(v),
+            });
+            effects.log_message = Some(format!("OSC: layout radius_m → {}", v));
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/gain" {
+        if let Some(gain) = parse_f32_arg(msg.args.first()) {
+            ctx.renderer.live.write().unwrap().master_gain = gain;
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/gain".to_string(),
+                value: BroadcastValue::Float(gain),
+            });
+        }
+        return Some(effects);
+    }
+
+    macro_rules! layout_float_with_recompute {
+        ($path:literal, $field:ident, $state:literal) => {
+            if addr == $path {
+                if let Some(value) = parse_f32_arg(msg.args.first()) {
+                    ctx.renderer.live.write().unwrap().$field = value;
+                    effects.mark_dirty = true;
+                    effects.trigger_layout_recompute = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: $state.to_string(),
+                        value: BroadcastValue::Float(value),
+                    });
+                }
+                return Some(effects);
+            }
+        };
+    }
+
+    layout_float_with_recompute!(
+        "/omniphony/control/spread/min",
+        spread_min,
+        "/omniphony/state/spread/min"
+    );
+    layout_float_with_recompute!(
+        "/omniphony/control/spread/max",
+        spread_max,
+        "/omniphony/state/spread/max"
+    );
+    layout_float_with_recompute!(
+        "/omniphony/control/spread/distance_range",
+        spread_distance_range,
+        "/omniphony/state/spread/distance_range"
+    );
+    layout_float_with_recompute!(
+        "/omniphony/control/spread/distance_curve",
+        spread_distance_curve,
+        "/omniphony/state/spread/distance_curve"
+    );
+
+    if addr == "/omniphony/control/spread/from_distance" {
+        if let Some(v) = parse_bool_arg(msg.args.first()) {
+            ctx.renderer.live.write().unwrap().spread_from_distance = v;
+            effects.mark_dirty = true;
+            effects.trigger_layout_recompute = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/spread/from_distance".to_string(),
+                value: BroadcastValue::Int(if v { 1 } else { 0 }),
+            });
+        }
+        return Some(effects);
+    }
+
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/vbap/cart/") {
+        let size = match msg.args.first() {
+            Some(OscType::Int(i)) => Some((*i).max(1) as usize),
+            Some(OscType::Float(f)) => Some((*f).round().max(1.0) as usize),
+            _ => None,
+        };
+        if let Some(size) = size {
+            let state_addr = match rest {
+                "x_size" => {
+                    ctx.renderer.live.write().unwrap().vbap_cart_x_size = size;
+                    Some("/omniphony/state/vbap/cart/x_size")
+                }
+                "y_size" => {
+                    ctx.renderer.live.write().unwrap().vbap_cart_y_size = size;
+                    Some("/omniphony/state/vbap/cart/y_size")
+                }
+                "z_size" => {
+                    ctx.renderer.live.write().unwrap().vbap_cart_z_size = size;
+                    Some("/omniphony/state/vbap/cart/z_size")
+                }
+                "z_neg_size" => {
+                    ctx.renderer.live.write().unwrap().vbap_cart_z_neg_size = size;
+                    Some("/omniphony/state/vbap/cart/z_neg_size")
+                }
+                _ => None,
+            };
+            if let Some(state_addr) = state_addr {
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+                        effects.broadcasts.push(BroadcastUpdate {
+                            addr: state_addr.to_string(),
+                            value: BroadcastValue::Int(size as i32),
+                        });
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/vbap/table_mode" {
+        if let Some(OscType::String(mode)) = msg.args.first() {
+            if let Some(mode) = renderer::live_params::LiveVbapTableMode::from_str(mode) {
+                ctx.renderer.live.write().unwrap().vbap_table_mode = mode;
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/vbap/table_mode".to_string(),
+                    value: BroadcastValue::String(mode.as_str().to_string()),
+                });
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/vbap/position_interpolation" {
+        if let Some(enabled) = parse_bool_arg(msg.args.first()) {
+            ctx.renderer.live.write().unwrap().vbap_position_interpolation = enabled;
+            effects.mark_dirty = true;
+            effects.trigger_layout_recompute = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/vbap/position_interpolation".to_string(),
+                value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
+            });
+        }
+        return Some(effects);
+    }
+
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/vbap/polar/") {
+        match rest {
+            "azimuth_resolution" | "elevation_resolution" => {
+                let res = match msg.args.first() {
+                    Some(OscType::Int(i)) => Some((*i).max(1)),
+                    Some(OscType::Float(f)) => Some((*f as i32).max(1)),
+                    _ => None,
+                };
+                if let Some(res) = res {
+                    let state_addr = match rest {
+                        "azimuth_resolution" => {
+                            ctx.renderer.live.write().unwrap().vbap_polar_azimuth_values = res;
+                            Some("/omniphony/state/vbap/polar/azimuth_resolution")
+                        }
+                        "elevation_resolution" => {
+                            ctx.renderer.live.write().unwrap().vbap_polar_elevation_values = res;
+                            Some("/omniphony/state/vbap/polar/elevation_resolution")
+                        }
+                        _ => None,
+                    };
+                    if let Some(state_addr) = state_addr {
+                        effects.mark_dirty = true;
+                        effects.trigger_layout_recompute = true;
+                        effects.broadcasts.push(BroadcastUpdate {
+                            addr: state_addr.to_string(),
+                            value: BroadcastValue::Int(res),
+                        });
+                    }
+                }
+            }
+            "distance_res" => {
+                let res = match msg.args.first() {
+                    Some(OscType::Int(i)) => Some((*i).max(1)),
+                    Some(OscType::Float(f)) => Some((*f as i32).max(1)),
+                    _ => None,
+                };
+                if let Some(res) = res {
+                    ctx.renderer.live.write().unwrap().vbap_polar_distance_res = res;
+                    effects.mark_dirty = true;
+                    effects.trigger_layout_recompute = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/vbap/polar/distance_res".to_string(),
+                        value: BroadcastValue::Int(res),
+                    });
+                }
+            }
+            "distance_max" => {
+                let max_v = match msg.args.first() {
+                    Some(OscType::Int(i)) => Some((*i as f32).max(0.01)),
+                    Some(OscType::Float(f)) => Some((*f).max(0.01)),
+                    _ => None,
+                };
+                if let Some(max_v) = max_v {
+                    ctx.renderer.live.write().unwrap().vbap_polar_distance_max = max_v;
+                    effects.mark_dirty = true;
+                    effects.trigger_layout_recompute = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/vbap/polar/distance_max".to_string(),
+                        value: BroadcastValue::Float(max_v),
+                    });
+                }
+            }
+            _ => {}
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/loudness" {
+        if let Some(v) = parse_bool_arg(msg.args.first()) {
+            ctx.renderer.live.write().unwrap().use_loudness = v;
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/loudness".to_string(),
+                value: BroadcastValue::Int(if v { 1 } else { 0 }),
+            });
+            let live = ctx.renderer.live.read().unwrap();
+            let gain_linear: f32 = match (live.use_loudness, live.dialogue_level) {
+                (true, Some(dl)) => 10.0_f32.powf((-31 - dl as i32) as f32 / 20.0),
+                _ => 1.0,
+            };
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/loudness/gain".to_string(),
+                value: BroadcastValue::Float(gain_linear),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/distance_model" {
+        if let Some(OscType::String(model)) = msg.args.first() {
+            if let Ok(model) = model.parse::<renderer::spatial_vbap::DistanceModel>() {
+                ctx.renderer.live.write().unwrap().distance_model = model;
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/distance_model".to_string(),
+                    value: BroadcastValue::String(model.to_string()),
+                });
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/room_ratio" {
+        if msg.args.len() >= 3 {
+            let w = parse_f32_arg(msg.args.first());
+            let l = parse_f32_arg(msg.args.get(1));
+            let h = parse_f32_arg(msg.args.get(2));
+            if let (Some(w), Some(l), Some(h)) = (w, l, h) {
+                ctx.renderer.live.write().unwrap().room_ratio = [w, l, h];
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/room_ratio".to_string(),
+                    value: BroadcastValue::Fff(w, l, h),
+                });
+                effects.log_message = Some(format!("OSC: room_ratio → [{}, {}, {}]", w, l, h));
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/room_ratio_rear" {
+        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
+            ctx.renderer.live.write().unwrap().room_ratio_rear = v;
+            effects.mark_dirty = true;
+            effects.trigger_layout_recompute = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/room_ratio_rear".to_string(),
+                value: BroadcastValue::Float(v),
+            });
+            effects.log_message = Some(format!("OSC: room_ratio_rear → {}", v));
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/room_ratio_lower" {
+        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
+            ctx.renderer.live.write().unwrap().room_ratio_lower = v;
+            effects.mark_dirty = true;
+            effects.trigger_layout_recompute = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/room_ratio_lower".to_string(),
+                value: BroadcastValue::Float(v),
+            });
+            effects.log_message = Some(format!("OSC: room_ratio_lower → {}", v));
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/room_ratio_center_blend" {
+        if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.clamp(0.0, 1.0)) {
+            ctx.renderer.live.write().unwrap().room_ratio_center_blend = v;
+            effects.mark_dirty = true;
+            effects.trigger_layout_recompute = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/room_ratio_center_blend".to_string(),
+                value: BroadcastValue::Float(v),
+            });
+            effects.log_message = Some(format!("OSC: room_ratio_center_blend → {}", v));
+        }
+        return Some(effects);
+    }
+
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/distance_diffuse/") {
+        match rest {
+            "enabled" => {
+                if let Some(v) = parse_bool_arg(msg.args.first()) {
+                    ctx.renderer.live.write().unwrap().use_distance_diffuse = v;
+                    effects.mark_dirty = true;
+                    effects.trigger_layout_recompute = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/distance_diffuse/enabled".to_string(),
+                        value: BroadcastValue::Int(if v { 1 } else { 0 }),
+                    });
+                }
+                return Some(effects);
+            }
+            "threshold" => {
+                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(1e-6)) {
+                    ctx.renderer.live.write().unwrap().distance_diffuse_threshold = v;
+                    effects.mark_dirty = true;
+                    effects.trigger_layout_recompute = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/distance_diffuse/threshold".to_string(),
+                        value: BroadcastValue::Float(v),
+                    });
+                }
+                return Some(effects);
+            }
+            "curve" => {
+                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.0)) {
+                    ctx.renderer.live.write().unwrap().distance_diffuse_curve = v;
+                    effects.mark_dirty = true;
+                    effects.trigger_layout_recompute = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/distance_diffuse/curve".to_string(),
+                        value: BroadcastValue::Float(v),
+                    });
+                }
+                return Some(effects);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/object/") {
+        if let Some(idx_str) = rest.strip_suffix("/gain") {
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                if let Some(gain) = parse_f32_arg(msg.args.first()) {
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .objects
+                        .entry(idx)
+                        .or_default()
+                        .gain = gain;
+                    ctx.renderer.mark_object_params_dirty();
+                    effects.mark_dirty = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: format!("/omniphony/state/object/{}/gain", idx),
+                        value: BroadcastValue::Float(gain),
+                    });
+                }
+            }
+            return Some(effects);
+        }
+        if let Some(idx_str) = rest.strip_suffix("/mute") {
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                if let Some(muted) = parse_bool_arg(msg.args.first()) {
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .objects
+                        .entry(idx)
+                        .or_default()
+                        .muted = muted;
+                    ctx.renderer.mark_object_params_dirty();
+                    effects.mark_dirty = true;
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: format!("/omniphony/state/object/{}/mute", idx),
+                        value: BroadcastValue::Int(if muted { 1 } else { 0 }),
+                    });
+                    effects.log_message = Some(format!("OSC: object[{}] mute → {}", idx, muted));
+                }
+            }
+            return Some(effects);
+        }
     }
 
     None
