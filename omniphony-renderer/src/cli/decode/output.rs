@@ -124,10 +124,7 @@ impl AudioWriter {
         samples: &AudioSamples,
         _channel_count: usize,
     ) -> Result<()> {
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "windows"
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let _ = samples;
 
         match self {
@@ -269,17 +266,6 @@ impl AudioWriter {
                 if v > 0.0 { Some(v) } else { None }
             }
             AudioWriter::Unsupported => None,
-        }
-    }
-
-    /// Signal the audio backend to discard buffered audio and re-enter prefill.
-    pub fn request_flush(&self) {
-        match self {
-            #[cfg(target_os = "linux")]
-            AudioWriter::Pipewire(pw) => pw.request_flush(),
-            #[cfg(target_os = "windows")]
-            AudioWriter::Asio(asio) => asio.request_flush(),
-            AudioWriter::Unsupported => {}
         }
     }
 }

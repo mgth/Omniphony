@@ -17,8 +17,15 @@ use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_HARD, ADAPTIVE_BAND_NEAR, AdaptiveControllerState,
-    AdaptiveResamplingConfig, apply_ema, compute_adaptive_step,
+    ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, AdaptiveResamplingConfig, compute_adaptive_step,
+    adaptive_runtime::{
+        AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
+        compute_hard_recover_plan, discard_ring_samples, note_refill_or_underrun,
+        output_to_input_domain_samples, postprocess_interleaved_output, update_far_mode_state,
+        update_latency_metrics, zero_pad_tail,
+    },
+    ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
+    resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
 };
 
 // FFI bindings for PipeWire thread-safe rate control and stream timing
@@ -99,15 +106,13 @@ const BUFFER_SIZE: usize = 48000 * 16 * 4;
 /// All latency values are in milliseconds and converted to frames at runtime
 /// using the actual sample rate, so they work correctly with any sample rate.
 ///
-/// `latency_ms` is both the prefill threshold (playback starts when the buffer
-/// reaches this level) and the PI controller target.  Having them identical
-/// means the controller starts in its linear regime from the very first frame.
+/// `latency_ms` is the PI controller target.
 ///
 /// `max_latency_ms` should be set to at least `2 × latency_ms` to give the
 /// ring buffer enough headroom for mpv burst writes without blocking the writer.
 #[derive(Debug, Clone)]
 pub struct PipewireBufferConfig {
-    /// Target latency: prefill threshold AND PI controller setpoint (ms). Default: 500.
+    /// Target latency used by the PI controller (ms). Default: 500.
     pub latency_ms: u32,
     /// Maximum buffer fill before applying back-pressure (ms). Default: latency_ms × 2.
     pub max_latency_ms: u32,
@@ -145,7 +150,9 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
     let done = Rc::new(Cell::new(false));
     let collected = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
 
-    let pending = core.sync(0).map_err(|e| anyhow!("PipeWire sync failed: {e:?}"))?;
+    let pending = core
+        .sync(0)
+        .map_err(|e| anyhow!("PipeWire sync failed: {e:?}"))?;
 
     let done_clone = Rc::clone(&done);
     let loop_clone = mainloop.clone();
@@ -193,7 +200,7 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
                 .filter(|v| !v.is_empty())
                 .unwrap_or(value);
 
-        collected_clone
+            collected_clone
                 .borrow_mut()
                 .push((value.to_string(), label.to_string()));
         })
@@ -215,13 +222,6 @@ pub fn list_pipewire_output_devices() -> Result<Vec<(String, String)>> {
 const LATENCY_SERVO_P_GAIN: f64 = 0.000004;
 const LATENCY_SERVO_I_GAIN: f64 = 0.0000002;
 const LATENCY_SERVO_MAX_RATE_ADJUST: f64 = 0.03;
-
-// Maximum I contribution: 200 ppm.  Keeps the integral from dominating when the buffer
-// sits above target for a while (e.g. during initial mpv burst fill).
-const MAX_INTEGRAL_TERM: f64 = 0.0002;
-// Rubato resampler constants
-const RESAMPLER_CHUNK_SIZE: usize = 1024; // Input chunk size for resampler
-
 fn wallclock_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -245,13 +245,12 @@ pub struct PipewireWriter {
     current_rate_adjust: Arc<AtomicU32>,
     /// 0 = unknown, 1 = near, 2 = far.
     current_adaptive_band: Arc<AtomicU8>,
-    /// Set by request_flush(); the PipeWire callback drains the ring buffer,
-    /// resets its state, and clears this flag on the next callback invocation.
-    flush_requested: Arc<AtomicBool>,
     /// Signals the PipeWire worker thread to stop and exit cleanly.
     shutdown_requested: Arc<AtomicBool>,
     /// Timestamp of the last successful write into the local ring buffer.
     last_write_ms: Arc<AtomicU64>,
+    /// Smoothed measured total latency (ring + output FIFO + graph) in ms bits.
+    measured_latency_ms_bits: Arc<AtomicU32>,
     /// Downstream graph latency as measured by pw_stream_get_time().delay (f32 ms bits).
     /// Updated every ~100 callbacks once the stream is stable.
     graph_latency_ms_bits: Arc<AtomicU32>,
@@ -319,12 +318,12 @@ impl PipewireWriter {
         let rate_adjust_clone = current_rate_adjust.clone();
         let current_adaptive_band = Arc::new(AtomicU8::new(0));
         let adaptive_band_clone = current_adaptive_band.clone();
-        let flush_requested = Arc::new(AtomicBool::new(false));
-        let flush_requested_clone = flush_requested.clone();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let shutdown_requested_clone = shutdown_requested.clone();
         let last_write_ms = Arc::new(AtomicU64::new(wallclock_millis()));
         let last_write_ms_clone = last_write_ms.clone();
+        let measured_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
+        let measured_latency_clone = measured_latency_ms_bits.clone();
         let graph_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let graph_latency_clone = graph_latency_ms_bits.clone();
         let control_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
@@ -354,9 +353,9 @@ impl PipewireWriter {
                 adaptive_config_for_thread,
                 rate_adjust_clone,
                 adaptive_band_clone,
-                flush_requested_clone,
                 shutdown_requested_clone,
                 last_write_ms_clone,
+                measured_latency_clone,
                 graph_latency_clone,
                 control_latency_clone,
             ) {
@@ -403,9 +402,9 @@ impl PipewireWriter {
             enable_adaptive_resampling,
             current_rate_adjust,
             current_adaptive_band,
-            flush_requested,
             shutdown_requested,
             last_write_ms,
+            measured_latency_ms_bits,
             graph_latency_ms_bits,
             control_latency_ms_bits,
             target_latency_ms,
@@ -425,73 +424,35 @@ impl PipewireWriter {
 
         let max_buffer_fill = self.max_buffer_samples;
         let buffer_before = self.sample_buffer.len();
-
-        let mut sample_idx = 0;
-        let mut wait_count = 0;
-        let mut last_log_time = std::time::Instant::now();
-
-        while sample_idx < samples.len() {
-            // Check buffer fill level
-            let buffer_level = self.sample_buffer.len();
-
-            // If buffer is too full, wait for it to drain
-            if buffer_level >= max_buffer_fill {
-                if wait_count == 0 {
-                    log::trace!(
-                        "Buffer nearly full ({} samples / {} max), waiting for playback to catch up...",
-                        buffer_level,
-                        max_buffer_fill
-                    );
-                }
-                wait_count += 1;
-                thread::sleep(Duration::from_millis(10));
-
-                // Log periodically while waiting
-                if last_log_time.elapsed().as_secs() >= 2 {
-                    log::warn!(
-                        "Still waiting for buffer to drain: {} samples, waited {}ms",
-                        buffer_level,
-                        wait_count * 10
-                    );
-                    last_log_time = std::time::Instant::now();
-                }
-
-                // Safety timeout to prevent infinite loop and memory accumulation
-                if wait_count > 200 {
-                    // 2 seconds max wait instead of 5
-                    log::warn!(
-                        "Buffer drain timeout after 2s - dropping {} remaining samples to prevent OOM",
-                        samples.len() - sample_idx
-                    );
-                    break;
-                }
-                continue;
-            }
-
-            // Push samples one by one until buffer is full or we've pushed everything
-            while sample_idx < samples.len() && self.sample_buffer.len() < max_buffer_fill {
-                if self.sample_buffer.push(samples[sample_idx]).is_ok() {
-                    sample_idx += 1;
-                } else {
-                    // Buffer full, will wait on next iteration
-                    break;
-                }
-            }
+        let report = push_samples_with_backpressure(
+            &self.sample_buffer,
+            samples,
+            max_buffer_fill,
+            10,
+            200,
+        );
+        if report.timed_out {
+            log::warn!(
+                "Buffer drain timeout after 2s - dropping {} remaining samples to prevent OOM",
+                samples.len().saturating_sub(report.pushed_samples)
+            );
         }
 
         // Only log if we had to wait (indicates potential issues)
-        if wait_count > 0 {
+        if report.wait_count > 0 {
             log::trace!(
                 "Buffer drain wait: {} waits ({}ms), pushed {} samples",
-                wait_count,
-                wait_count * 10,
-                sample_idx
+                report.wait_count,
+                report.wait_count * 10,
+                report.pushed_samples
             );
         }
 
         self.bootstrap_write_calls = self.bootstrap_write_calls.saturating_add(1);
-        self.bootstrap_written_samples = self.bootstrap_written_samples.saturating_add(sample_idx);
-        if sample_idx > 0 {
+        self.bootstrap_written_samples = self
+            .bootstrap_written_samples
+            .saturating_add(report.pushed_samples);
+        if report.pushed_samples > 0 {
             self.last_write_ms
                 .store(wallclock_millis(), Ordering::Relaxed);
         }
@@ -499,7 +460,7 @@ impl PipewireWriter {
             log::info!(
                 "PipeWire bootstrap write #{}: pushed {} / {} samples, ring {} -> {}, elapsed {:.0} ms",
                 self.bootstrap_write_calls,
-                sample_idx,
+                report.pushed_samples,
                 samples.len(),
                 buffer_before,
                 self.sample_buffer.len(),
@@ -511,32 +472,19 @@ impl PipewireWriter {
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        let timeout = Duration::from_secs(5);
-        let start = std::time::Instant::now();
-        let mut last_level = self.sample_buffer.len();
-        let mut last_change = start;
-
-        while !self.sample_buffer.is_empty() {
-            if start.elapsed() > timeout {
-                log::warn!(
-                    "Flush timeout - {} samples remaining",
-                    self.sample_buffer.len()
-                );
-                while self.sample_buffer.pop().is_some() {}
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-            let current = self.sample_buffer.len();
-            if current < last_level {
-                last_level = current;
-                last_change = std::time::Instant::now();
-            } else if last_change.elapsed() > Duration::from_millis(500) {
-                // Buffer stalled — likely in recovery mode (callback not consuming).
-                // Drain immediately rather than spinning until timeout.
-                log::debug!("Flush: buffer stalled at {} samples, draining", current);
-                while self.sample_buffer.pop().is_some() {}
-                break;
-            }
+        let report = flush_ring_buffer(
+            &self.sample_buffer,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            Some(Duration::from_millis(500)),
+        );
+        if report.timed_out {
+            log::warn!("Flush timeout - {} samples remaining", report.remaining_samples);
+        } else if report.stalled {
+            log::debug!(
+                "Flush: buffer stalled at {} samples, draining",
+                report.remaining_samples
+            );
         }
 
         log::debug!("PipeWire buffer flushed");
@@ -564,12 +512,6 @@ impl PipewireWriter {
         let fill_frames = self.sample_buffer.len() / self.channel_count as usize;
         let ring_ms = fill_frames as f32 / self.sample_rate as f32 * 1000.0;
         ring_ms + self.quantum_ms
-    }
-
-    /// Ring-buffer-only latency in ms (excludes PipeWire graph delay).
-    fn ring_latency_ms(&self) -> f32 {
-        let fill_frames = self.sample_buffer.len() / self.channel_count as usize;
-        fill_frames as f32 / self.sample_rate as f32 * 1000.0
     }
 
     /// Current rate-adjust factor applied by the PI controller.
@@ -612,21 +554,11 @@ impl PipewireWriter {
     /// Measured total audio delay seen by the listener:
     /// current ring-buffer latency + PipeWire graph latency.
     pub fn measured_audio_delay_ms(&self) -> f32 {
-        self.ring_latency_ms() + self.graph_latency_ms()
+        f32::from_bits(self.measured_latency_ms_bits.load(Ordering::Relaxed))
     }
 
     pub fn control_audio_delay_ms(&self) -> f32 {
         f32::from_bits(self.control_latency_ms_bits.load(Ordering::Relaxed))
-    }
-
-    /// Signal the PipeWire callback to discard buffered audio and re-enter prefill.
-    ///
-    /// Call this after a decoder seek/reset so that stale pre-seek audio is not
-    /// played out.  The callback drains the ring buffer and resets its state on
-    /// the next invocation, then waits for the buffer to refill before resuming.
-    pub fn request_flush(&self) {
-        self.flush_requested.store(true, Ordering::Relaxed);
-        log::debug!("PipeWire flush requested (seek/decoder reset)");
     }
 }
 
@@ -634,7 +566,6 @@ impl Drop for PipewireWriter {
     fn drop(&mut self) {
         log::debug!("Dropping PipeWire writer");
         self.shutdown_requested.store(true, Ordering::Relaxed);
-        self.flush_requested.store(true, Ordering::Relaxed);
         // Discard any remaining samples — flush() was already called by finalize().
         // Calling flush() again here would block for another 500ms–5s if the callback
         // is in recovery mode.  A quick drain + brief pause is sufficient for Drop.
@@ -658,18 +589,12 @@ fn run_pipewire_loop(
     adaptive_config: PipewireAdaptiveResamplingConfig,
     current_rate_adjust: Arc<AtomicU32>,
     current_adaptive_band: Arc<AtomicU8>,
-    flush_requested: Arc<AtomicBool>,
     shutdown_requested: Arc<AtomicBool>,
     _last_write_ms: Arc<AtomicU64>,
+    measured_latency_ms_out: Arc<AtomicU32>,
     graph_latency_ms_out: Arc<AtomicU32>,
     control_latency_ms_out: Arc<AtomicU32>,
 ) -> Result<()> {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum PlaybackState {
-        Prefill,
-        Running,
-    }
-
     // Determine actual output rate and resampling ratio
     let actual_output_rate = output_sample_rate.unwrap_or(sample_rate);
     let resample_ratio = actual_output_rate as f64 / sample_rate as f64;
@@ -750,7 +675,6 @@ fn run_pipewire_loop(
 
     // Setup state changed listener
     let ready_for_state = stream_ready.clone();
-    let flush_for_state = flush_requested.clone();
     let graph_latency_for_state = graph_latency_ms_out.clone();
     let control_latency_for_state = control_latency_ms_out.clone();
     let _state_listener = stream
@@ -765,9 +689,8 @@ fn run_pipewire_loop(
                 graph_latency_for_state.store(0u32, Ordering::Relaxed);
                 control_latency_for_state.store(0u32, Ordering::Relaxed);
                 if was_ready {
-                    flush_for_state.store(true, Ordering::Relaxed);
                     log::warn!(
-                        "PipeWire stream left STREAMING ({:?}); pausing writes and scheduling buffer flush on recovery",
+                        "PipeWire stream left STREAMING ({:?}); pausing writes until recovery",
                         new
                     );
                 }
@@ -820,31 +743,19 @@ fn run_pipewire_loop(
     };
 
     // Intermediate buffers for resampling
-    let mut resampler_input: Vec<Vec<f32>> =
-        vec![vec![0.0; RESAMPLER_CHUNK_SIZE]; channel_count as usize];
-    let mut input_frames_collected = 0;
-    let mut output_fifo: Vec<f32> =
-        Vec::with_capacity(RESAMPLER_CHUNK_SIZE * channel_count as usize * 4);
+    let mut resampler_fifo = ResamplerFifoEngine::new(channel_count as usize);
+    let mut effective_resample_ratio = resample_ratio;
+    let mut runtime_state = AdaptiveRuntimeState::new(resample_ratio);
 
     // Setup process callback
     let buffer_for_callback = buffer.clone();
     let desired_rate_for_callback = desired_rate.clone();
     let rate_adjust_for_callback = current_rate_adjust.clone();
-    let flush_requested_for_callback = flush_requested.clone();
     let shutdown_requested_for_callback = shutdown_requested.clone();
     let graph_latency_for_callback = graph_latency_ms_out.clone();
     let control_latency_for_callback = control_latency_ms_out.clone();
     let adaptive_resampling_enabled = enable_adaptive_resampling;
     let latency_servo_enabled = !use_local_resampler;
-    let mut callback_count = 0u64;
-    let mut playback_state = PlaybackState::Prefill;
-    let mut prefill_stable_callbacks = 0u32;
-    let mut last_prefill_available = 0usize;
-    let mut underrun_warned = false;
-    let mut controller_state = AdaptiveControllerState::default();
-    // -1 = hard underfill recovery (zero-fill), 1 = hard overfill recovery (drop), 0 = inactive.
-    let mut hard_correction_mode = 0i8;
-
     // Compute channel-aware buffer thresholds for the callback (ms → frames → samples).
     // IMPORTANT: these thresholds are compared against `buffer_for_callback.len()`, which
     // stores INPUT-domain samples (writer pushes at `sample_rate` before local resampling).
@@ -852,23 +763,19 @@ fn run_pipewire_loop(
     // Using output rate here underestimates latency when downsampling (e.g. 96k -> 48k),
     // causing too-low target fill, long-term A/V drift, and instability.
     //
-    // latency_ms is used for both the prefill threshold and the PI controller setpoint so
-    // that the controller starts in its linear regime from the very first frame.
+    // latency_ms is used as the PI controller setpoint.
     let latency_frames = (buffer_config.latency_ms as usize * sample_rate as usize) / 1000;
     let max_buffer_frames = (buffer_config.max_latency_ms as usize * sample_rate as usize) / 1000;
     let min_buffer_fill = latency_frames * channel_count as usize;
     let max_buffer_fill = max_buffer_frames * channel_count as usize;
-    let target_buffer_fill = min_buffer_fill; // same as prefill threshold
+    let target_buffer_fill = min_buffer_fill;
     let mut logged_runtime_target = target_buffer_fill;
     // Treat errors above ~120 ms as transient mismatch and allow faster convergence.
     let samples_per_ms = (sample_rate as usize).saturating_mul(channel_count as usize) / 1000;
     let fast_catchup_threshold =
         (adaptive_config.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
-    let hard_correction_threshold =
-        (adaptive_config.hard_correction_threshold_ms as usize).saturating_mul(samples_per_ms);
     let measurement_smoothing_alpha = adaptive_config.measurement_smoothing_alpha.clamp(0.0, 1.0);
-    let hard_correction_release_margin = hard_correction_threshold / 2;
-    let hard_correction_max_step = hard_correction_threshold / 2;
+    let adaptive_update_interval = adaptive_config.update_interval_callbacks.max(1) as u64;
 
     log::info!(
         "PipeWire buffer thresholds ({}ch): latency={}ms max={}ms quantum={}fr | \
@@ -887,7 +794,7 @@ fn run_pipewire_loop(
             if shutdown_requested_for_callback.load(Ordering::Relaxed) {
                 return;
             }
-            callback_count += 1;
+            let callback_count = runtime_state.advance_callback();
 
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 let datas = buffer.datas_mut();
@@ -936,24 +843,6 @@ fn run_pipewire_loop(
                         logged_runtime_target = runtime_target_buffer_fill;
                     }
 
-                    // Seek/decoder-reset flush: discard stale pre-seek audio and
-                    // re-enter prefill so post-seek audio starts cleanly.
-                    if flush_requested_for_callback.load(Ordering::Relaxed) {
-                        while buffer_for_callback.pop().is_some() {}
-                        playback_state = PlaybackState::Prefill;
-                        prefill_stable_callbacks = 0;
-                        last_prefill_available = 0;
-                        controller_state = AdaptiveControllerState::default();
-                        desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                        rate_adjust_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                        underrun_warned = false;
-                        output_fifo.clear();
-                        input_frames_collected = 0;
-                        flush_requested_for_callback.store(false, Ordering::Relaxed);
-                        control_latency_for_callback.store(0u32, Ordering::Relaxed);
-                        log::info!("PipeWire: seek flush complete, waiting for buffer prefill");
-                    }
-
                     // Sample downstream graph latency (RT-safe: pw_stream_get_time is RT-safe
                     // inside the process callback). Update every ~100 callbacks to amortise cost.
                     if callback_count % 100 == 50 {
@@ -968,385 +857,281 @@ fn run_pipewire_loop(
 
                     // Check if we have enough samples to prevent stuttering
                     let available = buffer_for_callback.len();
+                    // Convert output FIFO contents back to input-domain samples so
+                    // the controller sees the true amount of audio in flight, not
+                    // just the ring buffer.  Without this, the controller
+                    // systematically under-estimates the fill level and
+                    // over-compensates (integral windup → buffer drain).
+                    let output_fifo_input_domain_samples = output_to_input_domain_samples(
+                        resampler_fifo.output_len(),
+                        effective_resample_ratio,
+                    );
                     // The callback observes the ring before consuming this PipeWire block.
                     // For latency control, use a midpoint estimate so the controller tracks
                     // roughly the same delay the UI/user perceives during the block.
-                    let control_available =
-                        available.saturating_sub(frame_aligned_max / 2);
-                    let total_available = available.saturating_add(output_fifo.len());
-                    let smoothed_control_available = apply_ema(
-                        &mut controller_state.smoothed_control_available,
-                        control_available as f64,
-                        measurement_smoothing_alpha,
-                    )
-                    .max(0.0)
-                    .round() as usize;
-                    let smoothed_total_available = apply_ema(
-                        &mut controller_state.smoothed_total_available,
-                        total_available as f64,
-                        measurement_smoothing_alpha,
-                    )
-                    .max(0.0)
-                    .round() as usize;
-                    let control_latency_ms = (smoothed_control_available as f32
-                        / channel_count as f32
-                        / sample_rate as f32)
-                        * 1000.0
-                        + f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed));
-                    control_latency_for_callback.store(control_latency_ms.to_bits(), Ordering::Relaxed);
-                    let start_margin = frame_aligned_max / 2;
-                    let start_threshold = runtime_target_buffer_fill
-                        .saturating_add(start_margin)
-                        .min(max_buffer_fill);
-                    let desired_start_fill = start_threshold;
-                    let is_prefill_ready = available >= start_threshold;
-                    let is_prefill_stable = available >= last_prefill_available.saturating_sub(frame_aligned_max / 2);
-
-                    if playback_state == PlaybackState::Prefill {
-                        if is_prefill_ready && is_prefill_stable {
-                            prefill_stable_callbacks = prefill_stable_callbacks.saturating_add(1);
-                        } else {
-                            prefill_stable_callbacks = 0;
-                        }
-                        last_prefill_available = available;
-                    }
-
-                    let waiting_for_prefill = playback_state == PlaybackState::Prefill
-                        && prefill_stable_callbacks < 2;
-
-                    // Output silence while prefilling to the target.
-                    if waiting_for_prefill {
-                        for i in 0..frame_aligned_max {
-                            dest[i] = 0.0;
-                        }
-                        frame_aligned_max
+                    // Convert callback size to input domain to avoid domain mismatch
+                    // when upsampling (frame_aligned_max is in output domain).
+                    let callback_input_domain_samples = if effective_resample_ratio > 0.0 {
+                        ((frame_aligned_max as f64) / effective_resample_ratio).round() as usize
                     } else {
-                        if playback_state != PlaybackState::Running {
-                            let excess_samples = available.saturating_sub(desired_start_fill);
-                            let excess_frames = excess_samples / ch;
-                            let trimmed_samples = excess_frames * ch;
-                            if trimmed_samples > 0 {
-                                for _ in 0..trimmed_samples {
-                                    let _ = buffer_for_callback.pop();
-                                }
-                            }
-                            let start_fill = available.saturating_sub(trimmed_samples);
-                            playback_state = PlaybackState::Running;
-                            prefill_stable_callbacks = 0;
-                            if trimmed_samples > 0 {
-                                log::info!(
-                                    "Starting PipeWire playback ({} samples in buffer, trimmed {} excess samples)",
-                                    start_fill,
-                                    trimmed_samples
-                                );
-                            } else {
-                                log::info!("Starting PipeWire playback ({} samples in buffer)", start_fill);
-                            }
-                        }
+                        frame_aligned_max
+                    };
+                    let metrics = update_latency_metrics(
+                        &mut runtime_state,
+                        available,
+                        output_fifo_input_domain_samples,
+                        callback_input_domain_samples,
+                        channel_count as usize,
+                        sample_rate,
+                        f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
+                        measurement_smoothing_alpha,
+                        LatencyMetricTargets {
+                            measured_latency_ms_bits: &measured_latency_ms_out,
+                            control_latency_ms_bits: &control_latency_for_callback,
+                        },
+                    );
+                    if let Some(ref mut resampler) = resampler_opt {
+                        if adaptive_resampling_enabled
+                            && callback_count % adaptive_update_interval == 0
+                        {
+                            let step = compute_adaptive_step(
+                                &mut runtime_state.controller_state,
+                                &adaptive_config,
+                                metrics.smoothed_control_available,
+                                runtime_target_buffer_fill,
+                                fast_catchup_threshold,
+                                resample_ratio,
+                                480,
+                                MAX_INTEGRAL_TERM,
+                            );
+                            current_adaptive_band.store(step.band, Ordering::Relaxed);
 
-                        let mut hard_zero_fill = false;
-                        if adaptive_resampling_enabled && hard_correction_threshold > 0 {
-                            if hard_correction_mode < 0 {
-                                if smoothed_control_available.saturating_add(hard_correction_release_margin)
-                                    >= runtime_target_buffer_fill
+                            if let Err(e) =
+                                resampler.set_resample_ratio(step.current_ratio, true)
+                                    as Result<(), rubato::ResampleError>
+                            {
+                                log::warn!("Failed to set resampler ratio: {}", e);
+                            } else {
+                                effective_resample_ratio = step.current_ratio;
+                                if effective_resample_ratio.to_bits()
+                                    != runtime_state.last_logged_ratio_bits
                                 {
-                                    hard_correction_mode = 0;
-                                } else {
-                                    controller_state.accumulated_drift = 0.0;
-                                    rate_adjust_for_callback
-                                        .store(1.0f32.to_bits(), Ordering::Relaxed);
-                                    desired_rate_for_callback
-                                        .store(1.0f32.to_bits(), Ordering::Relaxed);
-                                    current_adaptive_band.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                                    hard_zero_fill = true;
-                                }
-                            } else if hard_correction_mode > 0 {
-                                let desired_keep = runtime_target_buffer_fill
-                                    .saturating_add(hard_correction_release_margin);
-                                if smoothed_total_available <= desired_keep {
-                                    hard_correction_mode = 0;
-                                } else {
-                                    let mut to_drop =
-                                        smoothed_total_available.saturating_sub(desired_keep);
-                                    to_drop = to_drop.min(hard_correction_max_step.max(ch));
-                                    let fifo_drop = to_drop.min(output_fifo.len());
-                                    if fifo_drop > 0 {
-                                        output_fifo.drain(0..fifo_drop);
-                                        to_drop = to_drop.saturating_sub(fifo_drop);
-                                    }
-                                    let ring_drop = (to_drop / ch) * ch;
-                                    for _ in 0..ring_drop {
-                                        let _ = buffer_for_callback.pop();
-                                    }
-                                    controller_state.accumulated_drift = 0.0;
-                                    current_adaptive_band.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                                    log::debug!(
-                                        "PipeWire hard correction: overfill total={} target={} threshold={} -> drop fifo={} ring={}",
-                                        smoothed_total_available,
-                                        runtime_target_buffer_fill,
-                                        hard_correction_threshold,
-                                        fifo_drop,
-                                        ring_drop
-                                    );
-                                }
-                            } else if smoothed_control_available
-                                .saturating_add(hard_correction_threshold)
-                                < runtime_target_buffer_fill
-                            {
-                                hard_correction_mode = -1;
-                                controller_state.accumulated_drift = 0.0;
-                                rate_adjust_for_callback
-                                    .store(1.0f32.to_bits(), Ordering::Relaxed);
-                                desired_rate_for_callback
-                                    .store(1.0f32.to_bits(), Ordering::Relaxed);
-                                current_adaptive_band.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                                hard_zero_fill = true;
-                                log::debug!(
-                                    "PipeWire hard correction: underfill buf={} target={} threshold={} -> zero-fill",
-                                    smoothed_control_available,
-                                    runtime_target_buffer_fill,
-                                    hard_correction_threshold
-                                );
-                            } else if smoothed_total_available
-                                > runtime_target_buffer_fill
-                                    .saturating_add(hard_correction_threshold)
-                            {
-                                hard_correction_mode = 1;
-                                let mut to_drop =
-                                    smoothed_total_available.saturating_sub(
+                                    let rel_ratio = effective_resample_ratio / resample_ratio;
+                                    log::info!(
+                                        "PipeWire adaptive ratio applied: base={:.6} effective={:.6} relative={:.6} consume={:.6} drift={} buf={}/{}",
+                                        resample_ratio,
+                                        effective_resample_ratio,
+                                        rel_ratio,
+                                        step.consume_adjust,
+                                        step.drift,
+                                        metrics.smoothed_control_available,
                                         runtime_target_buffer_fill
-                                            .saturating_add(hard_correction_release_margin),
                                     );
-                                to_drop = to_drop.min(hard_correction_max_step.max(ch));
-                                let fifo_drop = to_drop.min(output_fifo.len());
-                                if fifo_drop > 0 {
-                                    output_fifo.drain(0..fifo_drop);
-                                    to_drop = to_drop.saturating_sub(fifo_drop);
                                 }
-                                let ring_drop = (to_drop / ch) * ch;
-                                for _ in 0..ring_drop {
-                                    let _ = buffer_for_callback.pop();
-                                }
-                                controller_state.accumulated_drift = 0.0;
-                                current_adaptive_band.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                                    log::debug!(
-                                        "PipeWire hard correction: overfill total={} target={} threshold={} -> drop fifo={} ring={}",
-                                        smoothed_total_available,
-                                        runtime_target_buffer_fill,
-                                        hard_correction_threshold,
-                                        fifo_drop,
-                                    ring_drop
+                                runtime_state.last_logged_ratio_bits =
+                                    effective_resample_ratio.to_bits();
+                            }
+
+                            let effective_adjust = step.consume_adjust as f32;
+                            rate_adjust_for_callback
+                                .store(effective_adjust.to_bits(), Ordering::Relaxed);
+
+                            if callback_count % 100 == 0 {
+                                log::debug!(
+                                    "PipeWire Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
+                                    metrics.smoothed_control_available,
+                                    runtime_target_buffer_fill,
+                                    step.drift,
+                                    step.current_ratio,
+                                    resample_ratio,
+                                    step.p_term,
+                                    step.i_term
                                 );
                             }
                         }
 
-                        if hard_zero_fill {
-                            for i in 0..frame_aligned_max {
-                                dest[i] = 0.0;
+                        let audio_samples_needed = max_samples;
+                        if let Err(e) = resampler_fifo.ensure_output_samples(
+                            &buffer_for_callback,
+                            resampler,
+                            audio_samples_needed,
+                        ) {
+                            log::error!("Resampler error: {}", e);
+                        }
+
+                        let far_decision = update_far_mode_state(
+                            &mut runtime_state,
+                            &adaptive_config,
+                            adaptive_resampling_enabled,
+                            current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
+                            actual_output_rate,
+                        );
+
+                        if far_decision.hard_recover_far {
+                            let plan = compute_hard_recover_plan(
+                                callback_input_domain_samples,
+                                metrics.control_available,
+                                runtime_target_buffer_fill,
+                                effective_resample_ratio,
+                                channel_count as usize,
+                            );
+                            if let Err(e) = resampler_fifo.ensure_output_samples(
+                                &buffer_for_callback,
+                                resampler,
+                                plan.desired_consume_output_samples,
+                            ) {
+                                log::error!("Resampler error: {}", e);
                             }
-                            frame_aligned_max
-                        } else if let Some(ref mut resampler) = resampler_opt {
-                            // Adaptive rate matching with resampler
-                            if adaptive_resampling_enabled && callback_count % 10 == 0 {
-                                let step = compute_adaptive_step(
-                                    &mut controller_state,
-                                    &adaptive_config,
-                                    smoothed_control_available,
-                                    runtime_target_buffer_fill,
-                                    fast_catchup_threshold,
-                                    resample_ratio,
-                                    480,
-                                    MAX_INTEGRAL_TERM,
-                                );
-                                current_adaptive_band.store(step.band, Ordering::Relaxed);
-
-                                if let Err(e) = resampler.set_resample_ratio(step.current_ratio, true) as Result<(), rubato::ResampleError> {
-                                    log::warn!("Failed to set resampler ratio: {}", e);
-                                }
-
-                                // Store INPUT consumption adjust factor for OSC monitoring.
-                                let effective_adjust = step.consume_adjust as f32;
-                                rate_adjust_for_callback.store(effective_adjust.to_bits(), Ordering::Relaxed);
-
-                                if callback_count % 100 == 0 {
-                                    log::debug!(
-                                        "PipeWire Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
-                                        smoothed_control_available,
-                                        runtime_target_buffer_fill,
-                                        step.drift,
-                                        step.current_ratio,
-                                        resample_ratio,
-                                        step.p_term,
-                                        step.i_term
-                                    );
-                                }
-                            }
-
-                            // Feed resampler until output_fifo has enough data
-                            let audio_samples_needed = max_samples;
-
-                            while output_fifo.len() < audio_samples_needed {
-                                // Fill input buffer
-                                while input_frames_collected < RESAMPLER_CHUNK_SIZE {
-                                    let mut frame_complete = true;
-                                    if buffer_for_callback.len() >= channel_count as usize {
-                                        for ch in 0..channel_count as usize {
-                                            if let Some(sample_f32) = buffer_for_callback.pop() {
-                                                // Already in f32 format [-1.0, 1.0]
-                                                resampler_input[ch][input_frames_collected] = sample_f32;
-                                            } else {
-                                                frame_complete = false;
-                                                break;
-                                            }
-                                        }
-                                    } else {
-                                        frame_complete = false;
-                                    }
-
-                                    if frame_complete {
-                                        input_frames_collected += 1;
-                                    } else {
-                                        break;
-                                    }
-                                }
-
-                                // Run resampler if input is full
-                                if input_frames_collected == RESAMPLER_CHUNK_SIZE {
-                                    match resampler.process(&resampler_input, None) {
-                                        Ok(output_planar) => {
-                                            let output_frames = output_planar[0].len();
-                                            for i in 0..output_frames {
-                                                for ch in 0..channel_count as usize {
-                                                    output_fifo.push(output_planar[ch][i]);
-                                                }
-                                            }
-                                            input_frames_collected = 0;
-                                        },
-                                        Err(e) => {
-                                            log::error!("Resampler error: {}", e);
-                                            break;
-                                        }
-                                    }
-                                } else {
-                                    break;
-                                }
-                            }
-
-                            // Fill output buffer from FIFO
-                            if output_fifo.len() >= audio_samples_needed {
-                                // Copy f32 samples directly from FIFO to PipeWire
-                                for i in 0..audio_samples_needed {
-                                    dest[i] = output_fifo[i];
-                                }
-                                output_fifo.drain(0..audio_samples_needed);
-                            } else {
-                                // Underrun: not enough data in output_fifo
-                                if !underrun_warned {
-                                    log::warn!("Resampler underrun: only {} samples in FIFO, needed {}", output_fifo.len(), audio_samples_needed);
-                                    underrun_warned = true;
-                                }
-                                for i in 0..max_samples {
-                                    dest[i] = 0.0;
-                                }
-                            }
-                            max_samples
+                            resampler_fifo.discard_samples(plan.desired_consume_output_samples);
+                            dest[..max_samples].fill(0.0);
+                        } else if resampler_fifo.output_len() >= audio_samples_needed {
+                            let copied =
+                                resampler_fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
+                            debug_assert_eq!(copied, audio_samples_needed);
+                            postprocess_interleaved_output(
+                                &mut dest[..audio_samples_needed],
+                                ch,
+                                far_decision.mute_far_output,
+                                &mut runtime_state,
+                            );
                         } else {
-                            // Path 2: No resampling (direct copy with optional rate control via PipeWire)
-                            // Adaptive rate matching via PipeWire rate control
-                            if latency_servo_enabled && callback_count % 10 == 0 {
-                                let drift =
-                                    smoothed_control_available as i64 - runtime_target_buffer_fill as i64;
+                            let fifo_available = resampler_fifo.output_len();
+                            let copy_count =
+                                resampler_fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
+                            zero_pad_tail(&mut dest[..max_samples], copy_count);
+                            note_refill_or_underrun(
+                                &mut runtime_state,
+                                "Resampler underrun",
+                                "Resampler underrun",
+                                fifo_available,
+                                audio_samples_needed,
+                            );
+                        }
+                        max_samples
+                    } else {
+                        if latency_servo_enabled && callback_count % adaptive_update_interval == 0 {
+                            let drift =
+                                metrics.smoothed_control_available as i64
+                                    - runtime_target_buffer_fill as i64;
 
-                                if drift.abs() > 480 {
-                                    controller_state.accumulated_drift += drift as f64;
-                                    let i_gain = if adaptive_resampling_enabled {
-                                        adaptive_config.ki
-                                    } else {
-                                        LATENCY_SERVO_I_GAIN
-                                    };
-                                    let integral_contribution = controller_state.accumulated_drift * i_gain;
-                                    if integral_contribution.abs() > MAX_INTEGRAL_TERM {
-                                        controller_state.accumulated_drift =
-                                            (MAX_INTEGRAL_TERM / i_gain) * integral_contribution.signum();
-                                    }
-                                }
-
-                                let is_far = adaptive_resampling_enabled
-                                    && (drift.unsigned_abs() as usize) > fast_catchup_threshold;
-                                if adaptive_resampling_enabled {
-                                    current_adaptive_band.store(if is_far { ADAPTIVE_BAND_FAR } else { ADAPTIVE_BAND_NEAR }, Ordering::Relaxed);
-                                } else {
-                                    current_adaptive_band.store(0, Ordering::Relaxed);
-                                }
-                                let p_gain = if adaptive_resampling_enabled {
-                                    if is_far {
-                                        adaptive_config.kp_far
-                                    } else {
-                                        adaptive_config.kp_near
-                                    }
-                                } else {
-                                    LATENCY_SERVO_P_GAIN
-                                };
+                            if drift.abs() > 480 {
+                                runtime_state.controller_state.accumulated_drift += drift as f64;
                                 let i_gain = if adaptive_resampling_enabled {
                                     adaptive_config.ki
                                 } else {
                                     LATENCY_SERVO_I_GAIN
                                 };
-                                let p_term = drift as f64 * p_gain / 100.0;
-                                let i_term = controller_state.accumulated_drift * i_gain;
-                                // >1.0 means "consume input faster".
-                                let max_adjust = if adaptive_resampling_enabled {
-                                    if is_far {
-                                        adaptive_config.max_adjust_far
-                                    } else {
-                                        adaptive_config.max_adjust
-                                    }
-                                    .max(0.000001)
-                                } else {
-                                    LATENCY_SERVO_MAX_RATE_ADJUST
-                                };
-                                let consume_adjust =
-                                    (1.0 + p_term + i_term).clamp(1.0 - max_adjust, 1.0 + max_adjust);
-                                // SPA_PROP_RATE follows output/input semantics too:
-                                // to consume input faster, lower the ratio.
-                                let pipewire_rate = (1.0 / consume_adjust) as f32;
-
-                                rate_adjust_for_callback
-                                    .store((consume_adjust as f32).to_bits(), Ordering::Relaxed);
-                                desired_rate_for_callback.store(pipewire_rate.to_bits(), Ordering::Relaxed);
-
-                                if callback_count % 100 == 0 {
-                                    if adaptive_resampling_enabled {
-                                        log::debug!(
-                                            "Adaptive rate: buf={} target={} max={} drift={} (P={:.6} I={:.6}) -> consume={:.6} pw_rate={:.6}",
-                                            smoothed_control_available,
-                                            runtime_target_buffer_fill,
-                                            max_buffer_fill,
-                                            drift,
-                                            p_term,
-                                            i_term,
-                                            consume_adjust,
-                                            pipewire_rate
-                                        );
-                                    } else {
-                                        log::debug!(
-                                            "PipeWire latency servo: buf={} target={} max={} drift={} -> consume={:.6} pw_rate={:.6}",
-                                            smoothed_control_available,
-                                            runtime_target_buffer_fill,
-                                            max_buffer_fill,
-                                            drift,
-                                            consume_adjust,
-                                            pipewire_rate
-                                        );
-                                    }
+                                let integral_contribution =
+                                    runtime_state.controller_state.accumulated_drift * i_gain;
+                                if integral_contribution.abs() > MAX_INTEGRAL_TERM {
+                                    runtime_state.controller_state.accumulated_drift =
+                                        (MAX_INTEGRAL_TERM / i_gain) * integral_contribution.signum();
                                 }
                             }
 
-                            // Read only complete frames to maintain channel alignment
-                            let available_frames = available / ch;
-                            let frames_to_read = available_frames.min(max_frames);
-                            let samples_to_read = frames_to_read * ch;
+                            let is_far = adaptive_resampling_enabled
+                                && adaptive_config.enable_far_mode
+                                && (drift.unsigned_abs() as usize) > fast_catchup_threshold;
+                            if adaptive_resampling_enabled {
+                                current_adaptive_band.store(
+                                    if is_far { ADAPTIVE_BAND_FAR } else { ADAPTIVE_BAND_NEAR },
+                                    Ordering::Relaxed,
+                                );
+                            } else {
+                                current_adaptive_band.store(0, Ordering::Relaxed);
+                            }
+                            let p_gain = if adaptive_resampling_enabled {
+                                if is_far {
+                                    adaptive_config.kp_far
+                                } else {
+                                    adaptive_config.kp_near
+                                }
+                            } else {
+                                LATENCY_SERVO_P_GAIN
+                            };
+                            let i_gain = if adaptive_resampling_enabled {
+                                adaptive_config.ki
+                            } else {
+                                LATENCY_SERVO_I_GAIN
+                            };
+                            let p_term = drift as f64 * p_gain / 100.0;
+                            let i_term = runtime_state.controller_state.accumulated_drift * i_gain;
+                            let max_adjust = if adaptive_resampling_enabled {
+                                if is_far {
+                                    adaptive_config.max_adjust_far
+                                } else {
+                                    adaptive_config.max_adjust
+                                }
+                                .max(0.000001)
+                            } else {
+                                LATENCY_SERVO_MAX_RATE_ADJUST
+                            };
+                            let consume_adjust =
+                                (1.0 + p_term + i_term).clamp(1.0 - max_adjust, 1.0 + max_adjust);
+                            let pipewire_rate = (1.0 / consume_adjust) as f32;
 
+                            rate_adjust_for_callback
+                                .store((consume_adjust as f32).to_bits(), Ordering::Relaxed);
+                            desired_rate_for_callback.store(pipewire_rate.to_bits(), Ordering::Relaxed);
+
+                            if callback_count % 100 == 0 {
+                                if adaptive_resampling_enabled {
+                                    log::debug!(
+                                        "Adaptive rate: buf={} target={} max={} drift={} (P={:.6} I={:.6}) -> consume={:.6} pw_rate={:.6}",
+                                        metrics.smoothed_control_available,
+                                        runtime_target_buffer_fill,
+                                        max_buffer_fill,
+                                        drift,
+                                        p_term,
+                                        i_term,
+                                        consume_adjust,
+                                        pipewire_rate
+                                    );
+                                } else {
+                                    log::debug!(
+                                        "PipeWire latency servo: buf={} target={} max={} drift={} -> consume={:.6} pw_rate={:.6}",
+                                        metrics.smoothed_control_available,
+                                        runtime_target_buffer_fill,
+                                        max_buffer_fill,
+                                        drift,
+                                        consume_adjust,
+                                        pipewire_rate
+                                    );
+                                }
+                            }
+                        }
+
+                        let available_frames = available / ch;
+                        let frames_to_read = available_frames.min(max_frames);
+                        let samples_to_read = frames_to_read * ch;
+
+                        let far_decision: FarModeDecision = update_far_mode_state(
+                            &mut runtime_state,
+                            &adaptive_config,
+                            adaptive_resampling_enabled,
+                            current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
+                            actual_output_rate,
+                        );
+                        if far_decision.hard_recover_far {
+                            let plan = compute_hard_recover_plan(
+                                callback_input_domain_samples,
+                                metrics.control_available,
+                                runtime_target_buffer_fill,
+                                1.0,
+                                channel_count as usize,
+                            );
+                            let dropped =
+                                discard_ring_samples(&buffer_for_callback, plan.desired_consume_input_samples);
+                            if dropped < plan.desired_consume_input_samples {
+                                log::debug!(
+                                    "Far hard recover underfed: consumed {} / {} samples while targeting exact recovery",
+                                    dropped,
+                                    plan.desired_consume_input_samples
+                                );
+                            }
+                            dest[..max_samples].fill(0.0);
+                            max_samples
+                        } else {
                             let mut count = 0;
                             while count < samples_to_read {
                                 if let Some(sample_f32) = buffer_for_callback.pop() {
@@ -1357,19 +1142,25 @@ fn run_pipewire_loop(
                                 }
                             }
 
-                            // Zero-pad the remainder of the buffer
                             while count < max_samples {
                                 dest[count] = 0.0;
                                 count += 1;
                             }
+                            postprocess_interleaved_output(
+                                dest,
+                                ch,
+                                far_decision.mute_far_output,
+                                &mut runtime_state,
+                            );
 
-                            if samples_to_read < frame_aligned_max && !underrun_warned {
-                                log::warn!(
-                                    "Buffer underrun: only {} samples available, needed {}",
-                                    available,
-                                    frame_aligned_max
+                            if samples_to_read < frame_aligned_max {
+                                note_refill_or_underrun(
+                                    &mut runtime_state,
+                                    "Buffer underrun",
+                                    "Buffer underrun",
+                                    samples_to_read,
+                                    frame_aligned_max,
                                 );
-                                underrun_warned = true;
                             }
 
                             max_samples
@@ -1455,8 +1246,9 @@ fn run_pipewire_loop(
             let rate_bits = desired_rate.load(Ordering::Relaxed);
             let desired_rate_value = f32::from_bits(rate_bits);
 
-            // Only apply if significantly different from last applied
-            if (desired_rate_value - last_applied_rate).abs() > 0.0001 {
+            // Apply every actual control-value change so the observed behavior
+            // matches the requested ratio without an extra deadband here.
+            if desired_rate_value.to_bits() != last_applied_rate.to_bits() {
                 // Lock the thread loop for thread-safe API calls
                 unsafe {
                     pw_thread_loop_lock(loop_ptr as *mut _);
@@ -1475,7 +1267,7 @@ fn run_pipewire_loop(
 
                     if result == 0 {
                         last_applied_rate = desired_rate_value;
-                        log::trace!("Applied rate adjustment: {:.6}", rate);
+                        log::debug!("Applied rate adjustment: {:.6}", rate);
                     } else {
                         log::warn!("Failed to apply rate control: {}", result);
                     }

@@ -333,12 +333,8 @@ impl VbapPanner {
                 if x_size < 2 || y_size < 2 || z_size < 2 {
                     return Err("Cartesian table sizes must be >= 2 for X/Y/Z+".to_string());
                 }
-                self.cartesian_cache = Some(self.build_cartesian_cache(
-                    x_size,
-                    y_size,
-                    z_size,
-                    z_neg_size,
-                )?);
+                self.cartesian_cache =
+                    Some(self.build_cartesian_cache(x_size, y_size, z_size, z_neg_size)?);
                 log::info!(
                     "Generated cartesian VBAP cache: {}x{}x{}(+{}), {} spread tables",
                     x_size,

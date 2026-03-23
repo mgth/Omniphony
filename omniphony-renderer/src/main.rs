@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
-use clap::Parser as ClapParser;
-use cli::command::{Cli, Commands, LogFormat, LogLevel};
+use cli::command::{Commands, LogFormat, LogLevel, ParsedCli};
 use cli::decode::cmd_render;
 #[cfg(feature = "saf_vbap")]
 use cli::generate_vbap::cmd_generate_vbap;
@@ -15,6 +14,7 @@ mod bridge_loader;
 mod cli;
 mod events;
 mod input;
+mod runtime_osc;
 pub(crate) mod timestamp;
 
 fn normalize_cli_args<I>(args: I) -> Vec<OsString>
@@ -71,13 +71,13 @@ where
 /// Parses args from the service's binPath and runs the render command.
 #[cfg(windows)]
 fn run_as_service() -> anyhow::Result<()> {
-    use clap::Parser as ClapParser;
-    use cli::command::{Cli, Commands};
+    use cli::command::Commands;
     use cli::decode::cmd_render;
 
-    let cli = Cli::parse_from(normalize_cli_args(std::env::args_os()));
-    match cli.command {
-        Commands::Render(ref args) => cmd_render(args, &cli),
+    let parsed = ParsedCli::parse_from(normalize_cli_args(std::env::args_os()))?;
+    let render_sources = parsed.render_sources();
+    match parsed.cli.command {
+        Commands::Render(ref args) => cmd_render(args, &parsed.cli, &render_sources),
         _ => anyhow::bail!(
             "Only the 'render' command is supported in Windows service mode. \
              Embed the full command in the service binPath, e.g.:\n  \
@@ -95,7 +95,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut cli = Cli::parse_from(normalize_cli_args(std::env::args_os()));
+    let parsed = ParsedCli::parse_from(normalize_cli_args(std::env::args_os()))?;
+    let mut cli = parsed.cli.clone();
 
     // Load global config before initializing the logger so we can apply the
     // configured log level and format.  Config errors use eprintln! directly
@@ -112,7 +113,7 @@ fn main() -> Result<()> {
         .unwrap_or_default();
 
     // Resolve effective loglevel: explicit CLI value beats config; config beats default.
-    let effective_loglevel = if cli.loglevel != LogLevel::default() {
+    let effective_loglevel = if parsed.is_explicit("loglevel") {
         cli.loglevel
     } else {
         global_cfg
@@ -123,7 +124,7 @@ fn main() -> Result<()> {
     };
 
     // Resolve effective log_format.
-    let effective_log_format = if cli.log_format != LogFormat::default() {
+    let effective_log_format = if parsed.is_explicit("log_format") {
         cli.log_format
     } else {
         global_cfg
@@ -134,9 +135,9 @@ fn main() -> Result<()> {
     };
 
     // Resolve effective strict: --strict → true, --no-strict → false, else config.
-    let effective_strict = if cli.strict {
+    let effective_strict = if parsed.is_explicit("strict") {
         true
-    } else if cli.no_strict {
+    } else if parsed.is_explicit("no_strict") {
         false
     } else {
         global_cfg.strict.unwrap_or(false)
@@ -154,7 +155,7 @@ fn main() -> Result<()> {
     info!("{}", cli::command::VERSION_INFO);
 
     match cli.command {
-        Commands::Render(ref args) => cmd_render(args, &cli)?,
+        Commands::Render(ref args) => cmd_render(args, &cli, &parsed.render_sources())?,
         #[cfg(feature = "saf_vbap")]
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args)?,
         #[cfg(target_os = "windows")]

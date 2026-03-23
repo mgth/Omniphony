@@ -577,6 +577,14 @@
         display: flex;
       }
 
+      .adaptive-param-disabled {
+        opacity: 0.42;
+      }
+
+      .adaptive-param-disabled input {
+        opacity: 0.72;
+      }
+
       .telemetry-gauges-form {
         display: none;
         flex-direction: column;
@@ -1372,6 +1380,7 @@
           </select>
         </label>
         <div class="log-panel-actions">
+          <button id="logCopyBtn" type="button" class="log-panel-btn" data-i18n="log.copy">Copy</button>
           <button id="logClearBtn" type="button" class="log-panel-btn" data-i18n="log.clear">Clear</button>
           <button id="logToggleBtn" type="button" class="log-panel-btn icon-only panel-toggle-btn" data-i18n-title="log.expand" title="Expand">▾</button>
         </div>
@@ -1619,6 +1628,9 @@
               <div id="latencyMeterFill" class="meter-fill latency"></div>
               <div id="latencyRawMinMask" class="meter-range-mask" style="left:0;width:0;display:none"></div>
               <div id="latencyRawMaxMask" class="meter-range-mask" style="right:0;width:0;display:none"></div>
+              <div id="latencyTargetMarker" class="meter-marker" style="display:none;background:#52e2a2;top:-11px;bottom:auto;height:5px;width:5px;border-radius:50%"></div>
+              <div id="latencyNearLowMarker" class="meter-marker" style="display:none;background:#ffb84a;top:-11px;bottom:auto;height:5px;width:5px;border-radius:50%"></div>
+              <div id="latencyNearHighMarker" class="meter-marker" style="display:none;background:#ffb84a;top:-11px;bottom:auto;height:5px;width:5px;border-radius:50%"></div>
               <div id="latencyRawMinMarker" class="meter-marker min"></div>
               <div id="latencyCtrlMarker" class="meter-marker" style="background:#58a0ff;top:-4px;bottom:-4px"></div>
               <div id="latencyRawMaxMarker" class="meter-marker max"></div>
@@ -1639,17 +1651,22 @@
         <div id="telemetryGaugesForm" class="telemetry-gauges-form">
           <div class="control-row" style="margin-top:0;grid-template-columns:auto auto 1fr">
             <label for="latencyTargetInput" style="font-size:12px;white-space:nowrap" data-i18n="audio.targetLatency">Target latency</label>
-            <input id="latencyTargetInput" class="delay-input" type="number" min="1" step="1" value="500" style="width:5.5rem" />
+            <div style="display:flex;align-items:center;gap:0.35rem">
+              <input id="latencyTargetInput" class="delay-input" type="number" min="1" step="1" value="500" style="width:5.5rem" />
+              <span aria-hidden="true" title="Latency gauge target marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#52e2a2;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
+            </div>
             <div></div>
           </div>
           <div class="meter-row" id="resampleMeterRow">
             <div class="meter-mini-row" style="grid-column: 1 / -1;">
-              <div class="meter-mini-label" style="transform:translateY(-8px)" data-i18n="telemetry.resample">resample</div>
+              <div class="meter-mini-label" style="transform:translateY(-8px)" data-i18n="telemetry.resample">Resample</div>
               <div style="display:grid;gap:0.05rem;width:100%">
                 <div class="meter-bar resample-meter-shell">
                   <div class="resample-meter-center"></div>
                   <div id="resampleNegMeterFill" class="meter-fill resample-neg"></div>
                   <div id="resamplePosMeterFill" class="meter-fill resample-pos"></div>
+                  <div id="resampleNegNearMarker" class="meter-marker min" style="background:#ffd54a"></div>
+                  <div id="resamplePosNearMarker" class="meter-marker min" style="background:#ffd54a"></div>
                 </div>
                 <div id="resampleRatioInfo" style="font-size:10px;color:#b9c7d8;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;text-align:center">
                   —
@@ -1659,50 +1676,66 @@
           </div>
           <div class="inline-toggle" style="margin-top:0.35rem">
             <div class="title-with-info" style="flex:1 1 auto;min-width:0">
-              <div data-i18n="adaptive.title">adaptive resampling</div>
+              <div data-i18n="adaptive.title">Adaptive Resampling</div>
               <div style="display:flex;align-items:center;gap:0.35rem">
                 <div id="adaptiveBandIndicator" style="display:flex;align-items:center;gap:0.4rem;color:#d9ecff;font-size:12px">
                   <span id="adaptiveBandDot" style="width:0.6rem;height:0.6rem;border-radius:999px;background:rgba(255,255,255,0.25);display:inline-block"></span>
                   <span id="adaptiveBandText">—</span>
                 </div>
-                <button id="adaptiveResamplingInfoBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.infoButton" title="Adaptive resampling info">i</button>
-                <button id="adaptiveResamplingAdvancedToggleBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.advancedButton" title="Adaptive resampling advanced settings">⚙</button>
+                <button id="adaptiveResamplingInfoBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.infoButton" title="Adaptive Resampling Info">i</button>
+                <button id="adaptiveResamplingAdvancedToggleBtn" type="button" class="info-icon-btn" data-i18n-title="adaptive.advancedButton" title="Adaptive Resampling Advanced Settings">⚙</button>
               </div>
             </div>
             <input id="adaptiveResamplingToggle" type="checkbox" />
           </div>
           <div id="adaptiveResamplingAdvancedForm" class="adaptive-advanced-form">
             <div class="control-row" style="margin-top:0">
-              <label for="adaptiveKpNearInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.kpNear">Adaptive Kp near</label>
+              <div style="grid-column:1 / -1;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8fa6bd">Correction</div>
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveFarModeToggle" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.farMode">Far PI Mode</label>
+              <input id="adaptiveFarModeToggle" type="checkbox" />
+            </div>
+            <div id="adaptiveFarSilenceRow" class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveFarSilenceToggle" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.silenceFar">Silence in Far Mode</label>
+              <input id="adaptiveFarSilenceToggle" type="checkbox" />
+            </div>
+            <div id="adaptiveFarFadeRow" class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveFarFadeInMsInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.fadeNearReturn">Fade-In on Near Return</label>
+              <input id="adaptiveFarFadeInMsInput" class="delay-input" type="number" min="0" step="1" value="0" style="width:8rem" />
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveUpdateIntervalCallbacksInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.updateInterval">Update interval</label>
+              <input id="adaptiveUpdateIntervalCallbacksInput" class="delay-input" type="number" min="1" step="1" value="10" style="width:8rem" />
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveMaxAdjustInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.max">Adaptive max</label>
+              <div style="display:flex;align-items:center;gap:0.35rem">
+                <input id="adaptiveMaxAdjustInput" class="delay-input" type="number" min="0.000001" step="0.000001" value="0.010000" style="width:8rem" />
+                <span aria-hidden="true" title="Resample gauge near max marker" style="display:inline-block;width:2px;height:12px;border-radius:999px;background:#ffd54a;box-shadow:0 0 0 1px rgba(255,255,255,0.08)"></span>
+              </div>
+            </div>
+            <div class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveKpNearInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.kpNear">Adaptive KP</label>
               <input id="adaptiveKpNearInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00001000" style="width:8rem" />
-            </div>
-            <div class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveKpFarInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.kpFar">Adaptive Kp far</label>
-              <input id="adaptiveKpFarInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00002000" style="width:8rem" />
-            </div>
-            <div class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveNearFarThresholdInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.threshold">Near/far threshold</label>
-              <input id="adaptiveNearFarThresholdInput" class="delay-input" type="number" min="1" step="1" value="120" style="width:8rem" />
-            </div>
-            <div class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveHardCorrectionThresholdInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.hardThreshold">Hard correction threshold</label>
-              <input id="adaptiveHardCorrectionThresholdInput" class="delay-input" type="number" min="0" step="1" value="0" style="width:8rem" />
-            </div>
-            <div class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveMeasurementSmoothingAlphaInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.smoothing">Smoothing alpha</label>
-              <input id="adaptiveMeasurementSmoothingAlphaInput" class="delay-input" type="number" min="0" max="1" step="0.01" value="0.15" style="width:8rem" />
             </div>
             <div class="control-row" style="margin-top:0.2rem">
               <label for="adaptiveKiInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.ki">Adaptive Ki</label>
               <input id="adaptiveKiInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00000050" style="width:8rem" />
             </div>
             <div class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveMaxAdjustInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.max">Adaptive max</label>
-              <input id="adaptiveMaxAdjustInput" class="delay-input" type="number" min="0.000001" step="0.000001" value="0.010000" style="width:8rem" />
+              <div style="grid-column:1 / -1;margin-top:0.15rem;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8fa6bd">Thresholds</div>
+            </div>
+            <div id="adaptiveNearFarThresholdRow" class="control-row" style="margin-top:0.2rem">
+              <label for="adaptiveNearFarThresholdInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.threshold">Far Threshold</label>
+              <div style="display:flex;align-items:center;gap:0.35rem">
+                <input id="adaptiveNearFarThresholdInput" class="delay-input" type="number" min="1" step="1" value="120" style="width:8rem" />
+                <span id="adaptiveNearFarThresholdSymbol" aria-hidden="true" title="Latency gauge far threshold marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#ffb84a;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
+              </div>
             </div>
             <div class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveMaxAdjustFarInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.maxFar">Adaptive max far</label>
-              <input id="adaptiveMaxAdjustFarInput" class="delay-input" type="number" min="0.000001" step="0.000001" value="0.020000" style="width:8rem" />
+              <label for="adaptiveMeasurementSmoothingAlphaInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.smoothing">Smoothing alpha</label>
+              <input id="adaptiveMeasurementSmoothingAlphaInput" class="delay-input" type="number" min="0" max="1" step="0.01" value="0.15" style="width:8rem" />
             </div>
             <div style="margin-top:0.3rem;display:flex;justify-content:flex-end;gap:0.35rem">
               <button id="adaptiveResamplingAdvancedCancelBtn" data-i18n="common.cancel" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Cancel</button>
@@ -1734,39 +1767,24 @@
           <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
             <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
             <div class="info-title" style="margin:0" data-i18n="section.renderer">Renderer</div>
-            <div id="rendererRenderTimeWrap" style="display:none;align-items:center;gap:0.5rem;min-width:0;flex:0 0 auto">
-              <div style="display:grid;gap:0.08rem;min-width:0">
-                <div style="display:flex;align-items:center;gap:0.28rem;min-width:0">
-                  <div style="font-size:10px;color:#8fb6d8;white-space:nowrap">dec</div>
-                  <div class="meter-bar" style="width:58px;min-width:58px">
-                    <div id="rendererDecodeTimeFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(140,214,255,0.95), rgba(104,170,255,0.95))"></div>
-                    <div id="rendererDecodeTimeMinMarker" class="meter-marker min"></div>
-                    <div id="rendererDecodeTimeMaxMarker" class="meter-marker max"></div>
+            <div id="rendererPerfWrap" style="display:none;min-width:180px;flex:0 0 auto">
+              <div style="display:grid;gap:0.18rem;min-width:180px">
+                <div style="display:grid;grid-template-columns:180px max-content;align-items:center;gap:0.35rem">
+                  <div class="meter-bar" style="width:180px;min-width:180px;overflow:visible">
+                    <div id="rendererPerfDecodeFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(140,214,255,0.95), rgba(104,170,255,0.95));clip-path:inset(0 100% 0 0)"></div>
+                    <div id="rendererPerfRenderFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(112,170,255,0.92), rgba(88,132,255,0.92));clip-path:inset(0 100% 0 0)"></div>
+                    <div id="rendererPerfWriteFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(180,255,184,0.95), rgba(80,218,120,0.95));clip-path:inset(0 100% 0 0)"></div>
+                    <div id="rendererPerfDecodeMaxMarker" class="meter-marker min" style="background:#ffd54a"></div>
+                    <div id="rendererPerfRenderMaxMarker" class="meter-marker min" style="background:#ffb84a"></div>
+                    <div id="rendererPerfWriteMaxMarker" class="meter-marker min" style="background:#ff8b4a"></div>
                   </div>
+                  <span id="rendererPerfFrameValue" style="display:inline-block;min-width:5.4rem;text-align:right;font-size:10px;white-space:nowrap;font-variant-numeric:tabular-nums;color:#9eb4c8">frame —</span>
                 </div>
-                <div id="rendererDecodeTimeValue" style="font-size:10px;color:#d9ecff;white-space:nowrap">—</div>
-              </div>
-              <div style="display:grid;gap:0.08rem;min-width:0">
-                <div style="display:flex;align-items:center;gap:0.28rem;min-width:0">
-                  <div style="font-size:10px;color:#8fb6d8;white-space:nowrap">rnd</div>
-                  <div class="meter-bar" style="width:58px;min-width:58px">
-                    <div id="rendererRenderTimeFill" class="meter-fill latency-ctrl"></div>
-                    <div id="rendererRenderTimeMinMarker" class="meter-marker min"></div>
-                    <div id="rendererRenderTimeMaxMarker" class="meter-marker max"></div>
-                  </div>
+                <div style="display:grid;grid-template-columns:repeat(3, max-content);align-items:center;gap:0.28rem;font-size:10px;color:#d9ecff;white-space:nowrap;font-variant-numeric:tabular-nums">
+                  <span id="rendererPerfDecodeValue" style="display:inline-block;min-width:5.4rem;text-align:right">decode —</span>
+                  <span id="rendererPerfRenderValue" style="display:inline-block;min-width:5.4rem;text-align:right">render —</span>
+                  <span id="rendererPerfWriteValue" style="display:inline-block;min-width:5.4rem;text-align:right">write —</span>
                 </div>
-                <div id="rendererRenderTimeValue" style="font-size:10px;color:#d9ecff;white-space:nowrap">—</div>
-              </div>
-              <div style="display:grid;gap:0.08rem;min-width:0">
-                <div style="display:flex;align-items:center;gap:0.28rem;min-width:0">
-                  <div style="font-size:10px;color:#8fb6d8;white-space:nowrap">wri</div>
-                  <div class="meter-bar" style="width:58px;min-width:58px">
-                    <div id="rendererWriteTimeFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(180,255,184,0.95), rgba(80,218,120,0.95))"></div>
-                    <div id="rendererWriteTimeMinMarker" class="meter-marker min"></div>
-                    <div id="rendererWriteTimeMaxMarker" class="meter-marker max"></div>
-                  </div>
-                </div>
-                <div id="rendererWriteTimeValue" style="font-size:10px;color:#d9ecff;white-space:nowrap">—</div>
               </div>
             </div>
             </div>
@@ -2118,12 +2136,11 @@
         <div class="info-modal-title" data-i18n="adaptive.infoTitle">Adaptive Resampling</div>
         <div class="info-modal-text" data-i18n-html="adaptive.infoBody">
           These parameters tune how fast the local resampler recenters the audio buffer on the requested latency target.<br /><br />
-          <strong>Kp near</strong>: proportional gain used when the buffer is close to target. Keep this conservative to avoid jitter.<br />
-          <strong>Kp far</strong>: proportional gain used when the error is large. Increase this for faster recovery after drift or disruption.<br />
-          <strong>Near/far threshold</strong>: error threshold, in milliseconds of buffer drift, where control switches from near to far gain.<br />
-          <strong>Smoothing alpha</strong>: source-side measurement smoothing used by the controller and hard correction. Lower values are calmer, higher values react faster.<br />
-          <strong>Ki</strong>: integral gain. Corrects steady-state bias and clock mismatch, but too much can make recovery sluggish or unstable.<br />
-          <strong>Adaptive max</strong>: maximum correction ratio clamp. Higher values recover faster, but can sound more aggressive.
+          <strong>Adaptive KP</strong>: proportional gain used by the PI controller. Keep it conservative to avoid jitter.<br />
+          <strong>Far Threshold</strong>: error threshold, in milliseconds of buffer drift, where the controller enters far mode and uses hard recovery.<br />
+          <strong>Smoothing Alpha</strong>: source-side measurement smoothing used by the controller. Lower values are calmer, higher values react faster.<br />
+          <strong>Adaptive Ki</strong>: integral gain. Corrects steady-state bias and clock mismatch, but too much can make recovery sluggish or unstable.<br />
+          <strong>Adaptive Max</strong>: maximum correction ratio clamp. Higher values recover faster, but can sound more aggressive.
         </div>
         <div class="info-modal-actions">
           <button id="adaptiveResamplingInfoCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>

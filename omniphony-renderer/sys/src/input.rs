@@ -154,8 +154,8 @@ fn create_new_pipe_server_overlapped(
 ) -> Result<windows::Win32::Foundation::HANDLE> {
     use windows::Win32::Foundation::{BOOL, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
     use windows::Win32::Security::{
-        InitializeSecurityDescriptor, SetSecurityDescriptorDacl, PSECURITY_DESCRIPTOR,
-        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+        InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl,
     };
     use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
     use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
@@ -294,7 +294,9 @@ fn create_new_pipe_server_overlapped(
                     )
                     .into())
                 } else {
-                    Err(anyhow::anyhow!("ConnectNamedPipe completion failed: WIN32={err}"))
+                    Err(anyhow::anyhow!(
+                        "ConnectNamedPipe completion failed: WIN32={err}"
+                    ))
                 }
             }
         }
@@ -463,8 +465,10 @@ impl InputReader {
 
             let file = unsafe { File::from_raw_fd(raw_fd) };
 
+            let is_named_pipe = is_fifo(&input_path)?;
+
             // Detect if this is a FIFO and drain if requested
-            if drain_pipe && is_fifo(&input_path)? {
+            if drain_pipe && is_named_pipe {
                 let drained = drain_fd(&file)?;
                 if drained > 0 {
                     log::info!(
@@ -483,7 +487,7 @@ impl InputReader {
 
             return Ok(Self {
                 reader: Box::new(BufReader::new(file)),
-                is_pipe: false,
+                is_pipe: is_named_pipe,
                 data_fd: Some(data_fd),
             });
         }

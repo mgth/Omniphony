@@ -83,7 +83,11 @@ pub struct RenderConfig {
     pub osc_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub osc_port: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none", alias = "sink", alias = "asio_device_name")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "sink",
+        alias = "asio_device_name"
+    )]
     pub output_device: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pw_latency: Option<u32>,
@@ -108,6 +112,14 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_adaptive_resampling: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_resampling_enable_far_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_resampling_force_silence_in_far_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_resampling_hard_recover_in_far_mode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_resampling_far_mode_return_fade_in_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_kp_near: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_kp_far: Option<f32>,
@@ -118,9 +130,9 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_max_adjust_far: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub adaptive_resampling_near_far_threshold_ms: Option<u32>,
+    pub adaptive_resampling_update_interval_callbacks: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub adaptive_resampling_hard_correction_threshold_ms: Option<u32>,
+    pub adaptive_resampling_near_far_threshold_ms: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_measurement_smoothing_alpha: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -1,25 +1,38 @@
+pub mod control;
+pub mod adaptive_runtime;
+pub mod resampler_fifo;
+pub mod ring_buffer_io;
+
 #[derive(Debug, Clone)]
 pub struct AdaptiveResamplingConfig {
+    pub enable_far_mode: bool,
+    pub force_silence_in_far_mode: bool,
+    pub hard_recover_in_far_mode: bool,
+    pub far_mode_return_fade_in_ms: u32,
     pub kp_near: f64,
     pub kp_far: f64,
     pub ki: f64,
     pub max_adjust: f64,
     pub max_adjust_far: f64,
+    pub update_interval_callbacks: u32,
     pub near_far_threshold_ms: u32,
-    pub hard_correction_threshold_ms: u32,
     pub measurement_smoothing_alpha: f64,
 }
 
 impl Default for AdaptiveResamplingConfig {
     fn default() -> Self {
         Self {
+            enable_far_mode: true,
+            force_silence_in_far_mode: false,
+            hard_recover_in_far_mode: false,
+            far_mode_return_fade_in_ms: 0,
             kp_near: 0.00001,
             kp_far: 0.00002,
             ki: 0.0000005,
             max_adjust: 0.01,
             max_adjust_far: 0.02,
+            update_interval_callbacks: 10,
             near_far_threshold_ms: 120,
-            hard_correction_threshold_ms: 0,
             measurement_smoothing_alpha: 0.15,
         }
     }
@@ -28,13 +41,11 @@ impl Default for AdaptiveResamplingConfig {
 pub const ADAPTIVE_BAND_NONE: u8 = 0;
 pub const ADAPTIVE_BAND_NEAR: u8 = 1;
 pub const ADAPTIVE_BAND_FAR: u8 = 2;
-pub const ADAPTIVE_BAND_HARD: u8 = 3;
 
 pub fn adaptive_band_name(band: u8) -> Option<&'static str> {
     match band {
         ADAPTIVE_BAND_NEAR => Some("near"),
         ADAPTIVE_BAND_FAR => Some("far"),
-        ADAPTIVE_BAND_HARD => Some("hard"),
         _ => None,
     }
 }
@@ -44,6 +55,12 @@ pub struct AdaptiveControllerState {
     pub accumulated_drift: f64,
     pub smoothed_control_available: f64,
     pub smoothed_total_available: f64,
+    /// Set to `true` after the first control-latency EMA sample so that a real
+    /// value of 0.0 is not mistaken for "uninitialised".
+    pub control_ema_initialized: bool,
+    /// Set to `true` after the first total-latency EMA sample so that a real
+    /// value of 0.0 is not mistaken for "uninitialised".
+    pub total_ema_initialized: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,10 +73,11 @@ pub struct AdaptiveControlStep {
     pub band: u8,
 }
 
-pub fn apply_ema(previous: &mut f64, sample: f64, alpha: f64) -> f64 {
+pub fn apply_ema(previous: &mut f64, initialized: &mut bool, sample: f64, alpha: f64) -> f64 {
     let alpha = alpha.clamp(0.0, 1.0);
-    if *previous == 0.0 {
+    if !*initialized {
         *previous = sample;
+        *initialized = true;
     } else {
         *previous += alpha * (sample - *previous);
     }
@@ -87,7 +105,8 @@ pub fn compute_adaptive_step(
         }
     }
 
-    let is_far = near_far_threshold_samples > 0
+    let is_far = config.enable_far_mode
+        && near_far_threshold_samples > 0
         && (drift.unsigned_abs() as usize) >= near_far_threshold_samples;
     let band = if is_far {
         ADAPTIVE_BAND_FAR
@@ -125,6 +144,10 @@ pub fn compute_adaptive_step(
 pub mod asio;
 #[cfg(target_os = "linux")]
 pub mod pipewire;
+
+pub use control::{
+    AppliedAudioOutputState, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig,
+};
 
 #[cfg(target_os = "linux")]
 pub use pipewire::{PipewireBufferConfig, PipewireWriter, list_pipewire_output_devices};

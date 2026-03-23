@@ -172,8 +172,7 @@ impl RenderGainCache {
     ) -> bool {
         self.valid
             && self.topology_identity == topology_identity
-            && self.position_bits
-                == rendering_position.map(f64::to_bits)
+            && self.position_bits == rendering_position.map(f64::to_bits)
             && self.room_ratio_bits == live.room_ratio.map(f32::to_bits)
             && self.room_ratio_rear_bits == live.room_ratio_rear.to_bits()
             && self.room_ratio_lower_bits == live.room_ratio_lower.to_bits()
@@ -958,7 +957,10 @@ impl SpatialRenderer {
             control,
             speaker_gains_buf: vec![0.0f32; num_speakers],
             object_params_buf: Vec::new(),
-            speaker_params_buf: vec![crate::live_params::SpeakerLiveParams::default(); num_speakers],
+            speaker_params_buf: vec![
+                crate::live_params::SpeakerLiveParams::default();
+                num_speakers
+            ],
             object_params_generation_seen: 0,
             speaker_params_generation_seen: 0,
             bed_routing_gains_buf: vec![0.0f32; num_speakers],
@@ -1165,10 +1167,8 @@ impl SpatialRenderer {
                 }
                 for (&idx, params) in &g.objects {
                     if idx >= self.object_params_buf.len() {
-                        self.object_params_buf.resize(
-                            idx + 1,
-                            crate::live_params::ObjectLiveParams::default(),
-                        );
+                        self.object_params_buf
+                            .resize(idx + 1, crate::live_params::ObjectLiveParams::default());
                     }
                     self.object_params_buf[idx] = params.clone();
                 }
@@ -1247,8 +1247,7 @@ impl SpatialRenderer {
         output.resize(required, 0.0);
 
         // Collect VBAP gains at the final sample for each object channel (for monitoring).
-        let mut object_gains_out: Vec<(usize, Gains)> =
-            Vec::with_capacity(input_channel_count);
+        let mut object_gains_out: Vec<(usize, Gains)> = Vec::with_capacity(input_channel_count);
 
         // Beds always come FIRST in PCM data, then objects.
         // bed_indices contains bed channel IDs (e.g., [3] for LFE), NOT PCM channel indices.
@@ -1511,7 +1510,10 @@ impl SpatialRenderer {
                     } else {
                         let (_, _, _, final_gains) = compute_object_gains(rendering_position);
                         state.render_gain_cache.gains.clear();
-                        state.render_gain_cache.gains.extend(final_gains.iter().copied());
+                        state
+                            .render_gain_cache
+                            .gains
+                            .extend(final_gains.iter().copied());
                         state.render_gain_cache.update_signature(
                             topology_identity,
                             rendering_position,

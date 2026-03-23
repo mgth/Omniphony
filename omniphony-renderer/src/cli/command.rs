@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser as ClapParser, Subcommand, ValueEnum};
+use clap::{
+    parser::ValueSource, ArgMatches, Args, CommandFactory, FromArgMatches,
+    Parser as ClapParser, Subcommand, ValueEnum,
+};
 
 use renderer::live_params::RampMode;
 
@@ -10,7 +13,7 @@ pub const VERSION_INFO: &str = concat!(
     env!("BUILD_TIMESTAMP")
 );
 
-#[derive(Debug, ClapParser)]
+#[derive(Debug, Clone, ClapParser)]
 #[command(
     name       = env!("CARGO_PKG_NAME"),
     version    = VERSION_INFO,
@@ -50,7 +53,52 @@ pub struct Cli {
     pub command: Commands,
 }
 
-#[derive(Debug, Subcommand)]
+pub struct ParsedCli {
+    pub cli: Cli,
+    matches: ArgMatches,
+}
+
+impl ParsedCli {
+    pub fn parse_from<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let matches = Cli::command().try_get_matches_from(args)?;
+        let cli = Cli::from_arg_matches(&matches)?;
+        Ok(Self { cli, matches })
+    }
+
+    pub fn is_explicit(&self, id: &str) -> bool {
+        self.matches
+            .value_source(id)
+            .is_some_and(is_explicit_value_source)
+    }
+
+    pub fn render_sources(&self) -> RenderArgSources<'_> {
+        RenderArgSources {
+            matches: self.matches.subcommand_matches("render"),
+        }
+    }
+}
+
+pub struct RenderArgSources<'a> {
+    matches: Option<&'a ArgMatches>,
+}
+
+impl RenderArgSources<'_> {
+    pub fn is_explicit(&self, id: &str) -> bool {
+        self.matches
+            .and_then(|matches| matches.value_source(id))
+            .is_some_and(is_explicit_value_source)
+    }
+}
+
+fn is_explicit_value_source(source: ValueSource) -> bool {
+    matches!(source, ValueSource::CommandLine | ValueSource::EnvVariable)
+}
+
+#[derive(Debug, Clone, Subcommand)]
 pub enum Commands {
     /// Render the specified input stream to a realtime output backend.
     Render(RenderArgs),
@@ -127,10 +175,7 @@ pub struct RenderArgs {
     /// Output device or target name.
     /// PipeWire: node target name (e.g. "omniphony_router")
     /// ASIO: device name as listed by `orender list-asio-devices`
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "windows"
-    ))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[arg(
         long,
         value_name = "NAME",
@@ -396,10 +441,15 @@ pub struct RenderArgs {
     /// Override config file 'enable_adaptive_resampling' setting to false.
     #[arg(long, conflicts_with = "enable_adaptive_resampling")]
     pub disable_adaptive_resampling: bool,
+
+    /// Recompute adaptive resampling every N audio callbacks.
+    /// Lower values react faster but can make the control loop more nervous.
+    #[arg(long, value_name = "CALLBACKS")]
+    pub adaptive_resampling_update_interval_callbacks: Option<u32>,
 }
 
 #[cfg(feature = "saf_vbap")]
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct GenerateVbapArgs {
     /// Speaker layout configuration file (YAML)
     #[arg(long, value_name = "LAYOUT")]

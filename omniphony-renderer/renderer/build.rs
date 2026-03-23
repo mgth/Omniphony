@@ -148,16 +148,21 @@ fn resolve_saf_root(manifest_dir: &Path) -> Result<PathBuf> {
 
     let candidates = candidate_saf_roots(manifest_dir);
     for candidate in &candidates {
-        let canonical = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+        let canonical = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
         if canonical.join("build/framework/libsaf.a").exists() {
             return Ok(canonical);
         }
     }
 
-    let mut msg = String::from("SAF_ROOT is not set and SAF library was not found in any known location.\n");
+    let mut msg =
+        String::from("SAF_ROOT is not set and SAF library was not found in any known location.\n");
     msg.push_str("Checked:\n");
     for candidate in &candidates {
-        let canonical = candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+        let canonical = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
         msg.push_str(&format!("  - {}\n", canonical.display()));
     }
     msg.push_str("\nExport SAF_ROOT to a valid Spatial_Audio_Framework tree or build SAF in one of the locations above.");

@@ -23,12 +23,6 @@ use crate::spatial_vbap::VbapPanner;
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct OutputDeviceOption {
-    pub value: String,
-    pub label: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveVbapTableMode {
     Auto,
@@ -431,43 +425,10 @@ pub struct RendererControl {
     /// Set after construction via `set_config_path()`.
     pub config_path: Mutex<Option<PathBuf>>,
 
-    /// Requested output device / target name from OSC control.
-    pub requested_output_device: Mutex<Option<String>>,
     /// Actual renderer input path used for this process.
     pub input_path: Mutex<Option<String>>,
-    /// Snapshot of currently available output-device choices for the active backend.
-    pub available_output_devices: Mutex<Vec<OutputDeviceOption>>,
-
-    /// Callback that queries the audio backend for the live device list.
-    /// Set by the CLI layer after renderer init; called by the OSC refresh handler.
-    pub device_list_fetcher: Mutex<Option<Box<dyn Fn() -> Vec<OutputDeviceOption> + Send + Sync>>>,
-
-    /// Requested output sample rate from OSC control (`None` encoded as 0).
-    pub requested_output_sample_rate_hz: std::sync::atomic::AtomicU32,
-    /// Requested adaptive-resampling state from OSC control.
-    pub requested_adaptive_resampling: std::sync::atomic::AtomicBool,
     /// Requested ramp mode from OSC control.
     pub requested_ramp_mode: Mutex<RampMode>,
-    /// Requested output latency target in milliseconds from OSC control (`None` encoded as 0).
-    pub requested_latency_target_ms: std::sync::atomic::AtomicU32,
-    /// Requested adaptive-resampling PI tuning from OSC control, encoded as f32 bits.
-    pub requested_adaptive_resampling_kp_near_bits: std::sync::atomic::AtomicU32,
-    pub requested_adaptive_resampling_kp_far_bits: std::sync::atomic::AtomicU32,
-    pub requested_adaptive_resampling_ki_bits: std::sync::atomic::AtomicU32,
-    pub requested_adaptive_resampling_max_adjust_bits: std::sync::atomic::AtomicU32,
-    pub requested_adaptive_resampling_max_adjust_far_bits: std::sync::atomic::AtomicU32,
-    pub requested_adaptive_resampling_near_far_threshold_ms: std::sync::atomic::AtomicU32,
-    pub requested_adaptive_resampling_hard_correction_threshold_ms: std::sync::atomic::AtomicU32,
-    pub requested_adaptive_resampling_measurement_smoothing_alpha_bits:
-        std::sync::atomic::AtomicU32,
-
-    /// Current active output sample rate in Hz, as reported by the decode handler.
-    pub current_output_sample_rate_hz: std::sync::atomic::AtomicU32,
-
-    /// Current active sample format label (e.g. `f32le`, `s24le`).
-    pub current_sample_format: Mutex<String>,
-    /// Last audio output initialization/runtime error, if any.
-    pub current_audio_error: Mutex<Option<String>>,
 }
 
 impl RendererControl {
@@ -493,29 +454,8 @@ impl RendererControl {
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             config_path: Mutex::new(None),
-            requested_output_device: Mutex::new(None),
             input_path: Mutex::new(None),
-            available_output_devices: Mutex::new(Vec::new()),
-            device_list_fetcher: Mutex::new(None),
-            requested_output_sample_rate_hz: std::sync::atomic::AtomicU32::new(0),
-            requested_adaptive_resampling: std::sync::atomic::AtomicBool::new(false),
             requested_ramp_mode: Mutex::new(RampMode::Sample),
-            requested_latency_target_ms: std::sync::atomic::AtomicU32::new(0),
-            requested_adaptive_resampling_kp_near_bits: std::sync::atomic::AtomicU32::new(0),
-            requested_adaptive_resampling_kp_far_bits: std::sync::atomic::AtomicU32::new(0),
-            requested_adaptive_resampling_ki_bits: std::sync::atomic::AtomicU32::new(0),
-            requested_adaptive_resampling_max_adjust_bits: std::sync::atomic::AtomicU32::new(0),
-            requested_adaptive_resampling_max_adjust_far_bits: std::sync::atomic::AtomicU32::new(0),
-            requested_adaptive_resampling_near_far_threshold_ms: std::sync::atomic::AtomicU32::new(
-                0,
-            ),
-            requested_adaptive_resampling_hard_correction_threshold_ms:
-                std::sync::atomic::AtomicU32::new(0),
-            requested_adaptive_resampling_measurement_smoothing_alpha_bits:
-                std::sync::atomic::AtomicU32::new(0),
-            current_output_sample_rate_hz: std::sync::atomic::AtomicU32::new(0),
-            current_sample_format: Mutex::new("unknown".to_string()),
-            current_audio_error: Mutex::new(None),
         })
     }
 
@@ -682,19 +622,6 @@ impl RendererControl {
         self.config_dirty.store(false, Ordering::Relaxed);
     }
 
-    pub fn set_requested_output_sample_rate(&self, rate_hz: Option<u32>) {
-        self.requested_output_sample_rate_hz
-            .store(rate_hz.unwrap_or(0), Ordering::Relaxed);
-    }
-
-    pub fn set_requested_output_device(&self, output_device: Option<String>) {
-        *self.requested_output_device.lock().unwrap() = output_device;
-    }
-
-    pub fn requested_output_device(&self) -> Option<String> {
-        self.requested_output_device.lock().unwrap().clone()
-    }
-
     pub fn set_input_path(&self, input_path: Option<String>) {
         *self.input_path.lock().unwrap() = input_path;
     }
@@ -703,180 +630,11 @@ impl RendererControl {
         self.input_path.lock().unwrap().clone()
     }
 
-    pub fn set_available_output_devices(&self, devices: Vec<OutputDeviceOption>) {
-        *self.available_output_devices.lock().unwrap() = devices;
-    }
-
-    pub fn available_output_devices(&self) -> Vec<OutputDeviceOption> {
-        self.available_output_devices.lock().unwrap().clone()
-    }
-
-    pub fn set_device_list_fetcher(
-        &self,
-        fetcher: impl Fn() -> Vec<OutputDeviceOption> + Send + Sync + 'static,
-    ) {
-        *self.device_list_fetcher.lock().unwrap() = Some(Box::new(fetcher));
-    }
-
-    /// Query the audio backend live for the current device list, update the
-    /// cache, and return the new list. Returns `None` if no fetcher is set.
-    pub fn refresh_available_output_devices(&self) -> Option<Vec<OutputDeviceOption>> {
-        let fetcher = self.device_list_fetcher.lock().unwrap();
-        fetcher.as_ref().map(|f| {
-            let devices = f();
-            *self.available_output_devices.lock().unwrap() = devices.clone();
-            devices
-        })
-    }
-
-    pub fn requested_output_sample_rate(&self) -> Option<u32> {
-        match self.requested_output_sample_rate_hz.load(Ordering::Relaxed) {
-            0 => None,
-            v => Some(v),
-        }
-    }
-
-    pub fn set_requested_adaptive_resampling(&self, enabled: bool) {
-        self.requested_adaptive_resampling
-            .store(enabled, Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling(&self) -> bool {
-        self.requested_adaptive_resampling.load(Ordering::Relaxed)
-    }
-
     pub fn set_requested_ramp_mode(&self, mode: RampMode) {
         *self.requested_ramp_mode.lock().unwrap() = mode;
     }
 
     pub fn requested_ramp_mode(&self) -> RampMode {
         *self.requested_ramp_mode.lock().unwrap()
-    }
-
-    pub fn set_requested_latency_target_ms(&self, value: Option<u32>) {
-        self.requested_latency_target_ms
-            .store(value.unwrap_or(0), Ordering::Relaxed);
-    }
-
-    pub fn requested_latency_target_ms(&self) -> Option<u32> {
-        match self.requested_latency_target_ms.load(Ordering::Relaxed) {
-            0 => None,
-            v => Some(v),
-        }
-    }
-
-    pub fn set_requested_adaptive_resampling_kp_near(&self, value: f32) {
-        self.requested_adaptive_resampling_kp_near_bits
-            .store(value.to_bits(), Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling_kp_near(&self) -> f64 {
-        f32::from_bits(
-            self.requested_adaptive_resampling_kp_near_bits
-                .load(Ordering::Relaxed),
-        ) as f64
-    }
-
-    pub fn set_requested_adaptive_resampling_kp_far(&self, value: f32) {
-        self.requested_adaptive_resampling_kp_far_bits
-            .store(value.to_bits(), Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling_kp_far(&self) -> f64 {
-        f32::from_bits(
-            self.requested_adaptive_resampling_kp_far_bits
-                .load(Ordering::Relaxed),
-        ) as f64
-    }
-
-    pub fn set_requested_adaptive_resampling_ki(&self, value: f32) {
-        self.requested_adaptive_resampling_ki_bits
-            .store(value.to_bits(), Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling_ki(&self) -> f64 {
-        f32::from_bits(
-            self.requested_adaptive_resampling_ki_bits
-                .load(Ordering::Relaxed),
-        ) as f64
-    }
-
-    pub fn set_requested_adaptive_resampling_max_adjust(&self, value: f32) {
-        self.requested_adaptive_resampling_max_adjust_bits
-            .store(value.to_bits(), Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling_max_adjust(&self) -> f64 {
-        f32::from_bits(
-            self.requested_adaptive_resampling_max_adjust_bits
-                .load(Ordering::Relaxed),
-        ) as f64
-    }
-
-    pub fn set_requested_adaptive_resampling_max_adjust_far(&self, value: f32) {
-        self.requested_adaptive_resampling_max_adjust_far_bits
-            .store(value.to_bits(), Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling_max_adjust_far(&self) -> f64 {
-        f32::from_bits(
-            self.requested_adaptive_resampling_max_adjust_far_bits
-                .load(Ordering::Relaxed),
-        ) as f64
-    }
-
-    pub fn set_requested_adaptive_resampling_near_far_threshold_ms(&self, value: u32) {
-        self.requested_adaptive_resampling_near_far_threshold_ms
-            .store(value, Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling_near_far_threshold_ms(&self) -> u32 {
-        self.requested_adaptive_resampling_near_far_threshold_ms
-            .load(Ordering::Relaxed)
-    }
-
-    pub fn set_requested_adaptive_resampling_hard_correction_threshold_ms(&self, value: u32) {
-        self.requested_adaptive_resampling_hard_correction_threshold_ms
-            .store(value, Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling_hard_correction_threshold_ms(&self) -> u32 {
-        self.requested_adaptive_resampling_hard_correction_threshold_ms
-            .load(Ordering::Relaxed)
-    }
-
-    pub fn set_requested_adaptive_resampling_measurement_smoothing_alpha(&self, value: f32) {
-        self.requested_adaptive_resampling_measurement_smoothing_alpha_bits
-            .store(value.to_bits(), Ordering::Relaxed);
-    }
-
-    pub fn requested_adaptive_resampling_measurement_smoothing_alpha(&self) -> f64 {
-        f32::from_bits(
-            self.requested_adaptive_resampling_measurement_smoothing_alpha_bits
-                .load(Ordering::Relaxed),
-        ) as f64
-    }
-
-    pub fn set_audio_state(&self, sample_rate_hz: u32, sample_format: impl Into<String>) {
-        self.current_output_sample_rate_hz
-            .store(sample_rate_hz, Ordering::Relaxed);
-        *self.current_sample_format.lock().unwrap() = sample_format.into();
-    }
-
-    pub fn set_audio_error(&self, error: Option<String>) {
-        *self.current_audio_error.lock().unwrap() = error;
-    }
-
-    pub fn audio_state(&self) -> (Option<u32>, String) {
-        let rate = match self.current_output_sample_rate_hz.load(Ordering::Relaxed) {
-            0 => None,
-            v => Some(v),
-        };
-        let format = self.current_sample_format.lock().unwrap().clone();
-        (rate, format)
-    }
-
-    pub fn audio_error(&self) -> Option<String> {
-        self.current_audio_error.lock().unwrap().clone()
     }
 }

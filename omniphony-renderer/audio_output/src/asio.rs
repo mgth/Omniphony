@@ -14,8 +14,15 @@ use std::thread;
 use std::time::Duration;
 
 use crate::{
-    ADAPTIVE_BAND_HARD, AdaptiveControllerState, AdaptiveResamplingConfig, adaptive_band_name,
-    apply_ema, compute_adaptive_step,
+    AdaptiveResamplingConfig, adaptive_band_name, compute_adaptive_step,
+    adaptive_runtime::{
+        AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
+        compute_hard_recover_plan, note_refill_or_underrun, output_to_input_domain_samples,
+        postprocess_interleaved_output, update_far_mode_state, update_latency_metrics,
+        zero_pad_tail,
+    },
+    ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
+    resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
 };
 
 // Buffer size: 4 seconds of audio at 48kHz, 16 channels
@@ -25,11 +32,6 @@ const BUFFER_SIZE: usize = 48000 * 16 * 4;
 const MIN_BUFFER_MS: u32 = 25;
 const DEFAULT_TARGET_BUFFER_MS: u32 = 220;
 const MAX_BUFFER_MS: u32 = 250;
-const MAX_INTEGRAL_TERM: f64 = 0.0002;
-
-// Rubato constants
-const RESAMPLER_CHUNK_SIZE: usize = 1024; // Input chunk size for resampler
-
 pub struct AsioWriter {
     sample_buffer: Arc<ArrayQueue<f32>>,
     input_sample_rate: u32,
@@ -44,7 +46,6 @@ pub struct AsioWriter {
     current_adaptive_band: Arc<AtomicU8>,
     measured_latency_ms_bits: Arc<AtomicU32>,
     control_latency_ms_bits: Arc<AtomicU32>,
-    flush_requested: Arc<AtomicBool>,
     // We keep the stream alive by holding it here, though cpal streams run in background threads
     _stream: Option<cpal::Stream>,
 }
@@ -120,8 +121,6 @@ impl AsioWriter {
         let measured_latency_ms_bits_clone = measured_latency_ms_bits.clone();
         let control_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let control_latency_ms_bits_clone = control_latency_ms_bits.clone();
-        let flush_requested = Arc::new(AtomicBool::new(false));
-        let flush_requested_clone = flush_requested.clone();
 
         // Ring-buffer thresholds in INPUT-domain samples (same domain as buffer_clone.len()).
         let samples_per_ms =
@@ -133,8 +132,7 @@ impl AsioWriter {
         };
         let max_buffer_ms = MAX_BUFFER_MS.max(target_buffer_ms.saturating_mul(2));
         let min_buffer_fill = (samples_per_ms * MIN_BUFFER_MS as usize).max(channel_count as usize);
-        let target_buffer_fill =
-            (samples_per_ms * target_buffer_ms as usize).max(min_buffer_fill);
+        let target_buffer_fill = (samples_per_ms * target_buffer_ms as usize).max(min_buffer_fill);
         let max_buffer_fill = (samples_per_ms * max_buffer_ms as usize)
             .max(target_buffer_fill + channel_count as usize);
 
@@ -301,32 +299,12 @@ impl AsioWriter {
         )
         .map_err(|e| anyhow!("Failed to create resampler: {:?}", e))?;
 
-        // Intermediate buffers
-        // Stores input for resampler (planar)
-        let mut resampler_input: Vec<Vec<f32>> =
-            vec![vec![0.0; RESAMPLER_CHUNK_SIZE]; channel_count as usize];
-        // Stores accumulated input samples count
-        let mut input_frames_collected = 0;
-
-        // FIFO for resampled output waiting to be consumed by ASIO callback
-        // Interleaved f32 samples
-        let mut output_fifo: Vec<f32> =
-            Vec::with_capacity(RESAMPLER_CHUNK_SIZE * channel_count as usize * 4);
-
-        // Control loop state
-        let mut controller_state = AdaptiveControllerState::default();
-        let mut callback_count = 0u64;
-        let mut playback_started = false;
-        let mut underrun_warned = false;
+        let mut resampler_fifo = ResamplerFifoEngine::new(channel_count as usize);
+        let mut runtime_state = AdaptiveRuntimeState::new(1.0);
         let near_far_threshold_samples =
             (adaptive_config.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
         let measurement_smoothing_alpha =
             adaptive_config.measurement_smoothing_alpha.clamp(0.0, 1.0);
-        let hard_correction_threshold_samples =
-            (adaptive_config.hard_correction_threshold_ms as usize).saturating_mul(samples_per_ms);
-        let hard_correction_release_margin = hard_correction_threshold_samples / 2;
-        let hard_correction_max_step = hard_correction_threshold_samples / 2;
-        let mut hard_correction_mode: i8 = 0;
 
         let device_channel_count_for_callback = device_channel_count;
         let adaptive_resampling_enabled = enable_adaptive_resampling;
@@ -336,30 +314,12 @@ impl AsioWriter {
         let stream = device.build_output_stream(
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                callback_count += 1;
-
-                if flush_requested_clone.swap(false, Ordering::Relaxed) {
-                    while buffer_clone.pop().is_some() {}
-                    output_fifo.clear();
-                    input_frames_collected = 0;
-                    controller_state = AdaptiveControllerState::default();
-                    current_rate_adjust_clone.store(1.0f32.to_bits(), Ordering::Relaxed);
-                    current_adaptive_band_clone.store(0, Ordering::Relaxed);
-                    measured_latency_ms_bits_clone.store(0u32, Ordering::Relaxed);
-                    control_latency_ms_bits_clone.store(0u32, Ordering::Relaxed);
-                    playback_started = false;
-                    underrun_warned = false;
-                }
+                let callback_count = runtime_state.advance_callback();
 
                 // 1. Check buffer fill & Calculate Rate
                 let available_samples = buffer_clone.len(); // Input-domain samples (frames * channels)
-                let output_fifo_input_domain_samples = if resample_ratio > 0.0 {
-                    ((output_fifo.len() as f64) / resample_ratio).round() as usize
-                } else {
-                    output_fifo.len()
-                };
-                let total_available_input_domain =
-                    available_samples.saturating_add(output_fifo_input_domain_samples);
+                let output_fifo_input_domain_samples =
+                    output_to_input_domain_samples(resampler_fifo.output_len(), resample_ratio);
                 // data.len() is in device-channel domain; convert it to rendered-audio samples
                 // before comparing against the renderer/ring buffer fill level.
                 let callback_frames = data.len() / device_channel_count_for_callback as usize;
@@ -373,114 +333,35 @@ impl AsioWriter {
                 } else {
                     callback_audio_samples
                 };
-                let control_available = total_available_input_domain
-                    .saturating_sub(callback_input_domain_samples / 2);
-                let smoothed_control_available = apply_ema(
-                    &mut controller_state.smoothed_control_available,
-                    control_available as f64,
+                let metrics = update_latency_metrics(
+                    &mut runtime_state,
+                    available_samples,
+                    output_fifo_input_domain_samples,
+                    callback_input_domain_samples,
+                    channel_count as usize,
+                    input_sample_rate,
+                    0.0,
                     measurement_smoothing_alpha,
-                )
-                .max(0.0)
-                .round() as usize;
-                let smoothed_total_available = apply_ema(
-                    &mut controller_state.smoothed_total_available,
-                    total_available_input_domain as f64,
-                    measurement_smoothing_alpha,
-                )
-                .max(0.0)
-                .round() as usize;
-                let measured_latency_ms = (smoothed_total_available as f32
-                    / channel_count as f32
-                    / input_sample_rate as f32)
-                    * 1000.0;
-                let control_latency_ms = (smoothed_control_available as f32
-                    / channel_count as f32
-                    / input_sample_rate as f32)
-                    * 1000.0;
-                measured_latency_ms_bits_clone
-                    .store(measured_latency_ms.to_bits(), Ordering::Relaxed);
-                control_latency_ms_bits_clone
-                    .store(control_latency_ms.to_bits(), Ordering::Relaxed);
-
-                let mut hard_zero_fill = false;
-                if adaptive_resampling_enabled && hard_correction_threshold_samples > 0 {
-                    if hard_correction_mode < 0 {
-                        if smoothed_control_available.saturating_add(hard_correction_release_margin)
-                            >= target_buffer_fill
-                        {
-                            hard_correction_mode = 0;
-                        } else {
-                            controller_state.accumulated_drift = 0.0;
-                            current_rate_adjust_clone.store(1.0f32.to_bits(), Ordering::Relaxed);
-                            current_adaptive_band_clone.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                            hard_zero_fill = true;
-                        }
-                    } else if hard_correction_mode > 0 {
-                        let desired_keep =
-                            target_buffer_fill.saturating_add(hard_correction_release_margin);
-                        if smoothed_total_available <= desired_keep {
-                            hard_correction_mode = 0;
-                        } else {
-                            let mut to_drop = smoothed_total_available.saturating_sub(desired_keep);
-                            to_drop = to_drop.min(hard_correction_max_step.max(channel_count as usize));
-                            let fifo_drop = to_drop.min(output_fifo.len());
-                            if fifo_drop > 0 {
-                                output_fifo.drain(0..fifo_drop);
-                                to_drop = to_drop.saturating_sub(fifo_drop);
-                            }
-                            let ring_drop = (to_drop / channel_count as usize) * channel_count as usize;
-                            for _ in 0..ring_drop {
-                                let _ = buffer_clone.pop();
-                            }
-                            controller_state.accumulated_drift = 0.0;
-                            current_adaptive_band_clone.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                        }
-                    } else if smoothed_control_available
-                        .saturating_add(hard_correction_threshold_samples)
-                        < target_buffer_fill
-                    {
-                        hard_correction_mode = -1;
-                        controller_state.accumulated_drift = 0.0;
-                        current_rate_adjust_clone.store(1.0f32.to_bits(), Ordering::Relaxed);
-                        current_adaptive_band_clone.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                        hard_zero_fill = true;
-                    } else if smoothed_total_available
-                        > target_buffer_fill.saturating_add(hard_correction_threshold_samples)
-                    {
-                        hard_correction_mode = 1;
-                        let mut to_drop = smoothed_total_available.saturating_sub(
-                            target_buffer_fill.saturating_add(hard_correction_release_margin),
-                        );
-                        to_drop = to_drop.min(hard_correction_max_step.max(channel_count as usize));
-                        let fifo_drop = to_drop.min(output_fifo.len());
-                        if fifo_drop > 0 {
-                            output_fifo.drain(0..fifo_drop);
-                            to_drop = to_drop.saturating_sub(fifo_drop);
-                        }
-                        let ring_drop = (to_drop / channel_count as usize) * channel_count as usize;
-                        for _ in 0..ring_drop {
-                            let _ = buffer_clone.pop();
-                        }
-                        controller_state.accumulated_drift = 0.0;
-                        current_adaptive_band_clone.store(ADAPTIVE_BAND_HARD, Ordering::Relaxed);
-                    }
-                }
-
-                if hard_zero_fill {
-                    data.fill(0.0);
-                    return;
-                }
+                    LatencyMetricTargets {
+                        measured_latency_ms_bits: &measured_latency_ms_bits_clone,
+                        control_latency_ms_bits: &control_latency_ms_bits_clone,
+                    },
+                );
 
                 // Adaptive rate logic (PI Controller)
                 // Adjusts the resampling ratio around the base ratio to maintain buffer level
                 // Only active if adaptive resampling is enabled
                 if adaptive_resampling_enabled {
                     // Only adjust rate if we have started playback and have enough data
-                    if playback_started && callback_count % 10 == 0 {
+                    let adaptive_update_interval =
+                        adaptive_config.update_interval_callbacks.max(1) as u64;
+                    if callback_count % adaptive_update_interval == 0
+                        && metrics.total_available_input_domain >= channel_count as usize
+                    {
                         let step = compute_adaptive_step(
-                            &mut controller_state,
+                            &mut runtime_state.controller_state,
                             &adaptive_config,
-                            smoothed_control_available,
+                            metrics.smoothed_control_available,
                             target_buffer_fill,
                             near_far_threshold_samples,
                             resample_ratio,
@@ -499,7 +380,7 @@ impl AsioWriter {
                         if callback_count % 100 == 0 {
                             log::debug!(
                                 "ASIO Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
-                                smoothed_control_available,
+                                metrics.smoothed_control_available,
                                 target_buffer_fill,
                                 step.drift,
                                 step.current_ratio,
@@ -519,85 +400,43 @@ impl AsioWriter {
                 // output_fifo contains frames * channel_count
                 let output_frames_needed = data.len() / device_channel_count_for_callback as usize;
                 let audio_samples_needed = output_frames_needed * channel_count as usize;
-
-                while output_fifo.len() < audio_samples_needed {
-                    // We need to run the resampler
-                    // Do we have enough input for a chunk?
-                    // 2.1 Fill input buffer from ringbuffer
-                    while input_frames_collected < RESAMPLER_CHUNK_SIZE {
-                        // Try to pop one frame (all channels)
-                        let mut frame_complete = true;
-
-                        // Check if we have a full frame available in ringbuffer
-                        if buffer_clone.len() >= channel_count as usize {
-                            for ch in 0..channel_count as usize {
-                                if let Some(sample_f32) = buffer_clone.pop() {
-                                    // Already in f32 format [-1.0, 1.0]
-                                    resampler_input[ch][input_frames_collected] = sample_f32;
-                                } else {
-                                    frame_complete = false;
-                                    break;
-                                }
-                            }
-                        } else {
-                            frame_complete = false;
-                        }
-
-                        if frame_complete {
-                            input_frames_collected += 1;
-                        } else {
-                            // Not enough data in input buffer to fill a resampler chunk
-                            // If playback hasn't started, wait.
-                            // If it has, this is an underrun condition.
-                            break;
-                        }
-                    }
-
-                    // 2.2 Run Resampler if input is full
-                    if input_frames_collected == RESAMPLER_CHUNK_SIZE {
-                        match resampler.process(&resampler_input, None) {
-                            Ok(output_planar) => {
-                                // Interleave and push to FIFO
-                                let output_frames = output_planar[0].len();
-                                for i in 0..output_frames {
-                                    for ch in 0..channel_count as usize {
-                                        output_fifo.push(output_planar[ch][i]);
-                                    }
-                                }
-                                // Reset input counter
-                                input_frames_collected = 0;
-                            },
-                            Err(e) => {
-                                log::error!("Resampler error: {}", e);
-                                break;
-                            }
-                        }
-                    } else {
-                        // Cannot fill resampler chunk, underrun
-                        break;
-                    }
+                if let Err(e) =
+                    resampler_fifo.ensure_output_samples(&buffer_clone, &mut resampler, audio_samples_needed)
+                {
+                    log::error!("Resampler error: {}", e);
                 }
 
                 // 3. Fill ASIO callback buffer from FIFO
-                if output_fifo.len() >= audio_samples_needed {
-                    // We have enough data
-                        if !playback_started {
-                        if available_samples >= min_buffer_fill {
-                            playback_started = true;
-                            log::info!("ASIO playback started");
-                        } else {
-                            // Still filling, silence
-                            data.fill(0.0);
-                            return;
-                        }
+                let far_decision: FarModeDecision = update_far_mode_state(
+                    &mut runtime_state,
+                    &adaptive_config,
+                    adaptive_resampling_enabled,
+                    current_adaptive_band_clone.load(Ordering::Relaxed) == crate::ADAPTIVE_BAND_FAR,
+                    output_sample_rate,
+                );
+                if far_decision.hard_recover_far {
+                    let plan = compute_hard_recover_plan(
+                        callback_input_domain_samples,
+                        metrics.control_available,
+                        target_buffer_fill,
+                        resample_ratio,
+                        channel_count as usize,
+                    );
+                    if let Err(e) = resampler_fifo.ensure_output_samples(
+                        &buffer_clone,
+                        &mut resampler,
+                        plan.desired_consume_output_samples,
+                    ) {
+                        log::error!("Resampler error: {}", e);
                     }
-
+                    resampler_fifo.discard_samples(plan.desired_consume_output_samples);
+                    data.fill(0.0);
+                } else if resampler_fifo.output_len() >= audio_samples_needed {
+                    // We have enough data
                     // Map audio channels to device channels
                     // If device has more channels than audio, extra channels are zeroed
                     data.fill(0.0); // Zero all channels first
-
-                    let audio_iter = output_fifo.drain(0..audio_samples_needed);
-                    let audio_samples: Vec<f32> = audio_iter.collect();
+                    let audio_samples = resampler_fifo.drain_to_vec(audio_samples_needed);
 
                     // Interleave into device buffer: frame by frame
                     for frame_idx in 0..output_frames_needed {
@@ -610,28 +449,31 @@ impl AsioWriter {
                         }
                         // Remaining device channels (if any) stay at 0.0
                     }
+                    postprocess_interleaved_output(
+                        data,
+                        device_channel_count_for_callback as usize,
+                        far_decision.mute_far_output,
+                        &mut runtime_state,
+                    );
 
                 } else {
                     // Underrun
-                    if playback_started && !underrun_warned {
-                        log::warn!(
-                            "ASIO Underrun! output_fifo={}, needed={} (frames={})",
-                            output_fifo.len(),
-                            audio_samples_needed,
-                            output_frames_needed
-                        );
-                        underrun_warned = true;
-                    }
+                    note_refill_or_underrun(
+                        &mut runtime_state,
+                        "ASIO underrun",
+                        "ASIO underrun",
+                        resampler_fifo.output_len(),
+                        audio_samples_needed,
+                    );
                     // Fill what we have, silence rest
-                    let available = output_fifo.len();
-                    let drain_iter = output_fifo.drain(..);
-                    for (dest, src) in data.iter_mut().zip(drain_iter) {
-                        *dest = src;
-                    }
-                    // Silence remaining
-                    for sample in data.iter_mut().skip(available) {
-                        *sample = 0.0;
-                    }
+                    let copied = resampler_fifo.drain_into_slice(data);
+                    zero_pad_tail(data, copied);
+                    postprocess_interleaved_output(
+                        data,
+                        device_channel_count_for_callback as usize,
+                        far_decision.mute_far_output,
+                        &mut runtime_state,
+                    );
                 }
             },
             err_fn,
@@ -655,54 +497,31 @@ impl AsioWriter {
             current_adaptive_band,
             measured_latency_ms_bits,
             control_latency_ms_bits,
-            flush_requested,
             _stream: Some(stream),
         })
     }
 
     pub fn write_samples(&mut self, samples: &[f32]) -> Result<()> {
-        // Same logic as PipewireWriter
-        let mut sample_idx = 0;
-        let mut wait_count = 0;
-        let _last_log_time = std::time::Instant::now();
-
-        while sample_idx < samples.len() {
-            let buffer_level = self.sample_buffer.len();
-
-            if buffer_level >= self.max_buffer_fill {
-                if wait_count == 0 {
-                    // log::debug!("Buffer full, waiting...");
-                }
-                wait_count += 1;
-                thread::sleep(Duration::from_millis(10));
-
-                if wait_count > 200 {
-                    log::warn!("Buffer drain timeout");
-                    break;
-                }
-                continue;
-            }
-
-            while sample_idx < samples.len() && self.sample_buffer.len() < self.max_buffer_fill {
-                if self.sample_buffer.push(samples[sample_idx]).is_ok() {
-                    sample_idx += 1;
-                } else {
-                    break;
-                }
-            }
+        let report = push_samples_with_backpressure(
+            &self.sample_buffer,
+            samples,
+            self.max_buffer_fill,
+            10,
+            200,
+        );
+        if report.timed_out {
+            log::warn!("Buffer drain timeout");
         }
         Ok(())
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        let timeout = Duration::from_secs(5);
-        let start = std::time::Instant::now();
-        while !self.sample_buffer.is_empty() {
-            if start.elapsed() > timeout {
-                break;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
+        let _ = flush_ring_buffer(
+            &self.sample_buffer,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            None,
+        );
         Ok(())
     }
 
@@ -725,9 +544,7 @@ impl AsioWriter {
     }
 
     pub fn total_audio_delay_ms(&self) -> f32 {
-        (self.target_buffer_fill as f32
-            / self.channel_count as f32
-            / self.input_sample_rate as f32)
+        (self.target_buffer_fill as f32 / self.channel_count as f32 / self.input_sample_rate as f32)
             * 1000.0
     }
 
@@ -737,9 +554,5 @@ impl AsioWriter {
 
     pub fn control_audio_delay_ms(&self) -> f32 {
         f32::from_bits(self.control_latency_ms_bits.load(Ordering::Relaxed))
-    }
-
-    pub fn request_flush(&self) {
-        self.flush_requested.store(true, Ordering::Relaxed);
     }
 }
