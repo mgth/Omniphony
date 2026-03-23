@@ -66,8 +66,15 @@ import { renderDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { renderConfigSavedUI } from './controls/config.js';
 import { renderLatencyDisplay, renderLatencyMeterUI, renderRenderTimeUI, renderResampleRatioDisplay } from './controls/latency.js';
 import { renderAudioFormatDisplay, applyAudioSampleRateNow } from './controls/audio.js';
-import { updateObjectContributionUI, updateSpeakerContributionUI, getObjectDisplayName } from './sources.js';
+import { updateObjectContributionUI, updateSpeakerContributionUI, getObjectDisplayName, sourceCallbacks, setSelectedSource } from './sources.js';
 import { updateVbapCartesianFaceGrid, renderVbapCartesianGridToggle } from './scene/gizmos.js';
+import { updateObjectMeterUI, updateObjectPositionUI, updateObjectLabelUI } from './flush.js';
+import {
+  renderObjectsList, updateSpeakerControlsUI, updateObjectControlsUI,
+  objectHasActiveTrail, getObjectIds, updateSectionProportions
+} from './speakers.js';
+import { rebuildTrailGeometry, captureTrailPointColor } from './trails.js';
+import { muteSoloCallbacks } from './mute-solo.js';
 
 flushCallbacks.renderRoomRatioDisplay = renderRoomRatioDisplay;
 flushCallbacks.renderSpreadDisplay = renderSpreadDisplay;
@@ -95,6 +102,23 @@ flushCallbacks.updateVbapCartesianFaceGrid = updateVbapCartesianFaceGrid;
 flushCallbacks.renderVbapCartesianGridToggle = renderVbapCartesianGridToggle;
 flushCallbacks.applyRoomRatio = applyRoomRatio;
 flushCallbacks.updateRoomDimensionGuides = updateRoomDimensionGuides;
+
+// ── Source callbacks wiring ─────────────────────────────────────────────────
+sourceCallbacks.renderObjectsList = renderObjectsList;
+sourceCallbacks.updateObjectPositionUI = updateObjectPositionUI;
+sourceCallbacks.updateObjectLabelUI = updateObjectLabelUI;
+sourceCallbacks.updateObjectMeterUI = updateObjectMeterUI;
+sourceCallbacks.updateObjectControlsUI = updateObjectControlsUI;
+sourceCallbacks.updateSectionProportions = updateSectionProportions;
+sourceCallbacks.rebuildTrailGeometry = rebuildTrailGeometry;
+sourceCallbacks.captureTrailPointColor = captureTrailPointColor;
+sourceCallbacks.objectHasActiveTrail = objectHasActiveTrail;
+sourceCallbacks.getObjectIds = getObjectIds;
+
+// ── Mute/solo callbacks wiring ──────────────────────────────────────────────
+muteSoloCallbacks.updateSpeakerControlsUI = updateSpeakerControlsUI;
+muteSoloCallbacks.updateObjectControlsUI = updateObjectControlsUI;
+muteSoloCallbacks.setSelectedSource = setSelectedSource;
 
 // ── Preferences ─────────────────────────────────────────────────────────────
 const TRAIL_PREFS_STORAGE_KEY = 'spatialviz.trail_prefs';
