@@ -160,7 +160,11 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                 };
 
                 let mut frames_emitted = 0usize;
-                let mut emitted_samples_total = 0u32;
+                // Accumulate (samples, sample_rate) per frame so that emitted_duration_ms
+                // uses the input sample rate rather than a hardcoded 48 kHz constant.
+                // Different frames within a chunk should share the same rate, but we
+                // compute the sum correctly even if they don't.
+                let mut emitted_duration_ms = 0.0f64;
                 let packet_count = packets.len();
                 for (transport, data_type, payload) in packets {
                     let decode_started_at = Instant::now();
@@ -171,6 +175,11 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     let emitted_frames = result.frames.len();
                     let emitted_samples: u32 =
                         result.frames.iter().map(|frame| frame.sample_count).sum();
+                    let packet_emitted_ms: f64 = result.frames.iter().map(|frame| {
+                        let rate = frame.sampling_frequency.max(1) as f64;
+                        frame.sample_count as f64 / rate * 1000.0
+                    }).sum();
+                    emitted_duration_ms += packet_emitted_ms;
                     let metadata_frames = result
                         .frames
                         .iter()
@@ -264,7 +273,6 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     let per_frame_decode_time_ms = decode_time_ms / frame_count_in_packet;
                     let frames_in_packet = result.frames.len();
                     frames_emitted += frames_in_packet;
-                    emitted_samples_total = emitted_samples_total.saturating_add(emitted_samples);
                     for frame in result.frames {
                         frame_count += 1;
                         let sent_at = Instant::now();
@@ -292,8 +300,6 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                 }
 
                 if let Some(gap_ms) = chunk_gap_ms.filter(|gap_ms| *gap_ms > 10.0) {
-                    let emitted_duration_ms =
-                        emitted_samples_total as f64 / 48_000.0f64 * 1000.0f64;
                     let gap_over_emitted_ms = (gap_ms - emitted_duration_ms).max(0.0);
                     if gap_over_emitted_ms >= 20.0 || gap_ms >= 60.0 {
                         sys::live_log::emit_external_record(

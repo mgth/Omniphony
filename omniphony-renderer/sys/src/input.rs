@@ -828,6 +828,12 @@ impl InputReader {
                     break; // EOF
                 }
 
+                log::trace!(
+                    "pipe read: transferred={} chunk_size={}",
+                    transferred,
+                    chunk_size,
+                );
+
                 if !callback(&buffer[..transferred as usize])? {
                     break;
                 }
