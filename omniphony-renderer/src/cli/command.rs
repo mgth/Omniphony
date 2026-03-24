@@ -192,13 +192,7 @@ pub struct RenderArgs {
     #[arg(long, value_name = "MS")]
     pub latency_target_ms: Option<u32>,
 
-    /// Maximum buffer fill before applying back-pressure, in milliseconds.
-    /// Defaults to 2 × latency-target.  Must be greater than latency-target.
-    #[cfg(target_os = "linux")]
-    #[arg(long, value_name = "MS")]
-    pub latency_max_ms: Option<u32>,
-
-    /// [LINUX ONLY] PipeWire processing quantum in frames (~21ms at 48kHz for 1024 frames).
+/// [LINUX ONLY] PipeWire processing quantum in frames (~21ms at 48kHz for 1024 frames).
     /// Smaller values reduce hardware latency but increase CPU load. Default: 1024.
     #[cfg(target_os = "linux")]
     #[arg(long, value_name = "FRAMES")]

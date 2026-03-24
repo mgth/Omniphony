@@ -112,7 +112,7 @@ fn configure_linux_runtime_output(
     let latency_ms = args.latency_target_ms.unwrap_or(defaults.latency_ms);
     handler.runtime.pw_buffer_config = PipewireBufferConfig {
         latency_ms,
-        max_latency_ms: args.latency_max_ms.unwrap_or(latency_ms * 2),
+        max_latency_ms: latency_ms * 2,
         quantum_frames: args.pw_quantum.unwrap_or(defaults.quantum_frames),
     };
     handler.runtime.adaptive_resampling_config = build_adaptive_resampling_config(args, render_cfg);
