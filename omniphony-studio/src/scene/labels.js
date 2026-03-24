@@ -1,41 +1,11 @@
 import * as THREE from 'three';
 import { speakerLabels, app } from '../state.js';
 
-export function escapeSvgText(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&apos;');
-}
-
-export function buildLabelSvgDataUrl(text, color, width, height, isLarge) {
-  const lines = String(text ?? '').split('\n');
-  const fontSize = isLarge ? 36 : 28;
-  const baseFontSize = isLarge ? 24 : 18;
-  const lineHeight = isLarge ? 24 : 18;
-  let textMarkup = '';
-
-  if (lines.length <= 1) {
-    textMarkup = `<text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-size="${fontSize}" font-weight="700">${escapeSvgText(lines[0] || '')}</text>`;
-  } else {
-    const totalHeight = lineHeight * (lines.length - 1);
-    const startY = (height / 2) - (totalHeight / 2);
-    textMarkup = lines.map((line, index) => {
-      const weight = index === 0 ? 700 : 600;
-      const y = startY + (index * lineHeight);
-      return `<text x="50%" y="${y}" text-anchor="middle" dominant-baseline="middle" font-size="${baseFontSize}" font-weight="${weight}">${escapeSvgText(line)}</text>`;
-    }).join('');
-  }
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><g fill="${escapeSvgText(color || '#ffffff')}" font-family="sans-serif">${textMarkup}</g></svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
 export function createLabelSpriteBase(width, height, scaleX, scaleY, color, text) {
-  const image = new Image();
-  const texture = new THREE.Texture(image);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
   texture.generateMipmaps = false;
@@ -43,7 +13,7 @@ export function createLabelSpriteBase(width, height, scaleX, scaleY, color, text
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
   const sprite = new THREE.Sprite(material);
   sprite.scale.set(scaleX, scaleY, 1);
-  sprite.userData.labelImage = image;
+  sprite.userData.labelCanvas = canvas;
   sprite.userData.labelTexture = texture;
   sprite.userData.labelText = '';
   sprite.userData.labelColor = color;
@@ -62,29 +32,40 @@ export function createSmallLabelSprite(text, color = '#d9ecff') {
 }
 
 export function setLabelSpriteText(sprite, text) {
-  if (!sprite?.userData?.labelTexture || !sprite.userData.labelImage) {
+  if (!sprite?.userData?.labelTexture || !sprite.userData.labelCanvas) {
     return;
   }
   const nextText = String(text ?? '');
   if (sprite.userData.labelText === nextText) {
     return;
   }
-  const width = Number(sprite.userData.labelWidth) || 128;
-  const height = Number(sprite.userData.labelHeight) || 64;
+  const canvas = sprite.userData.labelCanvas;
+  const width = canvas.width;
+  const height = canvas.height;
+  const color = sprite.userData.labelColor || '#ffffff';
   const isLargeCanvas = width >= 200;
-  const image = sprite.userData.labelImage;
-  image.onload = () => {
-    if (sprite.userData.labelImage === image && sprite.userData.labelTexture) {
-      sprite.userData.labelTexture.needsUpdate = true;
-    }
-  };
-  image.src = buildLabelSvgDataUrl(
-    nextText,
-    sprite.userData.labelColor || '#ffffff',
-    width,
-    height,
-    isLargeCanvas
-  );
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const lines = nextText.split('\n');
+  if (lines.length <= 1) {
+    const fontSize = isLargeCanvas ? 36 : 28;
+    ctx.font = `700 ${fontSize}px sans-serif`;
+    ctx.fillText(lines[0] || '', width / 2, height / 2);
+  } else {
+    const fontSize = isLargeCanvas ? 24 : 18;
+    const lineHeight = isLargeCanvas ? 24 : 18;
+    const totalHeight = lineHeight * (lines.length - 1);
+    const startY = height / 2 - totalHeight / 2;
+    lines.forEach((line, index) => {
+      const weight = index === 0 ? '700' : '600';
+      ctx.font = `${weight} ${fontSize}px sans-serif`;
+      ctx.fillText(line, width / 2, startY + index * lineHeight);
+    });
+  }
+  sprite.userData.labelTexture.needsUpdate = true;
   sprite.userData.labelText = nextText;
 }
 

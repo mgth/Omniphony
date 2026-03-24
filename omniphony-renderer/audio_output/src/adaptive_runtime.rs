@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use crate::{AdaptiveControllerState, AdaptiveResamplingConfig, apply_ema};
+use crate::{AdaptiveControllerState, AdaptiveResamplingConfig};
 
 pub const MAX_INTEGRAL_TERM: f64 = 0.0002;
 
@@ -44,15 +44,11 @@ impl AdaptiveRuntimeState {
 pub struct LatencyMetrics {
     pub total_available_input_domain: usize,
     pub control_available: usize,
-    pub smoothed_control_available: usize,
-    pub smoothed_total_available: usize,
     pub measured_latency_ms: f32,
-    pub control_latency_ms: f32,
 }
 
 pub struct LatencyMetricTargets<'a> {
     pub measured_latency_ms_bits: &'a Arc<AtomicU32>,
-    pub control_latency_ms_bits: &'a Arc<AtomicU32>,
 }
 
 pub fn output_to_input_domain_samples(output_samples: usize, ratio: f64) -> usize {
@@ -71,49 +67,24 @@ pub fn update_latency_metrics(
     channel_count: usize,
     sample_rate: u32,
     graph_latency_ms: f32,
-    measurement_smoothing_alpha: f64,
     targets: LatencyMetricTargets<'_>,
 ) -> LatencyMetrics {
+    let _ = state; // no EMA state needed
     let total_available_input_domain =
         available_input_samples.saturating_add(output_fifo_input_domain_samples);
     let control_available =
         total_available_input_domain.saturating_sub(callback_input_domain_samples / 2);
-    let smoothed_control_available = apply_ema(
-        &mut state.controller_state.smoothed_control_available,
-        &mut state.controller_state.control_ema_initialized,
-        control_available as f64,
-        measurement_smoothing_alpha,
-    )
-    .max(0.0)
-    .round() as usize;
-    let smoothed_total_available = apply_ema(
-        &mut state.controller_state.smoothed_total_available,
-        &mut state.controller_state.total_ema_initialized,
-        total_available_input_domain as f64,
-        measurement_smoothing_alpha,
-    )
-    .max(0.0)
-    .round() as usize;
     let measured_latency_ms =
         (control_available as f32 / channel_count as f32 / sample_rate as f32) * 1000.0
-            + graph_latency_ms;
-    let control_latency_ms =
-        (smoothed_control_available as f32 / channel_count as f32 / sample_rate as f32) * 1000.0
             + graph_latency_ms;
     targets
         .measured_latency_ms_bits
         .store(measured_latency_ms.to_bits(), Ordering::Relaxed);
-    targets
-        .control_latency_ms_bits
-        .store(control_latency_ms.to_bits(), Ordering::Relaxed);
 
     LatencyMetrics {
         total_available_input_domain,
         control_available,
-        smoothed_control_available,
-        smoothed_total_available,
         measured_latency_ms,
-        control_latency_ms,
     }
 }
 
@@ -152,7 +123,8 @@ pub fn update_far_mode_state(
 ) -> FarModeDecision {
     let mute_far_output =
         adaptive_resampling_enabled && adaptive_config.force_silence_in_far_mode && is_far_band;
-    let hard_recover_far = mute_far_output && adaptive_config.hard_recover_in_far_mode;
+    let hard_recover_far =
+        adaptive_resampling_enabled && adaptive_config.hard_recover_in_far_mode && is_far_band;
 
     if mute_far_output {
         state.far_mode_was_muted = true;

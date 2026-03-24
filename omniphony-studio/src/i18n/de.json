@@ -141,6 +141,7 @@
   "adaptive.max": "Adaptives Maximum",
   "adaptive.maxFar": "Adaptives Maximum fern",
   "adaptive.apply": "Anwenden",
+  "adaptive.resetRatio": "Verhältnis zurücksetzen",
   "adaptive.infoTitle": "Adaptives Resampling",
   "adaptive.infoBody": "Diese Parameter bestimmen, wie schnell der lokale Resampler den Audiopuffer wieder auf die gewünschte Ziellatenz zentriert.<br><br><strong>Kp nah</strong>: Proportionalverstärkung, wenn der Puffer nahe am Ziel ist. Konservativ halten, um Jitter zu vermeiden.<br><strong>Kp fern</strong>: Proportionalverstärkung bei großem Fehler. Erhöhen für schnellere Erholung nach Drift oder Störung.<br><strong>Nah/Fern-Schwelle</strong>: Fehlerschwelle in Millisekunden Pufferdrift, ab der von nah auf fern umgeschaltet wird.<br><strong>Glättungs-Alpha</strong>: Quellseitige Messglättung für Controller und harte Korrektur. Niedrige Werte sind ruhiger, hohe reagieren schneller.<br><strong>Ki</strong>: Integralverstärkung. Korrigiert stationären Bias und Taktabweichung, zu hohe Werte können die Erholung träge oder instabil machen.<br><strong>Adaptives Maximum</strong>: Maximaler Korrekturverhältnis-Clamp. Höhere Werte erholen schneller, können aber aggressiver klingen.",
   "telemetry.infoTitle": "Latenzanzeigen",

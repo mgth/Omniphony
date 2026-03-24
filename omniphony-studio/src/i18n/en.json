@@ -145,6 +145,7 @@
   "adaptive.silenceFar": "Silence in Far Mode",
   "adaptive.fadeNearReturn": "Fade-In on Near Return",
   "adaptive.apply": "Apply",
+  "adaptive.resetRatio": "Reset ratio",
   "adaptive.infoTitle": "Adaptive Resampling",
   "adaptive.infoBody": "These parameters tune how fast the local resampler recenters the audio buffer on the requested latency target.<br><br><strong>Adaptive KP</strong>: proportional gain used by the PI controller. Keep it conservative to avoid jitter.<br><strong>Far Threshold</strong>: error threshold, in milliseconds of buffer drift, where the controller enters far mode and uses hard recovery.<br><strong>Smoothing Alpha</strong>: source-side measurement smoothing used by the controller. Lower values are calmer, higher values react faster.<br><strong>Adaptive Ki</strong>: integral gain. Corrects steady-state bias and clock mismatch, but too much can make recovery sluggish or unstable.<br><strong>Adaptive Max</strong>: maximum correction ratio clamp. Higher values recover faster, but can sound more aggressive.",
   "telemetry.infoTitle": "Latency Gauges",

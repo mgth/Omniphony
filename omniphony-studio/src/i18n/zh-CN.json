@@ -141,6 +141,7 @@
   "adaptive.max": "自适应最大值",
   "adaptive.maxFar": "自适应最大值 far",
   "adaptive.apply": "应用",
+  "adaptive.resetRatio": "重置比率",
   "adaptive.infoTitle": "自适应重采样",
   "adaptive.infoBody": "这些参数用于调整本地重采样器将音频缓冲区重新对准到目标延迟的速度。<br><br><strong>Kp near</strong>：缓冲区接近目标时使用的比例增益。应保持保守以避免抖动。<br><strong>Kp far</strong>：误差较大时使用的比例增益。可提高以便在漂移或中断后更快恢复。<br><strong>near/far 阈值</strong>：缓冲区漂移的误差阈值（毫秒），控制在此处从 near 增益切换到 far 增益。<br><strong>平滑 alpha</strong>：控制器和硬校正使用的源端测量平滑。较低值更平稳，较高值响应更快。<br><strong>Ki</strong>：积分增益。用于修正稳态偏差和时钟不匹配，但过大可能导致恢复变慢或不稳定。<br><strong>自适应最大值</strong>：最大校正比率限制。值越大恢复越快，但听感可能更激进。",
   "telemetry.infoTitle": "延迟仪表",

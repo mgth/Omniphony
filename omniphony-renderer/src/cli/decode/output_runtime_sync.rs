@@ -28,6 +28,7 @@ impl<'a> OutputRuntimeCoordinator<'a> {
         self.sync_requested_adaptive_resampling(output_backend)?;
         self.sync_requested_latency_target(output_backend)?;
         self.sync_requested_adaptive_tuning(output_backend)?;
+        self.sync_ratio_reset();
         Ok(())
     }
 
@@ -178,7 +179,7 @@ impl<'a> OutputRuntimeCoordinator<'a> {
         Ok(())
     }
 
-    fn sync_requested_adaptive_tuning(&mut self, output_backend: OutputBackend) -> Result<()> {
+    fn sync_requested_adaptive_tuning(&mut self, _output_backend: OutputBackend) -> Result<()> {
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             let requested = self
@@ -194,17 +195,14 @@ impl<'a> OutputRuntimeCoordinator<'a> {
                         far_mode_return_fade_in_ms: control
                             .requested_adaptive_resampling_far_mode_return_fade_in_ms(),
                         kp_near: kp,
-                        kp_far: kp,
                         ki: control.requested_adaptive_resampling_ki(),
                         max_adjust,
-                        max_adjust_far: max_adjust,
                         update_interval_callbacks: control
                             .requested_adaptive_resampling_update_interval_callbacks()
                             .max(1),
                         near_far_threshold_ms: control
                             .requested_adaptive_resampling_near_far_threshold_ms(),
-                        measurement_smoothing_alpha: control
-                            .requested_adaptive_resampling_measurement_smoothing_alpha(),
+                        paused: control.requested_adaptive_resampling_paused(),
                     }
                 })
                 .unwrap_or_else(|| self.runtime.adaptive_resampling_config.clone());
@@ -233,18 +231,14 @@ impl<'a> OutputRuntimeCoordinator<'a> {
                         .runtime
                         .adaptive_resampling_config
                         .near_far_threshold_ms
-                && requested.measurement_smoothing_alpha
-                    == self
-                        .runtime
-                        .adaptive_resampling_config
-                        .measurement_smoothing_alpha
+                && requested.paused == self.runtime.adaptive_resampling_config.paused
             {
                 return Ok(());
             }
 
             self.runtime.adaptive_resampling_config = requested;
             log::info!(
-                "Applying adaptive resampling tuning: far_mode={}, far_silence={}, hard_recover=forced, far_return_fade_in_ms={}, kp={:.8}, ki={:.8}, max_adjust={:.6}, update_interval_callbacks={}, far_threshold_ms={}, measurement_smoothing_alpha={:.3}",
+                "Applying adaptive resampling tuning (live): far_mode={}, far_silence={}, hard_recover=forced, far_return_fade_in_ms={}, kp={:.4}, ki={:.4}, max_adjust={:.6}, update_interval_callbacks={}, far_threshold_ms={}",
                 self.runtime.adaptive_resampling_config.enable_far_mode,
                 self.runtime
                     .adaptive_resampling_config
@@ -261,20 +255,26 @@ impl<'a> OutputRuntimeCoordinator<'a> {
                 self.runtime
                     .adaptive_resampling_config
                     .near_far_threshold_ms,
-                self.runtime
-                    .adaptive_resampling_config
-                    .measurement_smoothing_alpha
             );
 
-            if should_reset_writer(output_backend) {
-                self.flush_and_invalidate_writer();
-            }
+            // Apply live on the running audio thread — no restart needed.
+            self.output
+                .update_adaptive_config(self.runtime.adaptive_resampling_config.clone());
         }
 
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         let _ = output_backend;
 
         Ok(())
+    }
+
+    fn sync_ratio_reset(&mut self) {
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if let Some(audio) = self.audio_control {
+            if audio.take_ratio_reset() {
+                self.output.request_ratio_reset();
+            }
+        }
     }
 }
 

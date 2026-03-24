@@ -179,10 +179,6 @@ pub fn build_live_state_bundle(
                 args: vec![OscType::Float(requested.adaptive.kp_near as f32)],
             }),
             OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/adaptive_resampling/kp_far".to_string(),
-                args: vec![OscType::Float(requested.adaptive.kp_far as f32)],
-            }),
-            OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/ki".to_string(),
                 args: vec![OscType::Float(requested.adaptive.ki as f32)],
             }),
@@ -191,20 +187,12 @@ pub fn build_live_state_bundle(
                 args: vec![OscType::Float(requested.adaptive.max_adjust as f32)],
             }),
             OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/adaptive_resampling/max_adjust_far".to_string(),
-                args: vec![OscType::Float(requested.adaptive.max_adjust_far as f32)],
-            }),
-            OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/update_interval_callbacks".to_string(),
                 args: vec![OscType::Float(requested.adaptive.update_interval_callbacks as f32)],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/near_far_threshold_ms".to_string(),
                 args: vec![OscType::Float(requested.adaptive.near_far_threshold_ms as f32)],
-            }),
-            OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/adaptive_resampling/measurement_smoothing_alpha".to_string(),
-                args: vec![OscType::Float(requested.adaptive.measurement_smoothing_alpha as f32)],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/force_silence_in_far_mode".to_string(),
@@ -217,6 +205,10 @@ pub fn build_live_state_bundle(
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms".to_string(),
                 args: vec![OscType::Float(requested.adaptive.far_mode_return_fade_in_ms as f32)],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/pause".to_string(),
+                args: vec![OscType::Int(if requested.adaptive.paused { 1 } else { 0 })],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/audio/output_devices".to_string(),

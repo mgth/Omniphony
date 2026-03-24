@@ -203,6 +203,9 @@ export function applyInitState(payload) {
   if (typeof payload.adaptiveResampling === 'number') {
     app.adaptiveResamplingEnabled = payload.adaptiveResampling !== 0;
   }
+  if (typeof payload.adaptiveResamplingPaused === 'number') {
+    app.adaptiveResamplingPaused = payload.adaptiveResamplingPaused !== 0;
+  }
   if (typeof payload.adaptiveResamplingEnableFarMode === 'number') {
     app.adaptiveResamplingEnableFarMode = payload.adaptiveResamplingEnableFarMode !== 0;
   }
@@ -221,26 +224,17 @@ export function applyInitState(payload) {
   if (typeof payload.adaptiveResamplingKpNear === 'number') {
     app.adaptiveResamplingKpNear = payload.adaptiveResamplingKpNear;
   }
-  if (typeof payload.adaptiveResamplingKpFar === 'number') {
-    app.adaptiveResamplingKpFar = payload.adaptiveResamplingKpFar;
-  }
   if (typeof payload.adaptiveResamplingKi === 'number') {
     app.adaptiveResamplingKi = payload.adaptiveResamplingKi;
   }
   if (typeof payload.adaptiveResamplingMaxAdjust === 'number') {
     app.adaptiveResamplingMaxAdjust = payload.adaptiveResamplingMaxAdjust;
   }
-  if (typeof payload.adaptiveResamplingMaxAdjustFar === 'number') {
-    app.adaptiveResamplingMaxAdjustFar = payload.adaptiveResamplingMaxAdjustFar;
-  }
   if (typeof payload.adaptiveResamplingNearFarThresholdMs === 'number') {
     app.adaptiveResamplingNearFarThresholdMs = payload.adaptiveResamplingNearFarThresholdMs;
   }
   if (typeof payload.adaptiveResamplingUpdateIntervalCallbacks === 'number') {
     app.adaptiveResamplingUpdateIntervalCallbacks = payload.adaptiveResamplingUpdateIntervalCallbacks;
-  }
-  if (typeof payload.adaptiveResamplingMeasurementSmoothingAlpha === 'number') {
-    app.adaptiveResamplingMeasurementSmoothingAlpha = payload.adaptiveResamplingMeasurementSmoothingAlpha;
   }
   if (typeof payload.adaptiveResamplingBand === 'string') {
     app.adaptiveResamplingBand = payload.adaptiveResamplingBand;

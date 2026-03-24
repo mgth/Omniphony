@@ -141,6 +141,7 @@
   "adaptive.max": "Máximo adaptativo",
   "adaptive.maxFar": "Máximo adaptativo far",
   "adaptive.apply": "Aplicar",
+  "adaptive.resetRatio": "Redefinir ratio",
   "adaptive.infoTitle": "Resampling adaptativo",
   "adaptive.infoBody": "Esses parâmetros ajustam a velocidade com que o resampler local recentra o buffer de áudio na latência alvo solicitada.<br><br><strong>Kp near</strong>: ganho proporcional usado quando o buffer está perto do alvo. Mantenha conservador para evitar jitter.<br><strong>Kp far</strong>: ganho proporcional usado quando o erro é grande. Aumente para recuperar mais rápido após deriva ou interrupção.<br><strong>Limiar near/far</strong>: limiar de erro, em milissegundos de deriva do buffer, em que o controle troca do ganho near para o far.<br><strong>Alpha de suavização</strong>: suavização da medição na origem usada pelo controlador e pela correção dura. Valores baixos são mais calmos; valores altos reagem mais rápido.<br><strong>Ki</strong>: ganho integral. Corrige viés em regime permanente e desvio de clock, mas demais pode tornar a recuperação lenta ou instável.<br><strong>Máximo adaptativo</strong>: limite máximo do ratio de correção. Valores mais altos recuperam mais rápido, mas podem soar mais agressivos.",
   "telemetry.infoTitle": "Medidores de latência",

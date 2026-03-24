@@ -268,4 +268,26 @@ impl AudioWriter {
             AudioWriter::Unsupported => None,
         }
     }
+
+    /// Signal the audio thread to snap the resampling ratio back to base and reset the integrator.
+    pub fn request_ratio_reset(&self) {
+        match self {
+            #[cfg(target_os = "linux")]
+            AudioWriter::Pipewire(pw) => pw.request_ratio_reset(),
+            #[cfg(target_os = "windows")]
+            AudioWriter::Asio(asio) => asio.request_ratio_reset(),
+            AudioWriter::Unsupported => {}
+        }
+    }
+
+    /// Update adaptive resampling tuning parameters on the live audio thread without a restart.
+    pub fn update_adaptive_config(&self, config: audio_output::AdaptiveResamplingConfig) {
+        match self {
+            #[cfg(target_os = "linux")]
+            AudioWriter::Pipewire(pw) => pw.update_adaptive_config(config),
+            #[cfg(target_os = "windows")]
+            AudioWriter::Asio(asio) => asio.update_adaptive_config(config),
+            AudioWriter::Unsupported => {}
+        }
+    }
 }

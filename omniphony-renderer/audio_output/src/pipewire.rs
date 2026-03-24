@@ -9,7 +9,7 @@ use rubato::{
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
 use std::thread;
@@ -254,10 +254,10 @@ pub struct PipewireWriter {
     /// Downstream graph latency as measured by pw_stream_get_time().delay (f32 ms bits).
     /// Updated every ~100 callbacks once the stream is stable.
     graph_latency_ms_bits: Arc<AtomicU32>,
-    /// Smoothed control latency used by the adaptive controller.
-    control_latency_ms_bits: Arc<AtomicU32>,
     /// Configured ring-buffer target latency (from PipewireBufferConfig::latency_ms).
     target_latency_ms: u32,
+    live_adaptive_config: Arc<Mutex<AdaptiveResamplingConfig>>,
+    reset_ratio_requested: Arc<AtomicBool>,
     pw_thread: Option<thread::JoinHandle<()>>,
     bootstrap_started_at: Instant,
     bootstrap_write_calls: u32,
@@ -326,9 +326,10 @@ impl PipewireWriter {
         let measured_latency_clone = measured_latency_ms_bits.clone();
         let graph_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let graph_latency_clone = graph_latency_ms_bits.clone();
-        let control_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
-        let control_latency_clone = control_latency_ms_bits.clone();
-        let adaptive_config_for_thread = adaptive_config.clone();
+        let live_config = Arc::new(Mutex::new(adaptive_config));
+        let adaptive_config_for_thread = Arc::clone(&live_config);
+        let reset_ratio_requested = Arc::new(AtomicBool::new(false));
+        let reset_ratio_for_thread = Arc::clone(&reset_ratio_requested);
 
         // Capture before moving buffer_config into the thread closure.
         let max_latency_ms = buffer_config.max_latency_ms;
@@ -351,13 +352,13 @@ impl PipewireWriter {
                 output_sample_rate,
                 buffer_config,
                 adaptive_config_for_thread,
+                reset_ratio_for_thread,
                 rate_adjust_clone,
                 adaptive_band_clone,
                 shutdown_requested_clone,
                 last_write_ms_clone,
                 measured_latency_clone,
                 graph_latency_clone,
-                control_latency_clone,
             ) {
                 log::error!("PipeWire thread error: {}", e);
             }
@@ -406,8 +407,9 @@ impl PipewireWriter {
             last_write_ms,
             measured_latency_ms_bits,
             graph_latency_ms_bits,
-            control_latency_ms_bits,
             target_latency_ms,
+            live_adaptive_config: live_config,
+            reset_ratio_requested,
             pw_thread: Some(pw_thread),
             bootstrap_started_at: Instant::now(),
             bootstrap_write_calls: 0,
@@ -558,7 +560,19 @@ impl PipewireWriter {
     }
 
     pub fn control_audio_delay_ms(&self) -> f32 {
-        f32::from_bits(self.control_latency_ms_bits.load(Ordering::Relaxed))
+        self.measured_audio_delay_ms()
+    }
+
+    /// Signal the audio thread to snap the resampling ratio back to base and reset the integrator.
+    pub fn request_ratio_reset(&self) {
+        self.reset_ratio_requested.store(true, Ordering::Relaxed);
+    }
+
+    /// Update adaptive resampling tuning parameters without restarting the audio thread.
+    pub fn update_adaptive_config(&self, config: AdaptiveResamplingConfig) {
+        if let Ok(mut c) = self.live_adaptive_config.lock() {
+            *c = config;
+        }
     }
 }
 
@@ -586,14 +600,14 @@ fn run_pipewire_loop(
     enable_adaptive_resampling: bool,
     output_sample_rate: Option<u32>, // Target output rate for upsampling
     buffer_config: PipewireBufferConfig,
-    adaptive_config: PipewireAdaptiveResamplingConfig,
+    adaptive_config: Arc<Mutex<PipewireAdaptiveResamplingConfig>>,
+    reset_ratio_requested: Arc<AtomicBool>,
     current_rate_adjust: Arc<AtomicU32>,
     current_adaptive_band: Arc<AtomicU8>,
     shutdown_requested: Arc<AtomicBool>,
     _last_write_ms: Arc<AtomicU64>,
     measured_latency_ms_out: Arc<AtomicU32>,
     graph_latency_ms_out: Arc<AtomicU32>,
-    control_latency_ms_out: Arc<AtomicU32>,
 ) -> Result<()> {
     // Determine actual output rate and resampling ratio
     let actual_output_rate = output_sample_rate.unwrap_or(sample_rate);
@@ -676,7 +690,6 @@ fn run_pipewire_loop(
     // Setup state changed listener
     let ready_for_state = stream_ready.clone();
     let graph_latency_for_state = graph_latency_ms_out.clone();
-    let control_latency_for_state = control_latency_ms_out.clone();
     let _state_listener = stream
         .add_local_listener_with_user_data(())
         .state_changed(move |_, _, old, new| {
@@ -687,7 +700,6 @@ fn run_pipewire_loop(
             } else {
                 let was_ready = ready_for_state.swap(false, Ordering::Relaxed);
                 graph_latency_for_state.store(0u32, Ordering::Relaxed);
-                control_latency_for_state.store(0u32, Ordering::Relaxed);
                 if was_ready {
                     log::warn!(
                         "PipeWire stream left STREAMING ({:?}); pausing writes until recovery",
@@ -703,6 +715,10 @@ fn run_pipewire_loop(
     // 1.0 = normal speed, >1.0 = faster, <1.0 = slower
     let desired_rate = Arc::new(AtomicU32::new(1.0f32.to_bits()));
 
+    // Snapshot the current config for initialisation (resampler max ratio, thresholds).
+    // The live Arc is polled in the callback for any subsequent updates.
+    let adaptive_config_snapshot = adaptive_config.lock().unwrap().clone();
+
     // Initialize resampler for true rate conversion and for adaptive 1:1 operation.
     let mut resampler_opt = if use_local_resampler {
         let params = SincInterpolationParameters {
@@ -714,11 +730,7 @@ fn run_pipewire_loop(
         };
 
         // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
-        let max_resample_ratio_relative = 1.0
-            + adaptive_config
-                .max_adjust
-                .max(adaptive_config.max_adjust_far)
-                .max(0.000001);
+        let max_resample_ratio_relative = 1.0 + adaptive_config_snapshot.max_adjust.max(0.000001);
         let max_resample_ratio_abs = resample_ratio * max_resample_ratio_relative;
 
         log::debug!(
@@ -753,7 +765,8 @@ fn run_pipewire_loop(
     let rate_adjust_for_callback = current_rate_adjust.clone();
     let shutdown_requested_for_callback = shutdown_requested.clone();
     let graph_latency_for_callback = graph_latency_ms_out.clone();
-    let control_latency_for_callback = control_latency_ms_out.clone();
+    let live_adaptive_config_for_callback = Arc::clone(&adaptive_config);
+    let reset_ratio_for_callback = Arc::clone(&reset_ratio_requested);
     let adaptive_resampling_enabled = enable_adaptive_resampling;
     let latency_servo_enabled = !use_local_resampler;
     // Compute channel-aware buffer thresholds for the callback (ms → frames → samples).
@@ -772,10 +785,10 @@ fn run_pipewire_loop(
     let mut logged_runtime_target = target_buffer_fill;
     // Treat errors above ~120 ms as transient mismatch and allow faster convergence.
     let samples_per_ms = (sample_rate as usize).saturating_mul(channel_count as usize) / 1000;
-    let fast_catchup_threshold =
-        (adaptive_config.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
-    let measurement_smoothing_alpha = adaptive_config.measurement_smoothing_alpha.clamp(0.0, 1.0);
-    let adaptive_update_interval = adaptive_config.update_interval_callbacks.max(1) as u64;
+    let samples_per_ms_f64 = samples_per_ms as f64;
+    let mut fast_catchup_threshold =
+        (adaptive_config_snapshot.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
+    let mut adaptive_update_interval = adaptive_config_snapshot.update_interval_callbacks.max(1) as u64;
 
     log::info!(
         "PipeWire buffer thresholds ({}ch): latency={}ms max={}ms quantum={}fr | \
@@ -795,6 +808,23 @@ fn run_pipewire_loop(
                 return;
             }
             let callback_count = runtime_state.advance_callback();
+
+            // --- Test controls: reset ratio / pause PI ---
+            if reset_ratio_for_callback.load(Ordering::Relaxed) {
+                reset_ratio_for_callback.store(false, Ordering::Relaxed);
+                runtime_state.controller_state.accumulated_drift = 0.0;
+                if let Some(ref mut resampler) = resampler_opt {
+                    let _ = resampler.set_resample_ratio(resample_ratio, false);
+                    effective_resample_ratio = resample_ratio;
+                }
+                rate_adjust_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
+                desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
+                current_adaptive_band.store(0, Ordering::Relaxed);
+            }
+            let is_pi_paused = live_adaptive_config_for_callback
+                .try_lock()
+                .map(|cfg| cfg.paused)
+                .unwrap_or(false);
 
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 let datas = buffer.datas_mut();
@@ -884,25 +914,32 @@ fn run_pipewire_loop(
                         channel_count as usize,
                         sample_rate,
                         f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
-                        measurement_smoothing_alpha,
                         LatencyMetricTargets {
                             measured_latency_ms_bits: &measured_latency_ms_out,
-                            control_latency_ms_bits: &control_latency_for_callback,
                         },
                     );
                     if let Some(ref mut resampler) = resampler_opt {
                         if adaptive_resampling_enabled
+                            && !is_pi_paused
                             && callback_count % adaptive_update_interval == 0
                         {
+                            // Refresh config from the live Arc (non-blocking; keep stale on contention).
+                            if let Ok(cfg) = live_adaptive_config_for_callback.try_lock() {
+                                fast_catchup_threshold = (cfg.near_far_threshold_ms as usize)
+                                    .saturating_mul(samples_per_ms);
+                                adaptive_update_interval = cfg.update_interval_callbacks.max(1) as u64;
+                            }
+                            let current_adaptive_cfg = live_adaptive_config_for_callback.lock().unwrap().clone();
                             let step = compute_adaptive_step(
                                 &mut runtime_state.controller_state,
-                                &adaptive_config,
-                                metrics.smoothed_control_available,
+                                &current_adaptive_cfg,
+                                metrics.control_available,
                                 runtime_target_buffer_fill,
                                 fast_catchup_threshold,
                                 resample_ratio,
                                 480,
                                 MAX_INTEGRAL_TERM,
+                                samples_per_ms_f64,
                             );
                             current_adaptive_band.store(step.band, Ordering::Relaxed);
 
@@ -924,7 +961,7 @@ fn run_pipewire_loop(
                                         rel_ratio,
                                         step.consume_adjust,
                                         step.drift,
-                                        metrics.smoothed_control_available,
+                                        metrics.control_available,
                                         runtime_target_buffer_fill
                                     );
                                 }
@@ -939,7 +976,7 @@ fn run_pipewire_loop(
                             if callback_count % 100 == 0 {
                                 log::debug!(
                                     "PipeWire Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
-                                    metrics.smoothed_control_available,
+                                    metrics.control_available,
                                     runtime_target_buffer_fill,
                                     step.drift,
                                     step.current_ratio,
@@ -959,9 +996,10 @@ fn run_pipewire_loop(
                             log::error!("Resampler error: {}", e);
                         }
 
+                        let far_mode_cfg = live_adaptive_config_for_callback.lock().unwrap().clone();
                         let far_decision = update_far_mode_state(
                             &mut runtime_state,
-                            &adaptive_config,
+                            &far_mode_cfg,
                             adaptive_resampling_enabled,
                             current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
                             actual_output_rate,
@@ -1009,28 +1047,47 @@ fn run_pipewire_loop(
                         }
                         max_samples
                     } else {
-                        if latency_servo_enabled && callback_count % adaptive_update_interval == 0 {
+                        if latency_servo_enabled && !is_pi_paused && callback_count % adaptive_update_interval == 0 {
+                            // Refresh config from live Arc (non-blocking; keep stale on contention).
+                            let native_servo_cfg = live_adaptive_config_for_callback.lock().unwrap().clone();
+                            if adaptive_resampling_enabled {
+                                fast_catchup_threshold = (native_servo_cfg.near_far_threshold_ms as usize)
+                                    .saturating_mul(samples_per_ms);
+                                adaptive_update_interval = native_servo_cfg.update_interval_callbacks.max(1) as u64;
+                            }
                             let drift =
-                                metrics.smoothed_control_available as i64
-                                    - runtime_target_buffer_fill as i64;
+                                metrics.control_available as i64 - runtime_target_buffer_fill as i64;
+                            let drift_ms = drift as f64 / samples_per_ms_f64.max(1.0);
 
                             if drift.abs() > 480 {
-                                runtime_state.controller_state.accumulated_drift += drift as f64;
-                                let i_gain = if adaptive_resampling_enabled {
-                                    adaptive_config.ki
+                                if adaptive_resampling_enabled {
+                                    // accumulated_drift in ms for ppm/ms gains
+                                    runtime_state.controller_state.accumulated_drift += drift_ms;
+                                    let integral_contribution =
+                                        runtime_state.controller_state.accumulated_drift
+                                            * native_servo_cfg.ki / 1_000_000.0;
+                                    if integral_contribution.abs() > MAX_INTEGRAL_TERM
+                                        && native_servo_cfg.ki > 0.0
+                                    {
+                                        runtime_state.controller_state.accumulated_drift =
+                                            (MAX_INTEGRAL_TERM * 1_000_000.0 / native_servo_cfg.ki)
+                                                * integral_contribution.signum();
+                                    }
                                 } else {
-                                    LATENCY_SERVO_I_GAIN
-                                };
-                                let integral_contribution =
-                                    runtime_state.controller_state.accumulated_drift * i_gain;
-                                if integral_contribution.abs() > MAX_INTEGRAL_TERM {
-                                    runtime_state.controller_state.accumulated_drift =
-                                        (MAX_INTEGRAL_TERM / i_gain) * integral_contribution.signum();
+                                    runtime_state.controller_state.accumulated_drift += drift as f64;
+                                    let integral_contribution =
+                                        runtime_state.controller_state.accumulated_drift
+                                            * LATENCY_SERVO_I_GAIN;
+                                    if integral_contribution.abs() > MAX_INTEGRAL_TERM {
+                                        runtime_state.controller_state.accumulated_drift =
+                                            (MAX_INTEGRAL_TERM / LATENCY_SERVO_I_GAIN)
+                                                * integral_contribution.signum();
+                                    }
                                 }
                             }
 
                             let is_far = adaptive_resampling_enabled
-                                && adaptive_config.enable_far_mode
+                                && native_servo_cfg.enable_far_mode
                                 && (drift.unsigned_abs() as usize) > fast_catchup_threshold;
                             if adaptive_resampling_enabled {
                                 current_adaptive_band.store(
@@ -1040,29 +1097,19 @@ fn run_pipewire_loop(
                             } else {
                                 current_adaptive_band.store(0, Ordering::Relaxed);
                             }
-                            let p_gain = if adaptive_resampling_enabled {
-                                if is_far {
-                                    adaptive_config.kp_far
-                                } else {
-                                    adaptive_config.kp_near
-                                }
+                            let p_term = if adaptive_resampling_enabled {
+                                drift_ms * native_servo_cfg.kp_near / 1_000_000.0
                             } else {
-                                LATENCY_SERVO_P_GAIN
+                                drift as f64 * LATENCY_SERVO_P_GAIN / 100.0
                             };
-                            let i_gain = if adaptive_resampling_enabled {
-                                adaptive_config.ki
+                            let i_term = if adaptive_resampling_enabled {
+                                runtime_state.controller_state.accumulated_drift
+                                    * native_servo_cfg.ki / 1_000_000.0
                             } else {
-                                LATENCY_SERVO_I_GAIN
+                                runtime_state.controller_state.accumulated_drift * LATENCY_SERVO_I_GAIN
                             };
-                            let p_term = drift as f64 * p_gain / 100.0;
-                            let i_term = runtime_state.controller_state.accumulated_drift * i_gain;
                             let max_adjust = if adaptive_resampling_enabled {
-                                if is_far {
-                                    adaptive_config.max_adjust_far
-                                } else {
-                                    adaptive_config.max_adjust
-                                }
-                                .max(0.000001)
+                                native_servo_cfg.max_adjust.max(0.000001)
                             } else {
                                 LATENCY_SERVO_MAX_RATE_ADJUST
                             };
@@ -1078,7 +1125,7 @@ fn run_pipewire_loop(
                                 if adaptive_resampling_enabled {
                                     log::debug!(
                                         "Adaptive rate: buf={} target={} max={} drift={} (P={:.6} I={:.6}) -> consume={:.6} pw_rate={:.6}",
-                                        metrics.smoothed_control_available,
+                                        metrics.control_available,
                                         runtime_target_buffer_fill,
                                         max_buffer_fill,
                                         drift,
@@ -1090,7 +1137,7 @@ fn run_pipewire_loop(
                                 } else {
                                     log::debug!(
                                         "PipeWire latency servo: buf={} target={} max={} drift={} -> consume={:.6} pw_rate={:.6}",
-                                        metrics.smoothed_control_available,
+                                        metrics.control_available,
                                         runtime_target_buffer_fill,
                                         max_buffer_fill,
                                         drift,
@@ -1105,9 +1152,10 @@ fn run_pipewire_loop(
                         let frames_to_read = available_frames.min(max_frames);
                         let samples_to_read = frames_to_read * ch;
 
+                        let far_mode_cfg2 = live_adaptive_config_for_callback.lock().unwrap().clone();
                         let far_decision: FarModeDecision = update_far_mode_state(
                             &mut runtime_state,
-                            &adaptive_config,
+                            &far_mode_cfg2,
                             adaptive_resampling_enabled,
                             current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
                             actual_output_rate,

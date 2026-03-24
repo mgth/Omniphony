@@ -330,19 +330,6 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/adaptive_resampling/kp_far" {
-        let value = parse_positive_f32_arg(msg.args.first());
-        if let (Some(audio), Some(value)) = (ctx.audio.as_ref(), value) {
-            audio.set_requested_adaptive_resampling_kp_far(value);
-            effects.mark_dirty = true;
-            effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/kp_far".to_string(),
-                value: BroadcastValue::Float(value),
-            });
-        }
-        return Some(effects);
-    }
-
     if addr == "/omniphony/control/adaptive_resampling/ki" {
         let value = parse_positive_f32_arg(msg.args.first());
         if let (Some(audio), Some(value)) = (ctx.audio.as_ref(), value) {
@@ -363,19 +350,6 @@ pub fn apply_simple_osc_control(
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
                 addr: "/omniphony/state/adaptive_resampling/max_adjust".to_string(),
-                value: BroadcastValue::Float(value),
-            });
-        }
-        return Some(effects);
-    }
-
-    if addr == "/omniphony/control/adaptive_resampling/max_adjust_far" {
-        let value = parse_positive_f32_arg(msg.args.first());
-        if let (Some(audio), Some(value)) = (ctx.audio.as_ref(), value) {
-            audio.set_requested_adaptive_resampling_max_adjust_far(value);
-            effects.mark_dirty = true;
-            effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/max_adjust_far".to_string(),
                 value: BroadcastValue::Float(value),
             });
         }
@@ -409,20 +383,24 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/adaptive_resampling/measurement_smoothing_alpha" {
-        let value = match msg.args.first() {
-            Some(OscType::Float(f)) if *f >= 0.0 && *f <= 1.0 => Some(*f),
-            Some(OscType::Int(i)) if *i >= 0 && *i <= 1 => Some(*i as f32),
-            _ => None,
-        };
-        if let (Some(audio), Some(value)) = (ctx.audio.as_ref(), value) {
-            audio.set_requested_adaptive_resampling_measurement_smoothing_alpha(value);
+
+    if addr == "/omniphony/control/adaptive_resampling/pause" {
+        let paused = parse_bool_arg(msg.args.first());
+        if let (Some(audio), Some(paused)) = (ctx.audio.as_ref(), paused) {
+            audio.set_requested_adaptive_resampling_paused(paused);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/measurement_smoothing_alpha"
-                    .to_string(),
-                value: BroadcastValue::Float(value),
+                addr: "/omniphony/state/adaptive_resampling/pause".to_string(),
+                value: BroadcastValue::Int(if paused { 1 } else { 0 }),
             });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/adaptive_resampling/reset_ratio" {
+        if let Some(audio) = ctx.audio.as_ref() {
+            audio.request_ratio_reset();
+            effects.mark_dirty = true;
         }
         return Some(effects);
     }

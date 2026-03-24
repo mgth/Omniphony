@@ -1397,16 +1397,6 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
-            OscEvent::StateAdaptiveResamplingKpFar { value } => {
-                s.adaptive_resampling_kp_far = Some(value);
-                (
-                    Some((
-                        "adaptive_resampling:kp_far",
-                        serde_json::json!({ "value": value }),
-                    )),
-                    removed_ids,
-                )
-            }
             OscEvent::StateAdaptiveResamplingKi { value } => {
                 s.adaptive_resampling_ki = Some(value);
                 (
@@ -1422,16 +1412,6 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 (
                     Some((
                         "adaptive_resampling:max_adjust",
-                        serde_json::json!({ "value": value }),
-                    )),
-                    removed_ids,
-                )
-            }
-            OscEvent::StateAdaptiveResamplingMaxAdjustFar { value } => {
-                s.adaptive_resampling_max_adjust_far = Some(value);
-                (
-                    Some((
-                        "adaptive_resampling:max_adjust_far",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
@@ -1457,22 +1437,23 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
-            OscEvent::StateAdaptiveResamplingMeasurementSmoothingAlpha { value } => {
-                s.adaptive_resampling_measurement_smoothing_alpha = Some(value);
-                (
-                    Some((
-                        "adaptive_resampling:measurement_smoothing_alpha",
-                        serde_json::json!({ "value": s.adaptive_resampling_measurement_smoothing_alpha }),
-                    )),
-                    removed_ids,
-                )
-            }
             OscEvent::StateAdaptiveResamplingBand { value } => {
                 s.adaptive_resampling_band = Some(value.clone());
                 (
                     Some((
                         "adaptive_resampling:band",
                         serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
+
+            OscEvent::StateAdaptiveResamplingPaused { enabled } => {
+                s.adaptive_resampling_paused = Some(if enabled { 1 } else { 0 });
+                (
+                    Some((
+                        "adaptive_resampling:pause",
+                        serde_json::json!({ "enabled": if enabled { 1 } else { 0 } }),
                     )),
                     removed_ids,
                 )

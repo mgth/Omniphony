@@ -1653,6 +1653,7 @@
             <label for="latencyTargetInput" style="font-size:12px;white-space:nowrap" data-i18n="audio.targetLatency">Target latency</label>
             <div style="display:flex;align-items:center;gap:0.35rem">
               <input id="latencyTargetInput" class="delay-input" type="number" min="1" step="1" value="500" style="width:5.5rem" />
+              <button id="latencyTargetApplyBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer" data-i18n="adaptive.apply">Apply</button>
               <span aria-hidden="true" title="Latency gauge target marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#52e2a2;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
             </div>
             <div></div>
@@ -1688,6 +1689,10 @@
             </div>
             <input id="adaptiveResamplingToggle" type="checkbox" />
           </div>
+          <div style="display:flex;align-items:center;gap:0.4rem;margin-top:0.3rem">
+            <button id="adaptivePauseBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">⏸ Pause</button>
+            <button id="adaptiveRatioResetBtn" type="button" style="display:none;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer" data-i18n="adaptive.resetRatio">Reset ratio</button>
+          </div>
           <div id="adaptiveResamplingAdvancedForm" class="adaptive-advanced-form">
             <div class="control-row" style="margin-top:0">
               <div style="grid-column:1 / -1;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8fa6bd">Correction</div>
@@ -1717,11 +1722,11 @@
             </div>
             <div class="control-row" style="margin-top:0.2rem">
               <label for="adaptiveKpNearInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.kpNear">Adaptive KP</label>
-              <input id="adaptiveKpNearInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00001000" style="width:8rem" />
+              <input id="adaptiveKpNearInput" class="delay-input" type="number" min="0.01" step="0.1" value="10" style="width:8rem" />
             </div>
             <div class="control-row" style="margin-top:0.2rem">
               <label for="adaptiveKiInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.ki">Adaptive Ki</label>
-              <input id="adaptiveKiInput" class="delay-input" type="number" min="0.00000001" step="0.00000001" value="0.00000050" style="width:8rem" />
+              <input id="adaptiveKiInput" class="delay-input" type="number" min="0.01" step="1" value="50" style="width:8rem" />
             </div>
             <div class="control-row" style="margin-top:0.2rem">
               <div style="grid-column:1 / -1;margin-top:0.15rem;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8fa6bd">Thresholds</div>
@@ -1732,10 +1737,6 @@
                 <input id="adaptiveNearFarThresholdInput" class="delay-input" type="number" min="1" step="1" value="120" style="width:8rem" />
                 <span id="adaptiveNearFarThresholdSymbol" aria-hidden="true" title="Latency gauge far threshold marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#ffb84a;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
               </div>
-            </div>
-            <div class="control-row" style="margin-top:0.2rem">
-              <label for="adaptiveMeasurementSmoothingAlphaInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.smoothing">Smoothing alpha</label>
-              <input id="adaptiveMeasurementSmoothingAlphaInput" class="delay-input" type="number" min="0" max="1" step="0.01" value="0.15" style="width:8rem" />
             </div>
             <div style="margin-top:0.3rem;display:flex;justify-content:flex-end;gap:0.35rem">
               <button id="adaptiveResamplingAdvancedCancelBtn" data-i18n="common.cancel" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Cancel</button>
@@ -2138,7 +2139,6 @@
           These parameters tune how fast the local resampler recenters the audio buffer on the requested latency target.<br /><br />
           <strong>Adaptive KP</strong>: proportional gain used by the PI controller. Keep it conservative to avoid jitter.<br />
           <strong>Far Threshold</strong>: error threshold, in milliseconds of buffer drift, where the controller enters far mode and uses hard recovery.<br />
-          <strong>Smoothing Alpha</strong>: source-side measurement smoothing used by the controller. Lower values are calmer, higher values react faster.<br />
           <strong>Adaptive Ki</strong>: integral gain. Corrects steady-state bias and clock mismatch, but too much can make recovery sluggish or unstable.<br />
           <strong>Adaptive Max</strong>: maximum correction ratio clamp. Higher values recover faster, but can sound more aggressive.
         </div>

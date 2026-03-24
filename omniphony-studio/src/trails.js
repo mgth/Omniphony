@@ -14,22 +14,35 @@ const SOURCE_MATERIAL_COLOR = new THREE.Color(0xff7c4d);
 
 // ── Renderable constructors ───────────────────────────────────────────
 
-export function createDiffuseTrailRenderable() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 64;
-  const ctx = canvas.getContext('2d');
-  const gradient = ctx.createRadialGradient(32, 32, 4, 32, 32, 32);
-  gradient.addColorStop(0.0, 'rgba(255,255,255,1.0)');
-  gradient.addColorStop(0.35, 'rgba(255,255,255,0.65)');
-  gradient.addColorStop(1.0, 'rgba(255,255,255,0.0)');
-  ctx.clearRect(0, 0, 64, 64);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 64, 64);
-
-  const texture = new THREE.CanvasTexture(canvas);
+function createPointSpriteTexture() {
+  const size = 64;
+  const half = size / 2;
+  const innerR = 4;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = x - half + 0.5;
+      const dy = y - half + 0.5;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      // Linear falloff: alpha=1 at r<=innerR, 0 at r>=half, linear between
+      const t = Math.max(0, (r - innerR) / (half - innerR));
+      const alpha = r <= innerR ? 1.0 : Math.max(0, 1.0 - t);
+      const i = (y * size + x) * 4;
+      data[i]     = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = Math.round(alpha * 255);
+    }
+  }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
   texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+export function createDiffuseTrailRenderable() {
+  const texture = createPointSpriteTexture();
 
   const material = new THREE.ShaderMaterial({
     transparent: true,

@@ -141,6 +141,7 @@
   "adaptive.max": "Massimo adattivo",
   "adaptive.maxFar": "Massimo adattivo far",
   "adaptive.apply": "Applica",
+  "adaptive.resetRatio": "Ripristina ratio",
   "adaptive.infoTitle": "Resampling adattivo",
   "adaptive.infoBody": "Questi parametri regolano la velocità con cui il resampler locale ricentra il buffer audio sulla latenza obiettivo richiesta.<br><br><strong>Kp near</strong>: guadagno proporzionale usato quando il buffer è vicino al target. Mantenerlo conservativo per evitare jitter.<br><strong>Kp far</strong>: guadagno proporzionale usato quando l’errore è grande. Aumentarlo per recuperare più rapidamente dopo drift o interruzioni.<br><strong>Soglia near/far</strong>: soglia di errore, in millisecondi di drift del buffer, in cui il controllo passa dal guadagno near al far.<br><strong>Alpha di smoothing</strong>: smoothing lato sorgente usato dal controllore e dalla correzione dura. Valori bassi sono più calmi, valori alti reagiscono più velocemente.<br><strong>Ki</strong>: guadagno integrale. Corregge bias a regime e mismatch di clock, ma troppo può rendere il recupero lento o instabile.<br><strong>Massimo adattivo</strong>: limite massimo del rapporto di correzione. Valori più alti recuperano più velocemente, ma possono suonare più aggressivi.",
   "telemetry.infoTitle": "Indicatori di latenza",

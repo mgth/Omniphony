@@ -1,5 +1,8 @@
 use crate::AdaptiveResamplingConfig;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct OutputDeviceOption {
@@ -40,6 +43,7 @@ pub struct AudioControl {
     applied: Mutex<AppliedAudioOutputState>,
     available_output_devices: Mutex<Vec<OutputDeviceOption>>,
     device_list_fetcher: Mutex<Option<Box<dyn Fn() -> Vec<OutputDeviceOption> + Send + Sync>>>,
+    reset_ratio_pending: AtomicBool,
 }
 
 impl Default for AudioControl {
@@ -55,6 +59,7 @@ impl AudioControl {
             applied: Mutex::new(AppliedAudioOutputState::default()),
             available_output_devices: Mutex::new(Vec::new()),
             device_list_fetcher: Mutex::new(None),
+            reset_ratio_pending: AtomicBool::new(false),
         }
     }
 
@@ -150,14 +155,6 @@ impl AudioControl {
         self.requested_snapshot().adaptive.kp_near
     }
 
-    pub fn set_requested_adaptive_resampling_kp_far(&self, value: f32) {
-        self.update_requested(|requested| requested.adaptive.kp_far = value as f64);
-    }
-
-    pub fn requested_adaptive_resampling_kp_far(&self) -> f64 {
-        self.requested_snapshot().adaptive.kp_far
-    }
-
     pub fn set_requested_adaptive_resampling_ki(&self, value: f32) {
         self.update_requested(|requested| requested.adaptive.ki = value as f64);
     }
@@ -172,14 +169,6 @@ impl AudioControl {
 
     pub fn requested_adaptive_resampling_max_adjust(&self) -> f64 {
         self.requested_snapshot().adaptive.max_adjust
-    }
-
-    pub fn set_requested_adaptive_resampling_max_adjust_far(&self, value: f32) {
-        self.update_requested(|requested| requested.adaptive.max_adjust_far = value as f64);
-    }
-
-    pub fn requested_adaptive_resampling_max_adjust_far(&self) -> f64 {
-        self.requested_snapshot().adaptive.max_adjust_far
     }
 
     pub fn set_requested_adaptive_resampling_update_interval_callbacks(&self, value: u32) {
@@ -198,16 +187,24 @@ impl AudioControl {
         self.requested_snapshot().adaptive.near_far_threshold_ms
     }
 
-    pub fn set_requested_adaptive_resampling_measurement_smoothing_alpha(&self, value: f32) {
-        self.update_requested(|requested| {
-            requested.adaptive.measurement_smoothing_alpha = value as f64;
-        });
+    pub fn set_requested_adaptive_resampling_paused(&self, paused: bool) {
+        self.update_requested(|requested| requested.adaptive.paused = paused);
     }
 
-    pub fn requested_adaptive_resampling_measurement_smoothing_alpha(&self) -> f64 {
-        self.requested_snapshot()
-            .adaptive
-            .measurement_smoothing_alpha
+    pub fn requested_adaptive_resampling_paused(&self) -> bool {
+        self.requested_snapshot().adaptive.paused
+    }
+
+    /// Request a one-shot ratio reset. Consumed by the sync loop via `take_ratio_reset`.
+    pub fn request_ratio_reset(&self) {
+        self.reset_ratio_pending.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns true and clears the pending flag if a reset was requested.
+    pub fn take_ratio_reset(&self) -> bool {
+        self.reset_ratio_pending
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
     }
 
     pub fn set_available_output_devices(&self, devices: Vec<OutputDeviceOption>) {

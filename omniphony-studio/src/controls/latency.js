@@ -177,7 +177,7 @@ export function renderResampleRatioDisplay() {
   const ppm = Math.round((app.resampleRatio - 1.0) * 1e6);
   const sign = ppm >= 0 ? '+' : '';
   resampleRatioInfoEl.textContent = `${sign}${ppm} ppm`;
-  const farBound = Math.max(0.000001, Number(app.adaptiveResamplingMaxAdjustFar) || 0.000001);
+  const farBound = Math.max(0.000001, Number(app.adaptiveResamplingMaxAdjust) || 0.000001);
   const nearBound = Math.max(0, Math.min(farBound, Number(app.adaptiveResamplingMaxAdjust) || 0));
   const deviation = Number(app.resampleRatio) - 1.0;
   const normalizedMagnitude = Math.min(1, Math.abs(deviation) / farBound);

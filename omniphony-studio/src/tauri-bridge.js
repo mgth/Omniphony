@@ -496,11 +496,6 @@ export function setupTauriBridge() {
     updateAdaptiveResamplingUI();
   });
 
-  listen('adaptive_resampling:kp_far', ({ payload }) => {
-    app.adaptiveResamplingKpFar = Number(payload.value);
-    updateAdaptiveResamplingUI();
-  });
-
   listen('adaptive_resampling:ki', ({ payload }) => {
     app.adaptiveResamplingKi = Number(payload.value);
     updateAdaptiveResamplingUI();
@@ -508,11 +503,6 @@ export function setupTauriBridge() {
 
   listen('adaptive_resampling:max_adjust', ({ payload }) => {
     app.adaptiveResamplingMaxAdjust = Number(payload.value);
-    updateAdaptiveResamplingUI();
-  });
-
-  listen('adaptive_resampling:max_adjust_far', ({ payload }) => {
-    app.adaptiveResamplingMaxAdjustFar = Number(payload.value);
     updateAdaptiveResamplingUI();
   });
 
@@ -526,13 +516,13 @@ export function setupTauriBridge() {
     updateAdaptiveResamplingUI();
   });
 
-  listen('adaptive_resampling:measurement_smoothing_alpha', ({ payload }) => {
-    app.adaptiveResamplingMeasurementSmoothingAlpha = Number(payload.value);
+  listen('adaptive_resampling:band', ({ payload }) => {
+    app.adaptiveResamplingBand = typeof payload.value === 'string' ? payload.value : null;
     updateAdaptiveResamplingUI();
   });
 
-  listen('adaptive_resampling:band', ({ payload }) => {
-    app.adaptiveResamplingBand = typeof payload.value === 'string' ? payload.value : null;
+  listen('adaptive_resampling:pause', ({ payload }) => {
+    app.adaptiveResamplingPaused = payload.enabled !== 0;
     updateAdaptiveResamplingUI();
   });
 

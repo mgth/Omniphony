@@ -376,17 +376,6 @@ fn control_adaptive_resampling_kp_near(state: State<SharedState>, value: f32) {
 }
 
 #[tauri::command]
-fn control_adaptive_resampling_kp_far(state: State<SharedState>, value: f32) {
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendFloat {
-            address: "/omniphony/control/adaptive_resampling/kp_far".to_string(),
-            value: value.max(0.00000001),
-        },
-    );
-}
-
-#[tauri::command]
 fn control_adaptive_resampling_ki(state: State<SharedState>, value: f32) {
     send_control(
         &state.osc_tx,
@@ -403,17 +392,6 @@ fn control_adaptive_resampling_max_adjust(state: State<SharedState>, value: f32)
         &state.osc_tx,
         OscControlMsg::SendFloat {
             address: "/omniphony/control/adaptive_resampling/max_adjust".to_string(),
-            value: value.max(0.000001),
-        },
-    );
-}
-
-#[tauri::command]
-fn control_adaptive_resampling_max_adjust_far(state: State<SharedState>, value: f32) {
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendFloat {
-            address: "/omniphony/control/adaptive_resampling/max_adjust_far".to_string(),
             value: value.max(0.000001),
         },
     );
@@ -448,16 +426,25 @@ fn control_adaptive_resampling_near_far_threshold_ms(
     );
 }
 
+
 #[tauri::command]
-fn control_adaptive_resampling_measurement_smoothing_alpha(
-    state: State<SharedState>,
-    value: f32,
-) {
+fn control_adaptive_resampling_pause(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,
-        OscControlMsg::SendFloat {
-            address: "/omniphony/control/adaptive_resampling/measurement_smoothing_alpha".to_string(),
-            value: value.clamp(0.0, 1.0),
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/adaptive_resampling/pause".to_string(),
+            value: if enable != 0 { 1 } else { 0 },
+        },
+    );
+}
+
+#[tauri::command]
+fn control_adaptive_resampling_reset_ratio(state: State<SharedState>) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/adaptive_resampling/reset_ratio".to_string(),
+            value: 1,
         },
     );
 }
@@ -1783,13 +1770,12 @@ fn main() {
             control_adaptive_resampling_far_mode_return_fade_in_ms,
             control_latency_target,
             control_adaptive_resampling_kp_near,
-            control_adaptive_resampling_kp_far,
             control_adaptive_resampling_ki,
             control_adaptive_resampling_max_adjust,
-            control_adaptive_resampling_max_adjust_far,
             control_adaptive_resampling_update_interval_callbacks,
             control_adaptive_resampling_near_far_threshold_ms,
-            control_adaptive_resampling_measurement_smoothing_alpha,
+            control_adaptive_resampling_pause,
+            control_adaptive_resampling_reset_ratio,
             control_spread_min,
             control_spread_max,
             control_spread_from_distance,

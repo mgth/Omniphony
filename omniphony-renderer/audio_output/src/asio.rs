@@ -7,7 +7,7 @@ use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
 };
 use std::time::Duration;
@@ -44,7 +44,8 @@ pub struct AsioWriter {
     current_rate_adjust: Arc<AtomicU32>,
     current_adaptive_band: Arc<AtomicU8>,
     measured_latency_ms_bits: Arc<AtomicU32>,
-    control_latency_ms_bits: Arc<AtomicU32>,
+    live_adaptive_config: Arc<Mutex<AdaptiveResamplingConfig>>,
+    reset_ratio_requested: Arc<AtomicBool>,
     // We keep the stream alive by holding it here, though cpal streams run in background threads
     _stream: Option<cpal::Stream>,
 }
@@ -118,12 +119,10 @@ impl AsioWriter {
         let current_adaptive_band_clone = current_adaptive_band.clone();
         let measured_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let measured_latency_ms_bits_clone = measured_latency_ms_bits.clone();
-        let control_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
-        let control_latency_ms_bits_clone = control_latency_ms_bits.clone();
-
         // Ring-buffer thresholds in INPUT-domain samples (same domain as buffer_clone.len()).
         let samples_per_ms =
             (input_sample_rate as usize).saturating_mul(channel_count as usize) / 1000;
+        let samples_per_ms_f64 = samples_per_ms as f64;
         let target_buffer_ms = if target_latency_ms == 0 {
             DEFAULT_TARGET_BUFFER_MS
         } else {
@@ -275,11 +274,7 @@ impl AsioWriter {
         // Calculate max ratio for adaptive adjustments
         // Allow small adjustments around the base resample ratio
         // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
-        let max_resample_ratio_relative = 1.0
-            + adaptive_config
-                .max_adjust
-                .max(adaptive_config.max_adjust_far)
-                .max(0.000001);
+        let max_resample_ratio_relative = 1.0 + initial_cfg.max_adjust.max(0.000001);
         let max_resample_ratio_abs = resample_ratio * max_resample_ratio_relative;
 
         log::debug!(
@@ -300,11 +295,13 @@ impl AsioWriter {
 
         let mut resampler_fifo = ResamplerFifoEngine::new(channel_count as usize);
         let mut runtime_state = AdaptiveRuntimeState::new(1.0);
+        let live_config = Arc::new(Mutex::new(adaptive_config));
+        let live_config_for_callback = Arc::clone(&live_config);
+        let initial_cfg = live_config.lock().unwrap().clone();
+        let reset_ratio_requested = Arc::new(AtomicBool::new(false));
+        let reset_ratio_for_callback = Arc::clone(&reset_ratio_requested);
         let near_far_threshold_samples =
-            (adaptive_config.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
-        let measurement_smoothing_alpha =
-            adaptive_config.measurement_smoothing_alpha.clamp(0.0, 1.0);
-
+            (initial_cfg.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
         let device_channel_count_for_callback = device_channel_count;
         let adaptive_resampling_enabled = enable_adaptive_resampling;
 
@@ -314,6 +311,19 @@ impl AsioWriter {
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let callback_count = runtime_state.advance_callback();
+
+                // --- Test controls: reset ratio / pause PI ---
+                if reset_ratio_for_callback.load(Ordering::Relaxed) {
+                    reset_ratio_for_callback.store(false, Ordering::Relaxed);
+                    runtime_state.controller_state.accumulated_drift = 0.0;
+                    let _ = resampler.set_resample_ratio(resample_ratio, false);
+                    current_rate_adjust_clone.store(1.0f32.to_bits(), Ordering::Relaxed);
+                    current_adaptive_band_clone.store(0, Ordering::Relaxed);
+                }
+                let is_pi_paused = live_config_for_callback
+                    .try_lock()
+                    .map(|cfg| cfg.paused)
+                    .unwrap_or(false);
 
                 // 1. Check buffer fill & Calculate Rate
                 let available_samples = buffer_clone.len(); // Input-domain samples (frames * channels)
@@ -340,32 +350,34 @@ impl AsioWriter {
                     channel_count as usize,
                     input_sample_rate,
                     0.0,
-                    measurement_smoothing_alpha,
                     LatencyMetricTargets {
                         measured_latency_ms_bits: &measured_latency_ms_bits_clone,
-                        control_latency_ms_bits: &control_latency_ms_bits_clone,
                     },
                 );
 
                 // Adaptive rate logic (PI Controller)
                 // Adjusts the resampling ratio around the base ratio to maintain buffer level
                 // Only active if adaptive resampling is enabled
-                if adaptive_resampling_enabled {
+                if adaptive_resampling_enabled && !is_pi_paused {
                     // Only adjust rate if we have started playback and have enough data
+                    let current_asio_cfg = live_config_for_callback.lock().unwrap().clone();
                     let adaptive_update_interval =
-                        adaptive_config.update_interval_callbacks.max(1) as u64;
+                        current_asio_cfg.update_interval_callbacks.max(1) as u64;
                     if callback_count % adaptive_update_interval == 0
                         && metrics.total_available_input_domain >= channel_count as usize
                     {
+                        let near_far_threshold_samples =
+                            (current_asio_cfg.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
                         let step = compute_adaptive_step(
                             &mut runtime_state.controller_state,
-                            &adaptive_config,
-                            metrics.smoothed_control_available,
+                            &current_asio_cfg,
+                            metrics.control_available,
                             target_buffer_fill,
                             near_far_threshold_samples,
                             resample_ratio,
                             100,
                             MAX_INTEGRAL_TERM,
+                            samples_per_ms_f64,
                         );
 
                         // Update resampler ratio
@@ -379,7 +391,7 @@ impl AsioWriter {
                         if callback_count % 100 == 0 {
                             log::debug!(
                                 "ASIO Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
-                                metrics.smoothed_control_available,
+                                metrics.control_available,
                                 target_buffer_fill,
                                 step.drift,
                                 step.current_ratio,
@@ -406,9 +418,10 @@ impl AsioWriter {
                 }
 
                 // 3. Fill ASIO callback buffer from FIFO
+                let far_mode_cfg = live_config_for_callback.lock().unwrap().clone();
                 let far_decision: FarModeDecision = update_far_mode_state(
                     &mut runtime_state,
-                    &adaptive_config,
+                    &far_mode_cfg,
                     adaptive_resampling_enabled,
                     current_adaptive_band_clone.load(Ordering::Relaxed) == crate::ADAPTIVE_BAND_FAR,
                     output_sample_rate,
@@ -495,7 +508,8 @@ impl AsioWriter {
             current_rate_adjust,
             current_adaptive_band,
             measured_latency_ms_bits,
-            control_latency_ms_bits,
+            live_adaptive_config: live_config,
+            reset_ratio_requested,
             _stream: Some(stream),
         })
     }
@@ -552,6 +566,18 @@ impl AsioWriter {
     }
 
     pub fn control_audio_delay_ms(&self) -> f32 {
-        f32::from_bits(self.control_latency_ms_bits.load(Ordering::Relaxed))
+        self.measured_audio_delay_ms()
+    }
+
+    /// Signal the audio thread to snap the resampling ratio back to base and reset the integrator.
+    pub fn request_ratio_reset(&self) {
+        self.reset_ratio_requested.store(true, Ordering::Relaxed);
+    }
+
+    /// Update adaptive resampling tuning parameters without restarting the audio stream.
+    pub fn update_adaptive_config(&self, config: AdaptiveResamplingConfig) {
+        if let Ok(mut c) = self.live_adaptive_config.lock() {
+            *c = config;
+        }
     }
 }

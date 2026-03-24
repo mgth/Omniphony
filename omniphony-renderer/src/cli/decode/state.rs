@@ -123,6 +123,18 @@ impl OutputState {
         self.output_init_failed = false;
         self.audio_writer.take()
     }
+
+    pub fn update_adaptive_config(&self, config: audio_output::AdaptiveResamplingConfig) {
+        if let Some(writer) = &self.audio_writer {
+            writer.update_adaptive_config(config);
+        }
+    }
+
+    pub fn request_ratio_reset(&self) {
+        if let Some(writer) = &self.audio_writer {
+            writer.request_ratio_reset();
+        }
+    }
 }
 
 pub struct DecodeSessionState {

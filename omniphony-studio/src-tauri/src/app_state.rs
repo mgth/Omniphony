@@ -185,22 +185,18 @@ pub struct AppState {
     pub adaptive_resampling_far_mode_return_fade_in_ms: Option<i64>,
     #[serde(rename = "adaptiveResamplingKpNear")]
     pub adaptive_resampling_kp_near: Option<f64>,
-    #[serde(rename = "adaptiveResamplingKpFar")]
-    pub adaptive_resampling_kp_far: Option<f64>,
     #[serde(rename = "adaptiveResamplingKi")]
     pub adaptive_resampling_ki: Option<f64>,
     #[serde(rename = "adaptiveResamplingMaxAdjust")]
     pub adaptive_resampling_max_adjust: Option<f64>,
-    #[serde(rename = "adaptiveResamplingMaxAdjustFar")]
-    pub adaptive_resampling_max_adjust_far: Option<f64>,
     #[serde(rename = "adaptiveResamplingUpdateIntervalCallbacks")]
     pub adaptive_resampling_update_interval_callbacks: Option<i64>,
     #[serde(rename = "adaptiveResamplingNearFarThresholdMs")]
     pub adaptive_resampling_near_far_threshold_ms: Option<i64>,
-    #[serde(rename = "adaptiveResamplingMeasurementSmoothingAlpha")]
-    pub adaptive_resampling_measurement_smoothing_alpha: Option<f64>,
     #[serde(rename = "adaptiveResamplingBand")]
     pub adaptive_resampling_band: Option<String>,
+    #[serde(rename = "adaptiveResamplingPaused")]
+    pub adaptive_resampling_paused: Option<u8>,
     #[serde(rename = "vbapRecomputing")]
     pub vbap_recomputing: Option<bool>,
     #[serde(rename = "configSaved")]
@@ -305,15 +301,13 @@ impl Default for AppState {
             adaptive_resampling_force_silence_in_far_mode: Some(0),
             adaptive_resampling_hard_recover_in_far_mode: Some(0),
             adaptive_resampling_far_mode_return_fade_in_ms: Some(0),
-            adaptive_resampling_kp_near: Some(0.00001),
-            adaptive_resampling_kp_far: Some(0.00002),
-            adaptive_resampling_ki: Some(0.0000005),
+            adaptive_resampling_kp_near: Some(10.0),
+            adaptive_resampling_ki: Some(50.0),
             adaptive_resampling_max_adjust: Some(0.01),
-            adaptive_resampling_max_adjust_far: Some(0.02),
             adaptive_resampling_update_interval_callbacks: Some(10),
             adaptive_resampling_near_far_threshold_ms: Some(120),
-            adaptive_resampling_measurement_smoothing_alpha: Some(0.15),
             adaptive_resampling_band: None,
+            adaptive_resampling_paused: Some(0),
             vbap_recomputing: None,
             config_saved: None,
             latency_ms: None,

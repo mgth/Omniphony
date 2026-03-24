@@ -438,14 +438,11 @@ pub(super) fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<render
         adaptive_resampling_hard_recover_in_far_mode: None,
         adaptive_resampling_far_mode_return_fade_in_ms: None,
         adaptive_resampling_kp_near: None,
-        adaptive_resampling_kp_far: None,
         adaptive_resampling_ki: None,
         adaptive_resampling_max_adjust: None,
-        adaptive_resampling_max_adjust_far: None,
         adaptive_resampling_update_interval_callbacks: args
             .adaptive_resampling_update_interval_callbacks,
         adaptive_resampling_near_far_threshold_ms: None,
-        adaptive_resampling_measurement_smoothing_alpha: None,
         output_sample_rate: args.output_sample_rate,
         ramp_mode: if args.ramp_mode != RampModeArg::Sample {
             Some(match args.ramp_mode {

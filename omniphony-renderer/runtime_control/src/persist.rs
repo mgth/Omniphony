@@ -168,16 +168,12 @@ pub fn save_live_config(
             Some(requested.adaptive.far_mode_return_fade_in_ms);
         render.latency_target = requested.latency_target_ms;
         render.adaptive_resampling_kp_near = Some(requested.adaptive.kp_near as f32);
-        render.adaptive_resampling_kp_far = Some(requested.adaptive.kp_far as f32);
         render.adaptive_resampling_ki = Some(requested.adaptive.ki as f32);
         render.adaptive_resampling_max_adjust = Some(requested.adaptive.max_adjust as f32);
-        render.adaptive_resampling_max_adjust_far = Some(requested.adaptive.max_adjust_far as f32);
         render.adaptive_resampling_update_interval_callbacks =
             Some(requested.adaptive.update_interval_callbacks);
         render.adaptive_resampling_near_far_threshold_ms =
             Some(requested.adaptive.near_far_threshold_ms);
-        render.adaptive_resampling_measurement_smoothing_alpha =
-            Some(requested.adaptive.measurement_smoothing_alpha as f32);
     }
 
     drop(live);

@@ -10,13 +10,12 @@ pub struct AdaptiveResamplingConfig {
     pub hard_recover_in_far_mode: bool,
     pub far_mode_return_fade_in_ms: u32,
     pub kp_near: f64,
-    pub kp_far: f64,
     pub ki: f64,
     pub max_adjust: f64,
-    pub max_adjust_far: f64,
     pub update_interval_callbacks: u32,
     pub near_far_threshold_ms: u32,
-    pub measurement_smoothing_alpha: f64,
+    /// When true the PI controller is frozen: the current ratio is held as-is.
+    pub paused: bool,
 }
 
 impl Default for AdaptiveResamplingConfig {
@@ -26,14 +25,15 @@ impl Default for AdaptiveResamplingConfig {
             force_silence_in_far_mode: false,
             hard_recover_in_far_mode: false,
             far_mode_return_fade_in_ms: 0,
-            kp_near: 0.00001,
-            kp_far: 0.00002,
-            ki: 0.0000005,
+            // kp and ki are in ppm/ms (parts-per-million of ratio correction per ms of error).
+            // kp: proportional gain — ppm of correction per ms of current drift.
+            // ki: integral gain — ppm of correction per ms of accumulated drift.
+            kp_near: 10.0,
+            ki: 50.0,
             max_adjust: 0.01,
-            max_adjust_far: 0.02,
             update_interval_callbacks: 10,
             near_far_threshold_ms: 120,
-            measurement_smoothing_alpha: 0.15,
+            paused: false,
         }
     }
 }
@@ -53,14 +53,6 @@ pub fn adaptive_band_name(band: u8) -> Option<&'static str> {
 #[derive(Debug, Clone, Default)]
 pub struct AdaptiveControllerState {
     pub accumulated_drift: f64,
-    pub smoothed_control_available: f64,
-    pub smoothed_total_available: f64,
-    /// Set to `true` after the first control-latency EMA sample so that a real
-    /// value of 0.0 is not mistaken for "uninitialised".
-    pub control_ema_initialized: bool,
-    /// Set to `true` after the first total-latency EMA sample so that a real
-    /// value of 0.0 is not mistaken for "uninitialised".
-    pub total_ema_initialized: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,17 +65,13 @@ pub struct AdaptiveControlStep {
     pub band: u8,
 }
 
-pub fn apply_ema(previous: &mut f64, initialized: &mut bool, sample: f64, alpha: f64) -> f64 {
-    let alpha = alpha.clamp(0.0, 1.0);
-    if !*initialized {
-        *previous = sample;
-        *initialized = true;
-    } else {
-        *previous += alpha * (sample - *previous);
-    }
-    *previous
-}
-
+/// Compute one PI controller step.
+///
+/// `kp_near` and `ki` are expressed in **ppm/ms** (parts-per-million of ratio correction
+/// per millisecond of error). This makes them independent of sample rate and channel count.
+///
+/// `samples_per_ms` converts the sample-domain drift to milliseconds before the gains are
+/// applied. Pass `sample_rate * channel_count / 1000` (as f64) at the call site.
 pub fn compute_adaptive_step(
     state: &mut AdaptiveControllerState,
     config: &AdaptiveResamplingConfig,
@@ -93,15 +81,18 @@ pub fn compute_adaptive_step(
     base_ratio: f64,
     deadband_samples: usize,
     max_integral_term: f64,
+    samples_per_ms: f64,
 ) -> AdaptiveControlStep {
     let drift = available_samples as i64 - target_buffer_fill as i64;
+    let drift_ms = if samples_per_ms > 0.0 { drift as f64 / samples_per_ms } else { drift as f64 };
 
     if drift.unsigned_abs() as usize > deadband_samples {
-        state.accumulated_drift += drift as f64;
-        let integral_contribution = state.accumulated_drift * config.ki;
+        // accumulated_drift is in ms
+        state.accumulated_drift += drift_ms;
+        let integral_contribution = state.accumulated_drift * config.ki / 1_000_000.0;
         if integral_contribution.abs() > max_integral_term && config.ki > 0.0 {
             state.accumulated_drift =
-                (max_integral_term / config.ki) * integral_contribution.signum();
+                (max_integral_term * 1_000_000.0 / config.ki) * integral_contribution.signum();
         }
     }
 
@@ -113,18 +104,9 @@ pub fn compute_adaptive_step(
     } else {
         ADAPTIVE_BAND_NEAR
     };
-    let kp = if is_far {
-        config.kp_far
-    } else {
-        config.kp_near
-    };
-    let max_adjust = if is_far {
-        config.max_adjust_far
-    } else {
-        config.max_adjust
-    };
-    let p_term = drift as f64 * kp / 100.0;
-    let i_term = state.accumulated_drift * config.ki;
+    let p_term = drift_ms * config.kp_near / 1_000_000.0;
+    let i_term = state.accumulated_drift * config.ki / 1_000_000.0;
+    let max_adjust = config.max_adjust;
     let consume_adjust = (1.0 + p_term + i_term).clamp(1.0 - max_adjust, 1.0 + max_adjust);
     let current_ratio = (base_ratio / consume_adjust).clamp(
         base_ratio * (1.0 - max_adjust),

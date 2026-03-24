@@ -68,19 +68,11 @@ fn build_adaptive_resampling_config(
             .and_then(|cfg| cfg.adaptive_resampling_kp_near)
             .map(|v| v as f64)
             .unwrap_or(defaults.kp_near),
-        kp_far: render_cfg
-            .and_then(|cfg| cfg.adaptive_resampling_kp_near)
-            .map(|v| v as f64)
-            .unwrap_or(defaults.kp_near),
         ki: render_cfg
             .and_then(|cfg| cfg.adaptive_resampling_ki)
             .map(|v| v as f64)
             .unwrap_or(defaults.ki),
         max_adjust: render_cfg
-            .and_then(|cfg| cfg.adaptive_resampling_max_adjust)
-            .map(|v| v as f64)
-            .unwrap_or(defaults.max_adjust),
-        max_adjust_far: render_cfg
             .and_then(|cfg| cfg.adaptive_resampling_max_adjust)
             .map(|v| v as f64)
             .unwrap_or(defaults.max_adjust),
@@ -94,10 +86,7 @@ fn build_adaptive_resampling_config(
         near_far_threshold_ms: render_cfg
             .and_then(|cfg| cfg.adaptive_resampling_near_far_threshold_ms)
             .unwrap_or(defaults.near_far_threshold_ms),
-        measurement_smoothing_alpha: render_cfg
-            .and_then(|cfg| cfg.adaptive_resampling_measurement_smoothing_alpha)
-            .map(|v| v as f64)
-            .unwrap_or(defaults.measurement_smoothing_alpha),
+        paused: false,
     }
 }
 

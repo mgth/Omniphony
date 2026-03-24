@@ -141,6 +141,7 @@
   "adaptive.max": "適応最大値",
   "adaptive.maxFar": "適応最大値 far",
   "adaptive.apply": "適用",
+  "adaptive.resetRatio": "比率をリセット",
   "adaptive.infoTitle": "適応リサンプリング",
   "adaptive.infoBody": "これらのパラメータは、ローカルリサンプラが要求された目標レイテンシに向けてオーディオバッファをどれだけ速く再センタリングするかを調整します。<br><br><strong>Kp near</strong>：バッファが目標に近いときに使う比例ゲイン。ジッタを避けるため保守的に設定します。<br><strong>Kp far</strong>：誤差が大きいときに使う比例ゲイン。ドリフトや途切れから素早く回復したい場合に上げます。<br><strong>near/far しきい値</strong>：制御が near ゲインから far ゲインへ切り替わるバッファドリフトのしきい値（ms）。<br><strong>平滑化アルファ</strong>：コントローラとハード補正で使う入力側の測定平滑化。低い値は穏やか、高い値は速く反応します。<br><strong>Ki</strong>：積分ゲイン。定常偏差やクロック差を補正しますが、高すぎると回復が遅くなったり不安定になります。<br><strong>適応最大値</strong>：補正比率の最大クランプ。高いほど回復は速いですが、音はやや攻撃的になります。",
   "telemetry.infoTitle": "レイテンシゲージ",

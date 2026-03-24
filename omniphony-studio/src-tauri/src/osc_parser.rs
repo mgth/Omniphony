@@ -322,22 +322,18 @@ pub enum OscEvent {
     StateAdaptiveResamplingFarModeReturnFadeInMs { value: f64 },
     #[serde(rename = "state:adaptive_resampling:kp_near")]
     StateAdaptiveResamplingKpNear { value: f64 },
-    #[serde(rename = "state:adaptive_resampling:kp_far")]
-    StateAdaptiveResamplingKpFar { value: f64 },
     #[serde(rename = "state:adaptive_resampling:ki")]
     StateAdaptiveResamplingKi { value: f64 },
     #[serde(rename = "state:adaptive_resampling:max_adjust")]
     StateAdaptiveResamplingMaxAdjust { value: f64 },
-    #[serde(rename = "state:adaptive_resampling:max_adjust_far")]
-    StateAdaptiveResamplingMaxAdjustFar { value: f64 },
     #[serde(rename = "state:adaptive_resampling:update_interval_callbacks")]
     StateAdaptiveResamplingUpdateIntervalCallbacks { value: f64 },
     #[serde(rename = "state:adaptive_resampling:near_far_threshold_ms")]
     StateAdaptiveResamplingNearFarThresholdMs { value: f64 },
-    #[serde(rename = "state:adaptive_resampling:measurement_smoothing_alpha")]
-    StateAdaptiveResamplingMeasurementSmoothingAlpha { value: f64 },
     #[serde(rename = "state:adaptive_resampling:band")]
     StateAdaptiveResamplingBand { value: String },
+    #[serde(rename = "state:adaptive_resampling:pause")]
+    StateAdaptiveResamplingPaused { enabled: bool },
     #[serde(rename = "state:config:saved")]
     StateConfigSaved { saved: bool },
 }
@@ -745,16 +741,10 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             "kp_near" => Some(OscEvent::StateAdaptiveResamplingKpNear {
                 value: to_number(args[0])?,
             }),
-            "kp_far" => Some(OscEvent::StateAdaptiveResamplingKpFar {
-                value: to_number(args[0])?,
-            }),
             "ki" => Some(OscEvent::StateAdaptiveResamplingKi {
                 value: to_number(args[0])?,
             }),
             "max_adjust" => Some(OscEvent::StateAdaptiveResamplingMaxAdjust {
-                value: to_number(args[0])?,
-            }),
-            "max_adjust_far" => Some(OscEvent::StateAdaptiveResamplingMaxAdjustFar {
                 value: to_number(args[0])?,
             }),
             "update_interval_callbacks" => Some(
@@ -767,13 +757,11 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                     value: to_number(args[0])?,
                 })
             }
-            "measurement_smoothing_alpha" => {
-                Some(OscEvent::StateAdaptiveResamplingMeasurementSmoothingAlpha {
-                    value: to_number(args[0])?,
-                })
-            }
             "band" => Some(OscEvent::StateAdaptiveResamplingBand {
                 value: unwrap_string(raw_args.first()?)?,
+            }),
+            "pause" => Some(OscEvent::StateAdaptiveResamplingPaused {
+                enabled: to_number(args[0])? != 0.0,
             }),
             _ => None,
         },

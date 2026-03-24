@@ -144,6 +144,7 @@
   "adaptive.silenceFar": "Silence en mode far",
   "adaptive.fadeNearReturn": "Fade-In au retour en near",
   "adaptive.apply": "Appliquer",
+  "adaptive.resetRatio": "Réinitialiser le ratio",
   "adaptive.infoTitle": "Resampling adaptatif",
   "adaptive.infoBody": "Ces paramètres règlent la vitesse à laquelle le resampler local recentre le buffer audio sur la cible de latence demandée.<br><br><strong>KP adaptatif</strong> : gain proportionnel utilisé par le contrôleur PI. Le garder modéré pour éviter le jitter.<br><strong>Seuil far</strong> : seuil d’erreur, en millisecondes de dérive de buffer, à partir duquel le contrôleur passe en mode far et utilise la récupération dure.<br><strong>Alpha de lissage</strong> : lissage côté source utilisé par le contrôleur. Des valeurs basses sont plus calmes, des valeurs hautes réagissent plus vite.<br><strong>Ki adaptatif</strong> : gain intégral. Corrige le biais permanent et l’écart d’horloge, mais trop élevé peut rendre la récupération lente ou instable.<br><strong>Max adaptatif</strong> : limite maximale du ratio de correction. Des valeurs plus hautes récupèrent plus vite, mais peuvent être plus agressives à l’écoute.",
   "telemetry.infoTitle": "Jauges de latence",
