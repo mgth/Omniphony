@@ -1082,6 +1082,7 @@ fn resolve_orender_launch_spec(
     osc_metering_enabled: bool,
     bridge_path: Option<String>,
     orender_path: Option<String>,
+    log_level: Option<String>,
 ) -> Result<OrenderLaunchSpec, String> {
     let studio_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1183,6 +1184,16 @@ fn resolve_orender_launch_spec(
 
     if osc_metering_enabled {
         args.push("--osc-metering".to_string());
+    }
+
+    let level = log_level
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| matches!(*s, "off" | "error" | "warn" | "info" | "debug" | "trace"))
+        .unwrap_or("info");
+    if level != "info" {
+        args.push("--loglevel".to_string());
+        args.push(level.to_string());
     }
 
     if let Some(selected_layout) = state.inner.lock().unwrap().selected_layout_key.clone() {
@@ -1401,6 +1412,7 @@ fn install_orender_service(
     osc_metering_enabled: bool,
     bridge_path: Option<String>,
     orender_path: Option<String>,
+    log_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
     stop_non_service_orender_if_running(&state)?;
 
@@ -1413,6 +1425,7 @@ fn install_orender_service(
         osc_metering_enabled,
         bridge_path,
         orender_path,
+        log_level,
     )?;
 
     #[cfg(target_os = "linux")]
@@ -1620,6 +1633,7 @@ fn launch_orender(
     osc_metering_enabled: bool,
     bridge_path: Option<String>,
     orender_path: Option<String>,
+    log_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let spec = resolve_orender_launch_spec(
         &app,
@@ -1630,6 +1644,7 @@ fn launch_orender(
         osc_metering_enabled,
         bridge_path,
         orender_path,
+        log_level,
     )?;
 
     let log_path = default_orender_log_path();

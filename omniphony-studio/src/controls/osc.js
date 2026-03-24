@@ -13,7 +13,7 @@
 import { app, dirty, isLinux } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
-import { pushLog, normalizeLogError } from '../log.js';
+import { pushLog, normalizeLogError, normalizeLogLevel, logState } from '../log.js';
 import { invoke } from '@tauri-apps/api/core';
 
 // DOM refs
@@ -218,7 +218,8 @@ export function launchOrenderFromPanel(orenderPathOverride = null) {
     oscPort: config.osc_port,
     oscMeteringEnabled: config.osc_metering_enabled,
     bridgePath: config.bridge_path,
-    orenderPath: orenderPathOverride || config.orender_path
+    orenderPath: orenderPathOverride || config.orender_path,
+    logLevel: normalizeLogLevel(logState.backendLogLevel)
   };
   app.oscLaunchPending = true;
   return invoke('launch_orender', payload)
@@ -257,7 +258,8 @@ export function installOrenderServiceFromPanel() {
     oscPort: config.osc_port,
     oscMeteringEnabled: config.osc_metering_enabled,
     bridgePath: config.bridge_path,
-    orenderPath: app.oscConfiguredOrenderPath || config.orender_path
+    orenderPath: app.oscConfiguredOrenderPath || config.orender_path,
+    logLevel: normalizeLogLevel(logState.backendLogLevel)
   };
   app.orenderServicePending = true;
   renderOscStatus();
