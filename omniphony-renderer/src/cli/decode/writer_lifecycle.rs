@@ -247,7 +247,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     effective_sample_rate,
                     channel_count as u32,
                     self.runtime.output_device.clone(),
-                    self.runtime.asio_target_latency_ms,
+                    self.runtime.latency_target_ms,
                     self.runtime.enable_adaptive_resampling,
                     self.runtime.adaptive_resampling_config.clone(),
                 )?)

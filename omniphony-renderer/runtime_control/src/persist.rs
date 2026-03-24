@@ -166,7 +166,7 @@ pub fn save_live_config(
             Some(requested.adaptive.hard_recover_in_far_mode);
         render.adaptive_resampling_far_mode_return_fade_in_ms =
             Some(requested.adaptive.far_mode_return_fade_in_ms);
-        render.pw_latency = requested.latency_target_ms;
+        render.latency_target = requested.latency_target_ms;
         render.adaptive_resampling_kp_near = Some(requested.adaptive.kp_near as f32);
         render.adaptive_resampling_kp_far = Some(requested.adaptive.kp_far as f32);
         render.adaptive_resampling_ki = Some(requested.adaptive.ki as f32);

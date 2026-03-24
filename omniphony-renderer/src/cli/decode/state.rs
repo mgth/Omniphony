@@ -20,8 +20,8 @@ pub struct RuntimeOutputState {
     #[cfg(target_os = "linux")]
     pub pw_buffer_config: PipewireBufferConfig,
     pub adaptive_resampling_config: AdaptiveResamplingConfig,
-    #[cfg(target_os = "windows")]
-    pub asio_target_latency_ms: u32,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub latency_target_ms: u32,
     pub output_sample_rate: Option<u32>,
     pub enable_adaptive_resampling: bool,
 }
@@ -34,8 +34,8 @@ impl Default for RuntimeOutputState {
             #[cfg(target_os = "linux")]
             pw_buffer_config: PipewireBufferConfig::default(),
             adaptive_resampling_config: AdaptiveResamplingConfig::default(),
-            #[cfg(target_os = "windows")]
-            asio_target_latency_ms: 220,
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            latency_target_ms: 220,
             output_sample_rate: None,
             enable_adaptive_resampling: false,
         }

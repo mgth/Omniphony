@@ -109,10 +109,10 @@ fn configure_linux_runtime_output(
 ) {
     handler.runtime.output_device = args.output_device.clone();
     let defaults = PipewireBufferConfig::default();
-    let latency_ms = args.pw_latency.unwrap_or(defaults.latency_ms);
+    let latency_ms = args.latency_target_ms.unwrap_or(defaults.latency_ms);
     handler.runtime.pw_buffer_config = PipewireBufferConfig {
         latency_ms,
-        max_latency_ms: args.pw_max_latency.unwrap_or(latency_ms * 2),
+        max_latency_ms: args.latency_max_ms.unwrap_or(latency_ms * 2),
         quantum_frames: args.pw_quantum.unwrap_or(defaults.quantum_frames),
     };
     handler.runtime.adaptive_resampling_config = build_adaptive_resampling_config(args, render_cfg);
@@ -470,11 +470,11 @@ fn init_osc_runtime(
             #[cfg(target_os = "linux")]
             {
                 let defaults = PipewireBufferConfig::default();
-                Some(args.pw_latency.unwrap_or(defaults.latency_ms))
+                Some(args.latency_target_ms.unwrap_or(defaults.latency_ms))
             }
             #[cfg(target_os = "windows")]
             {
-                Some(args.pw_latency.unwrap_or(handler.runtime.asio_target_latency_ms))
+                Some(args.latency_target_ms.unwrap_or(handler.runtime.latency_target_ms))
             }
             #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             {

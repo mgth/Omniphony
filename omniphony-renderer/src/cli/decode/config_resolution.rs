@@ -168,8 +168,8 @@ pub(super) fn merge_render_config(
 
     // Platform-specific Option fields
     #[cfg(any(target_os = "linux", target_os = "windows"))]
-    if args.pw_latency.is_none() {
-        args.pw_latency = cfg.pw_latency;
+    if args.latency_target_ms.is_none() {
+        args.latency_target_ms = cfg.latency_target;
     }
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     if args.output_device.is_none() {
@@ -389,12 +389,12 @@ pub(super) fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<render
                 None
             }
         },
-        pw_latency: {
-            #[cfg(target_os = "linux")]
+        latency_target: {
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             {
-                args.pw_latency
+                args.latency_target_ms
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             {
                 None
             }

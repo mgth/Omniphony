@@ -157,13 +157,13 @@ impl<'a> OutputRuntimeCoordinator<'a> {
             let requested = self
                 .audio_control
                 .and_then(|control| control.requested_latency_target_ms())
-                .unwrap_or(self.runtime.asio_target_latency_ms);
+                .unwrap_or(self.runtime.latency_target_ms);
 
-            if requested != self.runtime.asio_target_latency_ms {
-                self.runtime.asio_target_latency_ms = requested.max(1);
+            if requested != self.runtime.latency_target_ms {
+                self.runtime.latency_target_ms = requested.max(1);
                 log::info!(
                     "Applying requested ASIO latency target: {} ms",
-                    self.runtime.asio_target_latency_ms
+                    self.runtime.latency_target_ms
                 );
 
                 if matches!(output_backend, OutputBackend::Asio) {

@@ -184,19 +184,19 @@ pub struct RenderArgs {
     )]
     pub output_device: Option<String>,
 
-    /// [LINUX ONLY] Target PipeWire latency in milliseconds.
+    /// Target buffer latency in milliseconds.
     /// Playback starts once the ring buffer has reached this level, and the PI
     /// controller (--enable-adaptive-resampling) maintains it at this level.
-    /// Default: 500.
-    #[cfg(target_os = "linux")]
+    /// Default: 500 (Linux/PipeWire), 220 (Windows/ASIO).
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[arg(long, value_name = "MS")]
-    pub pw_latency: Option<u32>,
+    pub latency_target_ms: Option<u32>,
 
-    /// [LINUX ONLY] PipeWire maximum buffer fill before applying back-pressure, in milliseconds.
-    /// Defaults to 2 × pw-latency.  Must be greater than pw-latency.
+    /// Maximum buffer fill before applying back-pressure, in milliseconds.
+    /// Defaults to 2 × latency-target.  Must be greater than latency-target.
     #[cfg(target_os = "linux")]
     #[arg(long, value_name = "MS")]
-    pub pw_max_latency: Option<u32>,
+    pub latency_max_ms: Option<u32>,
 
     /// [LINUX ONLY] PipeWire processing quantum in frames (~21ms at 48kHz for 1024 frames).
     /// Smaller values reduce hardware latency but increase CPU load. Default: 1024.

@@ -90,7 +90,7 @@ pub struct RenderConfig {
     )]
     pub output_device: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pw_latency: Option<u32>,
+    pub latency_target: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continuous: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
