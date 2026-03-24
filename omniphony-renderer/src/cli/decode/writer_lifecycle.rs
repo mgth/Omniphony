@@ -4,7 +4,6 @@ use super::state::{
 use super::output::AudioWriter;
 use crate::cli::command::OutputBackend;
 use anyhow::{anyhow, Result};
-use std::time::Instant;
 use audio_output::AudioControl;
 use std::sync::Arc;
 

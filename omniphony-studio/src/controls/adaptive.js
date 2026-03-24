@@ -72,13 +72,13 @@ export function renderAdaptiveResamplingUI() {
     adaptiveFarFadeInMsInputEl.value = String(Math.max(0, Math.round(app.adaptiveResamplingFarModeReturnFadeInMs ?? 0)));
   }
   if (adaptiveKpNearInputEl && !app.adaptiveKpNearEditing && !app.adaptiveKpNearDirty) {
-    adaptiveKpNearInputEl.value = app.adaptiveResamplingKpNear === null ? '' : Number(app.adaptiveResamplingKpNear).toFixed(2);
+    adaptiveKpNearInputEl.value = app.adaptiveResamplingKpNear === null ? '' : Number(app.adaptiveResamplingKpNear).toFixed(3);
   }
   if (adaptiveKiInputEl && !app.adaptiveKiEditing && !app.adaptiveKiDirty) {
-    adaptiveKiInputEl.value = app.adaptiveResamplingKi === null ? '' : Number(app.adaptiveResamplingKi).toFixed(2);
+    adaptiveKiInputEl.value = app.adaptiveResamplingKi === null ? '' : Number(app.adaptiveResamplingKi).toFixed(3);
   }
   if (adaptiveMaxAdjustInputEl && !app.adaptiveMaxAdjustEditing && !app.adaptiveMaxAdjustDirty) {
-    adaptiveMaxAdjustInputEl.value = app.adaptiveResamplingMaxAdjust === null ? '' : Number(app.adaptiveResamplingMaxAdjust).toFixed(6);
+    adaptiveMaxAdjustInputEl.value = app.adaptiveResamplingMaxAdjust === null ? '' : Math.round(Number(app.adaptiveResamplingMaxAdjust) * 1_000_000);
   }
   if (adaptiveNearFarThresholdInputEl && !app.adaptiveNearFarThresholdEditing && !app.adaptiveNearFarThresholdDirty) {
     adaptiveNearFarThresholdInputEl.value = app.adaptiveResamplingNearFarThresholdMs === null ? '' : String(Math.max(1, Math.round(app.adaptiveResamplingNearFarThresholdMs)));

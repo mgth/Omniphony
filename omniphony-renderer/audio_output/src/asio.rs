@@ -301,7 +301,7 @@ impl AsioWriter {
         let mut runtime_state = AdaptiveRuntimeState::new(1.0);
         let reset_ratio_requested = Arc::new(AtomicBool::new(false));
         let reset_ratio_for_callback = Arc::clone(&reset_ratio_requested);
-        let near_far_threshold_samples =
+        let _near_far_threshold_samples =
             (initial_cfg.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
         let device_channel_count_for_callback = device_channel_count;
         let adaptive_resampling_enabled = enable_adaptive_resampling;
