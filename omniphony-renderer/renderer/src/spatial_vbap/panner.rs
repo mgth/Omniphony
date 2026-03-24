@@ -41,8 +41,6 @@
 // SAF bindings - only available with the historical "saf_vbap" feature flag
 use super::coords::{adm_to_spherical, spherical_to_adm};
 use super::distance::{DistanceModel, calculate_distance_attenuation};
-#[cfg(feature = "saf_vbap")]
-use std::ffi::c_int;
 
 // Include the generated FFI bindings
 // Note: For Rust 2024 edition, we need to manually mark extern blocks as unsafe

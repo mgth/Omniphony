@@ -36,16 +36,19 @@ pub(crate) trait VbapGainSource {
 ///
 /// Delegates to [`VbapPanner::get_gains_with_spread`], which performs bilinear
 /// interpolation across azimuth, elevation, and spread dimensions.
+#[cfg(not(feature = "saf_vbap"))]
 pub(crate) struct TableGainSource<'a> {
     panner: &'a super::VbapPanner,
 }
 
+#[cfg(not(feature = "saf_vbap"))]
 impl<'a> TableGainSource<'a> {
     pub fn new(panner: &'a super::VbapPanner) -> Self {
         Self { panner }
     }
 }
 
+#[cfg(not(feature = "saf_vbap"))]
 impl VbapGainSource for TableGainSource<'_> {
     fn compute_gains(
         &self,

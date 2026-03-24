@@ -236,7 +236,7 @@ fn create_new_pipe_server_overlapped(
     };
 
     let connect_result: Result<()> = (|| {
-        unsafe { ResetEvent(io_event) };
+        let _ = unsafe { ResetEvent(io_event) };
 
         let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
         overlapped.hEvent = io_event;
@@ -744,7 +744,7 @@ impl InputReader {
                 }
 
                 // Reset the I/O event before starting a new read.
-                unsafe { ResetEvent(io_event) };
+                let _ = unsafe { ResetEvent(io_event) };
 
                 let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
                 overlapped.hEvent = io_event;

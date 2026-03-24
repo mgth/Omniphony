@@ -10,7 +10,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
 };
-use std::thread;
 use std::time::Duration;
 
 use crate::{
@@ -37,8 +36,8 @@ pub struct AsioWriter {
     input_sample_rate: u32,
     _output_sample_rate: u32,
     channel_count: u32,        // Number of audio channels we're producing
-    device_channel_count: u32, // Number of channels the ASIO device expects
-    stream_ready: Arc<AtomicBool>,
+    _device_channel_count: u32, // Number of channels the ASIO device expects
+    _stream_ready: Arc<AtomicBool>,
     enable_adaptive_resampling: bool, // Enable PI controller for buffer stability
     max_buffer_fill: usize,
     target_buffer_fill: usize,
@@ -488,8 +487,8 @@ impl AsioWriter {
             input_sample_rate,
             _output_sample_rate: output_sample_rate,
             channel_count,
-            device_channel_count: device_channel_count as u32,
-            stream_ready,
+            _device_channel_count: device_channel_count as u32,
+            _stream_ready: stream_ready,
             enable_adaptive_resampling,
             max_buffer_fill,
             target_buffer_fill,

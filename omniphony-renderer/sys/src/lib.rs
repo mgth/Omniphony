@@ -32,6 +32,7 @@ pub fn try_start_service(_app: fn() -> anyhow::Result<()>) -> bool {
     {
         return windows::try_start_service(_app);
     }
+    #[cfg(not(windows))]
     false
 }
 

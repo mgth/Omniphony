@@ -75,7 +75,7 @@ unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> windows::Win32::Founda
         // process_chunks_with_shutdown.
         let h = SHUTDOWN_EVENT_HANDLE.load(Ordering::Relaxed);
         if h != 0 {
-            let _ = SetEvent(HANDLE(h));
+            let _ = unsafe { SetEvent(HANDLE(h)) };
         }
         windows::Win32::Foundation::BOOL(1) // handled
     } else {
