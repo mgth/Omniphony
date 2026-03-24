@@ -167,7 +167,7 @@ pub(super) fn merge_render_config(
     }
 
     // Platform-specific Option fields
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     if args.pw_latency.is_none() {
         args.pw_latency = cfg.pw_latency;
     }

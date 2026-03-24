@@ -474,7 +474,7 @@ fn init_osc_runtime(
             }
             #[cfg(target_os = "windows")]
             {
-                Some(handler.runtime.asio_target_latency_ms)
+                Some(args.pw_latency.unwrap_or(handler.runtime.asio_target_latency_ms))
             }
             #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             {
