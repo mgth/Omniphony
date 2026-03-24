@@ -271,6 +271,10 @@ impl AsioWriter {
             window: WindowFunction::BlackmanHarris2,
         };
 
+        let live_config = Arc::new(Mutex::new(adaptive_config));
+        let live_config_for_callback = Arc::clone(&live_config);
+        let initial_cfg = live_config.lock().unwrap().clone();
+
         // Calculate max ratio for adaptive adjustments
         // Allow small adjustments around the base resample ratio
         // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
@@ -295,9 +299,6 @@ impl AsioWriter {
 
         let mut resampler_fifo = ResamplerFifoEngine::new(channel_count as usize);
         let mut runtime_state = AdaptiveRuntimeState::new(1.0);
-        let live_config = Arc::new(Mutex::new(adaptive_config));
-        let live_config_for_callback = Arc::clone(&live_config);
-        let initial_cfg = live_config.lock().unwrap().clone();
         let reset_ratio_requested = Arc::new(AtomicBool::new(false));
         let reset_ratio_for_callback = Arc::clone(&reset_ratio_requested);
         let near_far_threshold_samples =
