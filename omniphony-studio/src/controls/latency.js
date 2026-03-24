@@ -21,6 +21,7 @@ const latencyInfoEl = document.getElementById('latencyInfo');
 const latencyRawInfoEl = document.getElementById('latencyRawInfo');
 const latencyCtrlInfoEl = document.getElementById('latencyCtrlInfo');
 const latencyTargetInputEl = document.getElementById('latencyTargetInput');
+const latencyTargetApplyBtnEl = document.getElementById('latencyTargetApplyBtn');
 const resampleRatioInfoEl = document.getElementById('resampleRatioInfo');
 const resampleMeterRowEl = document.getElementById('resampleMeterRow');
 const resampleNegMeterFillEl = document.getElementById('resampleNegMeterFill');
@@ -136,6 +137,12 @@ export function renderLatencyDisplay() {
   if (latencyTargetInputEl && !app.latencyTargetEditing && !app.latencyTargetDirty) {
     const targetValue = app.latencyTargetMs ?? app.latencyMs;
     latencyTargetInputEl.value = targetValue === null ? '' : String(Math.max(1, Math.round(targetValue)));
+  }
+  if (latencyTargetApplyBtnEl) {
+    const enabled = app.latencyTargetDirty;
+    latencyTargetApplyBtnEl.disabled = !enabled;
+    latencyTargetApplyBtnEl.style.opacity = enabled ? '1' : '0.4';
+    latencyTargetApplyBtnEl.style.cursor = enabled ? 'pointer' : 'default';
   }
 }
 
@@ -389,23 +396,12 @@ export function updateRenderTimeUI() {
 }
 
 export function applyLatencyTargetNow() {
-  const latencyTargetInputEl = document.getElementById('latencyTargetInput');
   const requested = Math.max(1, Math.round(Number(latencyTargetInputEl?.value) || 0));
   app.latencyTargetMs = requested;
   app.latencyMs = requested;
+  app.latencyTargetDirty = false;
+  app.latencyTargetEditing = false;
   updateLatencyDisplay();
   updateLatencyMeterUI();
   invoke('control_latency_target', { value: requested });
-  app.latencyTargetDirty = false;
-  app.latencyTargetEditing = false;
-}
-
-export function scheduleLatencyTargetApply(delayMs = 160) {
-  if (app.latencyTargetApplyTimer !== null) {
-    clearTimeout(app.latencyTargetApplyTimer);
-  }
-  app.latencyTargetApplyTimer = window.setTimeout(() => {
-    app.latencyTargetApplyTimer = null;
-    applyLatencyTargetNow();
-  }, delayMs);
 }

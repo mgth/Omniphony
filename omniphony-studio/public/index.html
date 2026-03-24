@@ -354,6 +354,14 @@
           <button id="saveConfigBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Sauvegarder</button>
         </div>
       </div>
+      <div class="info-section" id="latencyControlSection">
+        <div class="info-title">Latence cible</div>
+        <div class="control-row" style="margin-top:0.2rem;gap:0.4rem">
+          <label for="latencyTargetInput" style="font-size:12px;white-space:nowrap">Cible (ms)</label>
+          <input id="latencyTargetInput" type="number" min="1" max="2000" step="1" style="width:60px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#d9ecff;border-radius:4px;padding:0.15rem 0.3rem;font-size:12px" />
+          <button id="latencyTargetApplyBtn" disabled style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.5rem;cursor:pointer;opacity:0.4">Apply</button>
+        </div>
+      </div>
       <div class="info-section" id="rendererSection">
         <div class="info-title">Renderer</div>
         <div class="control-row">

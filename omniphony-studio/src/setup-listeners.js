@@ -33,7 +33,7 @@ import {
   applyAudioSampleRateNow, applyAudioOutputDeviceNow, applyRampModeNow
 } from './controls/audio.js';
 import { updateConfigSavedUI } from './controls/config.js';
-import { applyLatencyTargetNow, scheduleLatencyTargetApply } from './controls/latency.js';
+import { applyLatencyTargetNow, updateLatencyDisplay } from './controls/latency.js';
 import {
   persistRoomGeometryPrefs, getRoomCenterBlendFromInput, renderRoomCenterBlendControl,
   normalizeRoomGeometryInputDisplays, updateRoomGeometryButtonsState,
@@ -999,6 +999,7 @@ export function setupUIListeners() {
 
   // ── Latency target ──────────────────────────────────────────────────────
 
+  const latencyTargetApplyBtnEl = document.getElementById('latencyTargetApplyBtn');
   if (latencyTargetInputEl) {
     latencyTargetInputEl.addEventListener('focus', () => {
       app.latencyTargetEditing = true;
@@ -1007,9 +1008,14 @@ export function setupUIListeners() {
     latencyTargetInputEl.addEventListener('input', () => {
       app.latencyTargetEditing = true;
       app.latencyTargetDirty = true;
-      scheduleLatencyTargetApply();
+      updateLatencyDisplay();
     });
-    latencyTargetInputEl.addEventListener('change', () => {
+    latencyTargetInputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') applyLatencyTargetNow();
+    });
+  }
+  if (latencyTargetApplyBtnEl) {
+    latencyTargetApplyBtnEl.addEventListener('click', () => {
       applyLatencyTargetNow();
     });
   }
