@@ -70,12 +70,13 @@ export function setupUIListeners() {
   const adaptiveFarFadeInMsInputEl = document.getElementById('adaptiveFarFadeInMsInput');
   const adaptiveResamplingAdvancedApplyBtnEl = document.getElementById('adaptiveResamplingAdvancedApplyBtn');
   const adaptiveResamplingAdvancedCancelBtnEl = document.getElementById('adaptiveResamplingAdvancedCancelBtn');
+  const adaptivePauseBtnEl = document.getElementById('adaptivePauseBtn');
+  const adaptiveRatioResetBtnEl = document.getElementById('adaptiveRatioResetBtn');
   const adaptiveKpNearInputEl = document.getElementById('adaptiveKpNearInput');
   const adaptiveKiInputEl = document.getElementById('adaptiveKiInput');
   const adaptiveMaxAdjustInputEl = document.getElementById('adaptiveMaxAdjustInput');
   const adaptiveNearFarThresholdInputEl = document.getElementById('adaptiveNearFarThresholdInput');
   const adaptiveUpdateIntervalCallbacksInputEl = document.getElementById('adaptiveUpdateIntervalCallbacksInput');
-  const adaptiveMeasurementSmoothingAlphaInputEl = document.getElementById('adaptiveMeasurementSmoothingAlphaInput');
   const spreadMinSliderEl = document.getElementById('spreadMinSlider');
   const spreadMaxSliderEl = document.getElementById('spreadMaxSlider');
   const spreadFromDistanceToggleEl = document.getElementById('spreadFromDistanceToggle');
@@ -164,8 +165,6 @@ export function setupUIListeners() {
   const logCopyBtnEl = document.getElementById('logCopyBtn');
   const logLevelSelectEl = document.getElementById('logLevelSelect');
   const latencyTargetInputEl = document.getElementById('latencyTargetInput');
-  const adaptiveKpFarInputEl = document.getElementById('adaptiveKpFarInput');
-  const adaptiveMaxAdjustFarInputEl = document.getElementById('adaptiveMaxAdjustFarInput');
   const audioSampleRateMenuBtnEl = document.getElementById('audioSampleRateMenuBtn');
   const audioSampleRateMenuEl = document.getElementById('audioSampleRateMenu');
   const audioSampleRateInputEl = document.getElementById('audioSampleRateInput');
@@ -289,22 +288,18 @@ export function setupUIListeners() {
   if (adaptiveResamplingAdvancedApplyBtnEl) {
     adaptiveResamplingAdvancedApplyBtnEl.addEventListener('click', () => {
       if (adaptiveResamplingAdvancedApplyBtnEl.disabled) return;
-      const kpNear = Math.max(0.00000001, Number(adaptiveKpNearInputEl?.value) || 0);
-      const ki = Math.max(0.00000001, Number(adaptiveKiInputEl?.value) || 0);
+      const kpNear = Math.max(0.01, Number(adaptiveKpNearInputEl?.value) || 0);
+      const ki = Math.max(0.01, Number(adaptiveKiInputEl?.value) || 0);
       const maxAdjust = Math.max(0.000001, Number(adaptiveMaxAdjustInputEl?.value) || 0);
       const nearFarThresholdMs = Math.max(1, Math.round(Number(adaptiveNearFarThresholdInputEl?.value) || 0));
       const updateIntervalCallbacks = Math.max(1, Math.round(Number(adaptiveUpdateIntervalCallbacksInputEl?.value) || 0));
-      const measurementSmoothingAlpha = Math.min(1, Math.max(0, Number(adaptiveMeasurementSmoothingAlphaInputEl?.value) || 0));
       const farModeReturnFadeInMs = Math.max(0, Math.round(Number(adaptiveFarFadeInMsInputEl?.value) || 0));
 
       app.adaptiveResamplingKpNear = kpNear;
-      app.adaptiveResamplingKpFar = kpNear;
       app.adaptiveResamplingKi = ki;
       app.adaptiveResamplingMaxAdjust = maxAdjust;
-      app.adaptiveResamplingMaxAdjustFar = maxAdjust;
       app.adaptiveResamplingNearFarThresholdMs = nearFarThresholdMs;
       app.adaptiveResamplingUpdateIntervalCallbacks = updateIntervalCallbacks;
-      app.adaptiveResamplingMeasurementSmoothingAlpha = measurementSmoothingAlpha;
       app.adaptiveResamplingFarModeReturnFadeInMs = farModeReturnFadeInMs;
       updateAdaptiveResamplingUI();
 
@@ -313,7 +308,6 @@ export function setupUIListeners() {
       invoke('control_adaptive_resampling_max_adjust', { value: maxAdjust });
       invoke('control_adaptive_resampling_near_far_threshold_ms', { value: nearFarThresholdMs });
       invoke('control_adaptive_resampling_update_interval_callbacks', { value: updateIntervalCallbacks });
-      invoke('control_adaptive_resampling_measurement_smoothing_alpha', { value: measurementSmoothingAlpha });
       invoke('control_adaptive_resampling_far_mode_return_fade_in_ms', { value: farModeReturnFadeInMs });
 
       resetAdaptiveResamplingAdvancedDirtyState();
@@ -326,6 +320,21 @@ export function setupUIListeners() {
       if (adaptiveResamplingAdvancedCancelBtnEl.disabled) return;
       resetAdaptiveResamplingAdvancedDirtyState();
       updateAdaptiveResamplingUI();
+    });
+  }
+
+  if (adaptivePauseBtnEl) {
+    adaptivePauseBtnEl.addEventListener('click', () => {
+      const enable = app.adaptiveResamplingPaused ? 0 : 1;
+      app.adaptiveResamplingPaused = enable === 1;
+      updateAdaptiveResamplingUI();
+      invoke('control_adaptive_resampling_pause', { enable });
+    });
+  }
+
+  if (adaptiveRatioResetBtnEl) {
+    adaptiveRatioResetBtnEl.addEventListener('click', () => {
+      invoke('control_adaptive_resampling_reset_ratio');
     });
   }
 
@@ -1034,18 +1043,6 @@ export function setupUIListeners() {
     });
   }
 
-  if (adaptiveKpFarInputEl) {
-    adaptiveKpFarInputEl.addEventListener('focus', () => {
-      app.adaptiveKpFarEditing = true;
-      adaptiveKpFarInputEl.select();
-    });
-    adaptiveKpFarInputEl.addEventListener('input', () => {
-      app.adaptiveKpFarEditing = true;
-      app.adaptiveKpFarDirty = true;
-      updateAdaptiveResamplingUI();
-    });
-  }
-
   if (adaptiveKiInputEl) {
     adaptiveKiInputEl.addEventListener('focus', () => {
       app.adaptiveKiEditing = true;
@@ -1070,18 +1067,6 @@ export function setupUIListeners() {
     });
   }
 
-  if (adaptiveMaxAdjustFarInputEl) {
-    adaptiveMaxAdjustFarInputEl.addEventListener('focus', () => {
-      app.adaptiveMaxAdjustFarEditing = true;
-      adaptiveMaxAdjustFarInputEl.select();
-    });
-    adaptiveMaxAdjustFarInputEl.addEventListener('input', () => {
-      app.adaptiveMaxAdjustFarEditing = true;
-      app.adaptiveMaxAdjustFarDirty = true;
-      updateAdaptiveResamplingUI();
-    });
-  }
-
   if (adaptiveNearFarThresholdInputEl) {
     adaptiveNearFarThresholdInputEl.addEventListener('focus', () => {
       app.adaptiveNearFarThresholdEditing = true;
@@ -1102,18 +1087,6 @@ export function setupUIListeners() {
     adaptiveUpdateIntervalCallbacksInputEl.addEventListener('input', () => {
       app.adaptiveUpdateIntervalCallbacksEditing = true;
       app.adaptiveUpdateIntervalCallbacksDirty = true;
-      updateAdaptiveResamplingUI();
-    });
-  }
-
-  if (adaptiveMeasurementSmoothingAlphaInputEl) {
-    adaptiveMeasurementSmoothingAlphaInputEl.addEventListener('focus', () => {
-      app.adaptiveMeasurementSmoothingAlphaEditing = true;
-      adaptiveMeasurementSmoothingAlphaInputEl.select();
-    });
-    adaptiveMeasurementSmoothingAlphaInputEl.addEventListener('input', () => {
-      app.adaptiveMeasurementSmoothingAlphaEditing = true;
-      app.adaptiveMeasurementSmoothingAlphaDirty = true;
       updateAdaptiveResamplingUI();
     });
   }
