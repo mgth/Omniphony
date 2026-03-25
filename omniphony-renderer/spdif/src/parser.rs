@@ -74,6 +74,11 @@ impl SpdifParser {
                     let data_type = self.buffer[4];
                     let payload_size =
                         u16::from_le_bytes([self.buffer[6], self.buffer[7]]) as usize;
+                    log::trace!(
+                        "IEC 61937 header: data_type=0x{:02X} pd_raw={} (bytes)",
+                        data_type,
+                        payload_size
+                    );
                     self.buffer.drain(0..8);
                     self.state = ParserState::WaitingForPayload {
                         data_type,
