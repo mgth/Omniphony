@@ -6,6 +6,8 @@ use crate::cli::command::OutputBackend;
 use anyhow::{anyhow, Result};
 use audio_output::AudioControl;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
 
 pub struct WriterLifecycleCoordinator<'a> {
     output: &'a mut OutputState,

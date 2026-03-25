@@ -107,6 +107,13 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             let mut spdif_parser = SpdifParser::new();
             let mut last_chunk_at: Option<Instant> = None;
 
+            // Throughput diagnostics: log input rate once per second to diagnose
+            // below-real-time delivery (e.g. mpv ao=pcm on Windows).
+            let mut throughput_window_start = Instant::now();
+            let mut throughput_bytes: u64 = 0;
+            let mut throughput_audio_ms: f64 = 0.0;
+            let mut throughput_chunks: u64 = 0;
+
             let mut process_chunk = |chunk: &[u8]| -> Result<bool> {
                 // Secondary check: interrupt the current stream on shutdown or reload.
                 if sys::ShutdownHandle::is_requested()
@@ -317,6 +324,35 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                             ),
                         );
                     }
+                }
+
+                // Accumulate throughput stats and log once per second.
+                throughput_bytes += chunk.len() as u64;
+                throughput_audio_ms += emitted_duration_ms;
+                throughput_chunks += 1;
+                let elapsed_secs = throughput_window_start.elapsed().as_secs_f64();
+                if elapsed_secs >= 1.0 {
+                    let rate = if elapsed_secs > 0.0 {
+                        throughput_audio_ms / (elapsed_secs * 1000.0)
+                    } else {
+                        0.0
+                    };
+                    sys::live_log::emit_external_record(
+                        log::Level::Debug,
+                        "orender::cli::decode::decoder_thread",
+                        &format!(
+                            "Input throughput: {:.0} bytes/s audio_ms={:.0} wall_ms={:.0} rate={:.3}x chunks={}",
+                            throughput_bytes as f64 / elapsed_secs,
+                            throughput_audio_ms,
+                            elapsed_secs * 1000.0,
+                            rate,
+                            throughput_chunks,
+                        ),
+                    );
+                    throughput_window_start = Instant::now();
+                    throughput_bytes = 0;
+                    throughput_audio_ms = 0.0;
+                    throughput_chunks = 0;
                 }
 
                 Ok(true)
