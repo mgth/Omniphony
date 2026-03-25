@@ -113,6 +113,10 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
             let mut throughput_bytes: u64 = 0;
             let mut throughput_audio_ms: f64 = 0.0;
             let mut throughput_chunks: u64 = 0;
+            let session_throughput_started_at = Instant::now();
+            let mut session_throughput_bytes: u64 = 0;
+            let mut session_throughput_audio_ms: f64 = 0.0;
+            let mut session_throughput_chunks: u64 = 0;
 
             let mut process_chunk = |chunk: &[u8]| -> Result<bool> {
                 // Secondary check: interrupt the current stream on shutdown or reload.
@@ -330,23 +334,40 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                 throughput_bytes += chunk.len() as u64;
                 throughput_audio_ms += emitted_duration_ms;
                 throughput_chunks += 1;
+                session_throughput_bytes += chunk.len() as u64;
+                session_throughput_audio_ms += emitted_duration_ms;
+                session_throughput_chunks += 1;
                 let elapsed_secs = throughput_window_start.elapsed().as_secs_f64();
                 if elapsed_secs >= 1.0 {
-                    let rate = if elapsed_secs > 0.0 {
+                    let window_rate = if elapsed_secs > 0.0 {
                         throughput_audio_ms / (elapsed_secs * 1000.0)
                     } else {
                         0.0
                     };
+                    let session_elapsed_secs =
+                        session_throughput_started_at.elapsed().as_secs_f64();
+                    let session_rate = if session_elapsed_secs > 0.0 {
+                        session_throughput_audio_ms / (session_elapsed_secs * 1000.0)
+                    } else {
+                        0.0
+                    };
+                    let session_audio_balance_ms =
+                        session_throughput_audio_ms - session_elapsed_secs * 1000.0;
                     sys::live_log::emit_external_record(
                         log::Level::Debug,
                         "orender::cli::decode::decoder_thread",
                         &format!(
-                            "Input throughput: {:.0} bytes/s audio_ms={:.0} wall_ms={:.0} rate={:.3}x chunks={}",
+                            "Input throughput: window_bytes_per_s={:.0} window_audio_ms={:.0} window_wall_ms={:.0} window_rate={:.3}x total_audio_ms={:.0} total_wall_ms={:.0} total_rate={:.3}x total_balance_ms={:+.0} window_chunks={} total_chunks={}",
                             throughput_bytes as f64 / elapsed_secs,
                             throughput_audio_ms,
                             elapsed_secs * 1000.0,
-                            rate,
+                            window_rate,
+                            session_throughput_audio_ms,
+                            session_elapsed_secs * 1000.0,
+                            session_rate,
+                            session_audio_balance_ms,
                             throughput_chunks,
+                            session_throughput_chunks,
                         ),
                     );
                     throughput_window_start = Instant::now();

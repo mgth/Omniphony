@@ -155,6 +155,9 @@ impl DecodeHandler {
         ctx: &FrameHandlerContext,
     ) -> Result<()> {
         let now = Instant::now();
+        if self.session.started_at.is_none() {
+            self.session.started_at = Some(now);
+        }
         let sample_rate = frame.sampling_frequency;
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
@@ -238,6 +241,71 @@ impl DecodeHandler {
         .handle_spatial_metadata(&frame, frame.sampling_frequency)?;
 
         self.session.decoded_samples += sample_count as u64;
+
+        let current_latency_instant_ms = self
+            .output
+            .audio_writer
+            .as_ref()
+            .and_then(|w| w.measured_audio_delay_ms());
+        let current_latency_control_ms = self
+            .output
+            .audio_writer
+            .as_ref()
+            .and_then(|w| w.control_audio_delay_ms());
+        let current_latency_target_ms = self
+            .output
+            .audio_writer
+            .as_ref()
+            .and_then(|w| w.total_audio_delay_ms());
+        let current_resample_ratio = self
+            .output
+            .audio_writer
+            .as_ref()
+            .and_then(|w| w.resample_ratio());
+        let current_adaptive_band = self
+            .output
+            .audio_writer
+            .as_ref()
+            .and_then(|w| w.adaptive_band());
+
+        if let Some(measured_ms) = current_latency_instant_ms {
+            let baseline_ms = *self
+                .session
+                .first_measured_output_delay_ms
+                .get_or_insert(measured_ms);
+            let should_log = self
+                .session
+                .last_output_delay_log_at
+                .map(|prev| now.saturating_duration_since(prev).as_secs_f64() >= 1.0)
+                .unwrap_or(true);
+            if should_log {
+                let session_elapsed_s = self
+                    .session
+                    .started_at
+                    .map(|started| now.saturating_duration_since(started).as_secs_f64())
+                    .unwrap_or(0.0);
+                let decoded_audio_ms =
+                    self.session.decoded_samples as f64 / sample_rate.max(1) as f64 * 1000.0;
+                let slope_ms_per_s = if session_elapsed_s > 0.0 {
+                    (measured_ms - baseline_ms) as f64 / session_elapsed_s
+                } else {
+                    0.0
+                };
+                log::debug!(
+                    "Output delay trend: measured_ms={:.3} control_ms={:?} target_ms={:?} delta_from_start_ms={:+.3} slope_ms_per_s={:+.3} session_s={:.3} decoded_audio_ms={:.0} ratio={:?} band={:?}",
+                    measured_ms,
+                    current_latency_control_ms,
+                    current_latency_target_ms,
+                    measured_ms - baseline_ms,
+                    slope_ms_per_s,
+                    session_elapsed_s,
+                    decoded_audio_ms,
+                    current_resample_ratio,
+                    current_adaptive_band,
+                );
+                self.session.last_output_delay_log_at = Some(now);
+            }
+        }
 
         let effective_channel_count = if ctx.bed_conform && self.spatial.has_objects {
             let empty_vec = Vec::new();

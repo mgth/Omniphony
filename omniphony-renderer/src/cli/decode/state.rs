@@ -141,8 +141,11 @@ pub struct DecodeSessionState {
     pub decoded_frames: u64,
     pub decoded_samples: u64,
     pub final_sample_rate: u32,
+    pub started_at: Option<Instant>,
     pub last_frame_received_at: Option<Instant>,
     pub last_frame_sample_count: Option<u32>,
+    pub last_output_delay_log_at: Option<Instant>,
+    pub first_measured_output_delay_ms: Option<f32>,
 }
 
 impl Default for DecodeSessionState {
@@ -151,8 +154,11 @@ impl Default for DecodeSessionState {
             decoded_frames: 0,
             decoded_samples: 0,
             final_sample_rate: 48000,
+            started_at: None,
             last_frame_received_at: None,
             last_frame_sample_count: None,
+            last_output_delay_log_at: None,
+            first_measured_output_delay_ms: None,
         }
     }
 }
