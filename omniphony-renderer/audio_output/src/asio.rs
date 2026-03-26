@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::{
     AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, adaptive_band_name,
-    clamp_max_adjust_for_local_resampler,
+    clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
         compute_hard_recover_plan, note_refill_or_underrun, output_to_input_domain_samples,
@@ -285,17 +285,6 @@ impl AsioWriter {
             window: WindowFunction::BlackmanHarris2,
         };
 
-        let mut adaptive_config = adaptive_config;
-        let clamped_initial_max_adjust =
-            clamp_max_adjust_for_local_resampler(adaptive_config.max_adjust);
-        if (clamped_initial_max_adjust - adaptive_config.max_adjust).abs() > f64::EPSILON {
-            log::warn!(
-                "Clamping ASIO adaptive max_adjust from {:.6} to {:.6} to fit local resampler bounds",
-                adaptive_config.max_adjust,
-                clamped_initial_max_adjust
-            );
-            adaptive_config.max_adjust = clamped_initial_max_adjust;
-        }
         let live_config = Arc::new(Mutex::new(adaptive_config));
         let live_config_for_callback = Arc::clone(&live_config);
         let initial_cfg = live_config.lock().unwrap().clone();
@@ -304,11 +293,13 @@ impl AsioWriter {
         // Allow small adjustments around the base resample ratio
         // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
         let max_resample_ratio_relative = LOCAL_RESAMPLER_MAX_RELATIVE_RATIO;
-        let max_resample_ratio_abs = resample_ratio * max_resample_ratio_relative;
+        let (min_resample_ratio_abs, max_resample_ratio_abs) =
+            local_resampler_ratio_bounds(resample_ratio);
 
         log::debug!(
-            "Initializing resampler: base_ratio={:.4}, max_ratio={:.4}, chunk_size={}",
+            "Initializing resampler: base_ratio={:.4}, min_ratio={:.4}, max_ratio={:.4}, chunk_size={}",
             resample_ratio,
+            min_resample_ratio_abs,
             max_resample_ratio_abs,
             RESAMPLER_CHUNK_SIZE
         );
@@ -441,10 +432,18 @@ impl AsioWriter {
                         );
 
                         // Update resampler ratio
-                        if let Err(e) = resampler.set_resample_ratio(decision.step.current_ratio, true) {
+                        let clamped_ratio =
+                            clamp_ratio_for_local_resampler(resample_ratio, decision.step.current_ratio);
+                        decision.step.current_ratio = clamped_ratio;
+                        decision.step.consume_adjust = resample_ratio / clamped_ratio;
+                        decision.effective_resample_ratio = clamped_ratio;
+                        decision.displayed_rate_adjust =
+                            paused_rate_adjust(resample_ratio, clamped_ratio);
+
+                        if let Err(e) = resampler.set_resample_ratio(clamped_ratio, true) {
                             log::warn!("Failed to set resampler ratio: {}", e);
                         } else {
-                            effective_resample_ratio = decision.effective_resample_ratio;
+                            effective_resample_ratio = clamped_ratio;
                         }
                         current_rate_adjust_clone
                             .store(decision.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
@@ -647,16 +646,6 @@ impl AsioWriter {
     /// Update adaptive resampling tuning parameters without restarting the audio stream.
     pub fn update_adaptive_config(&self, config: AdaptiveResamplingConfig) {
         if let Ok(mut c) = self.live_adaptive_config.lock() {
-            let mut config = config;
-            let clamped = clamp_max_adjust_for_local_resampler(config.max_adjust);
-            if (clamped - config.max_adjust).abs() > f64::EPSILON {
-                log::warn!(
-                    "Clamping live ASIO adaptive max_adjust from {:.6} to {:.6} to fit local resampler bounds",
-                    config.max_adjust,
-                    clamped
-                );
-                config.max_adjust = clamped;
-            }
             *c = config;
         }
     }

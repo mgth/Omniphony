@@ -18,11 +18,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, AdaptiveResamplingConfig,
-    LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, clamp_max_adjust_for_local_resampler,
+    LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, clamp_ratio_for_local_resampler,
+    local_resampler_ratio_bounds,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
         compute_hard_recover_plan, discard_ring_samples, note_refill_or_underrun,
-        output_to_input_domain_samples, postprocess_interleaved_output, reset_adaptive_runtime,
+        output_to_input_domain_samples, paused_rate_adjust, postprocess_interleaved_output,
+        reset_adaptive_runtime,
         run_adaptive_servo, should_run_adaptive_servo, update_far_mode_state,
         update_latency_metrics, zero_pad_tail,
     },
@@ -332,17 +334,6 @@ impl PipewireWriter {
         let control_latency_clone = control_latency_ms_bits.clone();
         let graph_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let graph_latency_clone = graph_latency_ms_bits.clone();
-        let mut adaptive_config = adaptive_config;
-        let clamped_initial_max_adjust =
-            clamp_max_adjust_for_local_resampler(adaptive_config.max_adjust);
-        if (clamped_initial_max_adjust - adaptive_config.max_adjust).abs() > f64::EPSILON {
-            log::warn!(
-                "Clamping PipeWire adaptive max_adjust from {:.6} to {:.6} to fit local resampler bounds",
-                adaptive_config.max_adjust,
-                clamped_initial_max_adjust
-            );
-            adaptive_config.max_adjust = clamped_initial_max_adjust;
-        }
         let live_config = Arc::new(Mutex::new(adaptive_config));
         let adaptive_config_for_thread = Arc::clone(&live_config);
         let reset_ratio_requested = Arc::new(AtomicBool::new(false));
@@ -590,16 +581,6 @@ impl PipewireWriter {
     /// Update adaptive resampling tuning parameters without restarting the audio thread.
     pub fn update_adaptive_config(&self, config: AdaptiveResamplingConfig) {
         if let Ok(mut c) = self.live_adaptive_config.lock() {
-            let mut config = config;
-            let clamped = clamp_max_adjust_for_local_resampler(config.max_adjust);
-            if (clamped - config.max_adjust).abs() > f64::EPSILON {
-                log::warn!(
-                    "Clamping live PipeWire adaptive max_adjust from {:.6} to {:.6} to fit local resampler bounds",
-                    config.max_adjust,
-                    clamped
-                );
-                config.max_adjust = clamped;
-            }
             *c = config;
         }
     }
@@ -761,11 +742,13 @@ fn run_pipewire_loop(
 
         // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
         let max_resample_ratio_relative = LOCAL_RESAMPLER_MAX_RELATIVE_RATIO;
-        let max_resample_ratio_abs = resample_ratio * max_resample_ratio_relative;
+        let (min_resample_ratio_abs, max_resample_ratio_abs) =
+            local_resampler_ratio_bounds(resample_ratio);
 
         log::debug!(
-            "Initializing PipeWire resampler: base_ratio={:.4}, max_ratio={:.4}, chunk_size={}",
+            "Initializing PipeWire resampler: base_ratio={:.4}, min_ratio={:.4}, max_ratio={:.4}, chunk_size={}",
             resample_ratio,
+            min_resample_ratio_abs,
             max_resample_ratio_abs,
             RESAMPLER_CHUNK_SIZE
         );
@@ -980,13 +963,23 @@ fn run_pipewire_loop(
                                 );
                                 current_adaptive_band.store(decision.adaptive_band, Ordering::Relaxed);
 
+                                let clamped_ratio = clamp_ratio_for_local_resampler(
+                                    resample_ratio,
+                                    decision.step.current_ratio,
+                                );
+                                decision.step.current_ratio = clamped_ratio;
+                                decision.step.consume_adjust = resample_ratio / clamped_ratio;
+                                decision.effective_resample_ratio = clamped_ratio;
+                                decision.displayed_rate_adjust =
+                                    paused_rate_adjust(resample_ratio, clamped_ratio);
+
                                 if let Err(e) =
-                                    resampler.set_resample_ratio(decision.step.current_ratio, true)
+                                    resampler.set_resample_ratio(clamped_ratio, true)
                                         as Result<(), rubato::ResampleError>
                                 {
                                     log::warn!("Failed to set resampler ratio: {}", e);
                                 } else {
-                                    effective_resample_ratio = decision.effective_resample_ratio;
+                                    effective_resample_ratio = clamped_ratio;
                                     if effective_resample_ratio.to_bits()
                                         != runtime_state.last_logged_ratio_bits
                                     {

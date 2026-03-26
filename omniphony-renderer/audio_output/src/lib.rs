@@ -43,20 +43,14 @@ pub const ADAPTIVE_BAND_NEAR: u8 = 1;
 pub const ADAPTIVE_BAND_FAR: u8 = 2;
 pub const LOCAL_RESAMPLER_MAX_RELATIVE_RATIO: f64 = 2.0;
 
-pub fn max_adjust_limit_for_relative_ratio(relative_ratio: f64) -> f64 {
-    if relative_ratio <= 1.0 {
-        return 0.000_001;
-    }
-    (relative_ratio - 1.0)
-        .min(1.0 - (1.0 / relative_ratio))
-        .max(0.000_001)
+pub fn local_resampler_ratio_bounds(base_ratio: f64) -> (f64, f64) {
+    let relative_ratio = LOCAL_RESAMPLER_MAX_RELATIVE_RATIO.max(1.0);
+    (base_ratio / relative_ratio, base_ratio * relative_ratio)
 }
 
-pub fn clamp_max_adjust_for_local_resampler(max_adjust: f64) -> f64 {
-    max_adjust.clamp(
-        0.000_001,
-        max_adjust_limit_for_relative_ratio(LOCAL_RESAMPLER_MAX_RELATIVE_RATIO),
-    )
+pub fn clamp_ratio_for_local_resampler(base_ratio: f64, ratio: f64) -> f64 {
+    let (min_ratio, max_ratio) = local_resampler_ratio_bounds(base_ratio);
+    ratio.clamp(min_ratio, max_ratio)
 }
 
 pub fn adaptive_band_name(band: u8) -> Option<&'static str> {
@@ -123,12 +117,11 @@ pub fn compute_adaptive_step(
     };
     let p_term = drift_ms * config.kp_near / 1_000_000.0;
     let i_term = state.accumulated_drift * config.ki / 1_000_000.0;
-    let max_adjust = config.max_adjust;
-    let consume_adjust = (1.0 + p_term + i_term).clamp(1.0 - max_adjust, 1.0 + max_adjust);
-    let current_ratio = (base_ratio / consume_adjust).clamp(
-        base_ratio * (1.0 - max_adjust),
-        base_ratio * (1.0 + max_adjust),
-    );
+    let max_adjust = config.max_adjust.max(0.0);
+    let min_consume_adjust = (1.0 - max_adjust).max(0.000_001);
+    let max_consume_adjust = 1.0 + max_adjust;
+    let consume_adjust = (1.0 + p_term + i_term).clamp(min_consume_adjust, max_consume_adjust);
+    let current_ratio = base_ratio / consume_adjust;
 
     AdaptiveControlStep {
         drift,
