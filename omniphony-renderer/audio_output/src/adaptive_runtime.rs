@@ -51,6 +51,13 @@ pub struct LatencyMetricTargets<'a> {
     pub measured_latency_ms_bits: &'a Arc<AtomicU32>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ResetOutcome {
+    pub effective_resample_ratio: f64,
+    pub displayed_rate_adjust: f32,
+    pub adaptive_band: u8,
+}
+
 pub fn output_to_input_domain_samples(output_samples: usize, ratio: f64) -> usize {
     if ratio > 0.0 {
         ((output_samples as f64) / ratio).round() as usize
@@ -85,6 +92,27 @@ pub fn update_latency_metrics(
         total_available_input_domain,
         control_available,
         measured_latency_ms,
+    }
+}
+
+pub fn reset_adaptive_runtime(
+    state: &mut AdaptiveRuntimeState,
+    base_ratio: f64,
+) -> ResetOutcome {
+    state.controller_state.accumulated_drift = 0.0;
+    state.last_logged_ratio_bits = base_ratio.to_bits();
+    ResetOutcome {
+        effective_resample_ratio: base_ratio,
+        displayed_rate_adjust: 1.0,
+        adaptive_band: crate::ADAPTIVE_BAND_NONE,
+    }
+}
+
+pub fn paused_rate_adjust(base_ratio: f64, effective_resample_ratio: f64) -> f32 {
+    if effective_resample_ratio > 0.0 {
+        (base_ratio / effective_resample_ratio) as f32
+    } else {
+        1.0
     }
 }
 

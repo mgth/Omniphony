@@ -21,8 +21,8 @@ use crate::{
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
         compute_hard_recover_plan, discard_ring_samples, note_refill_or_underrun,
-        output_to_input_domain_samples, postprocess_interleaved_output, update_far_mode_state,
-        update_latency_metrics, zero_pad_tail,
+        output_to_input_domain_samples, postprocess_interleaved_output, reset_adaptive_runtime,
+        update_far_mode_state, update_latency_metrics, zero_pad_tail,
     },
     ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
@@ -812,14 +812,15 @@ fn run_pipewire_loop(
             // --- Test controls: reset ratio / pause PI ---
             if reset_ratio_for_callback.load(Ordering::Relaxed) {
                 reset_ratio_for_callback.store(false, Ordering::Relaxed);
-                runtime_state.controller_state.accumulated_drift = 0.0;
                 if let Some(ref mut resampler) = resampler_opt {
                     let _ = resampler.set_resample_ratio(resample_ratio, false);
-                    effective_resample_ratio = resample_ratio;
                 }
-                rate_adjust_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
+                let reset = reset_adaptive_runtime(&mut runtime_state, resample_ratio);
+                effective_resample_ratio = reset.effective_resample_ratio;
+                rate_adjust_for_callback
+                    .store(reset.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
                 desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                current_adaptive_band.store(0, Ordering::Relaxed);
+                current_adaptive_band.store(reset.adaptive_band, Ordering::Relaxed);
             }
             let is_pi_paused = live_adaptive_config_for_callback
                 .try_lock()
