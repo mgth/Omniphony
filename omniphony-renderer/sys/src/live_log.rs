@@ -147,6 +147,16 @@ fn level_allowed(filter: LevelFilter, level: Level) -> bool {
     }
 }
 
+fn parse_record_level(level: &str) -> Level {
+    match level {
+        "error" => Level::Error,
+        "warn" => Level::Warn,
+        "info" => Level::Info,
+        "debug" => Level::Debug,
+        _ => Level::Trace,
+    }
+}
+
 pub fn init_logger(level: LevelFilter, json: bool) -> Result<(), log::SetLoggerError> {
     let mut builder = env_logger::Builder::from_default_env();
     builder.filter_level(LevelFilter::Trace);
@@ -199,7 +209,14 @@ pub fn current_runtime_level_name() -> &'static str {
 pub fn records_since(last_seq: u64) -> Vec<BufferedLogRecord> {
     LOGGER
         .get()
-        .map(|logger| logger.records_since(last_seq))
+        .map(|logger| {
+            let current_level = logger.current_level();
+            logger
+                .records_since(last_seq)
+                .into_iter()
+                .filter(|record| level_allowed(current_level, parse_record_level(&record.level)))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
