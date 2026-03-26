@@ -419,7 +419,7 @@ impl AsioWriter {
                         metrics.total_available_input_domain,
                         channel_count as usize,
                     ) {
-                        let decision = run_adaptive_servo(
+                        let mut decision = run_adaptive_servo(
                             &mut runtime_state,
                             &current_asio_cfg,
                             metrics,
