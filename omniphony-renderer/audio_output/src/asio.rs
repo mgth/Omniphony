@@ -450,7 +450,7 @@ impl AsioWriter {
                         current_adaptive_band_clone.store(decision.adaptive_band, Ordering::Relaxed);
 
                         if callback_count % 100 == 0 {
-                            log::debug!(
+                            log::trace!(
                                 "ASIO Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
                                 metrics.control_available,
                                 target_buffer_fill,

@@ -365,7 +365,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     let session_audio_balance_ms =
                         session_throughput_audio_ms - session_elapsed_secs * 1000.0;
                     sys::live_log::emit_external_record(
-                        log::Level::Debug,
+                        log::Level::Trace,
                         "orender::cli::decode::decoder_thread",
                         &format!(
                             "Input throughput: window_bytes_per_s={:.0} window_audio_ms={:.0} window_wall_ms={:.0} window_rate={:.3}x total_audio_ms={:.0} total_wall_ms={:.0} total_rate={:.3}x total_balance_ms={:+.0} window_chunks={} total_chunks={}",
