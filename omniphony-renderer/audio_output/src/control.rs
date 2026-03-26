@@ -163,6 +163,16 @@ impl AudioControl {
         self.requested_snapshot().adaptive.ki
     }
 
+    pub fn set_requested_adaptive_resampling_integral_discharge_ratio(&self, value: f32) {
+        self.update_requested(|requested| {
+            requested.adaptive.integral_discharge_ratio = value as f64;
+        });
+    }
+
+    pub fn requested_adaptive_resampling_integral_discharge_ratio(&self) -> f64 {
+        self.requested_snapshot().adaptive.integral_discharge_ratio
+    }
+
     pub fn set_requested_adaptive_resampling_max_adjust(&self, value: f32) {
         self.update_requested(|requested| requested.adaptive.max_adjust = value as f64);
     }

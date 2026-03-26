@@ -387,6 +387,17 @@ fn control_adaptive_resampling_ki(state: State<SharedState>, value: f32) {
 }
 
 #[tauri::command]
+fn control_adaptive_resampling_integral_discharge_ratio(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/adaptive_resampling/integral_discharge_ratio".to_string(),
+            value: value.clamp(0.0, 1.0),
+        },
+    );
+}
+
+#[tauri::command]
 fn control_adaptive_resampling_max_adjust(state: State<SharedState>, value: f32) {
     send_control(
         &state.osc_tx,
@@ -1771,6 +1782,7 @@ fn main() {
             control_latency_target,
             control_adaptive_resampling_kp_near,
             control_adaptive_resampling_ki,
+            control_adaptive_resampling_integral_discharge_ratio,
             control_adaptive_resampling_max_adjust,
             control_adaptive_resampling_update_interval_callbacks,
             control_adaptive_resampling_near_far_threshold_ms,

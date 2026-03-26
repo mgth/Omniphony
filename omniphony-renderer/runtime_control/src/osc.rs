@@ -71,6 +71,14 @@ fn parse_positive_f32_arg(arg: Option<&OscType>) -> Option<f32> {
     }
 }
 
+fn parse_nonnegative_f32_arg(arg: Option<&OscType>) -> Option<f32> {
+    match arg {
+        Some(OscType::Float(f)) if *f >= 0.0 => Some(*f),
+        Some(OscType::Int(i)) if *i >= 0 => Some(*i as f32),
+        _ => None,
+    }
+}
+
 fn parse_f32_arg(arg: Option<&OscType>) -> Option<f32> {
     match arg {
         Some(OscType::Float(f)) => Some(*f),
@@ -337,6 +345,19 @@ pub fn apply_simple_osc_control(
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
                 addr: "/omniphony/state/adaptive_resampling/ki".to_string(),
+                value: BroadcastValue::Float(value),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/adaptive_resampling/integral_discharge_ratio" {
+        let value = parse_nonnegative_f32_arg(msg.args.first()).map(|v| v.min(1.0));
+        if let (Some(audio), Some(value)) = (ctx.audio.as_ref(), value) {
+            audio.set_requested_adaptive_resampling_integral_discharge_ratio(value);
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/adaptive_resampling/integral_discharge_ratio".to_string(),
                 value: BroadcastValue::Float(value),
             });
         }

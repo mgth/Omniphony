@@ -196,6 +196,8 @@ impl<'a> OutputRuntimeCoordinator<'a> {
                             .requested_adaptive_resampling_far_mode_return_fade_in_ms(),
                         kp_near: kp,
                         ki: control.requested_adaptive_resampling_ki(),
+                        integral_discharge_ratio: control
+                            .requested_adaptive_resampling_integral_discharge_ratio(),
                         max_adjust,
                         update_interval_callbacks: control
                             .requested_adaptive_resampling_update_interval_callbacks()
@@ -220,6 +222,11 @@ impl<'a> OutputRuntimeCoordinator<'a> {
                         .far_mode_return_fade_in_ms
                 && requested.kp_near == self.runtime.adaptive_resampling_config.kp_near
                 && requested.ki == self.runtime.adaptive_resampling_config.ki
+                && requested.integral_discharge_ratio
+                    == self
+                        .runtime
+                        .adaptive_resampling_config
+                        .integral_discharge_ratio
                 && requested.max_adjust == self.runtime.adaptive_resampling_config.max_adjust
                 && requested.update_interval_callbacks
                     == self
@@ -238,7 +245,7 @@ impl<'a> OutputRuntimeCoordinator<'a> {
 
             self.runtime.adaptive_resampling_config = requested;
             log::info!(
-                "Applying adaptive resampling tuning (live): far_mode={}, far_silence={}, hard_recover=forced, far_return_fade_in_ms={}, kp={:.4}, ki={:.4}, max_adjust={:.6}, update_interval_callbacks={}, far_threshold_ms={}",
+                "Applying adaptive resampling tuning (live): far_mode={}, far_silence={}, hard_recover=forced, far_return_fade_in_ms={}, kp={:.4}, ki={:.4}, integral_discharge_ratio={:.4}, max_adjust={:.6}, update_interval_callbacks={}, far_threshold_ms={}",
                 self.runtime.adaptive_resampling_config.enable_far_mode,
                 self.runtime
                     .adaptive_resampling_config
@@ -248,6 +255,9 @@ impl<'a> OutputRuntimeCoordinator<'a> {
                     .far_mode_return_fade_in_ms,
                 self.runtime.adaptive_resampling_config.kp_near,
                 self.runtime.adaptive_resampling_config.ki,
+                self.runtime
+                    .adaptive_resampling_config
+                    .integral_discharge_ratio,
                 self.runtime.adaptive_resampling_config.max_adjust,
                 self.runtime
                     .adaptive_resampling_config

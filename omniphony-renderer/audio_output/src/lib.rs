@@ -11,6 +11,9 @@ pub struct AdaptiveResamplingConfig {
     pub far_mode_return_fade_in_ms: u32,
     pub kp_near: f64,
     pub ki: f64,
+    /// Fraction of accumulated integral drift retained when the error changes sign.
+    /// 0.0 fully resets the integrator, 1.0 keeps it unchanged.
+    pub integral_discharge_ratio: f64,
     pub max_adjust: f64,
     pub update_interval_callbacks: u32,
     pub near_far_threshold_ms: u32,
@@ -30,6 +33,7 @@ impl Default for AdaptiveResamplingConfig {
             // ki: integral gain — ppm of correction per ms of accumulated drift.
             kp_near: 10.0,
             ki: 50.0,
+            integral_discharge_ratio: 0.25,
             max_adjust: 0.01,
             update_interval_callbacks: 10,
             near_far_threshold_ms: 120,
@@ -107,7 +111,7 @@ pub fn compute_adaptive_step(
         if state.accumulated_drift != 0.0 && drift_ms != 0.0
             && state.accumulated_drift.signum() != drift_ms.signum()
         {
-            state.accumulated_drift *= 0.25;
+            state.accumulated_drift *= config.integral_discharge_ratio.clamp(0.0, 1.0);
         }
 
         let current_i_term = state.accumulated_drift * config.ki / 1_000_000.0;

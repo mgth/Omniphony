@@ -74,6 +74,7 @@ export function setupUIListeners() {
   const adaptiveRatioResetBtnEl = document.getElementById('adaptiveRatioResetBtn');
   const adaptiveKpNearInputEl = document.getElementById('adaptiveKpNearInput');
   const adaptiveKiInputEl = document.getElementById('adaptiveKiInput');
+  const adaptiveIntegralDischargeRatioInputEl = document.getElementById('adaptiveIntegralDischargeRatioInput');
   const adaptiveMaxAdjustInputEl = document.getElementById('adaptiveMaxAdjustInput');
   const adaptiveNearFarThresholdInputEl = document.getElementById('adaptiveNearFarThresholdInput');
   const adaptiveUpdateIntervalCallbacksInputEl = document.getElementById('adaptiveUpdateIntervalCallbacksInput');
@@ -285,11 +286,27 @@ export function setupUIListeners() {
     });
   }
 
+  if (adaptiveIntegralDischargeRatioInputEl) {
+    adaptiveIntegralDischargeRatioInputEl.addEventListener('focus', () => {
+      app.adaptiveIntegralDischargeRatioEditing = true;
+      adaptiveIntegralDischargeRatioInputEl.select();
+    });
+    adaptiveIntegralDischargeRatioInputEl.addEventListener('input', () => {
+      app.adaptiveIntegralDischargeRatioEditing = true;
+      app.adaptiveIntegralDischargeRatioDirty = true;
+      updateAdaptiveResamplingUI();
+    });
+  }
+
   if (adaptiveResamplingAdvancedApplyBtnEl) {
     adaptiveResamplingAdvancedApplyBtnEl.addEventListener('click', () => {
       if (adaptiveResamplingAdvancedApplyBtnEl.disabled) return;
       const kpNear = Math.max(0.01, Number(adaptiveKpNearInputEl?.value) || 0);
       const ki = Math.max(0.01, Number(adaptiveKiInputEl?.value) || 0);
+      const integralDischargeRatio = Math.min(
+        1,
+        Math.max(0, Number(adaptiveIntegralDischargeRatioInputEl?.value) || 0)
+      );
       const maxAdjustPpm = Math.max(1, Math.round(Number(adaptiveMaxAdjustInputEl?.value) || 0));
       const maxAdjust = Math.max(0.000001, maxAdjustPpm / 1_000_000);
       const nearFarThresholdMs = Math.max(1, Math.round(Number(adaptiveNearFarThresholdInputEl?.value) || 0));
@@ -298,6 +315,7 @@ export function setupUIListeners() {
 
       app.adaptiveResamplingKpNear = kpNear;
       app.adaptiveResamplingKi = ki;
+      app.adaptiveResamplingIntegralDischargeRatio = integralDischargeRatio;
       app.adaptiveResamplingMaxAdjust = maxAdjust;
       app.adaptiveResamplingNearFarThresholdMs = nearFarThresholdMs;
       app.adaptiveResamplingUpdateIntervalCallbacks = updateIntervalCallbacks;
@@ -306,6 +324,7 @@ export function setupUIListeners() {
 
       invoke('control_adaptive_resampling_kp_near', { value: kpNear });
       invoke('control_adaptive_resampling_ki', { value: ki });
+      invoke('control_adaptive_resampling_integral_discharge_ratio', { value: integralDischargeRatio });
       invoke('control_adaptive_resampling_max_adjust', { value: maxAdjust });
       invoke('control_adaptive_resampling_near_far_threshold_ms', { value: nearFarThresholdMs });
       invoke('control_adaptive_resampling_update_interval_callbacks', { value: updateIntervalCallbacks });

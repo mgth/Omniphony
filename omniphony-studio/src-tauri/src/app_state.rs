@@ -187,6 +187,8 @@ pub struct AppState {
     pub adaptive_resampling_kp_near: Option<f64>,
     #[serde(rename = "adaptiveResamplingKi")]
     pub adaptive_resampling_ki: Option<f64>,
+    #[serde(rename = "adaptiveResamplingIntegralDischargeRatio")]
+    pub adaptive_resampling_integral_discharge_ratio: Option<f64>,
     #[serde(rename = "adaptiveResamplingMaxAdjust")]
     pub adaptive_resampling_max_adjust: Option<f64>,
     #[serde(rename = "adaptiveResamplingUpdateIntervalCallbacks")]
@@ -305,6 +307,7 @@ impl Default for AppState {
             adaptive_resampling_far_mode_return_fade_in_ms: Some(0),
             adaptive_resampling_kp_near: Some(10.0),
             adaptive_resampling_ki: Some(50.0),
+            adaptive_resampling_integral_discharge_ratio: Some(0.25),
             adaptive_resampling_max_adjust: Some(0.01),
             adaptive_resampling_update_interval_callbacks: Some(10),
             adaptive_resampling_near_far_threshold_ms: Some(120),

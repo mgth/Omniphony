@@ -255,6 +255,9 @@ function parseOmniphonyStateMessage(parts, args) {
     if (parts[3] === 'ki') {
       return { type: 'state:adaptive_resampling:ki', value };
     }
+    if (parts[3] === 'integral_discharge_ratio') {
+      return { type: 'state:adaptive_resampling:integral_discharge_ratio', value };
+    }
     if (parts[3] === 'max_adjust') {
       return { type: 'state:adaptive_resampling:max_adjust', value };
     }

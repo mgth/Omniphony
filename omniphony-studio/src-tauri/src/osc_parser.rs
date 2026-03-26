@@ -326,6 +326,8 @@ pub enum OscEvent {
     StateAdaptiveResamplingKpNear { value: f64 },
     #[serde(rename = "state:adaptive_resampling:ki")]
     StateAdaptiveResamplingKi { value: f64 },
+    #[serde(rename = "state:adaptive_resampling:integral_discharge_ratio")]
+    StateAdaptiveResamplingIntegralDischargeRatio { value: f64 },
     #[serde(rename = "state:adaptive_resampling:max_adjust")]
     StateAdaptiveResamplingMaxAdjust { value: f64 },
     #[serde(rename = "state:adaptive_resampling:update_interval_callbacks")]
@@ -749,6 +751,11 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             "ki" => Some(OscEvent::StateAdaptiveResamplingKi {
                 value: to_number(args[0])?,
             }),
+            "integral_discharge_ratio" => {
+                Some(OscEvent::StateAdaptiveResamplingIntegralDischargeRatio {
+                    value: to_number(args[0])?,
+                })
+            }
             "max_adjust" => Some(OscEvent::StateAdaptiveResamplingMaxAdjust {
                 value: to_number(args[0])?,
             }),

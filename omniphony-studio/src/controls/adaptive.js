@@ -19,6 +19,7 @@ const adaptiveFarFadeRowEl = document.getElementById('adaptiveFarFadeRow');
 const adaptiveFarFadeInMsInputEl = document.getElementById('adaptiveFarFadeInMsInput');
 const adaptiveKpNearInputEl = document.getElementById('adaptiveKpNearInput');
 const adaptiveKiInputEl = document.getElementById('adaptiveKiInput');
+const adaptiveIntegralDischargeRatioInputEl = document.getElementById('adaptiveIntegralDischargeRatioInput');
 const adaptiveMaxAdjustInputEl = document.getElementById('adaptiveMaxAdjustInput');
 const adaptiveNearFarThresholdRowEl = document.getElementById('adaptiveNearFarThresholdRow');
 const adaptiveNearFarThresholdSymbolEl = document.getElementById('adaptiveNearFarThresholdSymbol');
@@ -77,6 +78,16 @@ export function renderAdaptiveResamplingUI() {
   if (adaptiveKiInputEl && !app.adaptiveKiEditing && !app.adaptiveKiDirty) {
     adaptiveKiInputEl.value = app.adaptiveResamplingKi === null ? '' : Number(app.adaptiveResamplingKi).toFixed(3);
   }
+  if (
+    adaptiveIntegralDischargeRatioInputEl &&
+    !app.adaptiveIntegralDischargeRatioEditing &&
+    !app.adaptiveIntegralDischargeRatioDirty
+  ) {
+    adaptiveIntegralDischargeRatioInputEl.value =
+      app.adaptiveResamplingIntegralDischargeRatio === null
+        ? ''
+        : Number(app.adaptiveResamplingIntegralDischargeRatio).toFixed(3);
+  }
   if (adaptiveMaxAdjustInputEl && !app.adaptiveMaxAdjustEditing && !app.adaptiveMaxAdjustDirty) {
     adaptiveMaxAdjustInputEl.value = app.adaptiveResamplingMaxAdjust === null ? '' : Math.round(Number(app.adaptiveResamplingMaxAdjust) * 1_000_000);
   }
@@ -113,6 +124,7 @@ export function renderAdaptiveResamplingUI() {
   const adaptiveDirty =
     app.adaptiveKpNearDirty ||
     app.adaptiveKiDirty ||
+    app.adaptiveIntegralDischargeRatioDirty ||
     app.adaptiveMaxAdjustDirty ||
     app.adaptiveNearFarThresholdDirty ||
     app.adaptiveUpdateIntervalCallbacksDirty ||
@@ -140,6 +152,8 @@ export function resetAdaptiveResamplingAdvancedDirtyState() {
   app.adaptiveKpNearEditing = false;
   app.adaptiveKiDirty = false;
   app.adaptiveKiEditing = false;
+  app.adaptiveIntegralDischargeRatioDirty = false;
+  app.adaptiveIntegralDischargeRatioEditing = false;
   app.adaptiveMaxAdjustDirty = false;
   app.adaptiveMaxAdjustEditing = false;
   app.adaptiveNearFarThresholdDirty = false;

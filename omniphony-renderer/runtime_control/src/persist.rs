@@ -169,6 +169,8 @@ pub fn save_live_config(
         render.latency_target = requested.latency_target_ms;
         render.adaptive_resampling_kp_near = Some(requested.adaptive.kp_near as f32);
         render.adaptive_resampling_ki = Some(requested.adaptive.ki as f32);
+        render.adaptive_resampling_integral_discharge_ratio =
+            Some(requested.adaptive.integral_discharge_ratio as f32);
         render.adaptive_resampling_max_adjust = Some(requested.adaptive.max_adjust as f32);
         render.adaptive_resampling_update_interval_callbacks =
             Some(requested.adaptive.update_interval_callbacks);

@@ -501,6 +501,11 @@ export function setupTauriBridge() {
     updateAdaptiveResamplingUI();
   });
 
+  listen('adaptive_resampling:integral_discharge_ratio', ({ payload }) => {
+    app.adaptiveResamplingIntegralDischargeRatio = Number(payload.value);
+    updateAdaptiveResamplingUI();
+  });
+
   listen('adaptive_resampling:max_adjust', ({ payload }) => {
     app.adaptiveResamplingMaxAdjust = Number(payload.value);
     updateAdaptiveResamplingUI();

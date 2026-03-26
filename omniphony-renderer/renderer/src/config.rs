@@ -124,6 +124,8 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_ki: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive_resampling_integral_discharge_ratio: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_max_adjust: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_update_interval_callbacks: Option<u32>,

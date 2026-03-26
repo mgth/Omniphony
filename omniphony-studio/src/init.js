@@ -227,6 +227,9 @@ export function applyInitState(payload) {
   if (typeof payload.adaptiveResamplingKi === 'number') {
     app.adaptiveResamplingKi = payload.adaptiveResamplingKi;
   }
+  if (typeof payload.adaptiveResamplingIntegralDischargeRatio === 'number') {
+    app.adaptiveResamplingIntegralDischargeRatio = payload.adaptiveResamplingIntegralDischargeRatio;
+  }
   if (typeof payload.adaptiveResamplingMaxAdjust === 'number') {
     app.adaptiveResamplingMaxAdjust = payload.adaptiveResamplingMaxAdjust;
   }

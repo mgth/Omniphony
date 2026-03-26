@@ -1416,6 +1416,16 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateAdaptiveResamplingIntegralDischargeRatio { value } => {
+                s.adaptive_resampling_integral_discharge_ratio = Some(value);
+                (
+                    Some((
+                        "adaptive_resampling:integral_discharge_ratio",
+                        serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
             OscEvent::StateAdaptiveResamplingMaxAdjust { value } => {
                 s.adaptive_resampling_max_adjust = Some(value);
                 (

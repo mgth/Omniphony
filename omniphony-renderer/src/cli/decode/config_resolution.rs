@@ -439,6 +439,7 @@ pub(super) fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<render
         adaptive_resampling_far_mode_return_fade_in_ms: None,
         adaptive_resampling_kp_near: None,
         adaptive_resampling_ki: None,
+        adaptive_resampling_integral_discharge_ratio: None,
         adaptive_resampling_max_adjust: None,
         adaptive_resampling_update_interval_callbacks: args
             .adaptive_resampling_update_interval_callbacks,

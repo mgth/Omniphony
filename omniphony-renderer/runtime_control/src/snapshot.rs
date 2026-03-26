@@ -183,6 +183,12 @@ pub fn build_live_state_bundle(
                 args: vec![OscType::Float(requested.adaptive.ki as f32)],
             }),
             OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/integral_discharge_ratio".to_string(),
+                args: vec![OscType::Float(
+                    requested.adaptive.integral_discharge_ratio as f32,
+                )],
+            }),
+            OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/max_adjust".to_string(),
                 args: vec![OscType::Float(requested.adaptive.max_adjust as f32)],
             }),

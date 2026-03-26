@@ -72,6 +72,10 @@ fn build_adaptive_resampling_config(
             .and_then(|cfg| cfg.adaptive_resampling_ki)
             .map(|v| v as f64)
             .unwrap_or(defaults.ki),
+        integral_discharge_ratio: render_cfg
+            .and_then(|cfg| cfg.adaptive_resampling_integral_discharge_ratio)
+            .map(|v| v as f64)
+            .unwrap_or(defaults.integral_discharge_ratio),
         max_adjust: render_cfg
             .and_then(|cfg| cfg.adaptive_resampling_max_adjust)
             .map(|v| v as f64)
