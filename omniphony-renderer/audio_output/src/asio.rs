@@ -451,14 +451,17 @@ impl AsioWriter {
 
                         if callback_count % 100 == 0 {
                             log::debug!(
-                                "ASIO Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
+                                "ASIO Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6} kp={:.6} ki={:.6} max_adjust={:.6})",
                                 metrics.control_available,
                                 target_buffer_fill,
                                 decision.step.drift,
                                 decision.step.current_ratio,
                                 resample_ratio,
                                 decision.step.p_term,
-                                decision.step.i_term
+                                decision.step.i_term,
+                                current_asio_cfg.kp_near,
+                                current_asio_cfg.ki,
+                                current_asio_cfg.max_adjust,
                             );
                         }
                     }
