@@ -25,18 +25,18 @@ impl Default for AdaptiveResamplingConfig {
     fn default() -> Self {
         Self {
             enable_far_mode: true,
-            force_silence_in_far_mode: false,
-            hard_recover_in_far_mode: false,
-            far_mode_return_fade_in_ms: 0,
+            force_silence_in_far_mode: true,
+            hard_recover_in_far_mode: true,
+            far_mode_return_fade_in_ms: 500,
             // kp and ki are in ppm/ms (parts-per-million of ratio correction per ms of error).
             // kp: proportional gain — ppm of correction per ms of current drift.
             // ki: integral gain — ppm of correction per ms of accumulated drift.
-            kp_near: 10.0,
-            ki: 50.0,
+            kp_near: 1.0,
+            ki: 1.0,
             integral_discharge_ratio: 0.25,
             max_adjust: 0.01,
-            update_interval_callbacks: 10,
-            near_far_threshold_ms: 120,
+            update_interval_callbacks: 1,
+            near_far_threshold_ms: 1000,
             paused: false,
         }
     }
