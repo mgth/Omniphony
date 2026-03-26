@@ -45,6 +45,8 @@ pub struct AsioWriter {
     current_rate_adjust: Arc<AtomicU32>,
     current_adaptive_band: Arc<AtomicU8>,
     measured_latency_ms_bits: Arc<AtomicU32>,
+    control_latency_ms_bits: Arc<AtomicU32>,
+    pipeline_latency_ms_bits: Arc<AtomicU32>,
     live_adaptive_config: Arc<Mutex<AdaptiveResamplingConfig>>,
     reset_ratio_requested: Arc<AtomicBool>,
     // We keep the stream alive by holding it here, though cpal streams run in background threads
@@ -126,6 +128,10 @@ impl AsioWriter {
         let current_adaptive_band_clone = current_adaptive_band.clone();
         let measured_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let measured_latency_ms_bits_clone = measured_latency_ms_bits.clone();
+        let control_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
+        let control_latency_ms_bits_clone = control_latency_ms_bits.clone();
+        let pipeline_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
+        let pipeline_latency_ms_bits_clone = pipeline_latency_ms_bits.clone();
         // Ring-buffer thresholds in INPUT-domain samples (same domain as buffer_clone.len()).
         let samples_per_ms =
             (input_sample_rate as usize).saturating_mul(channel_count as usize) / 1000;
@@ -374,6 +380,16 @@ impl AsioWriter {
                 } else {
                     callback_audio_samples
                 };
+                let callback_midpoint_ms = if channel_count > 0 && input_sample_rate > 0 {
+                    (callback_input_domain_samples as f32
+                        / channel_count as f32
+                        / input_sample_rate as f32)
+                        * 500.0
+                } else {
+                    0.0
+                };
+                pipeline_latency_ms_bits_clone
+                    .store(callback_midpoint_ms.to_bits(), Ordering::Relaxed);
                 let metrics = update_latency_metrics(
                     &mut runtime_state,
                     available_samples,
@@ -381,9 +397,10 @@ impl AsioWriter {
                     callback_input_domain_samples,
                     channel_count as usize,
                     input_sample_rate,
-                    0.0,
+                    callback_midpoint_ms,
                     LatencyMetricTargets {
                         measured_latency_ms_bits: &measured_latency_ms_bits_clone,
+                        control_latency_ms_bits: &control_latency_ms_bits_clone,
                     },
                 );
 
@@ -546,6 +563,8 @@ impl AsioWriter {
             current_rate_adjust,
             current_adaptive_band,
             measured_latency_ms_bits,
+            control_latency_ms_bits,
+            pipeline_latency_ms_bits,
             live_adaptive_config: live_config,
             reset_ratio_requested,
             _stream: Some(stream),
@@ -597,6 +616,7 @@ impl AsioWriter {
     pub fn total_audio_delay_ms(&self) -> f32 {
         (self.target_buffer_fill as f32 / self.channel_count as f32 / self.input_sample_rate as f32)
             * 1000.0
+            + f32::from_bits(self.pipeline_latency_ms_bits.load(Ordering::Relaxed))
     }
 
     pub fn measured_audio_delay_ms(&self) -> f32 {
@@ -604,7 +624,7 @@ impl AsioWriter {
     }
 
     pub fn control_audio_delay_ms(&self) -> f32 {
-        self.measured_audio_delay_ms()
+        f32::from_bits(self.control_latency_ms_bits.load(Ordering::Relaxed))
     }
 
     /// Signal the audio thread to snap the resampling ratio back to base and reset the integrator.

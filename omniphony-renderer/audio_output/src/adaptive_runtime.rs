@@ -44,11 +44,13 @@ impl AdaptiveRuntimeState {
 pub struct LatencyMetrics {
     pub total_available_input_domain: usize,
     pub control_available: usize,
+    pub control_latency_ms: f32,
     pub measured_latency_ms: f32,
 }
 
 pub struct LatencyMetricTargets<'a> {
     pub measured_latency_ms_bits: &'a Arc<AtomicU32>,
+    pub control_latency_ms_bits: &'a Arc<AtomicU32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,16 +91,20 @@ pub fn update_latency_metrics(
         available_input_samples.saturating_add(output_fifo_input_domain_samples);
     let control_available =
         total_available_input_domain.saturating_sub(callback_input_domain_samples / 2);
-    let measured_latency_ms =
-        (control_available as f32 / channel_count as f32 / sample_rate as f32) * 1000.0
-            + graph_latency_ms;
+    let control_latency_ms =
+        (control_available as f32 / channel_count as f32 / sample_rate as f32) * 1000.0;
+    let measured_latency_ms = control_latency_ms + graph_latency_ms;
     targets
         .measured_latency_ms_bits
         .store(measured_latency_ms.to_bits(), Ordering::Relaxed);
+    targets
+        .control_latency_ms_bits
+        .store(control_latency_ms.to_bits(), Ordering::Relaxed);
 
     LatencyMetrics {
         total_available_input_domain,
         control_available,
+        control_latency_ms,
         measured_latency_ms,
     }
 }

@@ -252,6 +252,8 @@ pub struct PipewireWriter {
     last_write_ms: Arc<AtomicU64>,
     /// Smoothed measured total latency (ring + output FIFO + graph) in ms bits.
     measured_latency_ms_bits: Arc<AtomicU32>,
+    /// Internal controller latency (ring + output FIFO midpoint) in ms bits.
+    control_latency_ms_bits: Arc<AtomicU32>,
     /// Downstream graph latency as measured by pw_stream_get_time().delay (f32 ms bits).
     /// Updated every ~100 callbacks once the stream is stable.
     graph_latency_ms_bits: Arc<AtomicU32>,
@@ -325,6 +327,8 @@ impl PipewireWriter {
         let last_write_ms_clone = last_write_ms.clone();
         let measured_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let measured_latency_clone = measured_latency_ms_bits.clone();
+        let control_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
+        let control_latency_clone = control_latency_ms_bits.clone();
         let graph_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let graph_latency_clone = graph_latency_ms_bits.clone();
         let live_config = Arc::new(Mutex::new(adaptive_config));
@@ -359,6 +363,7 @@ impl PipewireWriter {
                 shutdown_requested_clone,
                 last_write_ms_clone,
                 measured_latency_clone,
+                control_latency_clone,
                 graph_latency_clone,
             ) {
                 log::error!("PipeWire thread error: {}", e);
@@ -407,6 +412,7 @@ impl PipewireWriter {
             shutdown_requested,
             last_write_ms,
             measured_latency_ms_bits,
+            control_latency_ms_bits,
             graph_latency_ms_bits,
             target_latency_ms,
             live_adaptive_config: live_config,
@@ -561,7 +567,7 @@ impl PipewireWriter {
     }
 
     pub fn control_audio_delay_ms(&self) -> f32 {
-        self.measured_audio_delay_ms()
+        f32::from_bits(self.control_latency_ms_bits.load(Ordering::Relaxed))
     }
 
     /// Signal the audio thread to snap the resampling ratio back to base and reset the integrator.
@@ -608,6 +614,7 @@ fn run_pipewire_loop(
     shutdown_requested: Arc<AtomicBool>,
     _last_write_ms: Arc<AtomicU64>,
     measured_latency_ms_out: Arc<AtomicU32>,
+    control_latency_ms_out: Arc<AtomicU32>,
     graph_latency_ms_out: Arc<AtomicU32>,
 ) -> Result<()> {
     // Determine actual output rate and resampling ratio
@@ -918,6 +925,7 @@ fn run_pipewire_loop(
                         f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
                         LatencyMetricTargets {
                             measured_latency_ms_bits: &measured_latency_ms_out,
+                            control_latency_ms_bits: &control_latency_ms_out,
                         },
                     );
                     if let Some(ref mut resampler) = resampler_opt {
