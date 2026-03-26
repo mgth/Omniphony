@@ -957,7 +957,7 @@ fn run_pipewire_loop(
                                     runtime_target_buffer_fill,
                                     resample_ratio,
                                     480,
-                                    MAX_INTEGRAL_TERM,
+                                    current_adaptive_cfg.max_adjust.max(0.000_001),
                                     samples_per_ms,
                                     samples_per_ms_f64,
                                 );
@@ -1092,16 +1092,18 @@ fn run_pipewire_loop(
 
                             if drift.abs() > 480 {
                                 if adaptive_resampling_enabled {
+                                    let max_integral_term =
+                                        native_servo_cfg.max_adjust.max(0.000_001);
                                     // accumulated_drift in ms for ppm/ms gains
                                     runtime_state.controller_state.accumulated_drift += drift_ms;
                                     let integral_contribution =
                                         runtime_state.controller_state.accumulated_drift
                                             * native_servo_cfg.ki / 1_000_000.0;
-                                    if integral_contribution.abs() > MAX_INTEGRAL_TERM
+                                    if integral_contribution.abs() > max_integral_term
                                         && native_servo_cfg.ki > 0.0
                                     {
                                         runtime_state.controller_state.accumulated_drift =
-                                            (MAX_INTEGRAL_TERM * 1_000_000.0 / native_servo_cfg.ki)
+                                            (max_integral_term * 1_000_000.0 / native_servo_cfg.ki)
                                                 * integral_contribution.signum();
                                     }
                                 } else {

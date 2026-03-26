@@ -426,7 +426,7 @@ impl AsioWriter {
                             target_buffer_fill,
                             resample_ratio,
                             100,
-                            MAX_INTEGRAL_TERM,
+                            current_asio_cfg.max_adjust.max(0.000_001),
                             samples_per_ms,
                             samples_per_ms_f64,
                         );
