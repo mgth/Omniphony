@@ -13,7 +13,8 @@ use std::sync::{
 use std::time::Duration;
 
 use crate::{
-    AdaptiveResamplingConfig, adaptive_band_name,
+    AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, adaptive_band_name,
+    clamp_max_adjust_for_local_resampler,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
         compute_hard_recover_plan, note_refill_or_underrun, output_to_input_domain_samples,
@@ -284,6 +285,17 @@ impl AsioWriter {
             window: WindowFunction::BlackmanHarris2,
         };
 
+        let mut adaptive_config = adaptive_config;
+        let clamped_initial_max_adjust =
+            clamp_max_adjust_for_local_resampler(adaptive_config.max_adjust);
+        if (clamped_initial_max_adjust - adaptive_config.max_adjust).abs() > f64::EPSILON {
+            log::warn!(
+                "Clamping ASIO adaptive max_adjust from {:.6} to {:.6} to fit local resampler bounds",
+                adaptive_config.max_adjust,
+                clamped_initial_max_adjust
+            );
+            adaptive_config.max_adjust = clamped_initial_max_adjust;
+        }
         let live_config = Arc::new(Mutex::new(adaptive_config));
         let live_config_for_callback = Arc::clone(&live_config);
         let initial_cfg = live_config.lock().unwrap().clone();
@@ -291,7 +303,7 @@ impl AsioWriter {
         // Calculate max ratio for adaptive adjustments
         // Allow small adjustments around the base resample ratio
         // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
-        let max_resample_ratio_relative = 1.0 + initial_cfg.max_adjust.max(0.000001);
+        let max_resample_ratio_relative = LOCAL_RESAMPLER_MAX_RELATIVE_RATIO;
         let max_resample_ratio_abs = resample_ratio * max_resample_ratio_relative;
 
         log::debug!(
@@ -635,6 +647,16 @@ impl AsioWriter {
     /// Update adaptive resampling tuning parameters without restarting the audio stream.
     pub fn update_adaptive_config(&self, config: AdaptiveResamplingConfig) {
         if let Ok(mut c) = self.live_adaptive_config.lock() {
+            let mut config = config;
+            let clamped = clamp_max_adjust_for_local_resampler(config.max_adjust);
+            if (clamped - config.max_adjust).abs() > f64::EPSILON {
+                log::warn!(
+                    "Clamping live ASIO adaptive max_adjust from {:.6} to {:.6} to fit local resampler bounds",
+                    config.max_adjust,
+                    clamped
+                );
+                config.max_adjust = clamped;
+            }
             *c = config;
         }
     }

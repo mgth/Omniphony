@@ -18,6 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, AdaptiveResamplingConfig,
+    LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, clamp_max_adjust_for_local_resampler,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
         compute_hard_recover_plan, discard_ring_samples, note_refill_or_underrun,
@@ -331,6 +332,17 @@ impl PipewireWriter {
         let control_latency_clone = control_latency_ms_bits.clone();
         let graph_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let graph_latency_clone = graph_latency_ms_bits.clone();
+        let mut adaptive_config = adaptive_config;
+        let clamped_initial_max_adjust =
+            clamp_max_adjust_for_local_resampler(adaptive_config.max_adjust);
+        if (clamped_initial_max_adjust - adaptive_config.max_adjust).abs() > f64::EPSILON {
+            log::warn!(
+                "Clamping PipeWire adaptive max_adjust from {:.6} to {:.6} to fit local resampler bounds",
+                adaptive_config.max_adjust,
+                clamped_initial_max_adjust
+            );
+            adaptive_config.max_adjust = clamped_initial_max_adjust;
+        }
         let live_config = Arc::new(Mutex::new(adaptive_config));
         let adaptive_config_for_thread = Arc::clone(&live_config);
         let reset_ratio_requested = Arc::new(AtomicBool::new(false));
@@ -578,6 +590,16 @@ impl PipewireWriter {
     /// Update adaptive resampling tuning parameters without restarting the audio thread.
     pub fn update_adaptive_config(&self, config: AdaptiveResamplingConfig) {
         if let Ok(mut c) = self.live_adaptive_config.lock() {
+            let mut config = config;
+            let clamped = clamp_max_adjust_for_local_resampler(config.max_adjust);
+            if (clamped - config.max_adjust).abs() > f64::EPSILON {
+                log::warn!(
+                    "Clamping live PipeWire adaptive max_adjust from {:.6} to {:.6} to fit local resampler bounds",
+                    config.max_adjust,
+                    clamped
+                );
+                config.max_adjust = clamped;
+            }
             *c = config;
         }
     }
@@ -738,7 +760,7 @@ fn run_pipewire_loop(
         };
 
         // Rubato expects a relative ratio bound (>= 1.0), not an absolute ratio.
-        let max_resample_ratio_relative = 1.0 + adaptive_config_snapshot.max_adjust.max(0.000001);
+        let max_resample_ratio_relative = LOCAL_RESAMPLER_MAX_RELATIVE_RATIO;
         let max_resample_ratio_abs = resample_ratio * max_resample_ratio_relative;
 
         log::debug!(

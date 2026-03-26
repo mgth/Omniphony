@@ -41,6 +41,23 @@ impl Default for AdaptiveResamplingConfig {
 pub const ADAPTIVE_BAND_NONE: u8 = 0;
 pub const ADAPTIVE_BAND_NEAR: u8 = 1;
 pub const ADAPTIVE_BAND_FAR: u8 = 2;
+pub const LOCAL_RESAMPLER_MAX_RELATIVE_RATIO: f64 = 2.0;
+
+pub fn max_adjust_limit_for_relative_ratio(relative_ratio: f64) -> f64 {
+    if relative_ratio <= 1.0 {
+        return 0.000_001;
+    }
+    (relative_ratio - 1.0)
+        .min(1.0 - (1.0 / relative_ratio))
+        .max(0.000_001)
+}
+
+pub fn clamp_max_adjust_for_local_resampler(max_adjust: f64) -> f64 {
+    max_adjust.clamp(
+        0.000_001,
+        max_adjust_limit_for_relative_ratio(LOCAL_RESAMPLER_MAX_RELATIVE_RATIO),
+    )
+}
 
 pub fn adaptive_band_name(band: u8) -> Option<&'static str> {
     match band {
