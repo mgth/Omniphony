@@ -210,6 +210,16 @@ function parseOmniphonyStateMessage(parts, args) {
       value
     };
   }
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'latency_target_requested') {
+    const value = toNumber(args[0]);
+    if (value === null) {
+      return null;
+    }
+    return {
+      type: 'state:latency:requested',
+      value
+    };
+  }
 
   if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'resample_ratio') {
     const value = toNumber(args[0]);

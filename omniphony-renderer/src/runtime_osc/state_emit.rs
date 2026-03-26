@@ -109,9 +109,15 @@ impl OscSender {
                 args: vec![OscType::Float(ms)],
             }));
         }
-        if let Some(ms) = requested_latency_target_ms.or(latency_target_ms) {
+        if let Some(ms) = latency_target_ms {
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/latency_target".to_string(),
+                args: vec![OscType::Float(ms)],
+            }));
+        }
+        if let Some(ms) = requested_latency_target_ms.or(latency_target_ms) {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/latency_target_requested".to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }

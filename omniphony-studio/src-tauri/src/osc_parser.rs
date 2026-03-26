@@ -248,6 +248,8 @@ pub enum OscEvent {
     StateLatencyControl { value: f64 },
     #[serde(rename = "state:latency:target")]
     StateLatencyTarget { value: f64 },
+    #[serde(rename = "state:latency:target_requested")]
+    StateLatencyTargetRequested { value: f64 },
     #[serde(rename = "state:decode_time_ms")]
     StateDecodeTimeMs { value: f64 },
     #[serde(rename = "state:render_time_ms")]
@@ -581,6 +583,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             value: to_number(args[0])?,
         }),
         (3, "latency_target") => Some(OscEvent::StateLatencyTarget {
+            value: to_number(args[0])?,
+        }),
+        (3, "latency_target_requested") => Some(OscEvent::StateLatencyTargetRequested {
             value: to_number(args[0])?,
         }),
         (3, "decode_time_ms") => Some(OscEvent::StateDecodeTimeMs {

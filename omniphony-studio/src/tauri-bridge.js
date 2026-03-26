@@ -558,9 +558,13 @@ export function setupTauriBridge() {
 
   listen('latency:target', ({ payload }) => {
     app.latencyTargetMs = Number(payload.value);
-    app.latencyMs = Number(payload.value);
     updateLatencyDisplay();
     updateLatencyMeterUI();
+  });
+
+  listen('latency:requested', ({ payload }) => {
+    app.latencyRequestedMs = Number(payload.value);
+    updateLatencyDisplay();
   });
 
   // -----------------------------------------------------------------------

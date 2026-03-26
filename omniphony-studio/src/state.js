@@ -143,6 +143,7 @@ export const app = {
   latencyInstantMs: null,
   latencyControlMs: null,
   latencyTargetMs: null,
+  latencyRequestedMs: null,
   decodeTimeMs: null,
   decodeTimeWindow: [],
   renderTimeMs: null,

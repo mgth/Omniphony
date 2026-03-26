@@ -1063,11 +1063,20 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateLatencyTarget { value } => {
                 s.latency_target_ms = Some(value.round() as i64);
-                s.latency_ms = Some(value.round() as i64);
                 (
                     Some((
                         "latency:target",
                         serde_json::json!({ "value": s.latency_target_ms }),
+                    )),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateLatencyTargetRequested { value } => {
+                s.latency_requested_ms = Some(value.round() as i64);
+                (
+                    Some((
+                        "latency:requested",
+                        serde_json::json!({ "value": s.latency_requested_ms }),
                     )),
                     removed_ids,
                 )

@@ -256,6 +256,9 @@ export function applyInitState(payload) {
   if (typeof payload.latencyTargetMs === 'number') {
     app.latencyTargetMs = payload.latencyTargetMs;
   }
+  if (typeof payload.latencyRequestedMs === 'number') {
+    app.latencyRequestedMs = payload.latencyRequestedMs;
+  }
   if (typeof payload.decodeTimeMs === 'number') {
     app.decodeTimeMs = payload.decodeTimeMs;
   }

@@ -135,7 +135,7 @@ export function renderLatencyDisplay() {
     latencyInfoEl.textContent = tf('status.latencyFallback', { raw: instantText, ctrl: controlText });
   }
   if (latencyTargetInputEl && !app.latencyTargetEditing && !app.latencyTargetDirty) {
-    const targetValue = app.latencyTargetMs ?? app.latencyMs;
+    const targetValue = app.latencyRequestedMs ?? app.latencyTargetMs ?? app.latencyMs;
     latencyTargetInputEl.value = targetValue === null ? '' : String(Math.max(1, Math.round(targetValue)));
   }
   if (latencyTargetApplyBtnEl) {
@@ -397,8 +397,7 @@ export function updateRenderTimeUI() {
 
 export function applyLatencyTargetNow() {
   const requested = Math.max(1, Math.round(Number(latencyTargetInputEl?.value) || 0));
-  app.latencyTargetMs = requested;
-  app.latencyMs = requested;
+  app.latencyRequestedMs = requested;
   app.latencyTargetDirty = false;
   app.latencyTargetEditing = false;
   updateLatencyDisplay();
