@@ -290,7 +290,8 @@ export function setupUIListeners() {
       if (adaptiveResamplingAdvancedApplyBtnEl.disabled) return;
       const kpNear = Math.max(0.01, Number(adaptiveKpNearInputEl?.value) || 0);
       const ki = Math.max(0.01, Number(adaptiveKiInputEl?.value) || 0);
-      const maxAdjust = Math.max(0.000001, Number(adaptiveMaxAdjustInputEl?.value) || 0);
+      const maxAdjustPpm = Math.max(1, Math.round(Number(adaptiveMaxAdjustInputEl?.value) || 0));
+      const maxAdjust = Math.max(0.000001, maxAdjustPpm / 1_000_000);
       const nearFarThresholdMs = Math.max(1, Math.round(Number(adaptiveNearFarThresholdInputEl?.value) || 0));
       const updateIntervalCallbacks = Math.max(1, Math.round(Number(adaptiveUpdateIntervalCallbacksInputEl?.value) || 0));
       const farModeReturnFadeInMs = Math.max(0, Math.round(Number(adaptiveFarFadeInMsInputEl?.value) || 0));
