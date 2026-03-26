@@ -13,6 +13,11 @@ use anyhow::Result;
 use log::Level;
 use std::sync::mpsc;
 
+const DEFAULT_DECODE_QUEUE_LATENCY_MS: u32 = 220;
+const DECODE_QUEUE_MESSAGES_PER_MS: usize = 2;
+const MIN_DECODE_QUEUE_CAPACITY: usize = 512;
+const MAX_DECODE_QUEUE_CAPACITY: usize = 8192;
+
 struct PreparedDecodeRun {
     state: WriterState,
     rx: mpsc::Receiver<Result<DecoderMessage>>,
@@ -63,6 +68,13 @@ fn resolve_effective_decode_args(
         current_layout,
         vbap_table_mode_explicit,
     )
+}
+
+fn decode_queue_capacity(latency_target_ms: Option<u32>) -> usize {
+    let target_ms = latency_target_ms.unwrap_or(DEFAULT_DECODE_QUEUE_LATENCY_MS).max(1);
+    (target_ms as usize)
+        .saturating_mul(DECODE_QUEUE_MESSAGES_PER_MS)
+        .clamp(MIN_DECODE_QUEUE_CAPACITY, MAX_DECODE_QUEUE_CAPACITY)
 }
 
 fn maybe_save_effective_config(
@@ -143,7 +155,13 @@ fn prepare_render_run(args: &RenderArgs, cli: &Cli) -> Result<PreparedDecodeRun>
         preferred_vbap_table_mode
     );
 
-    let (tx, rx) = mpsc::sync_channel(100);
+    let queue_capacity = decode_queue_capacity(args.latency_target_ms);
+    log::info!(
+        "Decode queue capacity: {} messages (~{} ms at 40-sample frames)",
+        queue_capacity,
+        queue_capacity / DECODE_QUEUE_MESSAGES_PER_MS
+    );
+    let (tx, rx) = mpsc::sync_channel(queue_capacity);
     let shutdown = sys::shutdown::ShutdownHandle::install()?;
     let shutdown_signal = shutdown.shutdown_signal();
 
