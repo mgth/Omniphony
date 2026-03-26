@@ -304,7 +304,8 @@ impl AsioWriter {
         .map_err(|e| anyhow!("Failed to create resampler: {:?}", e))?;
 
         let mut resampler_fifo = ResamplerFifoEngine::new(channel_count as usize);
-        let mut runtime_state = AdaptiveRuntimeState::new(1.0);
+        let mut runtime_state = AdaptiveRuntimeState::new(resample_ratio);
+        let mut effective_resample_ratio = resample_ratio;
         let reset_ratio_requested = Arc::new(AtomicBool::new(false));
         let reset_ratio_for_callback = Arc::clone(&reset_ratio_requested);
         let _near_far_threshold_samples =
@@ -324,6 +325,7 @@ impl AsioWriter {
                     reset_ratio_for_callback.store(false, Ordering::Relaxed);
                     runtime_state.controller_state.accumulated_drift = 0.0;
                     let _ = resampler.set_resample_ratio(resample_ratio, false);
+                    effective_resample_ratio = resample_ratio;
                     current_rate_adjust_clone.store(1.0f32.to_bits(), Ordering::Relaxed);
                     current_adaptive_band_clone.store(0, Ordering::Relaxed);
                 }
@@ -353,7 +355,10 @@ impl AsioWriter {
                 // 1. Check buffer fill & Calculate Rate
                 let available_samples = buffer_clone.len(); // Input-domain samples (frames * channels)
                 let output_fifo_input_domain_samples =
-                    output_to_input_domain_samples(resampler_fifo.output_len(), resample_ratio);
+                    output_to_input_domain_samples(
+                        resampler_fifo.output_len(),
+                        effective_resample_ratio,
+                    );
                 // data.len() is in device-channel domain; convert it to rendered-audio samples
                 // before comparing against the renderer/ring buffer fill level.
                 let callback_frames = data.len() / device_channel_count_for_callback as usize;
@@ -362,8 +367,8 @@ impl AsioWriter {
                 // ASIO callback consumes output-domain samples after local resampling.
                 // Convert the callback midpoint estimate back to input-domain samples
                 // before comparing against the input-domain fill level.
-                let callback_input_domain_samples = if resample_ratio > 0.0 {
-                    ((callback_audio_samples as f64) / resample_ratio).round() as usize
+                let callback_input_domain_samples = if effective_resample_ratio > 0.0 {
+                    ((callback_audio_samples as f64) / effective_resample_ratio).round() as usize
                 } else {
                     callback_audio_samples
                 };
@@ -408,6 +413,8 @@ impl AsioWriter {
                         // Update resampler ratio
                         if let Err(e) = resampler.set_resample_ratio(step.current_ratio, true) {
                             log::warn!("Failed to set resampler ratio: {}", e);
+                        } else {
+                            effective_resample_ratio = step.current_ratio;
                         }
                         current_rate_adjust_clone
                             .store((step.consume_adjust as f32).to_bits(), Ordering::Relaxed);
