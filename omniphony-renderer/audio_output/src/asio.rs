@@ -433,6 +433,14 @@ impl AsioWriter {
                             );
                         }
                     }
+                } else if adaptive_resampling_enabled && is_pi_paused {
+                    let held_consume_adjust = if effective_resample_ratio > 0.0 {
+                        (resample_ratio / effective_resample_ratio) as f32
+                    } else {
+                        1.0
+                    };
+                    current_rate_adjust_clone
+                        .store(held_consume_adjust.to_bits(), Ordering::Relaxed);
                 } else {
                     current_rate_adjust_clone.store(1.0f32.to_bits(), Ordering::Relaxed);
                     current_adaptive_band_clone.store(0, Ordering::Relaxed);
