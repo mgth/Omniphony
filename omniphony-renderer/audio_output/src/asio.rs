@@ -13,12 +13,13 @@ use std::sync::{
 use std::time::Duration;
 
 use crate::{
-    AdaptiveResamplingConfig, adaptive_band_name, compute_adaptive_step,
+    AdaptiveResamplingConfig, adaptive_band_name,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
         compute_hard_recover_plan, note_refill_or_underrun, output_to_input_domain_samples,
         paused_rate_adjust, postprocess_interleaved_output, reset_adaptive_runtime,
-        update_far_mode_state, update_latency_metrics, zero_pad_tail,
+        run_adaptive_servo, should_run_adaptive_servo, update_far_mode_state,
+        update_latency_metrics, zero_pad_tail,
     },
     ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
@@ -392,45 +393,44 @@ impl AsioWriter {
                 if adaptive_resampling_enabled && !is_pi_paused {
                     // Only adjust rate if we have started playback and have enough data
                     let current_asio_cfg = live_config_for_callback.lock().unwrap().clone();
-                    let adaptive_update_interval =
-                        current_asio_cfg.update_interval_callbacks.max(1) as u64;
-                    if callback_count % adaptive_update_interval == 0
-                        && metrics.total_available_input_domain >= channel_count as usize
-                    {
-                        let near_far_threshold_samples =
-                            (current_asio_cfg.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
-                        let step = compute_adaptive_step(
-                            &mut runtime_state.controller_state,
+                    if should_run_adaptive_servo(
+                        callback_count,
+                        current_asio_cfg.update_interval_callbacks,
+                        metrics.total_available_input_domain,
+                        channel_count as usize,
+                    ) {
+                        let decision = run_adaptive_servo(
+                            &mut runtime_state,
                             &current_asio_cfg,
-                            metrics.control_available,
+                            metrics,
                             target_buffer_fill,
-                            near_far_threshold_samples,
                             resample_ratio,
                             100,
                             MAX_INTEGRAL_TERM,
+                            samples_per_ms,
                             samples_per_ms_f64,
                         );
 
                         // Update resampler ratio
-                        if let Err(e) = resampler.set_resample_ratio(step.current_ratio, true) {
+                        if let Err(e) = resampler.set_resample_ratio(decision.step.current_ratio, true) {
                             log::warn!("Failed to set resampler ratio: {}", e);
                         } else {
-                            effective_resample_ratio = step.current_ratio;
+                            effective_resample_ratio = decision.effective_resample_ratio;
                         }
                         current_rate_adjust_clone
-                            .store((step.consume_adjust as f32).to_bits(), Ordering::Relaxed);
-                        current_adaptive_band_clone.store(step.band, Ordering::Relaxed);
+                            .store(decision.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
+                        current_adaptive_band_clone.store(decision.adaptive_band, Ordering::Relaxed);
 
                         if callback_count % 100 == 0 {
                             log::debug!(
                                 "ASIO Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
                                 metrics.control_available,
                                 target_buffer_fill,
-                                step.drift,
-                                step.current_ratio,
+                                decision.step.drift,
+                                decision.step.current_ratio,
                                 resample_ratio,
-                                step.p_term,
-                                step.i_term
+                                decision.step.p_term,
+                                decision.step.i_term
                             );
                         }
                     }

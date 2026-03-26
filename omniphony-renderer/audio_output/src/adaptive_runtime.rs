@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use crate::{AdaptiveControllerState, AdaptiveResamplingConfig};
+use crate::{AdaptiveControlStep, AdaptiveControllerState, AdaptiveResamplingConfig, compute_adaptive_step};
 
 pub const MAX_INTEGRAL_TERM: f64 = 0.0002;
 
@@ -55,6 +55,14 @@ pub struct LatencyMetricTargets<'a> {
 pub struct ResetOutcome {
     pub effective_resample_ratio: f64,
     pub displayed_rate_adjust: f32,
+    pub adaptive_band: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AdaptiveServoDecision {
+    pub step: AdaptiveControlStep,
+    pub displayed_rate_adjust: f32,
+    pub effective_resample_ratio: f64,
     pub adaptive_band: u8,
 }
 
@@ -113,6 +121,50 @@ pub fn paused_rate_adjust(base_ratio: f64, effective_resample_ratio: f64) -> f32
         (base_ratio / effective_resample_ratio) as f32
     } else {
         1.0
+    }
+}
+
+pub fn should_run_adaptive_servo(
+    callback_count: u64,
+    update_interval_callbacks: u32,
+    total_available_input_domain: usize,
+    minimum_available_samples: usize,
+) -> bool {
+    let update_interval = update_interval_callbacks.max(1) as u64;
+    callback_count % update_interval == 0
+        && total_available_input_domain >= minimum_available_samples
+}
+
+pub fn run_adaptive_servo(
+    state: &mut AdaptiveRuntimeState,
+    config: &AdaptiveResamplingConfig,
+    metrics: LatencyMetrics,
+    target_buffer_fill: usize,
+    base_ratio: f64,
+    deadband_samples: usize,
+    max_integral_term: f64,
+    samples_per_ms: usize,
+    samples_per_ms_f64: f64,
+) -> AdaptiveServoDecision {
+    let near_far_threshold_samples =
+        (config.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
+    let step = compute_adaptive_step(
+        &mut state.controller_state,
+        config,
+        metrics.control_available,
+        target_buffer_fill,
+        near_far_threshold_samples,
+        base_ratio,
+        deadband_samples,
+        max_integral_term,
+        samples_per_ms_f64,
+    );
+
+    AdaptiveServoDecision {
+        displayed_rate_adjust: step.consume_adjust as f32,
+        effective_resample_ratio: step.current_ratio,
+        adaptive_band: step.band,
+        step,
     }
 }
 

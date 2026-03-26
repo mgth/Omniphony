@@ -17,12 +17,13 @@ use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, AdaptiveResamplingConfig, compute_adaptive_step,
+    ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, AdaptiveResamplingConfig,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
         compute_hard_recover_plan, discard_ring_samples, note_refill_or_underrun,
         output_to_input_domain_samples, postprocess_interleaved_output, reset_adaptive_runtime,
-        update_far_mode_state, update_latency_metrics, zero_pad_tail,
+        run_adaptive_servo, should_run_adaptive_servo, update_far_mode_state,
+        update_latency_metrics, zero_pad_tail,
     },
     ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
@@ -922,7 +923,6 @@ fn run_pipewire_loop(
                     if let Some(ref mut resampler) = resampler_opt {
                         if adaptive_resampling_enabled
                             && !is_pi_paused
-                            && callback_count % adaptive_update_interval == 0
                         {
                             // Refresh config from the live Arc (non-blocking; keep stale on contention).
                             if let Ok(cfg) = live_adaptive_config_for_callback.try_lock() {
@@ -931,60 +931,67 @@ fn run_pipewire_loop(
                                 adaptive_update_interval = cfg.update_interval_callbacks.max(1) as u64;
                             }
                             let current_adaptive_cfg = live_adaptive_config_for_callback.lock().unwrap().clone();
-                            let step = compute_adaptive_step(
-                                &mut runtime_state.controller_state,
-                                &current_adaptive_cfg,
-                                metrics.control_available,
-                                runtime_target_buffer_fill,
-                                fast_catchup_threshold,
-                                resample_ratio,
-                                480,
-                                MAX_INTEGRAL_TERM,
-                                samples_per_ms_f64,
-                            );
-                            current_adaptive_band.store(step.band, Ordering::Relaxed);
+                            if should_run_adaptive_servo(
+                                callback_count,
+                                adaptive_update_interval as u32,
+                                metrics.total_available_input_domain,
+                                channel_count as usize,
+                            ) {
+                                let mut decision = run_adaptive_servo(
+                                    &mut runtime_state,
+                                    &current_adaptive_cfg,
+                                    metrics,
+                                    runtime_target_buffer_fill,
+                                    resample_ratio,
+                                    480,
+                                    MAX_INTEGRAL_TERM,
+                                    samples_per_ms,
+                                    samples_per_ms_f64,
+                                );
+                                current_adaptive_band.store(decision.adaptive_band, Ordering::Relaxed);
 
-                            if let Err(e) =
-                                resampler.set_resample_ratio(step.current_ratio, true)
-                                    as Result<(), rubato::ResampleError>
-                            {
-                                log::warn!("Failed to set resampler ratio: {}", e);
-                            } else {
-                                effective_resample_ratio = step.current_ratio;
-                                if effective_resample_ratio.to_bits()
-                                    != runtime_state.last_logged_ratio_bits
+                                if let Err(e) =
+                                    resampler.set_resample_ratio(decision.step.current_ratio, true)
+                                        as Result<(), rubato::ResampleError>
                                 {
-                                    let rel_ratio = effective_resample_ratio / resample_ratio;
-                                    log::info!(
-                                        "PipeWire adaptive ratio applied: base={:.6} effective={:.6} relative={:.6} consume={:.6} drift={} buf={}/{}",
-                                        resample_ratio,
-                                        effective_resample_ratio,
-                                        rel_ratio,
-                                        step.consume_adjust,
-                                        step.drift,
+                                    log::warn!("Failed to set resampler ratio: {}", e);
+                                } else {
+                                    effective_resample_ratio = decision.effective_resample_ratio;
+                                    if effective_resample_ratio.to_bits()
+                                        != runtime_state.last_logged_ratio_bits
+                                    {
+                                        let rel_ratio = effective_resample_ratio / resample_ratio;
+                                        log::info!(
+                                            "PipeWire adaptive ratio applied: base={:.6} effective={:.6} relative={:.6} consume={:.6} drift={} buf={}/{}",
+                                            resample_ratio,
+                                            effective_resample_ratio,
+                                            rel_ratio,
+                                            decision.step.consume_adjust,
+                                            decision.step.drift,
+                                            metrics.control_available,
+                                            runtime_target_buffer_fill
+                                        );
+                                    }
+                                    runtime_state.last_logged_ratio_bits =
+                                        effective_resample_ratio.to_bits();
+                                    decision.effective_resample_ratio = effective_resample_ratio;
+                                }
+
+                                rate_adjust_for_callback
+                                    .store(decision.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
+
+                                if callback_count % 100 == 0 {
+                                    log::debug!(
+                                        "PipeWire Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
                                         metrics.control_available,
-                                        runtime_target_buffer_fill
+                                        runtime_target_buffer_fill,
+                                        decision.step.drift,
+                                        decision.step.current_ratio,
+                                        resample_ratio,
+                                        decision.step.p_term,
+                                        decision.step.i_term
                                     );
                                 }
-                                runtime_state.last_logged_ratio_bits =
-                                    effective_resample_ratio.to_bits();
-                            }
-
-                            let effective_adjust = step.consume_adjust as f32;
-                            rate_adjust_for_callback
-                                .store(effective_adjust.to_bits(), Ordering::Relaxed);
-
-                            if callback_count % 100 == 0 {
-                                log::debug!(
-                                    "PipeWire Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6})",
-                                    metrics.control_available,
-                                    runtime_target_buffer_fill,
-                                    step.drift,
-                                    step.current_ratio,
-                                    resample_ratio,
-                                    step.p_term,
-                                    step.i_term
-                                );
                             }
                         }
 
