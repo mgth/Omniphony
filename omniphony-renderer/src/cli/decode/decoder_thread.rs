@@ -312,7 +312,18 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
 
                 if let Some(gap_ms) = chunk_gap_ms.filter(|gap_ms| *gap_ms > 10.0) {
                     let gap_over_emitted_ms = (gap_ms - emitted_duration_ms).max(0.0);
-                    if gap_over_emitted_ms >= 20.0 || gap_ms >= 60.0 {
+                    let session_elapsed_secs =
+                        session_throughput_started_at.elapsed().as_secs_f64();
+                    let session_rate = if session_elapsed_secs > 0.0 {
+                        session_throughput_audio_ms / (session_elapsed_secs * 1000.0)
+                    } else {
+                        0.0
+                    };
+                    let pathological_gap =
+                        gap_over_emitted_ms >= 200.0 || gap_ms >= 300.0 || frames_emitted == 0;
+                    let sustained_input_deficit =
+                        session_elapsed_secs >= 5.0 && session_rate < 0.98;
+                    if pathological_gap && sustained_input_deficit {
                         sys::live_log::emit_external_record(
                             log::Level::Warn,
                             "orender::cli::decode::decoder_thread",

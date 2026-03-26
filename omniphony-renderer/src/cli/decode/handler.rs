@@ -172,10 +172,24 @@ impl DecodeHandler {
                 .last_frame_sample_count
                 .is_some_and(|prev| prev != sample_count_u32);
             let severe_gap_ms = (frame_duration_ms * 20.0).max(100.0);
+            let pathological_gap_ms = (frame_duration_ms * 200.0).max(500.0);
             let suspicious_metadata_change = metadata_count > 0 && sample_count_changed;
-            if wall_gap_ms > severe_gap_ms || suspicious_metadata_change {
+            if wall_gap_ms > pathological_gap_ms || suspicious_metadata_change {
                 log::warn!(
                     "Decoded frame cadence anomaly: samples={} ch={} sr={} metadata={} decode_ms={:.3} queue_ms={:.3} wall_gap_ms={:.3} frame_ms={:.3} prev_samples={:?}",
+                    sample_count,
+                    channel_count,
+                    sample_rate,
+                    metadata_count,
+                    ctx.decode_time_ms,
+                    ctx.queue_delay_ms,
+                    wall_gap_ms,
+                    frame_duration_ms,
+                    self.session.last_frame_sample_count
+                );
+            } else if wall_gap_ms > severe_gap_ms {
+                log::debug!(
+                    "Decoded frame burst cadence: samples={} ch={} sr={} metadata={} decode_ms={:.3} queue_ms={:.3} wall_gap_ms={:.3} frame_ms={:.3} prev_samples={:?}",
                     sample_count,
                     channel_count,
                     sample_rate,
