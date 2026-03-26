@@ -96,14 +96,35 @@ pub fn compute_adaptive_step(
 ) -> AdaptiveControlStep {
     let drift = available_samples as i64 - target_buffer_fill as i64;
     let drift_ms = if samples_per_ms > 0.0 { drift as f64 / samples_per_ms } else { drift as f64 };
+    let max_adjust = config.max_adjust.max(0.0);
+    let min_consume_adjust = (1.0 - max_adjust).max(0.000_001);
+    let max_consume_adjust = 1.0 + max_adjust;
+    let p_term = drift_ms * config.kp_near / 1_000_000.0;
 
     if drift.unsigned_abs() as usize > deadband_samples {
-        // accumulated_drift is in ms
-        state.accumulated_drift += drift_ms;
-        let integral_contribution = state.accumulated_drift * config.ki / 1_000_000.0;
-        if integral_contribution.abs() > max_integral_term && config.ki > 0.0 {
-            state.accumulated_drift =
-                (max_integral_term * 1_000_000.0 / config.ki) * integral_contribution.signum();
+        // When the error crosses the target, dump most of the integral energy so the
+        // controller does not keep pushing in the old direction for several callbacks.
+        if state.accumulated_drift != 0.0 && drift_ms != 0.0
+            && state.accumulated_drift.signum() != drift_ms.signum()
+        {
+            state.accumulated_drift *= 0.25;
+        }
+
+        let current_i_term = state.accumulated_drift * config.ki / 1_000_000.0;
+        let unsaturated_consume_adjust = 1.0 + p_term + current_i_term;
+        let saturated_high = unsaturated_consume_adjust >= max_consume_adjust;
+        let saturated_low = unsaturated_consume_adjust <= min_consume_adjust;
+        let pushes_further_into_saturation =
+            (saturated_high && drift_ms > 0.0) || (saturated_low && drift_ms < 0.0);
+
+        if !pushes_further_into_saturation {
+            // accumulated_drift is in ms
+            state.accumulated_drift += drift_ms;
+            let integral_contribution = state.accumulated_drift * config.ki / 1_000_000.0;
+            if integral_contribution.abs() > max_integral_term && config.ki > 0.0 {
+                state.accumulated_drift =
+                    (max_integral_term * 1_000_000.0 / config.ki) * integral_contribution.signum();
+            }
         }
     }
 
@@ -115,11 +136,7 @@ pub fn compute_adaptive_step(
     } else {
         ADAPTIVE_BAND_NEAR
     };
-    let p_term = drift_ms * config.kp_near / 1_000_000.0;
     let i_term = state.accumulated_drift * config.ki / 1_000_000.0;
-    let max_adjust = config.max_adjust.max(0.0);
-    let min_consume_adjust = (1.0 - max_adjust).max(0.000_001);
-    let max_consume_adjust = 1.0 + max_adjust;
     let consume_adjust = (1.0 + p_term + i_term).clamp(min_consume_adjust, max_consume_adjust);
     let current_ratio = base_ratio / consume_adjust;
 
