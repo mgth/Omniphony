@@ -38,7 +38,7 @@ import {
   persistRoomGeometryPrefs, getRoomCenterBlendFromInput, renderRoomCenterBlendControl,
   normalizeRoomGeometryInputDisplays, updateRoomGeometryButtonsState,
   applyRoomGeometryNow, scheduleRoomGeometryApply, applyRoomGeometryStateToInputs,
-  updateRoomGeometryLivePreview, refreshRoomGeometryInputState,
+  updateRoomGeometryLivePreview, refreshRoomGeometryInputState, setRoomGeometryExpanded,
   persistTrailPrefs, persistEffectiveRenderPrefs, refreshEffectiveRenderVisibility,
   getRoomDriverValue
 } from './controls/room-geometry.js';
@@ -140,6 +140,7 @@ export function setupUIListeners() {
   const displaySectionToggleBtnEl = document.getElementById('displaySectionToggleBtn');
   const audioOutputSectionToggleBtnEl = document.getElementById('audioOutputSectionToggleBtn');
   const rendererSectionToggleBtnEl = document.getElementById('rendererSectionToggleBtn');
+  const roomGeometryToggleBtnEl = document.getElementById('roomGeometryToggleBtn');
   const roomGeometryCancelBtnEl = document.getElementById('roomGeometryCancelBtn');
   const roomMasterAxisInputs = Array.from(document.querySelectorAll('input[name="roomMasterAxis"]'));
   const roomDriverWidthEl = document.getElementById('roomDriverWidth');
@@ -884,6 +885,12 @@ export function setupUIListeners() {
   });
 
   // ── Room geometry ───────────────────────────────────────────────────────
+
+  if (roomGeometryToggleBtnEl) {
+    roomGeometryToggleBtnEl.addEventListener('click', () => {
+      setRoomGeometryExpanded(!app.roomGeometryExpanded);
+    });
+  }
 
   if (roomGeometryCancelBtnEl) {
     roomGeometryCancelBtnEl.addEventListener('click', () => {
