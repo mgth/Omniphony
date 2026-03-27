@@ -23,7 +23,8 @@ const latencyCtrlInfoEl = document.getElementById('latencyCtrlInfo');
 const latencyTargetInputEl = document.getElementById('latencyTargetInput');
 const latencyTargetApplyBtnEl = document.getElementById('latencyTargetApplyBtn');
 const resampleRatioInfoEl = document.getElementById('resampleRatioInfo');
-const resampleMeterRowEl = document.getElementById('resampleMeterRow');
+const resampleMeterLabelEl = document.getElementById('resampleMeterLabel');
+const resampleMeterBodyEl = document.getElementById('resampleMeterBody');
 const resampleNegMeterFillEl = document.getElementById('resampleNegMeterFill');
 const resamplePosMeterFillEl = document.getElementById('resamplePosMeterFill');
 const resampleNegFarMarkerEl = document.getElementById('resampleNegFarMarker');
@@ -125,6 +126,7 @@ export function renderLatencyDisplay() {
   if (!latencyRawInfoEl && !latencyCtrlInfoEl && !latencyInfoEl) return;
   const instantText = app.latencyInstantMs === null ? '—' : `${formatNumber(app.latencyInstantMs, 0)} ms`;
   const controlText = app.latencyControlMs === null ? '—' : `${formatNumber(app.latencyControlMs, 0)} ms`;
+  const targetValue = app.latencyRequestedMs ?? app.latencyTargetMs ?? app.latencyMs;
   if (latencyRawInfoEl) {
     latencyRawInfoEl.textContent = instantText;
   }
@@ -135,7 +137,6 @@ export function renderLatencyDisplay() {
     latencyInfoEl.textContent = tf('status.latencyFallback', { raw: instantText, ctrl: controlText });
   }
   if (latencyTargetInputEl && !app.latencyTargetEditing && !app.latencyTargetDirty) {
-    const targetValue = app.latencyRequestedMs ?? app.latencyTargetMs ?? app.latencyMs;
     latencyTargetInputEl.value = targetValue === null ? '' : String(Math.max(1, Math.round(targetValue)));
   }
   if (latencyTargetApplyBtnEl) {
@@ -157,11 +158,13 @@ export function renderResampleRatioDisplay() {
   if (!resampleRatioInfoEl) return;
   if (app.adaptiveResamplingEnabled !== true) {
     resampleRatioInfoEl.style.display = 'none';
-    if (resampleMeterRowEl) resampleMeterRowEl.style.display = 'none';
+    if (resampleMeterLabelEl) resampleMeterLabelEl.style.display = 'none';
+    if (resampleMeterBodyEl) resampleMeterBodyEl.style.display = 'none';
     return;
   }
   resampleRatioInfoEl.style.display = '';
-  if (resampleMeterRowEl) resampleMeterRowEl.style.display = '';
+  if (resampleMeterLabelEl) resampleMeterLabelEl.style.display = '';
+  if (resampleMeterBodyEl) resampleMeterBodyEl.style.display = 'grid';
   const farModeEnabled = app.adaptiveResamplingEnableFarMode === true;
   if (app.resampleRatio === null) {
     resampleRatioInfoEl.textContent = '—';
@@ -226,7 +229,10 @@ export function updateResampleRatioDisplay() {
 // ── Latency meter UI ──────────────────────────────────────────────────────
 
 export function renderLatencyMeterUI() {
-  const maxMs = 2000;
+  const targetForScale = app.latencyRequestedMs ?? app.latencyTargetMs ?? app.latencyMs;
+  const maxMs = targetForScale === null
+    ? 2000
+    : Math.max(100, Number(targetForScale) * 2);
   const farModeEnabled = app.adaptiveResamplingEnableFarMode === true;
   const setThresholdDot = (el, valueMs) => {
     if (!el) return;

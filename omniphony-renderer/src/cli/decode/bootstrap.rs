@@ -60,7 +60,12 @@ fn build_adaptive_resampling_config(
         force_silence_in_far_mode: render_cfg
             .and_then(|cfg| cfg.adaptive_resampling_force_silence_in_far_mode)
             .unwrap_or(defaults.force_silence_in_far_mode),
-        hard_recover_in_far_mode: true,
+        hard_recover_high_in_far_mode: render_cfg
+            .and_then(|cfg| cfg.adaptive_resampling_hard_recover_high_in_far_mode)
+            .unwrap_or(defaults.hard_recover_high_in_far_mode),
+        hard_recover_low_in_far_mode: render_cfg
+            .and_then(|cfg| cfg.adaptive_resampling_hard_recover_low_in_far_mode)
+            .unwrap_or(defaults.hard_recover_low_in_far_mode),
         far_mode_return_fade_in_ms: render_cfg
             .and_then(|cfg| cfg.adaptive_resampling_far_mode_return_fade_in_ms)
             .unwrap_or(defaults.far_mode_return_fade_in_ms),

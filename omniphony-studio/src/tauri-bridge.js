@@ -481,8 +481,13 @@ export function setupTauriBridge() {
     updateAdaptiveResamplingUI();
   });
 
-  listen('adaptive_resampling:hard_recover_in_far_mode', ({ payload }) => {
-    app.adaptiveResamplingHardRecoverInFarMode = Number(payload.enabled) !== 0;
+  listen('adaptive_resampling:hard_recover_high_in_far_mode', ({ payload }) => {
+    app.adaptiveResamplingHardRecoverHighInFarMode = Number(payload.enabled) !== 0;
+    updateAdaptiveResamplingUI();
+  });
+
+  listen('adaptive_resampling:hard_recover_low_in_far_mode', ({ payload }) => {
+    app.adaptiveResamplingHardRecoverLowInFarMode = Number(payload.enabled) !== 0;
     updateAdaptiveResamplingUI();
   });
 

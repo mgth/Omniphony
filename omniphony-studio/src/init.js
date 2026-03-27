@@ -213,9 +213,13 @@ export function applyInitState(payload) {
     app.adaptiveResamplingForceSilenceInFarMode =
       payload.adaptiveResamplingForceSilenceInFarMode !== 0;
   }
-  if (typeof payload.adaptiveResamplingHardRecoverInFarMode === 'number') {
-    app.adaptiveResamplingHardRecoverInFarMode =
-      payload.adaptiveResamplingHardRecoverInFarMode !== 0;
+  if (typeof payload.adaptiveResamplingHardRecoverHighInFarMode === 'number') {
+    app.adaptiveResamplingHardRecoverHighInFarMode =
+      payload.adaptiveResamplingHardRecoverHighInFarMode !== 0;
+  }
+  if (typeof payload.adaptiveResamplingHardRecoverLowInFarMode === 'number') {
+    app.adaptiveResamplingHardRecoverLowInFarMode =
+      payload.adaptiveResamplingHardRecoverLowInFarMode !== 0;
   }
   if (typeof payload.adaptiveResamplingFarModeReturnFadeInMs === 'number') {
     app.adaptiveResamplingFarModeReturnFadeInMs =

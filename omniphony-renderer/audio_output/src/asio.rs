@@ -17,7 +17,8 @@ use crate::{
     clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
-        compute_hard_recover_plan, note_refill_or_underrun, output_to_input_domain_samples,
+        compute_hard_recover_high_plan,
+        note_refill_or_underrun, output_to_input_domain_samples, far_mode_band_from_latency,
         paused_rate_adjust, postprocess_interleaved_output, reset_adaptive_runtime,
         run_adaptive_servo, should_run_adaptive_servo, update_far_mode_state,
         update_latency_metrics, zero_pad_tail,
@@ -406,13 +407,20 @@ impl AsioWriter {
                         control_latency_ms_bits: &control_latency_ms_bits_clone,
                     },
                 );
+                let current_asio_cfg = live_config_for_callback.lock().unwrap().clone();
+                let fallback_band = far_mode_band_from_latency(
+                    &current_asio_cfg,
+                    metrics.control_available,
+                    target_buffer_fill,
+                    samples_per_ms,
+                );
+                current_adaptive_band_clone.store(fallback_band, Ordering::Relaxed);
 
                 // Adaptive rate logic (PI Controller)
                 // Adjusts the resampling ratio around the base ratio to maintain buffer level
                 // Only active if adaptive resampling is enabled
                 if adaptive_resampling_enabled && !is_pi_paused {
                     // Only adjust rate if we have started playback and have enough data
-                    let current_asio_cfg = live_config_for_callback.lock().unwrap().clone();
                     if should_run_adaptive_servo(
                         callback_count,
                         current_asio_cfg.update_interval_callbacks,
@@ -475,28 +483,62 @@ impl AsioWriter {
                     current_adaptive_band_clone.store(0, Ordering::Relaxed);
                 }
 
-                // 2. Feed Resampler until we have enough data in output_fifo for this callback
+                // 2. Decide far-mode recovery before consuming more input for this callback.
                 // data.len() is frames * device_channel_count
                 // output_fifo contains frames * channel_count
                 let output_frames_needed = data.len() / device_channel_count_for_callback as usize;
                 let audio_samples_needed = output_frames_needed * channel_count as usize;
-                if let Err(e) =
-                    resampler_fifo.ensure_output_samples(&buffer_clone, &mut resampler, audio_samples_needed)
-                {
-                    log::error!("Resampler error: {}", e);
-                }
-
-                // 3. Fill ASIO callback buffer from FIFO
                 let far_mode_cfg = live_config_for_callback.lock().unwrap().clone();
                 let far_decision: FarModeDecision = update_far_mode_state(
                     &mut runtime_state,
                     &far_mode_cfg,
-                    adaptive_resampling_enabled,
                     current_adaptive_band_clone.load(Ordering::Relaxed) == crate::ADAPTIVE_BAND_FAR,
+                    metrics.control_available,
+                    target_buffer_fill,
+                    callback_input_domain_samples,
+                    effective_resample_ratio,
+                    channel_count as usize,
                     output_sample_rate,
                 );
-                if far_decision.hard_recover_far {
-                    let plan = compute_hard_recover_plan(
+                if far_decision.hold_low_recover {
+                    let muted_samples_to_consume = if far_decision.consume_while_muted {
+                        audio_samples_needed
+                    } else {
+                        0
+                    };
+                    let muted_total_samples = muted_samples_to_consume
+                        .saturating_add(far_decision.low_recover_trim_output_samples);
+                    if muted_total_samples > 0 {
+                        if let Err(e) = resampler_fifo.ensure_output_samples(
+                            &buffer_clone,
+                            &mut resampler,
+                            muted_total_samples,
+                        ) {
+                            log::error!("Resampler error: {}", e);
+                        }
+                        if far_decision.low_recover_trim_output_samples > 0 {
+                            resampler_fifo.discard_samples(
+                                far_decision.low_recover_trim_output_samples,
+                            );
+                        }
+                        if muted_samples_to_consume > 0 {
+                            resampler_fifo.discard_samples(muted_samples_to_consume);
+                        }
+                    }
+                    data.fill(0.0);
+                } else {
+                    if let Err(e) = resampler_fifo.ensure_output_samples(
+                        &buffer_clone,
+                        &mut resampler,
+                        audio_samples_needed,
+                    ) {
+                        log::error!("Resampler error: {}", e);
+                    }
+                }
+
+                // 3. Fill ASIO callback buffer from FIFO
+                if far_decision.hard_recover_high {
+                    let plan = compute_hard_recover_high_plan(
                         callback_input_domain_samples,
                         metrics.control_available,
                         target_buffer_fill,
@@ -511,6 +553,8 @@ impl AsioWriter {
                         log::error!("Resampler error: {}", e);
                     }
                     resampler_fifo.discard_samples(plan.desired_consume_output_samples);
+                    data.fill(0.0);
+                } else if far_decision.hold_low_recover {
                     data.fill(0.0);
                 } else if resampler_fifo.output_len() >= audio_samples_needed {
                     // We have enough data

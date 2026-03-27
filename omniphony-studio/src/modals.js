@@ -17,8 +17,6 @@ const adaptiveResamplingInfoModalEl = document.getElementById('adaptiveResamplin
 const telemetryGaugesInfoModalEl = document.getElementById('telemetryGaugesInfoModal');
 const rampModeInfoModalEl = document.getElementById('rampModeInfoModal');
 const vbapPositionInterpolationInfoModalEl = document.getElementById('vbapPositionInterpolationInfoModal');
-const adaptiveResamplingAdvancedFormEl = document.getElementById('adaptiveResamplingAdvancedForm');
-const adaptiveResamplingAdvancedToggleBtnEl = document.getElementById('adaptiveResamplingAdvancedToggleBtn');
 const telemetryGaugesFormEl = document.getElementById('telemetryGaugesForm');
 const telemetryGaugesToggleBtnEl = document.getElementById('telemetryGaugesToggleBtn');
 const displaySectionContentEl = document.getElementById('displaySectionContent');
@@ -95,27 +93,13 @@ export function setDistanceDiffuseInfoModalOpen(open) {
 // Accordion sections (update shared state)
 // ---------------------------------------------------------------------------
 
-export function setAdaptiveResamplingAdvancedOpen(open) {
-  app.adaptiveResamplingAdvancedOpen = Boolean(open);
-  if (adaptiveResamplingAdvancedFormEl) {
-    adaptiveResamplingAdvancedFormEl.classList.toggle('open', app.adaptiveResamplingAdvancedOpen);
-  }
-  if (adaptiveResamplingAdvancedToggleBtnEl) {
-    adaptiveResamplingAdvancedToggleBtnEl.style.background = app.adaptiveResamplingAdvancedOpen
-      ? 'rgba(255, 255, 255, 0.18)'
-      : 'rgba(255, 255, 255, 0.08)';
-  }
-}
-
 export function setTelemetryGaugesOpen(open) {
   app.telemetryGaugesOpen = Boolean(open);
   if (telemetryGaugesFormEl) {
     telemetryGaugesFormEl.classList.toggle('open', app.telemetryGaugesOpen);
   }
   if (telemetryGaugesToggleBtnEl) {
-    telemetryGaugesToggleBtnEl.style.background = app.telemetryGaugesOpen
-      ? 'rgba(255, 255, 255, 0.18)'
-      : 'rgba(255, 255, 255, 0.08)';
+    telemetryGaugesToggleBtnEl.textContent = app.telemetryGaugesOpen ? '▾' : '▸';
   }
 }
 

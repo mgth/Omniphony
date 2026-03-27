@@ -20,7 +20,7 @@ import {
   setAdaptiveResamplingInfoModalOpen, setTelemetryGaugesInfoModalOpen,
   setRampModeInfoModalOpen, setVbapPositionInterpolationInfoModalOpen,
   setSpreadFromDistanceInfoModalOpen, setDistanceDiffuseInfoModalOpen,
-  setAdaptiveResamplingAdvancedOpen, setTelemetryGaugesOpen,
+  setTelemetryGaugesOpen,
   setDisplaySectionOpen, setAudioOutputSectionOpen, setRendererSectionOpen
 } from './modals.js';
 import { updateMasterGainUI, updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.js';
@@ -65,9 +65,9 @@ export function setupUIListeners() {
   const masterGainSliderEl = document.getElementById('masterGainSlider');
   const loudnessToggleEl = document.getElementById('loudnessToggle');
   const adaptiveResamplingToggleEl = document.getElementById('adaptiveResamplingToggle');
-  const adaptiveFarModeToggleEl = document.getElementById('adaptiveFarModeToggle');
+  const adaptiveFarHardRecoverHighToggleEl = document.getElementById('adaptiveFarHardRecoverHighToggle');
+  const adaptiveFarHardRecoverLowToggleEl = document.getElementById('adaptiveFarHardRecoverLowToggle');
   const adaptiveFarSilenceToggleEl = document.getElementById('adaptiveFarSilenceToggle');
-  const adaptiveFarHardRecoverToggleEl = document.getElementById('adaptiveFarHardRecoverToggle');
   const adaptiveFarFadeInMsInputEl = document.getElementById('adaptiveFarFadeInMsInput');
   const adaptiveResamplingAdvancedApplyBtnEl = document.getElementById('adaptiveResamplingAdvancedApplyBtn');
   const adaptiveResamplingAdvancedCancelBtnEl = document.getElementById('adaptiveResamplingAdvancedCancelBtn');
@@ -136,7 +136,6 @@ export function setupUIListeners() {
   const vbapPositionInterpolationInfoBtnEl = document.getElementById('vbapPositionInterpolationInfoBtn');
   const vbapPositionInterpolationInfoCloseBtnEl = document.getElementById('vbapPositionInterpolationInfoCloseBtn');
   const vbapPositionInterpolationInfoModalEl = document.getElementById('vbapPositionInterpolationInfoModal');
-  const adaptiveResamplingAdvancedToggleBtnEl = document.getElementById('adaptiveResamplingAdvancedToggleBtn');
   const telemetryGaugesToggleBtnEl = document.getElementById('telemetryGaugesToggleBtn');
   const displaySectionToggleBtnEl = document.getElementById('displaySectionToggleBtn');
   const audioOutputSectionToggleBtnEl = document.getElementById('audioOutputSectionToggleBtn');
@@ -249,12 +248,35 @@ export function setupUIListeners() {
     });
   }
 
-  if (adaptiveFarModeToggleEl) {
-    adaptiveFarModeToggleEl.addEventListener('change', () => {
-      const enable = adaptiveFarModeToggleEl.checked ? 1 : 0;
-      app.adaptiveResamplingEnableFarMode = enable === 1;
+  function syncAdaptiveFarModeDerived() {
+    const enableFarMode =
+      app.adaptiveResamplingHardRecoverHighInFarMode === true
+      || app.adaptiveResamplingHardRecoverLowInFarMode === true
+      || app.adaptiveResamplingForceSilenceInFarMode === true;
+    if (app.adaptiveResamplingEnableFarMode === enableFarMode) {
+      return;
+    }
+    app.adaptiveResamplingEnableFarMode = enableFarMode;
+    invoke('control_adaptive_resampling_enable_far_mode', { enable: enableFarMode ? 1 : 0 });
+  }
+
+  if (adaptiveFarHardRecoverHighToggleEl) {
+    adaptiveFarHardRecoverHighToggleEl.addEventListener('change', () => {
+      const enable = adaptiveFarHardRecoverHighToggleEl.checked ? 1 : 0;
+      app.adaptiveResamplingHardRecoverHighInFarMode = enable === 1;
+      syncAdaptiveFarModeDerived();
       updateAdaptiveResamplingUI();
-      invoke('control_adaptive_resampling_enable_far_mode', { enable });
+      invoke('control_adaptive_resampling_hard_recover_high_in_far_mode', { enable });
+    });
+  }
+
+  if (adaptiveFarHardRecoverLowToggleEl) {
+    adaptiveFarHardRecoverLowToggleEl.addEventListener('change', () => {
+      const enable = adaptiveFarHardRecoverLowToggleEl.checked ? 1 : 0;
+      app.adaptiveResamplingHardRecoverLowInFarMode = enable === 1;
+      syncAdaptiveFarModeDerived();
+      updateAdaptiveResamplingUI();
+      invoke('control_adaptive_resampling_hard_recover_low_in_far_mode', { enable });
     });
   }
 
@@ -262,17 +284,9 @@ export function setupUIListeners() {
     adaptiveFarSilenceToggleEl.addEventListener('change', () => {
       const enable = adaptiveFarSilenceToggleEl.checked ? 1 : 0;
       app.adaptiveResamplingForceSilenceInFarMode = enable === 1;
+      syncAdaptiveFarModeDerived();
       updateAdaptiveResamplingUI();
       invoke('control_adaptive_resampling_force_silence_in_far_mode', { enable });
-    });
-  }
-
-  if (adaptiveFarHardRecoverToggleEl) {
-    adaptiveFarHardRecoverToggleEl.addEventListener('change', () => {
-      const enable = adaptiveFarHardRecoverToggleEl.checked ? 1 : 0;
-      app.adaptiveResamplingHardRecoverInFarMode = enable === 1;
-      updateAdaptiveResamplingUI();
-      invoke('control_adaptive_resampling_hard_recover_in_far_mode', { enable });
     });
   }
 
@@ -830,12 +844,6 @@ export function setupUIListeners() {
   }
 
   // ── Collapsible section toggles ─────────────────────────────────────────
-
-  if (adaptiveResamplingAdvancedToggleBtnEl) {
-    adaptiveResamplingAdvancedToggleBtnEl.addEventListener('click', () => {
-      setAdaptiveResamplingAdvancedOpen(!app.adaptiveResamplingAdvancedOpen);
-    });
-  }
 
   if (telemetryGaugesToggleBtnEl) {
     telemetryGaugesToggleBtnEl.addEventListener('click', () => {

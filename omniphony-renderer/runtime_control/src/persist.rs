@@ -162,8 +162,10 @@ pub fn save_live_config(
         render.adaptive_resampling_enable_far_mode = Some(requested.adaptive.enable_far_mode);
         render.adaptive_resampling_force_silence_in_far_mode =
             Some(requested.adaptive.force_silence_in_far_mode);
-        render.adaptive_resampling_hard_recover_in_far_mode =
-            Some(requested.adaptive.hard_recover_in_far_mode);
+        render.adaptive_resampling_hard_recover_high_in_far_mode =
+            Some(requested.adaptive.hard_recover_high_in_far_mode);
+        render.adaptive_resampling_hard_recover_low_in_far_mode =
+            Some(requested.adaptive.hard_recover_low_in_far_mode);
         render.adaptive_resampling_far_mode_return_fade_in_ms =
             Some(requested.adaptive.far_mode_return_fade_in_ms);
         render.latency_target = requested.latency_target_ms;

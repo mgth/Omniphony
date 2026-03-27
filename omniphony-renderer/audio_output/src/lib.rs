@@ -7,7 +7,8 @@ pub mod ring_buffer_io;
 pub struct AdaptiveResamplingConfig {
     pub enable_far_mode: bool,
     pub force_silence_in_far_mode: bool,
-    pub hard_recover_in_far_mode: bool,
+    pub hard_recover_high_in_far_mode: bool,
+    pub hard_recover_low_in_far_mode: bool,
     pub far_mode_return_fade_in_ms: u32,
     pub kp_near: f64,
     pub ki: f64,
@@ -26,7 +27,8 @@ impl Default for AdaptiveResamplingConfig {
         Self {
             enable_far_mode: true,
             force_silence_in_far_mode: true,
-            hard_recover_in_far_mode: true,
+            hard_recover_high_in_far_mode: true,
+            hard_recover_low_in_far_mode: false,
             far_mode_return_fade_in_ms: 500,
             // kp and ki are in ppm/ms (parts-per-million of ratio correction per ms of error).
             // kp: proportional gain — ppm of correction per ms of current drift.

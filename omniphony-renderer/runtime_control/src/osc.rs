@@ -298,13 +298,30 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/adaptive_resampling/hard_recover_in_far_mode" {
+    if addr == "/omniphony/control/adaptive_resampling/hard_recover_high_in_far_mode"
+        || addr == "/omniphony/control/adaptive_resampling/hard_recover_in_far_mode"
+    {
         let enabled = parse_bool_arg(msg.args.first());
         if let (Some(audio), Some(enabled)) = (ctx.audio.as_ref(), enabled) {
-            audio.set_requested_adaptive_resampling_hard_recover_in_far_mode(enabled);
+            audio.set_requested_adaptive_resampling_hard_recover_high_in_far_mode(enabled);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/hard_recover_in_far_mode".to_string(),
+                addr: "/omniphony/state/adaptive_resampling/hard_recover_high_in_far_mode"
+                    .to_string(),
+                value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/adaptive_resampling/hard_recover_low_in_far_mode" {
+        let enabled = parse_bool_arg(msg.args.first());
+        if let (Some(audio), Some(enabled)) = (ctx.audio.as_ref(), enabled) {
+            audio.set_requested_adaptive_resampling_hard_recover_low_in_far_mode(enabled);
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/adaptive_resampling/hard_recover_low_in_far_mode"
+                    .to_string(),
                 value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
             });
         }

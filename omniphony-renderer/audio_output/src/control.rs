@@ -129,12 +129,20 @@ impl AudioControl {
         self.requested_snapshot().adaptive.force_silence_in_far_mode
     }
 
-    pub fn set_requested_adaptive_resampling_hard_recover_in_far_mode(&self, enabled: bool) {
-        self.update_requested(|requested| requested.adaptive.hard_recover_in_far_mode = enabled);
+    pub fn set_requested_adaptive_resampling_hard_recover_high_in_far_mode(&self, enabled: bool) {
+        self.update_requested(|requested| requested.adaptive.hard_recover_high_in_far_mode = enabled);
     }
 
-    pub fn requested_adaptive_resampling_hard_recover_in_far_mode(&self) -> bool {
-        self.requested_snapshot().adaptive.hard_recover_in_far_mode
+    pub fn requested_adaptive_resampling_hard_recover_high_in_far_mode(&self) -> bool {
+        self.requested_snapshot().adaptive.hard_recover_high_in_far_mode
+    }
+
+    pub fn set_requested_adaptive_resampling_hard_recover_low_in_far_mode(&self, enabled: bool) {
+        self.update_requested(|requested| requested.adaptive.hard_recover_low_in_far_mode = enabled);
+    }
+
+    pub fn requested_adaptive_resampling_hard_recover_low_in_far_mode(&self) -> bool {
+        self.requested_snapshot().adaptive.hard_recover_low_in_far_mode
     }
 
     pub fn set_requested_adaptive_resampling_far_mode_return_fade_in_ms(&self, value: u32) {

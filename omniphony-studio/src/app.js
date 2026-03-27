@@ -42,7 +42,6 @@ import {
 
 // ── Modals ──────────────────────────────────────────────────────────────────
 import {
-  setAdaptiveResamplingAdvancedOpen,
   setTelemetryGaugesOpen,
   setAudioOutputSectionOpen,
   setRendererSectionOpen,
@@ -198,7 +197,6 @@ loadTrailPrefs();
 loadEffectiveRenderPrefs();
 refreshRoomGeometryInputState();
 setRoomGeometryExpanded(false);
-setAdaptiveResamplingAdvancedOpen(false);
 setTelemetryGaugesOpen(false);
 setAudioOutputSectionOpen(false);
 setRendererSectionOpen(false);

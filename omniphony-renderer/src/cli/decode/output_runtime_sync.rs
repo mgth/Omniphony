@@ -191,7 +191,10 @@ impl<'a> OutputRuntimeCoordinator<'a> {
                         enable_far_mode: control.requested_adaptive_resampling_enable_far_mode(),
                         force_silence_in_far_mode: control
                             .requested_adaptive_resampling_force_silence_in_far_mode(),
-                        hard_recover_in_far_mode: true,
+                        hard_recover_high_in_far_mode: control
+                            .requested_adaptive_resampling_hard_recover_high_in_far_mode(),
+                        hard_recover_low_in_far_mode: control
+                            .requested_adaptive_resampling_hard_recover_low_in_far_mode(),
                         far_mode_return_fade_in_ms: control
                             .requested_adaptive_resampling_far_mode_return_fade_in_ms(),
                         kp_near: kp,
@@ -215,6 +218,16 @@ impl<'a> OutputRuntimeCoordinator<'a> {
                         .runtime
                         .adaptive_resampling_config
                         .force_silence_in_far_mode
+                && requested.hard_recover_high_in_far_mode
+                    == self
+                        .runtime
+                        .adaptive_resampling_config
+                        .hard_recover_high_in_far_mode
+                && requested.hard_recover_low_in_far_mode
+                    == self
+                        .runtime
+                        .adaptive_resampling_config
+                        .hard_recover_low_in_far_mode
                 && requested.far_mode_return_fade_in_ms
                     == self
                         .runtime
@@ -245,11 +258,17 @@ impl<'a> OutputRuntimeCoordinator<'a> {
 
             self.runtime.adaptive_resampling_config = requested;
             log::info!(
-                "Applying adaptive resampling tuning (live): far_mode={}, far_silence={}, hard_recover=forced, far_return_fade_in_ms={}, kp={:.4}, ki={:.4}, integral_discharge_ratio={:.4}, max_adjust={:.6}, update_interval_callbacks={}, far_threshold_ms={}",
+                "Applying adaptive resampling tuning (live): far_mode={}, far_silence={}, hard_recover_high={}, hard_recover_low={}, far_return_fade_in_ms={}, kp={:.4}, ki={:.4}, integral_discharge_ratio={:.4}, max_adjust={:.6}, update_interval_callbacks={}, far_threshold_ms={}",
                 self.runtime.adaptive_resampling_config.enable_far_mode,
                 self.runtime
                     .adaptive_resampling_config
                     .force_silence_in_far_mode,
+                self.runtime
+                    .adaptive_resampling_config
+                    .hard_recover_high_in_far_mode,
+                self.runtime
+                    .adaptive_resampling_config
+                    .hard_recover_low_in_far_mode,
                 self.runtime
                     .adaptive_resampling_config
                     .far_mode_return_fade_in_ms,

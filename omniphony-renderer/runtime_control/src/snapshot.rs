@@ -205,8 +205,12 @@ pub fn build_live_state_bundle(
                 args: vec![OscType::Int(if requested.adaptive.force_silence_in_far_mode { 1 } else { 0 })],
             }),
             OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/adaptive_resampling/hard_recover_in_far_mode".to_string(),
-                args: vec![OscType::Int(if requested.adaptive.hard_recover_in_far_mode { 1 } else { 0 })],
+                addr: "/omniphony/state/adaptive_resampling/hard_recover_high_in_far_mode".to_string(),
+                args: vec![OscType::Int(if requested.adaptive.hard_recover_high_in_far_mode { 1 } else { 0 })],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/hard_recover_low_in_far_mode".to_string(),
+                args: vec![OscType::Int(if requested.adaptive.hard_recover_low_in_far_mode { 1 } else { 0 })],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms".to_string(),
