@@ -8,6 +8,109 @@ import { applySpeakerPolarEdit, applySpeakerCartesianEdit, applySpeakerSceneCart
 import { setSelectedSource } from './sources.js';
 import { projectRayOntoAxis } from './input.js';
 
+let boundCanvas = null;
+
+function onPointerDown(event) {
+  app.pointerDownPosition = { x: event.clientX, y: event.clientY };
+  if (beginSpeakerDrag(event)) {
+    app.pointerDownPosition = null;
+  }
+}
+
+function onPointerUp(event) {
+  if (app.isDraggingSpeaker && event.pointerId === app.draggingPointerId) {
+    endSpeakerDrag();
+  }
+  if (!app.pointerDownPosition) {
+    return;
+  }
+
+  const dx = event.clientX - app.pointerDownPosition.x;
+  const dy = event.clientY - app.pointerDownPosition.y;
+  app.pointerDownPosition = null;
+
+  if (Math.hypot(dx, dy) <= 6) {
+    const hitSceneItem = selectSceneItemFromPointer(event);
+    if (hitSceneItem) {
+      return;
+    }
+    setSelectedSource(null);
+    setSelectedSpeaker(null);
+    updateControlsForEditMode();
+  }
+}
+
+function onPointerMove(event) {
+  if (app.isDraggingSpeaker && event.pointerId === app.draggingPointerId) {
+    updateSpeakerDrag(event);
+  }
+}
+
+function onPointerCancel() {
+  endSpeakerDrag();
+}
+
+function onPointerLeave() {
+  endSpeakerDrag();
+}
+
+function onWheel(event) {
+  if (app.activeEditMode !== 'polar' || app.selectedSpeakerIndex === null || !app.polarEditArmed) {
+    return;
+  }
+  if (!event.ctrlKey && !event.shiftKey) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const prevZoom = controls.enableZoom;
+  controls.enableZoom = false;
+
+  const delta = -Math.sign(event.deltaY);
+  const step = event.shiftKey ? 0.01 : 0.05;
+  const next = Math.min(2.0, Math.max(0.2, app.dragDistance + delta * step));
+  if (next === app.dragDistance) {
+    return;
+  }
+  app.dragDistance = next;
+  const pos = sphericalToCartesianDeg(app.dragAzimuthDeg, app.dragElevationDeg, app.dragDistance);
+  const mesh = speakerMeshes[app.selectedSpeakerIndex];
+  if (mesh) {
+    mesh.position.set(pos.x, pos.y, pos.z);
+  }
+  const label = speakerLabels[app.selectedSpeakerIndex];
+  if (label) {
+    label.position.set(pos.x, pos.y + 0.12, pos.z);
+  }
+  const speaker = app.currentLayoutSpeakers[app.selectedSpeakerIndex];
+  if (speaker) {
+    applySpeakerSceneCartesianEdit(app.selectedSpeakerIndex, pos.x, pos.y, pos.z, false);
+  }
+  controls.enableZoom = prevZoom;
+}
+
+export function rebindPointerListeners() {
+  const canvas = renderer.domElement;
+  if (boundCanvas === canvas) {
+    return;
+  }
+  if (boundCanvas) {
+    boundCanvas.removeEventListener('pointerdown', onPointerDown);
+    boundCanvas.removeEventListener('pointerup', onPointerUp);
+    boundCanvas.removeEventListener('pointermove', onPointerMove);
+    boundCanvas.removeEventListener('pointercancel', onPointerCancel);
+    boundCanvas.removeEventListener('pointerleave', onPointerLeave);
+    boundCanvas.removeEventListener('wheel', onWheel, true);
+  }
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointercancel', onPointerCancel);
+  canvas.addEventListener('pointerleave', onPointerLeave);
+  canvas.addEventListener('wheel', onWheel, { passive: false, capture: true });
+  boundCanvas = canvas;
+}
+
 function updateControlsForEditMode() {
   controls.enableZoom = true;
 }
@@ -239,83 +342,5 @@ export function endSpeakerDrag() {
 }
 
 export function setupPointerListeners() {
-  renderer.domElement.addEventListener('pointerdown', (event) => {
-    app.pointerDownPosition = { x: event.clientX, y: event.clientY };
-    if (beginSpeakerDrag(event)) {
-      app.pointerDownPosition = null;
-      return;
-    }
-  });
-
-  renderer.domElement.addEventListener('pointerup', (event) => {
-    if (app.isDraggingSpeaker && event.pointerId === app.draggingPointerId) {
-      endSpeakerDrag();
-    }
-    if (!app.pointerDownPosition) {
-      return;
-    }
-
-    const dx = event.clientX - app.pointerDownPosition.x;
-    const dy = event.clientY - app.pointerDownPosition.y;
-    app.pointerDownPosition = null;
-
-    if (Math.hypot(dx, dy) <= 6) {
-      const hitSceneItem = selectSceneItemFromPointer(event);
-      if (hitSceneItem) {
-        return;
-      }
-      setSelectedSource(null);
-      setSelectedSpeaker(null);
-      updateControlsForEditMode();
-    }
-  });
-
-  renderer.domElement.addEventListener('pointermove', (event) => {
-    if (app.isDraggingSpeaker && event.pointerId === app.draggingPointerId) {
-      updateSpeakerDrag(event);
-    }
-  });
-
-  renderer.domElement.addEventListener('pointercancel', () => {
-    endSpeakerDrag();
-  });
-
-  renderer.domElement.addEventListener('pointerleave', () => {
-    endSpeakerDrag();
-  });
-
-  renderer.domElement.addEventListener('wheel', (event) => {
-    if (app.activeEditMode !== 'polar' || app.selectedSpeakerIndex === null || !app.polarEditArmed) {
-      return;
-    }
-    if (!event.ctrlKey && !event.shiftKey) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    const prevZoom = controls.enableZoom;
-    controls.enableZoom = false;
-
-    const delta = -Math.sign(event.deltaY);
-    const step = event.shiftKey ? 0.01 : 0.05;
-    const next = Math.min(2.0, Math.max(0.2, app.dragDistance + delta * step));
-    if (next === app.dragDistance) {
-      return;
-    }
-    app.dragDistance = next;
-    const pos = sphericalToCartesianDeg(app.dragAzimuthDeg, app.dragElevationDeg, app.dragDistance);
-    const mesh = speakerMeshes[app.selectedSpeakerIndex];
-    if (mesh) {
-      mesh.position.set(pos.x, pos.y, pos.z);
-    }
-    const label = speakerLabels[app.selectedSpeakerIndex];
-    if (label) {
-      label.position.set(pos.x, pos.y + 0.12, pos.z);
-    }
-    const speaker = app.currentLayoutSpeakers[app.selectedSpeakerIndex];
-    if (speaker) {
-      applySpeakerSceneCartesianEdit(app.selectedSpeakerIndex, pos.x, pos.y, pos.z, false);
-    }
-    controls.enableZoom = prevZoom;
-  }, { passive: false, capture: true });
+  rebindPointerListeners();
 }

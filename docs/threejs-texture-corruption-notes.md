@@ -183,6 +183,36 @@ Why this still fits:
 - a regression clearly happened on 2026-03-24 when the hardened label path was replaced by `CanvasTexture`
 - the 2026-03-27 hardening reduced obvious risk factors but did not fully eliminate the issue
 
+## New finding: DOM panel composition can trigger it
+
+A much stronger trigger was identified during later debugging:
+
+- opening/closing certain collapsible DOM panels above the Three.js canvas in Tauri/WebView can trigger the corruption very reliably
+- `Room geometry` and `OSC config` were both observed to do this with the old `display: none` <-> `display: flex` pattern
+- replacing those toggles with a non-destructive hide/show strategy based on:
+  - `max-height`
+  - `opacity`
+  - `overflow: hidden`
+  - `pointer-events: none`
+  significantly reduced or removed the immediate trigger
+
+This is important because it shifts part of the suspicion away from "labels/trails only" toward:
+
+- WebView compositing
+- DOM/canvas stacking behavior
+- or a Tauri/WebKit/WebGL interaction triggered by abrupt layout/composition changes above the canvas
+
+In other words, the bug may still manifest in Three.js resources, but a reliable trigger can be a DOM visibility pattern rather than a purely Three.js-side resource update.
+
+## Practical rule for the Studio frontend
+
+For collapsible panels rendered over the 3D canvas:
+
+- avoid `display: none` <-> `display: flex/block/grid` toggles when possible
+- prefer keeping the panel mounted and switching visibility with `max-height`, `opacity`, `overflow`, and `pointer-events`
+
+This should be treated as a defensive workaround for the current Tauri/WebView rendering bug, even if the ultimate root cause is lower in the stack.
+
 ## Recommended next diagnostics
 
 1. Add logging for `webglcontextlost` and `webglcontextrestored`.
@@ -197,7 +227,8 @@ Why this still fits:
    - whether trails were in `diffuse` or `line`
    - whether the corrupted text was speaker labels, object labels, or both
    - whether the issue appeared after resize, sleep/wake, monitor changes, or long runtime
-4. If needed, add a temporary debug action to forcibly rebuild all label textures and trail materials after corruption to see whether the problem is recoverable without full reload.
+4. When investigating UI triggers, test whether the panel uses `display:none/flex` toggles over the canvas and convert it first before changing more Three.js code.
+5. If needed, add a temporary debug action to forcibly rebuild all label textures and trail materials after corruption to see whether the problem is recoverable without full reload.
 
 ## Files historically involved
 

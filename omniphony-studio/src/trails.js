@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { app, sourceTrails, sourcePositionsRaw, sourceMeshes, speakerMeshes, objectItems } from './state.js';
 import { normalizedOmniphonyToScenePosition, mapRoomPosition, omniphonyToSceneCartesian, hydrateObjectCoordinateState } from './coordinates.js';
+import { scene } from './scene/setup.js';
 
 // ── Module-level trail state ──────────────────────────────────────────
 let trailRenderMode = 'diffuse';
@@ -212,6 +213,28 @@ export function rebuildTrailGeometry(id) {
     return;
   }
   rebuildDiffuseTrailGeometry(trail, mappedPositions, pointColors, sourceScale);
+}
+
+export function replaceTrailRenderable(id) {
+  const trail = sourceTrails.get(id);
+  if (!trail?.line) {
+    return;
+  }
+  const previous = trail.line;
+  const next = createTrailRenderable();
+  next.visible = previous.visible;
+  scene.add(next);
+  scene.remove(previous);
+  previous.geometry.dispose();
+  previous.material.dispose();
+  trail.line = next;
+  rebuildTrailGeometry(id);
+}
+
+export function rebuildAllTrailRenderables() {
+  sourceTrails.forEach((_trail, id) => {
+    replaceTrailRenderable(id);
+  });
 }
 
 // ── Trail decay ───────────────────────────────────────────────────────

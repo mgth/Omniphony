@@ -11,7 +11,6 @@ import { scheduleUIFlush } from '../flush.js';
 import { flushCallbacks } from '../flush.js';
 import { invoke } from '@tauri-apps/api/core';
 import { roomDimensionGroup, roomBounds, roomGroup, room, roomEdges, roomFaces, fitScreenToUpperHalf } from '../scene/setup.js';
-import { createSmallLabelSprite, setLabelSpriteText } from '../scene/labels.js';
 import { updateVbapCartesianFaceGrid } from '../scene/gizmos.js';
 import { updateSourceDecorations } from '../sources.js';
 import { rebuildTrailGeometry } from '../trails.js';
@@ -589,12 +588,12 @@ export function setRoomGeometryExpanded(expanded) {
     roomGeometryFormEl.classList.toggle('open', app.roomGeometryExpanded);
   }
   if (roomGeometrySummaryEl) {
-    roomGeometrySummaryEl.style.display = app.roomGeometryExpanded ? 'none' : '';
+    roomGeometrySummaryEl.style.display = 'none';
   }
   if (roomGeometryToggleBtnEl) {
     roomGeometryToggleBtnEl.textContent = app.roomGeometryExpanded ? '\u25be' : '\u25b8';
   }
-  roomDimensionGroup.visible = app.roomGeometryExpanded;
+  roomDimensionGroup.visible = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -607,13 +606,10 @@ function createRoomDimensionGuide(color = 0x9dd3ff) {
     new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.85, depthTest: false })
   );
   line.renderOrder = 30;
-  const label = createSmallLabelSprite('');
-  label.renderOrder = 31;
   const group = new THREE.Group();
   group.add(line);
-  group.add(label);
   roomDimensionGroup.add(group);
-  return { group, line, label };
+  return { group, line };
 }
 
 const roomDimensionGuides = {
@@ -626,7 +622,15 @@ const roomDimensionGuides = {
   totalHeight: createRoomDimensionGuide(0xffb3e6)
 };
 
-function updateRoomDimensionGuide(guide, start, end, tickDir, labelText) {
+export function rebuildRoomDimensionGuideResources() {
+  Object.values(roomDimensionGuides).forEach((guide) => {
+    if (guide?.line?.material) {
+      guide.line.material.needsUpdate = true;
+    }
+  });
+}
+
+function updateRoomDimensionGuide(guide, start, end, tickDir, _labelText) {
   const tick = tickDir.clone().normalize().multiplyScalar(0.04);
   const points = [
     start, end,
@@ -635,9 +639,6 @@ function updateRoomDimensionGuide(guide, start, end, tickDir, labelText) {
   ];
   guide.line.geometry.dispose();
   guide.line.geometry = new THREE.BufferGeometry().setFromPoints(points);
-  const mid = start.clone().add(end).multiplyScalar(0.5).add(tick.clone().multiplyScalar(2.2));
-  guide.label.position.copy(mid);
-  setLabelSpriteText(guide.label, labelText);
 }
 
 export function updateRoomDimensionGuides(preview = null) {
@@ -706,7 +707,7 @@ export function updateRoomDimensionGuides(preview = null) {
     `${formatNumber((ratioHeight + ratioLower) * mpuValue, 2)}m`
   );
 
-  roomDimensionGroup.visible = app.roomGeometryExpanded;
+  roomDimensionGroup.visible = false;
 }
 
 // ---------------------------------------------------------------------------

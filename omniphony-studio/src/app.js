@@ -55,6 +55,7 @@ import { setupUIListeners } from './setup-listeners.js';
 import { setupPointerListeners } from './picking.js';
 import { setupNumericWheelEditing } from './input.js';
 import { flushUI, flushCallbacks } from './flush.js';
+import { setupVisualRecovery } from './visual-recovery.js';
 
 // ── Flush callback wiring ──────────────────────────────────────────────────
 import { renderSpreadDisplay } from './controls/spread.js';
@@ -206,6 +207,7 @@ setDisplaySectionOpen(false);
 setupUIListeners();
 setupPointerListeners();
 setupNumericWheelEditing();
+setupVisualRecovery();
 
 // Register Tauri backend event listeners
 setupTauriBridge();
@@ -256,7 +258,15 @@ function animate() {
     outline.quaternion.copy(camera.quaternion);
   });
 
-  renderer.render(scene, camera);
+  try {
+    const gl = renderer.getContext?.();
+    if (gl?.isContextLost?.()) {
+      return;
+    }
+    renderer.render(scene, camera);
+  } catch (error) {
+    console.error('[renderer.render]', error);
+  }
 }
 
 animate();

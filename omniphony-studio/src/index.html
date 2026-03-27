@@ -283,15 +283,31 @@
         background: rgba(255, 255, 255, 0.08);
       }
 
+      /* Important: do not toggle collapsible UI above the WebGL canvas with
+         display:none <-> flex/block. In Tauri/WebView this has repeatedly
+         triggered the long-standing texture corruption bug in the 3D view
+         (text labels replaced by scene copies, diffuse trails turning into
+         opaque squares). Keep panels in the DOM and hide them with
+         max-height/opacity/pointer-events instead. */
+
       .log-panel-body {
-        display: none;
+        display: block;
         max-height: min(28vh, 260px);
+        opacity: 0;
         overflow-y: auto;
         padding-right: 0.15rem;
+        pointer-events: none;
       }
 
       #logOverlay.expanded .log-panel-body {
-        display: block;
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      #logOverlay.collapsed .log-panel-body {
+        max-height: 0;
+        opacity: 0;
+        overflow: hidden;
       }
 
       .log-panel-empty {
@@ -545,25 +561,39 @@
       }
 
       .osc-config-form {
-        display: none;
+        display: flex;
         flex-direction: column;
         gap: 0.35rem;
-        margin-top: 0.4rem;
+        margin-top: 0;
+        max-height: 0;
+        opacity: 0;
+        overflow: hidden;
+        pointer-events: none;
       }
 
       .osc-config-form.open {
-        display: flex;
+        margin-top: 0.4rem;
+        max-height: 20rem;
+        opacity: 1;
+        pointer-events: auto;
       }
 
       .room-geometry-form {
-        display: none;
+        display: flex;
         flex-direction: column;
         gap: 0.25rem;
-        margin-top: 0.2rem;
+        margin-top: 0;
+        max-height: 0;
+        opacity: 0;
+        overflow: hidden;
+        pointer-events: none;
       }
 
       .room-geometry-form.open {
-        display: flex;
+        margin-top: 0.2rem;
+        max-height: 34rem;
+        opacity: 1;
+        pointer-events: auto;
       }
 
       .adaptive-advanced-form {
@@ -592,18 +622,25 @@
       }
 
       .telemetry-gauges-form {
-        display: none;
+        display: flex;
         flex-direction: column;
         gap: 0.3rem;
-        margin-top: 0.35rem;
+        margin-top: 0;
         padding: 0.45rem 0.5rem;
         background: rgba(255, 255, 255, 0.05);
         border: 1px solid rgba(255, 255, 255, 0.12);
         border-radius: 8px;
+        max-height: 0;
+        opacity: 0;
+        overflow: hidden;
+        pointer-events: none;
       }
 
       .telemetry-gauges-form.open {
-        display: flex;
+        margin-top: 0.35rem;
+        max-height: 48rem;
+        opacity: 1;
+        pointer-events: auto;
       }
 
       .save-footer {
@@ -767,12 +804,18 @@
       }
 
       .conditional-params {
-        display: none;
+        display: grid;
+        max-height: 0;
+        opacity: 0;
+        overflow: hidden;
+        pointer-events: none;
       }
 
       .conditional-params.open {
-        display: grid;
         gap: 0.2rem;
+        max-height: 80rem;
+        opacity: 1;
+        pointer-events: auto;
       }
 
       .info-list {

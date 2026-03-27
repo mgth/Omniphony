@@ -18,15 +18,51 @@ export const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window
 camera.position.set(-3.8, 1.1, 0.0);
 camera.lookAt(0, 0.25, 0);
 
-export const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
+function configureRenderer(nextRenderer) {
+  nextRenderer.setSize(window.innerWidth, window.innerHeight);
+  return nextRenderer;
+}
+
+export let renderer = configureRenderer(new THREE.WebGLRenderer({ antialias: true }));
 document.body.appendChild(renderer.domElement);
 
-export const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0.25, 0);
-controls.enableDamping = true;
-controls.dampingFactor = 0.06;
-controls.update();
+function createControls(domElement) {
+  const nextControls = new OrbitControls(camera, domElement);
+  nextControls.target.set(0, 0.25, 0);
+  nextControls.enableDamping = true;
+  nextControls.dampingFactor = 0.06;
+  nextControls.update();
+  return nextControls;
+}
+
+export let controls = createControls(renderer.domElement);
+
+export function rebuildRendererOnExistingCanvas() {
+  const canvas = renderer.domElement;
+  renderer.dispose();
+  renderer = configureRenderer(new THREE.WebGLRenderer({
+    antialias: true,
+    canvas
+  }));
+  return renderer;
+}
+
+export function rebuildRendererOnFreshCanvas() {
+  const previousCanvas = renderer.domElement;
+  const parent = previousCanvas.parentNode;
+  const nextRenderer = configureRenderer(new THREE.WebGLRenderer({ antialias: true }));
+  if (parent) {
+    parent.replaceChild(nextRenderer.domElement, previousCanvas);
+  } else {
+    document.body.appendChild(nextRenderer.domElement);
+    previousCanvas.remove();
+  }
+  renderer.dispose();
+  controls.dispose();
+  renderer = nextRenderer;
+  controls = createControls(renderer.domElement);
+  return renderer;
+}
 
 // ---------------------------------------------------------------------------
 // Lights

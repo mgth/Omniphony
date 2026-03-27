@@ -34,16 +34,11 @@ export function buildLabelSvgDataUrl(text, color, width, height, isLarge) {
 }
 
 export function createLabelSpriteBase(width, height, scaleX, scaleY, color, text) {
-  const image = new Image();
-  const texture = new THREE.Texture(image);
-  texture.minFilter = THREE.LinearFilter;
-  texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = false;
-  texture.colorSpace = THREE.SRGBColorSpace;
+  const texture = createLabelTexture();
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
   const sprite = new THREE.Sprite(material);
   sprite.scale.set(scaleX, scaleY, 1);
-  sprite.userData.labelImage = image;
+  sprite.userData.labelImage = texture.image;
   sprite.userData.labelTexture = texture;
   sprite.userData.labelText = '';
   sprite.userData.labelColor = color;
@@ -59,6 +54,34 @@ export function createLabelSprite(text) {
 
 export function createSmallLabelSprite(text, color = '#d9ecff') {
   return createLabelSpriteBase(128, 64, 0.25, 0.12, color, text);
+}
+
+export function createLabelTexture() {
+  const image = new Image();
+  const texture = new THREE.Texture(image);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+export function rebuildLabelSpriteTexture(sprite) {
+  if (!sprite?.material) {
+    return;
+  }
+  const oldTexture = sprite.userData?.labelTexture;
+  const nextTexture = createLabelTexture();
+  sprite.userData.labelImage = nextTexture.image;
+  sprite.userData.labelTexture = nextTexture;
+  sprite.material.map = nextTexture;
+  sprite.material.needsUpdate = true;
+  if (oldTexture && oldTexture !== nextTexture) {
+    oldTexture.dispose();
+  }
+  const nextText = String(sprite.userData?.labelText ?? '');
+  sprite.userData.labelText = '';
+  setLabelSpriteText(sprite, nextText);
 }
 
 export function setLabelSpriteText(sprite, text) {
