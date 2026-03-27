@@ -116,6 +116,7 @@ export function setupUIListeners() {
   const trailInfoModalEl = document.getElementById('trailInfoModal');
   const effectiveRenderInfoModalEl = document.getElementById('effectiveRenderInfoModal');
   const oscInfoBtnEl = document.getElementById('oscInfoBtn');
+  const aboutOpenAreaEl = document.getElementById('aboutOpenArea');
   const aboutBtnEl = document.getElementById('aboutBtn');
   const aboutCloseBtnEl = document.getElementById('aboutCloseBtn');
   const aboutModalEl = document.getElementById('aboutModal');
@@ -713,6 +714,18 @@ export function setupUIListeners() {
   if (aboutBtnEl) {
     aboutBtnEl.addEventListener('click', () => {
       setAboutModalOpen(true);
+    });
+  }
+
+  if (aboutOpenAreaEl) {
+    aboutOpenAreaEl.addEventListener('click', () => {
+      setAboutModalOpen(true);
+    });
+    aboutOpenAreaEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        setAboutModalOpen(true);
+      }
     });
   }
 
