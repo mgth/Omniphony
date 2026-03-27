@@ -344,9 +344,11 @@ pub fn update_far_mode_state(
         }
     }
 
+    let low_recover_requires_mute = matches!(state.low_recover_phase, LowRecoverPhase::Refill)
+        || low_recover_trim_plan.desired_consume_output_samples > 0;
     let mute_far_output = far_mode_enabled
         && ((adaptive_config.force_silence_in_far_mode && is_far_band)
-            || state.low_recover_phase != LowRecoverPhase::Inactive);
+            || low_recover_requires_mute);
     let hard_recover_high = far_mode_enabled
         && adaptive_config.hard_recover_high_in_far_mode
         && is_far_band
@@ -368,8 +370,8 @@ pub fn update_far_mode_state(
     FarModeDecision {
         mute_far_output,
         hard_recover_high,
-        hold_low_recover: state.low_recover_phase != LowRecoverPhase::Inactive,
-        consume_while_muted: state.low_recover_phase == LowRecoverPhase::Settling,
+        hold_low_recover: low_recover_requires_mute,
+        consume_while_muted: low_recover_trim_plan.desired_consume_output_samples > 0,
         low_recover_trim_input_samples: low_recover_trim_plan.desired_consume_input_samples,
         low_recover_trim_output_samples: low_recover_trim_plan.desired_consume_output_samples,
     }
