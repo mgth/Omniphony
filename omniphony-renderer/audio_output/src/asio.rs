@@ -500,6 +500,7 @@ impl AsioWriter {
                     callback_input_domain_samples,
                     effective_resample_ratio,
                     channel_count as usize,
+                    input_sample_rate,
                     output_sample_rate,
                 );
                 if far_decision.hold_low_recover {

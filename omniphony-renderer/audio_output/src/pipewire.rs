@@ -1037,6 +1037,7 @@ fn run_pipewire_loop(
                             callback_input_domain_samples,
                             effective_resample_ratio,
                             channel_count as usize,
+                            sample_rate,
                             actual_output_rate,
                         );
 
@@ -1238,6 +1239,7 @@ fn run_pipewire_loop(
                             callback_input_domain_samples,
                             1.0,
                             channel_count as usize,
+                            sample_rate,
                             actual_output_rate,
                         );
                         if far_decision.hard_recover_high {
