@@ -415,6 +415,7 @@ impl AsioWriter {
                     samples_per_ms,
                 );
                 current_adaptive_band_clone.store(fallback_band, Ordering::Relaxed);
+                let mut recovery_band = fallback_band;
 
                 // Adaptive rate logic (PI Controller)
                 // Adjusts the resampling ratio around the base ratio to maintain buffer level
@@ -456,6 +457,7 @@ impl AsioWriter {
                         current_rate_adjust_clone
                             .store(decision.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
                         current_adaptive_band_clone.store(decision.adaptive_band, Ordering::Relaxed);
+                        recovery_band = decision.adaptive_band;
 
                         if callback_count % 100 == 0 {
                             log::debug!(
@@ -478,9 +480,9 @@ impl AsioWriter {
                         paused_rate_adjust(resample_ratio, effective_resample_ratio);
                     current_rate_adjust_clone
                         .store(held_consume_adjust.to_bits(), Ordering::Relaxed);
+                    recovery_band = current_adaptive_band_clone.load(Ordering::Relaxed);
                 } else {
                     current_rate_adjust_clone.store(1.0f32.to_bits(), Ordering::Relaxed);
-                    current_adaptive_band_clone.store(0, Ordering::Relaxed);
                 }
 
                 // 2. Decide far-mode recovery before consuming more input for this callback.
@@ -492,7 +494,7 @@ impl AsioWriter {
                 let far_decision: FarModeDecision = update_far_mode_state(
                     &mut runtime_state,
                     &far_mode_cfg,
-                    current_adaptive_band_clone.load(Ordering::Relaxed) == crate::ADAPTIVE_BAND_FAR,
+                    recovery_band == crate::ADAPTIVE_BAND_FAR,
                     metrics.control_available,
                     target_buffer_fill,
                     callback_input_domain_samples,
@@ -542,7 +544,7 @@ impl AsioWriter {
                         callback_input_domain_samples,
                         metrics.control_available,
                         target_buffer_fill,
-                        resample_ratio,
+                        effective_resample_ratio,
                         channel_count as usize,
                     );
                     if let Err(e) = resampler_fifo.ensure_output_samples(

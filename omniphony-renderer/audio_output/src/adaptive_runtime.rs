@@ -293,6 +293,9 @@ pub fn update_far_mode_state(
     };
     let tolerance_input_samples =
         align_samples_to_audio_frame((callback_input_domain_samples / 4).max(channel_count), channel_count);
+    let low_recover_entry_threshold =
+        target_buffer_fill.saturating_sub(tolerance_input_samples);
+    let low_recover_exit_threshold = low_recover_entry_threshold;
 
     if !far_mode_enabled || !adaptive_config.hard_recover_low_in_far_mode {
         state.low_recover_phase = LowRecoverPhase::Inactive;
@@ -300,13 +303,13 @@ pub fn update_far_mode_state(
     } else {
         match state.low_recover_phase {
             LowRecoverPhase::Inactive => {
-                if is_far_band && control_available < target_buffer_fill {
+                if is_far_band && control_available < low_recover_entry_threshold {
                     state.low_recover_phase = LowRecoverPhase::Refill;
                     state.low_recover_settle_stable_callbacks = 0;
                 }
             }
             LowRecoverPhase::Refill => {
-                if control_available >= target_buffer_fill {
+                if control_available >= low_recover_exit_threshold {
                     state.low_recover_phase = LowRecoverPhase::Settling;
                     state.low_recover_settle_stable_callbacks = 0;
                 }
