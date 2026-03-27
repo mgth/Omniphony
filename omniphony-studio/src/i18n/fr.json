@@ -127,6 +127,7 @@
   "effectiveRender.infoTitle": "Position de rendu effective",
   "effectiveRender.infoButton": "Infos rendu effectif",
   "effectiveRender.infoBody": "Affiche une position de rendu effective estimée à partir des gains actuels des enceintes.<br><br>Un petit marqueur est placé au barycentre pondéré des enceintes actives, avec une pondération de type puissance basée sur le carré de chaque gain.<br><br>La ligne fine relie la position nominale de l'objet à cette position de rendu effective.",
+  "display.objectColors": "Couleurs des objets",
   "display.grid": "Grille",
   "renderer.summary": "mode : {mode}",
   "adaptive.title": "Resampling adaptatif",

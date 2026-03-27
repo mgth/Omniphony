@@ -55,6 +55,7 @@ const trailModeSelectEl = document.getElementById('trailModeSelect');
 const trailTtlSliderEl = document.getElementById('trailTtlSlider');
 const trailTtlValEl = document.getElementById('trailTtlVal');
 const effectiveRenderToggleEl = document.getElementById('effectiveRenderToggle');
+const objectColorsToggleEl = document.getElementById('objectColorsToggle');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -116,7 +117,8 @@ export function persistTrailPrefs() {
 export function persistEffectiveRenderPrefs() {
   try {
     localStorage.setItem(EFFECTIVE_RENDER_PREFS_STORAGE_KEY, JSON.stringify({
-      enabled: app.effectiveRenderEnabled
+      enabled: app.effectiveRenderEnabled,
+      objectColors: app.objectColorsEnabled
     }));
   } catch (_e) {
     // Ignore storage errors (private mode, quota, etc.).
@@ -141,6 +143,9 @@ export function applyTrailPrefsToUi() {
 export function applyEffectiveRenderPrefsToUi() {
   if (effectiveRenderToggleEl) {
     effectiveRenderToggleEl.checked = app.effectiveRenderEnabled;
+  }
+  if (objectColorsToggleEl) {
+    objectColorsToggleEl.checked = app.objectColorsEnabled;
   }
 }
 
@@ -170,6 +175,7 @@ export function loadEffectiveRenderPrefs() {
     if (raw) {
       const parsed = JSON.parse(raw);
       app.effectiveRenderEnabled = Boolean(parsed?.enabled);
+      app.objectColorsEnabled = Boolean(parsed?.objectColors);
     }
   } catch (_e) {
     // Ignore malformed payloads.

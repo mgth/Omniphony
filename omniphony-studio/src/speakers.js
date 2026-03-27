@@ -132,6 +132,7 @@ import {
   updateObjectContributionUI as updateObjectContributionUI_src,
   updateEffectiveRenderDecoration,
   getObjectDisplayName,
+  applyObjectItemColor,
   dbfsToScale,
   gainToMix
 } from './sources.js';
@@ -889,6 +890,7 @@ export function updateObjectItem(entry, id, position, name) {
   entry.root.classList.toggle('is-selected', selectedSourceId === id);
   updateMeterUI(entry, sourceLevels.get(id));
   updateObjectContributionUI_src(entry, id);
+  applyObjectItemColor(entry, id);
 }
 
 // ---------------------------------------------------------------------------

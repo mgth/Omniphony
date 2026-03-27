@@ -127,6 +127,7 @@
   "effectiveRender.infoTitle": "Posición de render efectiva",
   "effectiveRender.infoButton": "Info de render efectivo",
   "effectiveRender.infoBody": "Muestra una posición de render efectiva estimada a partir de las ganancias actuales de los altavoces.<br><br>Se coloca un pequeño marcador en el centroide ponderado de los altavoces activos, con una ponderación tipo potencia basada en el cuadrado de cada ganancia.<br><br>La línea fina conecta la posición nominal del objeto con esta posición de render efectiva.",
+  "display.objectColors": "Colores de objetos",
   "display.grid": "Cuadrícula",
   "renderer.summary": "modo: {mode}",
   "adaptive.title": "resampling adaptativo",

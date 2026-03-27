@@ -1208,6 +1208,16 @@
         box-shadow: inset 0 0 0 1px rgba(124, 231, 255, 0.34);
       }
 
+      .object-item.object-colorized .id-strip {
+        background: color-mix(in srgb, var(--object-accent, rgba(0, 0, 0, 0.55)) 34%, rgba(0, 0, 0, 0.55));
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--object-accent, rgba(124, 231, 255, 0.34)) 52%, rgba(255, 255, 255, 0.12));
+      }
+
+      .object-item.object-colorized.has-active-trail .id-strip {
+        background: color-mix(in srgb, var(--object-accent, rgba(124, 231, 255, 0.28)) 55%, rgba(124, 231, 255, 0.28));
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--object-accent, rgba(124, 231, 255, 0.34)) 64%, rgba(124, 231, 255, 0.34));
+      }
+
       .id-strip span {
         writing-mode: vertical-rl;
         text-orientation: mixed;
@@ -1545,6 +1555,10 @@
                 <button id="effectiveRenderInfoBtn" type="button" class="info-icon-btn" data-i18n-title="effectiveRender.infoButton" title="Effective render info">i</button>
               </div>
               <input id="effectiveRenderToggle" type="checkbox" />
+            </div>
+            <div class="inline-toggle" style="margin-top:0">
+              <div data-i18n="display.objectColors">Object colors</div>
+              <input id="objectColorsToggle" type="checkbox" />
             </div>
             <div id="trailSection" style="display:grid;gap:0.3rem">
               <div class="inline-toggle" style="margin-top:0">

@@ -57,6 +57,7 @@ import { rebuildTrailGeometry, createTrailRenderable } from './trails.js';
 import { scene } from './scene/setup.js';
 import { renderVbapCartesianGridToggle, updateVbapCartesianFaceGrid } from './scene/gizmos.js';
 import { setOscStatus } from './controls/osc.js';
+import { updateSourceSelectionStyles } from './sources.js';
 
 export function setupUIListeners() {
   // ── DOM element queries ─────────────────────────────────────────────────
@@ -198,6 +199,7 @@ export function setupUIListeners() {
   const speakerEditPolarModeEl = document.getElementById('speakerEditPolarMode');
   const trailToggleEl = document.getElementById('trailToggle');
   const effectiveRenderToggleEl = document.getElementById('effectiveRenderToggle');
+  const objectColorsToggleEl = document.getElementById('objectColorsToggle');
   const trailModeSelectEl = document.getElementById('trailModeSelect');
   const trailTtlSliderEl = document.getElementById('trailTtlSlider');
   const trailTtlValEl = document.getElementById('trailTtlVal');
@@ -1476,6 +1478,19 @@ export function setupUIListeners() {
     effectiveRenderToggleEl.addEventListener('change', () => {
       app.effectiveRenderEnabled = effectiveRenderToggleEl.checked;
       refreshEffectiveRenderVisibility();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  if (objectColorsToggleEl) {
+    objectColorsToggleEl.checked = app.objectColorsEnabled;
+    objectColorsToggleEl.addEventListener('change', () => {
+      app.objectColorsEnabled = objectColorsToggleEl.checked;
+      updateSourceSelectionStyles();
+      sourceTrails.forEach((_trail, id) => {
+        rebuildTrailGeometry(id);
+      });
+      refreshOverlayLists();
       persistEffectiveRenderPrefs();
     });
   }

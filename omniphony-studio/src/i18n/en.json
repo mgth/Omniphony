@@ -127,6 +127,7 @@
   "effectiveRender.infoTitle": "Effective render position",
   "effectiveRender.infoButton": "Effective render info",
   "effectiveRender.infoBody": "Shows an estimated effective render position computed from the current speaker gains.<br><br>A small marker is placed at the weighted centroid of the active speakers, using a power-style weighting based on each gain squared.<br><br>The thin line connects the object's nominal position to this effective rendered position.",
+  "display.objectColors": "Object colors",
   "display.grid": "Grid",
   "renderer.summary": "mode: {mode}",
   "adaptive.title": "Adaptive Resampling",

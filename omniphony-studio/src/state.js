@@ -37,6 +37,7 @@ export const sourceDirectSpeakerIndices = new Map();
 export const sourceTrails = new Map();
 export const sourceEffectiveMarkers = new Map();
 export const sourceEffectiveLines = new Map();
+export const sourceBaseColors = new Map();
 export const layoutsByKey = new Map();
 
 // Speaker meshes/labels are arrays (indexed by speaker slot)
@@ -232,6 +233,7 @@ export const app = {
   trailRenderMode: 'diffuse',
   trailPointTtlMs: 7000,
   effectiveRenderEnabled: false,
+  objectColorsEnabled: false,
   lastTrailDecayAt: 0,
 
   // Layout

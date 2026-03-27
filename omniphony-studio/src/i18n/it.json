@@ -127,6 +127,7 @@
   "effectiveRender.infoTitle": "Posizione di render effettiva",
   "effectiveRender.infoButton": "Info sul render effettivo",
   "effectiveRender.infoBody": "Mostra una posizione di render effettiva stimata calcolata dai guadagni correnti dei diffusori.<br><br>Un piccolo marcatore viene posto nel baricentro pesato dei diffusori attivi, con una pesatura di tipo potenza basata sul quadrato di ciascun gain.<br><br>La linea sottile collega la posizione nominale dell'oggetto a questa posizione di render effettiva.",
+  "display.objectColors": "Colori oggetto",
   "display.grid": "Griglia",
   "renderer.summary": "modo: {mode}",
   "adaptive.title": "resampling adattivo",

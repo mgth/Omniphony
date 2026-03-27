@@ -31,6 +31,7 @@ import {
   speakerLabels,
   speakerItems,
   objectItems,
+  sourceBaseColors,
   objectMuted,
   objectManualMuted,
   objectBaseGains,
@@ -116,6 +117,73 @@ export function formatObjectLabel(id) {
     }
   }
   return String(id);
+}
+
+const OBJECT_COLOR_PALETTE = [
+  '#ff6b6b',
+  '#4ecdc4',
+  '#ffe66d',
+  '#5dade2',
+  '#af7ac5',
+  '#f5b041',
+  '#58d68d',
+  '#ec7063',
+  '#48c9b0',
+  '#f4d03f',
+  '#5499c7',
+  '#a569bd',
+  '#eb984e',
+  '#45b39d',
+  '#7fb3d5',
+  '#f1948a'
+];
+
+function hashObjectId(id) {
+  let hash = 2166136261;
+  const text = String(id);
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+export function getObjectBaseColor(id) {
+  const key = String(id);
+  let color = sourceBaseColors.get(key);
+  if (!color) {
+    const numericId = Number(key);
+    const paletteIndex = Number.isInteger(numericId)
+      ? Math.abs(numericId) % OBJECT_COLOR_PALETTE.length
+      : hashObjectId(key) % OBJECT_COLOR_PALETTE.length;
+    color = new THREE.Color(OBJECT_COLOR_PALETTE[paletteIndex]);
+    sourceBaseColors.set(key, color.clone());
+  }
+  return color.clone();
+}
+
+export function getObjectTrailColor(id) {
+  return getObjectBaseColor(id).offsetHSL(0, 0.04, 0.08);
+}
+
+export function getObjectUiAccent(id) {
+  const color = getObjectBaseColor(id);
+  return `rgb(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)})`;
+}
+
+export function applyObjectItemColor(entry, id) {
+  if (!entry?.root || !entry.idStrip) {
+    return;
+  }
+  if (!app.objectColorsEnabled) {
+    entry.root.classList.remove('object-colorized');
+    entry.root.style.removeProperty('--object-accent');
+    entry.idStrip.style.removeProperty('color');
+    return;
+  }
+  entry.root.classList.add('object-colorized');
+  entry.root.style.setProperty('--object-accent', getObjectUiAccent(id));
+  entry.idStrip.style.color = '#edf5ff';
 }
 
 // ---------------------------------------------------------------------------
@@ -441,17 +509,21 @@ export function updateSourceColorsFromSelection() {
     const mix = gainToMix(gains?.[app.selectedSpeakerIndex]);
     const hasContribution = mix > 1e-6;
     const contributionColor = speakerSelectedColor;
+    const objectColor = app.objectColorsEnabled ? getObjectBaseColor(id) : sourceMaterial.color.clone();
 
     if (app.selectedSpeakerIndex !== null) {
       mesh.visible = true;
-      mesh.material.color.copy(hasContribution ? contributionColor : sourceMaterial.color);
+      mesh.material.color.copy(objectColor);
+      if (hasContribution) {
+        mesh.material.color.lerp(contributionColor, Math.min(0.68, 0.22 + (0.42 * mix)));
+      }
       mesh.material.opacity = hasContribution
         ? Math.max(baseOpacity * (0.35 + (0.55 * mix)), 0.24)
         : 0.0;
       mesh.scale.setScalar(baseScale);
     } else {
       mesh.visible = true;
-      mesh.material.color.copy(sourceMaterial.color);
+      mesh.material.color.copy(objectColor);
       mesh.material.opacity = 0.0;
       mesh.scale.setScalar(baseScale);
     }
@@ -463,9 +535,10 @@ export function updateSourceColorsFromSelection() {
         ? (mix <= 1e-6 ? 0.15 : 0.25 + (0.73 * mix))
         : 0.98;
       if (app.selectedSpeakerIndex !== null) {
-        outline.material.color.copy(sourceOutlineColor).lerp(contributionColor, hasContribution ? mix * 0.65 : 0);
+        outline.material.color.copy(app.objectColorsEnabled ? objectColor : sourceOutlineColor)
+          .lerp(contributionColor, hasContribution ? mix * 0.65 : 0);
       } else {
-        outline.material.color.copy(sourceOutlineColor);
+        outline.material.color.copy(app.objectColorsEnabled ? objectColor : sourceOutlineColor);
       }
     }
   });
@@ -489,7 +562,7 @@ export function updateSourceSelectionStyles() {
 
     const outline = sourceOutlines.get(id);
     if (outline) {
-      outline.material.color.copy(sourceOutlineColor);
+      outline.material.color.copy(app.objectColorsEnabled ? getObjectBaseColor(id) : sourceOutlineColor);
       const selectedColor = app.selectedSpeakerIndex !== null
         ? sourceHotColor.clone().lerp(sourceOutlineSelectedColor, 0.55)
         : sourceOutlineSelectedColor;
@@ -504,6 +577,11 @@ export function updateSourceSelectionStyles() {
     updateEffectiveRenderDecoration(id);
     if ((sourceTrails.get(id)?.positions.length || 0) > 0) {
       sourceCallbacks.rebuildTrailGeometry?.(id);
+    }
+
+    const entry = objectItems.get(String(id));
+    if (entry) {
+      applyObjectItemColor(entry, id);
     }
   });
 }
@@ -560,12 +638,16 @@ export function setSelectedSource(id) {
 export function getSourceMesh(id) {
   if (!sourceMeshes.has(id)) {
     const mesh = new THREE.Mesh(sourceGeometry, sourceMaterial.clone());
-    mesh.material.color.setHSL(Math.random(), 0.8, 0.6);
+    const objectColor = getObjectBaseColor(id);
+    const trailColor = getObjectTrailColor(id);
+    mesh.material.color.copy(objectColor);
     mesh.material.emissive.copy(sourceDefaultEmissive);
     mesh.material.opacity = 0.0;
     mesh.material.depthWrite = false;
     mesh.userData.sourceId = id;
     mesh.userData.baseOpacity = sourceMaterial.opacity;
+    mesh.userData.objectBaseColor = objectColor.clone();
+    mesh.userData.objectTrailColor = trailColor.clone();
 
     const outline = createSourceOutline();
     const trailLine = createTrailRenderable();
@@ -659,6 +741,7 @@ export function updateSource(id, position) {
   const entry = objectItems.get(key);
   if (entry) {
     entry.root.classList.toggle('has-active-trail', sourceCallbacks.objectHasActiveTrail?.(key) ?? false);
+    applyObjectItemColor(entry, key);
   }
 }
 
@@ -787,6 +870,7 @@ export function removeSource(id) {
   sourceLevelLastSeen.delete(String(id));
   sourceGains.delete(id);
   sourceOutlines.delete(id);
+  sourceBaseColors.delete(String(id));
   sourceNames.delete(String(id));
   sourcePositionsRaw.delete(String(id));
   sourceDirectSpeakerIndices.delete(String(id));

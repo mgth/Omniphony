@@ -14,44 +14,12 @@ const SOURCE_MATERIAL_COLOR = new THREE.Color(0xff7c4d);
 
 // ── Renderable constructors ───────────────────────────────────────────
 
-function createPointSpriteTexture() {
-  const size = 64;
-  const half = size / 2;
-  const innerR = 4;
-  const data = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const dx = x - half + 0.5;
-      const dy = y - half + 0.5;
-      const r = Math.sqrt(dx * dx + dy * dy);
-      // Linear falloff: alpha=1 at r<=innerR, 0 at r>=half, linear between
-      const t = Math.max(0, (r - innerR) / (half - innerR));
-      const alpha = r <= innerR ? 1.0 : Math.max(0, 1.0 - t);
-      const i = (y * size + x) * 4;
-      data[i]     = 255;
-      data[i + 1] = 255;
-      data[i + 2] = 255;
-      data[i + 3] = Math.round(alpha * 255);
-    }
-  }
-  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
-  texture.minFilter = THREE.LinearFilter;
-  texture.magFilter = THREE.LinearFilter;
-  texture.needsUpdate = true;
-  return texture;
-}
-
 export function createDiffuseTrailRenderable() {
-  const texture = createPointSpriteTexture();
-
   const material = new THREE.ShaderMaterial({
     transparent: true,
     depthTest: false,
     depthWrite: false,
     blending: THREE.NormalBlending,
-    uniforms: {
-      pointTexture: { value: texture }
-    },
     vertexShader: `
       attribute vec3 color;
       attribute float size;
@@ -68,13 +36,14 @@ export function createDiffuseTrailRenderable() {
       }
     `,
     fragmentShader: `
-      uniform sampler2D pointTexture;
       varying vec3 vColor;
       varying float vAlpha;
 
       void main() {
-        vec4 tex = texture2D(pointTexture, gl_PointCoord);
-        float alpha = tex.a * vAlpha;
+        vec2 centered = (gl_PointCoord - vec2(0.5)) * 2.0;
+        float radius = length(centered);
+        float alphaMask = 1.0 - smoothstep(0.25, 1.0, radius);
+        float alpha = alphaMask * vAlpha;
         if (alpha <= 0.001) discard;
         gl_FragColor = vec4(vColor, alpha);
       }
@@ -134,6 +103,10 @@ export function trailPointColorFromRaw(raw, fallbackColor) {
 }
 
 export function captureTrailPointColor(mesh) {
+  const objectTrailColor = mesh?.userData?.objectTrailColor;
+  if (objectTrailColor?.isColor) {
+    return [objectTrailColor.r, objectTrailColor.g, objectTrailColor.b];
+  }
   const color = mesh?.material?.color;
   if (!color) {
     return [SOURCE_MATERIAL_COLOR.r, SOURCE_MATERIAL_COLOR.g, SOURCE_MATERIAL_COLOR.b];
@@ -228,7 +201,9 @@ export function rebuildTrailGeometry(id) {
     return;
   }
   const mesh = sourceMeshes.get(id);
-  const fallbackColor = mesh ? mesh.material.color.clone() : new THREE.Color(0xcc6640);
+  const fallbackColor = mesh?.userData?.objectTrailColor?.isColor
+    ? mesh.userData.objectTrailColor.clone()
+    : (mesh ? mesh.material.color.clone() : new THREE.Color(0xcc6640));
   const sourceScale = Math.max(0.0, Number(mesh?.scale.x) || 0.0);
   const mappedPositions = trail.positions.map((raw) => mapTrailRawToScene(raw));
   const pointColors = trail.positions.map((raw) => trailPointColorFromRaw(raw, fallbackColor));

@@ -141,6 +141,7 @@ function loadEffectiveRenderPrefs() {
     if (!raw) return;
     const prefs = JSON.parse(raw);
     if (typeof prefs.enabled === 'boolean') app.effectiveRenderEnabled = prefs.enabled;
+    if (typeof prefs.objectColors === 'boolean') app.objectColorsEnabled = prefs.objectColors;
   } catch (_e) { /* ignore */ }
 }
 

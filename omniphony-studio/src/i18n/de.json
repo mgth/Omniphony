@@ -127,6 +127,7 @@
   "effectiveRender.infoTitle": "Effektive Render-Position",
   "effectiveRender.infoButton": "Info zur effektiven Wiedergabe",
   "effectiveRender.infoBody": "Zeigt eine geschätzte effektive Render-Position, berechnet aus den aktuellen Lautsprecher-Gains.<br><br>Ein kleiner Marker wird im gewichteten Schwerpunkt der aktiven Lautsprecher platziert, mit einer leistungsartigen Gewichtung auf Basis des quadrierten Gains.<br><br>Die feine Linie verbindet die nominelle Objektposition mit dieser effektiven Wiedergabeposition.",
+  "display.objectColors": "Objektfarben",
   "display.grid": "Gitter",
   "renderer.summary": "Modus: {mode}",
   "adaptive.title": "adaptives Resampling",

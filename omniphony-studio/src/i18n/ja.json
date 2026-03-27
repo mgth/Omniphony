@@ -127,6 +127,7 @@
   "effectiveRender.infoTitle": "実効レンダー位置",
   "effectiveRender.infoButton": "実効レンダー情報",
   "effectiveRender.infoBody": "現在のスピーカーゲインから推定した実効レンダー位置を表示します。<br><br>小さなマーカーは、各ゲインの二乗に基づくパワー重み付きで、アクティブなスピーカー位置の重心に配置されます。<br><br>細い線は、オブジェクトの名目上の位置と、この実効的なレンダー位置を結びます。",
+  "display.objectColors": "オブジェクト色",
   "display.grid": "グリッド",
   "renderer.summary": "モード: {mode}",
   "adaptive.title": "適応リサンプリング",
