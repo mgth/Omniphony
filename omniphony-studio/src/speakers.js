@@ -390,6 +390,13 @@ export function updateObjectControlsUI() {
   });
 }
 
+export function updateObjectDominantSpeakerUI(id) {
+  const entry = objectItems.get(String(id));
+  if (entry?.topRight) {
+    entry.topRight.textContent = getObjectDominantSpeakerText(id);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Object helpers (dominant speaker, trail detection)
 // ---------------------------------------------------------------------------

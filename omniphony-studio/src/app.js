@@ -70,7 +70,7 @@ import { updateObjectContributionUI, updateSpeakerContributionUI, getObjectDispl
 import { updateVbapCartesianFaceGrid, renderVbapCartesianGridToggle } from './scene/gizmos.js';
 import { updateObjectMeterUI, updateObjectPositionUI, updateObjectLabelUI } from './flush.js';
 import {
-  renderObjectsList, updateSpeakerControlsUI, updateObjectControlsUI,
+  renderObjectsList, updateSpeakerControlsUI, updateObjectControlsUI, updateObjectDominantSpeakerUI,
   objectHasActiveTrail, getObjectIds, updateSectionProportions
 } from './speakers.js';
 import { rebuildTrailGeometry, captureTrailPointColor } from './trails.js';
@@ -108,6 +108,7 @@ sourceCallbacks.renderObjectsList = renderObjectsList;
 sourceCallbacks.updateObjectPositionUI = updateObjectPositionUI;
 sourceCallbacks.updateObjectLabelUI = updateObjectLabelUI;
 sourceCallbacks.updateObjectMeterUI = updateObjectMeterUI;
+sourceCallbacks.updateObjectDominantSpeakerUI = updateObjectDominantSpeakerUI;
 sourceCallbacks.updateObjectControlsUI = updateObjectControlsUI;
 sourceCallbacks.updateSectionProportions = updateSectionProportions;
 sourceCallbacks.rebuildTrailGeometry = rebuildTrailGeometry;

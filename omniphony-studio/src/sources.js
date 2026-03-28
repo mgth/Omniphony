@@ -86,6 +86,7 @@ export const sourceCallbacks = {
   updateObjectPositionUI: null,
   updateObjectLabelUI: null,
   updateObjectMeterUI: null,
+  updateObjectDominantSpeakerUI: null,
   updateObjectControlsUI: null,
   updateSectionProportions: null,
   rebuildTrailGeometry: null,
@@ -805,6 +806,7 @@ export function normalizeGainsPayload(payload) {
 
 export function updateSourceGains(id, gainsPayload) {
   sourceGains.set(id, normalizeGainsPayload(gainsPayload));
+  sourceCallbacks.updateObjectDominantSpeakerUI?.(String(id));
   if (app.selectedSourceId === String(id)) {
     speakerItems.forEach((entry, speakerId) => {
       updateSpeakerContributionUI(entry, speakerId);
