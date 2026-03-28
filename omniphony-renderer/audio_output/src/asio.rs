@@ -473,7 +473,8 @@ impl AsioWriter {
                 let output_frames_needed = data.len() / device_channel_count_for_callback as usize;
                 let audio_samples_needed = output_frames_needed * channel_count as usize;
                 let far_mode_cfg = live_config_for_callback.lock().unwrap().clone();
-                    let far_decision: FarModeDecision = update_far_mode_state(
+                let startup_low_recover_was_active = runtime_state.startup_low_recover_active;
+                let far_decision: FarModeDecision = update_far_mode_state(
                     &mut runtime_state,
                     &far_mode_cfg,
                     recovery_band == crate::ADAPTIVE_BAND_FAR,
@@ -492,6 +493,17 @@ impl AsioWriter {
                         )),
                         Ordering::Relaxed,
                     );
+                let startup_low_recover_finished =
+                    startup_low_recover_was_active && !runtime_state.startup_low_recover_active;
+                if startup_low_recover_finished {
+                    // Drop any filter/FIFO history accumulated while muted so the first
+                    // audible callback starts from a clean state.
+                    resampler.reset();
+                    let _ = resampler.set_resample_ratio(effective_resample_ratio, false);
+                    resampler_fifo.reset();
+                    data.fill(0.0);
+                    return;
+                }
                 if far_decision.hold_low_recover {
                     let muted_samples_to_consume = if far_decision.consume_while_muted {
                         audio_samples_needed

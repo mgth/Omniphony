@@ -25,6 +25,14 @@ impl ResamplerFifoEngine {
         self.output_fifo.len()
     }
 
+    pub fn reset(&mut self) {
+        self.input_frames_collected = 0;
+        self.output_fifo.clear();
+        for channel in &mut self.resampler_input {
+            channel.fill(0.0);
+        }
+    }
+
     pub fn ensure_output_samples<R: Resampler<f32>>(
         &mut self,
         input_buffer: &ArrayQueue<f32>,
