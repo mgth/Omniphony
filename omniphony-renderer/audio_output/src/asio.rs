@@ -121,12 +121,6 @@ impl AsioWriter {
         let buffer_clone = sample_buffer.clone();
         let stream_ready = Arc::new(AtomicBool::new(false));
         let ready_clone = stream_ready.clone();
-        // Pre-fill gate: the ASIO callback outputs silence until the ring buffer
-        // has accumulated at least target_buffer_fill samples.  This prevents
-        // underruns caused by bursty pipe delivery (e.g. mpv ao=pcm writing
-        // several frames at once then being silent for the inter-burst gap).
-        let playback_ready = Arc::new(AtomicBool::new(false));
-        let playback_ready_clone = Arc::clone(&playback_ready);
         let current_rate_adjust = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let current_rate_adjust_clone = current_rate_adjust.clone();
         let current_adaptive_band = Arc::new(AtomicU8::new(0));
@@ -321,6 +315,7 @@ impl AsioWriter {
 
         let mut resampler_fifo = ResamplerFifoEngine::new(channel_count as usize);
         let mut runtime_state = AdaptiveRuntimeState::new(resample_ratio);
+        runtime_state.activate_startup_low_recover();
         let mut effective_resample_ratio = resample_ratio;
         let reset_ratio_requested = Arc::new(AtomicBool::new(false));
         let reset_ratio_for_callback = Arc::clone(&reset_ratio_requested);
@@ -350,24 +345,6 @@ impl AsioWriter {
                     .try_lock()
                     .map(|cfg| cfg.paused)
                     .unwrap_or(false);
-
-                // Pre-fill gate: hold playback until the ring buffer has enough
-                // audio to sustain the first inter-burst gap without underrun.
-                // Once the gate opens it stays open for the lifetime of the stream.
-                if !playback_ready_clone.load(Ordering::Relaxed) {
-                    let fill = buffer_clone.len();
-                    if fill >= target_buffer_fill {
-                        playback_ready_clone.store(true, Ordering::Relaxed);
-                        log::info!(
-                            "ASIO pre-fill complete ({} samples = {:.0} ms), starting playback",
-                            fill,
-                            fill as f32 / samples_per_ms_f64 as f32
-                        );
-                    } else {
-                        data.fill(0.0);
-                        return;
-                    }
-                }
 
                 // 1. Check buffer fill & Calculate Rate
                 let available_samples = buffer_clone.len(); // Input-domain samples (frames * channels)

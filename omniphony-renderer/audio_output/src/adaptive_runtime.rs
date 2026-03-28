@@ -38,6 +38,7 @@ pub struct AdaptiveRuntimeState {
     pub callback_count: u64,
     pub underrun_warned: bool,
     pub refill_streak: u32,
+    pub startup_low_recover_active: bool,
     pub low_recover_phase: LowRecoverPhase,
     pub low_recover_settle_stable_ms: f32,
     pub far_mode_was_muted: bool,
@@ -53,6 +54,7 @@ impl AdaptiveRuntimeState {
             callback_count: 0,
             underrun_warned: false,
             refill_streak: 0,
+            startup_low_recover_active: false,
             low_recover_phase: LowRecoverPhase::Inactive,
             low_recover_settle_stable_ms: 0.0,
             far_mode_was_muted: false,
@@ -65,6 +67,12 @@ impl AdaptiveRuntimeState {
     pub fn advance_callback(&mut self) -> u64 {
         self.callback_count = self.callback_count.saturating_add(1);
         self.callback_count
+    }
+
+    pub fn activate_startup_low_recover(&mut self) {
+        self.startup_low_recover_active = true;
+        self.low_recover_phase = LowRecoverPhase::Refill;
+        self.low_recover_settle_stable_ms = 0.0;
     }
 }
 
@@ -142,6 +150,7 @@ pub fn reset_adaptive_runtime(
     base_ratio: f64,
 ) -> ResetOutcome {
     state.controller_state.accumulated_drift = 0.0;
+    state.startup_low_recover_active = false;
     state.low_recover_phase = LowRecoverPhase::Inactive;
     state.low_recover_settle_stable_ms = 0.0;
     state.far_mode_was_muted = false;
@@ -331,13 +340,18 @@ pub fn update_far_mode_state(
         target_buffer_fill.saturating_sub(tolerance_input_samples);
     let low_recover_exit_threshold = low_recover_entry_threshold;
 
-    if !far_mode_enabled || !adaptive_config.hard_recover_low_in_far_mode {
+    let low_recover_enabled = adaptive_config.hard_recover_low_in_far_mode
+        || state.startup_low_recover_active;
+
+    if !far_mode_enabled || !low_recover_enabled {
         state.low_recover_phase = LowRecoverPhase::Inactive;
         state.low_recover_settle_stable_ms = 0.0;
     } else {
         match state.low_recover_phase {
             LowRecoverPhase::Inactive => {
-                if is_far_band && control_available < low_recover_entry_threshold {
+                if (state.startup_low_recover_active || is_far_band)
+                    && control_available < low_recover_entry_threshold
+                {
                     state.low_recover_phase = LowRecoverPhase::Refill;
                     state.low_recover_settle_stable_ms = 0.0;
                 }
@@ -366,6 +380,7 @@ pub fn update_far_mode_state(
                 } else {
                     state.low_recover_settle_stable_ms += settle_callback_ms;
                     if state.low_recover_settle_stable_ms >= LOW_RECOVER_SETTLE_STABLE_MS {
+                        state.startup_low_recover_active = false;
                         state.low_recover_phase = LowRecoverPhase::Inactive;
                         state.low_recover_settle_stable_ms = 0.0;
                     }
