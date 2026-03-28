@@ -1,8 +1,8 @@
-# ITU-R BS.775 5.1 Speaker Layout
+# Quadraphonic + LFE speaker layout
 #
-# Standard 5.1 surround sound configuration in normalized Cartesian coordinates.
+# Draft 4.1 configuration for PCM reference bridge work in normalized Cartesian coordinates.
 # LFE remains non-spatialized.
-# Total: 6 channels (including LFE)
+# Total: 5 channels (including LFE)
 
 speakers:
   - name: "FL"
@@ -19,18 +19,11 @@ speakers:
     z: 0.0
     spatialize: true
 
-  - name: "C"
+  - name: "LFE"
     coord_mode: "cartesian"
     x: 0.0
     y: 1.0
     z: 0.0
-    spatialize: true
-
-  - name: "LFE"
-    coord_mode: "cartesian"
-    x: 1.0
-    y: 1.0
-    z: -0.5
     spatialize: false
 
   - name: "BL"

@@ -1,87 +1,89 @@
+# Omniphony live 7.1.4 layout in normalized Cartesian coordinates.
+# LFE remains non-spatialized.
 name: "omniphony (live)"
 radius_m: 1
 speakers:
   - name: "FL"
-    coord_mode: cartesian
-    x: -1
-    y: 0.9999999981373549
-    z: 0
+    coord_mode: "cartesian"
+    x: -1.0
+    y: 1.0
+    z: 0.0
     spatialize: true
     delay_ms: 0
   - name: "FR"
-    coord_mode: cartesian
-    x: 1
-    y: 1
-    z: 0
+    coord_mode: "cartesian"
+    x: 1.0
+    y: 1.0
+    z: 0.0
     spatialize: true
     delay_ms: 0
   - name: "C"
-    coord_mode: polar
-    azimuth: 0
-    elevation: 0
-    distance: 2
+    coord_mode: "cartesian"
+    x: 0.5
+    y: 1.0
+    z: 0.0
     spatialize: true
     delay_ms: 0
   - name: "LFE"
-    coord_mode: cartesian
-    x: 1
-    y: 1
-    z: -1
+    coord_mode: "cartesian"
+    x: 1.0
+    y: 1.0
+    z: -1.0
     spatialize: false
     delay_ms: 0
   - name: "BL"
-    coord_mode: cartesian
-    x: -0.9999999403953552
-    y: -1
-    z: 0
+    coord_mode: "cartesian"
+    x: -1.0
+    y: -1.0
+    z: 0.0
     spatialize: true
     delay_ms: 0
   - name: "BR"
-    coord_mode: cartesian
-    x: 0.9999999403953552
-    y: -1
-    z: 0
+    coord_mode: "cartesian"
+    x: 1.0
+    y: -1.0
+    z: 0.0
     spatialize: true
     delay_ms: 0
   - name: "SL"
-    coord_mode: cartesian
-    x: -1
-    y: 0.000000001862645149230957
-    z: 0
+    coord_mode: "cartesian"
+    x: -1.0
+    y: 0.0
+    z: 0.0
     spatialize: true
     delay_ms: 0
   - name: "SR"
-    coord_mode: cartesian
-    x: 1
-    y: 0.000000001862645149230957
-    z: 0
+    coord_mode: "cartesian"
+    x: 1.0
+    y: 0.0
+    z: 0.0
     spatialize: true
     delay_ms: 0
   - name: "TFL"
-    coord_mode: cartesian
-    x: -1
+    coord_mode: "cartesian"
+    x: -1.0
     y: 0.5
-    z: 0.9999999403953552
+    z: 1.0
     spatialize: true
     delay_ms: 0
   - name: "TFR"
-    coord_mode: cartesian
-    x: 1
+    coord_mode: "cartesian"
+    x: 1.0
     y: 0.5
-    z: 0.9999999403953552
+    z: 1.0
     spatialize: true
     delay_ms: 0
   - name: "TBL"
-    coord_mode: cartesian
-    x: -1
+    coord_mode: "cartesian"
+    x: -1.0
     y: -0.5
-    z: 0.9999999403953552
+    z: 1.0
     spatialize: true
     delay_ms: 0
   - name: "TBR"
-    coord_mode: cartesian
-    x: 1
+    coord_mode: "cartesian"
+    x: 1.0
     y: -0.5
-    z: 0.9999999403953552
+    z: 1.0
     spatialize: true
     delay_ms: 0

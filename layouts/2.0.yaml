@@ -1,17 +1,19 @@
 # ITU-R BS.775 stereo speaker layout
 #
-# Standard 2.0 configuration.
+# Standard 2.0 configuration in normalized Cartesian coordinates.
 # Total: 2 channels
 
 speakers:
   - name: "FL"
-    azimuth: -26.565052
-    elevation: 0.0
-    distance: 2.236068
+    coord_mode: "cartesian"
+    x: -1.0
+    y: 1.0
+    z: 0.0
     spatialize: true
 
   - name: "FR"
-    azimuth: 26.565052
-    elevation: 0.0
-    distance: 2.236068
+    coord_mode: "cartesian"
+    x: 1.0
+    y: 1.0
+    z: 0.0
     spatialize: true

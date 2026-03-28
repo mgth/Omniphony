@@ -1,0 +1,27 @@
+# Stereo + LFE speaker layout
+#
+# Draft 2.1 configuration for PCM reference bridge work in normalized Cartesian coordinates.
+# LFE remains non-spatialized.
+# Total: 3 channels (including LFE)
+
+speakers:
+  - name: "FL"
+    coord_mode: "cartesian"
+    x: -1.0
+    y: 1.0
+    z: 0.0
+    spatialize: true
+
+  - name: "FR"
+    coord_mode: "cartesian"
+    x: 1.0
+    y: 1.0
+    z: 0.0
+    spatialize: true
+
+  - name: "LFE"
+    coord_mode: "cartesian"
+    x: 0.0
+    y: 1.0
+    z: 0.0
+    spatialize: false
