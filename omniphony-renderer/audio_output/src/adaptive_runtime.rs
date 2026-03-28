@@ -20,14 +20,14 @@ pub enum LowRecoverPhase {
 pub fn adaptive_runtime_state_name(
     low_recover_phase: LowRecoverPhase,
     hard_recover_high: bool,
-) -> Option<&'static str> {
+) -> &'static str {
     if hard_recover_high {
-        Some("high-recover")
+        "high-recover"
     } else {
         match low_recover_phase {
-            LowRecoverPhase::Inactive => None,
-            LowRecoverPhase::Refill => Some("low-recover"),
-            LowRecoverPhase::Settling => Some("settling"),
+            LowRecoverPhase::Inactive => "stable",
+            LowRecoverPhase::Refill => "low-recover",
+            LowRecoverPhase::Settling => "settling",
         }
     }
 }

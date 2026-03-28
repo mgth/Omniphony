@@ -67,18 +67,19 @@ pub fn adaptive_band_name(band: u8) -> Option<&'static str> {
     }
 }
 
-pub fn adaptive_runtime_state_code(name: Option<&str>) -> u8 {
+pub fn adaptive_runtime_state_code(name: &str) -> u8 {
     match name {
-        Some("low-recover") => 1,
-        Some("settling") => 2,
-        Some("high-recover") => 3,
-        Some(_) => 255,
-        None => 0,
+        "stable" => 0,
+        "low-recover" => 1,
+        "settling" => 2,
+        "high-recover" => 3,
+        _ => 255,
     }
 }
 
 pub fn adaptive_runtime_state_name_from_code(code: u8) -> Option<&'static str> {
     match code {
+        0 => Some("stable"),
         1 => Some("low-recover"),
         2 => Some("settling"),
         3 => Some("high-recover"),
