@@ -1478,6 +1478,16 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateAdaptiveResamplingState { value } => {
+                s.adaptive_resampling_state = Some(value.clone());
+                (
+                    Some((
+                        "adaptive_resampling:state",
+                        serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
 
             OscEvent::StateAdaptiveResamplingPaused { enabled } => {
                 s.adaptive_resampling_paused = Some(if enabled { 1 } else { 0 });

@@ -242,6 +242,18 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
   if (parts.length === 4 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'adaptive_resampling') {
+    if (parts[3] === 'band' || parts[3] === 'state') {
+      const value = typeof args[0] === 'string' ? args[0] : null;
+      if (value === null) {
+        return null;
+      }
+      return {
+        type: parts[3] === 'band'
+          ? 'state:adaptive_resampling:band'
+          : 'state:adaptive_resampling:state',
+        value
+      };
+    }
     const value = toNumber(args[0]);
     if (value === null) {
       return null;

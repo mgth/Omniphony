@@ -17,6 +17,21 @@ pub enum LowRecoverPhase {
     Settling,
 }
 
+pub fn adaptive_runtime_state_name(
+    low_recover_phase: LowRecoverPhase,
+    hard_recover_high: bool,
+) -> Option<&'static str> {
+    if hard_recover_high {
+        Some("high-recover")
+    } else {
+        match low_recover_phase {
+            LowRecoverPhase::Inactive => None,
+            LowRecoverPhase::Refill => Some("low-recover"),
+            LowRecoverPhase::Settling => Some("settling"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AdaptiveRuntimeState {
     pub controller_state: AdaptiveControllerState,

@@ -48,6 +48,7 @@ impl OscSender {
         latency_target_ms: Option<f32>,
         resample_ratio: Option<f32>,
         adaptive_band: Option<&str>,
+        adaptive_state: Option<&str>,
     ) -> Result<()> {
         let max_gain_id = object_gains.iter().map(|(idx, _)| *idx).max().unwrap_or(0);
         let mut gains_by_id: Vec<Option<&renderer::spatial_vbap::Gains>> =
@@ -131,6 +132,12 @@ impl OscSender {
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/band".to_string(),
                 args: vec![OscType::String(band.to_string())],
+            }));
+        }
+        if let Some(state) = adaptive_state {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/adaptive_resampling/state".to_string(),
+                args: vec![OscType::String(state.to_string())],
             }));
         }
 

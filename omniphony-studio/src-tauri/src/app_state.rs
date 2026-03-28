@@ -199,6 +199,8 @@ pub struct AppState {
     pub adaptive_resampling_near_far_threshold_ms: Option<i64>,
     #[serde(rename = "adaptiveResamplingBand")]
     pub adaptive_resampling_band: Option<String>,
+    #[serde(rename = "adaptiveResamplingState")]
+    pub adaptive_resampling_state: Option<String>,
     #[serde(rename = "adaptiveResamplingPaused")]
     pub adaptive_resampling_paused: Option<u8>,
     #[serde(rename = "vbapRecomputing")]
@@ -315,6 +317,7 @@ impl Default for AppState {
             adaptive_resampling_update_interval_callbacks: Some(1),
             adaptive_resampling_near_far_threshold_ms: Some(1000),
             adaptive_resampling_band: None,
+            adaptive_resampling_state: None,
             adaptive_resampling_paused: Some(0),
             vbap_recomputing: None,
             config_saved: None,

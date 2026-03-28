@@ -246,6 +246,9 @@ export function applyInitState(payload) {
   if (typeof payload.adaptiveResamplingBand === 'string') {
     app.adaptiveResamplingBand = payload.adaptiveResamplingBand;
   }
+  if (typeof payload.adaptiveResamplingState === 'string') {
+    app.adaptiveResamplingState = payload.adaptiveResamplingState;
+  }
   updateAdaptiveResamplingUI();
   if (typeof payload.configSaved === 'number') {
     app.configSaved = payload.configSaved !== 0;

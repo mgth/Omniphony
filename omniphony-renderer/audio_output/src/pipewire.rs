@@ -18,11 +18,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, AdaptiveResamplingConfig,
-    LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, clamp_ratio_for_local_resampler,
+    LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, adaptive_runtime_state_code,
+    adaptive_runtime_state_name_from_code, clamp_ratio_for_local_resampler,
     local_resampler_ratio_bounds,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
-        compute_hard_recover_high_plan,
+        adaptive_runtime_state_name, compute_hard_recover_high_plan,
         discard_ring_samples, note_refill_or_underrun, far_mode_band_from_latency,
         output_to_input_domain_samples, paused_rate_adjust, postprocess_interleaved_output,
         reset_adaptive_runtime,
@@ -250,6 +251,8 @@ pub struct PipewireWriter {
     current_rate_adjust: Arc<AtomicU32>,
     /// 0 = unknown, 1 = near, 2 = far.
     current_adaptive_band: Arc<AtomicU8>,
+    /// 0 = idle, 1 = low-recover, 2 = settling, 3 = high-recover.
+    current_runtime_state: Arc<AtomicU8>,
     /// Signals the PipeWire worker thread to stop and exit cleanly.
     shutdown_requested: Arc<AtomicBool>,
     /// Timestamp of the last successful write into the local ring buffer.
@@ -325,6 +328,8 @@ impl PipewireWriter {
         let rate_adjust_clone = current_rate_adjust.clone();
         let current_adaptive_band = Arc::new(AtomicU8::new(0));
         let adaptive_band_clone = current_adaptive_band.clone();
+        let current_runtime_state = Arc::new(AtomicU8::new(0));
+        let runtime_state_clone = current_runtime_state.clone();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let shutdown_requested_clone = shutdown_requested.clone();
         let last_write_ms = Arc::new(AtomicU64::new(wallclock_millis()));
@@ -364,6 +369,7 @@ impl PipewireWriter {
                 reset_ratio_for_thread,
                 rate_adjust_clone,
                 adaptive_band_clone,
+                runtime_state_clone,
                 shutdown_requested_clone,
                 last_write_ms_clone,
                 measured_latency_clone,
@@ -413,6 +419,7 @@ impl PipewireWriter {
             enable_adaptive_resampling,
             current_rate_adjust,
             current_adaptive_band,
+            current_runtime_state,
             shutdown_requested,
             last_write_ms,
             measured_latency_ms_bits,
@@ -550,6 +557,10 @@ impl PipewireWriter {
         }
     }
 
+    pub fn adaptive_runtime_state(&self) -> Option<&'static str> {
+        adaptive_runtime_state_name_from_code(self.current_runtime_state.load(Ordering::Relaxed))
+    }
+
     /// Downstream graph latency in ms as reported by pw_stream_get_time().delay.
     /// Includes PipeWire graph scheduling and the netjack2 driver quantum.
     /// Returns 0.0 until the stream has been active for ~2 seconds.
@@ -615,6 +626,7 @@ fn run_pipewire_loop(
     reset_ratio_requested: Arc<AtomicBool>,
     current_rate_adjust: Arc<AtomicU32>,
     current_adaptive_band: Arc<AtomicU8>,
+    current_runtime_state: Arc<AtomicU8>,
     shutdown_requested: Arc<AtomicBool>,
     _last_write_ms: Arc<AtomicU64>,
     measured_latency_ms_out: Arc<AtomicU32>,
@@ -1040,6 +1052,13 @@ fn run_pipewire_loop(
                             sample_rate,
                             actual_output_rate,
                         );
+                        current_runtime_state.store(
+                            adaptive_runtime_state_code(adaptive_runtime_state_name(
+                                runtime_state.low_recover_phase,
+                                far_decision.hard_recover_high,
+                            )),
+                            Ordering::Relaxed,
+                        );
 
                         if far_decision.hold_low_recover {
                             let muted_samples_to_consume = if far_decision.consume_while_muted {
@@ -1241,6 +1260,13 @@ fn run_pipewire_loop(
                             channel_count as usize,
                             sample_rate,
                             actual_output_rate,
+                        );
+                        current_runtime_state.store(
+                            adaptive_runtime_state_code(adaptive_runtime_state_name(
+                                runtime_state.low_recover_phase,
+                                far_decision.hard_recover_high,
+                            )),
+                            Ordering::Relaxed,
                         );
                         if far_decision.hard_recover_high {
                             let plan = compute_hard_recover_high_plan(

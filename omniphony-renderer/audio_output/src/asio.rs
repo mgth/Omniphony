@@ -14,9 +14,11 @@ use std::time::Duration;
 
 use crate::{
     AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, adaptive_band_name,
+    adaptive_runtime_state_code, adaptive_runtime_state_name_from_code,
     clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
+        adaptive_runtime_state_name,
         compute_hard_recover_high_plan,
         note_refill_or_underrun, output_to_input_domain_samples, far_mode_band_from_latency,
         paused_rate_adjust, postprocess_interleaved_output, reset_adaptive_runtime,
@@ -46,6 +48,7 @@ pub struct AsioWriter {
     target_buffer_fill: usize,
     current_rate_adjust: Arc<AtomicU32>,
     current_adaptive_band: Arc<AtomicU8>,
+    current_runtime_state: Arc<AtomicU8>,
     measured_latency_ms_bits: Arc<AtomicU32>,
     control_latency_ms_bits: Arc<AtomicU32>,
     pipeline_latency_ms_bits: Arc<AtomicU32>,
@@ -128,6 +131,8 @@ impl AsioWriter {
         let current_rate_adjust_clone = current_rate_adjust.clone();
         let current_adaptive_band = Arc::new(AtomicU8::new(0));
         let current_adaptive_band_clone = current_adaptive_band.clone();
+        let current_runtime_state = Arc::new(AtomicU8::new(0));
+        let current_runtime_state_clone = current_runtime_state.clone();
         let measured_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
         let measured_latency_ms_bits_clone = measured_latency_ms_bits.clone();
         let control_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
@@ -491,7 +496,7 @@ impl AsioWriter {
                 let output_frames_needed = data.len() / device_channel_count_for_callback as usize;
                 let audio_samples_needed = output_frames_needed * channel_count as usize;
                 let far_mode_cfg = live_config_for_callback.lock().unwrap().clone();
-                let far_decision: FarModeDecision = update_far_mode_state(
+                    let far_decision: FarModeDecision = update_far_mode_state(
                     &mut runtime_state,
                     &far_mode_cfg,
                     recovery_band == crate::ADAPTIVE_BAND_FAR,
@@ -500,9 +505,16 @@ impl AsioWriter {
                     callback_input_domain_samples,
                     effective_resample_ratio,
                     channel_count as usize,
-                    input_sample_rate,
-                    output_sample_rate,
-                );
+                        input_sample_rate,
+                        output_sample_rate,
+                    );
+                    current_runtime_state_clone.store(
+                        adaptive_runtime_state_code(adaptive_runtime_state_name(
+                            runtime_state.low_recover_phase,
+                            far_decision.hard_recover_high,
+                        )),
+                        Ordering::Relaxed,
+                    );
                 if far_decision.hold_low_recover {
                     let muted_samples_to_consume = if far_decision.consume_while_muted {
                         audio_samples_needed
@@ -623,6 +635,7 @@ impl AsioWriter {
             target_buffer_fill,
             current_rate_adjust,
             current_adaptive_band,
+            current_runtime_state,
             measured_latency_ms_bits,
             control_latency_ms_bits,
             pipeline_latency_ms_bits,
@@ -672,6 +685,10 @@ impl AsioWriter {
 
     pub fn adaptive_band(&self) -> Option<&'static str> {
         adaptive_band_name(self.current_adaptive_band.load(Ordering::Relaxed))
+    }
+
+    pub fn adaptive_runtime_state(&self) -> Option<&'static str> {
+        adaptive_runtime_state_name_from_code(self.current_runtime_state.load(Ordering::Relaxed))
     }
 
     pub fn total_audio_delay_ms(&self) -> f32 {

@@ -140,6 +140,7 @@ export const app = {
   adaptiveResamplingNearFarThresholdMs: 120,
   adaptiveResamplingUpdateIntervalCallbacks: 10,
   adaptiveResamplingBand: null,
+  adaptiveResamplingState: null,
 
   // Latency & performance
   latencyMs: null,

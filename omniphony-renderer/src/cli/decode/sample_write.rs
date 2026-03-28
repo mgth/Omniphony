@@ -67,6 +67,11 @@ impl<'a> SampleWriteCoordinator<'a> {
             .audio_writer
             .as_ref()
             .and_then(|w| w.adaptive_band());
+        let current_adaptive_state: Option<&'static str> = self
+            .output
+            .audio_writer
+            .as_ref()
+            .and_then(|w| w.adaptive_runtime_state());
 
         let freeze_delay_sync = current_latency_control_ms
             .zip(current_latency_target_ms)
@@ -201,6 +206,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             current_latency_target_ms,
                             current_resample_ratio,
                             current_adaptive_band,
+                            current_adaptive_state,
                         ) {
                             log::warn!("Failed to send meter OSC bundle: {}", e);
                             false
@@ -336,6 +342,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             current_latency_target_ms,
                             current_resample_ratio,
                             current_adaptive_band,
+                            current_adaptive_state,
                         ) {
                             log::warn!("Failed to send meter OSC bundle: {}", e);
                             false

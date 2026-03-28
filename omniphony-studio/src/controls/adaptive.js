@@ -33,6 +33,7 @@ const adaptiveResamplingAdvancedApplyBtnEl = document.getElementById('adaptiveRe
 const adaptiveResamplingAdvancedCancelBtnEl = document.getElementById('adaptiveResamplingAdvancedCancelBtn');
 const adaptiveBandDotEl = document.getElementById('adaptiveBandDot');
 const adaptiveBandTextEl = document.getElementById('adaptiveBandText');
+const adaptiveRuntimeStateTextEl = document.getElementById('adaptiveRuntimeStateText');
 const adaptivePauseBtnEl = document.getElementById('adaptivePauseBtn');
 const adaptiveRatioResetBtnEl = document.getElementById('adaptiveRatioResetBtn');
 
@@ -132,6 +133,9 @@ export function renderAdaptiveResamplingUI() {
   }
   if (adaptiveBandTextEl) {
     adaptiveBandTextEl.textContent = app.adaptiveResamplingBand ?? '—';
+  }
+  if (adaptiveRuntimeStateTextEl) {
+    adaptiveRuntimeStateTextEl.textContent = app.adaptiveResamplingState ?? '—';
   }
   if (adaptiveBandDotEl) {
     adaptiveBandDotEl.style.background =

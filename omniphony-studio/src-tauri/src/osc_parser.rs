@@ -338,6 +338,8 @@ pub enum OscEvent {
     StateAdaptiveResamplingNearFarThresholdMs { value: f64 },
     #[serde(rename = "state:adaptive_resampling:band")]
     StateAdaptiveResamplingBand { value: String },
+    #[serde(rename = "state:adaptive_resampling:state")]
+    StateAdaptiveResamplingState { value: String },
     #[serde(rename = "state:adaptive_resampling:pause")]
     StateAdaptiveResamplingPaused { enabled: bool },
     #[serde(rename = "state:config:saved")]
@@ -777,6 +779,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 })
             }
             "band" => Some(OscEvent::StateAdaptiveResamplingBand {
+                value: unwrap_string(raw_args.first()?)?,
+            }),
+            "state" => Some(OscEvent::StateAdaptiveResamplingState {
                 value: unwrap_string(raw_args.first()?)?,
             }),
             "pause" => Some(OscEvent::StateAdaptiveResamplingPaused {

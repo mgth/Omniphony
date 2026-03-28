@@ -67,6 +67,25 @@ pub fn adaptive_band_name(band: u8) -> Option<&'static str> {
     }
 }
 
+pub fn adaptive_runtime_state_code(name: Option<&str>) -> u8 {
+    match name {
+        Some("low-recover") => 1,
+        Some("settling") => 2,
+        Some("high-recover") => 3,
+        Some(_) => 255,
+        None => 0,
+    }
+}
+
+pub fn adaptive_runtime_state_name_from_code(code: u8) -> Option<&'static str> {
+    match code {
+        1 => Some("low-recover"),
+        2 => Some("settling"),
+        3 => Some("high-recover"),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AdaptiveControllerState {
     pub accumulated_drift: f64,

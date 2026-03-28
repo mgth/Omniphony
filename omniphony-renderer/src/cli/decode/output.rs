@@ -219,6 +219,16 @@ impl AudioWriter {
         }
     }
 
+    pub fn adaptive_runtime_state(&self) -> Option<&'static str> {
+        match self {
+            #[cfg(target_os = "linux")]
+            AudioWriter::Pipewire(pw) => pw.adaptive_runtime_state(),
+            #[cfg(target_os = "windows")]
+            AudioWriter::Asio(asio) => asio.adaptive_runtime_state(),
+            AudioWriter::Unsupported => None,
+        }
+    }
+
     /// Total audio delay in ms (ring-buffer target + backend graph latency).
     pub fn total_audio_delay_ms(&self) -> Option<f32> {
         match self {

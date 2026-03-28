@@ -531,6 +531,11 @@ export function setupTauriBridge() {
     updateAdaptiveResamplingUI();
   });
 
+  listen('adaptive_resampling:state', ({ payload }) => {
+    app.adaptiveResamplingState = typeof payload.value === 'string' ? payload.value : null;
+    updateAdaptiveResamplingUI();
+  });
+
   listen('adaptive_resampling:pause', ({ payload }) => {
     app.adaptiveResamplingPaused = payload.enabled !== 0;
     updateAdaptiveResamplingUI();
