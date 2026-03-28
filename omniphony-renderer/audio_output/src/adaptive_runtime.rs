@@ -307,14 +307,26 @@ pub fn update_far_mode_state(
         desired_consume_input_samples: 0,
         desired_consume_output_samples: 0,
     };
-    let tolerance_input_samples =
-        align_samples_to_audio_frame((callback_input_domain_samples / 4).max(channel_count), channel_count);
     let settle_callback_ms = if channel_count > 0 && input_sample_rate > 0 {
         (callback_input_domain_samples as f32 / channel_count as f32 / input_sample_rate as f32)
             * 1000.0
     } else {
         0.0
     };
+    let near_far_threshold_input_samples = if channel_count > 0 && input_sample_rate > 0 {
+        (((adaptive_config.near_far_threshold_ms as u64)
+            .saturating_mul(input_sample_rate as u64)
+            .saturating_mul(channel_count as u64))
+            / 1000) as usize
+    } else {
+        0
+    };
+    let tolerance_input_samples = align_samples_to_audio_frame(
+        (callback_input_domain_samples / 4)
+            .max(near_far_threshold_input_samples / 3)
+            .max(channel_count),
+        channel_count,
+    );
     let low_recover_entry_threshold =
         target_buffer_fill.saturating_sub(tolerance_input_samples);
     let low_recover_exit_threshold = low_recover_entry_threshold;
