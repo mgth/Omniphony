@@ -323,7 +323,7 @@ pub fn update_far_mode_state(
     };
     let tolerance_input_samples = align_samples_to_audio_frame(
         (callback_input_domain_samples / 4)
-            .max(near_far_threshold_input_samples / 3)
+            .max(near_far_threshold_input_samples / 2)
             .max(channel_count),
         channel_count,
     );
