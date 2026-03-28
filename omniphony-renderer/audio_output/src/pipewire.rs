@@ -1219,7 +1219,7 @@ fn run_pipewire_loop(
 
                             if callback_count % 100 == 0 {
                                 if adaptive_resampling_enabled {
-                                    log::debug!(
+                                    log::trace!(
                                         "Adaptive rate: buf={} target={} max={} drift={} (P={:.6} I={:.6}) -> consume={:.6} pw_rate={:.6}",
                                         metrics.control_available,
                                         runtime_target_buffer_fill,
@@ -1231,7 +1231,7 @@ fn run_pipewire_loop(
                                         pipewire_rate
                                     );
                                 } else {
-                                    log::debug!(
+                                    log::trace!(
                                         "PipeWire latency servo: buf={} target={} max={} drift={} -> consume={:.6} pw_rate={:.6}",
                                         metrics.control_available,
                                         runtime_target_buffer_fill,
@@ -1444,7 +1444,7 @@ fn run_pipewire_loop(
 
                     if result == 0 {
                         last_applied_rate = desired_rate_value;
-                        log::debug!("Applied rate adjustment: {:.6}", rate);
+                        log::trace!("Applied rate adjustment: {:.6}", rate);
                     } else {
                         log::warn!("Failed to apply rate control: {}", result);
                     }

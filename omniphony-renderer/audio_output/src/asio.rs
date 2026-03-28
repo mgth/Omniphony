@@ -442,7 +442,7 @@ impl AsioWriter {
                         recovery_band = decision.adaptive_band;
 
                         if callback_count % 100 == 0 {
-                            log::debug!(
+                            log::trace!(
                                 "ASIO Adaptive: buf={}/{} drift={} ratio={:.6} (base={:.2} P={:.6} I={:.6} kp={:.6} ki={:.6} max_adjust={:.6})",
                                 metrics.control_available,
                                 target_buffer_fill,
