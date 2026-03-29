@@ -55,6 +55,7 @@ import {
   renderVbapStatus
 } from './controls/vbap.js';
 import { updateAudioFormatDisplay } from './controls/audio.js';
+import { updateInputControlUI } from './controls/input.js';
 import { updateAdaptiveResamplingUI } from './controls/adaptive.js';
 import { updateDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { renderOscStatus, setOscStatus } from './controls/osc.js';
@@ -239,6 +240,109 @@ export function setupTauriBridge() {
       app.writeTimeWindow = [];
     }
     updateRenderTimeUI();
+  });
+
+  // -----------------------------------------------------------------------
+  // Audio input
+  // -----------------------------------------------------------------------
+
+  listen('input:mode', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    if (value === 'bridge' || value === 'live') {
+      app.inputMode = value;
+      updateInputControlUI();
+    }
+  });
+
+  listen('input:active_mode', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    if (value === 'bridge' || value === 'live') {
+      app.inputActiveMode = value;
+      updateInputControlUI();
+    }
+  });
+
+  listen('input:apply_pending', ({ payload }) => {
+    app.inputApplyPending = Number(payload?.enabled) !== 0;
+    updateInputControlUI();
+  });
+
+  listen('input:backend', ({ payload }) => {
+    app.inputBackend = String(payload?.value ?? '').trim() || null;
+    updateInputControlUI();
+  });
+
+  listen('input:channels', ({ payload }) => {
+    const value = Number(payload?.value);
+    app.inputChannels = Number.isFinite(value) && value > 0 ? value : null;
+    updateInputControlUI();
+  });
+
+  listen('input:sample_rate', ({ payload }) => {
+    const value = Number(payload?.value);
+    app.inputSampleRate = Number.isFinite(value) && value > 0 ? value : null;
+    updateInputControlUI();
+  });
+
+  listen('input:stream_format', ({ payload }) => {
+    app.inputStreamFormat = String(payload?.value ?? '').trim() || null;
+    updateInputControlUI();
+  });
+
+  listen('input:error', ({ payload }) => {
+    app.inputError = String(payload?.value ?? '').trim() || null;
+    updateInputControlUI();
+  });
+
+  listen('input:live:backend', ({ payload }) => {
+    app.liveInput.backend = String(payload?.value ?? '').trim().toLowerCase() || app.liveInput.backend;
+    updateInputControlUI();
+  });
+
+  listen('input:live:node', ({ payload }) => {
+    app.liveInput.node = String(payload?.value ?? '');
+    updateInputControlUI();
+  });
+
+  listen('input:live:description', ({ payload }) => {
+    app.liveInput.description = String(payload?.value ?? '');
+    updateInputControlUI();
+  });
+
+  listen('input:live:layout', ({ payload }) => {
+    app.liveInput.layout = String(payload?.value ?? '');
+    updateInputControlUI();
+  });
+
+  listen('input:live:channels', ({ payload }) => {
+    const value = Number(payload?.value);
+    if (Number.isFinite(value) && value > 0) {
+      app.liveInput.channels = value;
+    }
+    updateInputControlUI();
+  });
+
+  listen('input:live:sample_rate', ({ payload }) => {
+    const value = Number(payload?.value);
+    if (Number.isFinite(value) && value > 0) {
+      app.liveInput.sampleRate = value;
+    }
+    updateInputControlUI();
+  });
+
+  listen('input:live:format', ({ payload }) => {
+    app.liveInput.format = String(payload?.value ?? '').trim().toLowerCase() || app.liveInput.format;
+    updateInputControlUI();
+  });
+
+  listen('input:live:map', ({ payload }) => {
+    app.liveInput.map = String(payload?.value ?? '').trim().toLowerCase() || app.liveInput.map;
+    updateInputControlUI();
+  });
+
+  listen('input:live:lfe_mode', ({ payload }) => {
+    app.liveInput.lfeMode = String(payload?.value ?? '').trim().toLowerCase() || app.liveInput.lfeMode;
+    updateInputControlUI();
   });
 
   // -----------------------------------------------------------------------

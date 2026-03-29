@@ -34,6 +34,7 @@ import {
   renderVbapStatus
 } from './controls/vbap.js';
 import { updateAudioFormatDisplay } from './controls/audio.js';
+import { updateInputControlUI } from './controls/input.js';
 import { updateAdaptiveResamplingUI } from './controls/adaptive.js';
 import { updateDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { setOscStatus } from './controls/osc.js';
@@ -310,6 +311,65 @@ export function applyInitState(payload) {
   if (typeof payload.audioError === 'string') {
     app.audioError = payload.audioError.trim() || null;
   }
+  if (typeof payload.inputMode === 'string') {
+    const value = payload.inputMode.trim().toLowerCase();
+    if (value === 'bridge' || value === 'live') {
+      app.inputMode = value;
+    }
+  }
+  if (typeof payload.inputActiveMode === 'string') {
+    const value = payload.inputActiveMode.trim().toLowerCase();
+    if (value === 'bridge' || value === 'live') {
+      app.inputActiveMode = value;
+    }
+  }
+  if (typeof payload.inputApplyPending === 'number') {
+    app.inputApplyPending = payload.inputApplyPending !== 0;
+  }
+  if (typeof payload.inputBackend === 'string') {
+    app.inputBackend = payload.inputBackend.trim() || null;
+  }
+  if (typeof payload.inputChannels === 'number') {
+    app.inputChannels = payload.inputChannels > 0 ? payload.inputChannels : null;
+  }
+  if (typeof payload.inputSampleRate === 'number') {
+    app.inputSampleRate = payload.inputSampleRate > 0 ? payload.inputSampleRate : null;
+  }
+  if (typeof payload.inputStreamFormat === 'string') {
+    app.inputStreamFormat = payload.inputStreamFormat.trim() || null;
+  }
+  if (typeof payload.inputError === 'string') {
+    app.inputError = payload.inputError.trim() || null;
+  }
+  if (payload.liveInput && typeof payload.liveInput === 'object') {
+    if (typeof payload.liveInput.backend === 'string') {
+      app.liveInput.backend = payload.liveInput.backend.trim().toLowerCase() || app.liveInput.backend;
+    }
+    if (typeof payload.liveInput.node === 'string') {
+      app.liveInput.node = payload.liveInput.node;
+    }
+    if (typeof payload.liveInput.description === 'string') {
+      app.liveInput.description = payload.liveInput.description;
+    }
+    if (typeof payload.liveInput.layout === 'string') {
+      app.liveInput.layout = payload.liveInput.layout;
+    }
+    if (typeof payload.liveInput.channels === 'number' && payload.liveInput.channels > 0) {
+      app.liveInput.channels = payload.liveInput.channels;
+    }
+    if (typeof payload.liveInput.sampleRate === 'number' && payload.liveInput.sampleRate > 0) {
+      app.liveInput.sampleRate = payload.liveInput.sampleRate;
+    }
+    if (typeof payload.liveInput.format === 'string') {
+      app.liveInput.format = payload.liveInput.format.trim().toLowerCase() || app.liveInput.format;
+    }
+    if (typeof payload.liveInput.map === 'string') {
+      app.liveInput.map = payload.liveInput.map.trim().toLowerCase() || app.liveInput.map;
+    }
+    if (typeof payload.liveInput.lfeMode === 'string') {
+      app.liveInput.lfeMode = payload.liveInput.lfeMode.trim().toLowerCase() || app.liveInput.lfeMode;
+    }
+  }
   if (typeof payload.orenderInputPipe === 'string') {
     app.orenderInputPipe = payload.orenderInputPipe.trim() || null;
   }
@@ -331,6 +391,7 @@ export function applyInitState(payload) {
   updateLatencyMeterUI();
   updateResampleRatioDisplay();
   updateAudioFormatDisplay();
+  updateInputControlUI();
   updateMasterMeterUI();
   renderLogLevelControl();
 

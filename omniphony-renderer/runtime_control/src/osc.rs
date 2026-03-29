@@ -2,6 +2,9 @@ use rosc::{OscMessage, OscType};
 use std::collections::HashMap;
 
 use crate::context::RuntimeControlContext;
+use audio_output::{
+    InputBackend, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct SpeakerPatch {
@@ -83,6 +86,20 @@ fn parse_f32_arg(arg: Option<&OscType>) -> Option<f32> {
     match arg {
         Some(OscType::Float(f)) => Some(*f),
         Some(OscType::Int(i)) => Some(*i as f32),
+        _ => None,
+    }
+}
+
+fn parse_string_arg(arg: Option<&OscType>) -> Option<String> {
+    match arg {
+        Some(OscType::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
         _ => None,
     }
 }
@@ -219,6 +236,207 @@ pub fn apply_simple_osc_control(
                 addr: "/omniphony/state/audio/output_device".to_string(),
                 value: BroadcastValue::String(requested.unwrap_or_default()),
             });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/mode" {
+        let requested = parse_string_arg(msg.args.first()).and_then(|value| {
+            match value.to_ascii_lowercase().as_str() {
+                "bridge" => Some(InputMode::Bridge),
+                "live" => Some(InputMode::Live),
+                _ => None,
+            }
+        });
+        if let (Some(input), Some(requested)) = (ctx.input.as_ref(), requested) {
+            input.set_requested_mode(requested);
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/mode".to_string(),
+                value: BroadcastValue::String(match requested {
+                    InputMode::Bridge => "bridge".to_string(),
+                    InputMode::Live => "live".to_string(),
+                }),
+            });
+            effects.log_message = Some(format!(
+                "OSC: input mode staged → {}",
+                match requested {
+                    InputMode::Bridge => "bridge",
+                    InputMode::Live => "live",
+                }
+            ));
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/backend" {
+        let requested = parse_string_arg(msg.args.first()).and_then(|value| {
+            match value.to_ascii_lowercase().as_str() {
+                "pipewire" => Some(InputBackend::Pipewire),
+                "asio" => Some(InputBackend::Asio),
+                _ => None,
+            }
+        });
+        if let (Some(input), Some(requested)) = (ctx.input.as_ref(), requested) {
+            input.set_requested_backend(Some(requested));
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/backend".to_string(),
+                value: BroadcastValue::String(match requested {
+                    InputBackend::Pipewire => "pipewire".to_string(),
+                    InputBackend::Asio => "asio".to_string(),
+                }),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/node" {
+        let requested = parse_string_arg(msg.args.first());
+        if let Some(input) = ctx.input.as_ref() {
+            input.set_requested_node_name(requested.clone());
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/node".to_string(),
+                value: BroadcastValue::String(requested.unwrap_or_default()),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/description" {
+        let requested = parse_string_arg(msg.args.first());
+        if let Some(input) = ctx.input.as_ref() {
+            input.set_requested_node_description(requested.clone());
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/description".to_string(),
+                value: BroadcastValue::String(requested.unwrap_or_default()),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/layout" {
+        let requested = parse_string_arg(msg.args.first()).map(std::path::PathBuf::from);
+        if let Some(input) = ctx.input.as_ref() {
+            let state_value = requested
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            input.set_requested_layout_path(requested);
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/layout".to_string(),
+                value: BroadcastValue::String(state_value),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/channels" {
+        let requested = match msg.args.first() {
+            Some(OscType::Int(i)) if *i > 0 => Some(*i as u16),
+            Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u16),
+            _ => None,
+        };
+        if let (Some(input), Some(requested)) = (ctx.input.as_ref(), requested) {
+            input.set_requested_channels(Some(requested));
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/channels".to_string(),
+                value: BroadcastValue::Int(requested as i32),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/sample_rate" {
+        let requested = parse_positive_u32_arg(msg.args.first());
+        if let (Some(input), Some(requested)) = (ctx.input.as_ref(), requested) {
+            input.set_requested_sample_rate_hz(Some(requested));
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/sample_rate".to_string(),
+                value: BroadcastValue::Int(requested as i32),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/format" {
+        let requested = parse_string_arg(msg.args.first()).and_then(|value| {
+            match value.to_ascii_lowercase().as_str() {
+                "f32" => Some(InputSampleFormat::F32),
+                "s16" => Some(InputSampleFormat::S16),
+                _ => None,
+            }
+        });
+        if let (Some(input), Some(requested)) = (ctx.input.as_ref(), requested) {
+            input.set_requested_sample_format(Some(requested));
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/format".to_string(),
+                value: BroadcastValue::String(match requested {
+                    InputSampleFormat::F32 => "f32".to_string(),
+                    InputSampleFormat::S16 => "s16".to_string(),
+                }),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/map" {
+        let requested = parse_string_arg(msg.args.first()).and_then(|value| {
+            match value.to_ascii_lowercase().as_str() {
+                "7.1-fixed" => Some(InputMapMode::SevenOneFixed),
+                _ => None,
+            }
+        });
+        if let (Some(input), Some(requested)) = (ctx.input.as_ref(), requested) {
+            input.set_requested_map_mode(requested);
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/map".to_string(),
+                value: BroadcastValue::String("7.1-fixed".to_string()),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/lfe_mode" {
+        let requested = parse_string_arg(msg.args.first()).and_then(|value| {
+            match value.to_ascii_lowercase().as_str() {
+                "object" => Some(InputLfeMode::Object),
+                "direct" => Some(InputLfeMode::Direct),
+                "drop" => Some(InputLfeMode::Drop),
+                _ => None,
+            }
+        });
+        if let (Some(input), Some(requested)) = (ctx.input.as_ref(), requested) {
+            input.set_requested_lfe_mode(requested);
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/lfe_mode".to_string(),
+                value: BroadcastValue::String(match requested {
+                    InputLfeMode::Object => "object".to_string(),
+                    InputLfeMode::Direct => "direct".to_string(),
+                    InputLfeMode::Drop => "drop".to_string(),
+                }),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/apply" {
+        if let Some(input) = ctx.input.as_ref() {
+            input.request_apply();
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/apply_pending".to_string(),
+                value: BroadcastValue::Int(1),
+            });
+            effects.log_message = Some("OSC: input apply requested".to_string());
         }
         return Some(effects);
     }

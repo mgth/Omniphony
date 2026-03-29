@@ -256,7 +256,10 @@ pub(super) fn merge_render_config(
     }
 }
 
-pub(super) fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<renderer::config::Config> {
+pub(super) fn effective_to_config(
+    args: &RenderArgs,
+    cli: &Cli,
+) -> Result<renderer::config::Config> {
     use renderer::config::{Config, GlobalConfig, RenderConfig};
     use renderer::speaker_layout::SpeakerLayout;
 
@@ -281,6 +284,8 @@ pub(super) fn effective_to_config(args: &RenderArgs, cli: &Cli) -> Result<render
     };
 
     let render = RenderConfig {
+        input_mode: None,
+        live_input: None,
         output_backend: match args.output_backend {
             Some(value) if Some(value) != OutputBackend::platform_default() => {
                 Some(format!("{:?}", value).to_lowercase())

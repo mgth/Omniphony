@@ -1,9 +1,9 @@
 use super::output::AudioWriter;
 use crate::cli::command::OutputBackend;
 use crate::runtime_osc::OscSender;
+use audio_output::AdaptiveResamplingConfig;
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
-use audio_output::AdaptiveResamplingConfig;
 use bridge_api::RCoordinateFormat;
 use log::Level;
 use renderer::metering::AudioMeter;
@@ -146,6 +146,7 @@ pub struct DecodeSessionState {
     pub last_frame_sample_count: Option<u32>,
     pub last_output_delay_log_at: Option<Instant>,
     pub first_measured_output_delay_ms: Option<f32>,
+    pub last_input_state_generation: Option<u64>,
 }
 
 impl Default for DecodeSessionState {
@@ -159,6 +160,7 @@ impl Default for DecodeSessionState {
             last_frame_sample_count: None,
             last_output_delay_log_at: None,
             first_measured_output_delay_ms: None,
+            last_input_state_generation: None,
         }
     }
 }

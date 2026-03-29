@@ -167,6 +167,25 @@ export const app = {
   orenderInputPipe: null,
   audioSampleFormat: null,
   audioError: null,
+  inputMode: 'bridge',
+  inputActiveMode: 'bridge',
+  inputApplyPending: false,
+  inputBackend: null,
+  inputChannels: null,
+  inputSampleRate: null,
+  inputStreamFormat: null,
+  inputError: null,
+  liveInput: {
+    backend: 'pipewire',
+    node: '',
+    description: '',
+    layout: '',
+    channels: 8,
+    sampleRate: 48000,
+    format: 'f32',
+    map: '7.1-fixed',
+    lfeMode: 'object'
+  },
 
   // OSC
   oscMeteringEnabled: false,
@@ -201,6 +220,7 @@ export const app = {
   adaptiveFarFadeInMsDirty: false,
   telemetryGaugesOpen: false,
   audioOutputSectionOpen: false,
+  inputSectionOpen: false,
   rendererSectionOpen: false,
   displaySectionOpen: false,
 

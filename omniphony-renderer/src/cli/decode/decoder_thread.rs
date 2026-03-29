@@ -25,8 +25,15 @@ fn monotonic_usec_now() -> u64 {
     }
 }
 
-/// Messages sent from decoder thread to handler
+/// Messages sent from asynchronous input producers to the handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodedSource {
+    Bridge,
+    Live,
+}
+
 pub struct DecodedAudioData {
+    pub source: DecodedSource,
     pub frame: bridge_api::RDecodedFrame,
     pub decode_time_ms: f32,
     pub sent_at: Instant,
@@ -36,9 +43,9 @@ pub enum DecoderMessage {
     /// A fully decoded audio frame (PCM + metadata + dialogue level).
     AudioData(DecodedAudioData),
     /// Request to flush audio buffers (after seek/decoder reset).
-    FlushRequest,
+    FlushRequest(DecodedSource),
     /// Stream ended — reset handler state (for continuous mode).
-    StreamEnd,
+    StreamEnd(DecodedSource),
 }
 
 pub struct DecoderThreadConfig {
@@ -186,10 +193,14 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                     let emitted_frames = result.frames.len();
                     let emitted_samples: u32 =
                         result.frames.iter().map(|frame| frame.sample_count).sum();
-                    let packet_emitted_ms: f64 = result.frames.iter().map(|frame| {
-                        let rate = frame.sampling_frequency.max(1) as f64;
-                        frame.sample_count as f64 / rate * 1000.0
-                    }).sum();
+                    let packet_emitted_ms: f64 = result
+                        .frames
+                        .iter()
+                        .map(|frame| {
+                            let rate = frame.sampling_frequency.max(1) as f64;
+                            frame.sample_count as f64 / rate * 1000.0
+                        })
+                        .sum();
                     emitted_duration_ms += packet_emitted_ms;
                     let metadata_frames = result
                         .frames
@@ -272,7 +283,8 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         // Flushing here turns a recoverable bridge reset into an audible
                         // dropout that can last much longer than the actual decode hiccup.
                         if strict_mode {
-                            let _ = tx.send(Ok(DecoderMessage::FlushRequest));
+                            let _ =
+                                tx.send(Ok(DecoderMessage::FlushRequest(DecodedSource::Bridge)));
                         } else {
                             log::debug!(
                                 "Bridge reset in non-strict mode; keeping audio buffers intact"
@@ -289,6 +301,7 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
                         let sent_at = Instant::now();
                         if tx
                             .send(Ok(DecoderMessage::AudioData(DecodedAudioData {
+                                source: DecodedSource::Bridge,
                                 frame,
                                 decode_time_ms: per_frame_decode_time_ms,
                                 sent_at,
@@ -412,7 +425,10 @@ pub fn spawn_decoder_thread(config: DecoderThreadConfig) -> thread::JoinHandle<R
 
             // In continuous mode, send StreamEnd message to reset handler state.
             log::info!("Continuous mode: stream ended, signaling handler to reset...");
-            if tx.send(Ok(DecoderMessage::StreamEnd)).is_err() {
+            if tx
+                .send(Ok(DecoderMessage::StreamEnd(DecodedSource::Bridge)))
+                .is_err()
+            {
                 log::warn!("Failed to send StreamEnd message, receiver closed");
                 break;
             }

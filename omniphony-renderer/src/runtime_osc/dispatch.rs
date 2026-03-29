@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 
-use audio_output::AudioControl;
+use audio_output::{AudioControl, InputControl};
 use renderer::live_params::RendererControl;
 use rosc::{OscMessage, OscType};
 use runtime_control::command::{RuntimeCommand, parse_process_command};
@@ -13,7 +13,7 @@ use runtime_control::osc::{
 };
 
 use super::client_registry::OscClientRegistry;
-use super::export::{export_current_layout, save_live_config};
+use super::export::{build_live_state_bundle, export_current_layout, save_live_config};
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
     broadcast_fff, broadcast_float, broadcast_int, broadcast_speaker_config, broadcast_string,
@@ -25,12 +25,17 @@ pub(crate) fn handle_control_message(
     src: SocketAddr,
     control: &Arc<RendererControl>,
     audio_control: Option<&Arc<AudioControl>>,
+    input_control: Option<&Arc<InputControl>>,
     pending_speakers: &mut HashMap<usize, SpeakerPatch>,
     socket: &Arc<UdpSocket>,
     clients: &Arc<OscClientRegistry>,
 ) {
     let addr = msg.addr.as_str();
-    let runtime_ctx = RuntimeControlContext::new(Arc::clone(control), audio_control.cloned());
+    let runtime_ctx = RuntimeControlContext::new(
+        Arc::clone(control),
+        audio_control.cloned(),
+        input_control.cloned(),
+    );
 
     if addr == "/omniphony/control/metering" {
         let enabled = match msg.args.first() {
@@ -45,9 +50,18 @@ pub(crate) fn handle_control_message(
         return;
     }
 
+    if addr == "/omniphony/control/input/refresh" {
+        let state_bytes = build_live_state_bundle(control, audio_control, input_control);
+        super::transport::send_raw(socket, clients, &state_bytes);
+        log::info!("OSC: input state refresh requested");
+        return;
+    }
+
     if let Some(command) = parse_process_command(msg) {
         match command {
-            RuntimeCommand::SaveConfig => save_live_config(control, audio_control, socket, clients),
+            RuntimeCommand::SaveConfig => {
+                save_live_config(control, audio_control, input_control, socket, clients)
+            }
             RuntimeCommand::ReloadConfig => {
                 log::info!("OSC reload_config requested");
                 sys::shutdown::request_restart_from_config();
@@ -114,7 +128,9 @@ fn apply_control_effects(
             BroadcastValue::Int(value) => broadcast_int(socket, clients, &update.addr, value),
             BroadcastValue::Float(value) => broadcast_float(socket, clients, &update.addr, value),
             BroadcastValue::Fff(a, b, c) => broadcast_fff(socket, clients, &update.addr, a, b, c),
-            BroadcastValue::String(value) => broadcast_string(socket, clients, &update.addr, &value),
+            BroadcastValue::String(value) => {
+                broadcast_string(socket, clients, &update.addr, &value)
+            }
         }
     }
     if let Some(message) = effects.log_message {

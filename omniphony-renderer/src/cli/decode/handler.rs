@@ -1,3 +1,4 @@
+use super::decoder_thread::DecodedSource;
 use super::output_runtime_sync::OutputRuntimeCoordinator;
 use super::sample_write::SampleWriteCoordinator;
 use super::spatial_metadata::SpatialMetadataCoordinator;
@@ -7,7 +8,7 @@ use super::state::{
 };
 use super::writer_lifecycle::WriterLifecycleCoordinator;
 use crate::cli::command::OutputBackend;
-use audio_output::AudioControl;
+use audio_output::{AudioControl, InputControl, InputMode};
 use bridge_api::RDecodedFrame;
 
 use anyhow::Result;
@@ -132,6 +133,7 @@ pub struct DecodeHandler {
     pub session: DecodeSessionState,
     pub spatial_renderer: Option<renderer::spatial_renderer::SpatialRenderer>,
     pub audio_control: Option<Arc<AudioControl>>,
+    pub input_control: Option<Arc<InputControl>>,
 }
 
 impl Default for DecodeHandler {
@@ -144,13 +146,88 @@ impl Default for DecodeHandler {
             session: DecodeSessionState::default(),
             spatial_renderer: None,
             audio_control: None,
+            input_control: None,
         }
     }
 }
 
 impl DecodeHandler {
+    fn sync_input_runtime_state(
+        &mut self,
+        source: DecodedSource,
+        frame: &RDecodedFrame,
+    ) -> Result<()> {
+        let Some(input_control) = self.input_control.as_ref() else {
+            return Ok(());
+        };
+        let applied_before = input_control.applied_snapshot();
+        if matches!(source, DecodedSource::Bridge)
+            && applied_before.active_mode == InputMode::Bridge
+        {
+            let channels = Some(frame.channel_count as u16);
+            let sample_rate_hz = Some(frame.sampling_frequency);
+            let stream_format = Some("bridge-decoded".to_string());
+            let changed = applied_before.channels != channels
+                || applied_before.sample_rate_hz != sample_rate_hz
+                || applied_before.stream_format != stream_format
+                || applied_before.backend.is_some()
+                || applied_before.node_name.is_some();
+            if changed {
+                input_control.set_input_state(
+                    InputMode::Bridge,
+                    None,
+                    channels,
+                    sample_rate_hz,
+                    None,
+                    stream_format,
+                );
+            }
+        }
+
+        self.poll_runtime_state()
+    }
+
+    pub fn should_accept_source(&self, source: DecodedSource) -> bool {
+        let active_mode = self
+            .input_control
+            .as_ref()
+            .map(|control| control.applied_snapshot().active_mode)
+            .unwrap_or(InputMode::Bridge);
+        matches!(
+            (active_mode, source),
+            (InputMode::Bridge, DecodedSource::Bridge) | (InputMode::Live, DecodedSource::Live)
+        )
+    }
+
+    pub fn poll_runtime_state(&mut self) -> Result<()> {
+        let Some(input_control) = self.input_control.as_ref() else {
+            return Ok(());
+        };
+        let generation = input_control.state_generation();
+        let last = self.session.last_input_state_generation;
+        if last == Some(generation) {
+            return Ok(());
+        }
+        self.session.last_input_state_generation = Some(generation);
+        if self
+            .telemetry
+            .osc_sender
+            .as_ref()
+            .is_some_and(|sender| sender.has_osc_clients())
+        {
+            let osc_sender = self
+                .telemetry
+                .osc_sender
+                .as_ref()
+                .expect("osc_sender present");
+            osc_sender.send_live_state_bundle()?;
+        }
+        Ok(())
+    }
+
     pub fn handle_decoded_frame(
         &mut self,
+        source: DecodedSource,
         frame: RDecodedFrame,
         ctx: &FrameHandlerContext,
     ) -> Result<()> {
@@ -194,6 +271,8 @@ impl DecodeHandler {
         self.session.decoded_frames += 1u64;
         self.session.final_sample_rate = sample_rate;
         self.spatial.au_index += 1;
+
+        self.sync_input_runtime_state(source, &frame)?;
 
         // Apply dialogue normalisation from bridge (updated on major sync frames).
         // The level is always stored so OSC clients receive loudness/source
@@ -320,7 +399,11 @@ impl DecodeHandler {
             self.spatial_renderer.as_ref(),
             self.audio_control.as_ref(),
         )
-        .create_audio_writer_if_needed(ctx.output_backend, sample_rate, effective_channel_count)?;
+        .create_audio_writer_if_needed(
+            ctx.output_backend,
+            sample_rate,
+            effective_channel_count,
+        )?;
         WriterLifecycleCoordinator::new(
             &mut self.output,
             &self.runtime,
@@ -391,19 +474,20 @@ impl DecodeHandler {
                 self.spatial_renderer.as_ref(),
                 self.audio_control.as_ref(),
             )
-            .build_audio_writer(output_backend, sample_rate, effective_channel_count, None)?,
+            .build_audio_writer(
+                output_backend,
+                sample_rate,
+                effective_channel_count,
+                None,
+            )?,
         );
         self.reset_spatial_state_for_segment();
         Ok(())
     }
 
     fn reset_spatial_state_for_segment(&mut self) {
-        SpatialMetadataCoordinator::new(
-            &mut self.spatial,
-            self.spatial_renderer.as_ref(),
-            None,
-        )
-        .reset_for_segment();
+        SpatialMetadataCoordinator::new(&mut self.spatial, self.spatial_renderer.as_ref(), None)
+            .reset_for_segment();
     }
 
     pub fn handle_decoder_flush_request(&mut self) {

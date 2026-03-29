@@ -2,7 +2,7 @@ use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use audio_output::AudioControl;
+use audio_output::{AudioControl, InputControl};
 use renderer::live_params::RendererControl;
 
 use super::client_registry::OscClientRegistry;
@@ -11,17 +11,19 @@ use super::transport::{broadcast_int, send_raw};
 pub(crate) fn build_live_state_bundle(
     control: &Arc<RendererControl>,
     audio_control: Option<&Arc<AudioControl>>,
+    input_control: Option<&Arc<InputControl>>,
 ) -> Vec<u8> {
-    runtime_control::snapshot::build_live_state_bundle(control, audio_control)
+    runtime_control::snapshot::build_live_state_bundle(control, audio_control, input_control)
 }
 
 pub(crate) fn save_live_config(
     control: &Arc<RendererControl>,
     audio_control: Option<&Arc<AudioControl>>,
+    input_control: Option<&Arc<InputControl>>,
     socket: &UdpSocket,
     clients: &OscClientRegistry,
 ) {
-    match runtime_control::persist::save_live_config(control, audio_control) {
+    match runtime_control::persist::save_live_config(control, audio_control, input_control) {
         Ok(result) => {
             broadcast_int(socket, clients, "/omniphony/state/config/saved", 1);
             send_raw(socket, clients, &result.state_bundle);

@@ -272,6 +272,40 @@ pub enum OscEvent {
     StateAudioSampleFormat { value: String },
     #[serde(rename = "state:audio:error")]
     StateAudioError { value: String },
+    #[serde(rename = "state:input:mode")]
+    StateInputMode { value: String },
+    #[serde(rename = "state:input:active_mode")]
+    StateInputActiveMode { value: String },
+    #[serde(rename = "state:input:apply_pending")]
+    StateInputApplyPending { enabled: bool },
+    #[serde(rename = "state:input:backend")]
+    StateInputBackend { value: String },
+    #[serde(rename = "state:input:channels")]
+    StateInputChannels { value: u32 },
+    #[serde(rename = "state:input:sample_rate")]
+    StateInputSampleRate { value: u32 },
+    #[serde(rename = "state:input:stream_format")]
+    StateInputStreamFormat { value: String },
+    #[serde(rename = "state:input:error")]
+    StateInputError { value: String },
+    #[serde(rename = "state:input:live:backend")]
+    StateInputLiveBackend { value: String },
+    #[serde(rename = "state:input:live:node")]
+    StateInputLiveNode { value: String },
+    #[serde(rename = "state:input:live:description")]
+    StateInputLiveDescription { value: String },
+    #[serde(rename = "state:input:live:layout")]
+    StateInputLiveLayout { value: String },
+    #[serde(rename = "state:input:live:channels")]
+    StateInputLiveChannels { value: u32 },
+    #[serde(rename = "state:input:live:sample_rate")]
+    StateInputLiveSampleRate { value: u32 },
+    #[serde(rename = "state:input:live:format")]
+    StateInputLiveFormat { value: String },
+    #[serde(rename = "state:input:live:map")]
+    StateInputLiveMap { value: String },
+    #[serde(rename = "state:input:live:lfe_mode")]
+    StateInputLiveLfeMode { value: String },
     #[serde(rename = "state:input_pipe")]
     StateInputPipe { value: String },
     #[serde(rename = "state:osc:metering")]
@@ -392,9 +426,24 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
             }
             _ => "polar".to_string(),
         };
-        let x = args.get(7).copied().and_then(to_number).unwrap_or(px).clamp(-1.0, 1.0);
-        let y = args.get(8).copied().and_then(to_number).unwrap_or(py).clamp(-1.0, 1.0);
-        let z = args.get(9).copied().and_then(to_number).unwrap_or(pz).clamp(-1.0, 1.0);
+        let x = args
+            .get(7)
+            .copied()
+            .and_then(to_number)
+            .unwrap_or(px)
+            .clamp(-1.0, 1.0);
+        let y = args
+            .get(8)
+            .copied()
+            .and_then(to_number)
+            .unwrap_or(py)
+            .clamp(-1.0, 1.0);
+        let z = args
+            .get(9)
+            .copied()
+            .and_then(to_number)
+            .unwrap_or(pz)
+            .clamp(-1.0, 1.0);
 
         return Some(OscEvent::ConfigSpeaker {
             index,
@@ -702,25 +751,23 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 enabled: to_number(args[0])? != 0.0,
             })
         }
-        (5, "vbap") if parts[3] == "polar" => {
-            match parts[4] {
-                "azimuth_resolution" => {
-                    let value = to_number(args[0])?.max(0.0) as u32;
-                    Some(OscEvent::StateVbapPolarAzimuthResolution { value })
-                }
-                "elevation_resolution" => {
-                    let value = to_number(args[0])?.max(0.0) as u32;
-                    Some(OscEvent::StateVbapPolarElevationResolution { value })
-                }
-                "distance_res" => Some(OscEvent::StateVbapPolarDistanceRes {
-                    value: to_number(args[0])?.max(0.0) as u32,
-                }),
-                "distance_max" => Some(OscEvent::StateVbapPolarDistanceMax {
-                    value: to_number(args[0])?.max(0.0),
-                }),
-                _ => None,
+        (5, "vbap") if parts[3] == "polar" => match parts[4] {
+            "azimuth_resolution" => {
+                let value = to_number(args[0])?.max(0.0) as u32;
+                Some(OscEvent::StateVbapPolarAzimuthResolution { value })
             }
-        }
+            "elevation_resolution" => {
+                let value = to_number(args[0])?.max(0.0) as u32;
+                Some(OscEvent::StateVbapPolarElevationResolution { value })
+            }
+            "distance_res" => Some(OscEvent::StateVbapPolarDistanceRes {
+                value: to_number(args[0])?.max(0.0) as u32,
+            }),
+            "distance_max" => Some(OscEvent::StateVbapPolarDistanceMax {
+                value: to_number(args[0])?.max(0.0),
+            }),
+            _ => None,
+        },
         (4, "vbap") if parts[3] == "allow_negative_z" => Some(OscEvent::StateVbapAllowNegativeZ {
             enabled: to_number(args[0])? != 0.0,
         }),
@@ -768,16 +815,14 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             "max_adjust" => Some(OscEvent::StateAdaptiveResamplingMaxAdjust {
                 value: to_number(args[0])?,
             }),
-            "update_interval_callbacks" => Some(
-                OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks {
-                    value: to_number(args[0])?,
-                },
-            ),
-            "near_far_threshold_ms" => {
-                Some(OscEvent::StateAdaptiveResamplingNearFarThresholdMs {
+            "update_interval_callbacks" => {
+                Some(OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks {
                     value: to_number(args[0])?,
                 })
             }
+            "near_far_threshold_ms" => Some(OscEvent::StateAdaptiveResamplingNearFarThresholdMs {
+                value: to_number(args[0])?,
+            }),
             "band" => Some(OscEvent::StateAdaptiveResamplingBand {
                 value: unwrap_string(raw_args.first()?)?,
             }),
@@ -811,6 +856,64 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 let value = raw_args.first().and_then(unwrap_string)?;
                 Some(OscEvent::StateAudioError { value })
             }
+            _ => None,
+        },
+        (4, "input") => match parts[3] {
+            "mode" => {
+                let value = raw_args.first().and_then(unwrap_string)?;
+                Some(OscEvent::StateInputMode { value })
+            }
+            "active_mode" => Some(OscEvent::StateInputActiveMode {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "apply_pending" => Some(OscEvent::StateInputApplyPending {
+                enabled: to_number(args[0])? != 0.0,
+            }),
+            "backend" => Some(OscEvent::StateInputBackend {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "channels" => Some(OscEvent::StateInputChannels {
+                value: to_number(args[0])?.max(0.0) as u32,
+            }),
+            "sample_rate" => Some(OscEvent::StateInputSampleRate {
+                value: to_number(args[0])?.max(0.0) as u32,
+            }),
+            "stream_format" => Some(OscEvent::StateInputStreamFormat {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "error" => Some(OscEvent::StateInputError {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            _ => None,
+        },
+        (5, "input") if parts[3] == "live" => match parts[4] {
+            "backend" => Some(OscEvent::StateInputLiveBackend {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "node" => Some(OscEvent::StateInputLiveNode {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "description" => Some(OscEvent::StateInputLiveDescription {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "layout" => Some(OscEvent::StateInputLiveLayout {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "channels" => Some(OscEvent::StateInputLiveChannels {
+                value: to_number(args[0])?.max(0.0) as u32,
+            }),
+            "sample_rate" => Some(OscEvent::StateInputLiveSampleRate {
+                value: to_number(args[0])?.max(0.0) as u32,
+            }),
+            "format" => Some(OscEvent::StateInputLiveFormat {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "map" => Some(OscEvent::StateInputLiveMap {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "lfe_mode" => Some(OscEvent::StateInputLiveLfeMode {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
             _ => None,
         },
         (3, "input_pipe") => {

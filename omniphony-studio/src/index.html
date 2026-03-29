@@ -36,6 +36,24 @@
         gap: 0.4rem;
       }
 
+      #overlayHeader {
+        flex: 0 0 auto;
+      }
+
+      #overlayScroll {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable both-edges;
+        scrollbar-width: thin;
+        box-sizing: border-box;
+        padding-right: 0.85rem;
+      }
+
       .app-brand {
         display: flex;
         align-items: center;
@@ -139,6 +157,20 @@
         display: flex;
         flex-direction: column;
         gap: 0.4rem;
+      }
+
+      #speakersOverlayScroll {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable both-edges;
+        scrollbar-width: thin;
+        box-sizing: border-box;
+        padding-right: 0.85rem;
       }
 
       #logOverlay {
@@ -574,9 +606,15 @@
 
       .osc-config-form.open {
         margin-top: 0.4rem;
-        max-height: 20rem;
+        max-height: min(20rem, 32vh);
         opacity: 1;
         pointer-events: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable both-edges;
+        scrollbar-width: thin;
+        box-sizing: border-box;
+        padding-right: 0.65rem;
       }
 
       .room-geometry-form {
@@ -592,9 +630,15 @@
 
       .room-geometry-form.open {
         margin-top: 0.2rem;
-        max-height: 34rem;
+        max-height: min(34rem, 42vh);
         opacity: 1;
         pointer-events: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable both-edges;
+        scrollbar-width: thin;
+        box-sizing: border-box;
+        padding-right: 0.65rem;
       }
 
       .adaptive-advanced-form {
@@ -639,9 +683,15 @@
 
       .telemetry-gauges-form.open {
         margin-top: 0.35rem;
-        max-height: 48rem;
+        max-height: min(30rem, 40vh);
         opacity: 1;
         pointer-events: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable both-edges;
+        scrollbar-width: thin;
+        box-sizing: border-box;
+        padding-right: 0.65rem;
       }
 
       .save-footer {
@@ -814,23 +864,40 @@
 
       .conditional-params.open {
         gap: 0.2rem;
-        max-height: 80rem;
+        max-height: min(32rem, 42vh);
         opacity: 1;
         pointer-events: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable both-edges;
+        scrollbar-width: thin;
+        box-sizing: border-box;
+        padding-right: 0.55rem;
+      }
+
+      #inputSectionContent {
+        min-height: 0;
+      }
+
+      #inputSectionContent.conditional-params.open {
+        max-height: min(24rem, 38vh);
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable both-edges;
+        padding-right: 0.65rem;
       }
 
       .info-list {
         max-height: none;
-        overflow: auto;
-        scrollbar-gutter: stable;
+        overflow: visible;
         font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
         font-size: 12.5px;
         display: grid;
         gap: 0.25rem;
         align-content: start;
         grid-auto-rows: max-content;
-        flex: 1 1 auto;
-        min-height: 0;
+        flex: 0 0 auto;
+        min-height: auto;
       }
 
       #objectsList,
@@ -1030,6 +1097,88 @@
       .delay-input:focus {
         outline: none;
         border-color: rgba(255, 255, 255, 0.45);
+      }
+
+      .input-panel-shell {
+        margin-top: 0.35rem;
+        padding: 0.45rem 0.5rem;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.03);
+        display: grid;
+        gap: 0.4rem;
+      }
+
+      .input-panel-status {
+        font-size: 11px;
+        color: #b9c7d8;
+        line-height: 1.35;
+        word-break: break-word;
+      }
+
+      .input-panel-grid {
+        display: grid;
+        gap: 0.32rem;
+      }
+
+      .input-panel-row {
+        display: grid;
+        grid-template-columns: 6.4rem minmax(0, 1fr);
+        align-items: center;
+        gap: 0.45rem;
+      }
+
+      .input-panel-row label,
+      .input-panel-inline-label {
+        font-size: 12px;
+        white-space: nowrap;
+        color: rgba(217, 236, 255, 0.92);
+      }
+
+      .input-panel-row .delay-input,
+      .input-panel-row select,
+      .input-panel-stack .delay-input,
+      .input-panel-stack select {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+      }
+
+      .input-panel-stack {
+        display: grid;
+        gap: 0.32rem;
+      }
+
+      .input-panel-inline-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.35rem;
+      }
+
+      .input-panel-triple-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.35rem;
+      }
+
+      .input-panel-field {
+        display: grid;
+        gap: 0.16rem;
+        min-width: 0;
+      }
+
+      .input-panel-subtitle {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #8fa6bd;
+        margin-top: 0.08rem;
+      }
+
+      .input-panel-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.35rem;
       }
 
       .vbap-polar-grid {
@@ -1414,6 +1563,37 @@
       .vbap-status.ready {
         color: #78e08f;
       }
+
+      #overlayScroll::-webkit-scrollbar,
+      #speakersOverlayScroll::-webkit-scrollbar,
+      .osc-config-form.open::-webkit-scrollbar,
+      .room-geometry-form.open::-webkit-scrollbar,
+      .telemetry-gauges-form.open::-webkit-scrollbar,
+      .conditional-params.open::-webkit-scrollbar {
+        width: 10px;
+      }
+
+      #overlayScroll::-webkit-scrollbar-track,
+      #speakersOverlayScroll::-webkit-scrollbar-track,
+      .osc-config-form.open::-webkit-scrollbar-track,
+      .room-geometry-form.open::-webkit-scrollbar-track,
+      .telemetry-gauges-form.open::-webkit-scrollbar-track,
+      .conditional-params.open::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 999px;
+      }
+
+      #overlayScroll::-webkit-scrollbar-thumb,
+      #speakersOverlayScroll::-webkit-scrollbar-thumb,
+      .osc-config-form.open::-webkit-scrollbar-thumb,
+      .room-geometry-form.open::-webkit-scrollbar-thumb,
+      .telemetry-gauges-form.open::-webkit-scrollbar-thumb,
+      .conditional-params.open::-webkit-scrollbar-thumb {
+        background: rgba(217, 236, 255, 0.22);
+        border-radius: 999px;
+        border: 2px solid transparent;
+        background-clip: padding-box;
+      }
     </style>
   </head>
   <body>
@@ -1451,6 +1631,7 @@
           <div class="app-brand-subtitle">Spatial Control</div>
         </div>
       </div>
+      <div id="overlayScroll">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div><span class="osc-status-dot" id="oscStatusDot"></span><span data-i18n="osc.label">OSC</span>: <span id="status">Initializing...</span><span id="pipeStatus"> • Pipe: —</span></div>
         <div style="display:flex;align-items:center;gap:0.35rem">
@@ -1487,6 +1668,89 @@
           <button id="oscLaunchRendererBtn" type="button" style="background:rgba(88,160,255,0.18);border:1px solid rgba(88,160,255,0.38);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Launch orender</button>
         </div>
       </div>
+      <div class="info-section" id="audioInputSection">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+          <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
+            <div class="info-title" style="margin:0">Audio Input</div>
+            <div id="inputSummary" style="display:none;min-width:0;flex:1 1 auto;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">bridge • active bridge • bridge</div>
+          </div>
+          <button id="inputSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
+        </div>
+        <div id="inputSectionContent" class="conditional-params">
+        <div class="input-panel-shell">
+          <div id="inputStatusInfo" class="input-panel-status">requested bridge • active bridge • —</div>
+          <div class="input-panel-grid">
+            <div class="input-panel-row">
+              <label for="inputModeSelect">Mode</label>
+              <select id="inputModeSelect" class="delay-input">
+                <option value="bridge">Bridge</option>
+                <option value="live">Live input</option>
+              </select>
+            </div>
+          </div>
+          <div id="inputLiveFields" class="input-panel-stack">
+            <div class="input-panel-subtitle">Live Source</div>
+            <div class="input-panel-row">
+              <label for="inputBackendSelect">Backend</label>
+              <select id="inputBackendSelect" class="delay-input">
+                <option value="pipewire">PipeWire</option>
+                <option value="asio">ASIO</option>
+              </select>
+            </div>
+            <div class="input-panel-row">
+              <label for="inputNodeInput">Node</label>
+              <input id="inputNodeInput" class="delay-input" type="text" placeholder="omniphony_input_7_1" />
+            </div>
+            <div class="input-panel-row">
+              <label for="inputDescriptionInput">Description</label>
+              <input id="inputDescriptionInput" class="delay-input" type="text" placeholder="Omniphony Input 7.1" />
+            </div>
+            <div class="input-panel-row">
+              <label for="inputLayoutInput">Layout</label>
+              <input id="inputLayoutInput" class="delay-input" type="text" placeholder="../layouts/7.1.yaml" />
+            </div>
+            <div class="input-panel-inline-grid">
+              <div class="input-panel-field">
+                <label for="inputChannelsInput" class="input-panel-inline-label">Channels</label>
+                <input id="inputChannelsInput" class="delay-input" type="number" min="1" step="1" value="8" />
+              </div>
+              <div class="input-panel-field">
+                <label for="inputSampleRateInput" class="input-panel-inline-label">Sample rate</label>
+                <input id="inputSampleRateInput" class="delay-input" type="number" min="1" step="1" value="48000" />
+              </div>
+            </div>
+            <div class="input-panel-triple-grid">
+              <div class="input-panel-field">
+                <label for="inputFormatSelect" class="input-panel-inline-label">Format</label>
+                <select id="inputFormatSelect" class="delay-input">
+                  <option value="f32">f32</option>
+                  <option value="s16">s16</option>
+                </select>
+              </div>
+              <div class="input-panel-field">
+                <label for="inputMapSelect" class="input-panel-inline-label">Map</label>
+                <select id="inputMapSelect" class="delay-input">
+                  <option value="7.1-fixed">7.1 fixed</option>
+                </select>
+              </div>
+              <div class="input-panel-field">
+                <label for="inputLfeModeSelect" class="input-panel-inline-label">LFE</label>
+                <select id="inputLfeModeSelect" class="delay-input">
+                  <option value="object">Object</option>
+                  <option value="direct">Direct</option>
+                  <option value="drop">Drop</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="input-panel-actions">
+            <button id="inputRefreshBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Refresh</button>
+            <button id="inputApplyBtn" type="button" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Apply</button>
+          </div>
+        </div>
+        </div>
+      </div>
+      <div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid rgba(255, 255, 255, 0.12)"></div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.25rem">
         <div style="font-size:12px;font-weight:600" data-i18n="room.title">Room Geometry</div>
         <div style="display:flex;align-items:center;gap:0.35rem">
@@ -1642,8 +1906,10 @@
         </div>
         <div id="objectsList" class="info-list">No objects.</div>
       </div>
+      </div>
     </div>
     <div id="speakersOverlay">
+      <div id="speakersOverlayScroll">
       <div class="info-section" id="audioOutputSection">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
           <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
@@ -2078,6 +2344,7 @@
             <input id="speakerEditSpatializeToggle" type="checkbox" />
           </div>
         </div>
+      </div>
       </div>
     </div>
 

@@ -21,7 +21,7 @@ import {
   setRampModeInfoModalOpen, setVbapPositionInterpolationInfoModalOpen,
   setSpreadFromDistanceInfoModalOpen, setDistanceDiffuseInfoModalOpen,
   setTelemetryGaugesOpen,
-  setDisplaySectionOpen, setAudioOutputSectionOpen, setRendererSectionOpen
+  setDisplaySectionOpen, setAudioOutputSectionOpen, setInputSectionOpen, setRendererSectionOpen
 } from './modals.js';
 import { updateMasterGainUI, updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.js';
 import { updateSpreadDisplay } from './controls/spread.js';
@@ -32,6 +32,7 @@ import {
   closeAudioSampleRateMenu, openAudioSampleRateMenu, updateAudioFormatDisplay,
   applyAudioSampleRateNow, applyAudioOutputDeviceNow, applyRampModeNow
 } from './controls/audio.js';
+import { updateInputControlUI } from './controls/input.js';
 import { updateConfigSavedUI } from './controls/config.js';
 import { applyLatencyTargetNow, updateLatencyDisplay } from './controls/latency.js';
 import {
@@ -140,6 +141,7 @@ export function setupUIListeners() {
   const telemetryGaugesToggleBtnEl = document.getElementById('telemetryGaugesToggleBtn');
   const displaySectionToggleBtnEl = document.getElementById('displaySectionToggleBtn');
   const audioOutputSectionToggleBtnEl = document.getElementById('audioOutputSectionToggleBtn');
+  const inputSectionToggleBtnEl = document.getElementById('inputSectionToggleBtn');
   const rendererSectionToggleBtnEl = document.getElementById('rendererSectionToggleBtn');
   const roomGeometryToggleBtnEl = document.getElementById('roomGeometryToggleBtn');
   const roomGeometryCancelBtnEl = document.getElementById('roomGeometryCancelBtn');
@@ -207,6 +209,18 @@ export function setupUIListeners() {
   const localeSelectEl = document.getElementById('localeSelect');
   const layoutSelectEl = document.getElementById('layoutSelect');
   const refreshOutputDevicesBtnEl = document.getElementById('refreshOutputDevicesBtn');
+  const inputModeSelectEl = document.getElementById('inputModeSelect');
+  const inputBackendSelectEl = document.getElementById('inputBackendSelect');
+  const inputNodeInputEl = document.getElementById('inputNodeInput');
+  const inputDescriptionInputEl = document.getElementById('inputDescriptionInput');
+  const inputLayoutInputEl = document.getElementById('inputLayoutInput');
+  const inputChannelsInputEl = document.getElementById('inputChannelsInput');
+  const inputSampleRateInputEl = document.getElementById('inputSampleRateInput');
+  const inputFormatSelectEl = document.getElementById('inputFormatSelect');
+  const inputMapSelectEl = document.getElementById('inputMapSelect');
+  const inputLfeModeSelectEl = document.getElementById('inputLfeModeSelect');
+  const inputApplyBtnEl = document.getElementById('inputApplyBtn');
+  const inputRefreshBtnEl = document.getElementById('inputRefreshBtn');
 
   // ── Master gain ─────────────────────────────────────────────────────────
 
@@ -877,6 +891,12 @@ export function setupUIListeners() {
     });
   }
 
+  if (inputSectionToggleBtnEl) {
+    inputSectionToggleBtnEl.addEventListener('click', () => {
+      setInputSectionOpen(!app.inputSectionOpen);
+    });
+  }
+
   if (rendererSectionToggleBtnEl) {
     rendererSectionToggleBtnEl.addEventListener('click', () => {
       setRendererSectionOpen(!app.rendererSectionOpen);
@@ -1180,6 +1200,111 @@ export function setupUIListeners() {
   if (refreshOutputDevicesBtnEl) {
     refreshOutputDevicesBtnEl.addEventListener('click', () => {
       invoke('refresh_output_devices');
+    });
+  }
+
+  if (inputModeSelectEl) {
+    inputModeSelectEl.addEventListener('change', () => {
+      const value = inputModeSelectEl.value === 'live' ? 'live' : 'bridge';
+      app.inputMode = value;
+      updateInputControlUI();
+      invoke('control_input_mode', { value });
+    });
+  }
+
+  if (inputBackendSelectEl) {
+    inputBackendSelectEl.addEventListener('change', () => {
+      const value = inputBackendSelectEl.value === 'asio' ? 'asio' : 'pipewire';
+      app.liveInput.backend = value;
+      updateInputControlUI();
+      invoke('control_input_live_backend', { value });
+    });
+  }
+
+  if (inputNodeInputEl) {
+    inputNodeInputEl.addEventListener('change', () => {
+      const value = String(inputNodeInputEl.value || '');
+      app.liveInput.node = value;
+      updateInputControlUI();
+      invoke('control_input_live_node', { value });
+    });
+  }
+
+  if (inputDescriptionInputEl) {
+    inputDescriptionInputEl.addEventListener('change', () => {
+      const value = String(inputDescriptionInputEl.value || '');
+      app.liveInput.description = value;
+      updateInputControlUI();
+      invoke('control_input_live_description', { value });
+    });
+  }
+
+  if (inputLayoutInputEl) {
+    inputLayoutInputEl.addEventListener('change', () => {
+      const value = String(inputLayoutInputEl.value || '');
+      app.liveInput.layout = value;
+      updateInputControlUI();
+      invoke('control_input_live_layout', { value });
+    });
+  }
+
+  if (inputChannelsInputEl) {
+    inputChannelsInputEl.addEventListener('change', () => {
+      const value = Math.max(1, Math.round(Number(inputChannelsInputEl.value) || 8));
+      app.liveInput.channels = value;
+      updateInputControlUI();
+      invoke('control_input_live_channels', { value });
+    });
+  }
+
+  if (inputSampleRateInputEl) {
+    inputSampleRateInputEl.addEventListener('change', () => {
+      const value = Math.max(1, Math.round(Number(inputSampleRateInputEl.value) || 48000));
+      app.liveInput.sampleRate = value;
+      updateInputControlUI();
+      invoke('control_input_live_sample_rate', { value });
+    });
+  }
+
+  if (inputFormatSelectEl) {
+    inputFormatSelectEl.addEventListener('change', () => {
+      const value = inputFormatSelectEl.value === 's16' ? 's16' : 'f32';
+      app.liveInput.format = value;
+      updateInputControlUI();
+      invoke('control_input_live_format', { value });
+    });
+  }
+
+  if (inputMapSelectEl) {
+    inputMapSelectEl.addEventListener('change', () => {
+      const value = '7.1-fixed';
+      app.liveInput.map = value;
+      updateInputControlUI();
+      invoke('control_input_live_map', { value });
+    });
+  }
+
+  if (inputLfeModeSelectEl) {
+    inputLfeModeSelectEl.addEventListener('change', () => {
+      const raw = String(inputLfeModeSelectEl.value || '').trim().toLowerCase();
+      const value = ['object', 'direct', 'drop'].includes(raw) ? raw : 'object';
+      app.liveInput.lfeMode = value;
+      updateInputControlUI();
+      invoke('control_input_live_lfe_mode', { value });
+    });
+  }
+
+  if (inputApplyBtnEl) {
+    inputApplyBtnEl.addEventListener('click', () => {
+      app.inputApplyPending = true;
+      updateInputControlUI();
+      invoke('control_input_apply');
+    });
+  }
+
+  if (inputRefreshBtnEl) {
+    inputRefreshBtnEl.addEventListener('click', () => {
+      invoke('control_input_refresh');
     });
   }
 

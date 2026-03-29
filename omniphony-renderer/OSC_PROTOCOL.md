@@ -139,6 +139,25 @@ to newly registered clients as part of the initial state bundle.
 Common addresses include:
 
 - `/omniphony/state/gain`
+- `/omniphony/state/input_pipe`
+- `/omniphony/state/input/mode`
+- `/omniphony/state/input/active_mode`
+- `/omniphony/state/input/apply_pending`
+- `/omniphony/state/input/backend`
+- `/omniphony/state/input/channels`
+- `/omniphony/state/input/sample_rate`
+- `/omniphony/state/input/node`
+- `/omniphony/state/input/stream_format`
+- `/omniphony/state/input/error`
+- `/omniphony/state/input/live/backend`
+- `/omniphony/state/input/live/node`
+- `/omniphony/state/input/live/description`
+- `/omniphony/state/input/live/layout`
+- `/omniphony/state/input/live/channels`
+- `/omniphony/state/input/live/sample_rate`
+- `/omniphony/state/input/live/format`
+- `/omniphony/state/input/live/map`
+- `/omniphony/state/input/live/lfe_mode`
 - `/omniphony/state/object/{idx}/gain`
 - `/omniphony/state/object/{idx}/mute`
 - `/omniphony/state/speaker/{idx}/gain`
@@ -175,6 +194,19 @@ All control messages are sent to `--osc-rx-port`.
 
 Common control addresses include:
 
+- `/omniphony/control/input/refresh`
+- `/omniphony/control/input/mode`
+- `/omniphony/control/input/live/backend`
+- `/omniphony/control/input/live/node`
+- `/omniphony/control/input/live/description`
+- `/omniphony/control/input/live/layout`
+- `/omniphony/control/input/live/channels`
+- `/omniphony/control/input/live/sample_rate`
+- `/omniphony/control/input/live/format`
+- `/omniphony/control/input/live/map`
+- `/omniphony/control/input/live/lfe_mode`
+- `/omniphony/control/input/apply`
+- `/omniphony/control/audio/output_devices/refresh`
 - `/omniphony/control/gain`
 - `/omniphony/control/object/{idx}/gain`
 - `/omniphony/control/object/{idx}/mute`
@@ -212,6 +244,76 @@ Accepted values are:
 - `off`: no interpolation, jump directly to the target
 - `frame`: one interpolation step per decoded audio frame
 - `sample`: one interpolation step per rendered sample
+
+### Live Input Control for Studio
+
+The live-input surface is designed for staged editing from a controller such as
+Studio.
+
+Recommended flow:
+
+1. send one or more staged values under `/omniphony/control/input/...`
+2. send `/omniphony/control/input/apply`
+3. observe `/omniphony/state/input/...` for the applied runtime state
+
+Important addresses:
+
+- `/omniphony/control/input/refresh`
+  - forces `orender` to rebroadcast the full current state bundle
+  - useful if Studio reconnects without sending `/omniphony/register`
+
+- `/omniphony/control/input/mode s <bridge|live>`
+  - stages the requested active source mode
+
+- `/omniphony/control/input/live/backend s <pipewire|asio>`
+  - stages the backend used when `mode=live`
+
+- `/omniphony/control/input/live/node s <name>`
+  - stages the live input node name
+
+- `/omniphony/control/input/live/description s <label>`
+  - stages the human-readable live input node label
+
+- `/omniphony/control/input/live/layout s <path>`
+  - stages the source layout path used for fixed object positioning
+
+- `/omniphony/control/input/live/channels i <count>`
+  - stages the requested live input channel count
+
+- `/omniphony/control/input/live/sample_rate i <hz>`
+  - stages the requested live input sample rate
+
+- `/omniphony/control/input/live/format s <f32|s16>`
+  - stages the requested input sample format
+
+- `/omniphony/control/input/live/map s <7.1-fixed>`
+  - stages the fixed object mapping mode
+
+- `/omniphony/control/input/live/lfe_mode s <object|direct|drop>`
+  - stages the LFE policy
+
+- `/omniphony/control/input/apply`
+  - applies the staged live-input request atomically
+
+State semantics:
+
+- `/omniphony/state/input/mode`
+  - staged mode requested by Studio
+
+- `/omniphony/state/input/active_mode`
+  - mode currently active in the runtime
+
+- `/omniphony/state/input/apply_pending`
+  - `1` after staged edits are ready to apply, `0` after apply has been consumed
+
+- `/omniphony/state/input/error`
+  - last runtime error for the input path
+
+- `/omniphony/state/input/live/...`
+  - staged settings requested by Studio
+
+- `/omniphony/state/input/backend`, `/channels`, `/sample_rate`, `/node`, `/stream_format`
+  - currently applied runtime values
 
 ## Speaker Recompute Flow
 

@@ -1,8 +1,99 @@
 use crate::AdaptiveResamplingConfig;
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputMode {
+    Bridge,
+    Live,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputBackend {
+    Pipewire,
+    Asio,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputMapMode {
+    SevenOneFixed,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputLfeMode {
+    Object,
+    Direct,
+    Drop,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputSampleFormat {
+    F32,
+    S16,
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestedAudioInputConfig {
+    pub mode: InputMode,
+    pub backend: Option<InputBackend>,
+    pub node_name: Option<String>,
+    pub node_description: Option<String>,
+    pub layout_path: Option<std::path::PathBuf>,
+    pub channels: Option<u16>,
+    pub sample_rate_hz: Option<u32>,
+    pub sample_format: Option<InputSampleFormat>,
+    pub map_mode: InputMapMode,
+    pub lfe_mode: InputLfeMode,
+}
+
+impl Default for RequestedAudioInputConfig {
+    fn default() -> Self {
+        Self {
+            mode: InputMode::Bridge,
+            backend: None,
+            node_name: None,
+            node_description: None,
+            layout_path: None,
+            channels: None,
+            sample_rate_hz: None,
+            sample_format: None,
+            map_mode: InputMapMode::SevenOneFixed,
+            lfe_mode: InputLfeMode::Direct,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AppliedAudioInputState {
+    pub active_mode: InputMode,
+    pub backend: Option<InputBackend>,
+    pub channels: Option<u16>,
+    pub sample_rate_hz: Option<u32>,
+    pub node_name: Option<String>,
+    pub stream_format: Option<String>,
+    pub input_error: Option<String>,
+}
+
+impl Default for AppliedAudioInputState {
+    fn default() -> Self {
+        Self {
+            active_mode: InputMode::Bridge,
+            backend: None,
+            channels: None,
+            sample_rate_hz: None,
+            node_name: None,
+            stream_format: None,
+            input_error: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct OutputDeviceOption {
@@ -44,6 +135,13 @@ pub struct AudioControl {
     available_output_devices: Mutex<Vec<OutputDeviceOption>>,
     device_list_fetcher: Mutex<Option<Box<dyn Fn() -> Vec<OutputDeviceOption> + Send + Sync>>>,
     reset_ratio_pending: AtomicBool,
+}
+
+pub struct InputControl {
+    requested: Mutex<RequestedAudioInputConfig>,
+    applied: Mutex<AppliedAudioInputState>,
+    apply_pending: AtomicBool,
+    state_generation: AtomicU64,
 }
 
 impl Default for AudioControl {
@@ -267,5 +365,130 @@ impl AudioControl {
 
     pub fn audio_error(&self) -> Option<String> {
         self.applied_snapshot().audio_error
+    }
+}
+
+impl Default for InputControl {
+    fn default() -> Self {
+        Self::new(RequestedAudioInputConfig::default())
+    }
+}
+
+impl InputControl {
+    pub fn new(requested: RequestedAudioInputConfig) -> Self {
+        Self {
+            requested: Mutex::new(requested),
+            applied: Mutex::new(AppliedAudioInputState::default()),
+            apply_pending: AtomicBool::new(false),
+            state_generation: AtomicU64::new(1),
+        }
+    }
+
+    fn bump_state_generation(&self) {
+        self.state_generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn state_generation(&self) -> u64 {
+        self.state_generation.load(Ordering::Relaxed)
+    }
+
+    pub fn requested_snapshot(&self) -> RequestedAudioInputConfig {
+        self.requested.lock().unwrap().clone()
+    }
+
+    pub fn update_requested(&self, f: impl FnOnce(&mut RequestedAudioInputConfig)) {
+        let mut requested = self.requested.lock().unwrap();
+        f(&mut requested);
+        drop(requested);
+        self.bump_state_generation();
+    }
+
+    pub fn applied_snapshot(&self) -> AppliedAudioInputState {
+        self.applied.lock().unwrap().clone()
+    }
+
+    pub fn update_applied(&self, f: impl FnOnce(&mut AppliedAudioInputState)) {
+        let mut applied = self.applied.lock().unwrap();
+        f(&mut applied);
+        drop(applied);
+        self.bump_state_generation();
+    }
+
+    pub fn request_apply(&self) {
+        self.apply_pending.store(true, Ordering::Relaxed);
+        self.bump_state_generation();
+    }
+
+    pub fn take_apply_pending(&self) -> bool {
+        self.apply_pending
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    pub fn is_apply_pending(&self) -> bool {
+        self.apply_pending.load(Ordering::Relaxed)
+    }
+
+    pub fn set_requested_mode(&self, mode: InputMode) {
+        self.update_requested(|requested| requested.mode = mode);
+    }
+
+    pub fn set_requested_backend(&self, backend: Option<InputBackend>) {
+        self.update_requested(|requested| requested.backend = backend);
+    }
+
+    pub fn set_requested_node_name(&self, value: Option<String>) {
+        self.update_requested(|requested| requested.node_name = value);
+    }
+
+    pub fn set_requested_node_description(&self, value: Option<String>) {
+        self.update_requested(|requested| requested.node_description = value);
+    }
+
+    pub fn set_requested_layout_path(&self, value: Option<std::path::PathBuf>) {
+        self.update_requested(|requested| requested.layout_path = value);
+    }
+
+    pub fn set_requested_channels(&self, value: Option<u16>) {
+        self.update_requested(|requested| requested.channels = value);
+    }
+
+    pub fn set_requested_sample_rate_hz(&self, value: Option<u32>) {
+        self.update_requested(|requested| requested.sample_rate_hz = value);
+    }
+
+    pub fn set_requested_sample_format(&self, value: Option<InputSampleFormat>) {
+        self.update_requested(|requested| requested.sample_format = value);
+    }
+
+    pub fn set_requested_map_mode(&self, value: InputMapMode) {
+        self.update_requested(|requested| requested.map_mode = value);
+    }
+
+    pub fn set_requested_lfe_mode(&self, value: InputLfeMode) {
+        self.update_requested(|requested| requested.lfe_mode = value);
+    }
+
+    pub fn set_input_state(
+        &self,
+        mode: InputMode,
+        backend: Option<InputBackend>,
+        channels: Option<u16>,
+        sample_rate_hz: Option<u32>,
+        node_name: Option<String>,
+        stream_format: Option<String>,
+    ) {
+        self.update_applied(|applied| {
+            applied.active_mode = mode;
+            applied.backend = backend;
+            applied.channels = channels;
+            applied.sample_rate_hz = sample_rate_hz;
+            applied.node_name = node_name;
+            applied.stream_format = stream_format;
+        });
+    }
+
+    pub fn set_input_error(&self, error: Option<String>) {
+        self.update_applied(|applied| applied.input_error = error);
     }
 }

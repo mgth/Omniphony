@@ -4,11 +4,10 @@ use super::decoder_thread::{
     DecodedAudioData, DecoderMessage, DecoderThreadConfig, spawn_decoder_thread,
 };
 use super::handler::DecodeHandler;
+use super::live_input::spawn_live_input_manager;
 use super::state::{FrameHandlerContext, WriterState};
 use crate::bridge_loader::{LoadedBridge, resolve_bridge_path};
-use crate::cli::command::{
-    Cli, OutputBackend, RenderArgSources, RenderArgs, VbapTableModeArg,
-};
+use crate::cli::command::{Cli, OutputBackend, RenderArgSources, RenderArgs, VbapTableModeArg};
 use anyhow::Result;
 use log::Level;
 use std::sync::mpsc;
@@ -20,6 +19,7 @@ const MAX_DECODE_QUEUE_CAPACITY: usize = 8192;
 
 struct PreparedDecodeRun {
     state: WriterState,
+    tx: mpsc::SyncSender<Result<DecoderMessage>>,
     rx: mpsc::Receiver<Result<DecoderMessage>>,
     decode_thread: std::thread::JoinHandle<Result<()>>,
     _shutdown: sys::ShutdownHandle,
@@ -71,7 +71,9 @@ fn resolve_effective_decode_args(
 }
 
 fn decode_queue_capacity(latency_target_ms: Option<u32>) -> usize {
-    let target_ms = latency_target_ms.unwrap_or(DEFAULT_DECODE_QUEUE_LATENCY_MS).max(1);
+    let target_ms = latency_target_ms
+        .unwrap_or(DEFAULT_DECODE_QUEUE_LATENCY_MS)
+        .max(1);
     (target_ms as usize)
         .saturating_mul(DECODE_QUEUE_MESSAGES_PER_MS)
         .clamp(MIN_DECODE_QUEUE_CAPACITY, MAX_DECODE_QUEUE_CAPACITY)
@@ -86,9 +88,9 @@ fn maybe_save_effective_config(
         return Ok(false);
     }
 
-    let path = config_path
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine config path; use --config to specify one"))?;
+    let path = config_path.clone().ok_or_else(|| {
+        anyhow::anyhow!("Cannot determine config path; use --config to specify one")
+    })?;
 
     let config = effective_to_config(args, cli)?;
     config.save(&path)?;
@@ -170,13 +172,14 @@ fn prepare_render_run(args: &RenderArgs, cli: &Cli) -> Result<PreparedDecodeRun>
         strict_mode,
         continuous: args.continuous,
         drain_pipe: !args.no_drain_pipe,
-        tx,
+        tx: tx.clone(),
         bridge,
         shutdown_signal,
     });
 
     Ok(PreparedDecodeRun {
         state,
+        tx,
         rx,
         decode_thread,
         _shutdown: shutdown,
@@ -234,6 +237,7 @@ fn handle_stream_end(handler: &mut DecodeHandler, args: &RenderArgs) -> Result<(
 
     let spatial_renderer = handler.spatial_renderer.take();
     let audio_control = handler.audio_control.take();
+    let input_control = handler.input_control.take();
     let osc_sender = handler.telemetry.osc_sender.take();
     let audio_meter = handler.telemetry.audio_meter.take();
     let runtime = handler.runtime.clone();
@@ -242,6 +246,7 @@ fn handle_stream_end(handler: &mut DecodeHandler, args: &RenderArgs) -> Result<(
 
     handler.spatial_renderer = spatial_renderer;
     handler.audio_control = audio_control;
+    handler.input_control = input_control;
     handler.telemetry.osc_sender = osc_sender;
     handler.telemetry.audio_meter = audio_meter;
     handler.runtime = runtime;
@@ -266,6 +271,9 @@ fn handle_audio_message(
     decoded: DecodedAudioData,
     ctx: &DecodeRunContext<'_>,
 ) -> Result<()> {
+    if !handler.should_accept_source(decoded.source) {
+        return handler.poll_runtime_state();
+    }
     let frame = decoded.frame;
     if frame.is_new_segment {
         handler.spatial.segment_start_samples = handler.session.decoded_samples;
@@ -286,7 +294,7 @@ fn handle_audio_message(
         decode_time_ms: decoded.decode_time_ms,
         queue_delay_ms: decoded.sent_at.elapsed().as_secs_f32() * 1000.0,
     };
-    handler.handle_decoded_frame(frame, &ctx)
+    handler.handle_decoded_frame(decoded.source, frame, &ctx)
 }
 
 fn process_decoder_messages(
@@ -294,11 +302,31 @@ fn process_decoder_messages(
     handler: &mut DecodeHandler,
     ctx: &DecodeRunContext<'_>,
 ) -> Result<()> {
-    while let Ok(result) = rx.recv() {
+    loop {
+        let result = match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                handler.poll_runtime_state()?;
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match result {
             Ok(DecoderMessage::AudioData(frame)) => handle_audio_message(handler, frame, ctx)?,
-            Ok(DecoderMessage::FlushRequest) => handler.handle_decoder_flush_request(),
-            Ok(DecoderMessage::StreamEnd) => handle_stream_end(handler, ctx.args)?,
+            Ok(DecoderMessage::FlushRequest(source)) => {
+                if handler.should_accept_source(source) {
+                    handler.handle_decoder_flush_request();
+                } else {
+                    handler.poll_runtime_state()?;
+                }
+            }
+            Ok(DecoderMessage::StreamEnd(source)) => {
+                if handler.should_accept_source(source) {
+                    handle_stream_end(handler, ctx.args)?;
+                } else {
+                    handler.poll_runtime_state()?;
+                }
+            }
             Err(err) => return Err(err),
         }
     }
@@ -407,8 +435,16 @@ fn run_prepared_render(
         vbap_table_mode_explicit,
     )?;
     handler.spatial.coordinate_format = prepared.coordinate_format;
+    let live_input_manager = handler
+        .input_control
+        .as_ref()
+        .map(|input_control| spawn_live_input_manager(prepared.tx.clone(), input_control.clone()));
 
-    run_render_message_phase(&prepared, &mut handler, &effective_args)?;
+    let run_result = run_render_message_phase(&prepared, &mut handler, &effective_args);
+    if let Some(manager) = live_input_manager {
+        manager.stop();
+    }
+    run_result?;
     finalize_render_run(prepared, &mut handler, &effective_args)
 }
 

@@ -86,7 +86,8 @@ fn get_about_info() -> AboutInfo {
 #[tauri::command]
 fn save_osc_config(state: State<SharedState>, config: OscConfig) -> Result<(), String> {
     save_config(&state.config_dir, &config)?;
-    state.inner.lock().unwrap().osc_metering_enabled = Some(if config.osc_metering_enabled { 1 } else { 0 });
+    state.inner.lock().unwrap().osc_metering_enabled =
+        Some(if config.osc_metering_enabled { 1 } else { 0 });
     send_control(
         &state.osc_tx,
         OscControlMsg::SetMeteringEnabled {
@@ -112,10 +113,7 @@ fn control_osc_metering(state: State<SharedState>, enable: i32) -> Result<(), St
     cfg.osc_metering_enabled = enabled;
     save_config(&state.config_dir, &cfg)?;
     state.inner.lock().unwrap().osc_metering_enabled = Some(if enabled { 1 } else { 0 });
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SetMeteringEnabled { enabled },
-    );
+    send_control(&state.osc_tx, OscControlMsg::SetMeteringEnabled { enabled });
     Ok(())
 }
 
@@ -175,7 +173,8 @@ fn pick_export_layout_path(suggested_name: Option<String>) -> Option<String> {
         .filter(|s| !s.is_empty())
         .map(|s| {
             let lowered = s.to_ascii_lowercase();
-            if lowered.ends_with(".yaml") || lowered.ends_with(".yml") || lowered.ends_with(".json") {
+            if lowered.ends_with(".yaml") || lowered.ends_with(".yml") || lowered.ends_with(".json")
+            {
                 s.to_string()
             } else {
                 format!("{s}.yaml")
@@ -309,15 +308,11 @@ fn control_adaptive_resampling_enable_far_mode(state: State<SharedState>, enable
 }
 
 #[tauri::command]
-fn control_adaptive_resampling_force_silence_in_far_mode(
-    state: State<SharedState>,
-    enable: i32,
-) {
+fn control_adaptive_resampling_force_silence_in_far_mode(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/adaptive_resampling/force_silence_in_far_mode"
-                .to_string(),
+            address: "/omniphony/control/adaptive_resampling/force_silence_in_far_mode".to_string(),
             value: if enable != 0 { 1 } else { 0 },
         },
     );
@@ -354,10 +349,7 @@ fn control_adaptive_resampling_hard_recover_low_in_far_mode(
 }
 
 #[tauri::command]
-fn control_adaptive_resampling_far_mode_return_fade_in_ms(
-    state: State<SharedState>,
-    value: i32,
-) {
+fn control_adaptive_resampling_far_mode_return_fade_in_ms(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -424,25 +416,18 @@ fn control_adaptive_resampling_max_adjust(state: State<SharedState>, value: f32)
 }
 
 #[tauri::command]
-fn control_adaptive_resampling_update_interval_callbacks(
-    state: State<SharedState>,
-    value: i32,
-) {
+fn control_adaptive_resampling_update_interval_callbacks(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/adaptive_resampling/update_interval_callbacks"
-                .to_string(),
+            address: "/omniphony/control/adaptive_resampling/update_interval_callbacks".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_adaptive_resampling_near_far_threshold_ms(
-    state: State<SharedState>,
-    value: i32,
-) {
+fn control_adaptive_resampling_near_far_threshold_ms(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -451,7 +436,6 @@ fn control_adaptive_resampling_near_far_threshold_ms(
         },
     );
 }
-
 
 #[tauri::command]
 fn control_adaptive_resampling_pause(state: State<SharedState>, enable: i32) {
@@ -1047,6 +1031,156 @@ fn refresh_output_devices(state: State<SharedState>) {
     );
 }
 
+#[tauri::command]
+fn control_input_mode(state: State<SharedState>, value: String) {
+    let trimmed = value.trim().to_ascii_lowercase();
+    if !matches!(trimmed.as_str(), "bridge" | "live") {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/mode".to_string(),
+            value: trimmed,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_live_backend(state: State<SharedState>, value: String) {
+    let trimmed = value.trim().to_ascii_lowercase();
+    if !matches!(trimmed.as_str(), "pipewire" | "asio") {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/backend".to_string(),
+            value: trimmed,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_live_node(state: State<SharedState>, value: String) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/node".to_string(),
+            value: value.trim().to_string(),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_live_description(state: State<SharedState>, value: String) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/description".to_string(),
+            value: value.trim().to_string(),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_live_layout(state: State<SharedState>, value: String) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/layout".to_string(),
+            value: value.trim().to_string(),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_live_channels(state: State<SharedState>, value: i32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/input/live/channels".to_string(),
+            value: value.max(1),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_live_sample_rate(state: State<SharedState>, value: i32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/input/live/sample_rate".to_string(),
+            value: value.max(1),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_live_format(state: State<SharedState>, value: String) {
+    let trimmed = value.trim().to_ascii_lowercase();
+    if !matches!(trimmed.as_str(), "f32" | "s16") {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/format".to_string(),
+            value: trimmed,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_live_map(state: State<SharedState>, value: String) {
+    let trimmed = value.trim().to_ascii_lowercase();
+    if !matches!(trimmed.as_str(), "7.1-fixed") {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/map".to_string(),
+            value: trimmed,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_live_lfe_mode(state: State<SharedState>, value: String) {
+    let trimmed = value.trim().to_ascii_lowercase();
+    if !matches!(trimmed.as_str(), "object" | "direct" | "drop") {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/lfe_mode".to_string(),
+            value: trimmed,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_apply(state: State<SharedState>) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendNoArgs {
+            address: "/omniphony/control/input/apply".to_string(),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_input_refresh(state: State<SharedState>) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendNoArgs {
+            address: "/omniphony/control/input/refresh".to_string(),
+        },
+    );
+}
+
 fn first_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates.iter().find(|path| path.exists()).cloned()
 }
@@ -1067,7 +1201,10 @@ fn bundled_orender_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
 }
 
 fn bundled_layouts_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path().resource_dir().ok().map(|dir| dir.join("layouts"))
+    app.path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("layouts"))
 }
 
 fn default_orender_input_path() -> PathBuf {
@@ -1372,11 +1509,19 @@ fn get_orender_service_status() -> Result<OrenderServiceStatus, String> {
     {
         let service_name = linux_user_service_name();
         let output = ProcessCommand::new("systemctl")
-            .args(["--user", "show", "-p", "LoadState", "--value", &service_name])
+            .args([
+                "--user",
+                "show",
+                "-p",
+                "LoadState",
+                "--value",
+                &service_name,
+            ])
             .output()
             .map_err(|e| format!("query service status: {e}"))?;
         let load_state = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let installed = output.status.success() && load_state != "not-found" && !load_state.is_empty();
+        let installed =
+            output.status.success() && load_state != "not-found" && !load_state.is_empty();
         let running = if installed {
             ProcessCommand::new("systemctl")
                 .args(["--user", "is-active", "--quiet", &service_name])
@@ -1401,7 +1546,8 @@ fn get_orender_service_status() -> Result<OrenderServiceStatus, String> {
             .map_err(|e| format!("query service status: {e}"))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let missing = stdout.contains("1060") || stderr.contains("1060") || stdout.contains("does not exist");
+        let missing =
+            stdout.contains("1060") || stderr.contains("1060") || stdout.contains("does not exist");
         let installed = output.status.success() && !missing;
         let running = installed && stdout.contains("RUNNING");
         return Ok(OrenderServiceStatus {
@@ -1446,10 +1592,22 @@ fn install_orender_service(
         let service_name = linux_user_service_name();
         let unit_dir = linux_user_service_dir()?;
         let unit_path = unit_dir.join(&service_name);
-        std::fs::create_dir_all(&unit_dir)
-            .map_err(|e| format!("install service: failed to create {}: {e}", unit_dir.display()))?;
-        std::fs::write(&unit_path, linux_service_unit(&spec.orender_path, &spec.args))
-            .map_err(|e| format!("install service: failed to write {}: {e}", unit_path.display()))?;
+        std::fs::create_dir_all(&unit_dir).map_err(|e| {
+            format!(
+                "install service: failed to create {}: {e}",
+                unit_dir.display()
+            )
+        })?;
+        std::fs::write(
+            &unit_path,
+            linux_service_unit(&spec.orender_path, &spec.args),
+        )
+        .map_err(|e| {
+            format!(
+                "install service: failed to write {}: {e}",
+                unit_path.display()
+            )
+        })?;
         run_user_systemctl(&["daemon-reload"], "install service")?;
         run_user_systemctl(&["enable", &service_name], "install service")?;
         return Ok(serde_json::json!({
@@ -1522,8 +1680,12 @@ fn uninstall_orender_service() -> Result<(), String> {
         let _ = run_user_systemctl(&["stop", &service_name], "uninstall service");
         let _ = run_user_systemctl(&["disable", &service_name], "uninstall service");
         if unit_path.exists() {
-            std::fs::remove_file(&unit_path)
-                .map_err(|e| format!("uninstall service: failed to remove {}: {e}", unit_path.display()))?;
+            std::fs::remove_file(&unit_path).map_err(|e| {
+                format!(
+                    "uninstall service: failed to remove {}: {e}",
+                    unit_path.display()
+                )
+            })?;
         }
         run_user_systemctl(&["daemon-reload"], "uninstall service")?;
         return Ok(());
@@ -1710,8 +1872,7 @@ fn main() {
                     .expect("failed to decode window icon")
                     .into_rgba8();
                 let (width, height) = decoded.dimensions();
-                let window_icon =
-                    tauri::image::Image::new_owned(decoded.into_raw(), width, height);
+                let window_icon = tauri::image::Image::new_owned(decoded.into_raw(), width, height);
                 let _ = window.set_icon(window_icon);
             }
 
@@ -1732,7 +1893,8 @@ fn main() {
             let loaded_layouts = layouts::load_layouts(&layouts_dir);
 
             let mut initial_state = AppState::new(loaded_layouts);
-            initial_state.osc_metering_enabled = Some(if osc_cfg.osc_metering_enabled { 1 } else { 0 });
+            initial_state.osc_metering_enabled =
+                Some(if osc_cfg.osc_metering_enabled { 1 } else { 0 });
             let app_state = Arc::new(Mutex::new(initial_state));
             let osc_tx: Arc<Mutex<Option<UnboundedSender<OscControlMsg>>>> =
                 Arc::new(Mutex::new(None));
@@ -1848,6 +2010,18 @@ fn main() {
             control_ramp_mode,
             control_audio_output_device,
             refresh_output_devices,
+            control_input_mode,
+            control_input_live_backend,
+            control_input_live_node,
+            control_input_live_description,
+            control_input_live_layout,
+            control_input_live_channels,
+            control_input_live_sample_rate,
+            control_input_live_format,
+            control_input_live_map,
+            control_input_live_lfe_mode,
+            control_input_apply,
+            control_input_refresh,
             control_export_layout,
             control_audio_sample_rate,
         ])

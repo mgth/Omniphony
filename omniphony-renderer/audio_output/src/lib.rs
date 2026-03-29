@@ -181,7 +181,9 @@ pub mod asio;
 pub mod pipewire;
 
 pub use control::{
-    AppliedAudioOutputState, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig,
+    AppliedAudioInputState, AppliedAudioOutputState, AudioControl, InputBackend,
+    InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat, OutputDeviceOption,
+    RequestedAudioInputConfig, RequestedAudioOutputConfig,
 };
 
 #[cfg(target_os = "linux")]

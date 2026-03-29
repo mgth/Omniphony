@@ -1,7 +1,7 @@
 use super::handler::{BedChannelMapper, ChannelCountCalculator};
+use super::output::AudioSamples;
 use super::state::{DecodeSessionState, OutputState, SpatialState, TelemetryState};
 use super::virtual_bed::{build_virtual_bed_events, build_virtual_bed_objects};
-use super::output::AudioSamples;
 use anyhow::Result;
 use bridge_api::RChannelLabel;
 use bridge_api::RDecodedFrame;
@@ -36,7 +36,11 @@ impl<'a> SampleWriteCoordinator<'a> {
         }
     }
 
-    pub fn write_audio_samples(&mut self, frame: &RDecodedFrame, decode_time_ms: f32) -> Result<()> {
+    pub fn write_audio_samples(
+        &mut self,
+        frame: &RDecodedFrame,
+        decode_time_ms: f32,
+    ) -> Result<()> {
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
         let frame_duration_ms =

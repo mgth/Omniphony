@@ -119,6 +119,21 @@ pub struct OutputDeviceOption {
     pub label: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LiveInputState {
+    pub backend: Option<String>,
+    pub node: Option<String>,
+    pub description: Option<String>,
+    pub layout: Option<String>,
+    pub channels: Option<u32>,
+    #[serde(rename = "sampleRate")]
+    pub sample_rate: Option<u32>,
+    pub format: Option<String>,
+    pub map: Option<String>,
+    #[serde(rename = "lfeMode")]
+    pub lfe_mode: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LiveSpeakerConfig {
     pub name: String,
@@ -239,6 +254,24 @@ pub struct AppState {
     pub audio_sample_format: Option<String>,
     #[serde(rename = "audioError")]
     pub audio_error: Option<String>,
+    #[serde(rename = "inputMode")]
+    pub input_mode: Option<String>,
+    #[serde(rename = "inputActiveMode")]
+    pub input_active_mode: Option<String>,
+    #[serde(rename = "inputApplyPending")]
+    pub input_apply_pending: Option<u8>,
+    #[serde(rename = "inputBackend")]
+    pub input_backend: Option<String>,
+    #[serde(rename = "inputChannels")]
+    pub input_channels: Option<u32>,
+    #[serde(rename = "inputSampleRate")]
+    pub input_sample_rate: Option<u32>,
+    #[serde(rename = "inputStreamFormat")]
+    pub input_stream_format: Option<String>,
+    #[serde(rename = "inputError")]
+    pub input_error: Option<String>,
+    #[serde(rename = "liveInput")]
+    pub live_input: LiveInputState,
     #[serde(rename = "orenderInputPipe")]
     pub orender_input_pipe: Option<String>,
     #[serde(rename = "oscStatus")]
@@ -337,6 +370,15 @@ impl Default for AppState {
             audio_output_devices: Vec::new(),
             audio_sample_format: None,
             audio_error: None,
+            input_mode: Some("bridge".to_string()),
+            input_active_mode: Some("bridge".to_string()),
+            input_apply_pending: Some(0),
+            input_backend: None,
+            input_channels: None,
+            input_sample_rate: None,
+            input_stream_format: None,
+            input_error: None,
+            live_input: LiveInputState::default(),
             orender_input_pipe: None,
             osc_status: Some("initializing".to_string()),
             osc_metering_enabled: Some(0),

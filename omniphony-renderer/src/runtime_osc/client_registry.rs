@@ -93,12 +93,8 @@ impl OscClientRegistry {
         })
     }
 
-    pub(crate) fn send_filtered<F>(
-        &self,
-        socket: &std::net::UdpSocket,
-        bytes: &[u8],
-        predicate: F,
-    ) where
+    pub(crate) fn send_filtered<F>(&self, socket: &std::net::UdpSocket, bytes: &[u8], predicate: F)
+    where
         F: Fn(&OscClientState) -> bool,
     {
         let mut clients = self.clients.lock().unwrap();

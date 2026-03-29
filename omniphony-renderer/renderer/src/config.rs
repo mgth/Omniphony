@@ -23,6 +23,10 @@ pub struct GlobalConfig {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_mode: Option<InputModeConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_input: Option<LiveInputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presentation: Option<u8>,
@@ -143,6 +147,56 @@ pub struct RenderConfig {
     pub distance_diffuse_threshold: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_diffuse_curve: Option<f32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputModeConfig {
+    Bridge,
+    Live,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputBackendConfig {
+    Pipewire,
+    Asio,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputMapModeConfig {
+    SevenOneFixed,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputLfeModeConfig {
+    Object,
+    Direct,
+    Drop,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct LiveInputConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<InputBackendConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map: Option<InputMapModeConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lfe_mode: Option<InputLfeModeConfig>,
 }
 
 impl Config {

@@ -1,31 +1,31 @@
 use anyhow::Result;
-use audio_output::AudioControl;
+use audio_output::{AudioControl, InputControl};
 use rosc::{OscMessage, OscPacket};
 use runtime_control::osc::SpeakerPatch;
 use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use renderer::live_params::RendererControl;
 
 mod client_registry;
-mod export;
 mod dispatch;
+mod export;
 mod metadata_emit;
 mod recompute;
 mod state_emit;
 mod transport;
 
+use self::client_registry::OscClientRegistry;
 use self::dispatch::handle_control_message;
 use self::export::build_live_state_bundle;
-use self::client_registry::OscClientRegistry;
+pub(crate) use self::transport::build_speaker_config_bundle;
 use self::transport::{
     flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client, send_metering_state,
     send_raw_filtered,
 };
-pub(crate) use self::transport::build_speaker_config_bundle;
 
 /// Timeout after which a registered client (one that must heartbeat) is considered dead.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -102,6 +102,8 @@ pub struct OscSender {
     control: Option<Arc<RendererControl>>,
     /// Shared audio runtime control for output-device and adaptive-resampling state.
     audio_control: Option<Arc<AudioControl>>,
+    /// Shared input runtime control for bridge/live source selection and live input state.
+    input_control: Option<Arc<InputControl>>,
     /// Previous frame's object snapshots for delta detection.
     prev_objects: Option<Vec<ObjectSnapshot>>,
     /// Force next send_object_frame call to emit all objects.
@@ -120,6 +122,7 @@ impl OscSender {
             clients,
             control: None,
             audio_control: None,
+            input_control: None,
             prev_objects: None,
             force_full_next: Arc::new(AtomicBool::new(true)),
             content_generation: 0,
@@ -136,6 +139,10 @@ impl OscSender {
         self.audio_control = Some(control);
     }
 
+    pub fn attach_input_control(&mut self, control: Arc<InputControl>) {
+        self.input_control = Some(control);
+    }
+
     /// Start the OSC registration listener on `rx_port`.
     ///
     /// Clients send `/omniphony/register [i listen_port?]` from their listening socket.
@@ -149,6 +156,7 @@ impl OscSender {
         let config = Arc::new(config_bundle_bytes);
         let control = self.control.clone();
         let audio_control = self.audio_control.clone();
+        let input_control = self.input_control.clone();
         let force_full_next = Arc::clone(&self.force_full_next);
 
         std::thread::Builder::new()
@@ -195,8 +203,11 @@ impl OscSender {
                                     }
                                     // Send live-state bundle (gain, spread, etc.).
                                     if let Some(ref ctrl) = control {
-                                        let state_bytes =
-                                            build_live_state_bundle(ctrl, audio_control.as_ref());
+                                        let state_bytes = build_live_state_bundle(
+                                            ctrl,
+                                            audio_control.as_ref(),
+                                            input_control.as_ref(),
+                                        );
                                         if let Err(e) = socket.send_to(&state_bytes, client) {
                                             log::warn!(
                                                 "Failed to send live state to {}: {}",
@@ -249,6 +260,7 @@ impl OscSender {
                                             src,
                                             ctrl,
                                             audio_control.as_ref(),
+                                            input_control.as_ref(),
                                             &mut pending_speakers,
                                             &socket,
                                             &clients,

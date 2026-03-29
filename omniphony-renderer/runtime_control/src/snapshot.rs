@@ -1,12 +1,48 @@
 use std::sync::Arc;
 
-use audio_output::AudioControl;
+use audio_output::{AudioControl, InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat};
 use renderer::live_params::RendererControl;
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
+
+fn input_mode_name(mode: InputMode) -> &'static str {
+    match mode {
+        InputMode::Bridge => "bridge",
+        InputMode::Live => "live",
+    }
+}
+
+fn input_backend_name(backend: audio_output::InputBackend) -> &'static str {
+    match backend {
+        audio_output::InputBackend::Pipewire => "pipewire",
+        audio_output::InputBackend::Asio => "asio",
+    }
+}
+
+fn input_map_mode_name(mode: InputMapMode) -> &'static str {
+    match mode {
+        InputMapMode::SevenOneFixed => "7.1-fixed",
+    }
+}
+
+fn input_lfe_mode_name(mode: InputLfeMode) -> &'static str {
+    match mode {
+        InputLfeMode::Object => "object",
+        InputLfeMode::Direct => "direct",
+        InputLfeMode::Drop => "drop",
+    }
+}
+
+fn input_sample_format_name(format: InputSampleFormat) -> &'static str {
+    match format {
+        InputSampleFormat::F32 => "f32",
+        InputSampleFormat::S16 => "s16",
+    }
+}
 
 pub fn build_live_state_bundle(
     control: &Arc<RendererControl>,
     audio_control: Option<&Arc<AudioControl>>,
+    input_control: Option<&Arc<InputControl>>,
 ) -> Vec<u8> {
     let live = control.live.read().unwrap();
     let radius_m = control.editable_layout().radius_m;
@@ -237,6 +273,122 @@ pub fn build_live_state_bundle(
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/latency_target".to_string(),
                 args: vec![OscType::Float(ms as f32)],
+            }));
+        }
+    }
+
+    if let Some(input_control) = input_control {
+        let requested = input_control.requested_snapshot();
+        let applied = input_control.applied_snapshot();
+
+        messages.extend([
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/mode".to_string(),
+                args: vec![OscType::String(input_mode_name(requested.mode).to_string())],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/map".to_string(),
+                args: vec![OscType::String(
+                    input_map_mode_name(requested.map_mode).to_string(),
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/lfe_mode".to_string(),
+                args: vec![OscType::String(
+                    input_lfe_mode_name(requested.lfe_mode).to_string(),
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/apply_pending".to_string(),
+                args: vec![OscType::Int(if input_control.is_apply_pending() { 1 } else { 0 })],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/active_mode".to_string(),
+                args: vec![OscType::String(
+                    input_mode_name(applied.active_mode).to_string(),
+                )],
+            }),
+        ]);
+
+        if let Some(backend) = requested.backend {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/backend".to_string(),
+                args: vec![OscType::String(input_backend_name(backend).to_string())],
+            }));
+        }
+        if let Some(node_name) = requested.node_name {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/node".to_string(),
+                args: vec![OscType::String(node_name)],
+            }));
+        }
+        if let Some(description) = requested.node_description {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/description".to_string(),
+                args: vec![OscType::String(description)],
+            }));
+        }
+        if let Some(layout_path) = requested.layout_path {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/layout".to_string(),
+                args: vec![OscType::String(layout_path.display().to_string())],
+            }));
+        }
+        if let Some(channels) = requested.channels {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/channels".to_string(),
+                args: vec![OscType::Int(channels as i32)],
+            }));
+        }
+        if let Some(sample_rate_hz) = requested.sample_rate_hz {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/sample_rate".to_string(),
+                args: vec![OscType::Int(sample_rate_hz as i32)],
+            }));
+        }
+        if let Some(sample_format) = requested.sample_format {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/format".to_string(),
+                args: vec![OscType::String(
+                    input_sample_format_name(sample_format).to_string(),
+                )],
+            }));
+        }
+
+        if let Some(backend) = applied.backend {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/backend".to_string(),
+                args: vec![OscType::String(input_backend_name(backend).to_string())],
+            }));
+        }
+        if let Some(channels) = applied.channels {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/channels".to_string(),
+                args: vec![OscType::Int(channels as i32)],
+            }));
+        }
+        if let Some(sample_rate_hz) = applied.sample_rate_hz {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/sample_rate".to_string(),
+                args: vec![OscType::Int(sample_rate_hz as i32)],
+            }));
+        }
+        if let Some(node_name) = applied.node_name {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/node".to_string(),
+                args: vec![OscType::String(node_name)],
+            }));
+        }
+        if let Some(stream_format) = applied.stream_format {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/stream_format".to_string(),
+                args: vec![OscType::String(stream_format)],
+            }));
+        }
+        if let Some(error) = applied.input_error {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/error".to_string(),
+                args: vec![OscType::String(error)],
             }));
         }
     }

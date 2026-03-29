@@ -44,6 +44,7 @@ import {
 import {
   setTelemetryGaugesOpen,
   setAudioOutputSectionOpen,
+  setInputSectionOpen,
   setRendererSectionOpen,
   setDisplaySectionOpen
 } from './modals.js';
@@ -201,6 +202,7 @@ refreshRoomGeometryInputState();
 setRoomGeometryExpanded(false);
 setTelemetryGaugesOpen(false);
 setAudioOutputSectionOpen(false);
+setInputSectionOpen(false);
 setRendererSectionOpen(false);
 setDisplaySectionOpen(false);
 

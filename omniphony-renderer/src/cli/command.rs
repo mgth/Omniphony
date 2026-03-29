@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use clap::{
-    parser::ValueSource, ArgMatches, Args, CommandFactory, FromArgMatches,
-    Parser as ClapParser, Subcommand, ValueEnum,
+    ArgMatches, Args, CommandFactory, FromArgMatches, Parser as ClapParser, Subcommand, ValueEnum,
+    parser::ValueSource,
 };
 
 use renderer::live_params::RampMode;
@@ -103,6 +103,9 @@ pub enum Commands {
     /// Render the specified input stream to a realtime output backend.
     Render(RenderArgs),
 
+    /// Run realtime live-input rendering without a bridge-fed decode path.
+    InputLive(InputLiveArgs),
+
     /// Generate VBAP gain table from speaker layout configuration
     /// (Requires "saf_vbap" feature)
     #[cfg(feature = "saf_vbap")]
@@ -192,7 +195,7 @@ pub struct RenderArgs {
     #[arg(long, value_name = "MS")]
     pub latency_target_ms: Option<u32>,
 
-/// [LINUX ONLY] PipeWire processing quantum in frames (~21ms at 48kHz for 1024 frames).
+    /// [LINUX ONLY] PipeWire processing quantum in frames (~21ms at 48kHz for 1024 frames).
     /// Smaller values reduce hardware latency but increase CPU load. Default: 1024.
     #[cfg(target_os = "linux")]
     #[arg(long, value_name = "FRAMES")]
@@ -442,6 +445,109 @@ pub struct RenderArgs {
     pub adaptive_resampling_update_interval_callbacks: Option<u32>,
 }
 
+#[derive(Debug, Clone, Args)]
+pub struct InputLiveArgs {
+    /// Realtime input backend.
+    #[arg(long = "input-backend", value_enum)]
+    pub input_backend: Option<InputBackend>,
+
+    /// Input endpoint node name exposed to the host audio graph.
+    #[arg(long = "input-node", value_name = "NAME")]
+    pub input_node: Option<String>,
+
+    /// Human-readable input endpoint description.
+    #[arg(long = "input-description", value_name = "LABEL")]
+    pub input_description: Option<String>,
+
+    /// Layout used to derive fixed source positions for incoming channels.
+    #[arg(long = "input-layout", value_name = "LAYOUT")]
+    pub input_layout: Option<PathBuf>,
+
+    /// Number of incoming channels expected from the live input backend.
+    #[arg(long = "input-channels", value_name = "COUNT")]
+    pub input_channels: Option<u16>,
+
+    /// Requested input sample rate for the live backend.
+    #[arg(long = "input-sample-rate", value_name = "HZ")]
+    pub input_sample_rate: Option<u32>,
+
+    /// Requested input sample format.
+    #[arg(long = "input-format", value_enum)]
+    pub input_format: Option<InputSampleFormatArg>,
+
+    /// Channel-to-fixed-object mapping preset.
+    #[arg(long = "input-map", value_enum)]
+    pub input_map: Option<InputMapModeArg>,
+
+    /// How to treat the LFE input channel when present.
+    #[arg(long = "input-lfe-mode", value_enum)]
+    pub input_lfe_mode: Option<InputLfeModeArg>,
+
+    /// Realtime audio output backend.
+    #[arg(long = "output-backend", value_enum)]
+    pub output_backend: Option<OutputBackend>,
+
+    /// Output device or target name.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[arg(
+        long,
+        value_name = "NAME",
+        visible_alias = "sink",
+        alias = "asio-device-name"
+    )]
+    pub output_device: Option<String>,
+
+    /// Target buffer latency in milliseconds.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[arg(long, value_name = "MS")]
+    pub latency_target_ms: Option<u32>,
+
+    /// [LINUX ONLY] PipeWire processing quantum in frames.
+    #[cfg(target_os = "linux")]
+    #[arg(long, value_name = "FRAMES")]
+    pub pw_quantum: Option<u32>,
+
+    /// Enable VBAP spatial rendering for the fixed input objects.
+    #[arg(long, conflicts_with = "disable_vbap")]
+    pub enable_vbap: bool,
+
+    /// Override config file 'enable_vbap' setting to false.
+    #[arg(long, conflicts_with = "enable_vbap")]
+    pub disable_vbap: bool,
+
+    /// Speaker layout configuration file (YAML)
+    #[arg(long, value_name = "LAYOUT")]
+    pub speaker_layout: Option<PathBuf>,
+
+    /// Enable OSC output for metadata (requires --osc-host and --osc-port)
+    #[arg(long, conflicts_with = "no_osc")]
+    pub osc: bool,
+
+    /// Override config file 'osc' setting to false.
+    #[arg(long, conflicts_with = "osc")]
+    pub no_osc: bool,
+
+    /// Enable OSC audio level metering.
+    #[arg(long, conflicts_with = "no_osc_metering")]
+    pub osc_metering: bool,
+
+    /// Override config file 'osc_metering' setting to false.
+    #[arg(long, conflicts_with = "osc_metering")]
+    pub no_osc_metering: bool,
+
+    /// OSC target host
+    #[arg(long, value_name = "HOST", default_value = "127.0.0.1")]
+    pub osc_host: String,
+
+    /// OSC target port
+    #[arg(long, value_name = "PORT", default_value_t = 9000)]
+    pub osc_port: u16,
+
+    /// OSC registration listener port.
+    #[arg(long, value_name = "PORT", default_value_t = 9000)]
+    pub osc_rx_port: u16,
+}
+
 #[cfg(feature = "saf_vbap")]
 #[derive(Debug, Clone, Args)]
 pub struct GenerateVbapArgs {
@@ -556,6 +662,35 @@ pub enum OutputBackend {
     Unsupported,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum InputBackend {
+    #[cfg(target_os = "linux")]
+    Pipewire,
+    #[cfg(target_os = "windows")]
+    Asio,
+    #[value(skip)]
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum InputMapModeArg {
+    #[value(name = "7.1-fixed")]
+    SevenOneFixed,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum InputLfeModeArg {
+    Object,
+    Direct,
+    Drop,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum InputSampleFormatArg {
+    F32,
+    S16,
+}
+
 impl OutputBackend {
     pub fn platform_default() -> Option<Self> {
         #[cfg(target_os = "linux")]
@@ -603,6 +738,19 @@ impl std::str::FromStr for OutputBackend {
             #[cfg(target_os = "windows")]
             "asio" => Ok(Self::Asio),
             _ => Err(format!("Unknown output backend: {s}")),
+        }
+    }
+}
+
+impl std::str::FromStr for InputBackend {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            #[cfg(target_os = "linux")]
+            "pipewire" => Ok(Self::Pipewire),
+            #[cfg(target_os = "windows")]
+            "asio" => Ok(Self::Asio),
+            _ => Err(format!("Unknown input backend: {s}")),
         }
     }
 }

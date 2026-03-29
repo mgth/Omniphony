@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::app_state::{AppState, Meter};
 use crate::app_state::OutputDeviceOption;
+use crate::app_state::{AppState, Meter};
 use crate::layouts::build_live_layout_from_cache;
 use crate::osc_parser::{
     is_heartbeat_address, parse_osc_message, CoordinateFormat, HeartbeatResponse, LogEntry,
@@ -167,7 +167,13 @@ fn send_osc_speakers_move(socket: &UdpSocket, host: &str, rx_port: u16, from: i3
 }
 
 fn send_register(socket: &UdpSocket, host: &str, rx_port: u16, listen_port: u16) {
-    send_osc_int(socket, "/omniphony/register", host, rx_port, listen_port as i32);
+    send_osc_int(
+        socket,
+        "/omniphony/register",
+        host,
+        rx_port,
+        listen_port as i32,
+    );
     log::info!("[osc] register sent → udp://{host}:{rx_port} listen_port={listen_port}");
 }
 
@@ -182,7 +188,13 @@ fn send_metering_enabled(socket: &UdpSocket, host: &str, rx_port: u16, enabled: 
 }
 
 fn send_heartbeat(socket: &UdpSocket, host: &str, rx_port: u16, listen_port: u16) {
-    send_osc_int(socket, "/omniphony/heartbeat", host, rx_port, listen_port as i32);
+    send_osc_int(
+        socket,
+        "/omniphony/heartbeat",
+        host,
+        rx_port,
+        listen_port as i32,
+    );
 }
 
 fn emit_osc_status(app: &AppHandle, state: &Arc<Mutex<AppState>>, status: &str) {
@@ -247,12 +259,7 @@ fn osc_thread(
     let mut last_ack_at = Instant::now();
     let mut last_heartbeat_at = Instant::now();
     let mut is_connected = false;
-    let mut metering_enabled = state
-        .lock()
-        .unwrap()
-        .osc_metering_enabled
-        .unwrap_or(0)
-        != 0;
+    let mut metering_enabled = state.lock().unwrap().osc_metering_enabled.unwrap_or(0) != 0;
     send_metering_enabled(&socket, &host, osc_rx_port, metering_enabled);
     emit_osc_status(&app, &state, "reconnecting");
 
@@ -587,8 +594,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     .current_content_generation
                     .is_some_and(|prev| prev != generation);
                 let is_reset = generation_changed
-                    || s
-                        .last_spatial_sample_pos
+                    || s.last_spatial_sample_pos
                         .is_some_and(|prev| sample_pos < prev);
                 s.last_spatial_sample_pos = Some(sample_pos);
                 s.current_content_generation = Some(generation);
@@ -1174,6 +1180,138 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateInputMode { value } => {
+                s.input_mode = Some(value.clone());
+                (
+                    Some(("input:mode", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputActiveMode { value } => {
+                s.input_active_mode = Some(value.clone());
+                (
+                    Some(("input:active_mode", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputApplyPending { enabled } => {
+                s.input_apply_pending = Some(if enabled { 1 } else { 0 });
+                (
+                    Some((
+                        "input:apply_pending",
+                        serde_json::json!({ "enabled": if enabled { 1 } else { 0 } }),
+                    )),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputBackend { value } => {
+                s.input_backend = Some(value.clone());
+                (
+                    Some(("input:backend", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputChannels { value } => {
+                s.input_channels = Some(value);
+                (
+                    Some(("input:channels", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputSampleRate { value } => {
+                s.input_sample_rate = Some(value);
+                (
+                    Some(("input:sample_rate", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputStreamFormat { value } => {
+                s.input_stream_format = Some(value.clone());
+                (
+                    Some(("input:stream_format", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputError { value } => {
+                s.input_error = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.clone())
+                };
+                (
+                    Some(("input:error", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputLiveBackend { value } => {
+                s.live_input.backend = Some(value.clone());
+                (
+                    Some(("input:live:backend", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputLiveNode { value } => {
+                s.live_input.node = Some(value.clone());
+                (
+                    Some(("input:live:node", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputLiveDescription { value } => {
+                s.live_input.description = Some(value.clone());
+                (
+                    Some((
+                        "input:live:description",
+                        serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputLiveLayout { value } => {
+                s.live_input.layout = Some(value.clone());
+                (
+                    Some(("input:live:layout", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputLiveChannels { value } => {
+                s.live_input.channels = Some(value);
+                (
+                    Some(("input:live:channels", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputLiveSampleRate { value } => {
+                s.live_input.sample_rate = Some(value);
+                (
+                    Some((
+                        "input:live:sample_rate",
+                        serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputLiveFormat { value } => {
+                s.live_input.format = Some(value.clone());
+                (
+                    Some(("input:live:format", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputLiveMap { value } => {
+                s.live_input.map = Some(value.clone());
+                (
+                    Some(("input:live:map", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputLiveLfeMode { value } => {
+                s.live_input.lfe_mode = Some(value.clone());
+                (
+                    Some(("input:live:lfe_mode", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
             OscEvent::StateInputPipe { value } => {
                 s.orender_input_pipe = if value.trim().is_empty() {
                     None
@@ -1195,7 +1333,10 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
 
             OscEvent::Log { entry } => (
-                Some(("omniphony:log", serde_json::to_value::<LogEntry>(entry).unwrap_or_default())),
+                Some((
+                    "omniphony:log",
+                    serde_json::to_value::<LogEntry>(entry).unwrap_or_default(),
+                )),
                 removed_ids,
             ),
 
@@ -1255,7 +1396,10 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             OscEvent::StateVbapCartZNegSize { value } => {
                 s.vbap_cartesian.z_neg_size = Some(value);
                 (
-                    Some(("vbap:cart:z_neg_size", serde_json::json!({ "value": value }))),
+                    Some((
+                        "vbap:cart:z_neg_size",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
             }
@@ -1336,7 +1480,10 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             OscEvent::StateSpeakersRecomputing { enabled } => {
                 s.vbap_recomputing = Some(enabled);
                 (
-                    Some(("vbap:recomputing", serde_json::json!({ "enabled": enabled }))),
+                    Some((
+                        "vbap:recomputing",
+                        serde_json::json!({ "enabled": enabled }),
+                    )),
                     removed_ids,
                 )
             }
@@ -1373,7 +1520,8 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
             OscEvent::StateAdaptiveResamplingHardRecoverHighInFarMode { enabled } => {
-                s.adaptive_resampling_hard_recover_high_in_far_mode = Some(if enabled { 1 } else { 0 });
+                s.adaptive_resampling_hard_recover_high_in_far_mode =
+                    Some(if enabled { 1 } else { 0 });
                 (
                     Some((
                         "adaptive_resampling:hard_recover_high_in_far_mode",
@@ -1385,7 +1533,8 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
             OscEvent::StateAdaptiveResamplingHardRecoverLowInFarMode { enabled } => {
-                s.adaptive_resampling_hard_recover_low_in_far_mode = Some(if enabled { 1 } else { 0 });
+                s.adaptive_resampling_hard_recover_low_in_far_mode =
+                    Some(if enabled { 1 } else { 0 });
                 (
                     Some((
                         "adaptive_resampling:hard_recover_low_in_far_mode",

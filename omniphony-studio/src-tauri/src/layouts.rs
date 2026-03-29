@@ -524,12 +524,36 @@ pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
                 ExportSpeaker {
                     name: &speaker.id,
                     coord_mode: if cartesian { "cartesian" } else { "polar" },
-                    x: if cartesian { Some(clamp(speaker.x, -1.0, 1.0)) } else { None },
-                    y: if cartesian { Some(clamp(speaker.y, -1.0, 1.0)) } else { None },
-                    z: if cartesian { Some(clamp(speaker.z, -1.0, 1.0)) } else { None },
-                    azimuth: if cartesian { None } else { Some(speaker.azimuth_deg) },
-                    elevation: if cartesian { None } else { Some(speaker.elevation_deg) },
-                    distance: if cartesian { None } else { Some(speaker.distance_m.max(0.01)) },
+                    x: if cartesian {
+                        Some(clamp(speaker.x, -1.0, 1.0))
+                    } else {
+                        None
+                    },
+                    y: if cartesian {
+                        Some(clamp(speaker.y, -1.0, 1.0))
+                    } else {
+                        None
+                    },
+                    z: if cartesian {
+                        Some(clamp(speaker.z, -1.0, 1.0))
+                    } else {
+                        None
+                    },
+                    azimuth: if cartesian {
+                        None
+                    } else {
+                        Some(speaker.azimuth_deg)
+                    },
+                    elevation: if cartesian {
+                        None
+                    } else {
+                        Some(speaker.elevation_deg)
+                    },
+                    distance: if cartesian {
+                        None
+                    } else {
+                        Some(speaker.distance_m.max(0.01))
+                    },
                     spatialize: speaker.spatialize != 0,
                     delay_ms: speaker.delay_ms.max(0.0),
                 }

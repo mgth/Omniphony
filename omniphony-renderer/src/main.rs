@@ -28,6 +28,7 @@ where
 
     let known_subcommands = [
         OsString::from("render"),
+        OsString::from("input-live"),
         #[cfg(feature = "saf_vbap")]
         OsString::from("generate-vbap"),
         #[cfg(target_os = "windows")]
@@ -156,6 +157,9 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Render(ref args) => cmd_render(args, &cli, &parsed.render_sources())?,
+        Commands::InputLive(_) => {
+            anyhow::bail!("The 'input-live' command is defined but not implemented yet.")
+        }
         #[cfg(feature = "saf_vbap")]
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args)?,
         #[cfg(target_os = "windows")]

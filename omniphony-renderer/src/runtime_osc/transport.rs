@@ -113,9 +113,7 @@ pub(crate) fn broadcast_string(
     }
 }
 
-pub(crate) fn encode_log_record(
-    record: &sys::live_log::BufferedLogRecord,
-) -> Option<Vec<u8>> {
+pub(crate) fn encode_log_record(record: &sys::live_log::BufferedLogRecord) -> Option<Vec<u8>> {
     let packet = OscPacket::Message(OscMessage {
         addr: "/omniphony/log".to_string(),
         args: vec![

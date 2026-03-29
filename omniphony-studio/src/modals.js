@@ -24,6 +24,9 @@ const displaySectionToggleBtnEl = document.getElementById('displaySectionToggleB
 const audioOutputSectionContentEl = document.getElementById('audioOutputSectionContent');
 const audioOutputSummaryEl = document.getElementById('audioOutputSummary');
 const audioOutputSectionToggleBtnEl = document.getElementById('audioOutputSectionToggleBtn');
+const inputSectionContentEl = document.getElementById('inputSectionContent');
+const inputSummaryEl = document.getElementById('inputSummary');
+const inputSectionToggleBtnEl = document.getElementById('inputSectionToggleBtn');
 const rendererSectionContentEl = document.getElementById('rendererSectionContent');
 const rendererSummaryEl = document.getElementById('rendererSummary');
 const rendererSectionToggleBtnEl = document.getElementById('rendererSectionToggleBtn');
@@ -123,6 +126,19 @@ export function setAudioOutputSectionOpen(open) {
   }
   if (audioOutputSectionToggleBtnEl) {
     audioOutputSectionToggleBtnEl.textContent = app.audioOutputSectionOpen ? '▾' : '▸';
+  }
+}
+
+export function setInputSectionOpen(open) {
+  app.inputSectionOpen = Boolean(open);
+  if (inputSectionContentEl) {
+    inputSectionContentEl.classList.toggle('open', app.inputSectionOpen);
+  }
+  if (inputSummaryEl) {
+    inputSummaryEl.style.display = app.inputSectionOpen ? 'none' : 'block';
+  }
+  if (inputSectionToggleBtnEl) {
+    inputSectionToggleBtnEl.textContent = app.inputSectionOpen ? '▾' : '▸';
   }
 }
 

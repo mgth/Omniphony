@@ -2,9 +2,24 @@ use anyhow::Result;
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 
 use super::OscSender;
+use super::export::build_live_state_bundle;
 use super::transport::{broadcast_float, broadcast_int};
 
 impl OscSender {
+    pub fn send_live_state_bundle(&self) -> Result<()> {
+        let control = match self.control {
+            Some(ref c) => c,
+            None => return Ok(()),
+        };
+        let bytes = build_live_state_bundle(
+            control,
+            self.audio_control.as_ref(),
+            self.input_control.as_ref(),
+        );
+        self.send_to_all(&bytes);
+        Ok(())
+    }
+
     pub fn send_loudness_state(&self) {
         let control = match self.control {
             Some(ref c) => c,

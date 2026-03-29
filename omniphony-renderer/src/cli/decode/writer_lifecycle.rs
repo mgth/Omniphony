@@ -1,9 +1,9 @@
+use super::output::AudioWriter;
 use super::state::{
     DecodeSessionState, OutputState, RuntimeOutputState, SpatialState, TelemetryState,
 };
-use super::output::AudioWriter;
 use crate::cli::command::OutputBackend;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use audio_output::AudioControl;
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
@@ -171,8 +171,11 @@ impl<'a> WriterLifecycleCoordinator<'a> {
         output_backend: OutputBackend,
         input_sample_rate: u32,
     ) {
-        let (effective_rate, sample_format) =
-            effective_audio_state(output_backend, input_sample_rate, self.runtime.output_sample_rate);
+        let (effective_rate, sample_format) = effective_audio_state(
+            output_backend,
+            input_sample_rate,
+            self.runtime.output_sample_rate,
+        );
 
         if self.output.last_audio_sample_rate_hz == Some(effective_rate)
             && self.output.last_audio_sample_format.as_deref() == Some(sample_format)

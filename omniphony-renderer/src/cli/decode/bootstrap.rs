@@ -1,10 +1,14 @@
 use super::handler::DecodeHandler;
 use crate::cli::command::{OutputBackend, RenderArgs, VbapTableModeArg};
-use crate::runtime_osc::{build_speaker_config_bundle, OscSender};
+use crate::runtime_osc::{OscSender, build_speaker_config_bundle};
 use anyhow::Result;
-use audio_output::{AdaptiveResamplingConfig, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig};
 #[cfg(target_os = "linux")]
-use audio_output::pipewire::{list_pipewire_output_devices, PipewireBufferConfig};
+use audio_output::pipewire::{PipewireBufferConfig, list_pipewire_output_devices};
+use audio_output::{
+    AdaptiveResamplingConfig, AudioControl, InputBackend, InputControl, InputLfeMode, InputMapMode,
+    InputMode, InputSampleFormat, OutputDeviceOption, RequestedAudioInputConfig,
+    RequestedAudioOutputConfig,
+};
 use renderer::metering::AudioMeter;
 use renderer::speaker_layout::SpeakerLayout;
 use std::sync::Arc;
@@ -97,6 +101,50 @@ fn build_adaptive_resampling_config(
             .unwrap_or(defaults.near_far_threshold_ms),
         paused: false,
     }
+}
+
+fn build_requested_input_config(
+    render_cfg: Option<&renderer::config::RenderConfig>,
+) -> RequestedAudioInputConfig {
+    let mut requested = RequestedAudioInputConfig::default();
+
+    if let Some(render_cfg) = render_cfg {
+        requested.mode = match render_cfg.input_mode {
+            Some(renderer::config::InputModeConfig::Live) => InputMode::Live,
+            _ => InputMode::Bridge,
+        };
+
+        if let Some(live_input) = render_cfg.live_input.as_ref() {
+            requested.backend = live_input.backend.as_ref().map(|backend| match backend {
+                renderer::config::InputBackendConfig::Pipewire => InputBackend::Pipewire,
+                renderer::config::InputBackendConfig::Asio => InputBackend::Asio,
+            });
+            requested.node_name = live_input.node.clone();
+            requested.node_description = live_input.description.clone();
+            requested.layout_path = live_input.layout.clone();
+            requested.channels = live_input.channels;
+            requested.sample_rate_hz = live_input.sample_rate;
+            requested.sample_format = live_input.sample_format.as_deref().and_then(|format| {
+                match format.trim().to_ascii_lowercase().as_str() {
+                    "f32" => Some(InputSampleFormat::F32),
+                    "s16" => Some(InputSampleFormat::S16),
+                    _ => None,
+                }
+            });
+            requested.map_mode = match live_input.map {
+                Some(renderer::config::InputMapModeConfig::SevenOneFixed) | None => {
+                    InputMapMode::SevenOneFixed
+                }
+            };
+            requested.lfe_mode = match live_input.lfe_mode {
+                Some(renderer::config::InputLfeModeConfig::Object) => InputLfeMode::Object,
+                Some(renderer::config::InputLfeModeConfig::Drop) => InputLfeMode::Drop,
+                Some(renderer::config::InputLfeModeConfig::Direct) | None => InputLfeMode::Direct,
+            };
+        }
+    }
+
+    requested
 }
 
 #[cfg(target_os = "linux")]
@@ -234,7 +282,11 @@ fn init_spatial_renderer(
     vbap_table_mode_explicit: bool,
 ) -> Result<()> {
     #[cfg(not(feature = "saf_vbap"))]
-    let _ = (preferred_vbap_table_mode, vbap_table_mode_explicit, vbap_cartesian_defaults);
+    let _ = (
+        preferred_vbap_table_mode,
+        vbap_table_mode_explicit,
+        vbap_cartesian_defaults,
+    );
 
     if !args.enable_vbap {
         return Ok(());
@@ -430,6 +482,8 @@ fn init_osc_runtime(
     input_path: &std::path::Path,
     config_path: &Option<std::path::PathBuf>,
 ) -> Result<()> {
+    let render_cfg = render_config_from_path(config_path);
+
     if args.osc {
         use std::net::SocketAddrV4;
         use std::str::FromStr;
@@ -472,7 +526,10 @@ fn init_osc_runtime(
             }
             #[cfg(target_os = "windows")]
             {
-                Some(args.latency_target_ms.unwrap_or(handler.runtime.latency_target_ms))
+                Some(
+                    args.latency_target_ms
+                        .unwrap_or(handler.runtime.latency_target_ms),
+                )
             }
             #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             {
@@ -487,6 +544,9 @@ fn init_osc_runtime(
             adaptive_enabled: args.enable_adaptive_resampling,
             adaptive: handler.runtime.adaptive_resampling_config.clone(),
         }));
+        let input_control = Arc::new(InputControl::new(build_requested_input_config(
+            render_cfg.as_ref(),
+        )));
 
         if let Some(backend) = args.output_backend.or_else(OutputBackend::platform_default) {
             audio_control.set_available_output_devices(list_available_output_devices(backend));
@@ -495,17 +555,33 @@ fn init_osc_runtime(
             audio_control.set_available_output_devices(Vec::new());
         }
 
+        let input_requested = input_control.requested_snapshot();
+        input_control.set_input_state(
+            InputMode::Bridge,
+            None,
+            input_requested.channels,
+            input_requested.sample_rate_hz,
+            input_requested.node_name.clone(),
+            input_requested.sample_format.map(|format| match format {
+                InputSampleFormat::F32 => "f32".to_string(),
+                InputSampleFormat::S16 => "s16".to_string(),
+            }),
+        );
+
         handler.audio_control = Some(Arc::clone(&audio_control));
+        handler.input_control = Some(Arc::clone(&input_control));
         if let Some(path) = config_path {
             ctrl.set_config_path(path.clone());
         }
         if let Some(sender) = &mut handler.telemetry.osc_sender {
             sender.attach_renderer_control(ctrl);
             sender.attach_audio_control(audio_control);
+            sender.attach_input_control(input_control);
         }
     }
 
-    if let (Some(renderer), Some(sender)) = (&handler.spatial_renderer, &handler.telemetry.osc_sender)
+    if let (Some(renderer), Some(sender)) =
+        (&handler.spatial_renderer, &handler.telemetry.osc_sender)
     {
         let layout = renderer.speaker_layout();
         let config_bytes = build_speaker_config_bundle(&layout)?;

@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use audio_output::AudioControl;
+use audio_output::{
+    AudioControl, InputBackend, InputControl, InputLfeMode, InputMapMode, InputMode,
+    InputSampleFormat,
+};
 use renderer::live_params::{LiveVbapTableMode, RampMode, RendererControl, VbapBackendMode};
 
 use crate::snapshot::build_live_state_bundle;
@@ -19,6 +22,7 @@ fn round6(v: f32) -> f32 {
 pub fn save_live_config(
     control: &Arc<RendererControl>,
     audio_control: Option<&Arc<AudioControl>>,
+    input_control: Option<&Arc<InputControl>>,
 ) -> Result<SaveLiveConfigResult> {
     let path = {
         let guard = control.config_path.lock().unwrap();
@@ -180,12 +184,43 @@ pub fn save_live_config(
             Some(requested.adaptive.near_far_threshold_ms);
     }
 
+    if let Some(input_control) = input_control {
+        let requested = input_control.requested_snapshot();
+        render.input_mode = Some(match requested.mode {
+            InputMode::Bridge => renderer::config::InputModeConfig::Bridge,
+            InputMode::Live => renderer::config::InputModeConfig::Live,
+        });
+        render.live_input = Some(renderer::config::LiveInputConfig {
+            backend: requested.backend.map(|backend| match backend {
+                InputBackend::Pipewire => renderer::config::InputBackendConfig::Pipewire,
+                InputBackend::Asio => renderer::config::InputBackendConfig::Asio,
+            }),
+            node: requested.node_name,
+            description: requested.node_description,
+            layout: requested.layout_path,
+            channels: requested.channels,
+            sample_rate: requested.sample_rate_hz,
+            sample_format: requested.sample_format.map(|format| match format {
+                InputSampleFormat::F32 => "f32".to_string(),
+                InputSampleFormat::S16 => "s16".to_string(),
+            }),
+            map: Some(match requested.map_mode {
+                InputMapMode::SevenOneFixed => renderer::config::InputMapModeConfig::SevenOneFixed,
+            }),
+            lfe_mode: Some(match requested.lfe_mode {
+                InputLfeMode::Object => renderer::config::InputLfeModeConfig::Object,
+                InputLfeMode::Direct => renderer::config::InputLfeModeConfig::Direct,
+                InputLfeMode::Drop => renderer::config::InputLfeModeConfig::Drop,
+            }),
+        });
+    }
+
     drop(live);
     config.save(&path)?;
     control.mark_clean();
 
     Ok(SaveLiveConfigResult {
         path,
-        state_bundle: build_live_state_bundle(control, audio_control),
+        state_bundle: build_live_state_bundle(control, audio_control, input_control),
     })
 }
