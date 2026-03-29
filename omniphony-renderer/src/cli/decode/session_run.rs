@@ -438,7 +438,14 @@ fn run_prepared_render(
     let live_input_manager = handler
         .input_control
         .as_ref()
-        .map(|input_control| spawn_live_input_manager(prepared.tx.clone(), input_control.clone()));
+        .zip(handler.audio_control.as_ref())
+        .map(|(input_control, audio_control)| {
+            spawn_live_input_manager(
+                prepared.tx.clone(),
+                input_control.clone(),
+                audio_control.clone(),
+            )
+        });
 
     let run_result = run_render_message_phase(&prepared, &mut handler, &effective_args);
     if let Some(manager) = live_input_manager {

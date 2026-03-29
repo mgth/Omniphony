@@ -1,8 +1,11 @@
 use super::decoder_thread::{DecodedAudioData, DecodedSource, DecoderMessage};
 use anyhow::{Result, anyhow};
 use audio_output::{
-    InputBackend, InputControl, InputMode, InputSampleFormat, RequestedAudioInputConfig,
+    AudioControl, InputBackend, InputControl, InputMode, InputSampleFormat,
+    RequestedAudioInputConfig,
 };
+#[cfg(target_os = "linux")]
+use audio_output::pipewire::PipewireBufferConfig;
 use bridge_api::{RChannelLabel, RDecodedFrame};
 #[cfg(target_os = "linux")]
 use pipewire as pw;
@@ -27,6 +30,7 @@ struct PipewireLiveInputConfig {
     node_description: String,
     channels: u16,
     sample_rate_hz: u32,
+    target_latency_ms: u32,
 }
 
 pub struct LiveInputManagerHandle {
@@ -57,6 +61,7 @@ impl CaptureThreadHandle {
 pub fn spawn_live_input_manager(
     tx: mpsc::SyncSender<Result<DecoderMessage>>,
     input_control: Arc<InputControl>,
+    audio_control: Arc<AudioControl>,
 ) -> LiveInputManagerHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = Arc::clone(&stop);
@@ -72,7 +77,16 @@ pub fn spawn_live_input_manager(
             {
                 if bootstrap || input_control.take_apply_pending() {
                     bootstrap = false;
-                    reconcile_live_input(&tx, &input_control, &mut current_capture);
+                    reconcile_live_input(&tx, &input_control, &audio_control, &mut current_capture);
+                }
+
+                #[cfg(target_os = "linux")]
+                if requested_live_input_latency_ms(&audio_control)
+                    != current_capture
+                        .as_ref()
+                        .map(|capture| capture.config.target_latency_ms)
+                {
+                    reconcile_live_input(&tx, &input_control, &audio_control, &mut current_capture);
                 }
 
                 let capture_finished = current_capture
@@ -115,6 +129,7 @@ pub fn spawn_live_input_manager(
 fn reconcile_live_input(
     tx: &mpsc::SyncSender<Result<DecoderMessage>>,
     input_control: &Arc<InputControl>,
+    #[allow(unused_variables)] audio_control: &Arc<AudioControl>,
     current_capture: &mut Option<CaptureThreadHandle>,
 ) {
     let requested = input_control.requested_snapshot();
@@ -156,7 +171,7 @@ fn reconcile_live_input(
 
     #[cfg(target_os = "linux")]
     {
-        match resolve_pipewire_config(&requested) {
+        match resolve_pipewire_config(&requested, audio_control) {
             Ok(config) => {
                 let needs_restart = current_capture
                     .as_ref()
@@ -229,6 +244,7 @@ fn reconcile_live_input(
 #[cfg(target_os = "linux")]
 fn resolve_pipewire_config(
     requested: &RequestedAudioInputConfig,
+    audio_control: &AudioControl,
 ) -> Result<PipewireLiveInputConfig> {
     let backend = requested.backend.unwrap_or(InputBackend::Pipewire);
     if backend != InputBackend::Pipewire {
@@ -258,7 +274,15 @@ fn resolve_pipewire_config(
         sample_rate_hz: requested
             .sample_rate_hz
             .unwrap_or(DEFAULT_LIVE_INPUT_SAMPLE_RATE_HZ),
+        target_latency_ms: requested_live_input_latency_ms(audio_control)
+            .unwrap_or(PipewireBufferConfig::default().latency_ms)
+            .max(1),
     })
+}
+
+#[cfg(target_os = "linux")]
+fn requested_live_input_latency_ms(audio_control: &AudioControl) -> Option<u32> {
+    audio_control.requested_latency_target_ms()
 }
 
 #[cfg(target_os = "linux")]
@@ -310,15 +334,20 @@ fn run_pipewire_capture_loop(
     props.insert("media.name", config.node_description.clone());
     props.insert("audio.channels", config.channels.to_string());
     props.insert("audio.position", "FL,FR,FC,LFE,SL,SR,RL,RR");
+    let requested_latency_frames =
+        ((config.target_latency_ms as u64 * config.sample_rate_hz as u64) / 1000).max(1) as u32;
+    let requested_latency = format!("{}/{}", requested_latency_frames, config.sample_rate_hz);
+    props.insert("node.latency", requested_latency.as_str());
 
     let stream = pw::stream::StreamBox::new(&core, "omniphony-live-input", props)
         .map_err(|e| anyhow!("Failed to create PipeWire input stream: {e:?}"))?;
     log::info!(
-        "Publishing PipeWire live input sink: node={} description={} channels={} rate={}Hz",
+        "Publishing PipeWire live input sink: node={} description={} channels={} rate={}Hz latency={}",
         config.node_name,
         config.node_description,
         config.channels,
-        config.sample_rate_hz
+        config.sample_rate_hz,
+        requested_latency
     );
 
     struct CaptureUserData {
