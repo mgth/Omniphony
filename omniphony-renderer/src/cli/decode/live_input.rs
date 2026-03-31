@@ -25,7 +25,7 @@ use std::os::fd::RawFd;
 use std::os::raw::c_void;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -268,6 +268,10 @@ struct BridgeCaptureUserData {
     dynamic_trigger_interval: Option<Duration>,
     /// Last time we logged pw_time-derived scheduling data.
     last_pw_time_log_at: Instant,
+    /// Rate-adjust feedback from the output resampler.
+    /// Shared with the output side via InputControl. Used to correct dynamic_trigger_interval
+    /// so the DRIVER clock converges toward the hardware DAC rate and reduces resampler load.
+    output_rate_adjust: Arc<AtomicU32>,
 }
 
 #[cfg(target_os = "linux")]
@@ -736,6 +740,7 @@ impl PipewireBridgeExportNode {
                 last_idle_trigger: Instant::now(),
                 dynamic_trigger_interval: None,
                 last_pw_time_log_at: Instant::now(),
+                output_rate_adjust: Arc::new(AtomicU32::new(1.0f32.to_bits())),
             }),
             format_configured: false,
             started: false,
@@ -1499,10 +1504,17 @@ fn refresh_pw_stream_driver_timing(
         return;
     }
 
-    // Follow the actual graph quantum instead of leading it. Triggering early
-    // proved to drain mpv's soft-buffer faster than refill, which stalls video
-    // after a few seconds even when the clock domain is otherwise correct.
-    let scheduled_ns = quantum_ns;
+    // Follow the actual graph quantum, corrected by output rate-adjust feedback.
+    // rate_adjust < 1.0 → output is being slowed (DRIVER too fast) → stretch interval.
+    // rate_adjust > 1.0 → output is being sped up (DRIVER too slow) → shrink interval.
+    // Correction is clamped to ±5% to avoid instability.
+    let rate_adjust = f32::from_bits(user_data.output_rate_adjust.load(Ordering::Relaxed));
+    let correction = if rate_adjust > 0.0 {
+        (1.0f64 / rate_adjust as f64).clamp(0.95, 1.05)
+    } else {
+        1.0
+    };
+    let scheduled_ns = (quantum_ns as f64 * correction) as u64;
     let scheduled_ns = scheduled_ns.max(500_000);
     let scheduled_ns = scheduled_ns.min(20_000_000);
     user_data.dynamic_trigger_interval = Some(Duration::from_nanos(scheduled_ns));
@@ -1513,7 +1525,7 @@ fn refresh_pw_stream_driver_timing(
         let quantum_ms = quantum_ns as f64 / 1_000_000.0;
         let scheduled_ms = scheduled_ns as f64 / 1_000_000.0;
         log::info!(
-            "{} pw_time: rate={}/{} size={} transport_frames={} queued={} buffered={} queued_buffers={} avail_buffers={} delay={} quantum_ms={:.3} trigger_ms={:.3}",
+            "{} pw_time: rate={}/{} size={} transport_frames={} queued={} buffered={} queued_buffers={} avail_buffers={} delay={} quantum_ms={:.3} trigger_ms={:.3} rate_adjust={:.6} correction={:.4}",
             log_prefix,
             time.rate.num,
             time.rate.denom,
@@ -1525,7 +1537,9 @@ fn refresh_pw_stream_driver_timing(
             time.avail_buffers,
             time.delay,
             quantum_ms,
-            scheduled_ms
+            scheduled_ms,
+            rate_adjust,
+            correction
         );
     }
 }
@@ -1626,6 +1640,7 @@ fn run_pipewire_bridge_capture_stream(
             last_idle_trigger: Instant::now(),
             dynamic_trigger_interval: None,
             last_pw_time_log_at: Instant::now(),
+            output_rate_adjust: input_control.output_rate_adjust_atomic(),
         })
         .state_changed(move |stream, user_data, old, new| {
             log::info!(
@@ -2400,6 +2415,7 @@ fn run_pipewire_bridge_filter_backend(
             last_idle_trigger: Instant::now(),
             dynamic_trigger_interval: None,
             last_pw_time_log_at: Instant::now(),
+            output_rate_adjust: Arc::new(AtomicU32::new(1.0f32.to_bits())),
         }),
     });
     let user_data_ptr = Box::into_raw(user_data);

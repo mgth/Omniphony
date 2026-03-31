@@ -162,7 +162,10 @@ impl DecodeHandler {
         };
         let applied_before = input_control.applied_snapshot();
         if matches!(source, DecodedSource::Bridge)
-            && applied_before.active_mode == InputMode::Bridge
+            && matches!(
+                applied_before.active_mode,
+                InputMode::Bridge | InputMode::PipewireBridge
+            )
         {
             let channels = Some(frame.channel_count as u16);
             let sample_rate_hz = Some(frame.sampling_frequency);
@@ -195,7 +198,9 @@ impl DecodeHandler {
             .unwrap_or(InputMode::Bridge);
         matches!(
             (active_mode, source),
-            (InputMode::Bridge, DecodedSource::Bridge) | (InputMode::Live, DecodedSource::Live)
+            (InputMode::Bridge, DecodedSource::Bridge)
+                | (InputMode::Live, DecodedSource::Live)
+                | (InputMode::PipewireBridge, DecodedSource::Bridge)
         )
     }
 
@@ -328,6 +333,10 @@ impl DecodeHandler {
             .audio_writer
             .as_ref()
             .and_then(|w| w.resample_ratio());
+        // Propagate output rate-adjust to the input DRIVER feedback loop.
+        if let (Some(rate), Some(ic)) = (current_resample_ratio, self.input_control.as_ref()) {
+            ic.set_output_rate_adjust(rate);
+        }
         let current_adaptive_band = self
             .output
             .audio_writer

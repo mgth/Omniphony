@@ -1,7 +1,7 @@
 use crate::AdaptiveResamplingConfig;
 use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -9,6 +9,7 @@ use std::sync::{
 pub enum InputMode {
     Bridge,
     Live,
+    PipewireBridge,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -142,6 +143,9 @@ pub struct InputControl {
     applied: Mutex<AppliedAudioInputState>,
     apply_pending: AtomicBool,
     state_generation: AtomicU64,
+    /// Rate-adjust feedback from the output resampler, for use by the input DRIVER clock.
+    /// Encoded as f32 bits. 1.0 = no correction; <1.0 = output slowing down (DRIVER too fast).
+    output_rate_adjust: Arc<AtomicU32>,
 }
 
 impl Default for AudioControl {
@@ -381,7 +385,18 @@ impl InputControl {
             applied: Mutex::new(AppliedAudioInputState::default()),
             apply_pending: AtomicBool::new(false),
             state_generation: AtomicU64::new(1),
+            output_rate_adjust: Arc::new(AtomicU32::new(1.0f32.to_bits())),
         }
+    }
+
+    /// Called by the output side to publish its current rate-adjust to the input DRIVER.
+    pub fn set_output_rate_adjust(&self, rate: f32) {
+        self.output_rate_adjust.store(rate.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Returns a clone of the rate-adjust atomic, suitable for sharing with long-lived threads.
+    pub fn output_rate_adjust_atomic(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.output_rate_adjust)
     }
 
     fn bump_state_generation(&self) {
