@@ -41,6 +41,14 @@ Correctif important après la première version de cette note :
 - le facteur décisif identifié ensuite est la négociation et l'allocation des buffers PipeWire
 - en particulier, les changements qui ont commencé à forcer des tailles de buffers explicites et suffisantes ont débloqué le passage en streaming
 
+Correctif important après les séries suivantes :
+
+- le streaming a bien été débloqué un temps, mais avec un comportement encore dégradé
+- un second symptôme a ensuite été observé :
+  - audio haché de façon très régulière
+  - vidéo jouée à environ `1/4` de sa vitesse normale
+- ce second symptôme a permis d'isoler un problème distinct : certains backends PipeWire arrivaient à recevoir des données, mais avec une cadence effective alignée sur `48000 Hz` au lieu du domaine transport `192000 Hz`
+
 ## Récapitulatif par type de node / backend PipeWire
 
 ### 1. `PwExportedNode`
@@ -51,15 +59,32 @@ Exporter directement un `spa_node` custom via `pw_core_export()` devait produire
 
 #### Ce qui a été observé
 
-- le node était publié
-- mais la négociation ne progressait pas suffisamment
-- le chemin ne donnait pas les callbacks nécessaires côté ports / buffers
+Le backend `PwExportedNode` a d'abord été sous-estimé. Les séries plus récentes ont montré qu'il n'est pas ignoré par PipeWire :
+
+- le pair ajoute bien des listeners
+- il interroge massivement `enum_params` côté node
+- il interroge massivement `port_enum_params` côté port
+- il envoie `set_io`
+- il envoie `set_param(id=4)`
+- le node passe ensuite en `configured=true`
+
+Cela prouve que `PwExportedNode` est bien vu comme un `spa_node` réel et sérieusement exploré par le pair.
+
+#### Ce qui n'est jamais arrivé
+
+Même après enrichissement des params annoncés au niveau node, on n'a jamais vu :
+
+- `send_command`
+- `port_set_param`
+- `port_use_buffers`
+- `port_set_io`
+- `process`
 
 #### Conclusion
 
-- backend trop limité pour notre usage réel
-- il n'a jamais franchi le seuil de négociation utile
-- abandonné au profit de `PwClientNode`
+- `PwExportedNode` n'est pas une impasse triviale de type "node invisible"
+- le blocage est plus haut niveau : le pair inspecte le node, mais ne l'active jamais
+- il reste une piste sérieuse, à condition de simplifier / durcir la structure du node et du port
 
 ### 2. `PwClientNode`
 
@@ -155,7 +180,9 @@ Effet pratique :
 
 #### État actuel
 
-- après les essais `PwAdapter` / `PwFilter`, le backend par défaut a été remis sur `PwClientNode`
+- `PwClientNode` a finalement été rétrogradé comme piste de reprise principale
+- malgré l'enrichissement des `node.props`, il reste bloqué strictement au niveau node-level
+- au moment actuel de l'enquête, le backend par défaut a été remis sur `PwExportedNode`
 
 ### 3. `PwAdapter` avec `support.null-audio-sink` + monitor capture
 
@@ -275,15 +302,182 @@ Interprétation pratique :
 
 ### 5. `PwStream`
 
-#### Statut
+#### Ce qui a été observé (première phase)
 
-- présent dans le code
-- non poussé aussi loin que `PwClientNode`, `PwAdapter` ou `PwFilter` dans cette série d'essais
+`PwStream` a d'abord fourni le diagnostic le plus clair sur le problème de cadence.
 
-#### Conclusion
+Les logs initiaux montraient :
 
-- backend non invalidé formellement
-- mais pas assez exploré pour être aujourd'hui la piste prioritaire
+- `callback chunk: bytes=8192 transport_ms=2.667 rate=192000Hz channels=8`
+- environ `94` callbacks par seconde
+- donc un débit effectif proche de `48000` frames/s
+
+Calcul utile :
+
+- `8192 / (8ch * 2 bytes) = 512` frames transport par callback
+- `512 / 192000 = 2.667 ms` de transport par callback
+- `94 * 512 ≈ 48000` frames transport effectifs par seconde
+
+Conclusion de cette première phase :
+
+- sans `StreamFlags::DRIVER`, le stream est contraint par le graphe PipeWire à `48000 Hz`
+- cela explique le symptôme "audio haché + vidéo à 1/4 de vitesse"
+
+#### Phase 2 : `StreamFlags::DRIVER` + `trigger_process()`
+
+L'ajout du flag `DRIVER` donne au stream le contrôle du rythme du graphe. Il doit déclencher chaque cycle lui-même via `trigger_process()`.
+
+Changements appliqués :
+
+- `StreamFlags::AUTOCONNECT | MAP_BUFFERS | RT_PROCESS | DRIVER`
+- dépendance `pipewire = { version = "0.9.2", features = ["v0_3_34"] }` pour activer `trigger_process()`
+- premier `trigger_process()` au passage `Paused -> Streaming`
+- `node.force-rate = "192000"` dans les propriétés du stream
+
+#### Bugs successifs identifiés sur `PwStream` DRIVER
+
+##### Bug 1 : les early-returns tuaient la boucle DRIVER
+
+Les chemins de retour anticipé dans `process()` (buffer vide, `byte_len == 0`, données manquantes, etc.) ne reprogrammaient pas de cycle suivant.
+
+Conséquence :
+
+- un seul callback "vide" pouvait stopper définitivement la boucle
+
+Correctif :
+
+- tous les chemins non terminaux replanifient maintenant un cycle
+
+##### Bug 2 : spinning à très haute fréquence
+
+En re-triggerant immédiatement sur les callbacks vides, la boucle pouvait monter vers `250000 Hz`.
+
+Conséquence :
+
+- `Streaming -> Paused -> Streaming` toutes les ~16 secondes
+- reset du décodeur TrueHD
+- seulement quelques secondes d'audio utile par cycle
+
+Correctif :
+
+- limitation des triggers idle avec `PW_DRIVER_IDLE_TRIGGER_INTERVAL`
+
+##### Bug 3 : mauvais quantum dérivé de `pw_stream_get_time_n()`
+
+Le `pw_time.size` avait d'abord été interprété comme un nombre de frames transport, alors qu'il correspond ici aux samples interleavés.
+
+Exemple observé :
+
+- `pw_time.size = 4096`
+- avec `8` canaux cela correspond en réalité à `512` frames transport
+
+Conséquence :
+
+- le quantum calculé était `21.333 ms` au lieu de `2.667 ms`
+- le DRIVER se re-déclenchait 8x trop lentement
+
+Correctif :
+
+- conversion explicite `transport_frames = pw_time.size / channels`
+
+Après correction, les logs montrent bien :
+
+- `pw_time: rate=1/192000 size=4096 transport_frames=512 quantum_ms=2.667`
+
+##### Bug 4 : re-trigger synchrone depuis `process()`
+
+Même avec le bon quantum, appeler `trigger_process()` directement depuis `process()` faisait arriver le callback suivant immédiatement, de façon quasi réentrante.
+
+Conséquence :
+
+- seulement 2 callbacks visibles
+- puis plus rien
+
+Correctif :
+
+- abandon du `trigger_process()` synchrone
+- passage à une planification différée via la boucle `iterate()` du mainloop
+- chaque callback planifie le prochain cycle à `now + quantum` au lieu de l'exécuter immédiatement
+
+#### État actuel de `PwStream` + DRIVER
+
+Le backend `PwStream` n'est plus à considérer comme une simple impasse quarter-rate.
+
+Les derniers logs établissent :
+
+- le flux IEC61937 rentre bien à `192000 Hz`
+- le `pw_time` est cohérent avec `512` frames / `2.667 ms`
+- la boucle DRIVER tient maintenant plusieurs centaines de cycles par seconde
+- l'ingest est stable :
+  - `process_calls=332..367/s`
+  - `bytes=2.7..3.0 MB/s`
+  - `sync_buffers=44..49/s`
+  - `packets=44..49/s`
+- le bridge décode réellement des frames :
+  - `data_type=0x16`
+  - `sr=48000`
+  - `sample_count=40`
+  - `ch=12`
+- `orender` commence à voir les objets
+- la sortie audio PipeWire 48 kHz est créée et passe en `Streaming`
+
+Cela déplace le problème :
+
+- le verrou principal n'est plus la capture PipeWire d'entrée
+- le verrou restant est plus loin dans le pipeline, après le démarrage du rendu / de la sortie / de l'OSC
+- un arrêt ou décrochage du process est maintenant suspecté, mais pas encore expliqué par les logs existants
+
+#### Bug 5 : `RT_PROCESS` + `Rc<RefCell>` → ABRT après 1–2 minutes
+
+`StreamFlags::RT_PROCESS` fait tourner le callback `process()` dans un thread OS dédié (thread RT séparé du mainloop).
+
+Or la boucle principale appelait `drain_scheduled_pw_stream_trigger()` → `borrow_mut()` sur un `Rc<RefCell<PwDriverTriggerSchedule>>`, pendant que le thread RT appelait simultanément `schedule_pw_stream_driver_trigger()` → `borrow_mut()` sur le même `RefCell`.
+
+Double-borrow → `RefCell` panique à l'intérieur d'une frontière FFI → `panic_cannot_unwind` → `SIGABRT`.
+
+Correctif :
+
+- suppression de `StreamFlags::RT_PROCESS`
+- le callback `process()` tourne alors sur le thread mainloop
+- tous les accès `Rc<RefCell>` sont de nouveau single-thread → safe
+
+#### Tentative : `node.group` pour caler la capture sur l'horloge du DAC
+
+L'hypothèse était que mettre les deux streams (capture et sortie) dans le même `node.group` PipeWire ferait piloter la capture par l'horloge hardware du DAC, éliminant le drift de -20000 ppm.
+
+Ce qui a été fait :
+
+- `node.group = "omniphony-renderer"` ajouté sur le stream de sortie (`audio_output/src/pipewire.rs`)
+- `node.group = "omniphony-renderer"` ajouté sur le stream de capture (`live_input.rs`)
+- `StreamFlags::DRIVER` retiré du stream de capture
+- boucle iterate remplacée par un simple `iterate(50ms)`
+
+Ce qui a été observé :
+
+- `pw_time: rate=1/96000 size=1024` — le graphe PipeWire tourne à 96kHz
+- `process_calls = 94/s` = exactement `96000 / 1024 = 93.75` — le node.group est bien actif
+- mais `94 callbacks/s × 512 samples = ~48 000 samples/s` effectifs sur un flux IEC61937 à 192kHz
+- → le flux IEC61937 est consommé à 25% de sa vitesse réelle
+- → le buffer mpv se remplit et bloque la vidéo
+- → son haché, vidéo au ralenti
+
+Leçon :
+
+- PipeWire ne "multiplie pas" les samples par callback pour compenser un ratio de fréquence 4:1
+- tous les nœuds d'un même groupe reçoivent la même **durée de quantum** (ici ~10.67ms)
+- pour un flux 192kHz, cela livre `10.67ms × 192kHz = 2048 samples` attendus, mais le graphe en livre seulement 512 (aligned sur le quantum 96kHz du DAC)
+- l'approche `node.group` est donc incompatible avec un flux IEC61937 192kHz piloté par un DAC 48kHz
+
+Retour au mode `DRIVER` après cet échec.
+
+#### Paramètres clés `PwStream` en vigueur
+
+```
+node.force-rate = "192000"
+StreamFlags: AUTOCONNECT | MAP_BUFFERS | DRIVER   (RT_PROCESS retiré — cf. Bug 5)
+PW_STREAM_ACCUMULATE_CALLBACKS = 4
+PW_DRIVER_IDLE_TRIGGER_INTERVAL = 2ms
+```
 
 ## Hypothèses globales déjà invalidées
 
@@ -292,6 +486,8 @@ Les hypothèses suivantes ont été testées puis invalidées :
 - `orender` démarre trop tard par rapport à `mpv`
 - `mpv` ne voit pas le node `omniphony`
 - la seule annonce du format IEC958 / TrueHD suffisait à elle seule à débloquer le streaming
+- le ralentissement `1/4` venait seulement du sample-rate des frames décodées côté runtime
+- `node.rate` / `node.lock-rate` suffisaient à corriger la cadence d'un backend `PwStream`
 
 ## Ce qui a le plus probablement débloqué le streaming
 
@@ -316,23 +512,52 @@ Conclusion pratique :
 - mais ce n'est vraisemblablement pas ce qui a "débloqué" le streaming
 - le changement décisif semble être le passage à des buffers explicitement dimensionnés pour le flux passthrough
 
+## Ce qui a ensuite cassé la qualité temporelle (résolu)
+
+Une fois le streaming débloqué, un second problème indépendant est apparu :
+
+- audio haché
+- vidéo à `1/4` de vitesse
+
+Le cas démontré explicitement était `PwStream` sans flag `DRIVER` :
+
+- les callbacks indiquaient un domaine transport annoncé à `192000 Hz`
+- mais un débit effectif compatible avec environ `48000` frames/s
+
+Ce problème est maintenant résolu via `StreamFlags::DRIVER` + planification correcte du quantum (voir section `PwStream` phase 2, bugs 1–4).
+
+Leçon retenue :
+
+- "streaming débloqué" ne veut pas dire "backend valide"
+- il faut distinguer :
+  - réussite de la négociation
+  - justesse de la cadence réelle
+
 ## Piste de reprise prioritaire
 
-Si quelqu'un reprend l'investigation, il faut désormais prioriser dans cet ordre :
+La capture PipeWire d'entrée est maintenant stable et le pipeline TrueHD fonctionne. Le problème restant est le drift de clock entre le DRIVER software (capture) et le DAC hardware (sortie), qui force le resampler adaptatif à corriger ~-20000 ppm (≈ -2%).
 
-1. la géométrie des buffers annoncés aux ports PipeWire
-2. la taille réellement allouée aux `spa_buffer`
-3. la cohérence entre `size`, `stride`, `channels`, `sample_rate` et le type de transport IEC61937
-4. seulement ensuite les détails de type de node (`PwClientNode`, `PwExportedNode`, `PwAdapter`, `PwFilter`)
+### Boucle de rétroaction DRIVER ↔ sortie (piste suivante)
 
-Autrement dit :
+Le DRIVER software pilote sa boucle avec un timer basé sur `pw_time.size / channels / rate`. Ce timer est approximatif et tourne légèrement trop vite (~+2%), d'où les -20000 ppm de correction imposés par le resampler adaptatif en sortie.
 
-- le type de node reste important
-- mais la première zone à re-vérifier en cas de régression est désormais la négociation des buffers, pas seulement la visibilité du node ou le type de format annoncé
-- le problème est seulement un mauvais `target.object`
-- le problème est seulement l'absence de `add_mem`
-- le problème est seulement l'activation partagée du `client-node`
-- le problème est seulement le bruit `unknown resource 3 op:1`
+Idée : lire le `rate_adjust()` de `PipewireWriter` (qui expose la correction en cours du contrôleur PI) depuis la boucle de capture, et s'en servir pour ajuster `dynamic_trigger_interval` en temps réel.
+
+Principe :
+- `rate_adjust() < 1.0` → le DRIVER avance trop vite → allonger légèrement `dynamic_trigger_interval`
+- `rate_adjust() > 1.0` → le DRIVER avance trop lentement → raccourcir `dynamic_trigger_interval`
+- objectif : amener `rate_adjust()` vers `1.0` et réduire la correction resampler à ±quelques ppm
+
+Prérequis :
+- exposer `rate_adjust()` depuis `PipewireWriter` (déjà présent comme méthode publique)
+- passer un `Arc<PipewireWriter>` (ou juste un `Arc<AtomicU32>` wrappant `current_rate_adjust`) à `run_pipewire_bridge_capture_stream`
+- appliquer une correction bornée (ex : ±5%) sur `dynamic_trigger_interval` après chaque callback
+
+Ordre de priorité actuel :
+
+1. Implémenter la boucle de rétroaction DRIVER ↔ `rate_adjust()`
+2. Vérifier que les pops résiduels disparaissent avec un drift réduit
+3. Si régression sur l'entrée : vérifier la géométrie des buffers et la cadence DRIVER en premier
 
 ## Ce qui est établi avec un bon niveau de confiance
 
@@ -342,51 +567,56 @@ Autrement dit :
 
 3. `PwAdapter` et `PwFilter` exposent des objets visibles dans PipeWire, mais pas des cibles de sortie valides pour `mpv` dans cette configuration.
 
-4. `PwClientNode` est le backend le plus avancé côté protocole natif, mais la négociation des ports n'aboutit jamais.
+4. `PwClientNode` reçoit un handshake node-level avancé, mais la négociation des ports n'aboutit jamais.
+
+5. `PwStream` DRIVER peut désormais faire passer les données au bon rythme effectif pour un transport `192000 Hz`.
+
+6. `PwExportedNode` est bien reconnu comme `spa_node`, mais le pair ne passe jamais à `send_command` / `port_*` / `process`.
+
+7. L'état actuel le plus prometteur est : entrée PipeWire fonctionnelle, décodage effectif, rendu démarré, puis arrêt ou décrochage ultérieur encore à qualifier.
 
 ## Pistes de reprise recommandées
 
-### Priorité 1 : reprendre `PwClientNode`
+### Priorité 1 : poursuivre l'instrumentation du chemin `PwStream` / rendu / sortie
 
 Pourquoi :
 
-- c'est le seul backend qui a réellement dépassé le simple stade "node visible"
-- il ne bloque pas sur `target node available`
-- il bloque plus tard, dans la négociation `port_*`
+- c'est la seule piste qui a maintenant démontré :
+  - capture stable
+  - parsing IEC61937
+  - décodage
+  - apparition des objets
+  - démarrage de la sortie PipeWire
+- le problème a clairement migré en aval de la capture
 
-Points à instrumenter ou comparer :
+Points à instrumenter ensuite :
 
-- séquence exacte attendue après `set_param id=4` et `id=11`
-- conditions qui déclenchent `add_port` / `port_set_param`
-- layout exact et transitions réelles de `pw_node_activation`
-- éventuels `update` / `port_update` manquants ou incomplets
-- comparaison avec une implémentation PipeWire native de `pw_client_node`
+- raison exacte de sortie du process
+- `panic` éventuel
+- erreur remontée au niveau `main`
+- sortie contrôlée de la boucle capture
+- interaction entre rendu spatial, writer lifecycle et sortie PipeWire
 
-Signal attendu si cette piste progresse :
+Signal attendu :
 
-- apparition de `add_port`
-- puis `port_set_param`
-- puis `port_use_buffers` / `port_set_io`
+- soit un `panic at ...`
+- soit `orender exiting with error: ...`
+- soit `capture loop exiting ...`
+- soit une autre erreur explicite en aval du bridge d'entrée
 
-### Priorité 2 : vérifier si `mpv` vise bien un node et non un device/session object intermédiaire
-
-Pourquoi :
-
-- `ao_pipewire.c` côté `mpv` passe `PW_KEY_TARGET_OBJECT = ao->device`
-- `ao->device` vaut `omniphony`
-- `mpv` attend un node de type sink réellement cibleable
-
-À clarifier :
-
-- faut-il exposer un autre type d'objet PipeWire que celui actuellement créé
-- faut-il passer par une factory/session-manager différente
-
-### Priorité 3 : explorer sérieusement `PwStream`
+### Priorité 2 : garder `PwExportedNode` comme backend de référence bas niveau
 
 Pourquoi :
 
-- moins bas niveau que `PwClientNode`
-- potentiellement plus "natif" qu'un `filter` mal matérialisé ou qu'un `adapter` monitoré
+- il reste le backend le plus contrôlable si la piste `PwStream` devait finalement se révéler impossible à fiabiliser
+- il a déjà montré un handshake node-level crédible
+
+### Priorité 3 : garder `PwClientNode` comme référence protocolaire
+
+Pourquoi :
+
+- il reste utile pour comprendre le handshake node-level attendu
+- mais il ne doit plus être considéré comme la meilleure piste d'implémentation
 
 ## Backends à éviter pour l'instant
 
@@ -408,31 +638,40 @@ Pourquoi :
 
 ## État du code au moment du document
 
-- le backend par défaut a été remis sur `PwClientNode`
-- de nombreuses traces additionnelles existent toujours dans `live_input.rs`
-- elles sont utiles pour la reprise
+- le backend par défaut est `PwStream` avec `StreamFlags::DRIVER` (sans `RT_PROCESS`)
+- `node.force-rate = "192000"` est déclaré dans les propriétés du stream
+- `trigger_process()` est planifié via la boucle `iterate()` du mainloop (planification différée, pas synchrone depuis le callback)
+- `PW_STREAM_ACCUMULATE_CALLBACKS = 4` (accumulation de 4 quanta avant `process_chunk`)
+- `PW_DRIVER_IDLE_TRIGGER_INTERVAL = 2ms` (rate-limit sur tous les triggers, idle ET après vraie donnée)
+- le son fonctionne avec ~-20000 ppm de correction resampler côté sortie (DRIVER software légèrement trop rapide)
+- la boucle de rétroaction DRIVER ↔ `rate_adjust()` est la prochaine étape (voir section précédente)
+- de nombreuses traces additionnelles existent toujours dans `live_input.rs`, utiles pour la reprise
+- `handler.rs` contient une correction séparée sur la distinction `DecodedSource::Bridge` vs `DecodedSource::Live`
 
 ## Checklist de reprise
 
-1. Vérifier que le backend sélectionné est bien `PwClientNode`.
-2. Relancer `mpv` avec les traces PipeWire actuelles.
-3. Relever uniquement :
-   - `set_activation`
-   - `transport`
-   - `set_io`
-   - `set_param`
-   - `refresh configured state`
-   - `add_port`
-   - `port_set_param`
-   - `port_use_buffers`
-   - `port_set_io`
-4. Comparer la séquence obtenue à une implémentation PipeWire native de `pw_client_node`.
-5. Ne pas revenir sur `PwAdapter` ou `PwFilter` sans hypothèse nouvelle.
+1. Vérifier quel backend est sélectionné (`PwStream` DRIVER est le défaut).
+2. Pour `PwStream` DRIVER, valider la santé de l'entrée :
+   - `process_calls` doit être ~350–500/s (pas 250 000/s = spinning, pas 94/s = graphe 48kHz)
+   - `zero_chunks` doit être < 30% des process_calls
+   - `sync_buffers` et `packets` doivent être ~44–55/s
+   - `bytes` doit être ~2.7–3.1 MB/s
+3. Vérifier que le bridge décode des frames :
+   - `PipeWire bridge packet: data_type=0x16 payload_bytes=61424`
+   - `PipeWire bridge decoded frame: sr=48000 sample_count=40 ch=12`
+4. Vérifier la sortie PipeWire :
+   - `Audio streaming to PipeWire is now active`
+   - `output stream state: Streaming`
+5. Si l'entrée est saine et que ça bloque quand même : investiguer en aval (rendu, writer, OSC).
+6. En cas de régression sur la cadence : vérifier `pw_time.size / channels` pour le quantum correct.
+7. Ne pas revenir sur `PwAdapter` ou `PwFilter` sans hypothèse nouvelle.
 
 ## Résumé très court
 
-- `PwExportedNode` : trop faible, abandon
-- `PwClientNode` : meilleure piste, bloque sur `port_*`
+- `PwExportedNode` : bien reconnu comme `spa_node`, mais jamais activé (port_* jamais appelé)
+- `PwClientNode` : handshake node-level avancé, mais jamais de `port_*`
 - `PwAdapter` : sink visible, monitor inutilisable
 - `PwFilter` : node visible, mais pas une vraie target pour `mpv`
-- cause non résolue à ce stade, mais le meilleur point de reprise est clairement `PwClientNode`
+- `PwStream` + `DRIVER` (sans `RT_PROCESS`) : **son fonctionnel**, IEC61937 parsé, TrueHD décodé, rendu spatial actif
+- drift résiduel : DRIVER software ~+2% trop rapide → resampler sortie corrige à -20000 ppm
+- piste suivante : boucle de rétroaction `dynamic_trigger_interval` ↔ `rate_adjust()` pour réduire ce drift

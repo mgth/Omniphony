@@ -784,6 +784,7 @@ fn run_pipewire_loop(
     let mut resampler_fifo = ResamplerFifoEngine::new(channel_count as usize);
     let mut effective_resample_ratio = resample_ratio;
     let mut runtime_state = AdaptiveRuntimeState::new(resample_ratio);
+    runtime_state.activate_startup_low_recover();
 
     // Setup process callback
     let buffer_for_callback = buffer.clone();
