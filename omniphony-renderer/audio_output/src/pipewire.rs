@@ -942,7 +942,7 @@ fn run_pipewire_loop(
                         }
                     }
                     if runtime_target_buffer_fill != logged_runtime_target {
-                        log::info!(
+                        log::debug!(
                             "PipeWire runtime target fill adjusted to {} samples for observed callback size {} samples",
                             runtime_target_buffer_fill,
                             frame_aligned_max

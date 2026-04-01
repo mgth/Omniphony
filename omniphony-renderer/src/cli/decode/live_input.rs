@@ -181,8 +181,17 @@ impl BridgeDecodeWorker {
                 data_type,
             );
             let decode_time_ms = decode_started_at.elapsed().as_secs_f32() * 1000.0;
-            if result.frames.is_empty() || !result.error_message.is_empty() || result.did_reset {
-                log::info!(
+            if !result.error_message.is_empty() || result.did_reset {
+                log::warn!(
+                    "PipeWire bridge packet: data_type=0x{:02X} payload_bytes={} frames={} reset={} error={}",
+                    data_type,
+                    payload.len(),
+                    result.frames.len(),
+                    result.did_reset,
+                    result.error_message
+                );
+            } else if result.frames.is_empty() {
+                log::debug!(
                     "PipeWire bridge packet: data_type=0x{:02X} payload_bytes={} frames={} reset={} error={}",
                     data_type,
                     payload.len(),
@@ -209,7 +218,7 @@ impl BridgeDecodeWorker {
                     self.first_frame_logs_remaining -= 1;
                     let frame_ms =
                         frame.sample_count as f64 / frame.sampling_frequency.max(1) as f64 * 1000.0;
-                    log::warn!(
+                    log::debug!(
                         "PipeWire bridge decoded frame: sr={} sample_count={} ch={} frame_ms={:.3} data_type=0x{:02X} payload_bytes={}",
                         frame.sampling_frequency,
                         frame.sample_count,
@@ -255,6 +264,7 @@ struct BridgeCaptureUserData {
     packets_since_log: usize,
     frames_since_log: usize,
     empty_polls_since_log: usize,
+    callback_chunk_logs_remaining: usize,
     /// Accumulation buffer for PwStream clock-domain correction (192kHz transport over 48kHz graph).
     accumulate_buf: Vec<u8>,
     /// Number of process callbacks accumulated so far.
@@ -735,6 +745,7 @@ impl PipewireBridgeExportNode {
                 packets_since_log: 0,
                 frames_since_log: 0,
                 empty_polls_since_log: 0,
+                callback_chunk_logs_remaining: 8,
                 accumulate_buf: Vec::new(),
                 accumulate_count: 0,
                 last_idle_trigger: Instant::now(),
@@ -1531,7 +1542,7 @@ fn drain_scheduled_pw_stream_trigger(
     match stream.trigger_process() {
         Ok(()) => {
             if schedule.trigger_calls_since_log <= 8 {
-                log::info!(
+                log::trace!(
                     "{} trigger_process ok: reason={} trigger_calls={} trigger_errors={}",
                     log_prefix,
                     reason,
@@ -1611,7 +1622,7 @@ fn refresh_pw_stream_driver_timing(
         user_data.last_pw_time_log_at = now;
         let quantum_ms = quantum_ns as f64 / 1_000_000.0;
         let scheduled_ms = scheduled_ns as f64 / 1_000_000.0;
-        log::info!(
+        log::debug!(
             "{} pw_time: rate={}/{} size={} transport_frames={} queued={} buffered={} queued_buffers={} avail_buffers={} delay={} quantum_ms={:.3} trigger_ms={:.3} rate_adjust={:.6} correction={:.4}",
             log_prefix,
             time.rate.num,
@@ -1723,6 +1734,7 @@ fn run_pipewire_bridge_capture_stream(
             packets_since_log: 0,
             frames_since_log: 0,
             empty_polls_since_log: 0,
+            callback_chunk_logs_remaining: 8,
             accumulate_buf: Vec::new(),
             accumulate_count: 0,
             last_idle_trigger: Instant::now(),
@@ -1797,8 +1809,8 @@ fn run_pipewire_bridge_capture_stream(
         })
         .io_changed(move |_, user_data, id, area, size| {
             user_data.io_changed_calls_since_log += 1;
-            log::info!(
-                "{} io_changed: id={} area={:p} size={} io_changed_calls={} add_calls={} process_calls={}",
+                log::debug!(
+                    "{} io_changed: id={} area={:p} size={} io_changed_calls={} add_calls={} process_calls={}",
                 log_prefix,
                 id,
                 area,
@@ -1810,7 +1822,7 @@ fn run_pipewire_bridge_capture_stream(
         })
         .add_buffer(move |_, user_data, buffer| {
             user_data.add_buffer_calls_since_log += 1;
-            log::info!(
+            log::debug!(
                 "{} add_buffer: buffer={:p} add_calls={} remove_calls={} drained_calls={} io_changed_calls={} process_calls={}",
                 log_prefix,
                 buffer,
@@ -1823,7 +1835,7 @@ fn run_pipewire_bridge_capture_stream(
         })
         .remove_buffer(move |_, user_data, buffer| {
             user_data.remove_buffer_calls_since_log += 1;
-            log::info!(
+            log::debug!(
                 "{} remove_buffer: buffer={:p} add_calls={} remove_calls={} drained_calls={} io_changed_calls={} process_calls={}",
                 log_prefix,
                 buffer,
@@ -1861,7 +1873,7 @@ fn run_pipewire_bridge_capture_stream(
                 user_data.empty_polls_since_log += 1;
                 let now = Instant::now();
                 if now.duration_since(user_data.last_log_at) >= LIVE_BRIDGE_LOG_INTERVAL {
-                    log::info!(
+                    log::debug!(
                         "{} ingest idle: add_buffers={} remove_buffers={} drained={} io_changed={} process_calls={} empty_polls={} datas_empty={} data_missing={} zero_chunks={} oversized_chunks={} rate={}Hz channels={}",
                         log_prefix,
                         user_data.add_buffer_calls_since_log,
@@ -1906,7 +1918,7 @@ fn run_pipewire_bridge_capture_stream(
             let datas = buffer.datas_mut();
             if !user_data.first_buffer_layout_logged {
                 user_data.first_buffer_layout_logged = true;
-                log::info!(
+                log::debug!(
                     "{} first buffer layout: datas_len={}",
                     log_prefix,
                     datas.len()
@@ -1921,7 +1933,7 @@ fn run_pipewire_bridge_capture_stream(
                     let chunk_size = chunk.size();
                     let chunk_stride = chunk.stride();
                     let has_data = data.data().is_some();
-                    log::info!(
+                    log::debug!(
                         "{} first buffer data[{}]: type={:?} maxsize={} mapoffset={} chunk.offset={} chunk.size={} chunk.stride={} has_data={}",
                         log_prefix,
                         index,
@@ -2012,13 +2024,16 @@ fn run_pipewire_bridge_capture_stream(
                 return;
             }
             let chunk = &bytes[..byte_len];
-            if user_data.process_calls_since_log <= 8 && user_data.channels > 0 && user_data.rate_hz > 0
+            if user_data.callback_chunk_logs_remaining > 0
+                && user_data.channels > 0
+                && user_data.rate_hz > 0
             {
+                user_data.callback_chunk_logs_remaining -= 1;
                 let transport_ms = byte_len as f64
                     / (user_data.channels as f64 * std::mem::size_of::<u16>() as f64)
                     / user_data.rate_hz as f64
                     * 1000.0;
-                log::warn!(
+                log::debug!(
                     "{} callback chunk: bytes={} transport_ms={:.3} rate={}Hz channels={}",
                     log_prefix,
                     byte_len,
@@ -2050,7 +2065,7 @@ fn run_pipewire_bridge_capture_stream(
             user_data.frames_since_log += frame_count;
             let now = Instant::now();
             if now.duration_since(user_data.last_log_at) >= LIVE_BRIDGE_LOG_INTERVAL {
-                log::info!(
+                log::debug!(
                     "{} ingest: add_buffers={} remove_buffers={} drained={} io_changed={} process_calls={} buffers={} bytes={} sync_buffers={} packets={} frames={} empty_polls={} datas_empty={} data_missing={} zero_chunks={} oversized_chunks={} rate={}Hz channels={}",
                     log_prefix,
                     user_data.add_buffer_calls_since_log,
@@ -2072,7 +2087,7 @@ fn run_pipewire_bridge_capture_stream(
                     user_data.channels
                 );
                 if user_data.buffers_since_log > 0 && user_data.sync_buffers_since_log == 0 {
-                    log::warn!("{} ingest has audio buffers but no IEC61937 sync words yet", log_prefix);
+                    log::debug!("{} ingest has audio buffers but no IEC61937 sync words yet", log_prefix);
                 }
                 user_data.last_log_at = now;
                 user_data.add_buffer_calls_since_log = 0;
@@ -2102,7 +2117,7 @@ fn run_pipewire_bridge_capture_stream(
         })
         .drained(move |_, user_data| {
             user_data.drained_calls_since_log += 1;
-            log::info!(
+            log::debug!(
                 "{} drained: add_calls={} remove_calls={} drained_calls={} io_changed_calls={} process_calls={} buffers={} bytes={}",
                 log_prefix,
                 user_data.add_buffer_calls_since_log,
@@ -2533,6 +2548,7 @@ fn run_pipewire_bridge_filter_backend(
             packets_since_log: 0,
             frames_since_log: 0,
             empty_polls_since_log: 0,
+            callback_chunk_logs_remaining: 8,
             accumulate_buf: Vec::new(),
             accumulate_count: 0,
             last_idle_trigger: Instant::now(),
