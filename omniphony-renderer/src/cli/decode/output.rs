@@ -7,6 +7,7 @@ use audio_output::asio::AsioWriter;
 use audio_output::pipewire::{
     PipewireAdaptiveResamplingConfig, PipewireBufferConfig, PipewireWriter,
 };
+use std::sync::Arc;
 
 /// Audio sample data in different formats
 pub enum AudioSamples {
@@ -298,6 +299,16 @@ impl AudioWriter {
             #[cfg(target_os = "windows")]
             AudioWriter::Asio(asio) => asio.update_adaptive_config(config),
             AudioWriter::Unsupported => {}
+        }
+    }
+
+    /// Register the closure that fires pw_stream_trigger_process() on the capture DRIVER stream.
+    /// The output process callback will call it N times per callback using Bresenham scheduling.
+    pub fn set_input_trigger(&self, f: Arc<dyn Fn() + Send + Sync + 'static>, rate_hz: u32) {
+        match self {
+            #[cfg(target_os = "linux")]
+            AudioWriter::Pipewire(pw) => pw.set_input_trigger(f, rate_hz),
+            _ => {}
         }
     }
 }

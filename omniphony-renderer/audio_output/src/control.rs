@@ -146,6 +146,14 @@ pub struct InputControl {
     /// Rate-adjust feedback from the output resampler, for use by the input DRIVER clock.
     /// Encoded as f32 bits. 1.0 = no correction; <1.0 = output slowing down (DRIVER too fast).
     output_rate_adjust: Arc<AtomicU32>,
+    /// Direct trigger mode: closure that calls pw_stream_trigger_process() on the capture stream.
+    /// Set by the capture side after stream.connect(); consumed by the output process callback.
+    input_trigger_fn: Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>,
+    /// Sample rate of the capture stream (e.g. 192000), used for Bresenham trigger scheduling.
+    input_trigger_rate_hz: AtomicU32,
+    /// When true, the output callback is driving trigger_process(); the capture mainloop uses
+    /// a long iterate() timeout instead of the tight timer-based schedule.
+    direct_trigger_active: Arc<AtomicBool>,
 }
 
 impl Default for AudioControl {
@@ -386,6 +394,9 @@ impl InputControl {
             apply_pending: AtomicBool::new(false),
             state_generation: AtomicU64::new(1),
             output_rate_adjust: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+            input_trigger_fn: Mutex::new(None),
+            input_trigger_rate_hz: AtomicU32::new(0),
+            direct_trigger_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -397,6 +408,33 @@ impl InputControl {
     /// Returns a clone of the rate-adjust atomic, suitable for sharing with long-lived threads.
     pub fn output_rate_adjust_atomic(&self) -> Arc<AtomicU32> {
         Arc::clone(&self.output_rate_adjust)
+    }
+
+    /// Register the closure that fires pw_stream_trigger_process() on the capture DRIVER stream.
+    /// Called by the capture side immediately after stream.connect().
+    pub fn set_input_trigger_fn(&self, f: Arc<dyn Fn() + Send + Sync + 'static>, rate_hz: u32) {
+        *self.input_trigger_fn.lock().unwrap() = Some(f);
+        self.input_trigger_rate_hz.store(rate_hz, Ordering::Relaxed);
+    }
+
+    /// Returns a clone of the trigger closure, or None if not yet registered.
+    pub fn input_trigger_fn(&self) -> Option<Arc<dyn Fn() + Send + Sync + 'static>> {
+        self.input_trigger_fn.lock().unwrap().clone()
+    }
+
+    /// Returns the capture stream sample rate registered with the trigger fn.
+    pub fn input_trigger_rate_hz(&self) -> u32 {
+        self.input_trigger_rate_hz.load(Ordering::Relaxed)
+    }
+
+    /// Returns a clone of the direct_trigger_active flag for sharing with the capture mainloop.
+    pub fn direct_trigger_active_arc(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.direct_trigger_active)
+    }
+
+    /// Enable or disable direct trigger mode (output callback drives capture triggers).
+    pub fn set_direct_trigger_active(&self, active: bool) {
+        self.direct_trigger_active.store(active, Ordering::Relaxed);
     }
 
     fn bump_state_generation(&self) {

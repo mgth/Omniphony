@@ -2048,14 +2048,38 @@ fn run_pipewire_bridge_capture_stream(
         stream.node_id()
     );
 
+    // Register direct trigger closure: the output process callback will call this N times per
+    // output quantum using Bresenham scheduling, replacing the timer-based DRIVER schedule.
+    // pw_stream_trigger_process() is documented as thread-safe; we capture the raw pointer as
+    // usize to satisfy Send+Sync (the pointer itself is valid for the lifetime of this function).
+    {
+        let raw_ptr_addr = stream.as_raw_ptr() as usize;
+        let trigger_fn = Arc::new(move || {
+            unsafe { pw::sys::pw_stream_trigger_process(raw_ptr_addr as *mut _); }
+        });
+        input_control.set_input_trigger_fn(trigger_fn, config.sample_rate_hz);
+        log::info!(
+            "{} registered direct trigger fn: input_rate={}Hz",
+            log_prefix,
+            config.sample_rate_hz
+        );
+    }
+
+    let direct_trigger_active = input_control.direct_trigger_active_arc();
+
     while !stop.load(Ordering::Relaxed)
         && !sys::ShutdownHandle::is_requested()
         && !sys::ShutdownHandle::is_restart_from_config_requested()
     {
-        let _ = mainloop
-            .loop_()
-            .iterate(next_pw_stream_driver_timeout(&trigger_schedule));
-        drain_scheduled_pw_stream_trigger(&stream, &trigger_schedule, log_prefix);
+        if direct_trigger_active.load(Ordering::Relaxed) {
+            // Direct trigger mode: output callback drives trigger_process(); just pump events.
+            let _ = mainloop.loop_().iterate(std::time::Duration::from_millis(50));
+        } else {
+            let _ = mainloop
+                .loop_()
+                .iterate(next_pw_stream_driver_timeout(&trigger_schedule));
+            drain_scheduled_pw_stream_trigger(&stream, &trigger_schedule, log_prefix);
+        }
     }
 
     log::info!(

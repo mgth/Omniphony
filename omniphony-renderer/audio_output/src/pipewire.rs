@@ -272,6 +272,11 @@ pub struct PipewireWriter {
     bootstrap_started_at: Instant,
     bootstrap_write_calls: u32,
     bootstrap_written_samples: usize,
+    /// Direct trigger mode: closure calling pw_stream_trigger_process() on the capture DRIVER stream.
+    /// When set, the output process callback fires this N times per callback (Bresenham ratio).
+    input_trigger_fn: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>>,
+    /// Sample rate of the capture stream, used to compute the Bresenham trigger ratio.
+    input_trigger_rate_hz: Arc<AtomicU32>,
 }
 
 impl PipewireWriter {
@@ -344,6 +349,11 @@ impl PipewireWriter {
         let adaptive_config_for_thread = Arc::clone(&live_config);
         let reset_ratio_requested = Arc::new(AtomicBool::new(false));
         let reset_ratio_for_thread = Arc::clone(&reset_ratio_requested);
+        let input_trigger_fn: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>> =
+            Arc::new(Mutex::new(None));
+        let input_trigger_fn_for_thread = Arc::clone(&input_trigger_fn);
+        let input_trigger_rate_hz = Arc::new(AtomicU32::new(0));
+        let input_trigger_rate_for_thread = Arc::clone(&input_trigger_rate_hz);
 
         // Capture before moving buffer_config into the thread closure.
         let max_latency_ms = buffer_config.max_latency_ms;
@@ -375,6 +385,8 @@ impl PipewireWriter {
                 measured_latency_clone,
                 control_latency_clone,
                 graph_latency_clone,
+                input_trigger_fn_for_thread,
+                input_trigger_rate_for_thread,
             ) {
                 log::error!("PipeWire thread error: {}", e);
             }
@@ -432,6 +444,8 @@ impl PipewireWriter {
             bootstrap_started_at: Instant::now(),
             bootstrap_write_calls: 0,
             bootstrap_written_samples: 0,
+            input_trigger_fn,
+            input_trigger_rate_hz,
         })
     }
 
@@ -548,6 +562,14 @@ impl PipewireWriter {
         }
     }
 
+    /// Register the closure that fires pw_stream_trigger_process() on the capture DRIVER stream.
+    /// Once set, the output process callback fires this N times per callback using Bresenham
+    /// scheduling (ratio = input_rate_hz / output_sample_rate).
+    pub fn set_input_trigger(&self, f: Arc<dyn Fn() + Send + Sync + 'static>, rate_hz: u32) {
+        *self.input_trigger_fn.lock().unwrap() = Some(f);
+        self.input_trigger_rate_hz.store(rate_hz, Ordering::Relaxed);
+    }
+
     pub fn adaptive_band(&self) -> Option<&'static str> {
         match self.current_adaptive_band.load(Ordering::Relaxed) {
             1 => Some("near"),
@@ -632,6 +654,8 @@ fn run_pipewire_loop(
     measured_latency_ms_out: Arc<AtomicU32>,
     control_latency_ms_out: Arc<AtomicU32>,
     graph_latency_ms_out: Arc<AtomicU32>,
+    input_trigger_fn: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>>,
+    input_trigger_rate_hz: Arc<AtomicU32>,
 ) -> Result<()> {
     // Determine actual output rate and resampling ratio
     let actual_output_rate = output_sample_rate.unwrap_or(sample_rate);
@@ -796,6 +820,11 @@ fn run_pipewire_loop(
     let reset_ratio_for_callback = Arc::clone(&reset_ratio_requested);
     let adaptive_resampling_enabled = enable_adaptive_resampling;
     let latency_servo_enabled = !use_local_resampler;
+    // Direct trigger mode: snapshot trigger fn lazily on first callback, then run Bresenham.
+    let input_trigger_fn_for_callback = Arc::clone(&input_trigger_fn);
+    let input_trigger_rate_for_callback = Arc::clone(&input_trigger_rate_hz);
+    let mut local_input_trigger: Option<Arc<dyn Fn() + Send + Sync + 'static>> = None;
+    let mut bresenham_acc: i64 = 0;
     // Compute channel-aware buffer thresholds for the callback (ms → frames → samples).
     // IMPORTANT: these thresholds are compared against `buffer_for_callback.len()`, which
     // stores INPUT-domain samples (writer pushes at `sample_rate` before local resampling).
@@ -1353,6 +1382,25 @@ fn run_pipewire_loop(
                 *chunk.offset_mut() = 0;
                 *chunk.size_mut() = (written * 4) as u32;
                 *chunk.stride_mut() = 4;
+            }
+
+            // Direct trigger mode: fire pw_stream_trigger_process() on the capture DRIVER stream
+            // N times per output callback, using Bresenham scheduling for non-integer ratios.
+            // Lazily snapshot the closure on first availability (avoids locking on every callback).
+            if local_input_trigger.is_none() {
+                if let Ok(guard) = input_trigger_fn_for_callback.try_lock() {
+                    local_input_trigger = guard.clone();
+                }
+            }
+            if let Some(ref trigger) = local_input_trigger {
+                let in_rate = input_trigger_rate_for_callback.load(Ordering::Relaxed) as i64;
+                if in_rate > 0 {
+                    bresenham_acc += in_rate;
+                    while bresenham_acc >= actual_output_rate as i64 {
+                        trigger();
+                        bresenham_acc -= actual_output_rate as i64;
+                    }
+                }
             }
         })
         .register()

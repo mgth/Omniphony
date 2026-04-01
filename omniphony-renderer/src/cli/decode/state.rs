@@ -147,6 +147,8 @@ pub struct DecodeSessionState {
     pub last_output_delay_log_at: Option<Instant>,
     pub first_measured_output_delay_ms: Option<f32>,
     pub last_input_state_generation: Option<u64>,
+    /// Set to true once the direct trigger mode has been wired (trigger fn sent to writer).
+    pub direct_trigger_wired: bool,
 }
 
 impl Default for DecodeSessionState {
@@ -161,6 +163,7 @@ impl Default for DecodeSessionState {
             last_output_delay_log_at: None,
             first_measured_output_delay_ms: None,
             last_input_state_generation: None,
+            direct_trigger_wired: false,
         }
     }
 }
