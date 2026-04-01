@@ -337,19 +337,23 @@ impl DecodeHandler {
         if let (Some(rate), Some(ic)) = (current_resample_ratio, self.input_control.as_ref()) {
             ic.set_output_rate_adjust(rate);
         }
-        // Wire direct trigger mode once both the writer and the capture trigger fn are ready.
+        // Wire direct trigger mode once both the writer and the capture rate are ready.
         if !self.session.direct_trigger_wired {
             if let Some(ic) = self.input_control.as_ref() {
-                if let Some(trigger_fn) = ic.input_trigger_fn() {
+                let rate_hz = ic.input_trigger_rate_hz();
+                if rate_hz > 0 {
                     if let Some(writer) = self.output.audio_writer.as_ref() {
-                        let rate_hz = ic.input_trigger_rate_hz();
-                        writer.set_input_trigger(trigger_fn, rate_hz);
-                        ic.set_direct_trigger_active(true);
-                        self.session.direct_trigger_wired = true;
-                        log::info!(
-                            "Direct trigger mode active: capture input_rate={}Hz → output callback drives trigger_process()",
-                            rate_hz
-                        );
+                        writer.set_input_trigger_rate_hz(rate_hz);
+                        #[cfg(target_os = "linux")]
+                        if let Some(pending) = writer.pending_input_triggers() {
+                            ic.set_pending_input_triggers(pending);
+                            ic.set_direct_trigger_active(true);
+                            self.session.direct_trigger_wired = true;
+                            log::info!(
+                                "Direct trigger mode active: capture={}Hz → output Bresenham → capture mainloop drains + fires trigger_process()",
+                                rate_hz
+                            );
+                        }
                     }
                 }
             }

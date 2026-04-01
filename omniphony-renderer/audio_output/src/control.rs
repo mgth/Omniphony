@@ -1,7 +1,7 @@
 use crate::AdaptiveResamplingConfig;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering},
 };
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -146,13 +146,14 @@ pub struct InputControl {
     /// Rate-adjust feedback from the output resampler, for use by the input DRIVER clock.
     /// Encoded as f32 bits. 1.0 = no correction; <1.0 = output slowing down (DRIVER too fast).
     output_rate_adjust: Arc<AtomicU32>,
-    /// Direct trigger mode: closure that calls pw_stream_trigger_process() on the capture stream.
-    /// Set by the capture side after stream.connect(); consumed by the output process callback.
-    input_trigger_fn: Mutex<Option<Arc<dyn Fn() + Send + Sync + 'static>>>,
-    /// Sample rate of the capture stream (e.g. 192000), used for Bresenham trigger scheduling.
+    /// Direct trigger mode: pending trigger counter owned by the writer's RT callback.
+    /// Set by handler.rs after the writer is wired; capture mainloop clones and drains it.
+    /// Mutex<None> until wired.
+    pending_input_triggers: Mutex<Option<Arc<AtomicI64>>>,
+    /// Sample rate of the capture stream (e.g. 192000), used for Bresenham scheduling on the
+    /// output side. Set by register_direct_trigger_target().
     input_trigger_rate_hz: AtomicU32,
-    /// When true, the output callback is driving trigger_process(); the capture mainloop uses
-    /// a long iterate() timeout instead of the tight timer-based schedule.
+    /// When true, the capture mainloop drains pending_input_triggers instead of the timer schedule.
     direct_trigger_active: Arc<AtomicBool>,
 }
 
@@ -394,7 +395,7 @@ impl InputControl {
             apply_pending: AtomicBool::new(false),
             state_generation: AtomicU64::new(1),
             output_rate_adjust: Arc::new(AtomicU32::new(1.0f32.to_bits())),
-            input_trigger_fn: Mutex::new(None),
+            pending_input_triggers: Mutex::new(None),
             input_trigger_rate_hz: AtomicU32::new(0),
             direct_trigger_active: Arc::new(AtomicBool::new(false)),
         }
@@ -410,21 +411,28 @@ impl InputControl {
         Arc::clone(&self.output_rate_adjust)
     }
 
-    /// Register the closure that fires pw_stream_trigger_process() on the capture DRIVER stream.
-    /// Called by the capture side immediately after stream.connect().
-    pub fn set_input_trigger_fn(&self, f: Arc<dyn Fn() + Send + Sync + 'static>, rate_hz: u32) {
-        *self.input_trigger_fn.lock().unwrap() = Some(f);
-        self.input_trigger_rate_hz.store(rate_hz, Ordering::Relaxed);
+    /// Called by the capture side after stream.connect(): store the capture sample rate for the
+    /// output-side Bresenham calculation.  Does NOT set direct_trigger_active — that happens from
+    /// handler.rs once the writer is also ready.
+    pub fn register_direct_trigger_target(&self, capture_rate_hz: u32) {
+        self.input_trigger_rate_hz.store(capture_rate_hz, Ordering::Relaxed);
     }
 
-    /// Returns a clone of the trigger closure, or None if not yet registered.
-    pub fn input_trigger_fn(&self) -> Option<Arc<dyn Fn() + Send + Sync + 'static>> {
-        self.input_trigger_fn.lock().unwrap().clone()
-    }
-
-    /// Returns the capture stream sample rate registered with the trigger fn.
+    /// Returns the capture stream sample rate (set by register_direct_trigger_target).
+    /// Returns 0 if not yet registered.
     pub fn input_trigger_rate_hz(&self) -> u32 {
         self.input_trigger_rate_hz.load(Ordering::Relaxed)
+    }
+
+    /// Called by handler.rs after the writer is ready: hand the writer's pending-trigger counter
+    /// to InputControl so the capture mainloop can drain it.
+    pub fn set_pending_input_triggers(&self, counter: Arc<AtomicI64>) {
+        *self.pending_input_triggers.lock().unwrap() = Some(counter);
+    }
+
+    /// Returns a clone of the pending trigger counter, or None if not yet wired.
+    pub fn pending_input_triggers(&self) -> Option<Arc<AtomicI64>> {
+        self.pending_input_triggers.lock().unwrap().clone()
     }
 
     /// Returns a clone of the direct_trigger_active flag for sharing with the capture mainloop.
@@ -432,7 +440,7 @@ impl InputControl {
         Arc::clone(&self.direct_trigger_active)
     }
 
-    /// Enable or disable direct trigger mode (output callback drives capture triggers).
+    /// Enable or disable direct trigger mode (output callback drives trigger counts).
     pub fn set_direct_trigger_active(&self, active: bool) {
         self.direct_trigger_active.store(active, Ordering::Relaxed);
     }

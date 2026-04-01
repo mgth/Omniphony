@@ -7,7 +7,8 @@ use audio_output::asio::AsioWriter;
 use audio_output::pipewire::{
     PipewireAdaptiveResamplingConfig, PipewireBufferConfig, PipewireWriter,
 };
-use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::{Arc, atomic::AtomicI64};
 
 /// Audio sample data in different formats
 pub enum AudioSamples {
@@ -302,13 +303,22 @@ impl AudioWriter {
         }
     }
 
-    /// Register the closure that fires pw_stream_trigger_process() on the capture DRIVER stream.
-    /// The output process callback will call it N times per callback using Bresenham scheduling.
-    pub fn set_input_trigger(&self, f: Arc<dyn Fn() + Send + Sync + 'static>, rate_hz: u32) {
+    /// Set the capture sample rate for the Bresenham trigger ratio (direct trigger mode).
+    pub fn set_input_trigger_rate_hz(&self, rate_hz: u32) {
         match self {
             #[cfg(target_os = "linux")]
-            AudioWriter::Pipewire(pw) => pw.set_input_trigger(f, rate_hz),
+            AudioWriter::Pipewire(pw) => pw.set_input_trigger_rate_hz(rate_hz),
             _ => {}
+        }
+    }
+
+    /// Returns the pending-trigger counter incremented by the output RT callback (Bresenham).
+    /// Pass this to InputControl.set_pending_input_triggers() for the capture mainloop to drain.
+    #[cfg(target_os = "linux")]
+    pub fn pending_input_triggers(&self) -> Option<Arc<AtomicI64>> {
+        match self {
+            AudioWriter::Pipewire(pw) => Some(pw.pending_input_triggers()),
+            _ => None,
         }
     }
 }

@@ -2048,22 +2048,15 @@ fn run_pipewire_bridge_capture_stream(
         stream.node_id()
     );
 
-    // Register direct trigger closure: the output process callback will call this N times per
-    // output quantum using Bresenham scheduling, replacing the timer-based DRIVER schedule.
-    // pw_stream_trigger_process() is documented as thread-safe; we capture the raw pointer as
-    // usize to satisfy Send+Sync (the pointer itself is valid for the lifetime of this function).
-    {
-        let raw_ptr_addr = stream.as_raw_ptr() as usize;
-        let trigger_fn = Arc::new(move || {
-            unsafe { pw::sys::pw_stream_trigger_process(raw_ptr_addr as *mut _); }
-        });
-        input_control.set_input_trigger_fn(trigger_fn, config.sample_rate_hz);
-        log::info!(
-            "{} registered direct trigger fn: input_rate={}Hz",
-            log_prefix,
-            config.sample_rate_hz
-        );
-    }
+    // Register capture rate for output-side Bresenham.  The actual trigger_process() calls are
+    // made from THIS thread (capture mainloop) by draining the pending counter — cross-thread
+    // trigger_process() on a DRIVER stream is unreliable and was causing severe under-triggering.
+    input_control.register_direct_trigger_target(config.sample_rate_hz);
+    log::info!(
+        "{} registered direct trigger target: capture_rate={}Hz",
+        log_prefix,
+        config.sample_rate_hz
+    );
 
     let direct_trigger_active = input_control.direct_trigger_active_arc();
 
@@ -2072,8 +2065,23 @@ fn run_pipewire_bridge_capture_stream(
         && !sys::ShutdownHandle::is_restart_from_config_requested()
     {
         if direct_trigger_active.load(Ordering::Relaxed) {
-            // Direct trigger mode: output callback drives trigger_process(); just pump events.
-            let _ = mainloop.loop_().iterate(std::time::Duration::from_millis(50));
+            // Direct trigger mode: output callback increments pending counter (Bresenham).
+            // We drain it here from the capture mainloop thread, which is the correct caller
+            // for pw_stream_trigger_process() on a DRIVER stream.
+            if let Some(pending) = input_control.pending_input_triggers() {
+                let n = pending.swap(0, Ordering::AcqRel).clamp(0, 16);
+                for _ in 0..n {
+                    let _ = stream.trigger_process();
+                    let _ = mainloop.loop_().iterate(std::time::Duration::ZERO);
+                }
+                if n == 0 {
+                    // No pending triggers yet — short pause to avoid busy-spin.
+                    let _ = mainloop.loop_().iterate(std::time::Duration::from_millis(2));
+                }
+            } else {
+                // Counter not yet wired — fall back to short iterate so events still process.
+                let _ = mainloop.loop_().iterate(std::time::Duration::from_millis(2));
+            }
         } else {
             let _ = mainloop
                 .loop_()
