@@ -166,6 +166,10 @@ impl InputControl {
         self.pending_input_triggers.lock().unwrap().clone()
     }
 
+    pub fn clear_pending_input_triggers(&self) {
+        *self.pending_input_triggers.lock().unwrap() = None;
+    }
+
     pub fn direct_trigger_active_arc(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.direct_trigger_active)
     }

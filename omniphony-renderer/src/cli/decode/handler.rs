@@ -153,6 +153,18 @@ impl Default for DecodeHandler {
 }
 
 impl DecodeHandler {
+    fn reset_direct_trigger_wiring(&mut self) {
+        if !self.session.direct_trigger_wired {
+            return;
+        }
+        if let Some(input_control) = self.input_control.as_ref() {
+            input_control.set_direct_trigger_active(false);
+            input_control.clear_pending_input_triggers();
+        }
+        self.session.direct_trigger_wired = false;
+        log::info!("Direct trigger wiring reset after output writer restart");
+    }
+
     fn sync_input_runtime_state(
         &mut self,
         source: DecodedSource,
@@ -436,6 +448,9 @@ impl DecodeHandler {
             self.audio_control.as_deref(),
         )
         .sync_all(ctx.output_backend)?;
+        if self.output.audio_writer.is_none() {
+            self.reset_direct_trigger_wiring();
+        }
         WriterLifecycleCoordinator::new(
             &mut self.output,
             &self.runtime,
@@ -501,6 +516,7 @@ impl DecodeHandler {
         if let Some(mut writer) = self.output.invalidate_writer() {
             writer.flush()?;
         }
+        self.reset_direct_trigger_wiring();
         self.output.bootstrap_frames_seen = 0;
         self.output.bootstrap_started_at = None;
 
