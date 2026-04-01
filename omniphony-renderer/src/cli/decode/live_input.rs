@@ -25,7 +25,7 @@ use std::os::fd::RawFd;
 use std::os::raw::c_void;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -1395,6 +1395,14 @@ fn current_pw_driver_trigger_interval(user_data: &BridgeCaptureUserData) -> Dura
 }
 
 #[cfg(target_os = "linux")]
+fn current_direct_pw_driver_trigger_interval(input_control: &InputControl) -> Duration {
+    let rate_hz = input_control.input_trigger_rate_hz().max(1) as u128;
+    let quantum_frames = input_control.input_trigger_quantum_frames().max(1) as u128;
+    let nanos = ((quantum_frames * 1_000_000_000u128) / rate_hz).max(500_000);
+    Duration::from_nanos(nanos.min(u64::MAX as u128) as u64)
+}
+
+#[cfg(target_os = "linux")]
 fn schedule_pw_stream_driver_trigger(
     schedule: &Rc<RefCell<PwDriverTriggerSchedule>>,
     delay: Duration,
@@ -1422,6 +1430,81 @@ fn next_pw_stream_driver_timeout(
             .unwrap_or(Duration::ZERO)
             .min(Duration::from_millis(100)),
         None => Duration::from_millis(100),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn next_direct_pw_stream_driver_timeout(
+    pending: Option<&Arc<AtomicI64>>,
+    next_trigger_at: Option<Instant>,
+) -> Duration {
+    if pending.is_some_and(|p| p.load(Ordering::Relaxed) > 0) {
+        match next_trigger_at {
+            Some(deadline) => deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO)
+                .min(Duration::from_millis(20)),
+            None => Duration::ZERO,
+        }
+    } else {
+        Duration::from_millis(20)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn drain_direct_pw_stream_driver_trigger(
+    stream: &pw::stream::Stream,
+    pending: Option<&Arc<AtomicI64>>,
+    next_trigger_at: &mut Option<Instant>,
+    trigger_interval: Duration,
+    log_prefix: &'static str,
+) {
+    let Some(pending) = pending else {
+        *next_trigger_at = None;
+        return;
+    };
+    if pending.load(Ordering::Relaxed) <= 0 {
+        *next_trigger_at = None;
+        return;
+    }
+
+    let now = Instant::now();
+    let deadline = next_trigger_at.get_or_insert(now);
+    if *deadline > now {
+        return;
+    }
+
+    let pending_before = pending.load(Ordering::Relaxed);
+    if pending_before <= 0 {
+        *next_trigger_at = None;
+        return;
+    }
+
+    pending.fetch_sub(1, Ordering::AcqRel);
+    match stream.trigger_process() {
+        Ok(()) => {
+            log::trace!(
+                "{} direct trigger_process ok: pending_before={} interval_ms={:.3}",
+                log_prefix,
+                pending_before,
+                trigger_interval.as_secs_f64() * 1000.0
+            );
+        }
+        Err(err) => {
+            log::warn!(
+                "{} direct trigger_process failed: pending_before={} error={:?}",
+                log_prefix,
+                pending_before,
+                err
+            );
+        }
+    }
+
+    let remaining = pending.load(Ordering::Relaxed);
+    if remaining > 0 {
+        *next_trigger_at = Some((*deadline + trigger_interval).max(now + Duration::from_millis(1)));
+    } else {
+        *next_trigger_at = None;
     }
 }
 
@@ -1474,6 +1557,7 @@ fn drain_scheduled_pw_stream_trigger(
 #[cfg(target_os = "linux")]
 fn refresh_pw_stream_driver_timing(
     stream: &pw::stream::Stream,
+    input_control: &InputControl,
     user_data: &mut BridgeCaptureUserData,
     log_prefix: &'static str,
 ) {
@@ -1497,6 +1581,9 @@ fn refresh_pw_stream_driver_timing(
     // while the callback chunk cadence is driven by transport frames. Convert back to frames
     // before deriving the graph quantum, otherwise we overestimate by `channels`.
     let transport_frames = (time.size / user_data.channels.max(1) as u64).max(1);
+    input_control.register_direct_trigger_quantum_frames(
+        transport_frames.min(u32::MAX as u64) as u32,
+    );
     let quantum_ns = (transport_frames as u128 * time.rate.num as u128 * 1_000_000_000u128)
         / time.rate.denom as u128;
     let quantum_ns = quantum_ns.min(u64::MAX as u128) as u64;
@@ -1609,6 +1696,7 @@ fn run_pipewire_bridge_capture_stream(
     let stop_for_process = Arc::clone(&stop);
     let input_control_for_state = Arc::clone(&input_control);
     let config_for_state = config.clone();
+    let input_control_for_process = Arc::clone(&input_control);
     let trigger_schedule = Rc::new(RefCell::new(PwDriverTriggerSchedule::default()));
     let _trigger_schedule_for_state = Rc::clone(&trigger_schedule);
     let trigger_schedule_for_process = Rc::clone(&trigger_schedule);
@@ -1750,7 +1838,12 @@ fn run_pipewire_bridge_capture_stream(
             if stop_for_process.load(Ordering::Relaxed) {
                 return;
             }
-            refresh_pw_stream_driver_timing(stream, user_data, log_prefix);
+            refresh_pw_stream_driver_timing(
+                stream,
+                input_control_for_process.as_ref(),
+                user_data,
+                log_prefix,
+            );
             user_data.process_calls_since_log += 1;
             if !user_data.first_process_logged {
                 user_data.first_process_logged = true;
@@ -2057,31 +2150,29 @@ fn run_pipewire_bridge_capture_stream(
         log_prefix,
         config.sample_rate_hz
     );
-
     let direct_trigger_active = input_control.direct_trigger_active_arc();
+    let mut next_direct_trigger_at: Option<Instant> = None;
 
     while !stop.load(Ordering::Relaxed)
         && !sys::ShutdownHandle::is_requested()
         && !sys::ShutdownHandle::is_restart_from_config_requested()
     {
         if direct_trigger_active.load(Ordering::Relaxed) {
-            // Direct trigger mode: output callback increments pending counter (Bresenham).
-            // We drain it here from the capture mainloop thread, which is the correct caller
-            // for pw_stream_trigger_process() on a DRIVER stream.
-            if let Some(pending) = input_control.pending_input_triggers() {
-                let n = pending.swap(0, Ordering::AcqRel).clamp(0, 16);
-                for _ in 0..n {
-                    let _ = stream.trigger_process();
-                    let _ = mainloop.loop_().iterate(std::time::Duration::ZERO);
-                }
-                if n == 0 {
-                    // No pending triggers yet — short pause to avoid busy-spin.
-                    let _ = mainloop.loop_().iterate(std::time::Duration::from_millis(2));
-                }
-            } else {
-                // Counter not yet wired — fall back to short iterate so events still process.
-                let _ = mainloop.loop_().iterate(std::time::Duration::from_millis(2));
-            }
+            let pending = input_control.pending_input_triggers();
+            let trigger_interval = current_direct_pw_driver_trigger_interval(input_control.as_ref());
+            let _ = mainloop
+                .loop_()
+                .iterate(next_direct_pw_stream_driver_timeout(
+                    pending.as_ref(),
+                    next_direct_trigger_at,
+                ));
+            drain_direct_pw_stream_driver_trigger(
+                &stream,
+                pending.as_ref(),
+                &mut next_direct_trigger_at,
+                trigger_interval,
+                log_prefix,
+            );
         } else {
             let _ = mainloop
                 .loop_()

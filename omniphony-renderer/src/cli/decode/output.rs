@@ -312,6 +312,15 @@ impl AudioWriter {
         }
     }
 
+    /// Set the observed capture quantum in transport frames for direct-trigger mode.
+    pub fn set_input_trigger_quantum_frames(&self, quantum_frames: u32) {
+        match self {
+            #[cfg(target_os = "linux")]
+            AudioWriter::Pipewire(pw) => pw.set_input_trigger_quantum_frames(quantum_frames),
+            _ => {}
+        }
+    }
+
     /// Returns the pending-trigger counter incremented by the output RT callback (Bresenham).
     /// Pass this to InputControl.set_pending_input_triggers() for the capture mainloop to drain.
     #[cfg(target_os = "linux")]

@@ -278,6 +278,9 @@ pub struct PipewireWriter {
     pending_input_triggers: Arc<AtomicI64>,
     /// Sample rate of the capture stream, used to compute the Bresenham trigger ratio.
     input_trigger_rate_hz: Arc<AtomicU32>,
+    /// Observed capture quantum in transport frames. Combined with input_trigger_rate_hz so
+    /// direct trigger mode follows real audio duration instead of callback count alone.
+    input_trigger_quantum_frames: Arc<AtomicU32>,
 }
 
 impl PipewireWriter {
@@ -354,6 +357,8 @@ impl PipewireWriter {
         let pending_input_triggers_for_thread = Arc::clone(&pending_input_triggers);
         let input_trigger_rate_hz = Arc::new(AtomicU32::new(0));
         let input_trigger_rate_for_thread = Arc::clone(&input_trigger_rate_hz);
+        let input_trigger_quantum_frames = Arc::new(AtomicU32::new(0));
+        let input_trigger_quantum_for_thread = Arc::clone(&input_trigger_quantum_frames);
 
         // Capture before moving buffer_config into the thread closure.
         let max_latency_ms = buffer_config.max_latency_ms;
@@ -387,6 +392,7 @@ impl PipewireWriter {
                 graph_latency_clone,
                 pending_input_triggers_for_thread,
                 input_trigger_rate_for_thread,
+                input_trigger_quantum_for_thread,
             ) {
                 log::error!("PipeWire thread error: {}", e);
             }
@@ -446,6 +452,7 @@ impl PipewireWriter {
             bootstrap_written_samples: 0,
             pending_input_triggers,
             input_trigger_rate_hz,
+            input_trigger_quantum_frames,
         })
     }
 
@@ -568,6 +575,12 @@ impl PipewireWriter {
         self.input_trigger_rate_hz.store(rate_hz, Ordering::Relaxed);
     }
 
+    /// Set the observed capture quantum in transport frames for direct-trigger scheduling.
+    pub fn set_input_trigger_quantum_frames(&self, quantum_frames: u32) {
+        self.input_trigger_quantum_frames
+            .store(quantum_frames, Ordering::Relaxed);
+    }
+
     /// Returns the Arc that the output RT callback increments (Bresenham).
     /// Pass this to InputControl.set_pending_input_triggers() so the capture mainloop can drain it.
     pub fn pending_input_triggers(&self) -> Arc<AtomicI64> {
@@ -660,6 +673,7 @@ fn run_pipewire_loop(
     graph_latency_ms_out: Arc<AtomicU32>,
     pending_input_triggers: Arc<AtomicI64>,
     input_trigger_rate_hz: Arc<AtomicU32>,
+    input_trigger_quantum_frames: Arc<AtomicU32>,
 ) -> Result<()> {
     // Determine actual output rate and resampling ratio
     let actual_output_rate = output_sample_rate.unwrap_or(sample_rate);
@@ -827,6 +841,7 @@ fn run_pipewire_loop(
     // Direct trigger mode: Bresenham accumulator and shared counter for the capture mainloop.
     let pending_input_triggers_for_callback = Arc::clone(&pending_input_triggers);
     let input_trigger_rate_for_callback = Arc::clone(&input_trigger_rate_hz);
+    let input_trigger_quantum_for_callback = Arc::clone(&input_trigger_quantum_frames);
     let mut bresenham_acc: i64 = 0;
     // Compute channel-aware buffer thresholds for the callback (ms → frames → samples).
     // IMPORTANT: these thresholds are compared against `buffer_for_callback.len()`, which
@@ -867,6 +882,7 @@ fn run_pipewire_loop(
                 return;
             }
             let callback_count = runtime_state.advance_callback();
+            let mut callback_output_frames: usize = 0;
 
             // --- Test controls: reset ratio / pause PI ---
             if reset_ratio_for_callback.load(Ordering::Relaxed) {
@@ -910,6 +926,7 @@ fn run_pipewire_loop(
                     let ch = channel_count as usize;
                     let max_frames = max_samples / ch;
                     let frame_aligned_max = max_frames * ch;
+                    callback_output_frames = max_frames;
                     let runtime_target_buffer_fill = target_buffer_fill;
 
                     if callback_count == 1 {
@@ -1391,11 +1408,13 @@ fn run_pipewire_loop(
             // The capture mainloop drains this counter and fires pw_stream_trigger_process()
             // from its own thread — the only reliable caller for the capture DRIVER stream.
             let in_rate = input_trigger_rate_for_callback.load(Ordering::Relaxed) as i64;
-            if in_rate > 0 {
-                bresenham_acc += in_rate;
-                while bresenham_acc >= actual_output_rate as i64 {
+            let in_quantum = input_trigger_quantum_for_callback.load(Ordering::Relaxed) as i64;
+            if in_rate > 0 && in_quantum > 0 && callback_output_frames > 0 {
+                bresenham_acc += (callback_output_frames as i64).saturating_mul(in_rate);
+                let trigger_den = (actual_output_rate as i64).saturating_mul(in_quantum);
+                while trigger_den > 0 && bresenham_acc >= trigger_den {
                     pending_input_triggers_for_callback.fetch_add(1, Ordering::Relaxed);
-                    bresenham_acc -= actual_output_rate as i64;
+                    bresenham_acc -= trigger_den;
                 }
             }
         })

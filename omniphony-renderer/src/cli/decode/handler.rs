@@ -341,20 +341,35 @@ impl DecodeHandler {
         if !self.session.direct_trigger_wired {
             if let Some(ic) = self.input_control.as_ref() {
                 let rate_hz = ic.input_trigger_rate_hz();
-                if rate_hz > 0 {
+                let quantum_frames = ic.input_trigger_quantum_frames();
+                if rate_hz > 0 && quantum_frames > 0 {
                     if let Some(writer) = self.output.audio_writer.as_ref() {
                         writer.set_input_trigger_rate_hz(rate_hz);
+                        writer.set_input_trigger_quantum_frames(quantum_frames);
                         #[cfg(target_os = "linux")]
                         if let Some(pending) = writer.pending_input_triggers() {
                             ic.set_pending_input_triggers(pending);
                             ic.set_direct_trigger_active(true);
                             self.session.direct_trigger_wired = true;
                             log::info!(
-                                "Direct trigger mode active: capture={}Hz → output Bresenham → capture mainloop drains + fires trigger_process()",
-                                rate_hz
+                                "Direct trigger mode active: capture={}Hz quantum={}fr; capture mainloop paces trigger_process() on the output-derived schedule",
+                                rate_hz,
+                                quantum_frames
                             );
                         }
                     }
+                }
+            }
+        }
+        if let Some(ic) = self.input_control.as_ref() {
+            if let Some(writer) = self.output.audio_writer.as_ref() {
+                let rate_hz = ic.input_trigger_rate_hz();
+                let quantum_frames = ic.input_trigger_quantum_frames();
+                if rate_hz > 0 {
+                    writer.set_input_trigger_rate_hz(rate_hz);
+                }
+                if quantum_frames > 0 {
+                    writer.set_input_trigger_quantum_frames(quantum_frames);
                 }
             }
         }

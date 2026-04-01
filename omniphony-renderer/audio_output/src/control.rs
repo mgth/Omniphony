@@ -153,6 +153,10 @@ pub struct InputControl {
     /// Sample rate of the capture stream (e.g. 192000), used for Bresenham scheduling on the
     /// output side. Set by register_direct_trigger_target().
     input_trigger_rate_hz: AtomicU32,
+    /// Observed capture quantum in transport frames per trigger_process() cycle.
+    /// Used with input_trigger_rate_hz so the output side schedules by audio duration
+    /// rather than assuming one callback equals one sample period.
+    input_trigger_quantum_frames: AtomicU32,
     /// When true, the capture mainloop drains pending_input_triggers instead of the timer schedule.
     direct_trigger_active: Arc<AtomicBool>,
 }
@@ -397,6 +401,7 @@ impl InputControl {
             output_rate_adjust: Arc::new(AtomicU32::new(1.0f32.to_bits())),
             pending_input_triggers: Mutex::new(None),
             input_trigger_rate_hz: AtomicU32::new(0),
+            input_trigger_quantum_frames: AtomicU32::new(0),
             direct_trigger_active: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -422,6 +427,17 @@ impl InputControl {
     /// Returns 0 if not yet registered.
     pub fn input_trigger_rate_hz(&self) -> u32 {
         self.input_trigger_rate_hz.load(Ordering::Relaxed)
+    }
+
+    /// Called by the capture side once pw_stream_get_time_n() exposes the actual quantum.
+    pub fn register_direct_trigger_quantum_frames(&self, quantum_frames: u32) {
+        self.input_trigger_quantum_frames
+            .store(quantum_frames, Ordering::Relaxed);
+    }
+
+    /// Returns the observed capture quantum in transport frames.
+    pub fn input_trigger_quantum_frames(&self) -> u32 {
+        self.input_trigger_quantum_frames.load(Ordering::Relaxed)
     }
 
     /// Called by handler.rs after the writer is ready: hand the writer's pending-trigger counter
