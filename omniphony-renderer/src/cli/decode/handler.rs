@@ -466,6 +466,7 @@ impl DecodeHandler {
             &mut self.telemetry,
             &mut self.spatial,
             &self.session,
+            self.input_control.as_deref(),
             self.spatial_renderer.as_mut(),
         );
         if ctx.bed_conform && sample_write.spatial_has_objects() {

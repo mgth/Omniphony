@@ -32,7 +32,7 @@ import {
   closeAudioSampleRateMenu, openAudioSampleRateMenu, updateAudioFormatDisplay,
   applyAudioSampleRateNow, applyAudioOutputDeviceNow, applyRampModeNow
 } from './controls/audio.js';
-import { updateInputControlUI } from './controls/input.js';
+import { updateInputControlUI, persistInputPipeNow } from './controls/input.js';
 import { updateConfigSavedUI } from './controls/config.js';
 import { applyLatencyTargetNow, updateLatencyDisplay } from './controls/latency.js';
 import {
@@ -210,10 +210,12 @@ export function setupUIListeners() {
   const layoutSelectEl = document.getElementById('layoutSelect');
   const refreshOutputDevicesBtnEl = document.getElementById('refreshOutputDevicesBtn');
   const inputModeSelectEl = document.getElementById('inputModeSelect');
+  const inputPipeInputEl = document.getElementById('pipeStatus');
   const inputBackendSelectEl = document.getElementById('inputBackendSelect');
   const inputNodeInputEl = document.getElementById('inputNodeInput');
   const inputDescriptionInputEl = document.getElementById('inputDescriptionInput');
   const inputLayoutInputEl = document.getElementById('inputLayoutInput');
+  const inputLayoutBrowseBtnEl = document.getElementById('inputLayoutBrowseBtn');
   const inputChannelsInputEl = document.getElementById('inputChannelsInput');
   const inputSampleRateInputEl = document.getElementById('inputSampleRateInput');
   const inputFormatSelectEl = document.getElementById('inputFormatSelect');
@@ -1205,12 +1207,20 @@ export function setupUIListeners() {
 
   if (inputModeSelectEl) {
     inputModeSelectEl.addEventListener('change', () => {
-      const value = ['live', 'pipewire_bridge'].includes(inputModeSelectEl.value)
+      const value = ['pipewire', 'pipewire_bridge', 'pipe_bridge'].includes(inputModeSelectEl.value)
         ? inputModeSelectEl.value
-        : 'bridge';
+        : 'pipe_bridge';
       app.inputMode = value;
       updateInputControlUI();
       invoke('control_input_mode', { value });
+    });
+  }
+
+  if (inputPipeInputEl) {
+    inputPipeInputEl.addEventListener('change', () => {
+      persistInputPipeNow().finally(() => {
+        updateInputControlUI();
+      });
     });
   }
 
@@ -1241,12 +1251,25 @@ export function setupUIListeners() {
     });
   }
 
-  if (inputLayoutInputEl) {
-    inputLayoutInputEl.addEventListener('change', () => {
-      const value = String(inputLayoutInputEl.value || '');
-      app.liveInput.layout = value;
-      updateInputControlUI();
-      invoke('control_input_live_layout', { value });
+  if (inputLayoutBrowseBtnEl) {
+    inputLayoutBrowseBtnEl.addEventListener('click', () => {
+      invoke('pick_import_layout_path')
+        .then((path) => {
+          const trimmed = typeof path === 'string' ? path.trim() : '';
+          if (!trimmed) return;
+          pushLog('info', tf('log.layoutImportRequested', { path: trimmed }));
+          return invoke('import_input_layout_from_path', { path: trimmed })
+            .then((payload) => {
+              const importedPath = String(payload?.path || trimmed);
+              app.liveInput.layout = importedPath;
+              updateInputControlUI();
+              pushLog('info', tf('log.layoutImported', { path: importedPath }));
+            });
+        })
+        .catch((e) => {
+          console.error('[input layout import]', e);
+          pushLog('error', tf('log.layoutImportFailed', { error: normalizeLogError(e) }));
+        });
     });
   }
 

@@ -104,6 +104,11 @@ fn parse_string_arg(arg: Option<&OscType>) -> Option<String> {
     }
 }
 
+fn parse_input_layout_arg(arg: Option<&OscType>) -> Option<renderer::speaker_layout::SpeakerLayout> {
+    let raw = parse_string_arg(arg)?;
+    serde_yaml_ng::from_str::<renderer::speaker_layout::SpeakerLayout>(&raw).ok()
+}
+
 fn remap_live_speakers_remove(
     speakers: &mut std::collections::HashMap<usize, renderer::live_params::SpeakerLiveParams>,
     remove_idx: usize,
@@ -243,8 +248,8 @@ pub fn apply_simple_osc_control(
     if addr == "/omniphony/control/input/mode" {
         let requested = parse_string_arg(msg.args.first()).and_then(|value| {
             match value.to_ascii_lowercase().as_str() {
-                "bridge" => Some(InputMode::Bridge),
-                "live" => Some(InputMode::Live),
+                "bridge" | "pipe_bridge" => Some(InputMode::Bridge),
+                "live" | "pipewire" => Some(InputMode::Live),
                 "pipewire_bridge" => Some(InputMode::PipewireBridge),
                 _ => None,
             }
@@ -255,16 +260,16 @@ pub fn apply_simple_osc_control(
             effects.broadcasts.push(BroadcastUpdate {
                 addr: "/omniphony/state/input/mode".to_string(),
                 value: BroadcastValue::String(match requested {
-                    InputMode::Bridge => "bridge".to_string(),
-                    InputMode::Live => "live".to_string(),
+                    InputMode::Bridge => "pipe_bridge".to_string(),
+                    InputMode::Live => "pipewire".to_string(),
                     InputMode::PipewireBridge => "pipewire_bridge".to_string(),
                 }),
             });
             effects.log_message = Some(format!(
                 "OSC: input mode staged → {}",
                 match requested {
-                    InputMode::Bridge => "bridge",
-                    InputMode::Live => "live",
+                    InputMode::Bridge => "pipe_bridge",
+                    InputMode::Live => "pipewire",
                     InputMode::PipewireBridge => "pipewire_bridge",
                 }
             ));
@@ -328,11 +333,21 @@ pub fn apply_simple_osc_control(
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
             input.set_requested_layout_path(requested);
+            input.set_requested_current_layout(None);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
                 addr: "/omniphony/state/input/live/layout".to_string(),
                 value: BroadcastValue::String(state_value),
             });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/layout_import" {
+        let requested = parse_input_layout_arg(msg.args.first());
+        if let Some(input) = ctx.input.as_ref() {
+            input.set_requested_current_layout(requested);
+            effects.mark_dirty = true;
         }
         return Some(effects);
     }

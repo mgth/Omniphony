@@ -199,6 +199,7 @@ pub fn save_live_config(
             node: requested.node_name,
             description: requested.node_description,
             layout: requested.layout_path,
+            current_layout: requested.current_layout,
             channels: requested.channels,
             sample_rate: requested.sample_rate_hz,
             sample_format: requested.sample_format.map(|format| match format {

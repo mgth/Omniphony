@@ -313,14 +313,14 @@ export function applyInitState(payload) {
   }
   if (typeof payload.inputMode === 'string') {
     const value = payload.inputMode.trim().toLowerCase();
-    if (value === 'bridge' || value === 'live' || value === 'pipewire_bridge') {
-      app.inputMode = value;
+    if (value === 'bridge' || value === 'pipe_bridge' || value === 'live' || value === 'pipewire' || value === 'pipewire_bridge') {
+      app.inputMode = value === 'bridge' ? 'pipe_bridge' : (value === 'live' ? 'pipewire' : value);
     }
   }
   if (typeof payload.inputActiveMode === 'string') {
     const value = payload.inputActiveMode.trim().toLowerCase();
-    if (value === 'bridge' || value === 'live' || value === 'pipewire_bridge') {
-      app.inputActiveMode = value;
+    if (value === 'bridge' || value === 'pipe_bridge' || value === 'live' || value === 'pipewire' || value === 'pipewire_bridge') {
+      app.inputActiveMode = value === 'bridge' ? 'pipe_bridge' : (value === 'live' ? 'pipewire' : value);
     }
   }
   if (typeof payload.inputApplyPending === 'number') {

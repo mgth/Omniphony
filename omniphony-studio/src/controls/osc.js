@@ -40,7 +40,9 @@ const oscLaunchRendererBtnEl = document.getElementById('oscLaunchRendererBtn');
 
 export function renderOscStatus() {
   if (statusEl) statusEl.textContent = t(`status.${app.oscStatusState}`);
-  if (pipeStatusEl) pipeStatusEl.textContent = ` • Pipe: ${app.orenderInputPipe || '—'}`;
+  if (pipeStatusEl && document.activeElement !== pipeStatusEl) {
+    pipeStatusEl.value = app.orenderInputPipe || '';
+  }
   if (oscServiceBtnEl) {
     oscServiceBtnEl.textContent = app.orenderServiceInstalled ? 'Uninstall service' : 'Install service';
     oscServiceBtnEl.style.background = app.orenderServiceInstalled
@@ -151,7 +153,22 @@ export function loadOscConfigIntoPanel() {
     if (oscBridgePathInputEl) oscBridgePathInputEl.value = String(cfg.bridge_path || '');
     if (oscMeteringToggleEl) oscMeteringToggleEl.checked = Boolean(cfg.osc_metering_enabled);
     app.oscConfiguredOrenderPath = String(cfg.orender_path || '').trim();
+    app.orenderInputPipe = String(cfg.input_pipe || app.orenderInputPipe || '').trim() || null;
+    if (typeof cfg.audio_output_device === 'string') {
+      app.audioOutputDevice = cfg.audio_output_device.trim() || null;
+    }
+    if (typeof cfg.audio_sample_rate === 'number') {
+      app.audioSampleRate = cfg.audio_sample_rate > 0 ? cfg.audio_sample_rate : null;
+    }
+    if (typeof cfg.ramp_mode === 'string') {
+      const next = cfg.ramp_mode.trim().toLowerCase();
+      if (['off', 'frame', 'sample'].includes(next)) {
+        app.rampMode = next;
+      }
+    }
     app.oscConfigBaselineKey = oscConfigStateKey();
+    dirty.audioFormat = true;
+    scheduleUIFlush();
     renderOscConfigApplyButton();
     return refreshOrenderServiceStatus().catch(() => null).then(() => cfg);
   }).catch(() => null);

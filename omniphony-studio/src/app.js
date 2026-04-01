@@ -215,6 +215,9 @@ setupVisualRecovery();
 // Register Tauri backend event listeners
 setupTauriBridge();
 
+// Load persisted launch preferences before the live backend state arrives.
+loadOscConfigIntoPanel();
+
 // Fetch initial state from backend
 invoke('get_state')
   .then((payload) => {

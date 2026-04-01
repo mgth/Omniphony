@@ -150,10 +150,12 @@ pub struct RenderConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum InputModeConfig {
+    #[serde(rename = "pipe_bridge", alias = "bridge")]
     Bridge,
+    #[serde(rename = "pipewire", alias = "live")]
     Live,
+    #[serde(rename = "pipewire_bridge")]
     PipewireBridge,
 }
 
@@ -188,6 +190,9 @@ pub struct LiveInputConfig {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<PathBuf>,
+    /// Embedded input speaker layout (preferred over `layout` path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_layout: Option<crate::speaker_layout::SpeakerLayout>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channels: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]

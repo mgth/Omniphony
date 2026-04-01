@@ -5,10 +5,12 @@ use std::sync::{
 };
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum InputMode {
+    #[serde(rename = "pipe_bridge", alias = "bridge")]
     Bridge,
+    #[serde(rename = "pipewire", alias = "live")]
     Live,
+    #[serde(rename = "pipewire_bridge")]
     PipewireBridge,
 }
 
@@ -47,6 +49,7 @@ pub struct RequestedAudioInputConfig {
     pub node_name: Option<String>,
     pub node_description: Option<String>,
     pub layout_path: Option<PathBuf>,
+    pub current_layout: Option<renderer::speaker_layout::SpeakerLayout>,
     pub channels: Option<u16>,
     pub sample_rate_hz: Option<u32>,
     pub sample_format: Option<InputSampleFormat>,
@@ -62,6 +65,7 @@ impl Default for RequestedAudioInputConfig {
             node_name: None,
             node_description: None,
             layout_path: None,
+            current_layout: None,
             channels: None,
             sample_rate_hz: None,
             sample_format: None,
@@ -233,6 +237,13 @@ impl InputControl {
 
     pub fn set_requested_layout_path(&self, value: Option<PathBuf>) {
         self.update_requested(|requested| requested.layout_path = value);
+    }
+
+    pub fn set_requested_current_layout(
+        &self,
+        value: Option<renderer::speaker_layout::SpeakerLayout>,
+    ) {
+        self.update_requested(|requested| requested.current_layout = value);
     }
 
     pub fn set_requested_channels(&self, value: Option<u16>) {

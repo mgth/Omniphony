@@ -9,7 +9,7 @@ mod osc_parser;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::{fs::File, process::Command as ProcessCommand, process::Stdio};
+use std::{fs, fs::File, process::Command as ProcessCommand, process::Stdio};
 
 use app_state::AppState;
 use config::{load_config, save_config, OscConfig};
@@ -55,6 +55,13 @@ struct OrenderServiceStatus {
 struct OrenderLaunchSpec {
     orender_path: PathBuf,
     args: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct LaunchAudioPrefs {
+    audio_output_device: Option<String>,
+    audio_sample_rate: Option<i32>,
+    ramp_mode: Option<String>,
 }
 
 const ORENDER_SERVICE_NAME: &str = "omniphony-renderer";
@@ -104,6 +111,45 @@ fn save_osc_config(state: State<SharedState>, config: OscConfig) -> Result<(), S
         },
     );
     Ok(())
+}
+
+#[tauri::command]
+fn save_launch_audio_prefs(
+    state: State<SharedState>,
+    prefs: LaunchAudioPrefs,
+) -> Result<(), String> {
+    let mut cfg = load_config(&state.config_dir);
+    cfg.audio_output_device = prefs
+        .audio_output_device
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    cfg.audio_sample_rate = prefs
+        .audio_sample_rate
+        .filter(|value| *value > 0)
+        .map(|value| value as u32);
+    cfg.ramp_mode = prefs
+        .ramp_mode
+        .as_deref()
+        .map(str::trim)
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| matches!(value.as_str(), "off" | "frame" | "sample"));
+    save_config(&state.config_dir, &cfg)
+}
+
+#[tauri::command]
+fn save_input_pipe_pref(
+    state: State<SharedState>,
+    input_pipe: Option<String>,
+) -> Result<(), String> {
+    let mut cfg = load_config(&state.config_dir);
+    cfg.input_pipe = input_pipe
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    save_config(&state.config_dir, &cfg)
 }
 
 #[tauri::command]
@@ -1034,14 +1080,22 @@ fn refresh_output_devices(state: State<SharedState>) {
 #[tauri::command]
 fn control_input_mode(state: State<SharedState>, value: String) {
     let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "bridge" | "live" | "pipewire_bridge") {
+    if !matches!(
+        trimmed.as_str(),
+        "bridge" | "pipe_bridge" | "live" | "pipewire" | "pipewire_bridge"
+    ) {
         return;
     }
+    let normalized = match trimmed.as_str() {
+        "bridge" => "pipe_bridge",
+        "live" => "pipewire",
+        other => other,
+    };
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
             address: "/omniphony/control/input/mode".to_string(),
-            value: trimmed,
+            value: normalized.to_string(),
         },
     );
 }
@@ -1092,6 +1146,36 @@ fn control_input_live_layout(state: State<SharedState>, value: String) {
             value: value.trim().to_string(),
         },
     );
+}
+
+#[tauri::command]
+fn import_input_layout_from_path(
+    state: State<SharedState>,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("empty layout path".to_string());
+    }
+    layouts::load_layout_file(std::path::Path::new(trimmed))
+        .ok_or_else(|| "failed to parse layout file".to_string())?;
+    let contents =
+        fs::read_to_string(trimmed).map_err(|e| format!("failed to read layout file: {e}"))?;
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/layout".to_string(),
+            value: trimmed.to_string(),
+        },
+    );
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/layout_import".to_string(),
+            value: contents,
+        },
+    );
+    Ok(serde_json::json!({ "path": trimmed }))
 }
 
 #[tauri::command]
@@ -1314,7 +1398,13 @@ fn resolve_orender_launch_spec(
         })
         .ok_or_else(|| "a bridge plugin is required to launch orender".to_string())?;
 
-    let input_path = default_orender_input_path();
+    let input_path = cfg
+        .input_pipe
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_orender_input_path);
 
     let mut args = vec![
         "render".to_string(),
@@ -1361,12 +1451,39 @@ fn resolve_orender_launch_spec(
         }
     }
 
+    if let Some(output_device) = cfg
+        .audio_output_device
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push("--output-device".to_string());
+        args.push(output_device.to_string());
+    }
+
+    if let Some(output_sample_rate) = cfg.audio_sample_rate.filter(|value| *value > 0) {
+        args.push("--output-sample-rate".to_string());
+        args.push(output_sample_rate.to_string());
+    }
+
+    if let Some(ramp_mode) = cfg
+        .ramp_mode
+        .as_deref()
+        .map(str::trim)
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| matches!(value.as_str(), "off" | "frame" | "sample"))
+    {
+        args.push("--ramp-mode".to_string());
+        args.push(ramp_mode);
+    }
+
     cfg.host = host.trim().to_string();
     cfg.osc_rx_port = osc_rx_port;
     cfg.osc_port = osc_port;
     cfg.osc_metering_enabled = osc_metering_enabled;
     cfg.bridge_path = Some(bridge_path.display().to_string());
     cfg.orender_path = Some(orender_path.display().to_string());
+    cfg.input_pipe = Some(input_path.display().to_string());
     let _ = save_config(&state.config_dir, &cfg);
 
     Ok(OrenderLaunchSpec { orender_path, args })
@@ -1928,6 +2045,8 @@ fn main() {
             get_osc_config,
             get_about_info,
             save_osc_config,
+            save_launch_audio_prefs,
+            save_input_pipe_pref,
             launch_orender,
             stop_orender,
             get_orender_service_status,
@@ -2015,6 +2134,7 @@ fn main() {
             control_input_live_node,
             control_input_live_description,
             control_input_live_layout,
+            import_input_layout_from_path,
             control_input_live_channels,
             control_input_live_sample_rate,
             control_input_live_format,

@@ -54,6 +54,13 @@
         padding-right: 0.85rem;
       }
 
+      #overlayScroll > *,
+      #speakersOverlayScroll > * {
+        flex: 0 0 auto;
+        width: 100%;
+        min-height: auto;
+      }
+
       .app-brand {
         display: flex;
         align-items: center;
@@ -606,15 +613,10 @@
 
       .osc-config-form.open {
         margin-top: 0.4rem;
-        max-height: min(20rem, 32vh);
+        max-height: none;
         opacity: 1;
         pointer-events: auto;
-        overflow-y: auto;
-        overflow-x: hidden;
-        scrollbar-gutter: stable both-edges;
-        scrollbar-width: thin;
-        box-sizing: border-box;
-        padding-right: 0.65rem;
+        overflow: visible;
       }
 
       .room-geometry-form {
@@ -630,15 +632,10 @@
 
       .room-geometry-form.open {
         margin-top: 0.2rem;
-        max-height: min(34rem, 42vh);
+        max-height: none;
         opacity: 1;
         pointer-events: auto;
-        overflow-y: auto;
-        overflow-x: hidden;
-        scrollbar-gutter: stable both-edges;
-        scrollbar-width: thin;
-        box-sizing: border-box;
-        padding-right: 0.65rem;
+        overflow: visible;
       }
 
       .adaptive-advanced-form {
@@ -683,15 +680,10 @@
 
       .telemetry-gauges-form.open {
         margin-top: 0.35rem;
-        max-height: min(30rem, 40vh);
+        max-height: none;
         opacity: 1;
         pointer-events: auto;
-        overflow-y: auto;
-        overflow-x: hidden;
-        scrollbar-gutter: stable both-edges;
-        scrollbar-width: thin;
-        box-sizing: border-box;
-        padding-right: 0.65rem;
+        overflow: visible;
       }
 
       .save-footer {
@@ -864,15 +856,10 @@
 
       .conditional-params.open {
         gap: 0.2rem;
-        max-height: min(32rem, 42vh);
+        max-height: none;
         opacity: 1;
         pointer-events: auto;
-        overflow-y: auto;
-        overflow-x: hidden;
-        scrollbar-gutter: stable both-edges;
-        scrollbar-width: thin;
-        box-sizing: border-box;
-        padding-right: 0.55rem;
+        overflow: visible;
       }
 
       #inputSectionContent {
@@ -880,11 +867,8 @@
       }
 
       #inputSectionContent.conditional-params.open {
-        max-height: min(24rem, 38vh);
-        overflow-y: auto;
-        overflow-x: hidden;
-        scrollbar-gutter: stable both-edges;
-        padding-right: 0.65rem;
+        max-height: none;
+        overflow: visible;
       }
 
       .info-list {
@@ -1633,7 +1617,7 @@
       </div>
       <div id="overlayScroll">
       <div style="display:flex;align-items:center;justify-content:space-between">
-        <div><span class="osc-status-dot" id="oscStatusDot"></span><span data-i18n="osc.label">OSC</span>: <span id="status">Initializing...</span><span id="pipeStatus"> • Pipe: —</span></div>
+        <div><span class="osc-status-dot" id="oscStatusDot"></span><span data-i18n="osc.label">OSC</span>: <span id="status">Initializing...</span></div>
         <div style="display:flex;align-items:center;gap:0.35rem">
           <button id="aboutBtn" type="button" class="info-icon-btn" title="About">?</button>
           <button id="oscInfoBtn" type="button" class="info-icon-btn" data-i18n-title="osc.infoButton" title="OSC info">i</button>
@@ -1653,13 +1637,6 @@
           <label for="oscListenPortInput" data-i18n="osc.listenPort">Listen Port</label>
           <input id="oscListenPortInput" type="number" min="0" max="65535" value="0" />
         </div>
-        <div class="osc-config-row">
-          <label for="oscBridgePathInput">Bridge</label>
-          <div style="display:flex;align-items:center;gap:0.4rem;min-width:0">
-            <input id="oscBridgePathInput" type="text" value="" spellcheck="false" placeholder="Auto-detect" style="min-width:0;flex:1 1 auto" />
-            <button id="oscBridgeBrowseBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Browse</button>
-          </div>
-        </div>
         <div class="osc-config-actions">
           <button id="oscConfigApplyBtn" data-i18n="osc.connect" style="background:rgba(80,200,120,0.2);border:1px solid rgba(80,200,120,0.4);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Connect</button>
           <button id="oscServiceBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Install service</button>
@@ -1672,21 +1649,35 @@
         <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
           <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
             <div class="info-title" style="margin:0">Audio Input</div>
-            <div id="inputSummary" style="display:none;min-width:0;flex:1 1 auto;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">bridge • active bridge • bridge</div>
+            <div id="inputSummary" style="display:none;min-width:0;flex:1 1 auto;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pipe bridge • active Pipe bridge • pipe</div>
           </div>
           <button id="inputSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
         </div>
         <div id="inputSectionContent" class="conditional-params">
         <div class="input-panel-shell">
-          <div id="inputStatusInfo" class="input-panel-status">requested bridge • active bridge • —</div>
+          <div id="inputStatusInfo" class="input-panel-status">requested Pipe bridge • active Pipe bridge • —</div>
           <div class="input-panel-grid">
             <div class="input-panel-row">
               <label for="inputModeSelect">Mode</label>
               <select id="inputModeSelect" class="delay-input">
-                <option value="bridge">Bridge</option>
-                <option value="live">Live input</option>
+                <option value="pipe_bridge">Pipe bridge</option>
+                <option value="pipewire">PipeWire</option>
                 <option value="pipewire_bridge">PipeWire bridge</option>
               </select>
+            </div>
+          </div>
+          <div id="inputBridgeFields" class="input-panel-stack">
+            <div class="input-panel-subtitle">Bridge Input</div>
+            <div class="input-panel-row">
+              <label for="oscBridgePathInput">Bridge</label>
+              <div style="display:flex;align-items:center;gap:0.4rem;min-width:0">
+                <input id="oscBridgePathInput" type="text" value="" spellcheck="false" placeholder="Auto-detect" class="delay-input" style="min-width:0;flex:1 1 auto" />
+                <button id="oscBridgeBrowseBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Browse</button>
+              </div>
+            </div>
+            <div class="input-panel-row">
+              <label>Pipe</label>
+              <input id="pipeStatus" class="delay-input" type="text" spellcheck="false" placeholder="Auto-detect" style="width:100%;min-width:0;box-sizing:border-box;text-align:left" />
             </div>
           </div>
           <div id="inputLiveFields" class="input-panel-stack">
@@ -1708,7 +1699,10 @@
             </div>
             <div class="input-panel-row">
               <label for="inputLayoutInput">Layout</label>
-              <input id="inputLayoutInput" class="delay-input" type="text" placeholder="../layouts/7.1.yaml" />
+              <div style="display:flex;align-items:center;gap:0.4rem;min-width:0">
+                <input id="inputLayoutInput" class="delay-input" type="text" placeholder="No imported layout" readonly style="min-width:0;flex:1 1 auto" />
+                <button id="inputLayoutBrowseBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Import</button>
+              </div>
             </div>
             <div class="input-panel-inline-grid">
               <div class="input-panel-field">

@@ -7,8 +7,8 @@ use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 
 fn input_mode_name(mode: InputMode) -> &'static str {
     match mode {
-        InputMode::Bridge => "bridge",
-        InputMode::Live => "live",
+        InputMode::Bridge => "pipe_bridge",
+        InputMode::Live => "pipewire",
         InputMode::PipewireBridge => "pipewire_bridge",
     }
 }

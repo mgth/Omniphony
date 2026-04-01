@@ -242,7 +242,14 @@ fn fallback_virtual_bed_pose(
 fn resolve_virtual_bed_pose(
     label: RChannelLabel,
     use_7_1: bool,
+    input_layout: Option<&SpeakerLayout>,
 ) -> Option<(String, f32, f32, f32)> {
+    if let (Some(layout), Some(aliases)) = (input_layout, label_aliases(label, use_7_1)) {
+        if let Some(found) = find_speaker_in_layout(layout, aliases) {
+            return Some(found);
+        }
+    }
+
     let layouts = virtual_bed_layouts();
     let layout_opt = if use_7_1 {
         layouts.layout_7_1.as_ref()
@@ -261,6 +268,7 @@ fn resolve_virtual_bed_pose(
 
 pub fn build_virtual_bed_events(
     channel_labels: &[RChannelLabel],
+    input_layout: Option<&SpeakerLayout>,
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -275,10 +283,11 @@ pub fn build_virtual_bed_events(
         Vec::with_capacity(channel_labels.len());
 
     for (channel_idx, label) in channel_labels.iter().enumerate() {
-        let (_name, az_deg, el_deg, dist_m) = match resolve_virtual_bed_pose(*label, use_7_1) {
-            Some(v) => v,
-            None => continue,
-        };
+        let (_name, az_deg, el_deg, dist_m) =
+            match resolve_virtual_bed_pose(*label, use_7_1, input_layout) {
+                Some(v) => v,
+                None => continue,
+            };
 
         let (sx, sy, sz) = renderer::spatial_vbap::spherical_to_adm(az_deg, el_deg, dist_m);
         let (x, y, z) = inverse_room_ratio_map_for_virtual_object(
@@ -310,6 +319,7 @@ pub fn build_virtual_bed_events(
 
 pub fn build_virtual_bed_objects(
     channel_labels: &[RChannelLabel],
+    input_layout: Option<&SpeakerLayout>,
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -322,10 +332,11 @@ pub fn build_virtual_bed_objects(
 
     let mut objects: Vec<ObjectMeta> = Vec::with_capacity(channel_labels.len());
     for label in channel_labels {
-        let (name, az_deg, el_deg, dist_m) = match resolve_virtual_bed_pose(*label, use_7_1) {
-            Some(v) => v,
-            None => continue,
-        };
+        let (name, az_deg, el_deg, dist_m) =
+            match resolve_virtual_bed_pose(*label, use_7_1, input_layout) {
+                Some(v) => v,
+                None => continue,
+            };
         let (sx, sy, sz) = renderer::spatial_vbap::spherical_to_adm(az_deg, el_deg, dist_m);
         let (x, y, z) = inverse_room_ratio_map_for_virtual_object(
             sx,

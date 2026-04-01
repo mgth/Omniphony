@@ -113,9 +113,7 @@ fn build_requested_input_config(
     if let Some(render_cfg) = render_cfg {
         requested.mode = match render_cfg.input_mode {
             Some(renderer::config::InputModeConfig::Live) => InputMode::Live,
-            Some(renderer::config::InputModeConfig::PipewireBridge) => {
-                InputMode::PipewireBridge
-            }
+            Some(renderer::config::InputModeConfig::PipewireBridge) => InputMode::PipewireBridge,
             _ => InputMode::Bridge,
         };
 
@@ -127,6 +125,7 @@ fn build_requested_input_config(
             requested.node_name = live_input.node.clone();
             requested.node_description = live_input.description.clone();
             requested.layout_path = live_input.layout.clone();
+            requested.current_layout = live_input.current_layout.clone();
             requested.channels = live_input.channels;
             requested.sample_rate_hz = live_input.sample_rate;
             requested.sample_format = live_input.sample_format.as_deref().and_then(|format| {

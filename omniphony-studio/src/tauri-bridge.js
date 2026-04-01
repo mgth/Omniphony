@@ -248,16 +248,16 @@ export function setupTauriBridge() {
 
   listen('input:mode', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
-    if (value === 'bridge' || value === 'live' || value === 'pipewire_bridge') {
-      app.inputMode = value;
+    if (value === 'bridge' || value === 'pipe_bridge' || value === 'live' || value === 'pipewire' || value === 'pipewire_bridge') {
+      app.inputMode = value === 'bridge' ? 'pipe_bridge' : (value === 'live' ? 'pipewire' : value);
       updateInputControlUI();
     }
   });
 
   listen('input:active_mode', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
-    if (value === 'bridge' || value === 'live' || value === 'pipewire_bridge') {
-      app.inputActiveMode = value;
+    if (value === 'bridge' || value === 'pipe_bridge' || value === 'live' || value === 'pipewire' || value === 'pipewire_bridge') {
+      app.inputActiveMode = value === 'bridge' ? 'pipe_bridge' : (value === 'live' ? 'pipewire' : value);
       updateInputControlUI();
     }
   });
@@ -747,6 +747,7 @@ export function setupTauriBridge() {
   listen('state:input_pipe', ({ payload }) => {
     app.orenderInputPipe = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
     renderOscStatus();
+    updateInputControlUI();
   });
 
   // -----------------------------------------------------------------------

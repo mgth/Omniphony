@@ -1,8 +1,5 @@
 use super::decoder_thread::{DecodedAudioData, DecodedSource, DecoderMessage};
 use anyhow::{Result, anyhow};
-use audio_input::{
-    InputBackend, InputControl, InputMode, InputSampleFormat, RequestedAudioInputConfig,
-};
 #[cfg(target_os = "linux")]
 use audio_input::bridge::{LiveBridgeIngestRuntime, spawn_bridge_decode_worker};
 #[cfg(target_os = "linux")]
@@ -15,6 +12,9 @@ use audio_input::pipewire_legacy::{
 #[cfg(target_os = "linux")]
 use audio_input::pipewire_pods::{
     build_pipewire_bridge_buffers_pod, build_pipewire_bridge_format_pod,
+};
+use audio_input::{
+    InputBackend, InputControl, InputMode, InputSampleFormat, RequestedAudioInputConfig,
 };
 use audio_output::AudioControl;
 #[cfg(target_os = "linux")]
@@ -399,12 +399,10 @@ fn resolve_capture_config(
         InputMode::Live => {
             resolve_pipewire_pcm_config(requested, audio_control).map(ActiveCaptureConfig::Pcm)
         }
-        InputMode::PipewireBridge => resolve_pipewire_bridge_config(
-            requested,
-            audio_control,
-            bridge_runtime,
-        )
-        .map(ActiveCaptureConfig::Bridge),
+        InputMode::PipewireBridge => {
+            resolve_pipewire_bridge_config(requested, audio_control, bridge_runtime)
+                .map(ActiveCaptureConfig::Bridge)
+        }
     }
 }
 
@@ -718,9 +716,7 @@ fn run_pipewire_bridge_capture_loop(
             })));
         },
         move || {
-            let _ = tx_for_flush.try_send(Ok(DecoderMessage::FlushRequest(
-                DecodedSource::Bridge,
-            )));
+            let _ = tx_for_flush.try_send(Ok(DecoderMessage::FlushRequest(DecodedSource::Bridge)));
         },
         move |err| {
             let _ = tx.try_send(Err(err));
@@ -829,9 +825,7 @@ fn schedule_pw_stream_driver_trigger(
 }
 
 #[cfg(target_os = "linux")]
-fn next_pw_stream_driver_timeout(
-    schedule: &Rc<RefCell<PwDriverTriggerSchedule>>,
-) -> Duration {
+fn next_pw_stream_driver_timeout(schedule: &Rc<RefCell<PwDriverTriggerSchedule>>) -> Duration {
     let schedule = schedule.borrow();
     match schedule.next_trigger_at {
         Some(deadline) => deadline
@@ -990,9 +984,8 @@ fn refresh_pw_stream_driver_timing(
     // while the callback chunk cadence is driven by transport frames. Convert back to frames
     // before deriving the graph quantum, otherwise we overestimate by `channels`.
     let transport_frames = (time.size / user_data.channels.max(1) as u64).max(1);
-    input_control.register_direct_trigger_quantum_frames(
-        transport_frames.min(u32::MAX as u64) as u32,
-    );
+    input_control
+        .register_direct_trigger_quantum_frames(transport_frames.min(u32::MAX as u64) as u32);
     let quantum_ns = (transport_frames as u128 * time.rate.num as u128 * 1_000_000_000u128)
         / time.rate.denom as u128;
     let quantum_ns = quantum_ns.min(u64::MAX as u128) as u64;
@@ -1055,12 +1048,9 @@ fn run_pipewire_bridge_pw_stream_backend(
         target_latency_ms: config.target_latency_ms,
     };
     let ingest = RefCell::new(ingest);
-    run_pipewire_bridge_input_stream(
-        input_control,
-        stream_config,
-        stop,
-        move |chunk| ingest.borrow_mut().process_chunk(chunk),
-    )
+    run_pipewire_bridge_input_stream(input_control, stream_config, stop, move |chunk| {
+        ingest.borrow_mut().process_chunk(chunk)
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1514,17 +1504,18 @@ fn run_pipewire_bridge_capture_stream(
     )?;
     let format_pod =
         Pod::from_bytes(&format_values).ok_or_else(|| anyhow!("Invalid PipeWire format pod"))?;
-    let buffers_values =
-        build_pipewire_bridge_buffers_pod(config.channels, config.sample_rate_hz)?;
-    let buffers_pod = Pod::from_bytes(&buffers_values)
-        .ok_or_else(|| anyhow!("Invalid PipeWire buffers pod"))?;
+    let buffers_values = build_pipewire_bridge_buffers_pod(config.channels, config.sample_rate_hz)?;
+    let buffers_pod =
+        Pod::from_bytes(&buffers_values).ok_or_else(|| anyhow!("Invalid PipeWire buffers pod"))?;
     let mut params = [format_pod, buffers_pod];
 
     stream
         .connect(
             spa::utils::Direction::Input,
             target_id,
-            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::DRIVER,
+            pw::stream::StreamFlags::AUTOCONNECT
+                | pw::stream::StreamFlags::MAP_BUFFERS
+                | pw::stream::StreamFlags::DRIVER,
             &mut params,
         )
         .map_err(|e| anyhow!("Failed to connect PipeWire bridge input stream: {e:?}"))?;
@@ -1553,7 +1544,8 @@ fn run_pipewire_bridge_capture_stream(
     {
         if direct_trigger_active.load(Ordering::Relaxed) {
             let pending = input_control.pending_input_triggers();
-            let trigger_interval = current_direct_pw_driver_trigger_interval(input_control.as_ref());
+            let trigger_interval =
+                current_direct_pw_driver_trigger_interval(input_control.as_ref());
             let _ = mainloop
                 .loop_()
                 .iterate(next_direct_pw_stream_driver_timeout(

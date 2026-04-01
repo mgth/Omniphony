@@ -3,6 +3,7 @@ use super::output::AudioSamples;
 use super::state::{DecodeSessionState, OutputState, SpatialState, TelemetryState};
 use super::virtual_bed::{build_virtual_bed_events, build_virtual_bed_objects};
 use anyhow::Result;
+use audio_input::InputControl;
 use bridge_api::RChannelLabel;
 use bridge_api::RDecodedFrame;
 use std::time::Instant;
@@ -12,6 +13,7 @@ pub struct SampleWriteCoordinator<'a> {
     telemetry: &'a mut TelemetryState,
     spatial: &'a mut SpatialState,
     session: &'a DecodeSessionState,
+    input_control: Option<&'a InputControl>,
     spatial_renderer: Option<&'a mut renderer::spatial_renderer::SpatialRenderer>,
 }
 
@@ -25,6 +27,7 @@ impl<'a> SampleWriteCoordinator<'a> {
         telemetry: &'a mut TelemetryState,
         spatial: &'a mut SpatialState,
         session: &'a DecodeSessionState,
+        input_control: Option<&'a InputControl>,
         spatial_renderer: Option<&'a mut renderer::spatial_renderer::SpatialRenderer>,
     ) -> Self {
         Self {
@@ -32,6 +35,7 @@ impl<'a> SampleWriteCoordinator<'a> {
             telemetry,
             spatial,
             session,
+            input_control,
             spatial_renderer,
         }
     }
@@ -263,8 +267,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                             live.room_ratio_center_blend,
                         )
                     };
+                    let input_layout = self
+                        .input_control
+                        .and_then(|control| control.requested_snapshot().current_layout);
                     let virtual_events = match build_virtual_bed_events(
                         &labels,
+                        input_layout.as_ref(),
                         room_ratio,
                         room_ratio_rear,
                         room_ratio_lower,
@@ -390,6 +398,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             self.telemetry.osc_sender.as_mut(),
                             build_virtual_bed_objects(
                                 &labels,
+                                input_layout.as_ref(),
                                 room_ratio,
                                 room_ratio_rear,
                                 room_ratio_lower,

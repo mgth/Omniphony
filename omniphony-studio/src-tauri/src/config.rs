@@ -12,6 +12,14 @@ pub struct OscConfig {
     pub bridge_path: Option<String>,
     #[serde(default)]
     pub orender_path: Option<String>,
+    #[serde(default)]
+    pub input_pipe: Option<String>,
+    #[serde(default)]
+    pub audio_output_device: Option<String>,
+    #[serde(default)]
+    pub audio_sample_rate: Option<u32>,
+    #[serde(default)]
+    pub ramp_mode: Option<String>,
 }
 
 impl Default for OscConfig {
@@ -23,6 +31,10 @@ impl Default for OscConfig {
             osc_metering_enabled: false,
             bridge_path: None,
             orender_path: None,
+            input_pipe: None,
+            audio_output_device: None,
+            audio_sample_rate: None,
+            ramp_mode: None,
         }
     }
 }
