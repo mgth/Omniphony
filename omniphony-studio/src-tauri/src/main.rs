@@ -1034,7 +1034,7 @@ fn refresh_output_devices(state: State<SharedState>) {
 #[tauri::command]
 fn control_input_mode(state: State<SharedState>, value: String) {
     let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "bridge" | "live") {
+    if !matches!(trimmed.as_str(), "bridge" | "live" | "pipewire_bridge") {
         return;
     }
     send_control(

@@ -21,7 +21,9 @@ function stringOrEmpty(value) {
 
 export function updateInputControlUI() {
   if (inputModeSelectEl) {
-    inputModeSelectEl.value = app.inputMode === 'live' ? 'live' : 'bridge';
+    inputModeSelectEl.value = ['live', 'pipewire_bridge'].includes(app.inputMode)
+      ? app.inputMode
+      : 'bridge';
   }
   if (inputBackendSelectEl) {
     inputBackendSelectEl.value = app.liveInput.backend === 'asio' ? 'asio' : 'pipewire';
@@ -52,7 +54,7 @@ export function updateInputControlUI() {
     inputLfeModeSelectEl.value = ['object', 'direct', 'drop'].includes(value) ? value : 'object';
   }
 
-  const liveRequested = app.inputMode === 'live';
+  const liveRequested = app.inputMode !== 'bridge';
   if (inputLiveFieldsEl) {
     inputLiveFieldsEl.style.opacity = liveRequested ? '1' : '0.55';
   }
@@ -88,7 +90,7 @@ export function updateInputControlUI() {
   if (inputSummaryEl) {
     const requestedMode = app.inputMode || 'bridge';
     const activeMode = app.inputActiveMode || 'bridge';
-    const backend = requestedMode === 'live' ? (app.liveInput.backend || 'pipewire') : 'bridge';
+    const backend = requestedMode === 'bridge' ? 'bridge' : (app.liveInput.backend || 'pipewire');
     inputSummaryEl.textContent = `${requestedMode} • active ${activeMode} • ${backend}`;
   }
 

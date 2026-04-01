@@ -4,7 +4,7 @@ use super::decoder_thread::{
     DecodedAudioData, DecoderMessage, DecoderThreadConfig, spawn_decoder_thread,
 };
 use super::handler::DecodeHandler;
-use super::live_input::spawn_live_input_manager;
+use super::live_input::{LiveBridgeRuntimeConfig, spawn_live_input_manager};
 use super::state::{FrameHandlerContext, WriterState};
 use crate::bridge_loader::{LoadedBridge, resolve_bridge_path};
 use crate::cli::command::{Cli, OutputBackend, RenderArgSources, RenderArgs, VbapTableModeArg};
@@ -23,8 +23,10 @@ struct PreparedDecodeRun {
     rx: mpsc::Receiver<Result<DecoderMessage>>,
     decode_thread: std::thread::JoinHandle<Result<()>>,
     _shutdown: sys::ShutdownHandle,
-    _bridge_lib: bridge_api::BridgeLibRef,
+    bridge_lib: bridge_api::BridgeLibRef,
     input_path: std::path::PathBuf,
+    strict_mode: bool,
+    presentation: String,
     is_spatial_presentation: bool,
     coordinate_format: bridge_api::RCoordinateFormat,
     vbap_cartesian_defaults: bridge_api::RVbapCartesianDefaults,
@@ -183,8 +185,10 @@ fn prepare_render_run(args: &RenderArgs, cli: &Cli) -> Result<PreparedDecodeRun>
         rx,
         decode_thread,
         _shutdown: shutdown,
-        _bridge_lib: lib,
+        bridge_lib: lib,
         input_path: input,
+        strict_mode,
+        presentation: args.presentation.clone(),
         is_spatial_presentation,
         coordinate_format,
         vbap_cartesian_defaults,
@@ -306,6 +310,11 @@ fn process_decoder_messages(
         let result = match rx.recv_timeout(std::time::Duration::from_millis(50)) {
             Ok(result) => result,
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                if sys::ShutdownHandle::is_requested()
+                    || sys::ShutdownHandle::is_restart_from_config_requested()
+                {
+                    break;
+                }
                 handler.poll_runtime_state()?;
                 continue;
             }
@@ -444,6 +453,11 @@ fn run_prepared_render(
                 prepared.tx.clone(),
                 input_control.clone(),
                 audio_control.clone(),
+                LiveBridgeRuntimeConfig {
+                    lib: prepared.bridge_lib.clone(),
+                    strict_mode: prepared.strict_mode,
+                    presentation: prepared.presentation.clone(),
+                },
             )
         });
 

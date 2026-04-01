@@ -1205,7 +1205,9 @@ export function setupUIListeners() {
 
   if (inputModeSelectEl) {
     inputModeSelectEl.addEventListener('change', () => {
-      const value = inputModeSelectEl.value === 'live' ? 'live' : 'bridge';
+      const value = ['live', 'pipewire_bridge'].includes(inputModeSelectEl.value)
+        ? inputModeSelectEl.value
+        : 'bridge';
       app.inputMode = value;
       updateInputControlUI();
       invoke('control_input_mode', { value });

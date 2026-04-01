@@ -154,6 +154,7 @@ pub struct RenderConfig {
 pub enum InputModeConfig {
     Bridge,
     Live,
+    PipewireBridge,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

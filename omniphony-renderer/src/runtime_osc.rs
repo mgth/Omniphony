@@ -1,5 +1,6 @@
 use anyhow::Result;
-use audio_output::{AudioControl, InputControl};
+use audio_input::InputControl;
+use audio_output::AudioControl;
 use rosc::{OscMessage, OscPacket};
 use runtime_control::osc::SpeakerPatch;
 use std::collections::HashMap;

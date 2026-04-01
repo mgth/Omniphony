@@ -8,7 +8,8 @@ use super::state::{
 };
 use super::writer_lifecycle::WriterLifecycleCoordinator;
 use crate::cli::command::OutputBackend;
-use audio_output::{AudioControl, InputControl, InputMode};
+use audio_input::{InputControl, InputMode};
+use audio_output::AudioControl;
 use bridge_api::RDecodedFrame;
 
 use anyhow::Result;

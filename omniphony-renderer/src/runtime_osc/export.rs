@@ -2,7 +2,8 @@ use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use audio_output::{AudioControl, InputControl};
+use audio_input::InputControl;
+use audio_output::AudioControl;
 use renderer::live_params::RendererControl;
 
 use super::client_registry::OscClientRegistry;

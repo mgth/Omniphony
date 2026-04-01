@@ -248,7 +248,7 @@ export function setupTauriBridge() {
 
   listen('input:mode', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
-    if (value === 'bridge' || value === 'live') {
+    if (value === 'bridge' || value === 'live' || value === 'pipewire_bridge') {
       app.inputMode = value;
       updateInputControlUI();
     }
@@ -256,7 +256,7 @@ export function setupTauriBridge() {
 
   listen('input:active_mode', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
-    if (value === 'bridge' || value === 'live') {
+    if (value === 'bridge' || value === 'live' || value === 'pipewire_bridge') {
       app.inputActiveMode = value;
       updateInputControlUI();
     }

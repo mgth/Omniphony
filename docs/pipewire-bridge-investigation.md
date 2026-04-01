@@ -636,7 +636,7 @@ Pourquoi :
 - mais PipeWire refuse quand même le link
 - `node_id` reste invalide
 
-## État du code au moment du document
+## État du code — instantané historique (avant rétroaction et direct trigger)
 
 - le backend par défaut est `PwStream` avec `StreamFlags::DRIVER` (sans `RT_PROCESS`)
 - `node.force-rate = "192000"` est déclaré dans les propriétés du stream
@@ -644,7 +644,6 @@ Pourquoi :
 - `PW_STREAM_ACCUMULATE_CALLBACKS = 4` (accumulation de 4 quanta avant `process_chunk`)
 - `PW_DRIVER_IDLE_TRIGGER_INTERVAL = 2ms` (rate-limit sur tous les triggers, idle ET après vraie donnée)
 - le son fonctionne avec ~-20000 ppm de correction resampler côté sortie (DRIVER software légèrement trop rapide)
-- la boucle de rétroaction DRIVER ↔ `rate_adjust()` est la prochaine étape (voir section précédente)
 - de nombreuses traces additionnelles existent toujours dans `live_input.rs`, utiles pour la reprise
 - `handler.rs` contient une correction séparée sur la distinction `DecodedSource::Bridge` vs `DecodedSource::Live`
 
@@ -666,6 +665,193 @@ Pourquoi :
 6. En cas de régression sur la cadence : vérifier `pw_time.size / channels` pour le quantum correct.
 7. Ne pas revenir sur `PwAdapter` ou `PwFilter` sans hypothèse nouvelle.
 
+## Boucle de rétroaction DRIVER ↔ rate_adjust
+
+### Problème
+
+Avec `StreamFlags::DRIVER` piloté par timer (`dynamic_trigger_interval`), le DRIVER software tourne légèrement trop vite ou trop lentement par rapport à la véritable horloge matérielle de la sortie. Le resampler adaptatif côté sortie corrigeait ce drift en ajustant son ratio (observable : `-20000 ppm` ≈ -2%), mais sans rétroaction vers la source, le drift restait permanent.
+
+### Solution
+
+À chaque itération du mainloop de capture, le `dynamic_trigger_interval` est recalculé en tenant compte du `rate_adjust()` rapporté par le `PipewireWriter` :
+
+```
+interval_ns = base_interval_ns / rate_adjust_factor
+```
+
+Si `rate_adjust()` retourne `0.98` (resampler ralentit de 2%), le DRIVER est déclenché 2% moins vite, ce qui réduit l'écart à la source. La boucle converge vers un état stable où le resampler reste proche de `1.0`.
+
+### Résultat
+
+- resampler sortie stabilisé proche de `0.0 ppm` de correction (au lieu de `-20000 ppm`)
+- pas de restart, pas de configuration supplémentaire : la boucle s'active dès que le writer est prêt
+
+---
+
+## Mode direct trigger
+
+### Contexte
+
+Avec la boucle de rétroaction, le drift résiduel est corrigé, mais la planification via timer reste approximative (résolution de `std::thread::sleep` ~1ms, jitter). L'idée : faire piloter les triggers de capture directement par le callback RT de sortie, qui s'exécute à la cadence exacte du graphe PipeWire.
+
+### Tentative initiale (échouée) : `trigger_process()` cross-thread
+
+Première approche : le callback RT de sortie appelait directement `pw_stream_trigger_process()` sur le stream de capture.
+
+**Problème** : PipeWire coalesce les appels cross-thread. Le `pw_stream_trigger_process()` écrit dans un `eventfd`; plusieurs appels rapides depuis un thread différent de celui qui possède le mainloop de capture se fusionnent en un seul réveil. Avec un ratio 192000/48000 = 4 triggers par callback de sortie, les 4 appels coalescent en 1 seul wakeup. Résultat observé :
+
+```
+process_calls ≈ 4/sec   (au lieu de ~375/sec)
+wall_gap_ms   ≈ 2047ms  (1 seul iterate(50ms) toutes les ~500ms)
+```
+
+La cause : la boucle de capture appelait `iterate(50ms)` après chaque groupe coalesé, soit ~4 callbacks/sec au lieu de 375.
+
+### Architecture révisée : compteur atomique + pacing côté capture
+
+La règle PipeWire : `trigger_process()` doit être appelé depuis **le thread qui possède le mainloop** du stream DRIVER.
+
+Solution en deux parties :
+
+**Côté sortie (callback RT)** — producteur  
+Calcul Bresenham pour ratio non-entier, incrémente un `Arc<AtomicI64>`.
+
+Point important identifié ensuite :
+
+- le premier calcul utilisé (`capture_rate / output_rate`) était insuffisant
+- il suppose implicitement qu'un callback de sortie correspond à un quantum de capture
+- c'est faux dès que la sortie et la capture n'ont pas la même taille de bloc
+
+Le calcul correct doit intégrer :
+
+- la taille réelle du callback de sortie, en **frames de sortie**
+- le quantum réel de capture, en **frames transport**
+
+Formule correcte :
+
+```text
+triggers_par_callback_sortie
+= output_frames * capture_rate / (output_rate * capture_quantum_frames)
+```
+
+Exemple réel observé :
+
+- sortie : `1024` frames @ `48000 Hz` → `21.333 ms`
+- capture : `512` frames transport @ `192000 Hz` → `2.667 ms`
+- il faut donc `21.333 / 2.667 = 8` triggers capture par callback de sortie
+
+Le code a donc été révisé pour utiliser ce ratio réel :
+
+```rust
+// dans le process callback du PipewireWriter
+let in_rate = input_trigger_rate_hz.load(Relaxed) as i64;
+let in_quantum = input_trigger_quantum_frames.load(Relaxed) as i64;
+if in_rate > 0 && in_quantum > 0 && callback_output_frames > 0 {
+    bresenham_acc += callback_output_frames as i64 * in_rate;
+    let trigger_den = output_rate as i64 * in_quantum;
+    while bresenham_acc >= trigger_den {
+        pending_input_triggers.fetch_add(1, Relaxed);
+        bresenham_acc -= trigger_den;
+    }
+}
+```
+
+Le quantum de capture (`512` frames dans le cas observé) est publié depuis `pw_stream_get_time_n()` via `InputControl`, puis consommé par le writer de sortie.
+
+**Côté capture (mainloop)** — consommateur  
+Depuis le thread propriétaire du mainloop de capture :
+
+```rust
+if direct_trigger_active.load(Relaxed) {
+    if let Some(pending) = input_control.pending_input_triggers() {
+        if deadline_reached {
+            pending.fetch_sub(1, AcqRel);
+            let _ = stream.trigger_process();
+            next_deadline = now + trigger_interval;
+        }
+        let _ = mainloop.loop_().iterate(timeout_until_deadline_or_20ms);
+    }
+}
+```
+
+Correction importante identifiée après essais :
+
+- drainer le compteur avec `swap(0)` puis lancer `N` appels `trigger_process()` immédiatement est incorrect
+- même si le **nombre** de triggers est bon, PipeWire peut coalescer ou compacter des triggers trop rapprochés
+- cela re-colle la capture à la cadence du callback de sortie
+
+Symptôme observé avec cette version intermédiaire :
+
+- `pw_time` restait correct : `rate=1/192000 size=4096 transport_frames=512 quantum_ms=2.667`
+- mais l'ingest réel tombait à :
+  - `process_calls=49/s`
+  - puis parfois `26/s`, `9/s`, `4/s`
+- ces valeurs collent à la cadence de sortie `48000 / 1024 ≈ 46.9/s`, pas à la cadence capture attendue `192000 / 512 = 375/s`
+
+Conclusion :
+
+- il ne suffit pas d'avoir le bon ratio moyen
+- il faut aussi espacer les triggers côté capture sur le pas temporel du quantum capture
+- le compteur atomique doit donc représenter un **budget** de cycles à exécuter, pas une rafale à vider immédiatement
+
+Le pacing retenu côté capture est :
+
+- 1 trigger à la fois
+- depuis le thread propriétaire du mainloop
+- espacé de `capture_quantum_frames / capture_rate`
+- avec fallback timer-based si le mode direct n'est pas encore câblé
+
+### Câblage (`handler.rs`)
+
+Le câblage se fait en une seule fois dès que les deux côtés sont prêts :
+
+```rust
+// dans handler.rs, au démarrage du streaming
+if !self.session.direct_trigger_wired {
+    if let Some(ic) = self.input_control.as_ref() {
+        let rate_hz = ic.input_trigger_rate_hz();
+        let quantum_frames = ic.input_trigger_quantum_frames();
+        if rate_hz > 0 && quantum_frames > 0 {
+            if let Some(writer) = self.output.audio_writer.as_ref() {
+                writer.set_input_trigger_rate_hz(rate_hz);
+                writer.set_input_trigger_quantum_frames(quantum_frames);
+                #[cfg(target_os = "linux")]
+                if let Some(pending) = writer.pending_input_triggers() {
+                    ic.set_pending_input_triggers(pending);
+                    ic.set_direct_trigger_active(true);
+                    self.session.direct_trigger_wired = true;
+                }
+            }
+        }
+    }
+}
+```
+
+### Résultat
+
+Ce qui est maintenant établi :
+
+- le **ratio** sortie → capture doit utiliser `output_frames`, `output_rate`, `capture_quantum_frames`, `capture_rate`
+- le **drain burst** via `swap(0)` est faux, même avec le bon ratio
+- le mode direct doit être un scheduling **cadencé** des triggers capture, pas un vidage immédiat du backlog
+
+Ce qui reste à valider sur machine :
+
+- que cette version paced du mode direct remonte bien vers `~375 process_calls/s`
+- qu'elle garde la vidéo à vitesse réelle sans resampling local
+
+---
+
+## État actuel du code
+
+- backend : `PwStream` + `StreamFlags::DRIVER` (sans `RT_PROCESS`)
+- `node.force-rate = "192000"` dans les propriétés du stream
+- **boucle de rétroaction** : `dynamic_trigger_interval` ajusté via `rate_adjust()` de la sortie → drift résiduel quasi nul
+- **mode direct trigger** : output RT callback → `Arc<AtomicI64>` → capture mainloop → `trigger_process()` paced sur le quantum capture
+- Bresenham côté sortie pour ratios non-entiers, avec quantum capture réel pris en compte
+- fallback timer-based si direct trigger pas encore câblé
+- `PW_STREAM_ACCUMULATE_CALLBACKS = 4`, `PW_DRIVER_IDLE_TRIGGER_INTERVAL` remplacé par le mode direct
+
 ## Résumé très court
 
 - `PwExportedNode` : bien reconnu comme `spa_node`, mais jamais activé (port_* jamais appelé)
@@ -673,5 +859,5 @@ Pourquoi :
 - `PwAdapter` : sink visible, monitor inutilisable
 - `PwFilter` : node visible, mais pas une vraie target pour `mpv`
 - `PwStream` + `DRIVER` (sans `RT_PROCESS`) : **son fonctionnel**, IEC61937 parsé, TrueHD décodé, rendu spatial actif
-- drift résiduel : DRIVER software ~+2% trop rapide → resampler sortie corrige à -20000 ppm
-- piste suivante : boucle de rétroaction `dynamic_trigger_interval` ↔ `rate_adjust()` pour réduire ce drift
+- drift résiduel : corrigé par boucle de rétroaction `rate_adjust()` ↔ `dynamic_trigger_interval`
+- synchronisation : mode direct trigger — output callback → compteur atomique de budget → capture mainloop → `trigger_process()` espacé sur le quantum capture

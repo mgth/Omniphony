@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 
-use audio_output::{AudioControl, InputControl};
+use audio_input::InputControl;
+use audio_output::AudioControl;
 use renderer::live_params::RendererControl;
 use rosc::{OscMessage, OscType};
 use runtime_control::command::{RuntimeCommand, parse_process_command};

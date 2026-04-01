@@ -313,13 +313,13 @@ export function applyInitState(payload) {
   }
   if (typeof payload.inputMode === 'string') {
     const value = payload.inputMode.trim().toLowerCase();
-    if (value === 'bridge' || value === 'live') {
+    if (value === 'bridge' || value === 'live' || value === 'pipewire_bridge') {
       app.inputMode = value;
     }
   }
   if (typeof payload.inputActiveMode === 'string') {
     const value = payload.inputActiveMode.trim().toLowerCase();
-    if (value === 'bridge' || value === 'live') {
+    if (value === 'bridge' || value === 'live' || value === 'pipewire_bridge') {
       app.inputActiveMode = value;
     }
   }

@@ -7,7 +7,7 @@ use cli::decode::cmd_render;
 use cli::generate_vbap::cmd_generate_vbap;
 #[cfg(target_os = "windows")]
 use cli::list_asio_devices::cmd_list_asio_devices;
-use log::info;
+use log::{error, info};
 use std::ffi::OsString;
 
 mod bridge_loader;
@@ -152,19 +152,38 @@ fn main() -> Result<()> {
     let base_level = cli.loglevel.to_level_filter();
 
     sys::live_log::init_logger(base_level, matches!(cli.log_format, LogFormat::Json))?;
+    std::panic::set_hook(Box::new(|panic_info| {
+        let location = panic_info
+            .location()
+            .map(|loc| format!("{}:{}", loc.file(), loc.line()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = panic_info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| panic_info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        error!("panic at {}: {}", location, payload);
+    }));
 
     info!("{}", cli::command::VERSION_INFO);
 
-    match cli.command {
-        Commands::Render(ref args) => cmd_render(args, &cli, &parsed.render_sources())?,
+    let result: Result<()> = (|| match cli.command {
+        Commands::Render(ref args) => cmd_render(args, &cli, &parsed.render_sources()),
         Commands::InputLive(_) => {
             anyhow::bail!("The 'input-live' command is defined but not implemented yet.")
         }
         #[cfg(feature = "saf_vbap")]
-        Commands::GenerateVbap(ref args) => cmd_generate_vbap(args)?,
+        Commands::GenerateVbap(ref args) => cmd_generate_vbap(args),
         #[cfg(target_os = "windows")]
-        Commands::ListAsioDevices => cmd_list_asio_devices()?,
+        Commands::ListAsioDevices => cmd_list_asio_devices(),
+    })();
+
+    if let Err(ref err) = result {
+        error!("orender exiting with error: {err:#}");
+    } else {
+        info!("orender exiting cleanly");
     }
 
-    Ok(())
+    result
 }

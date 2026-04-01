@@ -2,12 +2,14 @@ use super::handler::DecodeHandler;
 use crate::cli::command::{OutputBackend, RenderArgs, VbapTableModeArg};
 use crate::runtime_osc::{OscSender, build_speaker_config_bundle};
 use anyhow::Result;
+use audio_input::{
+    InputBackend, InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
+    RequestedAudioInputConfig,
+};
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::{PipewireBufferConfig, list_pipewire_output_devices};
 use audio_output::{
-    AdaptiveResamplingConfig, AudioControl, InputBackend, InputControl, InputLfeMode, InputMapMode,
-    InputMode, InputSampleFormat, OutputDeviceOption, RequestedAudioInputConfig,
-    RequestedAudioOutputConfig,
+    AdaptiveResamplingConfig, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig,
 };
 use renderer::metering::AudioMeter;
 use renderer::speaker_layout::SpeakerLayout;
@@ -111,6 +113,9 @@ fn build_requested_input_config(
     if let Some(render_cfg) = render_cfg {
         requested.mode = match render_cfg.input_mode {
             Some(renderer::config::InputModeConfig::Live) => InputMode::Live,
+            Some(renderer::config::InputModeConfig::PipewireBridge) => {
+                InputMode::PipewireBridge
+            }
             _ => InputMode::Bridge,
         };
 
