@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use audio_output::{
-    AudioControl, InputBackend, InputControl, InputLfeMode, InputMapMode, InputMode,
-    InputSampleFormat,
+use audio_input::{
+    InputBackend, InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
 };
+use audio_output::AudioControl;
 use renderer::live_params::{LiveVbapTableMode, RampMode, RendererControl, VbapBackendMode};
 
 use crate::snapshot::build_live_state_bundle;
@@ -189,6 +189,7 @@ pub fn save_live_config(
         render.input_mode = Some(match requested.mode {
             InputMode::Bridge => renderer::config::InputModeConfig::Bridge,
             InputMode::Live => renderer::config::InputModeConfig::Live,
+            InputMode::PipewireBridge => renderer::config::InputModeConfig::PipewireBridge,
         });
         render.live_input = Some(renderer::config::LiveInputConfig {
             backend: requested.backend.map(|backend| match backend {

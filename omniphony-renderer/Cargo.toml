@@ -1,5 +1,5 @@
 [workspace]
-members = ["renderer", "audio_output", "sys", "bridge_api", "spdif", "runtime_control"]
+members = ["renderer", "audio_input", "audio_output", "sys", "bridge_api", "spdif", "runtime_control"]
 resolver = "2"
 
 [package]
@@ -20,6 +20,7 @@ path = "src/main.rs"
 [dependencies]
 renderer = { version = "0.1.0", path = "renderer" }
 audio_output = { version = "0.1.0", path = "audio_output" }
+audio_input = { version = "0.1.0", path = "audio_input" }
 sys = { version = "0.1.0", path = "sys" }
 bridge_api = { version = "0.1.0", path = "bridge_api" }
 spdif = { version = "0.1.0", path = "spdif" }
@@ -53,7 +54,7 @@ windows = { version = "0.54", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-pipewire = { version = "0.9.2" }
+pipewire = { version = "0.9.2", features = ["v0_3_34"] }
 
 [build-dependencies]
 anyhow = "1.0.99"

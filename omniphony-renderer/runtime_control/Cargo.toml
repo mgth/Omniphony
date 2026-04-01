@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.99"
+audio_input = { path = "../audio_input" }
 audio_output = { path = "../audio_output" }
 log = "0.4.27"
 renderer = { path = "../renderer" }

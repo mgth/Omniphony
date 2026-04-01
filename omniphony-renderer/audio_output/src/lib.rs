@@ -3,6 +3,8 @@ pub mod adaptive_runtime;
 pub mod resampler_fifo;
 pub mod ring_buffer_io;
 
+pub use control::{AppliedAudioOutputState, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig};
+
 #[derive(Debug, Clone)]
 pub struct AdaptiveResamplingConfig {
     pub enable_far_mode: bool,
@@ -179,12 +181,6 @@ pub fn compute_adaptive_step(
 pub mod asio;
 #[cfg(target_os = "linux")]
 pub mod pipewire;
-
-pub use control::{
-    AppliedAudioInputState, AppliedAudioOutputState, AudioControl, InputBackend,
-    InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat, OutputDeviceOption,
-    RequestedAudioInputConfig, RequestedAudioOutputConfig,
-};
 
 #[cfg(target_os = "linux")]
 pub use pipewire::{PipewireBufferConfig, PipewireWriter, list_pipewire_output_devices};

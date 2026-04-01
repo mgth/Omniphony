@@ -100,6 +100,181 @@ New requirement:
 This means the CLI shape must coexist with a runtime-selectable input source
 model rather than being treated as a once-at-startup-only mode forever.
 
+## PipeWire Bridge Follow-Up
+
+The current `pipewire_bridge` mode has reached a useful diagnosis point:
+
+- `mpv` can now discover and open the `omniphony` sink
+- PipeWire format negotiation succeeds with `MediaSubtype::Iec958`
+- `orender` fails during buffer allocation for the encoded sink
+- the current implementation uses a virtual `pw_stream` as an `Audio/Sink`
+
+This strongly suggests that the remaining limitation is not the codec or
+discovery layer, but the PipeWire primitive used to expose the encoded input.
+
+### Current observed behavior
+
+- With a raw-PCM-like sink declaration:
+  - `mpv` opened the sink but no buffers ever arrived
+- With an explicit `ParamBuffers`:
+  - PipeWire negotiated `Iec958` but rejected buffer allocation
+  - errors seen:
+    - `error alloc buffers: Invalid argument`
+    - `error alloc buffers: Operation not supported`
+- With the current more standard stream connect:
+  - format negotiation still succeeds
+  - `mpv` remains paused waiting for audio start
+  - no useful bitstream reaches the bridge
+
+### Working conclusion
+
+The `pw_stream`-based virtual sink approach is likely sufficient for PCM live
+input, but not for a virtual encoded `IEC958/TRUEHD` sink intended to receive
+passthrough-style audio from another client.
+
+Follow-up from the first replacement attempt:
+
+- a minimal `pw_filter` backend compiles and publishes a node
+- but in its current form it is still not accepted by `mpv` as a valid target
+  and `mpv` falls back to `no target node available`
+- this suggests that `pw_filter` by itself is not enough unless it is completed
+  with the rest of the sink-facing publication details expected by PipeWire
+- the likely final direction is now a true exported PipeWire node rather than a
+  stream-shaped abstraction
+
+The next implementation step should therefore move away from a simple
+`pw_stream` sink for `pipewire_bridge` and instead expose a PipeWire node that
+is closer to how the graph expects an encoded input port to behave.
+
+## PipeWire Bridge Replacement Plan
+
+### Goal
+
+Replace the current `pipewire_bridge` `pw_stream` sink implementation with a
+PipeWire node/filter design that can:
+
+1. appear as a valid `Audio/Sink` target for `mpv`
+2. negotiate `Iec958`/`TRUEHD`
+3. allocate or receive buffers in a supported way
+4. hand the captured bitstream to the existing bridge path
+
+### Implementation direction
+
+Phase 1 should stay inside `omniphony-renderer` and preserve the runtime/OSC/UI
+surface already built. The change should be confined to the PipeWire backend
+implementation behind `InputMode::PipewireBridge`.
+
+Recommended direction:
+
+- keep `InputMode::PipewireBridge`, OSC control, Studio UI, config persistence,
+  and the bridge injection path unchanged
+- replace only the backend used by
+  [`src/cli/decode/live_input.rs`](src/cli/decode/live_input.rs)
+- prefer a true PipeWire node/export path over a generic `pw_stream`
+  pretending to be an encoded sink
+- keep the current `pw_filter` attempt only as a short-lived exploration
+  checkpoint, not as the presumed final design
+
+### Development steps
+
+1. Isolate the current `pipewire_bridge` backend code path.
+   - Split the current `run_pipewire_bridge_capture_loop(...)` into:
+     - runtime/bridge ingestion logic
+     - PipeWire sink implementation
+   - This makes it possible to swap the backend primitive without touching the
+     `IEC61937 -> bridge -> DecoderMessage` path.
+
+2. Add a dedicated backend abstraction for encoded bridge sinks.
+   - Example internal shape:
+     - `trait PipewireBridgeSource`
+     - `fn run(self, tx, bridge, stop) -> Result<()>`
+   - Start with the current `pw_stream` implementation as `LegacyPwStreamSink`
+     to preserve a fallback while developing the replacement.
+
+3. Implement a new PipeWire backend based on a node/filter/adapter primitive.
+   - Publish the same user-facing node properties:
+     - `node.name`
+     - `node.description`
+     - `iec958.codecs = [ "TRUEHD" ]`
+     - `audio.position = [ FL FR C LFE SL SR RL RR ]`
+     - `resample.disable = true`
+     - `node.latency = ...`
+   - Ensure the port format is advertised as encoded `Iec958`.
+
+4. If `pw_filter` still fails to appear as a valid external sink target,
+   replace it with an exported PipeWire node.
+   - Investigate `pw_core_export` / `pw_impl_node`
+   - Model the node explicitly as an encoded sink endpoint rather than a
+     generic processing filter
+   - Preserve the already extracted ingest runtime so only the PipeWire-facing
+     backend changes
+
+5. Reattach the existing bitstream ingest path.
+   - Preserve:
+     - `SpdifParser`
+     - `RInputTransport::Iec61937`
+     - bridge `push_packet(...)`
+     - `DecoderMessage::AudioData(DecodedSource::Live, ...)`
+   - Do not change the bridge contract as part of this backend swap.
+
+6. Re-test with `mpv`.
+   - Expected success criteria:
+     - `mpv` no longer stalls in `paused`
+     - `mpv` no longer reports `no target node available`
+     - `orender` logs either `ingest idle` or `ingest`
+     - if data arrives, `sync_buffers > 0`
+     - if packets are reconstructed, `PipeWire bridge packet: ...`
+
+7. Only after the new backend works, remove the legacy experiment.
+   - Keep the old `pw_stream` path behind a short-lived internal toggle during
+     development if needed
+   - delete it once the replacement has proven stable
+
+## Problem Areas To Watch
+
+### PipeWire primitive mismatch
+
+The key risk is that encoded passthrough-style input may require a different
+kind of PipeWire object than the one used successfully for PCM capture.
+
+Current evidence points to:
+
+- `pw_stream`: discoverable but not viable for encoded sink buffering
+- `pw_filter`: closer, but still not yet a valid external sink target as
+  currently implemented
+- likely endpoint: exported node implementation
+
+### Buffer ownership model
+
+The failing area so far is buffer allocation. The replacement must match the
+buffer ownership model expected by PipeWire for an encoded sink target.
+
+### Avoid regressions to PCM live input
+
+The PCM `live` input path should remain on the simpler current mechanism unless
+there is a demonstrated need to refactor both modes together.
+
+### Logging discipline
+
+Keep the current useful diagnostics while removing the retry spam once the new
+backend is in place:
+
+- format negotiated
+- state changes
+- process/buffer activity
+- IEC61937 packet counts
+
+## Immediate Next Actions
+
+- extract the `pipewire_bridge` ingest logic from the current sink publication
+  logic in `live_input.rs`
+- introduce a backend-local abstraction so the PipeWire primitive can be swapped
+  without touching the bridge decode path
+- replace the exploratory `pw_filter` backend with a true exported PipeWire node
+  if the filter cannot be completed into a valid sink target quickly
+- preserve the existing `mpv`/Studio/runtime surface while iterating on the
+  backend internals
+
 ### Proposed command
 
 ```text

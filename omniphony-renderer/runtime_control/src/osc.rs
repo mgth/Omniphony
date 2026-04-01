@@ -2,7 +2,7 @@ use rosc::{OscMessage, OscType};
 use std::collections::HashMap;
 
 use crate::context::RuntimeControlContext;
-use audio_output::{
+use audio_input::{
     InputBackend, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
 };
 
@@ -245,6 +245,7 @@ pub fn apply_simple_osc_control(
             match value.to_ascii_lowercase().as_str() {
                 "bridge" => Some(InputMode::Bridge),
                 "live" => Some(InputMode::Live),
+                "pipewire_bridge" => Some(InputMode::PipewireBridge),
                 _ => None,
             }
         });
@@ -256,6 +257,7 @@ pub fn apply_simple_osc_control(
                 value: BroadcastValue::String(match requested {
                     InputMode::Bridge => "bridge".to_string(),
                     InputMode::Live => "live".to_string(),
+                    InputMode::PipewireBridge => "pipewire_bridge".to_string(),
                 }),
             });
             effects.log_message = Some(format!(
@@ -263,6 +265,7 @@ pub fn apply_simple_osc_control(
                 match requested {
                     InputMode::Bridge => "bridge",
                     InputMode::Live => "live",
+                    InputMode::PipewireBridge => "pipewire_bridge",
                 }
             ));
         }

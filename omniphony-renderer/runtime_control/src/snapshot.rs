@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use audio_output::{AudioControl, InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat};
+use audio_input::{InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat, InputBackend};
+use audio_output::AudioControl;
 use renderer::live_params::RendererControl;
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
 
@@ -8,13 +9,14 @@ fn input_mode_name(mode: InputMode) -> &'static str {
     match mode {
         InputMode::Bridge => "bridge",
         InputMode::Live => "live",
+        InputMode::PipewireBridge => "pipewire_bridge",
     }
 }
 
-fn input_backend_name(backend: audio_output::InputBackend) -> &'static str {
+fn input_backend_name(backend: InputBackend) -> &'static str {
     match backend {
-        audio_output::InputBackend::Pipewire => "pipewire",
-        audio_output::InputBackend::Asio => "asio",
+        InputBackend::Pipewire => "pipewire",
+        InputBackend::Asio => "asio",
     }
 }
 

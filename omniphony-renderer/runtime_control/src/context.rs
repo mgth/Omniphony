@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use audio_output::{AudioControl, InputControl};
+use audio_input::InputControl;
+use audio_output::AudioControl;
 use renderer::live_params::RendererControl;
 
 #[derive(Clone)]
