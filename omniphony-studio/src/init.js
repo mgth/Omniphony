@@ -354,6 +354,9 @@ export function applyInitState(payload) {
     if (typeof payload.liveInput.layout === 'string') {
       app.liveInput.layout = payload.liveInput.layout;
     }
+    if (typeof payload.liveInput.clockMode === 'string') {
+      app.liveInput.clockMode = payload.liveInput.clockMode.trim().toLowerCase() || app.liveInput.clockMode;
+    }
     if (typeof payload.liveInput.channels === 'number' && payload.liveInput.channels > 0) {
       app.liveInput.channels = payload.liveInput.channels;
     }

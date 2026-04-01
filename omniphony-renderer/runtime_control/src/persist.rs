@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use audio_input::{
-    InputBackend, InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
+    InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode, InputMode,
+    InputSampleFormat,
 };
 use audio_output::AudioControl;
 use renderer::live_params::{LiveVbapTableMode, RampMode, RendererControl, VbapBackendMode};
@@ -200,6 +201,10 @@ pub fn save_live_config(
             description: requested.node_description,
             layout: requested.layout_path,
             current_layout: requested.current_layout,
+            clock_mode: Some(match requested.clock_mode {
+                InputClockMode::Dac => renderer::config::InputClockModeConfig::Dac,
+                InputClockMode::Pipewire => renderer::config::InputClockModeConfig::Pipewire,
+            }),
             channels: requested.channels,
             sample_rate: requested.sample_rate_hz,
             sample_format: requested.sample_format.map(|format| match format {

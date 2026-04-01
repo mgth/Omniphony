@@ -296,6 +296,8 @@ pub enum OscEvent {
     StateInputLiveDescription { value: String },
     #[serde(rename = "state:input:live:layout")]
     StateInputLiveLayout { value: String },
+    #[serde(rename = "state:input:live:clock_mode")]
+    StateInputLiveClockMode { value: String },
     #[serde(rename = "state:input:live:channels")]
     StateInputLiveChannels { value: u32 },
     #[serde(rename = "state:input:live:sample_rate")]
@@ -897,6 +899,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 value: raw_args.first().and_then(unwrap_string)?,
             }),
             "layout" => Some(OscEvent::StateInputLiveLayout {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "clock_mode" => Some(OscEvent::StateInputLiveClockMode {
                 value: raw_args.first().and_then(unwrap_string)?,
             }),
             "channels" => Some(OscEvent::StateInputLiveChannels {

@@ -314,6 +314,11 @@ export function setupTauriBridge() {
     updateInputControlUI();
   });
 
+  listen('input:live:clock_mode', ({ payload }) => {
+    app.liveInput.clockMode = String(payload?.value ?? '').trim().toLowerCase() || app.liveInput.clockMode;
+    updateInputControlUI();
+  });
+
   listen('input:live:channels', ({ payload }) => {
     const value = Number(payload?.value);
     if (Number.isFinite(value) && value > 0) {

@@ -42,6 +42,13 @@ pub enum InputSampleFormat {
     S16,
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputClockMode {
+    Dac,
+    Pipewire,
+}
+
 #[derive(Debug, Clone)]
 pub struct RequestedAudioInputConfig {
     pub mode: InputMode,
@@ -50,6 +57,7 @@ pub struct RequestedAudioInputConfig {
     pub node_description: Option<String>,
     pub layout_path: Option<PathBuf>,
     pub current_layout: Option<renderer::speaker_layout::SpeakerLayout>,
+    pub clock_mode: InputClockMode,
     pub channels: Option<u16>,
     pub sample_rate_hz: Option<u32>,
     pub sample_format: Option<InputSampleFormat>,
@@ -66,6 +74,7 @@ impl Default for RequestedAudioInputConfig {
             node_description: None,
             layout_path: None,
             current_layout: None,
+            clock_mode: InputClockMode::Dac,
             channels: None,
             sample_rate_hz: None,
             sample_format: None,
@@ -248,6 +257,10 @@ impl InputControl {
         value: Option<renderer::speaker_layout::SpeakerLayout>,
     ) {
         self.update_requested(|requested| requested.current_layout = value);
+    }
+
+    pub fn set_requested_clock_mode(&self, value: InputClockMode) {
+        self.update_requested(|requested| requested.clock_mode = value);
     }
 
     pub fn set_requested_channels(&self, value: Option<u16>) {

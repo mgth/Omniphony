@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use audio_input::{InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat, InputBackend};
+use audio_input::{
+    InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode, InputMode,
+    InputSampleFormat,
+};
 use audio_output::AudioControl;
 use renderer::live_params::RendererControl;
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
@@ -38,6 +41,13 @@ fn input_sample_format_name(format: InputSampleFormat) -> &'static str {
     match format {
         InputSampleFormat::F32 => "f32",
         InputSampleFormat::S16 => "s16",
+    }
+}
+
+fn input_clock_mode_name(mode: InputClockMode) -> &'static str {
+    match mode {
+        InputClockMode::Dac => "dac",
+        InputClockMode::Pipewire => "pipewire",
     }
 }
 
@@ -298,6 +308,12 @@ pub fn build_live_state_bundle(
                 addr: "/omniphony/state/input/live/lfe_mode".to_string(),
                 args: vec![OscType::String(
                     input_lfe_mode_name(requested.lfe_mode).to_string(),
+                )],
+            }),
+            OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/live/clock_mode".to_string(),
+                args: vec![OscType::String(
+                    input_clock_mode_name(requested.clock_mode).to_string(),
                 )],
             }),
             OscPacket::Message(OscMessage {

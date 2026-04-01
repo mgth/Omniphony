@@ -1216,6 +1216,21 @@ fn control_input_live_format(state: State<SharedState>, value: String) {
 }
 
 #[tauri::command]
+fn control_input_live_clock_mode(state: State<SharedState>, value: String) {
+    let trimmed = value.trim().to_ascii_lowercase();
+    if !matches!(trimmed.as_str(), "dac" | "pipewire") {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/input/live/clock_mode".to_string(),
+            value: trimmed,
+        },
+    );
+}
+
+#[tauri::command]
 fn control_input_live_map(state: State<SharedState>, value: String) {
     let trimmed = value.trim().to_ascii_lowercase();
     if !matches!(trimmed.as_str(), "7.1-fixed") {
@@ -2138,6 +2153,7 @@ fn main() {
             control_input_live_channels,
             control_input_live_sample_rate,
             control_input_live_format,
+            control_input_live_clock_mode,
             control_input_live_map,
             control_input_live_lfe_mode,
             control_input_apply,

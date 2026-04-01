@@ -1274,6 +1274,16 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateInputLiveClockMode { value } => {
+                s.live_input.clock_mode = Some(value.clone());
+                (
+                    Some((
+                        "input:live:clock_mode",
+                        serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
             OscEvent::StateInputLiveChannels { value } => {
                 s.live_input.channels = Some(value);
                 (

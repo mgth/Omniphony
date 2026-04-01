@@ -125,6 +125,8 @@ pub struct LiveInputState {
     pub node: Option<String>,
     pub description: Option<String>,
     pub layout: Option<String>,
+    #[serde(rename = "clockMode")]
+    pub clock_mode: Option<String>,
     pub channels: Option<u32>,
     #[serde(rename = "sampleRate")]
     pub sample_rate: Option<u32>,

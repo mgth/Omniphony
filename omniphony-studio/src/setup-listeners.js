@@ -214,6 +214,7 @@ export function setupUIListeners() {
   const inputBackendSelectEl = document.getElementById('inputBackendSelect');
   const inputNodeInputEl = document.getElementById('inputNodeInput');
   const inputDescriptionInputEl = document.getElementById('inputDescriptionInput');
+  const inputClockModeSelectEl = document.getElementById('inputClockModeSelect');
   const inputLayoutInputEl = document.getElementById('inputLayoutInput');
   const inputLayoutBrowseBtnEl = document.getElementById('inputLayoutBrowseBtn');
   const inputChannelsInputEl = document.getElementById('inputChannelsInput');
@@ -1248,6 +1249,15 @@ export function setupUIListeners() {
       app.liveInput.description = value;
       updateInputControlUI();
       invoke('control_input_live_description', { value });
+    });
+  }
+
+  if (inputClockModeSelectEl) {
+    inputClockModeSelectEl.addEventListener('change', () => {
+      const value = inputClockModeSelectEl.value === 'pipewire' ? 'pipewire' : 'dac';
+      app.liveInput.clockMode = value;
+      updateInputControlUI();
+      invoke('control_input_live_clock_mode', { value });
     });
   }
 

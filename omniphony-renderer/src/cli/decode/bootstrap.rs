@@ -3,8 +3,8 @@ use crate::cli::command::{OutputBackend, RenderArgs, VbapTableModeArg};
 use crate::runtime_osc::{OscSender, build_speaker_config_bundle};
 use anyhow::Result;
 use audio_input::{
-    InputBackend, InputControl, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
-    RequestedAudioInputConfig,
+    InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode, InputMode,
+    InputSampleFormat, RequestedAudioInputConfig,
 };
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::{PipewireBufferConfig, list_pipewire_output_devices};
@@ -126,6 +126,10 @@ fn build_requested_input_config(
             requested.node_description = live_input.description.clone();
             requested.layout_path = live_input.layout.clone();
             requested.current_layout = live_input.current_layout.clone();
+            requested.clock_mode = match live_input.clock_mode {
+                Some(renderer::config::InputClockModeConfig::Pipewire) => InputClockMode::Pipewire,
+                Some(renderer::config::InputClockModeConfig::Dac) | None => InputClockMode::Dac,
+            };
             requested.channels = live_input.channels;
             requested.sample_rate_hz = live_input.sample_rate;
             requested.sample_format = live_input.sample_format.as_deref().and_then(|format| {

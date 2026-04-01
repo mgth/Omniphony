@@ -8,7 +8,7 @@ use super::state::{
 };
 use super::writer_lifecycle::WriterLifecycleCoordinator;
 use crate::cli::command::OutputBackend;
-use audio_input::{InputControl, InputMode};
+use audio_input::{InputClockMode, InputControl, InputMode};
 use audio_output::AudioControl;
 use bridge_api::RDecodedFrame;
 
@@ -163,6 +163,17 @@ impl DecodeHandler {
         }
         self.session.direct_trigger_wired = false;
         log::info!("Direct trigger wiring reset after output writer restart");
+    }
+
+    fn wants_output_driven_bridge_clock(&self) -> bool {
+        self.input_control
+            .as_ref()
+            .map(|control| {
+                let requested = control.requested_snapshot();
+                requested.mode == InputMode::PipewireBridge
+                    && requested.clock_mode == InputClockMode::Dac
+            })
+            .unwrap_or(false)
     }
 
     fn sync_input_runtime_state(
@@ -350,8 +361,12 @@ impl DecodeHandler {
         if let (Some(rate), Some(ic)) = (current_resample_ratio, self.input_control.as_ref()) {
             ic.set_output_rate_adjust(rate);
         }
+        let wants_output_driven_bridge_clock = self.wants_output_driven_bridge_clock();
+        if !wants_output_driven_bridge_clock {
+            self.reset_direct_trigger_wiring();
+        }
         // Wire direct trigger mode once both the writer and the capture rate are ready.
-        if !self.session.direct_trigger_wired {
+        if wants_output_driven_bridge_clock && !self.session.direct_trigger_wired {
             if let Some(ic) = self.input_control.as_ref() {
                 let rate_hz = ic.input_trigger_rate_hz();
                 let quantum_frames = ic.input_trigger_quantum_frames();
@@ -374,15 +389,17 @@ impl DecodeHandler {
                 }
             }
         }
-        if let Some(ic) = self.input_control.as_ref() {
-            if let Some(writer) = self.output.audio_writer.as_ref() {
-                let rate_hz = ic.input_trigger_rate_hz();
-                let quantum_frames = ic.input_trigger_quantum_frames();
-                if rate_hz > 0 {
-                    writer.set_input_trigger_rate_hz(rate_hz);
-                }
-                if quantum_frames > 0 {
-                    writer.set_input_trigger_quantum_frames(quantum_frames);
+        if wants_output_driven_bridge_clock {
+            if let Some(ic) = self.input_control.as_ref() {
+                if let Some(writer) = self.output.audio_writer.as_ref() {
+                    let rate_hz = ic.input_trigger_rate_hz();
+                    let quantum_frames = ic.input_trigger_quantum_frames();
+                    if rate_hz > 0 {
+                        writer.set_input_trigger_rate_hz(rate_hz);
+                    }
+                    if quantum_frames > 0 {
+                        writer.set_input_trigger_quantum_frames(quantum_frames);
+                    }
                 }
             }
         }

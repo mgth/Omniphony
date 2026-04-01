@@ -180,6 +180,7 @@ export const app = {
     node: '',
     description: '',
     layout: '',
+    clockMode: 'dac',
     channels: 8,
     sampleRate: 48000,
     format: 'f32',

@@ -13,6 +13,6 @@ pub mod pipewire_exported;
 pub mod pipewire_client_node;
 
 pub use control::{
-    AppliedAudioInputState, InputBackend, InputControl, InputLfeMode, InputMapMode, InputMode,
-    InputSampleFormat, RequestedAudioInputConfig,
+    AppliedAudioInputState, InputBackend, InputClockMode, InputControl, InputLfeMode,
+    InputMapMode, InputMode, InputSampleFormat, RequestedAudioInputConfig,
 };

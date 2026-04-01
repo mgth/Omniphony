@@ -1698,6 +1698,13 @@
               <input id="inputDescriptionInput" class="delay-input" type="text" placeholder="Omniphony Input 7.1" />
             </div>
             <div class="input-panel-row">
+              <label for="inputClockModeSelect">Clock</label>
+              <select id="inputClockModeSelect" class="delay-input">
+                <option value="dac">DAC</option>
+                <option value="pipewire">PipeWire</option>
+              </select>
+            </div>
+            <div class="input-panel-row">
               <label for="inputLayoutInput">Layout</label>
               <div style="display:flex;align-items:center;gap:0.4rem;min-width:0">
                 <input id="inputLayoutInput" class="delay-input" type="text" placeholder="No imported layout" readonly style="min-width:0;flex:1 1 auto" />

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::context::RuntimeControlContext;
 use audio_input::{
-    InputBackend, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
+    InputBackend, InputClockMode, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -440,6 +440,28 @@ pub fn apply_simple_osc_control(
                     InputLfeMode::Object => "object".to_string(),
                     InputLfeMode::Direct => "direct".to_string(),
                     InputLfeMode::Drop => "drop".to_string(),
+                }),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/input/live/clock_mode" {
+        let requested = parse_string_arg(msg.args.first()).and_then(|value| {
+            match value.to_ascii_lowercase().as_str() {
+                "dac" => Some(InputClockMode::Dac),
+                "pipewire" => Some(InputClockMode::Pipewire),
+                _ => None,
+            }
+        });
+        if let (Some(input), Some(requested)) = (ctx.input.as_ref(), requested) {
+            input.set_requested_clock_mode(requested);
+            effects.mark_dirty = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/input/live/clock_mode".to_string(),
+                value: BroadcastValue::String(match requested {
+                    InputClockMode::Dac => "dac".to_string(),
+                    InputClockMode::Pipewire => "pipewire".to_string(),
                 }),
             });
         }

@@ -6,6 +6,7 @@ const inputPipeInputEl = document.getElementById('pipeStatus');
 const inputBackendSelectEl = document.getElementById('inputBackendSelect');
 const inputNodeInputEl = document.getElementById('inputNodeInput');
 const inputDescriptionInputEl = document.getElementById('inputDescriptionInput');
+const inputClockModeSelectEl = document.getElementById('inputClockModeSelect');
 const inputLayoutInputEl = document.getElementById('inputLayoutInput');
 const inputLayoutBrowseBtnEl = document.getElementById('inputLayoutBrowseBtn');
 const inputChannelsInputEl = document.getElementById('inputChannelsInput');
@@ -22,6 +23,7 @@ const inputBackendRowEl = inputBackendSelectEl?.closest('.input-panel-row') || n
 const inputPipeRowEl = inputPipeInputEl?.closest('.input-panel-row') || null;
 const inputNodeRowEl = inputNodeInputEl?.closest('.input-panel-row') || null;
 const inputDescriptionRowEl = inputDescriptionInputEl?.closest('.input-panel-row') || null;
+const inputClockModeRowEl = inputClockModeSelectEl?.closest('.input-panel-row') || null;
 const inputLayoutRowEl = inputLayoutInputEl?.closest('.input-panel-row') || null;
 const inputChannelsRowEl = inputChannelsInputEl?.closest('.input-panel-field') || null;
 const inputSampleRateRowEl = inputSampleRateInputEl?.closest('.input-panel-field') || null;
@@ -66,6 +68,9 @@ export function updateInputControlUI() {
   if (inputDescriptionInputEl) {
     inputDescriptionInputEl.value = stringOrEmpty(app.liveInput.description);
   }
+  if (inputClockModeSelectEl) {
+    inputClockModeSelectEl.value = app.liveInput.clockMode === 'pipewire' ? 'pipewire' : 'dac';
+  }
   if (inputLayoutInputEl) {
     inputLayoutInputEl.value = stringOrEmpty(app.liveInput.layout);
   }
@@ -103,6 +108,7 @@ export function updateInputControlUI() {
   if (inputBackendRowEl) inputBackendRowEl.style.display = liveRequested ? '' : 'none';
   if (inputNodeRowEl) inputNodeRowEl.style.display = endpointRequested ? '' : 'none';
   if (inputDescriptionRowEl) inputDescriptionRowEl.style.display = endpointRequested ? '' : 'none';
+  if (inputClockModeRowEl) inputClockModeRowEl.style.display = pipewireBridgeRequested ? '' : 'none';
   if (inputLayoutRowEl) inputLayoutRowEl.style.display = liveRequested ? '' : 'none';
   if (inputChannelsRowEl) inputChannelsRowEl.style.display = liveRequested ? '' : 'none';
   if (inputSampleRateRowEl) inputSampleRateRowEl.style.display = liveRequested ? '' : 'none';
@@ -113,15 +119,18 @@ export function updateInputControlUI() {
     inputBackendSelectEl,
     inputNodeInputEl,
     inputDescriptionInputEl,
+    inputClockModeSelectEl,
     inputChannelsInputEl,
     inputSampleRateInputEl,
     inputFormatSelectEl,
     inputMapSelectEl,
     inputLfeModeSelectEl
   ].forEach((el) => {
-    if (el) {
+      if (el) {
       if (el === inputNodeInputEl || el === inputDescriptionInputEl) {
         el.disabled = !endpointRequested;
+      } else if (el === inputClockModeSelectEl) {
+        el.disabled = !pipewireBridgeRequested;
       } else {
         el.disabled = !liveRequested;
       }
@@ -149,8 +158,9 @@ export function updateInputControlUI() {
         `requested ${requestedModeLabel} • active ${activeModeLabel} • ${backend} • ${channels} ch • ${sampleRate} Hz • ${format} • ${pending}${error}`;
     } else {
       const pipe = app.orenderInputPipe || '—';
+      const clockMode = pipewireBridgeRequested ? ` • clock ${app.liveInput.clockMode || 'dac'}` : '';
       inputStatusInfoEl.textContent =
-        `requested ${requestedModeLabel} • active ${activeModeLabel} • pipe ${pipe} • ${pending}${error}`;
+        `requested ${requestedModeLabel} • active ${activeModeLabel} • pipe ${pipe}${clockMode} • ${pending}${error}`;
     }
   }
 
@@ -162,6 +172,8 @@ export function updateInputControlUI() {
       const backend = app.liveInput.backend || 'pipewire';
       const layout = app.liveInput.layout ? ' • imported layout' : '';
       inputSummaryEl.textContent = `${requestedModeLabel} • active ${activeModeLabel} • ${backend}${layout}`;
+    } else if (pipewireBridgeRequested) {
+      inputSummaryEl.textContent = `${requestedModeLabel} • active ${activeModeLabel} • ${app.liveInput.clockMode || 'dac'} clock`;
     } else {
       inputSummaryEl.textContent = `${requestedModeLabel} • active ${activeModeLabel} • pipe`;
     }
