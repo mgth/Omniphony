@@ -457,6 +457,7 @@ fn run_prepared_render(
                     lib: prepared.bridge_lib.clone(),
                     strict_mode: prepared.strict_mode,
                     presentation: prepared.presentation.clone(),
+                    clock_mode: input_control.requested_snapshot().clock_mode,
                 },
             )
         });

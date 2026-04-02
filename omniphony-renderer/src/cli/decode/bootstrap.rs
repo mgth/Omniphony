@@ -128,6 +128,7 @@ fn build_requested_input_config(
             requested.current_layout = live_input.current_layout.clone();
             requested.clock_mode = match live_input.clock_mode {
                 Some(renderer::config::InputClockModeConfig::Pipewire) => InputClockMode::Pipewire,
+                Some(renderer::config::InputClockModeConfig::Upstream) => InputClockMode::Upstream,
                 Some(renderer::config::InputClockModeConfig::Dac) | None => InputClockMode::Dac,
             };
             requested.channels = live_input.channels;

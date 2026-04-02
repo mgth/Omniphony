@@ -14,7 +14,8 @@ use audio_input::pipewire_pods::{
     build_pipewire_bridge_buffers_pod, build_pipewire_bridge_format_pod,
 };
 use audio_input::{
-    InputBackend, InputControl, InputMode, InputSampleFormat, RequestedAudioInputConfig,
+    InputBackend, InputClockMode, InputControl, InputMode, InputSampleFormat,
+    RequestedAudioInputConfig,
 };
 use audio_output::AudioControl;
 #[cfg(target_os = "linux")]
@@ -74,6 +75,7 @@ pub struct LiveBridgeRuntimeConfig {
     pub lib: bridge_api::BridgeLibRef,
     pub strict_mode: bool,
     pub presentation: String,
+    pub clock_mode: InputClockMode,
 }
 
 #[derive(Clone)]
@@ -83,6 +85,7 @@ struct PipewireBridgeInputConfig {
     channels: u16,
     sample_rate_hz: u32,
     target_latency_ms: u32,
+    clock_mode: InputClockMode,
     runtime: LiveBridgeRuntimeConfig,
 }
 
@@ -109,6 +112,7 @@ impl ActiveCaptureConfig {
                     && lhs.channels == rhs.channels
                     && lhs.sample_rate_hz == rhs.sample_rate_hz
                     && lhs.target_latency_ms == rhs.target_latency_ms
+                    && lhs.clock_mode == rhs.clock_mode
                     && lhs.runtime.strict_mode == rhs.runtime.strict_mode
                     && lhs.runtime.presentation == rhs.runtime.presentation
             }
@@ -154,6 +158,7 @@ fn bridge_stream_config(config: &PipewireBridgeInputConfig) -> PipewireBridgeStr
         channels: config.channels,
         sample_rate_hz: config.sample_rate_hz,
         target_latency_ms: config.target_latency_ms,
+        clock_mode: config.clock_mode,
     }
 }
 
@@ -477,6 +482,7 @@ fn resolve_pipewire_bridge_config(
         target_latency_ms: requested_live_input_latency_ms(audio_control)
             .unwrap_or(PipewireBufferConfig::default().latency_ms)
             .max(1),
+        clock_mode: requested.clock_mode,
         runtime: bridge_runtime.clone(),
     })
 }
@@ -724,7 +730,15 @@ fn run_pipewire_bridge_capture_loop(
     )?;
     let ingest = LiveBridgeIngestRuntime::new(raw_tx);
 
-    match selected_pipewire_bridge_backend() {
+    let backend = selected_pipewire_bridge_backend(config.clock_mode);
+    log::info!(
+        "PipeWire bridge backend selection: node={} clock_mode={:?} backend={:?}",
+        config.node_name,
+        config.clock_mode,
+        backend
+    );
+
+    match backend {
         PipewireBridgeBackendKind::PwAdapter => {
             let stream_config = bridge_stream_config(&config);
             run_pipewire_bridge_adapter_backend_legacy(
@@ -744,6 +758,7 @@ fn run_pipewire_bridge_capture_loop(
                             channels: stream_config.channels,
                             sample_rate_hz: stream_config.sample_rate_hz,
                             target_latency_ms: stream_config.target_latency_ms,
+                            clock_mode: stream_config.clock_mode,
                             runtime: config.runtime.clone(),
                         },
                         ingest,
@@ -788,8 +803,11 @@ fn run_pipewire_bridge_capture_loop(
 // PipeWire DRIVER pacing helpers for the bridge capture stream.
 
 #[cfg(target_os = "linux")]
-fn selected_pipewire_bridge_backend() -> PipewireBridgeBackendKind {
-    PipewireBridgeBackendKind::PwStream
+fn selected_pipewire_bridge_backend(clock_mode: InputClockMode) -> PipewireBridgeBackendKind {
+    match clock_mode {
+        InputClockMode::Upstream => PipewireBridgeBackendKind::PwClientNode,
+        InputClockMode::Dac | InputClockMode::Pipewire => PipewireBridgeBackendKind::PwStream,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -862,6 +880,14 @@ fn drain_direct_pw_stream_driver_trigger(
     trigger_interval: Duration,
     log_prefix: &'static str,
 ) {
+    if stream.state() != pw::stream::StreamState::Streaming {
+        if let Some(pending) = pending {
+            pending.store(0, Ordering::Release);
+        }
+        *next_trigger_at = None;
+        return;
+    }
+
     let Some(pending) = pending else {
         *next_trigger_at = None;
         return;
@@ -917,6 +943,13 @@ fn drain_scheduled_pw_stream_trigger(
     schedule: &Rc<RefCell<PwDriverTriggerSchedule>>,
     log_prefix: &'static str,
 ) {
+    if stream.state() != pw::stream::StreamState::Streaming {
+        let mut schedule = schedule.borrow_mut();
+        schedule.next_trigger_at = None;
+        schedule.pending_reason = None;
+        return;
+    }
+
     let reason = {
         let mut schedule = schedule.borrow_mut();
         let Some(deadline) = schedule.next_trigger_at else {
@@ -1046,6 +1079,7 @@ fn run_pipewire_bridge_pw_stream_backend(
         channels: config.channels,
         sample_rate_hz: config.sample_rate_hz,
         target_latency_ms: config.target_latency_ms,
+        clock_mode: config.clock_mode,
     };
     let ingest = RefCell::new(ingest);
     run_pipewire_bridge_input_stream(input_control, stream_config, stop, move |chunk| {

@@ -451,6 +451,7 @@ pub fn apply_simple_osc_control(
             match value.to_ascii_lowercase().as_str() {
                 "dac" => Some(InputClockMode::Dac),
                 "pipewire" => Some(InputClockMode::Pipewire),
+                "upstream" => Some(InputClockMode::Upstream),
                 _ => None,
             }
         });
@@ -462,6 +463,7 @@ pub fn apply_simple_osc_control(
                 value: BroadcastValue::String(match requested {
                     InputClockMode::Dac => "dac".to_string(),
                     InputClockMode::Pipewire => "pipewire".to_string(),
+                    InputClockMode::Upstream => "upstream".to_string(),
                 }),
             });
         }

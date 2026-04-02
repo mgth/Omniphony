@@ -1218,7 +1218,7 @@ fn control_input_live_format(state: State<SharedState>, value: String) {
 #[tauri::command]
 fn control_input_live_clock_mode(state: State<SharedState>, value: String) {
     let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "dac" | "pipewire") {
+    if !matches!(trimmed.as_str(), "dac" | "pipewire" | "upstream") {
         return;
     }
     send_control(

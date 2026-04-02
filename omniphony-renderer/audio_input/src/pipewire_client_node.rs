@@ -429,7 +429,7 @@ pub fn run_pipewire_bridge_client_node_backend(
         let node_listener_res = unsafe {
             pw_node_add_listener_raw(pw_node, &mut state.node_hook, &node_events, state_ptr.cast())
         };
-        log::info!(
+        log::debug!(
             "PipeWire bridge client-node node_add_listener: node={} result={} pw_node={:p}",
             config.node_name,
             node_listener_res,
@@ -468,7 +468,7 @@ pub fn run_pipewire_bridge_client_node_backend(
             &state.node_info,
         )
     };
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node update: node={} result={}",
         config.node_name,
         update_res
@@ -485,14 +485,14 @@ pub fn run_pipewire_bridge_client_node_backend(
             &state.port_info,
         )
     };
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node port_update: node={} result={}",
         config.node_name,
         port_update_res
     );
 
     let active_res = unsafe { pw_client_node_set_active_raw(client_node, true) };
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node set_active: node={} result={}",
         config.node_name,
         active_res
@@ -705,7 +705,7 @@ fn pipewire_bridge_client_node_refresh_configured_state(
             &state.port_info,
         )
     };
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node refresh configured state: node={} configured={} update_res={} port_update_res={}",
         state.config.node_name,
         state.format_configured,
@@ -775,7 +775,7 @@ fn pipewire_bridge_client_node_mark_activation_ready(state: &mut PipewireBridgeC
         std::ptr::write_volatile(&mut activation.state[1].status, PW_NODE_ACTIVATION_FINISHED);
     }
 
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node activation ready: node={} activation={:p} client_version={} server_version={} status={} state0={} state1={}",
         state.config.node_name,
         state.activation_ptr,
@@ -913,7 +913,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_core_add_mem(
         ptr,
         size,
     });
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node core add_mem: node={} id={} type={} fd={} flags={} size={} ptr={:p}",
         state.config.node_name,
         id,
@@ -946,7 +946,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_core_remove_mem(data: *mut c_vo
         state.activation_ptr = std::ptr::null_mut();
         state.activation_size = 0;
     }
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node core remove_mem: node={} id={}",
         state.config.node_name,
         id
@@ -985,7 +985,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_transport(
                 std::ptr::null_mut()
             },
         );
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node transport: node={} readfd={} writefd={} mem_id={} offset={} size={} ptr={:p}",
         state.config.node_name,
         readfd,
@@ -1005,7 +1005,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_set_param(
     param: *const spa::sys::spa_pod,
 ) -> i32 {
     let state = unsafe { &mut *(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node set_param: node={} id={} flags={} param_null={}",
         state.config.node_name,
         id,
@@ -1023,7 +1023,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_set_param(
             }
             state.format_configured = true;
             let refresh_res = pipewire_bridge_client_node_refresh_configured_state(state);
-            log::info!(
+            log::debug!(
                 "PipeWire bridge client-node accepted node-level config: node={} id={} configured={} refresh_res={}",
                 state.config.node_name,
                 id,
@@ -1067,7 +1067,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_set_io(
         _ => {}
     }
     pipewire_bridge_client_node_mark_activation_ready(state);
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node set_io: node={} id={} mem_id={} offset={} size={} ptr={:p}",
         state.config.node_name,
         id,
@@ -1084,7 +1084,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_event(
     event: *const spa::sys::spa_event,
 ) -> i32 {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node event: node={} event={:p}",
         state.config.node_name,
         event
@@ -1097,7 +1097,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_command(
     command: *const spa::sys::spa_command,
 ) -> i32 {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node command: node={} command={:p}",
         state.config.node_name,
         command
@@ -1112,7 +1112,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_add_port(
     props: *const spa::sys::spa_dict,
 ) -> i32 {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node add_port: node={} direction={:?} port_id={} props={:p}",
         state.config.node_name,
         direction,
@@ -1128,7 +1128,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_remove_port(
     port_id: u32,
 ) -> i32 {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node remove_port: node={} direction={:?} port_id={}",
         state.config.node_name,
         direction,
@@ -1146,7 +1146,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_port_set_param(
     param: *const spa::sys::spa_pod,
 ) -> i32 {
     let state = unsafe { &mut *(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node port_set_param: node={} direction={:?} port_id={} id={} flags={} param_null={}",
         state.config.node_name,
         direction,
@@ -1166,7 +1166,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_port_set_param(
     }
     state.format_configured = true;
     let refresh_res = pipewire_bridge_client_node_refresh_configured_state(state);
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node accepted port format: node={} port_id={} configured={} refresh_res={}",
         state.config.node_name,
         port_id,
@@ -1186,7 +1186,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_port_use_buffers(
     buffers: *mut pw::sys::pw_client_node_buffer,
 ) -> i32 {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node port_use_buffers: node={} direction={:?} port_id={} mix_id={} flags={} n_buffers={} buffers={:p}",
         state.config.node_name,
         direction,
@@ -1210,7 +1210,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_port_use_buffers(
                 spa_buffers.as_mut_ptr(),
             )
         };
-        log::info!(
+        log::trace!(
             "PipeWire bridge client-node port_buffers: node={} direction={:?} port_id={} mix_id={} n_buffers={} result={}",
             state.config.node_name,
             direction,
@@ -1234,7 +1234,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_port_set_io(
     size: u32,
 ) -> i32 {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node port_set_io: node={} direction={:?} port_id={} mix_id={} id={} mem_id={} offset={} size={}",
         state.config.node_name,
         direction,
@@ -1273,7 +1273,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_set_activation(
             },
         );
     pipewire_bridge_client_node_mark_activation_ready(state);
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node set_activation: node={} peer_node_id={} signalfd={} mem_id={} offset={} size={} ptr={:p}",
         state.config.node_name,
         node_id,
@@ -1295,7 +1295,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_port_set_mix_info(
     props: *const spa::sys::spa_dict,
 ) -> i32 {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node port_set_mix_info: node={} direction={:?} port_id={} mix_id={} peer_id={} props={:p}",
         state.config.node_name,
         direction,
@@ -1309,12 +1309,12 @@ unsafe extern "C" fn pipewire_bridge_client_node_port_set_mix_info(
 
 unsafe extern "C" fn pipewire_bridge_client_node_proxy_destroy(data: *mut c_void) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!("PipeWire bridge client-node proxy destroy: node={}", state.config.node_name);
+    log::debug!("PipeWire bridge client-node proxy destroy: node={}", state.config.node_name);
 }
 
 unsafe extern "C" fn pipewire_bridge_client_node_proxy_bound(data: *mut c_void, global_id: u32) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node proxy bound: node={} global_id={}",
         state.config.node_name,
         global_id
@@ -1323,12 +1323,12 @@ unsafe extern "C" fn pipewire_bridge_client_node_proxy_bound(data: *mut c_void, 
 
 unsafe extern "C" fn pipewire_bridge_client_node_proxy_removed(data: *mut c_void) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!("PipeWire bridge client-node proxy removed: node={}", state.config.node_name);
+    log::debug!("PipeWire bridge client-node proxy removed: node={}", state.config.node_name);
 }
 
 unsafe extern "C" fn pipewire_bridge_client_node_proxy_done(data: *mut c_void, seq: i32) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node proxy done: node={} seq={}",
         state.config.node_name,
         seq
@@ -1364,7 +1364,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_proxy_bound_props(
     props: *const spa::sys::spa_dict,
 ) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node proxy bound_props: node={} global_id={} props={:p}",
         state.config.node_name,
         global_id,
@@ -1378,7 +1378,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_node_info(
 ) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
     if info.is_null() {
-        log::info!(
+        log::debug!(
             "PipeWire bridge client-node node info: node={} info=<null>",
             state.config.node_name
         );
@@ -1394,7 +1394,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_node_info(
                 .into_owned(),
         )
     };
-    log::info!(
+    log::debug!(
         "PipeWire bridge client-node node info: node={} id={} state={} change_mask={} n_input_ports={} n_output_ports={} error={}",
         state.config.node_name,
         info.id,
@@ -1415,7 +1415,7 @@ unsafe extern "C" fn pipewire_bridge_client_node_node_param(
     param: *const spa::sys::spa_pod,
 ) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::info!(
+    log::trace!(
         "PipeWire bridge client-node node param: node={} seq={} id={} index={} next={} param_null={}",
         state.config.node_name,
         seq,

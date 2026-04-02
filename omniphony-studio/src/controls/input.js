@@ -69,7 +69,9 @@ export function updateInputControlUI() {
     inputDescriptionInputEl.value = stringOrEmpty(app.liveInput.description);
   }
   if (inputClockModeSelectEl) {
-    inputClockModeSelectEl.value = app.liveInput.clockMode === 'pipewire' ? 'pipewire' : 'dac';
+    inputClockModeSelectEl.value = ['dac', 'pipewire', 'upstream'].includes(app.liveInput.clockMode)
+      ? app.liveInput.clockMode
+      : 'dac';
   }
   if (inputLayoutInputEl) {
     inputLayoutInputEl.value = stringOrEmpty(app.liveInput.layout);

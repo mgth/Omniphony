@@ -48,6 +48,7 @@ fn input_clock_mode_name(mode: InputClockMode) -> &'static str {
     match mode {
         InputClockMode::Dac => "dac",
         InputClockMode::Pipewire => "pipewire",
+        InputClockMode::Upstream => "upstream",
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::InputControl;
+use crate::{InputClockMode, InputControl};
 use crate::pipewire_pods::{
     build_pipewire_bridge_buffers_pod, build_pipewire_bridge_format_pod,
     build_pipewire_bridge_stream_properties,
@@ -25,6 +25,11 @@ pub struct PipewireBridgeStreamConfig {
     pub channels: u16,
     pub sample_rate_hz: u32,
     pub target_latency_ms: u32,
+    pub clock_mode: InputClockMode,
+}
+
+fn bridge_stream_uses_driver(clock_mode: InputClockMode) -> bool {
+    !matches!(clock_mode, InputClockMode::Upstream)
 }
 
 struct BridgeCaptureUserData {
@@ -129,6 +134,14 @@ fn drain_direct_pw_stream_driver_trigger(
     trigger_interval: Duration,
     log_prefix: &'static str,
 ) {
+    if stream.state() != pw::stream::StreamState::Streaming {
+        if let Some(pending) = pending {
+            pending.store(0, Ordering::Release);
+        }
+        *next_trigger_at = None;
+        return;
+    }
+
     let Some(pending) = pending else {
         *next_trigger_at = None;
         return;
@@ -183,6 +196,13 @@ fn drain_scheduled_pw_stream_trigger(
     schedule: &Rc<RefCell<PwDriverTriggerSchedule>>,
     log_prefix: &'static str,
 ) {
+    if stream.state() != pw::stream::StreamState::Streaming {
+        let mut schedule = schedule.borrow_mut();
+        schedule.next_trigger_at = None;
+        schedule.pending_reason = None;
+        return;
+    }
+
     let reason = {
         let mut schedule = schedule.borrow_mut();
         let Some(deadline) = schedule.next_trigger_at else {
@@ -301,6 +321,7 @@ where
     F: FnMut(&[u8]) -> (usize, usize) + 'static,
 {
     pw::init();
+    let use_driver = bridge_stream_uses_driver(config.clock_mode);
 
     let log_prefix = "PipeWire bridge input";
     let mainloop = pw::main_loop::MainLoopRc::new(None)
@@ -375,12 +396,19 @@ where
         .state_changed(move |_stream, _user_data, old, new| {
             log::info!("{} state changed: {:?} -> {:?}", log_prefix, old, new);
             if new == pw::stream::StreamState::Streaming {
-                log::info!("{} is now STREAMING — triggering initial driver cycle", log_prefix);
-                schedule_pw_stream_driver_trigger(
-                    &trigger_schedule_for_state,
-                    Duration::ZERO,
-                    "state_changed_streaming",
-                );
+                if use_driver {
+                    log::info!("{} is now STREAMING — triggering initial driver cycle", log_prefix);
+                    schedule_pw_stream_driver_trigger(
+                        &trigger_schedule_for_state,
+                        Duration::ZERO,
+                        "state_changed_streaming",
+                    );
+                } else {
+                    log::info!(
+                        "{} is now STREAMING — upstream clock mode active (no DRIVER trigger)",
+                        log_prefix
+                    );
+                }
             }
             if matches!(new, pw::stream::StreamState::Error(_)) {
                 input_control_for_state.set_input_error(Some(format!(
@@ -521,7 +549,8 @@ where
                     user_data.oversized_chunks_since_log = 0;
                     user_data.empty_polls_since_log = 0;
                 }
-                if now.duration_since(user_data.last_idle_trigger)
+                if use_driver
+                    && now.duration_since(user_data.last_idle_trigger)
                     >= current_pw_driver_trigger_interval(user_data)
                 {
                     user_data.last_idle_trigger = now;
@@ -564,7 +593,8 @@ where
             if datas.is_empty() {
                 user_data.datas_empty_since_log += 1;
                 let now = Instant::now();
-                if now.duration_since(user_data.last_idle_trigger)
+                if use_driver
+                    && now.duration_since(user_data.last_idle_trigger)
                     >= current_pw_driver_trigger_interval(user_data)
                 {
                     user_data.last_idle_trigger = now;
@@ -581,7 +611,8 @@ where
             let Some(bytes) = data.data() else {
                 user_data.data_missing_since_log += 1;
                 let now = Instant::now();
-                if now.duration_since(user_data.last_idle_trigger)
+                if use_driver
+                    && now.duration_since(user_data.last_idle_trigger)
                     >= current_pw_driver_trigger_interval(user_data)
                 {
                     user_data.last_idle_trigger = now;
@@ -596,7 +627,8 @@ where
             if byte_len == 0 {
                 user_data.zero_size_chunks_since_log += 1;
                 let now = Instant::now();
-                if now.duration_since(user_data.last_idle_trigger)
+                if use_driver
+                    && now.duration_since(user_data.last_idle_trigger)
                     >= current_pw_driver_trigger_interval(user_data)
                 {
                     user_data.last_idle_trigger = now;
@@ -611,7 +643,8 @@ where
             if byte_len > bytes.len() {
                 user_data.oversized_chunks_since_log += 1;
                 let now = Instant::now();
-                if now.duration_since(user_data.last_idle_trigger)
+                if use_driver
+                    && now.duration_since(user_data.last_idle_trigger)
                     >= current_pw_driver_trigger_interval(user_data)
                 {
                     user_data.last_idle_trigger = now;
@@ -625,7 +658,8 @@ where
             }
             if user_data.channels == 0 {
                 let now = Instant::now();
-                if now.duration_since(user_data.last_idle_trigger)
+                if use_driver
+                    && now.duration_since(user_data.last_idle_trigger)
                     >= current_pw_driver_trigger_interval(user_data)
                 {
                     user_data.last_idle_trigger = now;
@@ -721,11 +755,13 @@ where
                 user_data.frames_since_log = 0;
                 user_data.empty_polls_since_log = 0;
             }
-            schedule_pw_stream_driver_trigger(
-                &trigger_schedule_for_process,
-                current_pw_driver_trigger_interval(user_data),
-                "post_process",
-            );
+            if use_driver {
+                schedule_pw_stream_driver_trigger(
+                    &trigger_schedule_for_process,
+                    current_pw_driver_trigger_interval(user_data),
+                    "post_process",
+                );
+            }
         })
         .drained(move |_, user_data| {
             user_data.drained_calls_since_log += 1;
@@ -757,13 +793,17 @@ where
         .ok_or_else(|| anyhow!("Invalid PipeWire buffers pod"))?;
     let mut params = [format_pod, buffers_pod];
 
+    let mut stream_flags =
+        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS;
+    if use_driver {
+        stream_flags |= pw::stream::StreamFlags::DRIVER;
+    }
+
     stream
         .connect(
             spa::utils::Direction::Input,
             None,
-            pw::stream::StreamFlags::AUTOCONNECT
-                | pw::stream::StreamFlags::MAP_BUFFERS
-                | pw::stream::StreamFlags::DRIVER,
+            stream_flags,
             &mut params,
         )
         .map_err(|e| anyhow!("Failed to connect PipeWire bridge input stream: {e:?}"))?;
@@ -774,12 +814,19 @@ where
         stream.node_id()
     );
 
-    input_control.register_direct_trigger_target(config.sample_rate_hz);
-    log::info!(
-        "{} registered direct trigger target: capture_rate={}Hz",
-        log_prefix,
-        config.sample_rate_hz
-    );
+    if use_driver {
+        input_control.register_direct_trigger_target(config.sample_rate_hz);
+        log::info!(
+            "{} registered direct trigger target: capture_rate={}Hz",
+            log_prefix,
+            config.sample_rate_hz
+        );
+    } else {
+        log::info!(
+            "{} using upstream clock mode: no DRIVER scheduling, waiting for graph-driven callbacks",
+            log_prefix
+        );
+    }
     let direct_trigger_active = input_control.direct_trigger_active_arc();
     let mut next_direct_trigger_at: Option<Instant> = None;
 
@@ -801,11 +848,13 @@ where
                 trigger_interval,
                 log_prefix,
             );
-        } else {
+        } else if use_driver {
             let _ = mainloop
                 .loop_()
                 .iterate(next_pw_stream_driver_timeout(&trigger_schedule));
             drain_scheduled_pw_stream_trigger(&stream, &trigger_schedule, log_prefix);
+        } else {
+            let _ = mainloop.loop_().iterate(Duration::from_millis(50));
         }
     }
 

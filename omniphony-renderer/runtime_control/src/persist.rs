@@ -204,6 +204,7 @@ pub fn save_live_config(
             clock_mode: Some(match requested.clock_mode {
                 InputClockMode::Dac => renderer::config::InputClockModeConfig::Dac,
                 InputClockMode::Pipewire => renderer::config::InputClockModeConfig::Pipewire,
+                InputClockMode::Upstream => renderer::config::InputClockModeConfig::Upstream,
             }),
             channels: requested.channels,
             sample_rate: requested.sample_rate_hz,

@@ -47,6 +47,7 @@ pub enum InputSampleFormat {
 pub enum InputClockMode {
     Dac,
     Pipewire,
+    Upstream,
 }
 
 #[derive(Debug, Clone)]

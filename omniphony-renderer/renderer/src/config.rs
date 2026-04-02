@@ -185,6 +185,7 @@ pub enum InputLfeModeConfig {
 pub enum InputClockModeConfig {
     Dac,
     Pipewire,
+    Upstream,
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]

@@ -1254,7 +1254,9 @@ export function setupUIListeners() {
 
   if (inputClockModeSelectEl) {
     inputClockModeSelectEl.addEventListener('change', () => {
-      const value = inputClockModeSelectEl.value === 'pipewire' ? 'pipewire' : 'dac';
+      const value = ['dac', 'pipewire', 'upstream'].includes(inputClockModeSelectEl.value)
+        ? inputClockModeSelectEl.value
+        : 'dac';
       app.liveInput.clockMode = value;
       updateInputControlUI();
       invoke('control_input_live_clock_mode', { value });
