@@ -38,6 +38,10 @@ export const LOCALE_OPTION_SPECS = [
 
 export { LOCALE_STORAGE_KEY };
 
+let renderLogLevelControlCallback = null;
+let renderLogPanelCallback = null;
+const localeChangeListeners = new Set();
+
 function normalizeLocale(value) {
   return ['fr', 'de', 'ja', 'es', 'it', 'pt-BR', 'zh-CN'].includes(value) ? value : 'en';
 }
@@ -78,7 +82,25 @@ function detectLocale() {
 export const i18nState = { locale: detectLocale() };
 
 export function setLocale(newLocale) {
-  i18nState.locale = normalizeLocale(newLocale);
+  const pref = normalizeLocalePreference(newLocale);
+  localStorage.setItem(LOCALE_STORAGE_KEY, pref);
+  i18nState.locale = pref === 'auto' ? detectSystemLocale() : pref;
+  applyStaticTranslations();
+  localeChangeListeners.forEach((listener) => {
+    try {
+      listener(i18nState.locale, pref);
+    } catch (error) {
+      console.error('[i18n] locale change listener failed', error);
+    }
+  });
+}
+
+export function onLocaleChange(listener) {
+  if (typeof listener !== 'function') return () => {};
+  localeChangeListeners.add(listener);
+  return () => {
+    localeChangeListeners.delete(listener);
+  };
 }
 
 export function t(key) {
@@ -94,11 +116,18 @@ export function tf(key, values = {}) {
 }
 
 /**
- * Apply data-i18n, data-i18n-title, data-i18n-html attributes and locale select.
+ * Apply data-i18n, data-i18n-title, data-i18n-html, data-i18n-placeholder,
+ * and data-i18n-aria-label attributes plus locale select.
  * `renderLogLevelControl` and `renderLogPanel` are passed as callbacks to avoid
  * circular imports with the log module.
  */
 export function applyStaticTranslations(renderLogLevelControl, renderLogPanel) {
+  if (typeof renderLogLevelControl === 'function') {
+    renderLogLevelControlCallback = renderLogLevelControl;
+  }
+  if (typeof renderLogPanel === 'function') {
+    renderLogPanelCallback = renderLogPanel;
+  }
   const localeSelectEl = document.getElementById('localeSelect');
   document.documentElement.lang = i18nState.locale;
   if (localeSelectEl) {
@@ -122,6 +151,14 @@ export function applyStaticTranslations(renderLogLevelControl, renderLogPanel) {
     const key = el.getAttribute('data-i18n-html');
     if (key) el.innerHTML = t(key);
   });
-  if (renderLogLevelControl) renderLogLevelControl();
-  if (renderLogPanel) renderLogPanel();
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+    const key = el.getAttribute('data-i18n-placeholder');
+    if (key) el.setAttribute('placeholder', t(key));
+  });
+  document.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
+    const key = el.getAttribute('data-i18n-aria-label');
+    if (key) el.setAttribute('aria-label', t(key));
+  });
+  if (renderLogLevelControlCallback) renderLogLevelControlCallback();
+  if (renderLogPanelCallback) renderLogPanelCallback();
 }

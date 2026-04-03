@@ -390,10 +390,26 @@ export function renderRenderTimeUI() {
   setMarker(rendererPerfRenderMaxMarkerEl, decMax === null && rndMax === null ? null : (decMax ?? 0) + (rndMax ?? 0));
   setMarker(rendererPerfWriteMaxMarkerEl, decMax === null && rndMax === null && wriMax === null ? null : (decMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0));
 
-  if (rendererPerfDecodeValueEl) rendererPerfDecodeValueEl.textContent = `decode ${app.decodeTimeMs === null ? '—' : `${formatNumber(dec, 3)} ms`}`;
-  if (rendererPerfRenderValueEl) rendererPerfRenderValueEl.textContent = `render ${app.renderTimeMs === null ? '—' : `${formatNumber(rnd, 3)} ms`}`;
-  if (rendererPerfWriteValueEl) rendererPerfWriteValueEl.textContent = `write ${app.writeTimeMs === null ? '—' : `${formatNumber(wri, 3)} ms`}`;
-  if (rendererPerfFrameValueEl) rendererPerfFrameValueEl.textContent = `frame ${app.frameDurationMs === null ? '—' : `${formatNumber(frameBudgetMs, 3)} ms`}`;
+  if (rendererPerfDecodeValueEl) {
+    rendererPerfDecodeValueEl.textContent = tf('renderer.perf.decode', {
+      value: app.decodeTimeMs === null ? '—' : `${formatNumber(dec, 3)} ms`
+    });
+  }
+  if (rendererPerfRenderValueEl) {
+    rendererPerfRenderValueEl.textContent = tf('renderer.perf.render', {
+      value: app.renderTimeMs === null ? '—' : `${formatNumber(rnd, 3)} ms`
+    });
+  }
+  if (rendererPerfWriteValueEl) {
+    rendererPerfWriteValueEl.textContent = tf('renderer.perf.write', {
+      value: app.writeTimeMs === null ? '—' : `${formatNumber(wri, 3)} ms`
+    });
+  }
+  if (rendererPerfFrameValueEl) {
+    rendererPerfFrameValueEl.textContent = tf('renderer.perf.frame', {
+      value: app.frameDurationMs === null ? '—' : `${formatNumber(frameBudgetMs, 3)} ms`
+    });
+  }
 }
 
 export function updateRenderTimeUI() {

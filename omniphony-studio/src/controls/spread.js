@@ -5,6 +5,7 @@
  */
 
 import { app, dirty } from '../state.js';
+import { t, tf } from '../i18n.js';
 import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 
@@ -27,8 +28,12 @@ export function renderSpreadDisplay() {
   const maxDeg = app.spreadState.max === null ? null : app.spreadState.max * 180.0;
   const minText = minDeg === null ? '—' : formatNumber(minDeg, 0);
   const maxText = maxDeg === null ? '—' : formatNumber(maxDeg, 0);
-  const modeText = app.spreadState.fromDistance === null ? '—' : app.spreadState.fromDistance ? 'distance' : 'object_size';
-  spreadInfoEl.textContent = `spread: ${minText}° / ${maxText}° | mode: ${modeText}`;
+  const modeText = app.spreadState.fromDistance === null ? '—' : app.spreadState.fromDistance ? t('spread.mode.distance') : t('spread.mode.objectSize');
+  spreadInfoEl.textContent = tf('spread.summary', {
+    min: `${minText}°`,
+    max: `${maxText}°`,
+    mode: modeText
+  });
   if (spreadMinSliderEl) {
     const value = minDeg === null ? 0 : minDeg;
     spreadMinSliderEl.value = String(value);

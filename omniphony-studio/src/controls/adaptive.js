@@ -150,7 +150,7 @@ export function renderAdaptiveResamplingUI() {
   }
   const isPaused = app.adaptiveResamplingPaused === true;
   if (adaptivePauseBtnEl) {
-    adaptivePauseBtnEl.textContent = isPaused ? '▶ Resume' : '⏸ Pause';
+    adaptivePauseBtnEl.textContent = isPaused ? `▶ ${t('adaptive.resume')}` : `⏸ ${t('adaptive.pause')}`;
     adaptivePauseBtnEl.style.background = isPaused ? 'rgba(255,180,0,0.18)' : 'rgba(255,255,255,0.08)';
     adaptivePauseBtnEl.style.borderColor = isPaused ? 'rgba(255,180,0,0.5)' : 'rgba(255,255,255,0.2)';
     adaptivePauseBtnEl.style.color = isPaused ? '#ffd87a' : '#d9ecff';

@@ -8,6 +8,8 @@
     <style>
       :root {
         color-scheme: dark;
+        --panel-open-max-height: min(44vh, 420px);
+        --panel-open-max-height-large: min(52vh, 520px);
       }
 
       body {
@@ -494,6 +496,17 @@
         gap: 0.5rem;
         margin-top: 0.2rem;
         justify-content: space-between;
+        min-width: 0;
+      }
+
+      .inline-toggle > :first-child,
+      .title-with-info > :first-child,
+      .control-row > label,
+      .room-geometry-summary-label,
+      .room-geometry-summary-value {
+        min-width: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
       }
 
       .spread-row {
@@ -613,10 +626,12 @@
 
       .osc-config-form.open {
         margin-top: 0.4rem;
-        max-height: none;
+        max-height: var(--panel-open-max-height);
         opacity: 1;
         pointer-events: auto;
-        overflow: visible;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
       }
 
       .room-geometry-form {
@@ -632,10 +647,12 @@
 
       .room-geometry-form.open {
         margin-top: 0.2rem;
-        max-height: none;
+        max-height: var(--panel-open-max-height-large);
         opacity: 1;
         pointer-events: auto;
-        overflow: visible;
+        overflow-x: auto;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
       }
 
       .adaptive-advanced-form {
@@ -680,10 +697,12 @@
 
       .telemetry-gauges-form.open {
         margin-top: 0.35rem;
-        max-height: none;
+        max-height: var(--panel-open-max-height-large);
         opacity: 1;
         pointer-events: auto;
-        overflow: visible;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
       }
 
       .save-footer {
@@ -762,6 +781,7 @@
         align-items: center;
         justify-content: space-between;
         gap: 0.4rem;
+        min-width: 0;
       }
 
       .info-icon-btn {
@@ -856,10 +876,12 @@
 
       .conditional-params.open {
         gap: 0.2rem;
-        max-height: none;
+        max-height: var(--panel-open-max-height);
         opacity: 1;
         pointer-events: auto;
-        overflow: visible;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
       }
 
       #inputSectionContent {
@@ -867,8 +889,18 @@
       }
 
       #inputSectionContent.conditional-params.open {
-        max-height: none;
-        overflow: visible;
+        max-height: var(--panel-open-max-height-large);
+      }
+
+      #displaySectionContent.conditional-params.open,
+      #audioOutputSectionContent.conditional-params.open,
+      #rendererSectionContent.conditional-params.open,
+      #trailSectionContent.conditional-params.open,
+      #vbapSectionContent.conditional-params.open,
+      #spreadSectionContent.conditional-params.open,
+      #distanceDiffuseParams.conditional-params.open,
+      #spreadFromDistanceParams.conditional-params.open {
+        max-height: var(--panel-open-max-height-large);
       }
 
       .info-list {
@@ -1055,6 +1087,7 @@
         gap: 0.35rem;
         align-items: center;
         margin-top: 0.2rem;
+        min-width: 0;
       }
 
       .speaker-item .control-row {
@@ -1115,8 +1148,10 @@
       .input-panel-row label,
       .input-panel-inline-label {
         font-size: 12px;
-        white-space: nowrap;
+        white-space: normal;
+        overflow-wrap: anywhere;
         color: rgba(217, 236, 255, 0.92);
+        min-width: 0;
       }
 
       .input-panel-row .delay-input,
@@ -1608,18 +1643,18 @@
       </div>
     </div>
     <div id="overlay">
-      <div id="aboutOpenArea" class="app-brand" role="button" tabindex="0" title="About" style="cursor:pointer">
+      <div id="aboutOpenArea" class="app-brand" role="button" tabindex="0" data-i18n-title="about.open" title="About" style="cursor:pointer">
         <img class="app-brand-logo" src="./omniphony-logo.svg" alt="Omniphony logo" />
         <div class="app-brand-title">
           <strong data-i18n="app.title">Omniphony Studio</strong>
-          <div class="app-brand-subtitle">Spatial Control</div>
+          <div class="app-brand-subtitle" data-i18n="app.subtitle">Spatial Control</div>
         </div>
       </div>
       <div id="overlayScroll">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div><span class="osc-status-dot" id="oscStatusDot"></span><span data-i18n="osc.label">OSC</span>: <span id="status">Initializing...</span></div>
         <div style="display:flex;align-items:center;gap:0.35rem">
-          <button id="aboutBtn" type="button" class="info-icon-btn" title="About">?</button>
+          <button id="aboutBtn" type="button" class="info-icon-btn" data-i18n-title="about.open" title="About">?</button>
           <button id="oscInfoBtn" type="button" class="info-icon-btn" data-i18n-title="osc.infoButton" title="OSC info">i</button>
           <button id="oscConfigToggleBtn" type="button" class="panel-toggle-btn" data-i18n-title="osc.configTitle" title="OSC Configuration">⚙</button>
         </div>
@@ -1648,7 +1683,7 @@
       <div class="info-section" id="audioInputSection">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
           <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
-            <div class="info-title" style="margin:0">Audio Input</div>
+            <div class="info-title" style="margin:0" data-i18n="section.audioInput">Audio Input</div>
             <div id="inputSummary" style="display:none;min-width:0;flex:1 1 auto;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pipe bridge • active Pipe bridge • pipe</div>
           </div>
           <button id="inputSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
@@ -1658,97 +1693,97 @@
           <div id="inputStatusInfo" class="input-panel-status">requested Pipe bridge • active Pipe bridge • —</div>
           <div class="input-panel-grid">
             <div class="input-panel-row">
-              <label for="inputModeSelect">Mode</label>
+              <label for="inputModeSelect" data-i18n="input.mode">Mode</label>
               <select id="inputModeSelect" class="delay-input">
-                <option value="pipe_bridge">Pipe bridge</option>
-                <option value="pipewire">PipeWire</option>
-                <option value="pipewire_bridge">PipeWire bridge</option>
+                <option value="pipe_bridge" data-i18n="input.mode.pipe_bridge">Pipe bridge</option>
+                <option value="pipewire" data-i18n="input.mode.pipewire">PipeWire</option>
+                <option value="pipewire_bridge" data-i18n="input.mode.pipewire_bridge">PipeWire bridge</option>
               </select>
             </div>
           </div>
           <div id="inputBridgeFields" class="input-panel-stack">
-            <div class="input-panel-subtitle">Bridge Input</div>
+            <div class="input-panel-subtitle" data-i18n="input.bridgeInput">Bridge Input</div>
             <div class="input-panel-row">
-              <label for="oscBridgePathInput">Bridge</label>
+              <label for="oscBridgePathInput" data-i18n="input.bridgeBinary">Bridge</label>
               <div style="display:flex;align-items:center;gap:0.4rem;min-width:0">
-                <input id="oscBridgePathInput" type="text" value="" spellcheck="false" placeholder="Auto-detect" class="delay-input" style="min-width:0;flex:1 1 auto" />
-                <button id="oscBridgeBrowseBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Browse</button>
+                <input id="oscBridgePathInput" type="text" value="" spellcheck="false" placeholder="Auto-detect" data-i18n-placeholder="input.autoDetect" class="delay-input" style="min-width:0;flex:1 1 auto" />
+                <button id="oscBridgeBrowseBtn" type="button" data-i18n="input.browse" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Browse</button>
               </div>
             </div>
             <div class="input-panel-row">
-              <label>Pipe</label>
-              <input id="pipeStatus" class="delay-input" type="text" spellcheck="false" placeholder="Auto-detect" style="width:100%;min-width:0;box-sizing:border-box;text-align:left" />
+              <label data-i18n="input.pipe">Pipe</label>
+              <input id="pipeStatus" class="delay-input" type="text" spellcheck="false" placeholder="Auto-detect" data-i18n-placeholder="input.autoDetect" style="width:100%;min-width:0;box-sizing:border-box;text-align:left" />
             </div>
           </div>
           <div id="inputLiveFields" class="input-panel-stack">
-            <div class="input-panel-subtitle">Live Source</div>
+            <div class="input-panel-subtitle" data-i18n="input.liveSource">Live Source</div>
             <div class="input-panel-row">
-              <label for="inputBackendSelect">Backend</label>
+              <label for="inputBackendSelect" data-i18n="input.backend">Backend</label>
               <select id="inputBackendSelect" class="delay-input">
-                <option value="pipewire">PipeWire</option>
-                <option value="asio">ASIO</option>
+                <option value="pipewire" data-i18n="input.backend.pipewire">PipeWire</option>
+                <option value="asio" data-i18n="input.backend.asio">ASIO</option>
               </select>
             </div>
             <div class="input-panel-row">
-              <label for="inputNodeInput">Node</label>
+              <label for="inputNodeInput" data-i18n="input.node">Node</label>
               <input id="inputNodeInput" class="delay-input" type="text" placeholder="omniphony_input_7_1" />
             </div>
             <div class="input-panel-row">
-              <label for="inputDescriptionInput">Description</label>
+              <label for="inputDescriptionInput" data-i18n="input.description">Description</label>
               <input id="inputDescriptionInput" class="delay-input" type="text" placeholder="Omniphony Input 7.1" />
             </div>
             <div class="input-panel-row">
-              <label for="inputClockModeSelect">Clock</label>
+              <label for="inputClockModeSelect" data-i18n="input.clock">Clock</label>
               <select id="inputClockModeSelect" class="delay-input">
-                <option value="dac">DAC</option>
-                <option value="pipewire">PipeWire</option>
-                <option value="upstream">Upstream</option>
+                <option value="dac" data-i18n="input.clock.dac">DAC</option>
+                <option value="pipewire" data-i18n="input.clock.pipewire">PipeWire</option>
+                <option value="upstream" data-i18n="input.clock.upstream">Upstream</option>
               </select>
             </div>
             <div class="input-panel-row">
-              <label for="inputLayoutInput">Layout</label>
+              <label for="inputLayoutInput" data-i18n="input.layout">Layout</label>
               <div style="display:flex;align-items:center;gap:0.4rem;min-width:0">
-                <input id="inputLayoutInput" class="delay-input" type="text" placeholder="No imported layout" readonly style="min-width:0;flex:1 1 auto" />
-                <button id="inputLayoutBrowseBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Import</button>
+                <input id="inputLayoutInput" class="delay-input" type="text" placeholder="No imported layout" data-i18n-placeholder="input.noImportedLayout" readonly style="min-width:0;flex:1 1 auto" />
+                <button id="inputLayoutBrowseBtn" type="button" data-i18n="input.import" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Import</button>
               </div>
             </div>
             <div class="input-panel-inline-grid">
               <div class="input-panel-field">
-                <label for="inputChannelsInput" class="input-panel-inline-label">Channels</label>
+                <label for="inputChannelsInput" class="input-panel-inline-label" data-i18n="input.channels">Channels</label>
                 <input id="inputChannelsInput" class="delay-input" type="number" min="1" step="1" value="8" />
               </div>
               <div class="input-panel-field">
-                <label for="inputSampleRateInput" class="input-panel-inline-label">Sample rate</label>
+                <label for="inputSampleRateInput" class="input-panel-inline-label" data-i18n="audio.sampleRate">Sample rate</label>
                 <input id="inputSampleRateInput" class="delay-input" type="number" min="1" step="1" value="48000" />
               </div>
             </div>
             <div class="input-panel-triple-grid">
               <div class="input-panel-field">
-                <label for="inputFormatSelect" class="input-panel-inline-label">Format</label>
+                <label for="inputFormatSelect" class="input-panel-inline-label" data-i18n="input.format">Format</label>
                 <select id="inputFormatSelect" class="delay-input">
                   <option value="f32">f32</option>
                   <option value="s16">s16</option>
                 </select>
               </div>
               <div class="input-panel-field">
-                <label for="inputMapSelect" class="input-panel-inline-label">Map</label>
+                <label for="inputMapSelect" class="input-panel-inline-label" data-i18n="input.map">Map</label>
                 <select id="inputMapSelect" class="delay-input">
                   <option value="7.1-fixed">7.1 fixed</option>
                 </select>
               </div>
               <div class="input-panel-field">
-                <label for="inputLfeModeSelect" class="input-panel-inline-label">LFE</label>
+                <label for="inputLfeModeSelect" class="input-panel-inline-label" data-i18n="input.lfe">LFE</label>
                 <select id="inputLfeModeSelect" class="delay-input">
-                  <option value="object">Object</option>
-                  <option value="direct">Direct</option>
-                  <option value="drop">Drop</option>
+                  <option value="object" data-i18n="input.lfe.object">Object</option>
+                  <option value="direct" data-i18n="input.lfe.direct">Direct</option>
+                  <option value="drop" data-i18n="input.lfe.drop">Drop</option>
                 </select>
               </div>
             </div>
           </div>
           <div class="input-panel-actions">
-            <button id="inputRefreshBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Refresh</button>
-            <button id="inputApplyBtn" type="button" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Apply</button>
+            <button id="inputRefreshBtn" type="button" data-i18n="input.refresh" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Refresh</button>
+            <button id="inputApplyBtn" type="button" data-i18n="input.apply" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Apply</button>
           </div>
         </div>
         </div>
@@ -1933,7 +1968,7 @@
               <select id="audioOutputDeviceSelect" class="delay-input" style="flex:1 1 auto;min-width:0">
                 <option value="">Default</option>
               </select>
-              <button id="refreshOutputDevicesBtn" type="button" title="Refresh device list" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.1rem 0.45rem;cursor:pointer;flex-shrink:0">↺</button>
+            <button id="refreshOutputDevicesBtn" type="button" data-i18n-title="audio.refreshDevices" title="Refresh device list" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.1rem 0.45rem;cursor:pointer;flex-shrink:0">↺</button>
             </div>
           </div>
           <div class="control-row" style="margin-top:0.3rem;grid-template-columns:auto 1fr">
@@ -1949,7 +1984,7 @@
       <div class="info-section">
         <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:0.5rem">
           <div style="display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto auto auto;column-gap:0.5rem;row-gap:0.18rem;align-items:start;min-width:0;flex:1 1 auto">
-            <div class="info-title" style="margin:0;grid-column:1;grid-row:1">Latency</div>
+            <div class="info-title" style="margin:0;grid-column:1;grid-row:1" data-i18n="section.latency">Latency</div>
             <div class="meter-bar" style="grid-column:2;grid-row:1;align-self:center;overflow:visible">
               <div id="latencyMeterFill" class="meter-fill latency"></div>
               <div id="latencyRawMinMask" class="meter-range-mask" style="left:0;width:0;display:none"></div>
@@ -1985,8 +2020,8 @@
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:0.35rem;justify-content:flex-end;flex:0 0 auto">
-            <button id="telemetryGaugesInfoBtn" type="button" class="info-icon-btn" title="Latency panel info">i</button>
-            <button id="telemetryGaugesToggleBtn" type="button" class="panel-toggle-btn" title="Show latency controls">▸</button>
+            <button id="telemetryGaugesInfoBtn" type="button" class="info-icon-btn" data-i18n-title="telemetry.infoButton" title="Latency panel info">i</button>
+            <button id="telemetryGaugesToggleBtn" type="button" class="panel-toggle-btn" data-i18n-title="telemetry.toggle" title="Show latency controls">▸</button>
           </div>
         </div>
         <div id="telemetryGaugesForm" class="telemetry-gauges-form">
@@ -1995,7 +2030,7 @@
             <div style="display:flex;align-items:center;gap:0.35rem">
               <input id="latencyTargetInput" class="delay-input" type="number" min="1" step="1" value="500" style="width:5.5rem" />
               <button id="latencyTargetApplyBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer" data-i18n="adaptive.apply">Apply</button>
-              <span aria-hidden="true" title="Latency gauge target marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#52e2a2;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
+              <span aria-hidden="true" data-i18n-title="telemetry.targetMarkerTitle" title="Latency gauge target marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#52e2a2;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
             </div>
             <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.35rem;min-width:0">
               <div id="adaptiveBandIndicator" style="display:flex;align-items:center;gap:0.4rem;color:#d9ecff;font-size:12px">
@@ -2015,7 +2050,7 @@
                 <label for="adaptiveNearFarThresholdInput" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.threshold">Far Threshold</label>
                 <div style="display:flex;align-items:center;gap:0.35rem">
                   <input id="adaptiveNearFarThresholdInput" class="delay-input" type="number" min="1" step="1" value="120" style="width:8rem" />
-                  <span id="adaptiveNearFarThresholdSymbol" aria-hidden="true" title="Latency gauge far threshold marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#ffb84a;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
+                  <span id="adaptiveNearFarThresholdSymbol" aria-hidden="true" data-i18n-title="telemetry.thresholdMarkerTitle" title="Latency gauge far threshold marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#ffb84a;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
                 </div>
               </div>
               <div class="control-row" style="margin-top:0.2rem">
@@ -2058,7 +2093,7 @@
                 <div style="display:flex;align-items:center;gap:0.35rem">
                   <input id="adaptiveMaxAdjustInput" class="delay-input" type="number" min="0.001" step="1" value="10000" style="width:7rem" />
                   <span style="font-size:11px;color:#8fa6bd">ppm</span>
-                  <span aria-hidden="true" title="Resample gauge near max marker" style="display:inline-block;width:2px;height:12px;border-radius:999px;background:#ffd54a;box-shadow:0 0 0 1px rgba(255,255,255,0.08)"></span>
+                  <span aria-hidden="true" data-i18n-title="telemetry.resampleMarkerTitle" title="Resample gauge near max marker" style="display:inline-block;width:2px;height:12px;border-radius:999px;background:#ffd54a;box-shadow:0 0 0 1px rgba(255,255,255,0.08)"></span>
                 </div>
               </div>
               <div id="adaptiveKpNearRow" class="control-row" style="margin-top:0.2rem">
@@ -2137,18 +2172,18 @@
             <div id="vbapSectionContent" class="conditional-params open">
             <div class="control-row" style="margin-top:0.25rem;grid-template-columns:1fr auto;align-items:center">
               <div style="display:flex;align-items:center;gap:0.45rem;min-width:0">
-                <label style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">VBAP</label>
-                <div id="vbapStatus" class="vbap-status" style="margin:0;font-size:11px;min-width:0">VBAP status: —</div>
+                <label style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="vbap.title">VBAP</label>
+                <div id="vbapStatus" class="vbap-status" style="margin:0;font-size:11px;min-width:0">—</div>
               </div>
               <div style="display:flex;gap:0.2rem;align-items:center">
                 <button id="vbapModeAutoBtn" type="button" class="toggle-btn" data-i18n="common.auto" style="padding:0.15rem 0.45rem;font-size:11px">Auto</button>
-                <button id="vbapModePolarBtn" type="button" class="toggle-btn" style="padding:0.15rem 0.45rem;font-size:11px">Polar</button>
-                <button id="vbapModeCartesianBtn" type="button" class="toggle-btn" style="padding:0.15rem 0.45rem;font-size:11px">Cartesian</button>
+                <button id="vbapModePolarBtn" type="button" class="toggle-btn" data-i18n="common.polarShort" style="padding:0.15rem 0.45rem;font-size:11px">Polar</button>
+                <button id="vbapModeCartesianBtn" type="button" class="toggle-btn" data-i18n="common.cartesianShort" style="padding:0.15rem 0.45rem;font-size:11px">Cartesian</button>
               </div>
             </div>
             <div style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
               <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:start">
-                <label style="font-size:12px;white-space:nowrap;color:#ffffff">VBAP cart</label>
+                <label style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.cart">VBAP cart</label>
                 <div style="display:flex;flex-direction:column;gap:0.15rem;align-items:stretch">
                   <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.15rem">
                     <input id="vbapCartXSizeInput" class="delay-input" type="number" min="1" step="1" placeholder="X" />
@@ -2165,7 +2200,7 @@
                 </div>
               </div>
               <div class="control-row" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:start">
-                <label style="font-size:12px;white-space:nowrap;color:#ffffff">VBAP polar</label>
+                <label style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.polar">VBAP polar</label>
                 <div style="display:flex;flex-direction:column;gap:0.15rem;align-items:stretch">
                   <div class="vbap-polar-grid">
                     <input id="vbapPolarAzimuthResolutionInput" class="delay-input" type="number" min="1" step="1" placeholder="az n" style="grid-column:1;grid-row:1" />
@@ -2184,8 +2219,8 @@
               </div>
               <div class="inline-toggle" style="margin-top:0.1rem;display:flex;align-items:center;gap:0.35rem">
                 <div class="title-with-info" style="min-width:0">
-                  <span style="font-size:12px;white-space:nowrap;color:#ffffff">Position interpolation</span>
-                  <button id="vbapPositionInterpolationInfoBtn" type="button" class="info-icon-btn" title="VBAP position interpolation info">i</button>
+                  <span style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.positionInterpolation">Position interpolation</span>
+                  <button id="vbapPositionInterpolationInfoBtn" type="button" class="info-icon-btn" data-i18n-title="vbap.positionInterpolationInfoButton" title="VBAP position interpolation info">i</button>
                 </div>
                 <input id="vbapPositionInterpolationToggleEl" type="checkbox" />
               </div>
@@ -2204,27 +2239,27 @@
             </select>
           </div>
           <div class="control-row" style="margin-top:0.2rem;grid-template-columns:1fr auto;align-items:center">
-            <label for="distanceModelSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">Distance model</label>
+            <label for="distanceModelSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="distance.model">Distance model</label>
             <select id="distanceModelSelect" class="delay-input" style="min-width:11rem">
-              <option value="none">None</option>
-              <option value="linear">Linear</option>
-              <option value="quadratic">Quadratic</option>
-              <option value="inverse-square">Inverse-square</option>
+              <option value="none" data-i18n="distance.model.none">None</option>
+              <option value="linear" data-i18n="distance.model.linear">Linear</option>
+              <option value="quadratic" data-i18n="distance.model.quadratic">Quadratic</option>
+              <option value="inverse-square" data-i18n="distance.model.inverseSquare">Inverse-square</option>
             </select>
           </div>
           <div class="info-section" id="spreadSection" style="margin:0;padding:0;border:none;background:none">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Spread</div>
+              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-i18n="spread.title">Spread</div>
             </div>
             <div id="spreadSectionContent" class="conditional-params open">
             <div id="spreadInfo">spread: —° / —°</div>
             <div style="margin-top:0.2rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.15rem">
               <div class="control-row" style="margin-top:0">
-                <label style="font-size:12px;white-space:nowrap">Min <span id="spreadMinVal">0°</span></label>
+                <label style="font-size:12px;white-space:nowrap"><span data-i18n="spread.min">Min</span> <span id="spreadMinVal">0°</span></label>
                 <input id="spreadMinSlider" type="range" min="0" max="180" step="1" value="0" class="gain-slider" />
               </div>
               <div class="control-row" style="margin-top:0.1rem">
-                <label style="font-size:12px;white-space:nowrap">Max <span id="spreadMaxVal">180°</span></label>
+                <label style="font-size:12px;white-space:nowrap"><span data-i18n="spread.max">Max</span> <span id="spreadMaxVal">180°</span></label>
                 <input id="spreadMaxSlider" type="range" min="0" max="180" step="1" value="180" class="gain-slider" />
               </div>
             </div>
@@ -2234,7 +2269,7 @@
             <div class="title-with-info" style="font-size:12px;font-weight:600;color:#ffffff">
               <span data-i18n="distance.title">Distance Diffuse</span>
               <div class="inline-toggle" style="display:flex;align-items:center;gap:0.35rem">
-                <button id="distanceDiffuseInfoBtn" type="button" class="info-icon-btn" title="Distance diffuse info">i</button>
+                <button id="distanceDiffuseInfoBtn" type="button" class="info-icon-btn" data-i18n-title="distance.infoButton" title="Distance diffuse info">i</button>
                 <input id="distanceDiffuseToggle" type="checkbox" />
               </div>
             </div>
@@ -2253,17 +2288,17 @@
             <div class="title-with-info" style="font-size:12px;font-weight:600;color:#ffffff">
               <span data-i18n="spread.distanceTitle">Spread from Distance</span>
               <div class="inline-toggle" style="display:flex;align-items:center;gap:0.35rem">
-                <button id="spreadFromDistanceInfoBtn" type="button" class="info-icon-btn" title="Spread from distance info">i</button>
+                <button id="spreadFromDistanceInfoBtn" type="button" class="info-icon-btn" data-i18n-title="spread.distanceInfoButton" title="Spread from distance info">i</button>
                 <input id="spreadFromDistanceToggle" type="checkbox" />
               </div>
             </div>
             <div id="spreadFromDistanceParams" class="conditional-params">
               <div class="meter-row" style="margin-top:0.2rem">
-                <label style="font-size:12px;white-space:nowrap">spread range <span id="spreadDistanceRangeVal">1.00</span></label>
+                <label style="font-size:12px;white-space:nowrap"><span data-i18n="spread.range">spread range</span> <span id="spreadDistanceRangeVal">1.00</span></label>
                 <input id="spreadDistanceRangeSlider" type="range" min="0.1" max="3.0" step="0.01" value="1.0" class="gain-slider" />
               </div>
               <div class="meter-row" style="margin-top:0.15rem">
-                <label style="font-size:12px;white-space:nowrap">spread curve <span id="spreadDistanceCurveVal">1.00</span></label>
+                <label style="font-size:12px;white-space:nowrap"><span data-i18n="spread.curve">spread curve</span> <span id="spreadDistanceCurveVal">1.00</span></label>
                 <input id="spreadDistanceCurveSlider" type="range" min="0.1" max="3.0" step="0.05" value="1.0" class="gain-slider" />
               </div>
             </div>
@@ -2435,22 +2470,22 @@
           <img class="about-logo" src="./omniphony-logo.svg" alt="Omniphony logo" />
           <div class="about-heading">
             <strong id="aboutName">Omniphony Studio</strong>
-            <span>About</span>
+            <span data-i18n="about.title">About</span>
           </div>
         </div>
-        <div id="aboutDescription" class="info-modal-text">
+        <div id="aboutDescription" class="info-modal-text" data-i18n="about.descriptionFallback">
           Omniphony is an open spatial-audio project built around realtime rendering, transport, control, and monitoring tools for object-based audio workflows. Omniphony Studio is the visual control surface of that ecosystem.
         </div>
         <dl class="about-info-grid">
-          <dt>Version</dt>
+          <dt data-i18n="about.version">Version</dt>
           <dd id="aboutVersion">0.1.0</dd>
-          <dt>License</dt>
+          <dt data-i18n="about.license">License</dt>
           <dd id="aboutLicense">GPL-3.0-only</dd>
-          <dt>Repository</dt>
+          <dt data-i18n="about.repository">Repository</dt>
           <dd><a id="aboutRepositoryLink" href="https://github.com/mgth/Omniphony" target="_blank" rel="noreferrer">github.com/mgth/Omniphony</a></dd>
         </dl>
         <div class="info-modal-actions">
-          <button id="aboutCloseBtn" type="button" class="toggle-btn">Close</button>
+          <button id="aboutCloseBtn" type="button" class="toggle-btn" data-i18n="common.close">Close</button>
         </div>
       </div>
     </div>
@@ -2514,8 +2549,8 @@
 
     <div id="vbapPositionInterpolationInfoModal" class="info-modal" aria-hidden="true">
       <div class="info-modal-card">
-        <div class="info-modal-title">VBAP position interpolation</div>
-        <div class="info-modal-text">
+        <div class="info-modal-title" data-i18n="vbap.positionInterpolationInfoTitle">VBAP position interpolation</div>
+        <div class="info-modal-text" data-i18n-html="vbap.positionInterpolationInfoBody">
           <strong>On</strong>: interpolate between neighbouring VBAP table cells for smoother spatial motion and lookup continuity.<br /><br />
           <strong>Off</strong>: use nearest-cell lookup. This is cheaper and more deterministic, but movement can become more stepped.
         </div>

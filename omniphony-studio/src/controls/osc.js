@@ -44,7 +44,7 @@ export function renderOscStatus() {
     pipeStatusEl.value = app.orenderInputPipe || '';
   }
   if (oscServiceBtnEl) {
-    oscServiceBtnEl.textContent = app.orenderServiceInstalled ? 'Uninstall service' : 'Install service';
+    oscServiceBtnEl.textContent = app.orenderServiceInstalled ? t('osc.service.uninstall') : t('osc.service.install');
     oscServiceBtnEl.style.background = app.orenderServiceInstalled
       ? 'rgba(255,96,96,0.18)'
       : 'rgba(255,255,255,0.08)';
@@ -56,7 +56,7 @@ export function renderOscStatus() {
     oscServiceBtnEl.style.opacity = (app.orenderServicePending || app.oscLaunchPending) ? '0.6' : '1';
     oscServiceBtnEl.style.cursor = (app.orenderServicePending || app.oscLaunchPending) ? 'default' : 'pointer';
     const manager = app.orenderServiceManager ? ` (${app.orenderServiceManager})` : '';
-    oscServiceBtnEl.title = `${app.orenderServiceInstalled ? 'Uninstall' : 'Install'} service${manager}`;
+    oscServiceBtnEl.title = `${app.orenderServiceInstalled ? t('osc.service.uninstallShort') : t('osc.service.installShort')} ${t('osc.service.serviceNoun')}${manager}`;
   }
   if (oscRestartServiceBtnEl) {
     const enabled = app.orenderServiceInstalled && !app.orenderServicePending && !app.oscLaunchPending;
@@ -64,8 +64,8 @@ export function renderOscStatus() {
     oscRestartServiceBtnEl.style.opacity = enabled ? '1' : '0.45';
     oscRestartServiceBtnEl.style.cursor = enabled ? 'pointer' : 'default';
     oscRestartServiceBtnEl.title = app.orenderServiceInstalled
-      ? 'Restart service'
-      : 'Install service first';
+      ? t('osc.service.restart')
+      : t('osc.service.installFirst');
   }
   if (oscRestartPipewireBtnEl) {
     const enabled = isLinux && !app.orenderServicePending && !app.oscLaunchPending;
@@ -74,8 +74,8 @@ export function renderOscStatus() {
     oscRestartPipewireBtnEl.style.opacity = enabled ? '1' : '0.45';
     oscRestartPipewireBtnEl.style.cursor = enabled ? 'pointer' : 'default';
     oscRestartPipewireBtnEl.title = isLinux
-      ? 'Restart PipeWire and WirePlumber'
-      : 'Only available on Linux';
+      ? t('osc.pipewire.restartTitle')
+      : t('osc.pipewire.linuxOnly');
   }
   if (oscStatusDotEl) {
     const colors = {
@@ -89,8 +89,8 @@ export function renderOscStatus() {
   if (oscLaunchRendererBtnEl) {
     const running = app.orenderServiceInstalled ? app.orenderServiceRunning : app.oscStatusState === 'connected';
     oscLaunchRendererBtnEl.textContent = app.orenderServiceInstalled
-      ? (running ? 'Stop service' : 'Start service')
-      : (running ? 'Stop orender' : 'Launch orender');
+      ? (running ? t('osc.service.stop') : t('osc.service.start'))
+      : (running ? t('osc.orender.stop') : t('osc.orender.launch'));
     oscLaunchRendererBtnEl.style.background = running
       ? 'rgba(255,96,96,0.18)'
       : 'rgba(88,160,255,0.18)';

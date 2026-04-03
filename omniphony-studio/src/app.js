@@ -13,7 +13,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { app, sourceOutlines } from './state.js';
 
 // ── i18n & logging ──────────────────────────────────────────────────────────
-import { t, tf, applyStaticTranslations } from './i18n.js';
+import { t, tf, applyStaticTranslations, onLocaleChange } from './i18n.js';
 import { pushLog, renderLogLevelControl, renderLogPanel, normalizeLogError } from './log.js';
 
 // ── Scene ───────────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ import { decayTrails } from './trails.js';
 import { decayMeters } from './speakers.js';
 
 // ── Controls ────────────────────────────────────────────────────────────────
-import { setOscStatus, loadOscConfigIntoPanel } from './controls/osc.js';
+import { setOscStatus, loadOscConfigIntoPanel, renderOscStatus } from './controls/osc.js';
 import {
   loadRoomGeometryPrefs, refreshRoomGeometryInputState, setRoomGeometryExpanded,
   renderRoomRatioDisplay, refreshEffectiveRenderVisibility, updateRoomDimensionGuides, applyRoomRatio
@@ -60,7 +60,7 @@ import { setupVisualRecovery } from './visual-recovery.js';
 
 // ── Flush callback wiring ──────────────────────────────────────────────────
 import { renderSpreadDisplay } from './controls/spread.js';
-import { renderVbapMode, renderVbapCartesian, renderVbapPolar } from './controls/vbap.js';
+import { renderVbapStatus, renderVbapMode, renderVbapCartesian, renderVbapPolar } from './controls/vbap.js';
 import { renderLoudnessDisplay, renderDistanceModelUI, renderMasterGainUI, updateMasterMeterUI } from './controls/master.js';
 import { renderAdaptiveResamplingUI } from './controls/adaptive.js';
 import { renderDistanceDiffuseUI } from './controls/distance-diffuse.js';
@@ -121,6 +121,25 @@ sourceCallbacks.getObjectIds = getObjectIds;
 muteSoloCallbacks.updateSpeakerControlsUI = updateSpeakerControlsUI;
 muteSoloCallbacks.updateObjectControlsUI = updateObjectControlsUI;
 muteSoloCallbacks.setSelectedSource = setSelectedSource;
+
+onLocaleChange(() => {
+  renderOscStatus();
+  renderRoomRatioDisplay();
+  renderVbapStatus();
+  renderVbapMode();
+  renderLoudnessDisplay();
+  renderAdaptiveResamplingUI();
+  renderDistanceDiffuseUI();
+  renderLatencyDisplay();
+  renderResampleRatioDisplay();
+  renderAudioFormatDisplay();
+  renderLatencyMeterUI();
+  renderMasterGainUI();
+  updateMasterMeterUI();
+  renderSpeakersList();
+  renderObjectsList();
+  renderConfigSavedUI();
+});
 
 // ── Preferences ─────────────────────────────────────────────────────────────
 const TRAIL_PREFS_STORAGE_KEY = 'spatialviz.trail_prefs';

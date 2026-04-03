@@ -1,5 +1,6 @@
 import { app } from '../state.js';
 import { invoke } from '@tauri-apps/api/core';
+import { t, tf } from '../i18n.js';
 
 const inputModeSelectEl = document.getElementById('inputModeSelect');
 const inputPipeInputEl = document.getElementById('pipeStatus');
@@ -39,15 +40,28 @@ function formatInputModeLabel(value) {
   switch (value) {
     case 'bridge':
     case 'pipe_bridge':
-      return 'Pipe bridge';
+      return t('input.mode.pipe_bridge');
     case 'pipewire_bridge':
-      return 'PipeWire bridge';
+      return t('input.mode.pipewire_bridge');
     case 'live':
     case 'pipewire':
-      return 'PipeWire';
+      return t('input.mode.pipewire');
     default:
       return value || '—';
   }
+}
+
+function formatInputBackendLabel(value) {
+  if (value === 'asio') return t('input.backend.asio');
+  if (value === 'pipewire') return t('input.backend.pipewire');
+  return value || '—';
+}
+
+function formatClockModeLabel(value) {
+  if (value === 'dac') return t('input.clock.dac');
+  if (value === 'pipewire') return t('input.clock.pipewire');
+  if (value === 'upstream') return t('input.clock.upstream');
+  return value || '—';
 }
 
 export function updateInputControlUI() {
@@ -149,20 +163,33 @@ export function updateInputControlUI() {
     const activeMode = app.inputActiveMode || 'pipe_bridge';
     const requestedModeLabel = formatInputModeLabel(requestedMode);
     const activeModeLabel = formatInputModeLabel(activeMode);
-    const pending = app.inputApplyPending ? 'pending apply' : 'synced';
-    const error = app.inputError ? ` • error: ${app.inputError}` : '';
+    const sync = app.inputApplyPending ? t('input.sync.pending') : t('input.sync.synced');
+    const error = app.inputError ? tf('input.status.error', { error: app.inputError }) : '';
     if (liveRequested) {
-      const backend = app.inputBackend || app.liveInput.backend || '—';
+      const backend = formatInputBackendLabel(app.inputBackend || app.liveInput.backend || '');
       const channels = app.inputChannels || app.liveInput.channels || '—';
       const sampleRate = app.inputSampleRate || app.liveInput.sampleRate || '—';
       const format = app.inputStreamFormat || app.liveInput.format || '—';
-      inputStatusInfoEl.textContent =
-        `requested ${requestedModeLabel} • active ${activeModeLabel} • ${backend} • ${channels} ch • ${sampleRate} Hz • ${format} • ${pending}${error}`;
+      inputStatusInfoEl.textContent = tf('input.status.live', {
+        requested: requestedModeLabel,
+        active: activeModeLabel,
+        backend,
+        channels,
+        sampleRate,
+        format,
+        sync
+      }) + error;
     } else {
       const pipe = app.orenderInputPipe || '—';
-      const clockMode = pipewireBridgeRequested ? ` • clock ${app.liveInput.clockMode || 'dac'}` : '';
-      inputStatusInfoEl.textContent =
-        `requested ${requestedModeLabel} • active ${activeModeLabel} • pipe ${pipe}${clockMode} • ${pending}${error}`;
+      const clock = pipewireBridgeRequested
+        ? tf('input.status.clock', { clock: formatClockModeLabel(app.liveInput.clockMode || 'dac') })
+        : '';
+      inputStatusInfoEl.textContent = tf('input.status.bridge', {
+        requested: requestedModeLabel,
+        active: activeModeLabel,
+        pipe,
+        sync
+      }) + clock + error;
     }
   }
 
@@ -171,18 +198,29 @@ export function updateInputControlUI() {
     const requestedModeLabel = formatInputModeLabel(requestedMode);
     const activeModeLabel = formatInputModeLabel(activeMode);
     if (liveRequested) {
-      const backend = app.liveInput.backend || 'pipewire';
-      const layout = app.liveInput.layout ? ' • imported layout' : '';
-      inputSummaryEl.textContent = `${requestedModeLabel} • active ${activeModeLabel} • ${backend}${layout}`;
+      const backend = formatInputBackendLabel(app.liveInput.backend || 'pipewire');
+      const layoutSuffix = app.liveInput.layout ? t('input.summary.liveLayout') : '';
+      inputSummaryEl.textContent = tf('input.summary.live', {
+        requested: requestedModeLabel,
+        active: activeModeLabel,
+        backend
+      }) + layoutSuffix;
     } else if (pipewireBridgeRequested) {
-      inputSummaryEl.textContent = `${requestedModeLabel} • active ${activeModeLabel} • ${app.liveInput.clockMode || 'dac'} clock`;
+      inputSummaryEl.textContent = tf('input.summary.pipewireBridge', {
+        requested: requestedModeLabel,
+        active: activeModeLabel,
+        clock: formatClockModeLabel(app.liveInput.clockMode || 'dac')
+      });
     } else {
-      inputSummaryEl.textContent = `${requestedModeLabel} • active ${activeModeLabel} • pipe`;
+      inputSummaryEl.textContent = tf('input.summary.bridge', {
+        requested: requestedModeLabel,
+        active: activeModeLabel
+      });
     }
   }
 
   if (inputApplyBtnEl) {
-    inputApplyBtnEl.textContent = app.inputApplyPending ? 'Apply pending…' : 'Apply';
+    inputApplyBtnEl.textContent = app.inputApplyPending ? t('input.applyPending') : t('input.apply');
   }
 }
 
