@@ -2181,6 +2181,16 @@
                 <button id="vbapModeCartesianBtn" type="button" class="toggle-btn" data-i18n="common.cartesianShort" style="padding:0.15rem 0.45rem;font-size:11px">Cartesian</button>
               </div>
             </div>
+            <div class="control-row" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:center">
+              <label for="renderBackendSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">Render backend</label>
+              <div style="display:flex;align-items:center;gap:0.35rem">
+                <select id="renderBackendSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
+                  <option value="vbap">VBAP</option>
+                  <option value="experimental_distance">Distance</option>
+                </select>
+                <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
+              </div>
+            </div>
             <div style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
               <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:start">
                 <label style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.cart">VBAP cart</label>

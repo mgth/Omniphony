@@ -48,6 +48,7 @@ import {
 import { updateMasterGainUI, updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.js';
 import { updateSpreadDisplay } from './controls/spread.js';
 import {
+  updateRenderBackend,
   updateVbapMode,
   updateVbapCartesian,
   updateVbapPolar,
@@ -392,6 +393,18 @@ export function setupTauriBridge() {
   // -----------------------------------------------------------------------
   // VBAP
   // -----------------------------------------------------------------------
+
+  listen('render_backend', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    app.renderBackendState.selection = ['vbap', 'experimental_distance'].includes(value) ? value : null;
+    updateRenderBackend();
+  });
+
+  listen('render_backend:effective', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    app.renderBackendState.effective = ['vbap', 'experimental_distance'].includes(value) ? value : null;
+    updateRenderBackend();
+  });
 
   listen('vbap:recomputing', ({ payload }) => {
     app.vbapRecomputing = payload.enabled === true;

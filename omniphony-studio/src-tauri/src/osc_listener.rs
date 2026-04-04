@@ -1005,6 +1005,20 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
 
+            OscEvent::StateRenderBackend { value } => {
+                (
+                    Some(("render_backend", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+
+            OscEvent::StateRenderBackendEffective { value } => {
+                (
+                    Some(("render_backend:effective", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+
             OscEvent::StateLoudness { enabled } => {
                 s.loudness = Some(if enabled { 1 } else { 0 });
                 (

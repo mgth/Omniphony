@@ -34,6 +34,7 @@ export const flushCallbacks = {
   renderRoomRatioDisplay: null,
   renderSpreadDisplay: null,
   renderVbapMode: null,
+  renderRenderBackend: null,
   renderVbapCartesian: null,
   renderVbapPolar: null,
   renderLoudnessDisplay: null,
@@ -129,6 +130,11 @@ export function flushUI() {
   if (dirty.vbapMode) {
     flushCallbacks.renderVbapMode?.();
     dirty.vbapMode = false;
+  }
+
+  if (dirty.renderBackend) {
+    flushCallbacks.renderRenderBackend?.();
+    dirty.renderBackend = false;
   }
 
   if (dirty.vbapCartesian) {

@@ -60,7 +60,13 @@ import { setupVisualRecovery } from './visual-recovery.js';
 
 // ── Flush callback wiring ──────────────────────────────────────────────────
 import { renderSpreadDisplay } from './controls/spread.js';
-import { renderVbapStatus, renderVbapMode, renderVbapCartesian, renderVbapPolar } from './controls/vbap.js';
+import {
+  renderVbapStatus,
+  renderVbapMode,
+  renderRenderBackend,
+  renderVbapCartesian,
+  renderVbapPolar
+} from './controls/vbap.js';
 import { renderLoudnessDisplay, renderDistanceModelUI, renderMasterGainUI, updateMasterMeterUI } from './controls/master.js';
 import { renderAdaptiveResamplingUI } from './controls/adaptive.js';
 import { renderDistanceDiffuseUI } from './controls/distance-diffuse.js';
@@ -80,6 +86,7 @@ import { muteSoloCallbacks } from './mute-solo.js';
 flushCallbacks.renderRoomRatioDisplay = renderRoomRatioDisplay;
 flushCallbacks.renderSpreadDisplay = renderSpreadDisplay;
 flushCallbacks.renderVbapMode = renderVbapMode;
+flushCallbacks.renderRenderBackend = renderRenderBackend;
 flushCallbacks.renderVbapCartesian = renderVbapCartesian;
 flushCallbacks.renderVbapPolar = renderVbapPolar;
 flushCallbacks.renderLoudnessDisplay = renderLoudnessDisplay;
@@ -127,6 +134,7 @@ onLocaleChange(() => {
   renderRoomRatioDisplay();
   renderVbapStatus();
   renderVbapMode();
+  renderRenderBackend();
   renderLoudnessDisplay();
   renderAdaptiveResamplingUI();
   renderDistanceDiffuseUI();

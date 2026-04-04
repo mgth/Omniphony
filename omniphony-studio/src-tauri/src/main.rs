@@ -642,6 +642,21 @@ fn control_vbap_table_mode(state: State<SharedState>, mode: String) {
 }
 
 #[tauri::command]
+fn control_render_backend(state: State<SharedState>, value: String) {
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(normalized.as_str(), "vbap" | "experimental_distance") {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/render_backend".to_string(),
+            value: normalized,
+        },
+    );
+}
+
+#[tauri::command]
 fn control_vbap_polar_azimuth_resolution(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
@@ -2111,6 +2126,7 @@ fn main() {
             control_vbap_cart_z_size,
             control_vbap_cart_z_neg_size,
             control_vbap_table_mode,
+            control_render_backend,
             control_vbap_polar_azimuth_resolution,
             control_vbap_polar_elevation_resolution,
             control_vbap_polar_distance_res,

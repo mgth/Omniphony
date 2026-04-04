@@ -351,6 +351,28 @@ function parseOmniphonyStateMessage(parts, args) {
     };
   }
 
+  if (parts.length === 3 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'render_backend') {
+    const value = String(args[0]?.value ?? args[0] ?? '').trim().toLowerCase();
+    if (!['vbap', 'experimental_distance'].includes(value)) {
+      return null;
+    }
+    return {
+      type: 'state:render_backend',
+      value
+    };
+  }
+
+  if (parts.length === 4 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[2] === 'render_backend' && parts[3] === 'effective') {
+    const value = String(args[0]?.value ?? args[0] ?? '').trim().toLowerCase();
+    if (!['vbap', 'experimental_distance'].includes(value)) {
+      return null;
+    }
+    return {
+      type: 'state:render_backend:effective',
+      value
+    };
+  }
+
   if (parts.length === 5 && parts[0] === 'omniphony' && parts[1] === 'state' && parts[4] === 'gain') {
     const kind = parts[2];
     if (!['object', 'speaker'].includes(kind)) {

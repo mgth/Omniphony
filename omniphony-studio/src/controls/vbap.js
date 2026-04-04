@@ -14,6 +14,8 @@ const vbapStatusEl = document.getElementById('vbapStatus');
 const vbapModeAutoBtnEl = document.getElementById('vbapModeAutoBtn');
 const vbapModePolarBtnEl = document.getElementById('vbapModePolarBtn');
 const vbapModeCartesianBtnEl = document.getElementById('vbapModeCartesianBtn');
+const renderBackendSelectEl = document.getElementById('renderBackendSelect');
+const renderBackendEffectiveEl = document.getElementById('renderBackendEffective');
 const rendererSummaryEl = document.getElementById('rendererSummary');
 const vbapCartXSizeInputEl = document.getElementById('vbapCartXSizeInput');
 const vbapCartYSizeInputEl = document.getElementById('vbapCartYSizeInput');
@@ -83,11 +85,39 @@ export function renderVbapMode() {
     if (mode === 'auto') modeText = vbapModeAutoBtnEl?.textContent?.trim() || 'Auto';
     if (mode === 'polar') modeText = vbapModePolarBtnEl?.textContent?.trim() || 'Polar';
     if (mode === 'cartesian') modeText = vbapModeCartesianBtnEl?.textContent?.trim() || 'Cartesian';
-    rendererSummaryEl.textContent = tf('renderer.summary', { mode: modeText });
+    const backend = app.renderBackendState.effective || app.renderBackendState.selection;
+    const backendText = backend === 'experimental_distance'
+      ? 'Distance'
+      : backend === 'vbap'
+        ? 'VBAP'
+        : '—';
+    rendererSummaryEl.textContent = `${backendText} / ${tf('renderer.summary', { mode: modeText })}`;
   }
 }
 
 export function updateVbapMode() {
+  dirty.vbapMode = true;
+  scheduleUIFlush();
+}
+
+export function renderRenderBackend() {
+  const selection = typeof app.renderBackendState.selection === 'string' ? app.renderBackendState.selection : 'vbap';
+  const effective = typeof app.renderBackendState.effective === 'string' ? app.renderBackendState.effective : null;
+  if (renderBackendSelectEl) {
+    renderBackendSelectEl.value = selection;
+  }
+  if (renderBackendEffectiveEl) {
+    renderBackendEffectiveEl.textContent =
+      effective === 'experimental_distance'
+        ? 'Distance'
+        : effective === 'vbap'
+          ? 'VBAP'
+          : '—';
+  }
+}
+
+export function updateRenderBackend() {
+  dirty.renderBackend = true;
   dirty.vbapMode = true;
   scheduleUIFlush();
 }

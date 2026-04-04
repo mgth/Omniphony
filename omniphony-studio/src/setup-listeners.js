@@ -25,7 +25,14 @@ import {
 } from './modals.js';
 import { updateMasterGainUI, updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.js';
 import { updateSpreadDisplay } from './controls/spread.js';
-import { renderVbapStatus, updateVbapMode, updateVbapCartesian, updateVbapPolar, updateVbapPositionInterpolation } from './controls/vbap.js';
+import {
+  renderVbapStatus,
+  updateVbapMode,
+  updateRenderBackend,
+  updateVbapCartesian,
+  updateVbapPolar,
+  updateVbapPositionInterpolation
+} from './controls/vbap.js';
 import { updateDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { updateAdaptiveResamplingUI, resetAdaptiveResamplingAdvancedDirtyState } from './controls/adaptive.js';
 import {
@@ -94,6 +101,7 @@ export function setupUIListeners() {
   const vbapModeAutoBtnEl = document.getElementById('vbapModeAutoBtn');
   const vbapModePolarBtnEl = document.getElementById('vbapModePolarBtn');
   const vbapModeCartesianBtnEl = document.getElementById('vbapModeCartesianBtn');
+  const renderBackendSelectEl = document.getElementById('renderBackendSelect');
   const vbapPolarAzimuthResolutionInputEl = document.getElementById('vbapPolarAzimuthResolutionInput');
   const vbapPolarElevationResolutionInputEl = document.getElementById('vbapPolarElevationResolutionInput');
   const vbapPolarDistanceResInputEl = document.getElementById('vbapPolarDistanceResInput');
@@ -549,6 +557,19 @@ export function setupUIListeners() {
       invoke('control_vbap_table_mode', { mode });
     });
   });
+
+  if (renderBackendSelectEl) {
+    renderBackendSelectEl.addEventListener('change', () => {
+      const value = String(renderBackendSelectEl.value || '').trim().toLowerCase();
+      if (!['vbap', 'experimental_distance'].includes(value)) return;
+      if (app.renderBackendState.selection === value) return;
+      app.renderBackendState.selection = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateRenderBackend();
+      invoke('control_render_backend', { value });
+    });
+  }
 
   // ── VBAP polar ──────────────────────────────────────────────────────────
 
