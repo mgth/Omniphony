@@ -67,7 +67,7 @@
 use crate::live_params::{
     LiveParams, LiveVbapTableMode, RampMode, RenderTopology, RendererControl, VbapBackendMode,
 };
-use crate::render_backend::{RenderBackend, RenderRequest, VbapBackend};
+use crate::render_backend::{RenderBackend, RenderBackendKind, RenderRequest, VbapBackend};
 use crate::spatial_vbap::VbapTableMode;
 use crate::spatial_vbap::{DistanceModel, Gains, VbapPanner, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
@@ -578,7 +578,8 @@ impl SpatialRenderer {
             live_params,
             topology,
             editable_layout,
-            Some(crate::live_params::VbapRebuildParams {
+            Some(crate::live_params::BackendRebuildParams::Vbap(
+                crate::live_params::VbapRebuildParams {
                 az_res_deg,
                 el_res_deg,
                 spread_resolution,
@@ -592,7 +593,8 @@ impl SpatialRenderer {
                 cartesian_default_z_neg_size,
                 allow_negative_z,
                 distance_model,
-            }),
+            },
+            )),
         );
 
         Ok(Self::finish_construction(
@@ -764,7 +766,8 @@ impl SpatialRenderer {
             &excluded,
             &topology.bed_to_speaker_mapping,
         );
-        let rebuild_params = crate::live_params::VbapRebuildParams {
+        let rebuild_params = crate::live_params::BackendRebuildParams::Vbap(
+            crate::live_params::VbapRebuildParams {
             az_res_deg: vbap_azimuth_resolution,
             el_res_deg: vbap_elevation_resolution,
             spread_resolution,
@@ -790,7 +793,8 @@ impl SpatialRenderer {
             },
             allow_negative_z,
             distance_model,
-        };
+        },
+        );
         let editable_layout = topology.speaker_layout.clone();
         let control = RendererControl::new(
             live_params,
@@ -912,6 +916,7 @@ impl SpatialRenderer {
             spread_distance_range,
             spread_distance_curve,
             ramp_mode,
+            backend_kind: RenderBackendKind::Vbap,
             vbap_cart_x_size: cartesian_default_x_size.max(1),
             vbap_cart_y_size: cartesian_default_y_size.max(1),
             vbap_cart_z_size: cartesian_default_z_size.max(1),

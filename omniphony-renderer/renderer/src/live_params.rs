@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::render_backend::RenderBackend;
+use crate::render_backend::{RenderBackend, RenderBackendKind};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
@@ -160,6 +160,9 @@ pub struct LiveParams {
     /// Ramp processing mode for object moves and gain transitions.
     pub ramp_mode: RampMode,
 
+    /// Requested spatial render backend.
+    pub backend_kind: RenderBackendKind,
+
     /// Cartesian VBAP table size on X axis (live-editable via OSC).
     pub vbap_cart_x_size: usize,
 
@@ -267,6 +270,11 @@ pub struct VbapRebuildParams {
     pub distance_model: crate::spatial_vbap::DistanceModel,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum BackendRebuildParams {
+    Vbap(VbapRebuildParams),
+}
+
 /// Immutable render-time snapshot published atomically to the audio thread.
 ///
 /// This is the only topology state the renderer should consume during a frame:
@@ -323,7 +331,7 @@ impl RenderTopology {
 
 #[cfg(feature = "saf_vbap")]
 #[derive(Clone)]
-pub struct TopologyRebuildPlan {
+pub struct VbapTopologyBuildPlan {
     pub layout: SpeakerLayout,
     pub positions: Vec<[f32; 2]>,
     pub azimuth_resolution: i32,
@@ -349,7 +357,7 @@ pub struct TopologyRebuildPlan {
 }
 
 #[cfg(feature = "saf_vbap")]
-impl TopologyRebuildPlan {
+impl VbapTopologyBuildPlan {
     pub fn build_topology(&self) -> Result<RenderTopology> {
         let vbap = crate::spatial_vbap::VbapPanner::new_with_mode(
             &self.positions,
@@ -389,6 +397,46 @@ impl TopologyRebuildPlan {
     }
 }
 
+#[cfg(feature = "saf_vbap")]
+#[derive(Clone)]
+pub enum TopologyBuildPlan {
+    Vbap(VbapTopologyBuildPlan),
+}
+
+#[cfg(feature = "saf_vbap")]
+impl TopologyBuildPlan {
+    pub fn build_topology(&self) -> Result<RenderTopology> {
+        match self {
+            Self::Vbap(plan) => plan.build_topology(),
+        }
+    }
+
+    pub fn backend_kind(&self) -> RenderBackendKind {
+        match self {
+            Self::Vbap(_) => RenderBackendKind::Vbap,
+        }
+    }
+
+    pub fn layout(&self) -> &SpeakerLayout {
+        match self {
+            Self::Vbap(plan) => &plan.layout,
+        }
+    }
+
+    pub fn log_summary(&self) -> String {
+        match self {
+            Self::Vbap(plan) => format!(
+                "backend=vbap azimuth_resolution={} elevation_resolution={} distance_res={} distance_max={} mode={:?}",
+                plan.azimuth_resolution,
+                plan.elevation_resolution,
+                plan.distance_res,
+                plan.distance_max,
+                plan.table_mode
+            ),
+        }
+    }
+}
+
 /// Shared control object held by both `SpatialRenderer` and `OscSender`.
 ///
 /// The renderer reads `live` via a snapshot and loads the current immutable
@@ -412,7 +460,7 @@ pub struct RendererControl {
     ///
     /// `None` when the renderer was constructed from a pre-loaded table (`from_vbap`),
     /// because recomputation is not supported in that case.
-    pub vbap_rebuild_params: Option<VbapRebuildParams>,
+    pub backend_rebuild_params: Option<BackendRebuildParams>,
 
     /// `true` while a VBAP recompute is running in the background.
     pub recomputing: AtomicBool,
@@ -448,13 +496,13 @@ impl RendererControl {
         live: LiveParams,
         initial_topology: RenderTopology,
         editable_layout: SpeakerLayout,
-        vbap_rebuild_params: Option<VbapRebuildParams>,
+        backend_rebuild_params: Option<BackendRebuildParams>,
     ) -> Arc<Self> {
         Arc::new(Self {
             live: RwLock::new(live),
             topology: ArcSwap::new(Arc::new(initial_topology)),
             editable_layout: Mutex::new(editable_layout),
-            vbap_rebuild_params,
+            backend_rebuild_params,
             recomputing: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
@@ -502,10 +550,14 @@ impl RendererControl {
     }
 
     #[cfg(feature = "saf_vbap")]
-    pub fn prepare_topology_rebuild(&self) -> Option<TopologyRebuildPlan> {
-        let rebuild = self.vbap_rebuild_params?;
+    pub fn prepare_topology_rebuild(&self) -> Option<TopologyBuildPlan> {
+        let rebuild = self.backend_rebuild_params?;
         let layout = self.editable_layout();
         let live = self.live.read().unwrap();
+        if live.backend_kind != RenderBackendKind::Vbap {
+            return None;
+        }
+        let BackendRebuildParams::Vbap(rebuild) = rebuild;
         let positions = layout
             .spatializable_positions_for_room(
                 live.room_ratio,
@@ -592,7 +644,7 @@ impl RendererControl {
             0.25
         };
 
-        Some(TopologyRebuildPlan {
+        Some(TopologyBuildPlan::Vbap(VbapTopologyBuildPlan {
             layout,
             positions,
             azimuth_resolution,
@@ -615,7 +667,7 @@ impl RendererControl {
             diffuse: live.use_distance_diffuse,
             diffuse_thr: live.distance_diffuse_threshold,
             diffuse_curve: live.distance_diffuse_curve,
-        })
+        }))
     }
 
     /// Mark live params as dirty (changed since last save) and return the new state.

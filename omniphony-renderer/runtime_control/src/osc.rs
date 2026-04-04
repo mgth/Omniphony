@@ -5,6 +5,7 @@ use crate::context::RuntimeControlContext;
 use audio_input::{
     InputBackend, InputClockMode, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
 };
+use renderer::render_backend::RenderBackendKind;
 
 #[derive(Debug, Clone, Default)]
 pub struct SpeakerPatch {
@@ -241,6 +242,26 @@ pub fn apply_simple_osc_control(
                 addr: "/omniphony/state/audio/output_device".to_string(),
                 value: BroadcastValue::String(requested.unwrap_or_default()),
             });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/render_backend" {
+        let requested =
+            parse_string_arg(msg.args.first()).and_then(|value| RenderBackendKind::from_str(&value));
+        if let Some(requested) = requested {
+            let mut live = ctx.renderer.live.write().unwrap();
+            if live.backend_kind != requested {
+                live.backend_kind = requested;
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/render_backend".to_string(),
+                    value: BroadcastValue::String(requested.as_str().to_string()),
+                });
+                effects.log_message =
+                    Some(format!("OSC: render_backend -> {}", requested.as_str()));
+            }
         }
         return Some(effects);
     }

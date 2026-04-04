@@ -98,7 +98,9 @@ pub fn save_live_config(
         LiveVbapTableMode::Cartesian => true,
         LiveVbapTableMode::Polar => false,
         LiveVbapTableMode::Auto => matches!(
-            control.vbap_rebuild_params.map(|p| p.preferred_table_mode),
+            control.backend_rebuild_params.map(|p| match p {
+                renderer::live_params::BackendRebuildParams::Vbap(p) => p.preferred_table_mode,
+            }),
             Some(VbapBackendMode::Cartesian)
         ),
     };

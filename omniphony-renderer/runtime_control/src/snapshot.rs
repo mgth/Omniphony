@@ -61,8 +61,17 @@ pub fn build_live_state_bundle(
     let radius_m = control.editable_layout().radius_m;
     let active_topology = control.active_topology();
     let effective_mode = active_topology.backend.effective_mode_name();
+    let effective_backend = active_topology.backend.kind().as_str();
 
     let mut messages = vec![
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/render_backend".to_string(),
+            args: vec![OscType::String(live.backend_kind.as_str().to_string())],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/render_backend/effective".to_string(),
+            args: vec![OscType::String(effective_backend.to_string())],
+        }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/gain".to_string(),
             args: vec![OscType::Float(live.master_gain)],
@@ -145,8 +154,10 @@ pub fn build_live_state_bundle(
             addr: "/omniphony/state/vbap/allow_negative_z".to_string(),
             args: vec![OscType::Int(
                 if control
-                    .vbap_rebuild_params
-                    .map(|p| p.allow_negative_z)
+                    .backend_rebuild_params
+                    .map(|p| match p {
+                        renderer::live_params::BackendRebuildParams::Vbap(p) => p.allow_negative_z,
+                    })
                     .unwrap_or(true)
                 {
                     1

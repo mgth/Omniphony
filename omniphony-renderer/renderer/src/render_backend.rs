@@ -2,9 +2,25 @@ use crate::speaker_layout::SpeakerLayout;
 use crate::spatial_vbap::{DistanceModel, Gains, VbapPanner, adm_to_spherical};
 use anyhow::Result;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RenderBackendKind {
     Vbap,
+}
+
+impl RenderBackendKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Vbap => "vbap",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "vbap" => Some(Self::Vbap),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

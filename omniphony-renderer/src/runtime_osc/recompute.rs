@@ -20,9 +20,9 @@ pub(crate) fn trigger_layout_recompute(
 
     #[cfg(feature = "saf_vbap")]
     {
-        if control.vbap_rebuild_params.is_none() {
+        if control.backend_rebuild_params.is_none() {
             log::warn!(
-                "OSC apply: VBAP speaker positions cannot be updated — pre-loaded table does not support recompute"
+                "OSC apply: speaker positions cannot be updated — active backend does not support recompute"
             );
             broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 0);
             return;
@@ -40,7 +40,7 @@ pub(crate) fn trigger_layout_recompute(
         let rebuild_plan = match control.prepare_topology_rebuild() {
             Some(plan) => plan,
             None => {
-                log::warn!("OSC apply: failed to prepare VBAP recompute plan");
+                log::warn!("OSC apply: failed to prepare render backend recompute plan");
                 broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 0);
                 return;
             }
@@ -57,15 +57,11 @@ pub(crate) fn trigger_layout_recompute(
         let rebuild_plan_for_thread = rebuild_plan.clone();
 
         std::thread::Builder::new()
-            .name("vbap-recompute".into())
+            .name("render-backend-recompute".into())
             .spawn(move || {
                 log::info!(
-                    "VBAP recompute started (azimuth_resolution={}, elevation_resolution={}, distance_res={}, distance_max={}, mode={:?})",
-                    rebuild_plan_for_thread.azimuth_resolution,
-                    rebuild_plan_for_thread.elevation_resolution,
-                    rebuild_plan_for_thread.distance_res,
-                    rebuild_plan_for_thread.distance_max,
-                    rebuild_plan_for_thread.table_mode
+                    "Render backend recompute started ({})",
+                    rebuild_plan_for_thread.log_summary()
                 );
                 match rebuild_plan_for_thread.build_topology() {
                     Ok(new_topology) => {
@@ -73,9 +69,20 @@ pub(crate) fn trigger_layout_recompute(
                         control_clone
                             .recomputing
                             .store(false, std::sync::atomic::Ordering::Relaxed);
-                        log::info!("VBAP updated with new speaker layout");
+                        log::info!(
+                            "Render backend {:?} updated with new speaker layout",
+                            rebuild_plan_for_thread.backend_kind()
+                        );
                         let effective_mode =
                             control_clone.active_topology().backend.effective_mode_name();
+                        let effective_backend =
+                            control_clone.active_topology().backend.kind().as_str();
+                        broadcast_string(
+                            &socket_clone,
+                            &clients_clone,
+                            "/omniphony/state/render_backend/effective",
+                            effective_backend,
+                        );
                         broadcast_string(
                             &socket_clone,
                             &clients_clone,
@@ -88,7 +95,7 @@ pub(crate) fn trigger_layout_recompute(
                             "/omniphony/state/speakers/recomputing",
                             0,
                         );
-                        for (idx, speaker) in rebuild_plan_for_thread.layout.speakers.iter().enumerate() {
+                        for (idx, speaker) in rebuild_plan_for_thread.layout().speakers.iter().enumerate() {
                             broadcast_fff(
                                 &socket_clone,
                                 &clients_clone,
@@ -110,10 +117,10 @@ pub(crate) fn trigger_layout_recompute(
                                 &speaker.name,
                             );
                         }
-                        log::info!("VBAP recompute completed");
+                        log::info!("Render backend recompute completed");
                     }
                     Err(e) => {
-                        log::error!("VBAP recompute failed: {}", e);
+                        log::error!("Render backend recompute failed: {}", e);
                         control_clone
                             .recomputing
                             .store(false, std::sync::atomic::Ordering::Relaxed);
