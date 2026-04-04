@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::spatial_vbap::VbapPanner;
+use crate::render_backend::RenderBackend;
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
@@ -274,36 +274,37 @@ pub struct VbapRebuildParams {
 /// mappings that tie both together.
 pub struct RenderTopology {
     pub speaker_layout: SpeakerLayout,
-    pub vbap: Arc<VbapPanner>,
-    pub vbap_to_speaker_mapping: Option<Vec<usize>>,
+    pub backend: Arc<RenderBackend>,
+    pub backend_to_speaker_mapping: Option<Vec<usize>>,
     pub bed_to_speaker_mapping: HashMap<usize, usize>,
     pub num_speakers: usize,
     pub num_spatializable: usize,
 }
 
 impl RenderTopology {
-    pub fn new(vbap: Arc<VbapPanner>, speaker_layout: SpeakerLayout) -> Result<Self> {
+    pub fn new(backend: Arc<RenderBackend>, speaker_layout: SpeakerLayout) -> Result<Self> {
         let num_speakers = speaker_layout.num_speakers();
         let (_, spatializable_mapping) = speaker_layout.spatializable_positions();
         let num_spatializable = spatializable_mapping.len();
+        let backend_speakers = backend.speaker_count();
 
-        let vbap_to_speaker_mapping = if vbap.num_speakers() == num_speakers {
+        let backend_to_speaker_mapping = if backend_speakers == num_speakers {
             log::info!(
-                "VBAP table uses v4 expanded format ({} speakers) - SIMD optimized",
+                "Render backend uses expanded speaker-domain format ({} speakers)",
                 num_speakers
             );
             None
-        } else if vbap.num_speakers() == num_spatializable {
+        } else if backend_speakers == num_spatializable {
             log::info!(
-                "VBAP table uses v3 legacy format ({} spatializable of {} total) - using mapping",
+                "Render backend uses spatializable-domain format ({} spatializable of {} total) - using mapping",
                 num_spatializable,
                 num_speakers
             );
             Some(spatializable_mapping)
         } else {
             return Err(anyhow::anyhow!(
-                "VBAP table mismatch: table has {} speakers but layout has {} total ({} spatializable)",
-                vbap.num_speakers(),
+                "Render backend speaker mismatch: backend has {} speakers but layout has {} total ({} spatializable)",
+                backend_speakers,
                 num_speakers,
                 num_spatializable
             ));
@@ -314,8 +315,8 @@ impl RenderTopology {
             num_speakers,
             num_spatializable,
             speaker_layout,
-            vbap,
-            vbap_to_speaker_mapping,
+            backend,
+            backend_to_speaker_mapping,
         })
     }
 }
@@ -379,7 +380,12 @@ impl TopologyRebuildPlan {
         )
         .map_err(|e| anyhow::anyhow!("Failed to precompute VBAP effect tables: {}", e))?;
 
-        RenderTopology::new(Arc::new(vbap), self.layout.clone())
+        RenderTopology::new(
+            Arc::new(RenderBackend::Vbap(crate::render_backend::VbapBackend::new(
+                vbap,
+            ))),
+            self.layout.clone(),
+        )
     }
 }
 

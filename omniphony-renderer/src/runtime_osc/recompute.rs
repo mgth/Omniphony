@@ -74,11 +74,8 @@ pub(crate) fn trigger_layout_recompute(
                             .recomputing
                             .store(false, std::sync::atomic::Ordering::Relaxed);
                         log::info!("VBAP updated with new speaker layout");
-                        let effective_mode = match control_clone.active_topology().vbap.table_mode()
-                        {
-                            renderer::spatial_vbap::VbapTableMode::Polar => "polar",
-                            renderer::spatial_vbap::VbapTableMode::Cartesian { .. } => "cartesian",
-                        };
+                        let effective_mode =
+                            control_clone.active_topology().backend.effective_mode_name();
                         broadcast_string(
                             &socket_clone,
                             &clients_clone,

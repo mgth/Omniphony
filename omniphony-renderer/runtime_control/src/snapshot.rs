@@ -60,10 +60,7 @@ pub fn build_live_state_bundle(
     let live = control.live.read().unwrap();
     let radius_m = control.editable_layout().radius_m;
     let active_topology = control.active_topology();
-    let effective_mode = match active_topology.vbap.table_mode() {
-        renderer::spatial_vbap::VbapTableMode::Polar => "polar",
-        renderer::spatial_vbap::VbapTableMode::Cartesian { .. } => "cartesian",
-    };
+    let effective_mode = active_topology.backend.effective_mode_name();
 
     let mut messages = vec![
         OscPacket::Message(OscMessage {
