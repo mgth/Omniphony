@@ -112,7 +112,6 @@ struct ExperimentalSpeakerCandidate {
 }
 
 const EXPERIMENTAL_DISTANCE_FLOOR: f32 = 0.05;
-const EXPERIMENTAL_CLOSE_SPEAKER_DISTANCE: f32 = 0.035;
 const EXPERIMENTAL_MIN_ACTIVE_SPEAKERS: usize = 2;
 const EXPERIMENTAL_MAX_ACTIVE_SPEAKERS: usize = 8;
 const EXPERIMENTAL_POSITION_ERROR_FLOOR: f32 = 0.08;
@@ -277,7 +276,7 @@ impl ExperimentalDistanceBackend {
             return RenderResponse { gains };
         };
 
-        if nearest_distance <= EXPERIMENTAL_CLOSE_SPEAKER_DISTANCE {
+        if nearest_distance <= f32::EPSILON {
             gains.set(nearest_index, 1.0);
             return RenderResponse { gains };
         }
