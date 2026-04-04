@@ -1,5 +1,5 @@
-use crate::speaker_layout::SpeakerLayout;
 use crate::spatial_vbap::{DistanceModel, Gains, VbapPanner, adm_to_spherical};
+use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -84,7 +84,11 @@ impl RenderBackend {
         }
     }
 
-    pub fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
+    pub fn save_to_file(
+        &self,
+        path: &std::path::Path,
+        speaker_layout: &SpeakerLayout,
+    ) -> Result<()> {
         match self {
             Self::Vbap(backend) => backend.save_to_file(path, speaker_layout),
             Self::ExperimentalDistance(backend) => backend.save_to_file(path, speaker_layout),
@@ -99,6 +103,21 @@ pub struct VbapBackend {
 pub struct ExperimentalDistanceBackend {
     speaker_positions: Vec<[f32; 3]>,
 }
+
+#[derive(Clone, Copy)]
+struct ExperimentalSpeakerCandidate {
+    index: usize,
+    transformed_position: [f32; 3],
+    distance: f32,
+}
+
+const EXPERIMENTAL_DISTANCE_FLOOR: f32 = 0.05;
+const EXPERIMENTAL_CLOSE_SPEAKER_DISTANCE: f32 = 0.035;
+const EXPERIMENTAL_MIN_ACTIVE_SPEAKERS: usize = 2;
+const EXPERIMENTAL_MAX_ACTIVE_SPEAKERS: usize = 8;
+const EXPERIMENTAL_POSITION_ERROR_FLOOR: f32 = 0.08;
+const EXPERIMENTAL_POSITION_ERROR_NEAREST_SCALE: f32 = 0.75;
+const EXPERIMENTAL_POSITION_ERROR_SPAN_SCALE: f32 = 0.3;
 
 impl VbapBackend {
     pub fn new(panner: VbapPanner) -> Self {
@@ -202,7 +221,11 @@ impl VbapBackend {
         }
     }
 
-    pub fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
+    pub fn save_to_file(
+        &self,
+        path: &std::path::Path,
+        speaker_layout: &SpeakerLayout,
+    ) -> Result<()> {
         self.panner
             .save_to_file(path, speaker_layout)
             .map_err(|e| anyhow::anyhow!("Failed to save VBAP table: {}", e))
@@ -219,60 +242,53 @@ impl ExperimentalDistanceBackend {
     }
 
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let [x, y, z] = req.adm_position.map(|v| v as f32);
-        let target = [
-            x * req.room_ratio[0],
-            map_depth_with_room_ratios(y, req.room_ratio[1], req.room_ratio_rear, req.room_ratio_center_blend),
-            if z >= 0.0 {
-                z * req.room_ratio[2]
-            } else {
-                z * req.room_ratio_lower
-            },
-        ];
+        let target = transform_position(
+            req.adm_position.map(|v| v as f32),
+            req.room_ratio,
+            req.room_ratio_rear,
+            req.room_ratio_lower,
+            req.room_ratio_center_blend,
+        );
 
-        let mut gains = Gains::zeroed(self.speaker_positions.len());
-        let mut min_distance = f32::MAX;
-        let mut min_index = 0usize;
-        let mut energy = 0.0f32;
-
-        for (i, speaker) in self.speaker_positions.iter().enumerate() {
-            let sx = speaker[0] * req.room_ratio[0];
-            let sy = map_depth_with_room_ratios(
-                speaker[1],
-                req.room_ratio[1],
+        let mut candidates = Vec::with_capacity(self.speaker_positions.len());
+        let mut nearest = None::<(usize, f32)>;
+        for (index, speaker) in self.speaker_positions.iter().copied().enumerate() {
+            let transformed_position = transform_position(
+                speaker,
+                req.room_ratio,
                 req.room_ratio_rear,
+                req.room_ratio_lower,
                 req.room_ratio_center_blend,
             );
-            let sz = if speaker[2] >= 0.0 {
-                speaker[2] * req.room_ratio[2]
-            } else {
-                speaker[2] * req.room_ratio_lower
-            };
-            let dx = target[0] - sx;
-            let dy = target[1] - sy;
-            let dz = target[2] - sz;
-            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-            if distance < min_distance {
-                min_distance = distance;
-                min_index = i;
+            let distance = euclidean_distance(target, transformed_position);
+            match nearest {
+                Some((_, best_distance)) if distance >= best_distance => {}
+                _ => nearest = Some((index, distance)),
             }
-            let weight = 1.0 / distance.max(0.05);
-            gains.set(i, weight);
-            energy += weight * weight;
+            candidates.push(ExperimentalSpeakerCandidate {
+                index,
+                transformed_position,
+                distance,
+            });
         }
 
-        if min_distance <= 0.05 {
-            for g in gains.iter_mut() {
-                *g = 0.0;
-            }
-            gains.set(min_index, 1.0);
+        let mut gains = Gains::zeroed(self.speaker_positions.len());
+        let Some((nearest_index, nearest_distance)) = nearest else {
+            return RenderResponse { gains };
+        };
+
+        if nearest_distance <= EXPERIMENTAL_CLOSE_SPEAKER_DISTANCE {
+            gains.set(nearest_index, 1.0);
             return RenderResponse { gains };
         }
 
+        candidates.sort_unstable_by(|a, b| a.distance.total_cmp(&b.distance));
+        let active_count = select_experimental_active_count(target, &candidates);
+        let energy = write_experimental_subset_gains(&mut gains, &candidates[..active_count]);
         if energy > 1e-12 {
             let norm = energy.sqrt();
-            for g in gains.iter_mut() {
-                *g /= norm;
+            for gain in gains.iter_mut() {
+                *gain /= norm;
             }
         }
 
@@ -283,11 +299,144 @@ impl ExperimentalDistanceBackend {
         "distance"
     }
 
-    pub fn save_to_file(&self, _path: &std::path::Path, _speaker_layout: &SpeakerLayout) -> Result<()> {
+    pub fn save_to_file(
+        &self,
+        _path: &std::path::Path,
+        _speaker_layout: &SpeakerLayout,
+    ) -> Result<()> {
         Err(anyhow::anyhow!(
             "Saving a precomputed table is only supported for the VBAP backend"
         ))
     }
+}
+
+#[inline]
+fn transform_position(
+    position: [f32; 3],
+    room_ratio: [f32; 3],
+    room_ratio_rear: f32,
+    room_ratio_lower: f32,
+    room_ratio_center_blend: f32,
+) -> [f32; 3] {
+    [
+        position[0] * room_ratio[0],
+        map_depth_with_room_ratios(
+            position[1],
+            room_ratio[1],
+            room_ratio_rear,
+            room_ratio_center_blend,
+        ),
+        if position[2] >= 0.0 {
+            position[2] * room_ratio[2]
+        } else {
+            position[2] * room_ratio_lower
+        },
+    ]
+}
+
+#[inline]
+fn euclidean_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+#[inline]
+fn experimental_distance_weight(distance: f32) -> f32 {
+    let clamped = distance.max(EXPERIMENTAL_DISTANCE_FLOOR);
+    1.0 / (clamped * clamped.sqrt())
+}
+
+fn write_experimental_subset_gains(
+    gains: &mut Gains,
+    candidates: &[ExperimentalSpeakerCandidate],
+) -> f32 {
+    let mut energy = 0.0f32;
+    for candidate in candidates {
+        let weight = experimental_distance_weight(candidate.distance);
+        gains.set(candidate.index, weight);
+        energy += weight * weight;
+    }
+    energy
+}
+
+fn select_experimental_active_count(
+    target: [f32; 3],
+    candidates: &[ExperimentalSpeakerCandidate],
+) -> usize {
+    if candidates.is_empty() {
+        return 0;
+    }
+
+    let min_active = candidates
+        .len()
+        .min(EXPERIMENTAL_MIN_ACTIVE_SPEAKERS.max(1));
+    let max_active = candidates
+        .len()
+        .min(EXPERIMENTAL_MAX_ACTIVE_SPEAKERS.max(1));
+    let nearest_distance = candidates[0].distance;
+    let mut best_count = 1usize;
+    let mut best_error = f32::MAX;
+
+    // Stop once the energy-weighted barycenter lands close enough to the target.
+    for count in 1..=max_active {
+        let subset = &candidates[..count];
+        let reconstructed = reconstruct_experimental_position(subset);
+        let error = euclidean_distance(target, reconstructed);
+        if error < best_error {
+            best_error = error;
+            best_count = count;
+        }
+
+        if count >= min_active {
+            let span = candidate_subset_span(subset);
+            let threshold = EXPERIMENTAL_POSITION_ERROR_FLOOR
+                .max(nearest_distance * EXPERIMENTAL_POSITION_ERROR_NEAREST_SCALE)
+                .max(span * EXPERIMENTAL_POSITION_ERROR_SPAN_SCALE);
+            if error <= threshold {
+                return count;
+            }
+        }
+    }
+
+    best_count.max(min_active.min(max_active))
+}
+
+fn reconstruct_experimental_position(candidates: &[ExperimentalSpeakerCandidate]) -> [f32; 3] {
+    let mut weighted = [0.0f32; 3];
+    let mut energy = 0.0f32;
+    for candidate in candidates {
+        let weight = experimental_distance_weight(candidate.distance);
+        let contribution = weight * weight;
+        weighted[0] += candidate.transformed_position[0] * contribution;
+        weighted[1] += candidate.transformed_position[1] * contribution;
+        weighted[2] += candidate.transformed_position[2] * contribution;
+        energy += contribution;
+    }
+
+    if energy <= 1e-12 {
+        return candidates[0].transformed_position;
+    }
+
+    [
+        weighted[0] / energy,
+        weighted[1] / energy,
+        weighted[2] / energy,
+    ]
+}
+
+fn candidate_subset_span(candidates: &[ExperimentalSpeakerCandidate]) -> f32 {
+    let mut span = 0.0f32;
+    for i in 0..candidates.len() {
+        for j in (i + 1)..candidates.len() {
+            span = span.max(euclidean_distance(
+                candidates[i].transformed_position,
+                candidates[j].transformed_position,
+            ));
+        }
+    }
+    span
 }
 
 #[inline]
