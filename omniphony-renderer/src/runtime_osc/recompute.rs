@@ -20,9 +20,9 @@ pub(crate) fn trigger_layout_recompute(
 
     #[cfg(feature = "saf_vbap")]
     {
-        if control.backend_rebuild_params.is_none() {
+        if control.prepare_topology_rebuild().is_none() {
             log::warn!(
-                "OSC apply: speaker positions cannot be updated — active backend does not support recompute"
+                "OSC apply: speaker positions cannot be updated — requested backend rebuild could not be prepared"
             );
             broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 0);
             return;

@@ -275,6 +275,13 @@ pub enum BackendRebuildParams {
     Vbap(VbapRebuildParams),
 }
 
+#[cfg(feature = "saf_vbap")]
+#[derive(Clone)]
+pub struct ExperimentalDistanceTopologyBuildPlan {
+    pub layout: SpeakerLayout,
+    pub speaker_positions: Vec<[f32; 3]>,
+}
+
 /// Immutable render-time snapshot published atomically to the audio thread.
 ///
 /// This is the only topology state the renderer should consume during a frame:
@@ -401,6 +408,7 @@ impl VbapTopologyBuildPlan {
 #[derive(Clone)]
 pub enum TopologyBuildPlan {
     Vbap(VbapTopologyBuildPlan),
+    ExperimentalDistance(ExperimentalDistanceTopologyBuildPlan),
 }
 
 #[cfg(feature = "saf_vbap")]
@@ -408,18 +416,30 @@ impl TopologyBuildPlan {
     pub fn build_topology(&self) -> Result<RenderTopology> {
         match self {
             Self::Vbap(plan) => plan.build_topology(),
+            Self::ExperimentalDistance(plan) => {
+                RenderTopology::new(
+                    Arc::new(RenderBackend::ExperimentalDistance(
+                        crate::render_backend::ExperimentalDistanceBackend::new(
+                            plan.speaker_positions.clone(),
+                        ),
+                    )),
+                    plan.layout.clone(),
+                )
+            }
         }
     }
 
     pub fn backend_kind(&self) -> RenderBackendKind {
         match self {
             Self::Vbap(_) => RenderBackendKind::Vbap,
+            Self::ExperimentalDistance(_) => RenderBackendKind::ExperimentalDistance,
         }
     }
 
     pub fn layout(&self) -> &SpeakerLayout {
         match self {
             Self::Vbap(plan) => &plan.layout,
+            Self::ExperimentalDistance(plan) => &plan.layout,
         }
     }
 
@@ -432,6 +452,10 @@ impl TopologyBuildPlan {
                 plan.distance_res,
                 plan.distance_max,
                 plan.table_mode
+            ),
+            Self::ExperimentalDistance(plan) => format!(
+                "backend=experimental_distance speakers={}",
+                plan.speaker_positions.len()
             ),
         }
     }
@@ -551,12 +575,24 @@ impl RendererControl {
 
     #[cfg(feature = "saf_vbap")]
     pub fn prepare_topology_rebuild(&self) -> Option<TopologyBuildPlan> {
-        let rebuild = self.backend_rebuild_params?;
         let layout = self.editable_layout();
         let live = self.live.read().unwrap();
-        if live.backend_kind != RenderBackendKind::Vbap {
-            return None;
+        if live.backend_kind == RenderBackendKind::ExperimentalDistance {
+            let speaker_positions = layout
+                .speakers
+                .iter()
+                .filter(|speaker| speaker.spatialize)
+                .map(|speaker| [speaker.x, speaker.y, speaker.z])
+                .collect();
+            return Some(TopologyBuildPlan::ExperimentalDistance(
+                ExperimentalDistanceTopologyBuildPlan {
+                    layout,
+                    speaker_positions,
+                },
+            ));
         }
+
+        let rebuild = self.backend_rebuild_params?;
         let BackendRebuildParams::Vbap(rebuild) = rebuild;
         let positions = layout
             .spatializable_positions_for_room(

@@ -6,18 +6,23 @@ use anyhow::Result;
 #[serde(rename_all = "snake_case")]
 pub enum RenderBackendKind {
     Vbap,
+    ExperimentalDistance,
 }
 
 impl RenderBackendKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Vbap => "vbap",
+            Self::ExperimentalDistance => "experimental_distance",
         }
     }
 
     pub fn from_str(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "vbap" => Some(Self::Vbap),
+            "experimental_distance" | "distance" | "distance_based" => {
+                Some(Self::ExperimentalDistance)
+            }
             _ => None,
         }
     }
@@ -47,42 +52,52 @@ pub struct RenderResponse {
 
 pub enum RenderBackend {
     Vbap(VbapBackend),
+    ExperimentalDistance(ExperimentalDistanceBackend),
 }
 
 impl RenderBackend {
     pub fn kind(&self) -> RenderBackendKind {
         match self {
             Self::Vbap(_) => RenderBackendKind::Vbap,
+            Self::ExperimentalDistance(_) => RenderBackendKind::ExperimentalDistance,
         }
     }
 
     pub fn speaker_count(&self) -> usize {
         match self {
             Self::Vbap(backend) => backend.speaker_count(),
+            Self::ExperimentalDistance(backend) => backend.speaker_count(),
         }
     }
 
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
         match self {
             Self::Vbap(backend) => backend.compute_gains(req),
+            Self::ExperimentalDistance(backend) => backend.compute_gains(req),
         }
     }
 
     pub fn effective_mode_name(&self) -> &'static str {
         match self {
             Self::Vbap(backend) => backend.effective_mode_name(),
+            Self::ExperimentalDistance(backend) => backend.effective_mode_name(),
         }
     }
 
     pub fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         match self {
             Self::Vbap(backend) => backend.save_to_file(path, speaker_layout),
+            Self::ExperimentalDistance(backend) => backend.save_to_file(path, speaker_layout),
         }
     }
 }
 
 pub struct VbapBackend {
     panner: VbapPanner,
+}
+
+pub struct ExperimentalDistanceBackend {
+    speaker_positions: Vec<[f32; 3]>,
 }
 
 impl VbapBackend {
@@ -191,6 +206,87 @@ impl VbapBackend {
         self.panner
             .save_to_file(path, speaker_layout)
             .map_err(|e| anyhow::anyhow!("Failed to save VBAP table: {}", e))
+    }
+}
+
+impl ExperimentalDistanceBackend {
+    pub fn new(speaker_positions: Vec<[f32; 3]>) -> Self {
+        Self { speaker_positions }
+    }
+
+    pub fn speaker_count(&self) -> usize {
+        self.speaker_positions.len()
+    }
+
+    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        let [x, y, z] = req.adm_position.map(|v| v as f32);
+        let target = [
+            x * req.room_ratio[0],
+            map_depth_with_room_ratios(y, req.room_ratio[1], req.room_ratio_rear, req.room_ratio_center_blend),
+            if z >= 0.0 {
+                z * req.room_ratio[2]
+            } else {
+                z * req.room_ratio_lower
+            },
+        ];
+
+        let mut gains = Gains::zeroed(self.speaker_positions.len());
+        let mut min_distance = f32::MAX;
+        let mut min_index = 0usize;
+        let mut energy = 0.0f32;
+
+        for (i, speaker) in self.speaker_positions.iter().enumerate() {
+            let sx = speaker[0] * req.room_ratio[0];
+            let sy = map_depth_with_room_ratios(
+                speaker[1],
+                req.room_ratio[1],
+                req.room_ratio_rear,
+                req.room_ratio_center_blend,
+            );
+            let sz = if speaker[2] >= 0.0 {
+                speaker[2] * req.room_ratio[2]
+            } else {
+                speaker[2] * req.room_ratio_lower
+            };
+            let dx = target[0] - sx;
+            let dy = target[1] - sy;
+            let dz = target[2] - sz;
+            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+            if distance < min_distance {
+                min_distance = distance;
+                min_index = i;
+            }
+            let weight = 1.0 / distance.max(0.05);
+            gains.set(i, weight);
+            energy += weight * weight;
+        }
+
+        if min_distance <= 0.05 {
+            for g in gains.iter_mut() {
+                *g = 0.0;
+            }
+            gains.set(min_index, 1.0);
+            return RenderResponse { gains };
+        }
+
+        if energy > 1e-12 {
+            let norm = energy.sqrt();
+            for g in gains.iter_mut() {
+                *g /= norm;
+            }
+        }
+
+        RenderResponse { gains }
+    }
+
+    pub fn effective_mode_name(&self) -> &'static str {
+        "distance"
+    }
+
+    pub fn save_to_file(&self, _path: &std::path::Path, _speaker_layout: &SpeakerLayout) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Saving a precomputed table is only supported for the VBAP backend"
+        ))
     }
 }
 
