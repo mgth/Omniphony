@@ -7,7 +7,7 @@ use super::handler::DecodeHandler;
 use super::live_input::{LiveBridgeRuntimeConfig, spawn_live_input_manager};
 use super::state::{FrameHandlerContext, WriterState};
 use crate::bridge_loader::{LoadedBridge, resolve_bridge_path};
-use crate::cli::command::{Cli, OutputBackend, RenderArgSources, RenderArgs, VbapTableModeArg};
+use crate::cli::command::{Cli, EvaluationModeArg, OutputBackend, RenderArgSources, RenderArgs};
 use anyhow::Result;
 use log::Level;
 use std::sync::mpsc;
@@ -30,7 +30,7 @@ struct PreparedDecodeRun {
     is_spatial_presentation: bool,
     coordinate_format: bridge_api::RCoordinateFormat,
     vbap_cartesian_defaults: bridge_api::RVbapCartesianDefaults,
-    preferred_vbap_table_mode: bridge_api::RVbapTableMode,
+    preferred_evaluation_mode: bridge_api::RVbapTableMode,
 }
 
 fn resolve_effective_decode_args(
@@ -53,11 +53,11 @@ fn resolve_effective_decode_args(
         .unwrap_or_default();
 
     let mut effective = args.clone();
-    let vbap_table_mode_explicit = arg_sources.is_explicit("vbap_table_mode")
+    let evaluation_mode_explicit = arg_sources.is_explicit("render_evaluation_mode")
         || cfg
             .render
             .as_ref()
-            .and_then(|rc| rc.vbap_table_mode.as_ref())
+            .and_then(|rc| rc.render_evaluation_mode.as_ref())
             .is_some();
     if let Some(rc) = &cfg.render {
         merge_render_config(rc, &mut effective, arg_sources);
@@ -68,7 +68,7 @@ fn resolve_effective_decode_args(
         config_path,
         effective,
         current_layout,
-        vbap_table_mode_explicit,
+        evaluation_mode_explicit,
     )
 }
 
@@ -145,7 +145,7 @@ fn prepare_render_run(args: &RenderArgs, cli: &Cli) -> Result<PreparedDecodeRun>
     let is_spatial_presentation = bridge.is_spatial();
     let coordinate_format = bridge.coordinate_format();
     let vbap_cartesian_defaults = bridge.vbap_cartesian_defaults();
-    let preferred_vbap_table_mode = bridge.preferred_vbap_table_mode();
+    let preferred_evaluation_mode = bridge.preferred_vbap_table_mode();
     log::info!("Bridge coordinate format: {:?}", coordinate_format);
     log::info!(
         "Bridge cartesian VBAP defaults: x={}, y={}, z={}, allow_negative_z={}",
@@ -155,8 +155,8 @@ fn prepare_render_run(args: &RenderArgs, cli: &Cli) -> Result<PreparedDecodeRun>
         vbap_cartesian_defaults.allow_negative_z
     );
     log::info!(
-        "Bridge preferred VBAP table mode: {:?}",
-        preferred_vbap_table_mode
+        "Bridge preferred evaluation mode: {:?}",
+        preferred_evaluation_mode
     );
 
     let queue_capacity = decode_queue_capacity(args.latency_target_ms);
@@ -192,7 +192,7 @@ fn prepare_render_run(args: &RenderArgs, cli: &Cli) -> Result<PreparedDecodeRun>
         is_spatial_presentation,
         coordinate_format,
         vbap_cartesian_defaults,
-        preferred_vbap_table_mode,
+        preferred_evaluation_mode,
     })
 }
 
@@ -418,17 +418,17 @@ fn run_prepared_render(
     args: &RenderArgs,
     config_path: &Option<std::path::PathBuf>,
     current_layout_from_config: Option<renderer::speaker_layout::SpeakerLayout>,
-    vbap_table_mode_explicit: bool,
+    evaluation_mode_explicit: bool,
 ) -> Result<()> {
     let mut effective_args = args.clone();
-    if !vbap_table_mode_explicit {
-        effective_args.vbap_table_mode = match prepared.preferred_vbap_table_mode {
-            bridge_api::RVbapTableMode::Polar => VbapTableModeArg::Polar,
-            bridge_api::RVbapTableMode::Cartesian => VbapTableModeArg::Cartesian,
+    if !evaluation_mode_explicit {
+        effective_args.render_evaluation_mode = match prepared.preferred_evaluation_mode {
+            bridge_api::RVbapTableMode::Polar => EvaluationModeArg::Polar,
+            bridge_api::RVbapTableMode::Cartesian => EvaluationModeArg::Cartesian,
         };
         log::info!(
-            "Using bridge-preferred VBAP table mode: {:?}",
-            effective_args.vbap_table_mode
+            "Using bridge-preferred evaluation mode: {:?}",
+            effective_args.render_evaluation_mode
         );
     }
 
@@ -440,8 +440,8 @@ fn run_prepared_render(
         config_path,
         current_layout_from_config,
         prepared.vbap_cartesian_defaults,
-        prepared.preferred_vbap_table_mode,
-        vbap_table_mode_explicit,
+        prepared.preferred_evaluation_mode,
+        evaluation_mode_explicit,
     )?;
     handler.spatial.coordinate_format = prepared.coordinate_format;
     let live_input_manager = handler
@@ -472,7 +472,7 @@ fn run_prepared_render(
 
 pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'_>) -> Result<()> {
     loop {
-        let (config_path, effective_args, current_layout_from_config, vbap_table_mode_explicit) =
+        let (config_path, effective_args, current_layout_from_config, evaluation_mode_explicit) =
             resolve_effective_decode_args(args, cli, arg_sources);
         let args = &effective_args;
 
@@ -486,7 +486,7 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
             args,
             &config_path,
             current_layout_from_config,
-            vbap_table_mode_explicit,
+            evaluation_mode_explicit,
         )?;
 
         if sys::ShutdownHandle::is_restart_from_config_requested() {

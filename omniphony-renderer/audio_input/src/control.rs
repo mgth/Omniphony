@@ -224,9 +224,14 @@ impl InputControl {
     }
 
     pub fn take_apply_pending(&self) -> bool {
-        self.apply_pending
+        let taken = self
+            .apply_pending
             .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
+            .is_ok();
+        if taken {
+            self.bump_state_generation();
+        }
+        taken
     }
 
     pub fn is_apply_pending(&self) -> bool {

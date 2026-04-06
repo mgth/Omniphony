@@ -1,5 +1,89 @@
 import * as THREE from 'three';
-import { speakerLabels, app } from '../state.js';
+import { sourceLabels, speakerLabels, app } from '../state.js';
+
+const labelDebugStats = {
+  created: 0,
+  textureRebuilds: 0,
+  textUpdates: 0,
+  textSkips: 0,
+  imageLoads: 0,
+  recentEvents: []
+};
+
+let nextLabelDebugId = 1;
+
+function labelDebugTarget(sprite) {
+  if (!sprite?.userData) {
+    return null;
+  }
+  if (sprite.userData.sourceId !== undefined) {
+    return `source:${sprite.userData.sourceId}`;
+  }
+  if (sprite.userData.speakerIndex !== undefined) {
+    return `speaker:${sprite.userData.speakerIndex}`;
+  }
+  return sprite.userData.labelDebugId ? `label:${sprite.userData.labelDebugId}` : null;
+}
+
+function pushLabelDebugEvent(type, sprite, extra = {}) {
+  const event = {
+    t: Date.now(),
+    type,
+    target: labelDebugTarget(sprite),
+    text: sprite?.userData?.labelText ?? null,
+    ...extra
+  };
+  labelDebugStats.recentEvents.push(event);
+  if (labelDebugStats.recentEvents.length > 80) {
+    labelDebugStats.recentEvents.shift();
+  }
+}
+
+function attachLabelDebugHandle() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const existing = window.omniphonyDebug && typeof window.omniphonyDebug === 'object'
+    ? window.omniphonyDebug
+    : {};
+  window.omniphonyDebug = {
+    ...existing,
+    labelStats: labelDebugStats,
+    summarizeLabels() {
+      const sourceTargets = new Map();
+      const speakerTargets = new Map();
+      sourceLabels.forEach((label, id) => {
+        sourceTargets.set(`source:${id}`, (sourceTargets.get(`source:${id}`) || 0) + 1);
+      });
+      speakerLabels.forEach((label, index) => {
+        if (!label) {
+          return;
+        }
+        const key = `speaker:${label.userData?.speakerIndex ?? index}`;
+        speakerTargets.set(key, (speakerTargets.get(key) || 0) + 1);
+      });
+      const duplicateSources = Array.from(sourceTargets.entries()).filter(([, count]) => count > 1);
+      const duplicateSpeakers = Array.from(speakerTargets.entries()).filter(([, count]) => count > 1);
+      return {
+        sourceLabelCount: sourceLabels.size,
+        speakerLabelCount: speakerLabels.filter(Boolean).length,
+        duplicateSources,
+        duplicateSpeakers,
+        stats: { ...labelDebugStats }
+      };
+    },
+    resetLabelStats() {
+      labelDebugStats.created = 0;
+      labelDebugStats.textureRebuilds = 0;
+      labelDebugStats.textUpdates = 0;
+      labelDebugStats.textSkips = 0;
+      labelDebugStats.imageLoads = 0;
+      labelDebugStats.recentEvents.length = 0;
+    }
+  };
+}
+
+attachLabelDebugHandle();
 
 export function escapeSvgText(value) {
   return String(value)
@@ -35,15 +119,27 @@ export function buildLabelSvgDataUrl(text, color, width, height, isLarge) {
 
 export function createLabelSpriteBase(width, height, scaleX, scaleY, color, text) {
   const texture = createLabelTexture();
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: false,
+    alphaTest: 0.25,
+    depthTest: false,
+    depthWrite: false,
+    toneMapped: false
+  });
   const sprite = new THREE.Sprite(material);
   sprite.scale.set(scaleX, scaleY, 1);
+  sprite.frustumCulled = false;
+  sprite.renderOrder = 40;
+  sprite.userData.labelDebugId = nextLabelDebugId++;
   sprite.userData.labelImage = texture.image;
   sprite.userData.labelTexture = texture;
   sprite.userData.labelText = '';
   sprite.userData.labelColor = color;
   sprite.userData.labelWidth = width;
   sprite.userData.labelHeight = height;
+  labelDebugStats.created += 1;
+  pushLabelDebugEvent('create', sprite, { width, height });
   setLabelSpriteText(sprite, text);
   return sprite;
 }
@@ -70,6 +166,8 @@ export function rebuildLabelSpriteTexture(sprite) {
   if (!sprite?.material) {
     return;
   }
+  labelDebugStats.textureRebuilds += 1;
+  pushLabelDebugEvent('rebuild-texture', sprite);
   const oldTexture = sprite.userData?.labelTexture;
   const nextTexture = createLabelTexture();
   sprite.userData.labelImage = nextTexture.image;
@@ -90,14 +188,19 @@ export function setLabelSpriteText(sprite, text) {
   }
   const nextText = String(text ?? '');
   if (sprite.userData.labelText === nextText) {
+    labelDebugStats.textSkips += 1;
     return;
   }
+  labelDebugStats.textUpdates += 1;
+  pushLabelDebugEvent('set-text', sprite, { nextText });
   const width = Number(sprite.userData.labelWidth) || 128;
   const height = Number(sprite.userData.labelHeight) || 64;
   const isLargeCanvas = width >= 200;
   const image = sprite.userData.labelImage;
   image.onload = () => {
     if (sprite.userData.labelImage === image && sprite.userData.labelTexture) {
+      labelDebugStats.imageLoads += 1;
+      pushLabelDebugEvent('image-load', sprite);
       sprite.userData.labelTexture.needsUpdate = true;
     }
   };

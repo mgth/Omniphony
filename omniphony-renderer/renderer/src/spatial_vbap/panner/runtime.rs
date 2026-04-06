@@ -9,17 +9,12 @@ impl VbapPanner {
     ///   directions (exact FFI triangulation).
     /// - Without `saf_vbap`: creates a [`TableGainSource`] that interpolates from
     ///   the pre-computed polar spread tables.
-    fn make_gain_source(
-        &self,
-    ) -> Result<Box<dyn gain_source::VbapGainSource + '_>, String> {
+    fn make_gain_source(&self) -> Result<Box<dyn gain_source::VbapGainSource + '_>, String> {
         #[cfg(feature = "saf_vbap")]
         {
-            let dirs = self
-                .speaker_dirs_deg
-                .as_deref()
-                .ok_or_else(|| {
-                    "Direct VBAP layout unavailable (speaker_dirs_deg missing)".to_string()
-                })?;
+            let dirs = self.speaker_dirs_deg.as_deref().ok_or_else(|| {
+                "Direct VBAP layout unavailable (speaker_dirs_deg missing)".to_string()
+            })?;
             Ok(Box::new(saf_backend::SpartaVbapLayout::from_speaker_dirs(
                 dirs,
             )?))
@@ -355,8 +350,7 @@ impl VbapPanner {
                 for &y in &y_coords {
                     for &x in &x_coords {
                         let (azimuth, elevation, _) = adm_to_spherical(x, y, z);
-                        let gains =
-                            gain_source.compute_gains(azimuth, elevation, spread)?;
+                        let gains = gain_source.compute_gains(azimuth, elevation, spread)?;
                         table.extend_from_slice(&gains[..]);
                     }
                 }

@@ -319,6 +319,12 @@ export function updateEffectiveRenderDecoration(id) {
   line.geometry.setFromPoints([mesh.position.clone(), effectivePosition.clone()]);
 }
 
+export function refreshEffectiveRenderDecorations() {
+  sourceMeshes.forEach((_mesh, id) => {
+    updateEffectiveRenderDecoration(id);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Source decorations (label + outline positioning)
 // ---------------------------------------------------------------------------

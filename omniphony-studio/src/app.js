@@ -60,14 +60,27 @@ import { setupVisualRecovery } from './visual-recovery.js';
 
 // ── Flush callback wiring ──────────────────────────────────────────────────
 import { renderSpreadDisplay } from './controls/spread.js';
-import { renderVbapStatus, renderVbapMode, renderVbapCartesian, renderVbapPolar } from './controls/vbap.js';
+import {
+  renderVbapStatus,
+  renderEvaluationMode,
+  renderRenderBackend,
+  renderVbapCartesian,
+  renderVbapPolar
+} from './controls/vbap.js';
 import { renderLoudnessDisplay, renderDistanceModelUI, renderMasterGainUI, updateMasterMeterUI } from './controls/master.js';
 import { renderAdaptiveResamplingUI } from './controls/adaptive.js';
 import { renderDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { renderConfigSavedUI } from './controls/config.js';
 import { renderLatencyDisplay, renderLatencyMeterUI, renderRenderTimeUI, renderResampleRatioDisplay } from './controls/latency.js';
 import { renderAudioFormatDisplay, applyAudioSampleRateNow } from './controls/audio.js';
-import { updateObjectContributionUI, updateSpeakerContributionUI, getObjectDisplayName, sourceCallbacks, setSelectedSource } from './sources.js';
+import {
+  updateObjectContributionUI,
+  updateSpeakerContributionUI,
+  getObjectDisplayName,
+  refreshEffectiveRenderDecorations,
+  sourceCallbacks,
+  setSelectedSource
+} from './sources.js';
 import { updateVbapCartesianFaceGrid, renderVbapCartesianGridToggle } from './scene/gizmos.js';
 import { updateObjectMeterUI, updateObjectPositionUI, updateObjectLabelUI } from './flush.js';
 import {
@@ -79,7 +92,8 @@ import { muteSoloCallbacks } from './mute-solo.js';
 
 flushCallbacks.renderRoomRatioDisplay = renderRoomRatioDisplay;
 flushCallbacks.renderSpreadDisplay = renderSpreadDisplay;
-flushCallbacks.renderVbapMode = renderVbapMode;
+flushCallbacks.renderEvaluationMode = renderEvaluationMode;
+flushCallbacks.renderRenderBackend = renderRenderBackend;
 flushCallbacks.renderVbapCartesian = renderVbapCartesian;
 flushCallbacks.renderVbapPolar = renderVbapPolar;
 flushCallbacks.renderLoudnessDisplay = renderLoudnessDisplay;
@@ -98,7 +112,7 @@ flushCallbacks.updateObjectContributionUI = updateObjectContributionUI;
 flushCallbacks.updateSpeakerContributionUI = updateSpeakerContributionUI;
 flushCallbacks.getObjectDisplayName = getObjectDisplayName;
 flushCallbacks.applyAudioSampleRateNow = applyAudioSampleRateNow;
-flushCallbacks.refreshEffectiveRenderVisibility = refreshEffectiveRenderVisibility;
+flushCallbacks.refreshEffectiveRenderVisibility = refreshEffectiveRenderDecorations;
 flushCallbacks.updateVbapCartesianFaceGrid = updateVbapCartesianFaceGrid;
 flushCallbacks.renderVbapCartesianGridToggle = renderVbapCartesianGridToggle;
 flushCallbacks.applyRoomRatio = applyRoomRatio;
@@ -126,7 +140,8 @@ onLocaleChange(() => {
   renderOscStatus();
   renderRoomRatioDisplay();
   renderVbapStatus();
-  renderVbapMode();
+  renderEvaluationMode();
+  renderRenderBackend();
   renderLoudnessDisplay();
   renderAdaptiveResamplingUI();
   renderDistanceDiffuseUI();
@@ -240,6 +255,10 @@ loadOscConfigIntoPanel();
 // Fetch initial state from backend
 invoke('get_state')
   .then((payload) => {
+    if (app.oscSnapshotReady && payload && payload.oscSnapshotReady === false) {
+      pushLog('debug', 'Ignoring stale initial state after live OSC snapshot');
+      return;
+    }
     applyInitState(payload);
     pushLog('info', t('log.stateLoaded'));
   })

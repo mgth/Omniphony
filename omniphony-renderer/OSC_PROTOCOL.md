@@ -173,8 +173,8 @@ Common addresses include:
 - `/omniphony/state/loudness/source`
 - `/omniphony/state/loudness/gain`
 - `/omniphony/state/room_ratio`
-- `/omniphony/state/vbap/table_mode`
-- `/omniphony/state/vbap/effective_mode`
+- `/omniphony/state/render_evaluation_mode`
+- `/omniphony/state/render_evaluation_mode/effective`
 - `/omniphony/state/log_level`
 
 ### Log Stream
@@ -219,7 +219,7 @@ Common control addresses include:
 - `/omniphony/control/spread/distance_curve`
 - `/omniphony/control/loudness`
 - `/omniphony/control/room_ratio`
-- `/omniphony/control/vbap/table_mode`
+- `/omniphony/control/render_evaluation_mode`
 - `/omniphony/control/speaker/{idx}/az`
 - `/omniphony/control/speaker/{idx}/el`
 - `/omniphony/control/speaker/{idx}/distance`
@@ -330,7 +330,7 @@ When the new topology is published, it broadcasts:
 - `/omniphony/state/speakers/recomputing i 0`
 - updated `/omniphony/state/speaker/{idx}` messages
 - updated `/omniphony/state/speaker/{idx}/spatialize` messages
-- `/omniphony/state/vbap/effective_mode`
+- `/omniphony/state/render_evaluation_mode/effective`
 
 ## Notes
 

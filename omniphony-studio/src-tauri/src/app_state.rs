@@ -107,16 +107,53 @@ pub struct VbapPolar {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct VbapMode {
+pub struct RenderBackendState {
     pub selection: Option<String>,
-    #[serde(rename = "effectiveMode")]
-    pub effective_mode: Option<String>,
+    pub effective: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct RenderEvaluationModeState {
+    pub selection: Option<String>,
+    pub effective: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct OutputDeviceOption {
     pub value: String,
     pub label: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct RuntimeLatencyState {
+    #[serde(rename = "latencyMs")]
+    pub latency_ms: Option<i64>,
+    #[serde(rename = "latencyInstantMs")]
+    pub latency_instant_ms: Option<i64>,
+    #[serde(rename = "latencyControlMs")]
+    pub latency_control_ms: Option<i64>,
+    #[serde(rename = "latencyTargetMs")]
+    pub latency_target_ms: Option<i64>,
+    #[serde(rename = "latencyRequestedMs")]
+    pub latency_requested_ms: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct RuntimeAudioState {
+    #[serde(rename = "audioSampleRate")]
+    pub audio_sample_rate: Option<u32>,
+    #[serde(rename = "rampMode")]
+    pub ramp_mode: Option<String>,
+    #[serde(rename = "audioOutputDevice")]
+    pub audio_output_device: Option<String>,
+    #[serde(rename = "audioOutputDeviceEffective")]
+    pub audio_output_device_effective: Option<String>,
+    #[serde(rename = "audioOutputDevices")]
+    pub audio_output_devices: Vec<OutputDeviceOption>,
+    #[serde(rename = "audioSampleFormat")]
+    pub audio_sample_format: Option<String>,
+    #[serde(rename = "audioError")]
+    pub audio_error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -186,8 +223,10 @@ pub struct AppState {
     pub vbap_cartesian: VbapCartesian,
     #[serde(rename = "vbapPolar")]
     pub vbap_polar: VbapPolar,
-    #[serde(rename = "vbapMode")]
-    pub vbap_mode: VbapMode,
+    #[serde(rename = "renderBackendState")]
+    pub render_backend_state: RenderBackendState,
+    #[serde(rename = "renderEvaluationModeState")]
+    pub render_evaluation_mode_state: RenderEvaluationModeState,
     #[serde(rename = "vbapAllowNegativeZ")]
     pub vbap_allow_negative_z: Option<bool>,
     #[serde(rename = "adaptiveResampling")]
@@ -224,16 +263,8 @@ pub struct AppState {
     pub vbap_recomputing: Option<bool>,
     #[serde(rename = "configSaved")]
     pub config_saved: Option<u8>,
-    #[serde(rename = "latencyMs")]
-    pub latency_ms: Option<i64>,
-    #[serde(rename = "latencyInstantMs")]
-    pub latency_instant_ms: Option<i64>,
-    #[serde(rename = "latencyControlMs")]
-    pub latency_control_ms: Option<i64>,
-    #[serde(rename = "latencyTargetMs")]
-    pub latency_target_ms: Option<i64>,
-    #[serde(rename = "latencyRequestedMs")]
-    pub latency_requested_ms: Option<i64>,
+    #[serde(flatten)]
+    pub latency: RuntimeLatencyState,
     #[serde(rename = "decodeTimeMs")]
     pub decode_time_ms: Option<f64>,
     #[serde(rename = "renderTimeMs")]
@@ -244,18 +275,8 @@ pub struct AppState {
     pub frame_duration_ms: Option<f64>,
     #[serde(rename = "resampleRatio")]
     pub resample_ratio: Option<f64>,
-    #[serde(rename = "audioSampleRate")]
-    pub audio_sample_rate: Option<u32>,
-    #[serde(rename = "rampMode")]
-    pub ramp_mode: Option<String>,
-    #[serde(rename = "audioOutputDevice")]
-    pub audio_output_device: Option<String>,
-    #[serde(rename = "audioOutputDevices")]
-    pub audio_output_devices: Vec<OutputDeviceOption>,
-    #[serde(rename = "audioSampleFormat")]
-    pub audio_sample_format: Option<String>,
-    #[serde(rename = "audioError")]
-    pub audio_error: Option<String>,
+    #[serde(flatten)]
+    pub audio: RuntimeAudioState,
     #[serde(rename = "inputMode")]
     pub input_mode: Option<String>,
     #[serde(rename = "inputActiveMode")]
@@ -295,6 +316,8 @@ pub struct AppState {
     pub layouts: Vec<Layout>,
     #[serde(rename = "selectedLayoutKey")]
     pub selected_layout_key: Option<String>,
+    #[serde(rename = "oscSnapshotReady")]
+    pub osc_snapshot_ready: bool,
 }
 
 impl AppState {
@@ -313,6 +336,76 @@ impl AppState {
             },
             ..Default::default()
         }
+    }
+
+    pub fn set_latency_value(&mut self, value: f64) -> i64 {
+        let rounded = value.round() as i64;
+        self.latency.latency_ms = Some(rounded);
+        rounded
+    }
+
+    pub fn set_latency_instant_value(&mut self, value: f64) -> i64 {
+        let rounded = value.round() as i64;
+        self.latency.latency_instant_ms = Some(rounded);
+        rounded
+    }
+
+    pub fn set_latency_control_value(&mut self, value: f64) -> i64 {
+        let rounded = value.round() as i64;
+        self.latency.latency_control_ms = Some(rounded);
+        rounded
+    }
+
+    pub fn set_latency_target_value(&mut self, value: f64) -> i64 {
+        let rounded = value.round() as i64;
+        self.latency.latency_target_ms = Some(rounded);
+        rounded
+    }
+
+    pub fn set_latency_requested_value(&mut self, value: f64) -> i64 {
+        let rounded = value.round() as i64;
+        self.latency.latency_requested_ms = Some(rounded);
+        rounded
+    }
+
+    pub fn set_audio_sample_rate_value(&mut self, value: u32) -> Option<u32> {
+        self.audio.audio_sample_rate = if value == 0 { None } else { Some(value) };
+        self.audio.audio_sample_rate
+    }
+
+    pub fn set_audio_requested_output_device(&mut self, value: &str) -> Option<String> {
+        self.audio.audio_output_device = if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        };
+        self.audio.audio_output_device.clone()
+    }
+
+    pub fn set_audio_effective_output_device(&mut self, value: &str) -> Option<String> {
+        self.audio.audio_output_device_effective = if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        };
+        self.audio.audio_output_device_effective.clone()
+    }
+
+    pub fn set_audio_output_devices(&mut self, devices: Vec<OutputDeviceOption>) {
+        self.audio.audio_output_devices = devices;
+    }
+
+    pub fn set_audio_sample_format(&mut self, value: String) {
+        self.audio.audio_sample_format = Some(value);
+    }
+
+    pub fn set_audio_error(&mut self, value: &str) -> Option<String> {
+        self.audio.audio_error = if value.trim().is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        };
+        self.audio.audio_error.clone()
     }
 }
 
@@ -337,7 +430,8 @@ impl Default for AppState {
             distance_model: DistanceModelState::default(),
             vbap_cartesian: VbapCartesian::default(),
             vbap_polar: VbapPolar::default(),
-            vbap_mode: VbapMode::default(),
+            render_backend_state: RenderBackendState::default(),
+            render_evaluation_mode_state: RenderEvaluationModeState::default(),
             vbap_allow_negative_z: None,
             adaptive_resampling: Some(0),
             adaptive_resampling_enable_far_mode: Some(1),
@@ -356,22 +450,16 @@ impl Default for AppState {
             adaptive_resampling_paused: Some(0),
             vbap_recomputing: None,
             config_saved: None,
-            latency_ms: None,
-            latency_instant_ms: None,
-            latency_control_ms: None,
-            latency_target_ms: None,
-            latency_requested_ms: None,
+            latency: RuntimeLatencyState::default(),
             decode_time_ms: None,
             render_time_ms: None,
             write_time_ms: None,
             frame_duration_ms: None,
             resample_ratio: None,
-            audio_sample_rate: None,
-            ramp_mode: Some("sample".to_string()),
-            audio_output_device: None,
-            audio_output_devices: Vec::new(),
-            audio_sample_format: None,
-            audio_error: None,
+            audio: RuntimeAudioState {
+                ramp_mode: Some("sample".to_string()),
+                ..RuntimeAudioState::default()
+            },
             input_mode: Some("pipe_bridge".to_string()),
             input_active_mode: Some("pipe_bridge".to_string()),
             input_apply_pending: Some(0),
@@ -392,6 +480,7 @@ impl Default for AppState {
             current_coordinate_format: 0,
             layouts: Vec::new(),
             selected_layout_key: None,
+            osc_snapshot_ready: false,
         }
     }
 }

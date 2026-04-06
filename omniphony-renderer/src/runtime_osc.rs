@@ -181,10 +181,27 @@ impl OscSender {
                     .last()
                     .map(|record| record.seq)
                     .unwrap_or(0);
+                let mut last_input_state_generation = input_control
+                    .as_ref()
+                    .map(|control| control.state_generation());
 
                 let mut buf = [0u8; 4096];
                 loop {
                     flush_pending_logs(&socket, &clients, &mut last_log_seq);
+                    if let Some(input) = input_control.as_ref() {
+                        let generation = input.state_generation();
+                        if last_input_state_generation != Some(generation) {
+                            last_input_state_generation = Some(generation);
+                            if let Some(ref ctrl) = control {
+                                let state_bytes = build_live_state_bundle(
+                                    ctrl,
+                                    audio_control.as_ref(),
+                                    input_control.as_ref(),
+                                );
+                                send_raw_filtered(&socket, &clients, &state_bytes, |_| true);
+                            }
+                        }
+                    }
                     match rx_socket.recv_from(&mut buf) {
                         Ok((len, src)) => {
                             match rosc::decoder::decode_udp(&buf[..len]) {

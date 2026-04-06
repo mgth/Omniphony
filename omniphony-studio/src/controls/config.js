@@ -4,9 +4,10 @@
 
 import { app, dirty } from '../state.js';
 import { scheduleUIFlush, flushCallbacks } from '../flush.js';
+import { inAudioPanel, inSaveFooter } from '../ui/panel-roots.js';
 
-const configSavedIndicatorEl = document.getElementById('configSavedIndicator');
-const saveConfigBtnEl = document.getElementById('saveConfigBtn');
+const configSavedIndicatorEl = inAudioPanel('configSavedIndicator');
+const saveConfigBtnEl = inSaveFooter('saveConfigBtn');
 
 export function renderConfigSavedUI() {
   if (!configSavedIndicatorEl) return;

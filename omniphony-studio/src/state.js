@@ -64,6 +64,7 @@ export const dirty = {
   roomRatio: false,
   spread: false,
   vbapMode: false,
+  renderBackend: false,
   vbapCartesian: false,
   vbapPolar: false,
   loudness: false,
@@ -101,7 +102,8 @@ export const app = {
   // VBAP
   vbapCartesianState: { xSize: null, ySize: null, zSize: null, zNegSize: 0 },
   vbapPolarState: { azimuthResolution: null, elevationResolution: null, distanceRes: null, distanceMax: null },
-  vbapModeState: { selection: null, effectiveMode: null },
+  evaluationModeState: { selection: null, effective: null },
+  renderBackendState: { selection: null, effective: null },
   vbapPositionInterpolation: null,
   vbapAllowNegativeZ: null,
   vbapRecomputing: null,
@@ -115,7 +117,7 @@ export const app = {
   distanceModel: 'none',
 
   // Master
-  masterGain: 1,
+  masterGain: null,
 
   // Loudness
   loudnessEnabled: null,
@@ -163,6 +165,7 @@ export const app = {
   audioSampleRate: null,
   rampMode: 'sample',
   audioOutputDevice: null,
+  audioOutputDeviceEffective: null,
   audioOutputDevices: [],
   orenderInputPipe: null,
   audioSampleFormat: null,
@@ -190,6 +193,7 @@ export const app = {
 
   // OSC
   oscMeteringEnabled: false,
+  oscSnapshotReady: false,
   oscStatusState: 'initializing',
   oscConfigAutoOpenTimer: null,
   oscLaunchPending: false,

@@ -229,20 +229,20 @@ pub struct RenderArgs {
 
     /// Number of azimuth cells across full range [-180°, +180°]
     #[arg(
-        long = "vbap-azimuth-resolution",
+        long = "evaluation-polar-azimuth-resolution",
         value_name = "DEG",
         default_value_t = 360
     )]
-    pub vbap_azimuth_resolution: i32,
+    pub evaluation_polar_azimuth_resolution: i32,
 
     /// Number of elevation cells across full range:
     /// [-90°, +90°] when negative Z is enabled, otherwise [0°, +90°]
     #[arg(
-        long = "vbap-elevation-resolution",
+        long = "evaluation-polar-elevation-resolution",
         value_name = "DEG",
         default_value_t = 180
     )]
-    pub vbap_elevation_resolution: i32,
+    pub evaluation_polar_elevation_resolution: i32,
 
     /// VBAP spreading coefficient (0.0 = point source, 1.0 = maximum spread)
     /// Deprecated: Use --vbap-distance-res instead for dynamic per-object spread
@@ -252,50 +252,50 @@ pub struct RenderArgs {
     /// Number of distance cells across full range [0, vbap-distance-max]
     /// Higher values = denser precompute but higher memory
     #[arg(
-        long = "vbap-distance-res",
+        long = "evaluation-polar-distance-res",
         value_name = "RESOLUTION",
         default_value_t = 8
     )]
-    pub vbap_distance_res: i32,
+    pub evaluation_polar_distance_res: i32,
 
     /// Maximum distance covered by polar VBAP precomputed table
     #[arg(
-        long = "vbap-distance-max",
+        long = "evaluation-polar-distance-max",
         value_name = "DISTANCE",
         default_value_t = 2.0
     )]
-    pub vbap_distance_max: f32,
+    pub evaluation_polar_distance_max: f32,
 
     /// Interpolate between neighbouring VBAP table positions during lookup.
     /// Disable this to use nearest-cell lookup for lower CPU cost.
-    #[arg(long, conflicts_with = "no_vbap_position_interpolation")]
-    pub vbap_position_interpolation: bool,
+    #[arg(long = "render-evaluation-position-interpolation", conflicts_with = "no_render_evaluation_position_interpolation")]
+    pub render_evaluation_position_interpolation: bool,
 
     /// Disable interpolation between neighbouring VBAP table positions.
-    #[arg(long, conflicts_with = "vbap_position_interpolation")]
-    pub no_vbap_position_interpolation: bool,
+    #[arg(long = "no-render-evaluation-position-interpolation", conflicts_with = "render_evaluation_position_interpolation")]
+    pub no_render_evaluation_position_interpolation: bool,
 
     /// VBAP pre-computed table mode.
     /// - `polar`: pre-compute gains over azimuth/elevation (current behavior)
     /// - `cartesian`: pre-compute gains over x/y/z ADM grid
-    #[arg(long, value_enum, default_value_t = VbapTableModeArg::Polar)]
-    pub vbap_table_mode: VbapTableModeArg,
+    #[arg(long = "render-evaluation-mode", value_enum, default_value_t = EvaluationModeArg::Polar)]
+    pub render_evaluation_mode: EvaluationModeArg,
 
     /// Cartesian VBAP cell count on X axis (used only when --vbap-table-mode cartesian)
-    #[arg(long, value_name = "SIZE")]
-    pub vbap_cart_x_size: Option<usize>,
+    #[arg(long = "evaluation-cartesian-x-size", value_name = "SIZE")]
+    pub evaluation_cartesian_x_size: Option<usize>,
 
     /// Cartesian VBAP cell count on Y axis (used only when --vbap-table-mode cartesian)
-    #[arg(long, value_name = "SIZE")]
-    pub vbap_cart_y_size: Option<usize>,
+    #[arg(long = "evaluation-cartesian-y-size", value_name = "SIZE")]
+    pub evaluation_cartesian_y_size: Option<usize>,
 
     /// Cartesian VBAP cell count on Z axis (used only when --vbap-table-mode cartesian)
-    #[arg(long, value_name = "SIZE")]
-    pub vbap_cart_z_size: Option<usize>,
+    #[arg(long = "evaluation-cartesian-z-size", value_name = "SIZE")]
+    pub evaluation_cartesian_z_size: Option<usize>,
 
     /// Cartesian VBAP cell count on negative Z axis (used only when --vbap-table-mode cartesian)
-    #[arg(long, value_name = "SIZE")]
-    pub vbap_cart_z_neg_size: Option<usize>,
+    #[arg(long = "evaluation-cartesian-z-neg-size", value_name = "SIZE")]
+    pub evaluation_cartesian_z_neg_size: Option<usize>,
 
     /// Allow negative Z values for VBAP tables (floor below listener).
     #[arg(long, conflicts_with = "no_vbap_allow_negative_z")]
@@ -707,7 +707,7 @@ impl OutputBackend {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum VbapTableModeArg {
+pub enum EvaluationModeArg {
     Polar,
     Cartesian,
 }

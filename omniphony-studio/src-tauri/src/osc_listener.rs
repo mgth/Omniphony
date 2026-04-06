@@ -15,6 +15,7 @@ use crate::osc_parser::{
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 
 // ── control messages (frontend → OSC listener) ────────────────────────────
 
@@ -201,6 +202,9 @@ fn emit_osc_status(app: &AppHandle, state: &Arc<Mutex<AppState>>, status: &str) 
     {
         let mut s = state.lock().unwrap();
         s.osc_status = Some(status.to_string());
+        if status != "connected" {
+            s.osc_snapshot_ready = false;
+        }
     }
     let _ = app.emit("osc:status", serde_json::json!({ "status": status }));
 }
@@ -256,6 +260,7 @@ fn osc_thread(
     log::info!("[osc] listening on udp://0.0.0.0:{listen_port}");
 
     send_register(&socket, &host, osc_rx_port, listen_port);
+    let mut last_snapshot_request_at = Instant::now();
     let mut last_ack_at = Instant::now();
     let mut last_heartbeat_at = Instant::now();
     let mut is_connected = false;
@@ -316,6 +321,7 @@ fn osc_thread(
                         host = h;
                         osc_rx_port = rx_port;
                         send_register(&socket, &host, osc_rx_port, lp);
+                        last_snapshot_request_at = Instant::now();
                         send_metering_enabled(&socket, &host, osc_rx_port, metering_enabled);
                         last_ack_at = Instant::now();
                         if is_connected {
@@ -333,6 +339,14 @@ fn osc_thread(
             }
         }
 
+        let snapshot_ready = state.lock().unwrap().osc_snapshot_ready;
+        if !snapshot_ready && last_snapshot_request_at.elapsed() >= SNAPSHOT_REQUEST_INTERVAL {
+            send_register(&socket, &host, osc_rx_port, listen_port);
+            send_metering_enabled(&socket, &host, osc_rx_port, metering_enabled);
+            last_snapshot_request_at = Instant::now();
+            log::debug!("[osc] snapshot not ready yet, re-requesting live state bundle");
+        }
+
         // heartbeat timer
         if last_heartbeat_at.elapsed() >= HEARTBEAT_INTERVAL {
             last_heartbeat_at = Instant::now();
@@ -345,6 +359,7 @@ fn osc_thread(
                     emit_osc_status(&app, &state, "reconnecting");
                 }
                 send_register(&socket, &host, osc_rx_port, listen_port);
+                last_snapshot_request_at = Instant::now();
                 send_metering_enabled(&socket, &host, osc_rx_port, metering_enabled);
             }
         }
@@ -1005,6 +1020,47 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
 
+            OscEvent::StateRenderBackend { value } => {
+                s.render_backend_state.selection = Some(value.clone());
+                (
+                    Some(("render_backend", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+
+            OscEvent::StateRenderBackendEffective { value } => {
+                s.render_backend_state.effective = Some(value.clone());
+                (
+                    Some(("render_backend:effective", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+
+            OscEvent::StateRenderEvaluationMode { value } => {
+                s.render_evaluation_mode_state.selection = Some(value.clone());
+                (
+                    Some(("render_evaluation_mode", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+
+            OscEvent::StateRenderEvaluationModeEffective { value } => {
+                s.render_evaluation_mode_state.effective = Some(value.clone());
+                (
+                    Some((
+                        "render_evaluation_mode:effective",
+                        serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
+
+            OscEvent::StateSnapshotComplete => {
+                s.osc_snapshot_ready = true;
+                let snapshot = serde_json::to_value(&*s).unwrap_or(serde_json::Value::Null);
+                (Some(("state:snapshot_ready", snapshot)), removed_ids)
+            }
+
             OscEvent::StateLoudness { enabled } => {
                 s.loudness = Some(if enabled { 1 } else { 0 });
                 (
@@ -1041,48 +1097,48 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
 
             OscEvent::StateLatency { value } => {
-                s.latency_ms = Some(value.round() as i64);
+                let rounded = s.set_latency_value(value);
                 (
-                    Some(("latency", serde_json::json!({ "value": s.latency_ms }))),
+                    Some(("latency", serde_json::json!({ "value": rounded }))),
                     removed_ids,
                 )
             }
             OscEvent::StateLatencyInstant { value } => {
-                s.latency_instant_ms = Some(value.round() as i64);
+                let rounded = s.set_latency_instant_value(value);
                 (
                     Some((
                         "latency:instant",
-                        serde_json::json!({ "value": s.latency_instant_ms }),
+                        serde_json::json!({ "value": rounded }),
                     )),
                     removed_ids,
                 )
             }
             OscEvent::StateLatencyControl { value } => {
-                s.latency_control_ms = Some(value.round() as i64);
+                let rounded = s.set_latency_control_value(value);
                 (
                     Some((
                         "latency:control",
-                        serde_json::json!({ "value": s.latency_control_ms }),
+                        serde_json::json!({ "value": rounded }),
                     )),
                     removed_ids,
                 )
             }
             OscEvent::StateLatencyTarget { value } => {
-                s.latency_target_ms = Some(value.round() as i64);
+                let rounded = s.set_latency_target_value(value);
                 (
                     Some((
                         "latency:target",
-                        serde_json::json!({ "value": s.latency_target_ms }),
+                        serde_json::json!({ "value": rounded }),
                     )),
                     removed_ids,
                 )
             }
             OscEvent::StateLatencyTargetRequested { value } => {
-                s.latency_requested_ms = Some(value.round() as i64);
+                let rounded = s.set_latency_requested_value(value);
                 (
                     Some((
                         "latency:requested",
-                        serde_json::json!({ "value": s.latency_requested_ms }),
+                        serde_json::json!({ "value": rounded }),
                     )),
                     removed_ids,
                 )
@@ -1124,27 +1180,43 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
             OscEvent::StateAudioSampleRate { value } => {
-                s.audio_sample_rate = if value == 0 { None } else { Some(value) };
+                s.set_audio_sample_rate_value(value);
                 (
                     Some(("audio:sample_rate", serde_json::json!({ "value": value }))),
                     removed_ids,
                 )
             }
             OscEvent::StateRampMode { value } => {
-                s.ramp_mode = Some(value.clone());
+                s.audio.ramp_mode = Some(value.clone());
                 (
                     Some(("state:ramp_mode", serde_json::json!({ "value": value }))),
                     removed_ids,
                 )
             }
             OscEvent::StateAudioOutputDevice { value } => {
-                s.audio_output_device = if value.trim().is_empty() {
-                    None
-                } else {
-                    Some(value.clone())
-                };
+                s.set_audio_requested_output_device(&value);
                 (
                     Some(("audio:output_device", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateAudioOutputDeviceRequested { value } => {
+                s.set_audio_requested_output_device(&value);
+                (
+                    Some((
+                        "audio:output_device:requested",
+                        serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateAudioOutputDeviceEffective { value } => {
+                s.set_audio_effective_output_device(&value);
+                (
+                    Some((
+                        "audio:output_device:effective",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
             }
@@ -1153,7 +1225,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     .first()
                     .and_then(|json| serde_json::from_str::<Vec<OutputDeviceOption>>(json).ok())
                     .unwrap_or_default();
-                s.audio_output_devices = parsed.clone();
+                s.set_audio_output_devices(parsed.clone());
                 (
                     Some((
                         "audio:output_devices",
@@ -1163,18 +1235,14 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
             OscEvent::StateAudioSampleFormat { value } => {
-                s.audio_sample_format = Some(value.clone());
+                s.set_audio_sample_format(value.clone());
                 (
                     Some(("audio:sample_format", serde_json::json!({ "value": value }))),
                     removed_ids,
                 )
             }
             OscEvent::StateAudioError { value } => {
-                s.audio_error = if value.trim().is_empty() {
-                    None
-                } else {
-                    Some(value.clone())
-                };
+                s.set_audio_error(&value);
                 (
                     Some(("audio:error", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -1382,96 +1450,91 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapCartXSize { value } => {
+            OscEvent::StateRenderEvaluationCartesianXSize { value } => {
                 s.vbap_cartesian.x_size = Some(value);
                 (
-                    Some(("vbap:cart:x_size", serde_json::json!({ "value": value }))),
+                    Some((
+                        "render_evaluation:cartesian:x_size",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapCartYSize { value } => {
+            OscEvent::StateRenderEvaluationCartesianYSize { value } => {
                 s.vbap_cartesian.y_size = Some(value);
                 (
-                    Some(("vbap:cart:y_size", serde_json::json!({ "value": value }))),
+                    Some((
+                        "render_evaluation:cartesian:y_size",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapCartZSize { value } => {
+            OscEvent::StateRenderEvaluationCartesianZSize { value } => {
                 s.vbap_cartesian.z_size = Some(value);
                 (
-                    Some(("vbap:cart:z_size", serde_json::json!({ "value": value }))),
+                    Some((
+                        "render_evaluation:cartesian:z_size",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapCartZNegSize { value } => {
+            OscEvent::StateRenderEvaluationCartesianZNegSize { value } => {
                 s.vbap_cartesian.z_neg_size = Some(value);
                 (
                     Some((
-                        "vbap:cart:z_neg_size",
+                        "render_evaluation:cartesian:z_neg_size",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapTableMode { value } => {
-                s.vbap_mode.selection = Some(value.clone());
-                (
-                    Some(("vbap:table_mode", serde_json::json!({ "value": value }))),
-                    removed_ids,
-                )
-            }
-            OscEvent::StateVbapEffectiveMode { value } => {
-                s.vbap_mode.effective_mode = Some(value.clone());
-                (
-                    Some(("vbap:effective_mode", serde_json::json!({ "value": value }))),
-                    removed_ids,
-                )
-            }
-            OscEvent::StateVbapPolarAzimuthResolution { value } => {
+            OscEvent::StateRenderEvaluationPolarAzimuthResolution { value } => {
                 s.vbap_polar.azimuth_resolution = Some(value);
                 (
                     Some((
-                        "vbap:polar:azimuth_resolution",
+                        "render_evaluation:polar:azimuth_resolution",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapPolarElevationResolution { value } => {
+            OscEvent::StateRenderEvaluationPolarElevationResolution { value } => {
                 s.vbap_polar.elevation_resolution = Some(value);
                 (
                     Some((
-                        "vbap:polar:elevation_resolution",
+                        "render_evaluation:polar:elevation_resolution",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapPolarDistanceRes { value } => {
+            OscEvent::StateRenderEvaluationPolarDistanceRes { value } => {
                 s.vbap_polar.distance_res = Some(value);
                 (
                     Some((
-                        "vbap:polar:distance_res",
+                        "render_evaluation:polar:distance_res",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapPolarDistanceMax { value } => {
+            OscEvent::StateRenderEvaluationPolarDistanceMax { value } => {
                 s.vbap_polar.distance_max = Some(value);
                 (
                     Some((
-                        "vbap:polar:distance_max",
+                        "render_evaluation:polar:distance_max",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapPositionInterpolation { enabled } => {
+            OscEvent::StateRenderEvaluationPositionInterpolation { enabled } => {
                 s.vbap_polar.position_interpolation = Some(enabled);
                 (
                     Some((
-                        "vbap:position_interpolation",
+                        "render_evaluation:position_interpolation",
                         serde_json::json!({ "enabled": enabled }),
                     )),
                     removed_ids,

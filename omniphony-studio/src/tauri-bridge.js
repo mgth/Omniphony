@@ -48,7 +48,8 @@ import {
 import { updateMasterGainUI, updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.js';
 import { updateSpreadDisplay } from './controls/spread.js';
 import {
-  updateVbapMode,
+  updateRenderBackend,
+  updateEvaluationMode,
   updateVbapCartesian,
   updateVbapPolar,
   updateVbapPositionInterpolation,
@@ -62,8 +63,15 @@ import { renderOscStatus, setOscStatus } from './controls/osc.js';
 import { updateConfigSavedUI } from './controls/config.js';
 import { updateRoomRatioDisplay, applyRoomRatio } from './controls/room-geometry.js';
 import { normalizeLogLevel, renderLogLevelControl, logState, pushLog } from './log.js';
+import { applyInitState } from './init.js';
 
 export function setupTauriBridge() {
+  listen('state:snapshot_ready', ({ payload }) => {
+    if (payload && typeof payload === 'object') {
+      applyInitState(payload);
+    }
+  });
+
   // -----------------------------------------------------------------------
   // Layouts
   // -----------------------------------------------------------------------
@@ -393,72 +401,96 @@ export function setupTauriBridge() {
   // VBAP
   // -----------------------------------------------------------------------
 
+  listen('render_backend', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    app.renderBackendState.selection = ['vbap', 'experimental_distance'].includes(value) ? value : null;
+    if (!['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.selection)) {
+      app.evaluationModeState.selection = 'auto';
+    }
+    updateRenderBackend();
+  });
+
+  listen('render_backend:effective', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    app.renderBackendState.effective = ['vbap', 'experimental_distance'].includes(value) ? value : null;
+    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
+      app.evaluationModeState.effective = null;
+    }
+    app.vbapRecomputing = false;
+    renderVbapStatus();
+    updateRenderBackend();
+  });
+
+  listen('render_evaluation_mode', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    app.evaluationModeState.selection =
+      ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
+    updateEvaluationMode();
+  });
+
+  listen('render_evaluation_mode:effective', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    app.evaluationModeState.effective =
+      ['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
+    app.vbapRecomputing = false;
+    renderVbapStatus();
+    updateEvaluationMode();
+  });
+
   listen('vbap:recomputing', ({ payload }) => {
     app.vbapRecomputing = payload.enabled === true;
     renderVbapStatus();
   });
 
-  listen('vbap:cart:x_size', ({ payload }) => {
+  listen('render_evaluation:cartesian:x_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.xSize = value > 0 ? value : null;
     updateVbapCartesian();
   });
 
-  listen('vbap:cart:y_size', ({ payload }) => {
+  listen('render_evaluation:cartesian:y_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.ySize = value > 0 ? value : null;
     updateVbapCartesian();
   });
 
-  listen('vbap:cart:z_size', ({ payload }) => {
+  listen('render_evaluation:cartesian:z_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.zSize = value > 0 ? value : null;
     updateVbapCartesian();
   });
 
-  listen('vbap:cart:z_neg_size', ({ payload }) => {
+  listen('render_evaluation:cartesian:z_neg_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.zNegSize = value >= 0 ? value : 0;
     updateVbapCartesian();
   });
 
-  listen('vbap:table_mode', ({ payload }) => {
-    const value = String(payload?.value ?? '').trim().toLowerCase();
-    app.vbapModeState.selection = ['auto', 'polar', 'cartesian'].includes(value) ? value : null;
-    updateVbapMode();
-  });
-
-  listen('vbap:effective_mode', ({ payload }) => {
-    const value = String(payload?.value ?? '').trim().toLowerCase();
-    app.vbapModeState.effectiveMode = ['polar', 'cartesian'].includes(value) ? value : null;
-    updateVbapMode();
-  });
-
-  listen('vbap:polar:azimuth_resolution', ({ payload }) => {
+  listen('render_evaluation:polar:azimuth_resolution', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapPolarState.azimuthResolution = value > 0 ? value : null;
     updateVbapPolar();
   });
 
-  listen('vbap:polar:elevation_resolution', ({ payload }) => {
+  listen('render_evaluation:polar:elevation_resolution', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapPolarState.elevationResolution = value > 0 ? value : null;
     updateVbapPolar();
   });
 
-  listen('vbap:polar:distance_res', ({ payload }) => {
+  listen('render_evaluation:polar:distance_res', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapPolarState.distanceRes = value > 0 ? value : null;
     updateVbapPolar();
   });
 
-  listen('vbap:polar:distance_max', ({ payload }) => {
+  listen('render_evaluation:polar:distance_max', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapPolarState.distanceMax = value > 0 ? value : null;
     updateVbapPolar();
   });
 
-  listen('vbap:position_interpolation', ({ payload }) => {
+  listen('render_evaluation:position_interpolation', ({ payload }) => {
     app.vbapPositionInterpolation = payload.enabled === true;
     updateVbapPositionInterpolation();
   });
@@ -720,6 +752,16 @@ export function setupTauriBridge() {
 
   listen('audio:output_device', ({ payload }) => {
     app.audioOutputDevice = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
+    updateAudioFormatDisplay();
+  });
+
+  listen('audio:output_device:requested', ({ payload }) => {
+    app.audioOutputDevice = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
+    updateAudioFormatDisplay();
+  });
+
+  listen('audio:output_device:effective', ({ payload }) => {
+    app.audioOutputDeviceEffective = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
     updateAudioFormatDisplay();
   });
 

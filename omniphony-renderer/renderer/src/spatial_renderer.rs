@@ -49,8 +49,8 @@
 //!     false,                 // distance_diffuse
 //!     1.0,                   // distance_diffuse_threshold
 //!     1.0,                   // distance_diffuse_curve
-//!     omniphony_renderer::live_params::VbapBackendMode::Polar,      // bridge preferred mode
-//!     omniphony_renderer::live_params::LiveVbapTableMode::Polar,    // initial live selection
+//!     omniphony_renderer::live_params::PreferredEvaluationMode::PrecomputedPolar, // bridge preferred mode
+//!     omniphony_renderer::live_params::LiveEvaluationMode::PrecomputedPolar,      // initial live selection
 //!     31,                    // cartesian default x size
 //!     31,                    // cartesian default y size
 //!     15,                    // cartesian default z size
@@ -65,7 +65,14 @@
 //! ```
 
 use crate::live_params::{
-    LiveParams, LiveVbapTableMode, RampMode, RenderTopology, RendererControl, VbapBackendMode,
+    CartesianEvaluationParams, EvaluationLiveParams, LiveEvaluationMode, LiveParams,
+    PolarEvaluationParams, PreferredEvaluationMode, RampMode, RenderTopology,
+    RendererControl,
+};
+use crate::render_backend::{
+    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
+    GainModelInstance, PolarEvaluationConfig, RenderBackendKind, RenderRequest, VbapBackend,
+    build_prepared_render_engine,
 };
 use crate::spatial_vbap::VbapTableMode;
 use crate::spatial_vbap::{DistanceModel, Gains, VbapPanner, adm_to_spherical};
@@ -81,6 +88,55 @@ pub struct RenderedFrame {
     /// `(channel_idx, gains)` — `gains[speaker_idx]` is the gain applied to that speaker.
     /// Ordered by `channel_idx`. Empty if no objects were spatialized this frame.
     pub object_gains: Vec<(usize, Gains)>,
+}
+
+fn evaluation_build_config(
+    request_template: RenderRequest,
+    position_interpolation: bool,
+    table_mode: VbapTableMode,
+    azimuth_resolution: i32,
+    elevation_resolution: i32,
+    distance_step: f32,
+    distance_max: f32,
+    allow_negative_z: bool,
+) -> EvaluationBuildConfig {
+    let cartesian = match table_mode {
+        VbapTableMode::Cartesian {
+            x_size,
+            y_size,
+            z_size,
+            z_neg_size,
+        } => CartesianEvaluationConfig {
+            x_size,
+            y_size,
+            z_size,
+            z_neg_size,
+        },
+        VbapTableMode::Polar => CartesianEvaluationConfig {
+            x_size: 2,
+            y_size: 2,
+            z_size: 2,
+            z_neg_size: usize::from(allow_negative_z),
+        },
+    };
+    let azimuth_values = (360 / azimuth_resolution.max(1)).max(2) as usize;
+    let elevation_span = if allow_negative_z { 180 } else { 90 };
+    let elevation_values = (elevation_span / elevation_resolution.max(1)).max(2) as usize;
+    let distance_values = ((distance_max.max(0.01) / distance_step.max(0.01)).round() as usize)
+        .max(1)
+        + 1;
+    EvaluationBuildConfig {
+        request_template,
+        position_interpolation,
+        cartesian,
+        polar: PolarEvaluationConfig {
+            azimuth_values,
+            elevation_values,
+            distance_values,
+            distance_max,
+            allow_negative_z,
+        },
+    }
 }
 
 /// Format-agnostic spatial metadata for one audio channel (bed or object).
@@ -459,8 +515,8 @@ impl SpatialRenderer {
         distance_diffuse: bool,
         distance_diffuse_threshold: f32,
         distance_diffuse_curve: f32,
-        preferred_table_mode: VbapBackendMode,
-        initial_table_mode: LiveVbapTableMode,
+        preferred_evaluation_mode: PreferredEvaluationMode,
+        initial_evaluation_mode: LiveEvaluationMode,
         cartesian_default_x_size: usize,
         cartesian_default_y_size: usize,
         cartesian_default_z_size: usize,
@@ -516,14 +572,50 @@ impl SpatialRenderer {
                 "VBAP panner created without precomputed effect tables"
             ));
         }
-        let vbap = Arc::new(vbap);
-        let topology = RenderTopology::new(Arc::clone(&vbap), speaker_layout)?;
+        let vbap_triangles = vbap.num_triangles();
+        let topology = RenderTopology::new(
+            Arc::new(build_prepared_render_engine(
+                GainModelInstance::Vbap(VbapBackend::new(vbap)),
+                match table_mode {
+                    VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
+                    VbapTableMode::Cartesian { .. } => {
+                        EffectiveEvaluationMode::PrecomputedCartesian
+                    }
+                },
+                &evaluation_build_config(
+                    RenderRequest {
+                        adm_position: [0.0, 0.0, 0.0],
+                        spread_min,
+                        spread_max,
+                        spread_from_distance,
+                        spread_distance_range,
+                        spread_distance_curve,
+                        room_ratio,
+                        room_ratio_rear,
+                        room_ratio_lower,
+                        room_ratio_center_blend,
+                        use_distance_diffuse: distance_diffuse,
+                        distance_diffuse_threshold,
+                        distance_diffuse_curve,
+                        distance_model,
+                    },
+                    vbap_position_interpolation,
+                    table_mode,
+                    az_res_deg,
+                    el_res_deg,
+                    distance_step,
+                    distance_max,
+                    allow_negative_z,
+                ),
+            )?),
+            speaker_layout,
+        )?;
 
         log::info!(
             "Created spatial renderer: {} total speakers, {} spatializable, {} triangles, spread_res={}, table_mode={:?}, distance_model={}",
             num_speakers,
             num_vbap_speakers,
-            vbap.num_triangles(),
+            vbap_triangles,
             spread_resolution,
             table_mode,
             distance_model
@@ -538,7 +630,7 @@ impl SpatialRenderer {
             .collect();
         let live_params = Self::build_live_params_and_log(
             &topology.speaker_layout,
-            initial_table_mode,
+            initial_evaluation_mode,
             az_res_deg,
             el_res_deg,
             distance_step,
@@ -574,20 +666,23 @@ impl SpatialRenderer {
             live_params,
             topology,
             editable_layout,
-            Some(crate::live_params::VbapRebuildParams {
-                az_res_deg,
-                el_res_deg,
-                spread_resolution,
-                distance_max,
-                position_interpolation: vbap_position_interpolation,
-                table_mode,
-                preferred_table_mode,
-                cartesian_default_x_size,
-                cartesian_default_y_size,
-                cartesian_default_z_size,
-                cartesian_default_z_neg_size,
+            Some(crate::live_params::BackendRebuildParams {
+                gain_model_kind: RenderBackendKind::Vbap.as_gain_model_kind(),
+                preferred_evaluation_mode,
                 allow_negative_z,
-                distance_model,
+                vbap: Some(crate::live_params::VbapModelRebuildParams {
+                    az_res_deg,
+                    el_res_deg,
+                    spread_resolution,
+                    distance_max,
+                    table_mode,
+                    cartesian_default_x_size,
+                    cartesian_default_y_size,
+                    cartesian_default_z_size,
+                    cartesian_default_z_neg_size,
+                    distance_model,
+                    allow_negative_z,
+                }),
             }),
         );
 
@@ -652,18 +747,14 @@ impl SpatialRenderer {
         distance_diffuse_threshold: f32,
         distance_diffuse_curve: f32,
     ) -> Result<Self> {
-        let vbap = Arc::new(vbap);
-        let topology = RenderTopology::new(Arc::clone(&vbap), speaker_layout)?;
-        let num_speakers = topology.num_speakers;
-
+        let num_speakers = speaker_layout.num_speakers();
         let spread_resolution = vbap.spread_resolution();
         let distance_step = if spread_resolution > 0.0 {
             spread_resolution
         } else {
             0.25
         };
-        let vbap = Arc::into_inner(vbap)
-            .ok_or_else(|| anyhow::anyhow!("VBAP arc unexpectedly shared during construction"))?
+        let vbap = vbap
             .with_negative_z(allow_negative_z)
             .with_position_interpolation(vbap_position_interpolation)
             .precompute_effect_tables(
@@ -689,15 +780,58 @@ impl SpatialRenderer {
                 "Loaded VBAP panner without precomputed effect tables"
             ));
         }
+        let vbap_num_speakers = vbap.num_speakers();
+        let vbap_num_triangles = vbap.num_triangles();
+        let vbap_table_mode = vbap.table_mode();
+        let vbap_azimuth_resolution = vbap.azimuth_resolution();
+        let vbap_elevation_resolution = vbap.elevation_resolution();
+        let vbap_position_interpolation = vbap.position_interpolation();
 
         log::info!(
             "Created spatial renderer from pre-loaded VBAP table: {} total speakers, {} in VBAP table, {} triangles, spread_res={}, distance_model={}",
             num_speakers,
-            vbap.num_speakers(),
-            vbap.num_triangles(),
+            vbap_num_speakers,
+            vbap_num_triangles,
             spread_resolution,
             distance_model
         );
+        let topology = RenderTopology::new(
+            Arc::new(build_prepared_render_engine(
+                GainModelInstance::Vbap(VbapBackend::new(vbap)),
+                match vbap_table_mode {
+                    VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
+                    VbapTableMode::Cartesian { .. } => {
+                        EffectiveEvaluationMode::PrecomputedCartesian
+                    }
+                },
+                &evaluation_build_config(
+                    RenderRequest {
+                        adm_position: [0.0, 0.0, 0.0],
+                        spread_min,
+                        spread_max,
+                        spread_from_distance,
+                        spread_distance_range,
+                        spread_distance_curve,
+                        room_ratio,
+                        room_ratio_rear,
+                        room_ratio_lower,
+                        room_ratio_center_blend,
+                        use_distance_diffuse: distance_diffuse,
+                        distance_diffuse_threshold,
+                        distance_diffuse_curve,
+                        distance_model,
+                    },
+                    vbap_position_interpolation,
+                    vbap_table_mode,
+                    vbap_azimuth_resolution,
+                    vbap_elevation_resolution,
+                    distance_step,
+                    distance_max,
+                    allow_negative_z,
+                ),
+            )?),
+            speaker_layout,
+        )?;
 
         let excluded: Vec<&str> = topology
             .speaker_layout
@@ -708,29 +842,29 @@ impl SpatialRenderer {
             .collect();
         let live_params = Self::build_live_params_and_log(
             &topology.speaker_layout,
-            match vbap.table_mode() {
-                VbapTableMode::Polar => LiveVbapTableMode::Polar,
-                VbapTableMode::Cartesian { .. } => LiveVbapTableMode::Cartesian,
+            match vbap_table_mode {
+                VbapTableMode::Polar => LiveEvaluationMode::PrecomputedPolar,
+                VbapTableMode::Cartesian { .. } => LiveEvaluationMode::PrecomputedCartesian,
             },
-            vbap.azimuth_resolution(),
-            vbap.elevation_resolution(),
+            vbap_azimuth_resolution,
+            vbap_elevation_resolution,
             distance_step,
             distance_max,
             allow_negative_z,
-            vbap.position_interpolation(),
-            match vbap.table_mode() {
+            vbap_position_interpolation,
+            match vbap_table_mode {
                 VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
                 VbapTableMode::Polar => 1,
             },
-            match vbap.table_mode() {
+            match vbap_table_mode {
                 VbapTableMode::Cartesian { y_size, .. } => y_size.saturating_sub(1),
                 VbapTableMode::Polar => 1,
             },
-            match vbap.table_mode() {
+            match vbap_table_mode {
                 VbapTableMode::Cartesian { z_size, .. } => z_size.saturating_sub(1),
                 VbapTableMode::Polar => 1,
             },
-            match vbap.table_mode() {
+            match vbap_table_mode {
                 VbapTableMode::Cartesian { z_neg_size, .. } => z_neg_size,
                 VbapTableMode::Polar => 0,
             },
@@ -754,39 +888,42 @@ impl SpatialRenderer {
             &excluded,
             &topology.bed_to_speaker_mapping,
         );
-        let rebuild_params = crate::live_params::VbapRebuildParams {
-            az_res_deg: vbap.azimuth_resolution(),
-            el_res_deg: vbap.elevation_resolution(),
-            spread_resolution,
-            distance_max,
-            position_interpolation: vbap.position_interpolation(),
-            table_mode: vbap.table_mode(),
-            preferred_table_mode: VbapBackendMode::from_table_mode(vbap.table_mode()),
-            cartesian_default_x_size: match vbap.table_mode() {
-                VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
-                VbapTableMode::Polar => 1,
-            },
-            cartesian_default_y_size: match vbap.table_mode() {
-                VbapTableMode::Cartesian { y_size, .. } => y_size.saturating_sub(1),
-                VbapTableMode::Polar => 1,
-            },
-            cartesian_default_z_size: match vbap.table_mode() {
-                VbapTableMode::Cartesian { z_size, .. } => z_size.saturating_sub(1),
-                VbapTableMode::Polar => 1,
-            },
-            cartesian_default_z_neg_size: match vbap.table_mode() {
-                VbapTableMode::Cartesian { z_neg_size, .. } => z_neg_size,
-                VbapTableMode::Polar => 0,
-            },
-            allow_negative_z,
-            distance_model,
-        };
-        let control = RendererControl::new(
-            live_params,
-            RenderTopology::new(Arc::new(vbap), topology.speaker_layout.clone())?,
-            topology.speaker_layout.clone(),
-            Some(rebuild_params),
-        );
+        let rebuild_params =
+            crate::live_params::BackendRebuildParams {
+                gain_model_kind: RenderBackendKind::Vbap.as_gain_model_kind(),
+                preferred_evaluation_mode: PreferredEvaluationMode::from_vbap_table_mode(
+                    vbap_table_mode,
+                ),
+                allow_negative_z,
+                vbap: Some(crate::live_params::VbapModelRebuildParams {
+                az_res_deg: vbap_azimuth_resolution,
+                el_res_deg: vbap_elevation_resolution,
+                spread_resolution,
+                distance_max,
+                table_mode: vbap_table_mode,
+                cartesian_default_x_size: match vbap_table_mode {
+                    VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
+                    VbapTableMode::Polar => 1,
+                },
+                cartesian_default_y_size: match vbap_table_mode {
+                    VbapTableMode::Cartesian { y_size, .. } => y_size.saturating_sub(1),
+                    VbapTableMode::Polar => 1,
+                },
+                cartesian_default_z_size: match vbap_table_mode {
+                    VbapTableMode::Cartesian { z_size, .. } => z_size.saturating_sub(1),
+                    VbapTableMode::Polar => 1,
+                },
+                cartesian_default_z_neg_size: match vbap_table_mode {
+                    VbapTableMode::Cartesian { z_neg_size, .. } => z_neg_size,
+                    VbapTableMode::Polar => 0,
+                },
+                distance_model,
+                allow_negative_z,
+            }),
+            };
+        let editable_layout = topology.speaker_layout.clone();
+        let control =
+            RendererControl::new(live_params, topology, editable_layout, Some(rebuild_params));
 
         Ok(Self::finish_construction(
             num_speakers,
@@ -806,7 +943,7 @@ impl SpatialRenderer {
     #[allow(clippy::too_many_arguments)]
     fn build_live_params_and_log(
         speaker_layout: &SpeakerLayout,
-        initial_table_mode: LiveVbapTableMode,
+        initial_evaluation_mode: LiveEvaluationMode,
         az_res_deg: i32,
         el_res_deg: i32,
         distance_res: f32,
@@ -901,18 +1038,25 @@ impl SpatialRenderer {
             spread_distance_range,
             spread_distance_curve,
             ramp_mode,
-            vbap_cart_x_size: cartesian_default_x_size.max(1),
-            vbap_cart_y_size: cartesian_default_y_size.max(1),
-            vbap_cart_z_size: cartesian_default_z_size.max(1),
-            vbap_cart_z_neg_size: cartesian_default_z_neg_size,
-            vbap_table_mode: initial_table_mode,
-            vbap_polar_azimuth_values: (360.0 / az_res_deg.max(1) as f32).round() as i32,
-            vbap_polar_elevation_values: (((if allow_negative_z { 180.0 } else { 90.0 })
-                / el_res_deg.max(1) as f32)
-                .round() as i32),
-            vbap_polar_distance_res: (distance_max / distance_res.max(0.01)).round() as i32,
-            vbap_polar_distance_max: distance_max.max(0.01),
-            vbap_position_interpolation,
+            backend_kind: RenderBackendKind::Vbap,
+            evaluation: EvaluationLiveParams {
+                mode: initial_evaluation_mode,
+                position_interpolation: vbap_position_interpolation,
+                cartesian: CartesianEvaluationParams {
+                    x_size: cartesian_default_x_size.max(1),
+                    y_size: cartesian_default_y_size.max(1),
+                    z_size: cartesian_default_z_size.max(1),
+                    z_neg_size: cartesian_default_z_neg_size,
+                },
+                polar: PolarEvaluationParams {
+                    azimuth_values: (360.0 / az_res_deg.max(1) as f32).round() as i32,
+                    elevation_values: (((if allow_negative_z { 180.0 } else { 90.0 })
+                        / el_res_deg.max(1) as f32)
+                        .round() as i32),
+                    distance_res: (distance_max / distance_res.max(0.01)).round() as i32,
+                    distance_max: distance_max.max(0.01),
+                },
+            },
             use_loudness,
             distance_model,
             speakers: speaker_live,
@@ -1221,8 +1365,6 @@ impl SpatialRenderer {
         // ── 2. Load the current immutable render topology (lock-free ArcSwap snapshot) ──
         let topology_guard = self.control.active_topology();
         let topology = &*topology_guard;
-        let vbap = &*topology.vbap;
-        let vbap_has_precomputed_effects = vbap.has_precomputed_effects();
         let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
 
         let start_time = std::time::Instant::now();
@@ -1238,7 +1380,7 @@ impl SpatialRenderer {
         let bed_indices = self.bed_indices.load_full();
         let active_layout = &topology.speaker_layout;
         let active_bed_to_speaker_mapping = &topology.bed_to_speaker_mapping;
-        let active_vbap_to_speaker_mapping = &topology.vbap_to_speaker_mapping;
+        let active_backend_to_speaker_mapping = &topology.backend_to_speaker_mapping;
 
         // Reuse the donated buffer — resize (no alloc if capacity suffices) and zero it.
         let mut output = samples_buf;
@@ -1397,9 +1539,6 @@ impl SpatialRenderer {
                 };
 
                 let compute_object_gains = |rendering_position: [f64; 3]| {
-                    // Apply room ratio to scale ADM coordinates, with smooth
-                    // front/rear depth warp so depth=0 is preserved and depth=±1 hits the
-                    // configured front/rear limits.
                     let scaled_x = rendering_position[0] as f32 * live.room_ratio[0];
                     let scaled_y = map_depth_with_room_ratios(
                         rendering_position[1] as f32,
@@ -1412,88 +1551,25 @@ impl SpatialRenderer {
                     } else {
                         rendering_position[2] as f32 * live.room_ratio_lower
                     };
-
-                    let final_gains = if vbap_has_precomputed_effects {
-                        // Effect tables are baked in object ADM space; runtime only does a lookup.
-                        vbap.get_gains_cartesian(
-                            rendering_position[0] as f32,
-                            rendering_position[1] as f32,
-                            rendering_position[2] as f32,
-                            0.0,
-                            self.distance_model,
-                        )
-                    } else {
-                        let effective_spread = if live.spread_from_distance {
-                            let (_, _, dist) =
-                                crate::spatial_vbap::adm_to_spherical(scaled_x, scaled_y, scaled_z);
-                            let t = (1.0 - dist / live.spread_distance_range)
-                                .clamp(0.0, 1.0)
-                                .powf(live.spread_distance_curve);
-                            (live.spread_min + t * (live.spread_max - live.spread_min))
-                                .clamp(0.0, 1.0)
-                        } else {
-                            live.spread_min.clamp(0.0, 1.0)
-                        };
-                        let direct_gains = vbap.get_gains_cartesian(
-                            scaled_x,
-                            scaled_y,
-                            scaled_z,
-                            effective_spread,
-                            self.distance_model,
-                        );
-
-                        // Distance-diffuse blend: mix direct gains with the gains of the
-                        // antipodal point (-x, -y, z) — same elevation, opposite horizontal.
-                        // Distance is computed in ADM space (pre-room_ratio) so the threshold
-                        // is independent of the room_ratio setting.
-                        if live.use_distance_diffuse {
-                            let [rx, ry, rz] = rendering_position;
-                            let adm_dist = ((rx * rx + ry * ry + rz * rz) as f32).sqrt();
-                            let t = (adm_dist / live.distance_diffuse_threshold.max(1e-6))
-                                .min(1.0)
-                                .powf(live.distance_diffuse_curve);
-                            // alpha ∈ [0.5, 1.0]: 0.5 at origin, 1.0 at threshold
-                            let alpha = 0.5 + 0.5 * t;
-                            // Iso-energy weights: w_d² + w_m² = 1 for orthogonal vectors
-                            let w_direct = alpha.sqrt();
-                            let w_mirror = (1.0 - alpha).sqrt();
-                            let mirror_gains = vbap.get_gains_cartesian(
-                                -scaled_x,
-                                -scaled_y,
-                                scaled_z,
-                                effective_spread,
-                                self.distance_model,
-                            );
-
-                            // Blend and accumulate energies in one pass.
-                            let n = direct_gains.len();
-                            let mut blended = crate::spatial_vbap::Gains::zeroed(n);
-                            let mut energy_direct = 0.0f32;
-                            let mut energy_blended = 0.0f32;
-                            for i in 0..n {
-                                let g = w_direct * direct_gains[i] + w_mirror * mirror_gains[i];
-                                blended.set(i, g);
-                                energy_direct += direct_gains[i] * direct_gains[i];
-                                energy_blended += g * g;
-                            }
-
-                            // When direct and mirror solutions share speakers the positive
-                            // cross-term inflates the blended energy above energy_direct.
-                            // Renormalize so the output always carries the same power as the
-                            // un-blended direct signal (which already includes distance
-                            // attenuation).  For orthogonal vectors scale ≈ 1.0.
-                            if energy_blended > 1e-12 {
-                                let scale = (energy_direct / energy_blended).sqrt();
-                                for g in blended.iter_mut() {
-                                    *g *= scale;
-                                }
-                            }
-
-                            blended
-                        } else {
-                            direct_gains
-                        }
-                    };
+                    let final_gains = topology
+                        .backend
+                        .compute_gains(&RenderRequest {
+                            adm_position: rendering_position,
+                            spread_min: live.spread_min,
+                            spread_max: live.spread_max,
+                            spread_from_distance: live.spread_from_distance,
+                            spread_distance_range: live.spread_distance_range,
+                            spread_distance_curve: live.spread_distance_curve,
+                            room_ratio: live.room_ratio,
+                            room_ratio_rear: live.room_ratio_rear,
+                            room_ratio_lower: live.room_ratio_lower,
+                            room_ratio_center_blend: live.room_ratio_center_blend,
+                            use_distance_diffuse: live.use_distance_diffuse,
+                            distance_diffuse_threshold: live.distance_diffuse_threshold,
+                            distance_diffuse_curve: live.distance_diffuse_curve,
+                            distance_model: self.distance_model,
+                        })
+                        .gains;
                     (scaled_x, scaled_y, scaled_z, final_gains)
                 };
 
@@ -1539,12 +1615,13 @@ impl SpatialRenderer {
                                     .iter()
                                     .enumerate()
                                     .map(|(idx, g)| {
-                                        let speaker_idx =
-                                            if let Some(mapping) = active_vbap_to_speaker_mapping {
-                                                mapping[idx]
-                                            } else {
-                                                idx // v4: direct mapping
-                                            };
+                                        let speaker_idx = if let Some(mapping) =
+                                            active_backend_to_speaker_mapping
+                                        {
+                                            mapping[idx]
+                                        } else {
+                                            idx
+                                        };
                                         format!(
                                             "{}={:.3}",
                                             active_speaker_names
@@ -1606,7 +1683,7 @@ impl SpatialRenderer {
                             * obj_gain;
 
                         let out_base = sample_idx * self.num_speakers;
-                        if let Some(mapping) = active_vbap_to_speaker_mapping {
+                        if let Some(mapping) = active_backend_to_speaker_mapping {
                             for (vbap_idx, &gain) in final_gains.iter().enumerate() {
                                 let speaker_idx = mapping[vbap_idx];
                                 output[out_base + speaker_idx] += object_sample * gain;
@@ -1618,7 +1695,7 @@ impl SpatialRenderer {
                         }
                     }
 
-                    if let Some(mapping) = active_vbap_to_speaker_mapping {
+                    if let Some(mapping) = active_backend_to_speaker_mapping {
                         let mut gains = Gains::zeroed(self.num_speakers);
                         for (vbap_idx, &gain) in final_gains.iter().enumerate() {
                             gains.set(mapping[vbap_idx], gain);
@@ -1654,7 +1731,7 @@ impl SpatialRenderer {
                     // v4 format: direct iteration (SIMD friendly), gains array has all speakers
                     // v3 format: use mapping to scatter gains to correct speaker indices
                     let out_base = sample_idx * self.num_speakers;
-                    if let Some(mapping) = active_vbap_to_speaker_mapping {
+                    if let Some(mapping) = active_backend_to_speaker_mapping {
                         // v3/runtime: use mapping
                         for (vbap_idx, &gain) in final_gains.iter().enumerate() {
                             let speaker_idx = mapping[vbap_idx];
@@ -1823,9 +1900,8 @@ impl SpatialRenderer {
     pub fn save_vbap_table(&self, path: &std::path::Path) -> Result<()> {
         let topology = self.control.active_topology();
         topology
-            .vbap
+            .backend
             .save_to_file(path, &topology.speaker_layout)
-            .map_err(|e| anyhow::anyhow!("Failed to save VBAP table: {}", e))
     }
 }
 
@@ -1861,8 +1937,8 @@ mod tests {
             false,
             1.0,
             1.0,
-            VbapBackendMode::Polar,
-            LiveVbapTableMode::Polar,
+            PreferredEvaluationMode::PrecomputedPolar,
+            LiveEvaluationMode::PrecomputedPolar,
             31,
             31,
             15,

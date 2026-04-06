@@ -52,17 +52,19 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vbap_distance_max: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_position_interpolation: Option<bool>,
+    pub render_backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_table_mode: Option<String>,
+    pub render_evaluation_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_cart_x_size: Option<usize>,
+    pub render_evaluation_position_interpolation: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_cart_y_size: Option<usize>,
+    pub evaluation_cartesian_x_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_cart_z_size: Option<usize>,
+    pub evaluation_cartesian_y_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_cart_z_neg_size: Option<usize>,
+    pub evaluation_cartesian_z_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluation_cartesian_z_neg_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vbap_allow_negative_z: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -119,7 +121,10 @@ pub struct RenderConfig {
     pub adaptive_resampling_enable_far_mode: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_force_silence_in_far_mode: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", alias = "adaptive_resampling_hard_recover_in_far_mode")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "adaptive_resampling_hard_recover_in_far_mode"
+    )]
     pub adaptive_resampling_hard_recover_high_in_far_mode: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_hard_recover_low_in_far_mode: Option<bool>,

@@ -27,7 +27,8 @@ import { setLatencyInstantMs, updateLatencyDisplay, updateLatencyMeterUI, update
 import { updateMasterGainUI, updateMasterMeterUI } from './controls/master.js';
 import { updateSpreadDisplay } from './controls/spread.js';
 import {
-  updateVbapMode,
+  updateRenderBackend,
+  updateEvaluationMode,
   updateVbapCartesian,
   updateVbapPolar,
   updateVbapPositionInterpolation,
@@ -42,8 +43,13 @@ import { updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.
 import { updateRoomRatioDisplay, applyRoomRatio, applyRoomRatioToScene } from './controls/room-geometry.js';
 import { updateConfigSavedUI } from './controls/config.js';
 import { normalizeLogLevel, renderLogLevelControl, logState } from './log.js';
+import { syncRuntimeConnectionLock } from './runtime-connection.js';
 
 export function applyInitState(payload) {
+  if (typeof payload.oscSnapshotReady === 'boolean') {
+    app.oscSnapshotReady = payload.oscSnapshotReady;
+    syncRuntimeConnectionLock();
+  }
   speakerMuted.clear();
   objectMuted.clear();
   speakerManualMuted.clear();
@@ -119,19 +125,36 @@ export function applyInitState(payload) {
     }
   }
   updateVbapCartesian();
-  if (payload.vbapMode && typeof payload.vbapMode.selection === 'string') {
-    const selection = payload.vbapMode.selection.trim().toLowerCase();
-    if (selection === 'auto' || selection === 'polar' || selection === 'cartesian') {
-      app.vbapModeState.selection = selection;
+  if (payload.renderBackendState && typeof payload.renderBackendState === 'object') {
+    if (typeof payload.renderBackendState.selection === 'string') {
+      const selection = payload.renderBackendState.selection.trim().toLowerCase();
+      if (selection === 'vbap' || selection === 'experimental_distance') {
+        app.renderBackendState.selection = selection;
+      }
+    }
+    if (typeof payload.renderBackendState.effective === 'string') {
+      const effective = payload.renderBackendState.effective.trim().toLowerCase();
+      if (effective === 'vbap' || effective === 'experimental_distance') {
+        app.renderBackendState.effective = effective;
+      }
     }
   }
-  if (payload.vbapMode && typeof payload.vbapMode.effectiveMode === 'string') {
-    const effectiveMode = payload.vbapMode.effectiveMode.trim().toLowerCase();
-    if (effectiveMode === 'polar' || effectiveMode === 'cartesian') {
-      app.vbapModeState.effectiveMode = effectiveMode;
+  if (payload.renderEvaluationModeState && typeof payload.renderEvaluationModeState === 'object') {
+    if (typeof payload.renderEvaluationModeState.selection === 'string') {
+      const selection = payload.renderEvaluationModeState.selection.trim().toLowerCase();
+      if (['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(selection)) {
+        app.evaluationModeState.selection = selection;
+      }
+    }
+    if (typeof payload.renderEvaluationModeState.effective === 'string') {
+      const effective = payload.renderEvaluationModeState.effective.trim().toLowerCase();
+      if (['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(effective)) {
+        app.evaluationModeState.effective = effective;
+      }
     }
   }
-  updateVbapMode();
+  updateRenderBackend();
+  updateEvaluationMode();
   if (payload.vbapPolar) {
     if (typeof payload.vbapPolar.azimuthResolution === 'number') {
       app.vbapPolarState.azimuthResolution = payload.vbapPolar.azimuthResolution > 0 ? payload.vbapPolar.azimuthResolution : null;
@@ -271,13 +294,13 @@ export function applyInitState(payload) {
     app.latencyRequestedMs = payload.latencyRequestedMs;
   }
   if (typeof payload.decodeTimeMs === 'number') {
-    app.decodeTimeMs = payload.decodeTimeMs;
+    setDecodeTimeMs(payload.decodeTimeMs);
   }
   if (typeof payload.renderTimeMs === 'number') {
-    app.renderTimeMs = payload.renderTimeMs;
+    setRenderTimeMs(payload.renderTimeMs);
   }
   if (typeof payload.writeTimeMs === 'number') {
-    app.writeTimeMs = payload.writeTimeMs;
+    setWriteTimeMs(payload.writeTimeMs);
   }
   if (typeof payload.frameDurationMs === 'number') {
     app.frameDurationMs = payload.frameDurationMs;
@@ -296,6 +319,9 @@ export function applyInitState(payload) {
   }
   if (typeof payload.audioOutputDevice === 'string') {
     app.audioOutputDevice = payload.audioOutputDevice.trim() || null;
+  }
+  if (typeof payload.audioOutputDeviceEffective === 'string') {
+    app.audioOutputDeviceEffective = payload.audioOutputDeviceEffective.trim() || null;
   }
   if (Array.isArray(payload.audioOutputDevices)) {
     app.audioOutputDevices = payload.audioOutputDevices
@@ -382,6 +408,7 @@ export function applyInitState(payload) {
       setOscStatus(s);
     }
   }
+  syncRuntimeConnectionLock();
   if (typeof payload.oscMeteringEnabled === 'number') {
     app.oscMeteringEnabled = payload.oscMeteringEnabled !== 0;
     const oscMeteringToggleEl = document.getElementById('oscMeteringToggle');
@@ -392,6 +419,7 @@ export function applyInitState(payload) {
   }
   updateLatencyDisplay();
   updateLatencyMeterUI();
+  updateRenderTimeUI();
   updateResampleRatioDisplay();
   updateAudioFormatDisplay();
   updateInputControlUI();

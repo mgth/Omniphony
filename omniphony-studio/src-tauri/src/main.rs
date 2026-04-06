@@ -57,13 +57,6 @@ struct OrenderLaunchSpec {
     args: Vec<String>,
 }
 
-#[derive(serde::Deserialize)]
-struct LaunchAudioPrefs {
-    audio_output_device: Option<String>,
-    audio_sample_rate: Option<i32>,
-    ramp_mode: Option<String>,
-}
-
 const ORENDER_SERVICE_NAME: &str = "omniphony-renderer";
 
 // ── Tauri commands ────────────────────────────────────────────────────────
@@ -111,45 +104,6 @@ fn save_osc_config(state: State<SharedState>, config: OscConfig) -> Result<(), S
         },
     );
     Ok(())
-}
-
-#[tauri::command]
-fn save_launch_audio_prefs(
-    state: State<SharedState>,
-    prefs: LaunchAudioPrefs,
-) -> Result<(), String> {
-    let mut cfg = load_config(&state.config_dir);
-    cfg.audio_output_device = prefs
-        .audio_output_device
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    cfg.audio_sample_rate = prefs
-        .audio_sample_rate
-        .filter(|value| *value > 0)
-        .map(|value| value as u32);
-    cfg.ramp_mode = prefs
-        .ramp_mode
-        .as_deref()
-        .map(str::trim)
-        .map(|value| value.to_ascii_lowercase())
-        .filter(|value| matches!(value.as_str(), "off" | "frame" | "sample"));
-    save_config(&state.config_dir, &cfg)
-}
-
-#[tauri::command]
-fn save_input_pipe_pref(
-    state: State<SharedState>,
-    input_pipe: Option<String>,
-) -> Result<(), String> {
-    let mut cfg = load_config(&state.config_dir);
-    cfg.input_pipe = input_pipe
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    save_config(&state.config_dir, &cfg)
 }
 
 #[tauri::command]
@@ -583,114 +537,132 @@ fn control_distance_model(state: State<SharedState>, value: String) {
 }
 
 #[tauri::command]
-fn control_vbap_cart_x_size(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_cartesian_x_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/cart/x_size".to_string(),
+            address: "/omniphony/control/render_evaluation/cartesian/x_size".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_cart_y_size(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_cartesian_y_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/cart/y_size".to_string(),
+            address: "/omniphony/control/render_evaluation/cartesian/y_size".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_cart_z_size(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_cartesian_z_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/cart/z_size".to_string(),
+            address: "/omniphony/control/render_evaluation/cartesian/z_size".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_cart_z_neg_size(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_cartesian_z_neg_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/cart/z_neg_size".to_string(),
+            address: "/omniphony/control/render_evaluation/cartesian/z_neg_size".to_string(),
             value: value.max(0),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_table_mode(state: State<SharedState>, mode: String) {
-    let normalized = mode.trim().to_ascii_lowercase();
-    if !matches!(normalized.as_str(), "auto" | "polar" | "cartesian") {
+fn control_render_backend(state: State<SharedState>, value: String) {
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(normalized.as_str(), "vbap" | "experimental_distance") {
         return;
     }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/vbap/table_mode".to_string(),
+            address: "/omniphony/control/render_backend".to_string(),
             value: normalized,
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_polar_azimuth_resolution(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_mode(state: State<SharedState>, value: String) {
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(
+        normalized.as_str(),
+        "auto" | "realtime" | "precomputed_polar" | "precomputed_cartesian"
+    ) {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/render_evaluation_mode".to_string(),
+            value: normalized,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_render_evaluation_polar_azimuth_resolution(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/polar/azimuth_resolution".to_string(),
+            address: "/omniphony/control/render_evaluation/polar/azimuth_resolution".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_polar_elevation_resolution(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_polar_elevation_resolution(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/polar/elevation_resolution".to_string(),
+            address: "/omniphony/control/render_evaluation/polar/elevation_resolution".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_polar_distance_res(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_polar_distance_res(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/polar/distance_res".to_string(),
+            address: "/omniphony/control/render_evaluation/polar/distance_res".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_polar_distance_max(state: State<SharedState>, value: f32) {
+fn control_render_evaluation_polar_distance_max(state: State<SharedState>, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/vbap/polar/distance_max".to_string(),
+            address: "/omniphony/control/render_evaluation/polar/distance_max".to_string(),
             value: value.max(0.01),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_position_interpolation(state: State<SharedState>, enable: i32) {
+fn control_render_evaluation_position_interpolation(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/position_interpolation".to_string(),
+            address: "/omniphony/control/render_evaluation/position_interpolation".to_string(),
             value: if enable != 0 { 1 } else { 0 },
         },
     );
@@ -1346,29 +1318,32 @@ fn resolve_orender_launch_spec(
         .ok_or_else(|| "failed to resolve workspace root".to_string())?
         .to_path_buf();
 
-    let mut cfg = load_config(&state.config_dir);
+    let repo_orender_candidates = [
+        repo_root.join("omniphony-renderer/target/release/orender"),
+        repo_root.join("omniphony-renderer/target/debug/orender"),
+    ];
 
-    let orender_path = orender_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .or_else(|| {
-            cfg.orender_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.exists())
-        })
-        .or_else(|| first_existing_path(&bundled_orender_candidates(app)))
-        .or_else(|| {
-            first_existing_path(&[
-                repo_root.join("omniphony-renderer/target/release/orender"),
-                repo_root.join("omniphony-renderer/target/debug/orender"),
-            ])
-        })
+    let orender_path = if cfg!(debug_assertions) {
+        first_existing_path(&repo_orender_candidates)
+            .or_else(|| {
+                orender_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(PathBuf::from)
+                    .filter(|path| path.exists())
+            })
+            .or_else(|| first_existing_path(&bundled_orender_candidates(app)))
+    } else {
+        orender_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+            .or_else(|| first_existing_path(&bundled_orender_candidates(app)))
+            .or_else(|| first_existing_path(&repo_orender_candidates))
+    }
         .or_else(|| {
             let lookup_cmd = if cfg!(target_os = "windows") {
                 "where"
@@ -1398,14 +1373,6 @@ fn resolve_orender_launch_spec(
         .map(PathBuf::from)
         .filter(|path| path.exists())
         .or_else(|| {
-            cfg.bridge_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.exists())
-        })
-        .or_else(|| {
             first_existing_path(&[
                 workspace_root.join("truehd-bridge/target/release/libtruehd_bridge.so"),
                 repo_root.join("omniphony-renderer/target/release/libtruehd_bridge.so"),
@@ -1413,13 +1380,7 @@ fn resolve_orender_launch_spec(
         })
         .ok_or_else(|| "a bridge plugin is required to launch orender".to_string())?;
 
-    let input_path = cfg
-        .input_pipe
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(default_orender_input_path);
+    let input_path = default_orender_input_path();
 
     let mut args = vec![
         "render".to_string(),
@@ -1466,40 +1427,15 @@ fn resolve_orender_launch_spec(
         }
     }
 
-    if let Some(output_device) = cfg
-        .audio_output_device
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        args.push("--output-device".to_string());
-        args.push(output_device.to_string());
-    }
-
-    if let Some(output_sample_rate) = cfg.audio_sample_rate.filter(|value| *value > 0) {
-        args.push("--output-sample-rate".to_string());
-        args.push(output_sample_rate.to_string());
-    }
-
-    if let Some(ramp_mode) = cfg
-        .ramp_mode
-        .as_deref()
-        .map(str::trim)
-        .map(|value| value.to_ascii_lowercase())
-        .filter(|value| matches!(value.as_str(), "off" | "frame" | "sample"))
-    {
-        args.push("--ramp-mode".to_string());
-        args.push(ramp_mode);
-    }
-
-    cfg.host = host.trim().to_string();
-    cfg.osc_rx_port = osc_rx_port;
-    cfg.osc_port = osc_port;
-    cfg.osc_metering_enabled = osc_metering_enabled;
-    cfg.bridge_path = Some(bridge_path.display().to_string());
-    cfg.orender_path = Some(orender_path.display().to_string());
-    cfg.input_pipe = Some(input_path.display().to_string());
-    let _ = save_config(&state.config_dir, &cfg);
+    let _ = save_config(
+        &state.config_dir,
+        &OscConfig {
+            host: host.trim().to_string(),
+            osc_rx_port,
+            osc_port,
+            osc_metering_enabled,
+        },
+    );
 
     Ok(OrenderLaunchSpec { orender_path, args })
 }
@@ -2060,8 +1996,6 @@ fn main() {
             get_osc_config,
             get_about_info,
             save_osc_config,
-            save_launch_audio_prefs,
-            save_input_pipe_pref,
             launch_orender,
             stop_orender,
             get_orender_service_status,
@@ -2106,16 +2040,17 @@ fn main() {
             control_spread_distance_range,
             control_spread_distance_curve,
             control_distance_model,
-            control_vbap_cart_x_size,
-            control_vbap_cart_y_size,
-            control_vbap_cart_z_size,
-            control_vbap_cart_z_neg_size,
-            control_vbap_table_mode,
-            control_vbap_polar_azimuth_resolution,
-            control_vbap_polar_elevation_resolution,
-            control_vbap_polar_distance_res,
-            control_vbap_polar_distance_max,
-            control_vbap_position_interpolation,
+            control_render_evaluation_cartesian_x_size,
+            control_render_evaluation_cartesian_y_size,
+            control_render_evaluation_cartesian_z_size,
+            control_render_evaluation_cartesian_z_neg_size,
+            control_render_backend,
+            control_render_evaluation_mode,
+            control_render_evaluation_polar_azimuth_resolution,
+            control_render_evaluation_polar_elevation_resolution,
+            control_render_evaluation_polar_distance_res,
+            control_render_evaluation_polar_distance_max,
+            control_render_evaluation_position_interpolation,
             control_distance_diffuse_enabled,
             control_distance_diffuse_threshold,
             control_distance_diffuse_curve,

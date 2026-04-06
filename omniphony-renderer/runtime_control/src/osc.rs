@@ -5,6 +5,8 @@ use crate::context::RuntimeControlContext;
 use audio_input::{
     InputBackend, InputClockMode, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
 };
+use renderer::render_backend::RenderBackendKind;
+use renderer::live_params::LiveEvaluationMode;
 
 #[derive(Debug, Clone, Default)]
 pub struct SpeakerPatch {
@@ -241,6 +243,55 @@ pub fn apply_simple_osc_control(
                 addr: "/omniphony/state/audio/output_device".to_string(),
                 value: BroadcastValue::String(requested.unwrap_or_default()),
             });
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/render_backend" {
+        let requested =
+            parse_string_arg(msg.args.first()).and_then(|value| RenderBackendKind::from_str(&value));
+        if let Some(requested) = requested {
+            let mut live = ctx.renderer.live.write().unwrap();
+            if live.backend_kind != requested {
+                live.backend_kind = requested;
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/render_backend".to_string(),
+                    value: BroadcastValue::String(requested.as_str().to_string()),
+                });
+                effects.log_message =
+                    Some(format!("OSC: render_backend -> {}", requested.as_str()));
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/render_evaluation_mode" {
+        let requested =
+            parse_string_arg(msg.args.first()).and_then(|value| LiveEvaluationMode::from_str(&value));
+        if let Some(requested) = requested {
+            let mut live = ctx.renderer.live.write().unwrap();
+            if live.evaluation.mode != requested {
+                live.set_evaluation_mode(requested);
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+            }
+            {
+                if live.backend_kind == RenderBackendKind::Vbap {
+                    effects.mark_dirty = true;
+                }
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/render_evaluation_mode".to_string(),
+                    value: BroadcastValue::String(
+                        live.requested_evaluation_mode().as_str().to_string(),
+                    ),
+                });
+                effects.log_message = Some(format!(
+                    "OSC: render_evaluation_mode -> {}",
+                    live.requested_evaluation_mode().as_str()
+                ));
+            }
         }
         return Some(effects);
     }
@@ -792,7 +843,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/vbap/cart/") {
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/render_evaluation/cartesian/") {
         let size = match msg.args.first() {
             Some(OscType::Int(i)) => Some((*i).max(1) as usize),
             Some(OscType::Float(f)) => Some((*f).round().max(1.0) as usize),
@@ -801,64 +852,49 @@ pub fn apply_simple_osc_control(
         if let Some(size) = size {
             let state_addr = match rest {
                 "x_size" => {
-                    ctx.renderer.live.write().unwrap().vbap_cart_x_size = size;
-                    Some("/omniphony/state/vbap/cart/x_size")
+                    ctx.renderer.live.write().unwrap().evaluation.cartesian.x_size = size;
+                    Some("/omniphony/state/render_evaluation/cartesian/x_size")
                 }
                 "y_size" => {
-                    ctx.renderer.live.write().unwrap().vbap_cart_y_size = size;
-                    Some("/omniphony/state/vbap/cart/y_size")
+                    ctx.renderer.live.write().unwrap().evaluation.cartesian.y_size = size;
+                    Some("/omniphony/state/render_evaluation/cartesian/y_size")
                 }
                 "z_size" => {
-                    ctx.renderer.live.write().unwrap().vbap_cart_z_size = size;
-                    Some("/omniphony/state/vbap/cart/z_size")
+                    ctx.renderer.live.write().unwrap().evaluation.cartesian.z_size = size;
+                    Some("/omniphony/state/render_evaluation/cartesian/z_size")
                 }
                 "z_neg_size" => {
-                    ctx.renderer.live.write().unwrap().vbap_cart_z_neg_size = size;
-                    Some("/omniphony/state/vbap/cart/z_neg_size")
+                    ctx.renderer.live.write().unwrap().evaluation.cartesian.z_neg_size = size;
+                    Some("/omniphony/state/render_evaluation/cartesian/z_neg_size")
                 }
                 _ => None,
             };
             if let Some(state_addr) = state_addr {
                 effects.mark_dirty = true;
                 effects.trigger_layout_recompute = true;
-                        effects.broadcasts.push(BroadcastUpdate {
-                            addr: state_addr.to_string(),
-                            value: BroadcastValue::Int(size as i32),
-                        });
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == "/omniphony/control/vbap/table_mode" {
-        if let Some(OscType::String(mode)) = msg.args.first() {
-            if let Some(mode) = renderer::live_params::LiveVbapTableMode::from_str(mode) {
-                ctx.renderer.live.write().unwrap().vbap_table_mode = mode;
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
                 effects.broadcasts.push(BroadcastUpdate {
-                    addr: "/omniphony/state/vbap/table_mode".to_string(),
-                    value: BroadcastValue::String(mode.as_str().to_string()),
+                    addr: state_addr.to_string(),
+                    value: BroadcastValue::Int(size as i32),
                 });
             }
         }
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/vbap/position_interpolation" {
+    if addr == "/omniphony/control/render_evaluation/position_interpolation" {
         if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().unwrap().vbap_position_interpolation = enabled;
+            ctx.renderer.live.write().unwrap().evaluation.position_interpolation = enabled;
             effects.mark_dirty = true;
             effects.trigger_layout_recompute = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/vbap/position_interpolation".to_string(),
+                addr: "/omniphony/state/render_evaluation/position_interpolation".to_string(),
                 value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
             });
         }
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/vbap/polar/") {
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/render_evaluation/polar/") {
         match rest {
             "azimuth_resolution" | "elevation_resolution" => {
                 let res = match msg.args.first() {
@@ -869,12 +905,14 @@ pub fn apply_simple_osc_control(
                 if let Some(res) = res {
                     let state_addr = match rest {
                         "azimuth_resolution" => {
-                            ctx.renderer.live.write().unwrap().vbap_polar_azimuth_values = res;
-                            Some("/omniphony/state/vbap/polar/azimuth_resolution")
+                            ctx.renderer.live.write().unwrap().evaluation.polar.azimuth_values =
+                                res;
+                            Some("/omniphony/state/render_evaluation/polar/azimuth_resolution")
                         }
                         "elevation_resolution" => {
-                            ctx.renderer.live.write().unwrap().vbap_polar_elevation_values = res;
-                            Some("/omniphony/state/vbap/polar/elevation_resolution")
+                            ctx.renderer.live.write().unwrap().evaluation.polar.elevation_values =
+                                res;
+                            Some("/omniphony/state/render_evaluation/polar/elevation_resolution")
                         }
                         _ => None,
                     };
@@ -895,11 +933,11 @@ pub fn apply_simple_osc_control(
                     _ => None,
                 };
                 if let Some(res) = res {
-                    ctx.renderer.live.write().unwrap().vbap_polar_distance_res = res;
+                    ctx.renderer.live.write().unwrap().evaluation.polar.distance_res = res;
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
                     effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/vbap/polar/distance_res".to_string(),
+                        addr: "/omniphony/state/render_evaluation/polar/distance_res".to_string(),
                         value: BroadcastValue::Int(res),
                     });
                 }
@@ -911,11 +949,11 @@ pub fn apply_simple_osc_control(
                     _ => None,
                 };
                 if let Some(max_v) = max_v {
-                    ctx.renderer.live.write().unwrap().vbap_polar_distance_max = max_v;
+                    ctx.renderer.live.write().unwrap().evaluation.polar.distance_max = max_v;
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
                     effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/vbap/polar/distance_max".to_string(),
+                        addr: "/omniphony/state/render_evaluation/polar/distance_max".to_string(),
                         value: BroadcastValue::Float(max_v),
                     });
                 }

@@ -33,6 +33,7 @@ impl Default for RequestedAudioOutputConfig {
 
 #[derive(Debug, Clone, Default)]
 pub struct AppliedAudioOutputState {
+    pub output_device: Option<String>,
     pub output_sample_rate_hz: Option<u32>,
     pub sample_format: String,
     pub audio_error: Option<String>,
@@ -256,6 +257,10 @@ impl AudioControl {
         });
     }
 
+    pub fn set_effective_output_device(&self, output_device: Option<String>) {
+        self.update_applied(|applied| applied.output_device = output_device);
+    }
+
     pub fn set_audio_error(&self, error: Option<String>) {
         self.update_applied(|applied| applied.audio_error = error);
     }
@@ -267,5 +272,9 @@ impl AudioControl {
 
     pub fn audio_error(&self) -> Option<String> {
         self.applied_snapshot().audio_error
+    }
+
+    pub fn effective_output_device(&self) -> Option<String> {
+        self.applied_snapshot().output_device
     }
 }

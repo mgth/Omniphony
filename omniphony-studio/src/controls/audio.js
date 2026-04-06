@@ -8,14 +8,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { app, dirty, AUDIO_SAMPLE_RATE_PRESETS } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
+import { inAudioPanel } from '../ui/panel-roots.js';
 
 // DOM refs
-const audioFormatInfoEl = document.getElementById('audioFormatInfo');
-const audioOutputDeviceSelectEl = document.getElementById('audioOutputDeviceSelect');
-const rampModeSelectEl = document.getElementById('rampModeSelect');
-const audioSampleRateInputEl = document.getElementById('audioSampleRateInput');
-const audioSampleRateMenuEl = document.getElementById('audioSampleRateMenu');
-const audioOutputSummaryEl = document.getElementById('audioOutputSummary');
+const audioFormatInfoEl = inAudioPanel('audioFormatInfo');
+const audioOutputDeviceSelectEl = inAudioPanel('audioOutputDeviceSelect');
+const rampModeSelectEl = inAudioPanel('rampModeSelect');
+const audioSampleRateInputEl = inAudioPanel('audioSampleRateInput');
+const audioSampleRateMenuEl = inAudioPanel('audioSampleRateMenu');
+const audioOutputSummaryEl = inAudioPanel('audioOutputSummary');
 
 export function renderAudioFormatDisplay() {
   if (audioFormatInfoEl) {
@@ -25,7 +26,8 @@ export function renderAudioFormatDisplay() {
     audioFormatInfoEl.textContent = app.audioError ? `${baseText} • Error: ${app.audioError}` : baseText;
   }
   if (audioOutputDeviceSelectEl) {
-    const options = [{ value: '', label: t('status.defaultOutputDevice') }, ...app.audioOutputDevices];
+    const defaultLabel = app.oscSnapshotReady ? t('status.defaultOutputDevice') : '—';
+    const options = [{ value: '', label: defaultLabel }, ...app.audioOutputDevices];
     if (app.audioOutputDevice && !options.some((entry) => entry.value === app.audioOutputDevice)) {
       options.push({ value: app.audioOutputDevice, label: app.audioOutputDevice });
     }
@@ -50,9 +52,12 @@ export function renderAudioFormatDisplay() {
     audioSampleRateInputEl.value = String(app.audioSampleRate || 0);
   }
   if (audioOutputSummaryEl) {
-    const deviceValue = (app.audioOutputDevice || '').trim();
-    const deviceEntry = app.audioOutputDevices.find((entry) => entry.value === deviceValue);
-    const deviceText = deviceValue ? (deviceEntry?.label || deviceValue) : t('status.defaultOutputDevice');
+    const requestedValue = (app.audioOutputDevice || '').trim();
+    const effectiveValue = (app.audioOutputDeviceEffective || requestedValue).trim();
+    const deviceEntry = app.audioOutputDevices.find((entry) => entry.value === effectiveValue);
+    const deviceText = effectiveValue
+      ? (deviceEntry?.label || effectiveValue)
+      : (app.oscSnapshotReady ? t('status.defaultOutputDevice') : '—');
     const rateText = app.audioSampleRate ? `${app.audioSampleRate} Hz` : '—';
     const fmtText = app.audioSampleFormat || '—';
     const summary = tf('audio.summary', {
@@ -101,23 +106,10 @@ export function updateAudioFormatDisplay() {
   scheduleUIFlush();
 }
 
-function persistLaunchAudioPrefs() {
-  return invoke('save_launch_audio_prefs', {
-    prefs: {
-      audioOutputDevice: app.audioOutputDevice || null,
-      audioSampleRate: app.audioSampleRate || 0,
-      rampMode: app.rampMode || 'sample'
-    }
-  }).catch((e) => {
-    console.error('[save_launch_audio_prefs]', e);
-  });
-}
-
 export function applyAudioSampleRateNow() {
   const requested = Math.max(0, Math.round(Number(audioSampleRateInputEl?.value) || 0));
   app.audioSampleRate = requested > 0 ? requested : null;
   updateAudioFormatDisplay();
-  persistLaunchAudioPrefs();
   invoke('control_audio_sample_rate', { sampleRate: requested });
   app.audioSampleRateEditing = false;
   closeAudioSampleRateMenu();
@@ -127,7 +119,6 @@ export function applyAudioOutputDeviceNow() {
   const requested = String(audioOutputDeviceSelectEl?.value || '').trim();
   app.audioOutputDevice = requested || null;
   updateAudioFormatDisplay();
-  persistLaunchAudioPrefs();
   invoke('control_audio_output_device', { outputDevice: requested });
   app.audioOutputDeviceEditing = false;
 }
@@ -139,6 +130,5 @@ export function applyRampModeNow() {
   }
   app.rampMode = requested;
   updateAudioFormatDisplay();
-  persistLaunchAudioPrefs();
   invoke('control_ramp_mode', { value: requested });
 }

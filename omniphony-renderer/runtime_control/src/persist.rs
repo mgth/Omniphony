@@ -6,7 +6,7 @@ use audio_input::{
     InputSampleFormat,
 };
 use audio_output::AudioControl;
-use renderer::live_params::{LiveVbapTableMode, RampMode, RendererControl, VbapBackendMode};
+use renderer::live_params::{LiveEvaluationMode, RampMode, RendererControl, PreferredEvaluationMode};
 
 use crate::snapshot::build_live_state_bundle;
 
@@ -64,54 +64,60 @@ pub fn save_live_config(
     } else {
         None
     };
-    render.vbap_azimuth_resolution = if live.vbap_polar_azimuth_values != 360 {
-        Some(live.vbap_polar_azimuth_values.max(1))
+    render.vbap_azimuth_resolution = if live.evaluation.polar.azimuth_values != 360 {
+        Some(live.evaluation.polar.azimuth_values.max(1))
     } else {
         None
     };
-    render.vbap_elevation_resolution = if live.vbap_polar_elevation_values != 180 {
-        Some(live.vbap_polar_elevation_values.max(1))
+    render.vbap_elevation_resolution = if live.evaluation.polar.elevation_values != 180 {
+        Some(live.evaluation.polar.elevation_values.max(1))
     } else {
         None
     };
-    render.vbap_distance_res = if live.vbap_polar_distance_res != 8 {
-        Some(live.vbap_polar_distance_res.max(1))
+    render.vbap_distance_res = if live.evaluation.polar.distance_res != 8 {
+        Some(live.evaluation.polar.distance_res.max(1))
     } else {
         None
     };
-    render.vbap_distance_max = if (live.vbap_polar_distance_max - 2.0).abs() > 1e-4 {
-        Some(live.vbap_polar_distance_max.max(0.01))
+    render.vbap_distance_max = if (live.evaluation.polar.distance_max - 2.0).abs() > 1e-4 {
+        Some(live.evaluation.polar.distance_max.max(0.01))
     } else {
         None
     };
-    render.vbap_position_interpolation = if live.vbap_position_interpolation {
-        None
+    render.render_evaluation_position_interpolation = if live.evaluation.position_interpolation {
+        Some(true)
     } else {
-        Some(false)
+        None
     };
-    render.vbap_table_mode = match live.vbap_table_mode {
-        LiveVbapTableMode::Auto => None,
-        LiveVbapTableMode::Polar => Some("polar".to_string()),
-        LiveVbapTableMode::Cartesian => Some("cartesian".to_string()),
+    render.render_backend = match live.backend_kind {
+        renderer::render_backend::RenderBackendKind::Vbap => None,
+        other => Some(other.as_str().to_string()),
     };
-    let effective_cartesian = match live.vbap_table_mode {
-        LiveVbapTableMode::Cartesian => true,
-        LiveVbapTableMode::Polar => false,
-        LiveVbapTableMode::Auto => matches!(
-            control.vbap_rebuild_params.map(|p| p.preferred_table_mode),
-            Some(VbapBackendMode::Cartesian)
+    render.render_evaluation_mode = match live.requested_evaluation_mode() {
+        LiveEvaluationMode::Auto => None,
+        other => Some(other.as_str().to_string()),
+    };
+    let effective_cartesian = match live.requested_evaluation_mode() {
+        LiveEvaluationMode::PrecomputedCartesian => true,
+        LiveEvaluationMode::PrecomputedPolar => false,
+        LiveEvaluationMode::Realtime => false,
+        LiveEvaluationMode::Auto => matches!(
+            control
+                .backend_rebuild_params
+                .map(|p| p.preferred_evaluation_mode),
+            Some(PreferredEvaluationMode::PrecomputedCartesian)
         ),
     };
     if effective_cartesian {
-        render.vbap_cart_x_size = Some(live.vbap_cart_x_size.max(1));
-        render.vbap_cart_y_size = Some(live.vbap_cart_y_size.max(1));
-        render.vbap_cart_z_size = Some(live.vbap_cart_z_size.max(1));
-        render.vbap_cart_z_neg_size = Some(live.vbap_cart_z_neg_size);
+        render.evaluation_cartesian_x_size = Some(live.evaluation.cartesian.x_size.max(1));
+        render.evaluation_cartesian_y_size = Some(live.evaluation.cartesian.y_size.max(1));
+        render.evaluation_cartesian_z_size = Some(live.evaluation.cartesian.z_size.max(1));
+        render.evaluation_cartesian_z_neg_size = Some(live.evaluation.cartesian.z_neg_size);
     } else {
-        render.vbap_cart_x_size = None;
-        render.vbap_cart_y_size = None;
-        render.vbap_cart_z_size = None;
-        render.vbap_cart_z_neg_size = None;
+        render.evaluation_cartesian_x_size = None;
+        render.evaluation_cartesian_y_size = None;
+        render.evaluation_cartesian_z_size = None;
+        render.evaluation_cartesian_z_neg_size = None;
     }
     render.spread_from_distance = if live.spread_from_distance { Some(true) } else { None };
     render.spread_distance_range = if (live.spread_distance_range - 1.0).abs() > 1e-4 {
