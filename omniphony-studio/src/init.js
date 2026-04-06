@@ -28,7 +28,7 @@ import { updateMasterGainUI, updateMasterMeterUI } from './controls/master.js';
 import { updateSpreadDisplay } from './controls/spread.js';
 import {
   updateRenderBackend,
-  updateVbapMode,
+  updateEvaluationMode,
   updateVbapCartesian,
   updateVbapPolar,
   updateVbapPositionInterpolation,
@@ -183,7 +183,7 @@ export function applyInitState(payload) {
     }
   }
   updateRenderBackend();
-  updateVbapMode();
+  updateEvaluationMode();
   if (payload.vbapPolar) {
     if (typeof payload.vbapPolar.azimuthResolution === 'number') {
       app.vbapPolarState.azimuthResolution = payload.vbapPolar.azimuthResolution > 0 ? payload.vbapPolar.azimuthResolution : null;

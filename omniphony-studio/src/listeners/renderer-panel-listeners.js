@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
 import { formatNumber } from '../coordinates.js';
-import { renderVbapStatus, updateVbapMode, updateRenderBackend, updateVbapCartesian, updateVbapPolar, updateVbapPositionInterpolation } from '../controls/vbap.js';
+import { renderVbapStatus, updateEvaluationMode, updateRenderBackend, updateVbapCartesian, updateVbapPolar, updateVbapPositionInterpolation } from '../controls/vbap.js';
 import { updateSpreadDisplay } from '../controls/spread.js';
 import { updateDistanceModelUI } from '../controls/master.js';
 import { updateDistanceDiffuseUI } from '../controls/distance-diffuse.js';
@@ -187,7 +187,7 @@ export function setupRendererPanelListeners() {
       app.evaluationModeState.selection = value;
       app.vbapRecomputing = true;
       renderVbapStatus();
-      updateVbapMode();
+      updateEvaluationMode();
       invoke('control_render_evaluation_mode', { value });
     });
   }

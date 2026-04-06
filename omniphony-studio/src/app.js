@@ -62,7 +62,7 @@ import { setupVisualRecovery } from './visual-recovery.js';
 import { renderSpreadDisplay } from './controls/spread.js';
 import {
   renderVbapStatus,
-  renderVbapMode,
+  renderEvaluationMode,
   renderRenderBackend,
   renderVbapCartesian,
   renderVbapPolar
@@ -92,7 +92,7 @@ import { muteSoloCallbacks } from './mute-solo.js';
 
 flushCallbacks.renderRoomRatioDisplay = renderRoomRatioDisplay;
 flushCallbacks.renderSpreadDisplay = renderSpreadDisplay;
-flushCallbacks.renderVbapMode = renderVbapMode;
+flushCallbacks.renderEvaluationMode = renderEvaluationMode;
 flushCallbacks.renderRenderBackend = renderRenderBackend;
 flushCallbacks.renderVbapCartesian = renderVbapCartesian;
 flushCallbacks.renderVbapPolar = renderVbapPolar;
@@ -140,7 +140,7 @@ onLocaleChange(() => {
   renderOscStatus();
   renderRoomRatioDisplay();
   renderVbapStatus();
-  renderVbapMode();
+  renderEvaluationMode();
   renderRenderBackend();
   renderLoudnessDisplay();
   renderAdaptiveResamplingUI();

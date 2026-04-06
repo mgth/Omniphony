@@ -49,7 +49,7 @@ import { updateMasterGainUI, updateLoudnessDisplay, updateDistanceModelUI } from
 import { updateSpreadDisplay } from './controls/spread.js';
 import {
   updateRenderBackend,
-  updateVbapMode,
+  updateEvaluationMode,
   updateVbapCartesian,
   updateVbapPolar,
   updateVbapPositionInterpolation,
@@ -427,14 +427,14 @@ export function setupTauriBridge() {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.evaluationModeState.selection =
       ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
-    updateVbapMode();
+    updateEvaluationMode();
   });
 
   listen('render_evaluation_mode:effective', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.evaluationModeState.effective =
       ['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
-    updateVbapMode();
+    updateEvaluationMode();
   });
 
   listen('vbap:recomputing', ({ payload }) => {
@@ -472,7 +472,7 @@ export function setupTauriBridge() {
     if (value === 'auto') app.evaluationModeState.selection = 'auto';
     else if (value === 'polar') app.evaluationModeState.selection = 'precomputed_polar';
     else if (value === 'cartesian') app.evaluationModeState.selection = 'precomputed_cartesian';
-    updateVbapMode();
+    updateEvaluationMode();
   });
 
   listen('vbap:effective_mode', ({ payload }) => {
@@ -480,7 +480,7 @@ export function setupTauriBridge() {
     app.vbapModeState.effectiveMode = ['polar', 'cartesian'].includes(value) ? value : null;
     if (value === 'polar') app.evaluationModeState.effective = 'precomputed_polar';
     else if (value === 'cartesian') app.evaluationModeState.effective = 'precomputed_cartesian';
-    updateVbapMode();
+    updateEvaluationMode();
   });
 
   listen('vbap:polar:azimuth_resolution', ({ payload }) => {

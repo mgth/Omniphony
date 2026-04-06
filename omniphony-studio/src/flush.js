@@ -33,7 +33,7 @@ import { updateMeterUI } from './mute-solo.js';
 export const flushCallbacks = {
   renderRoomRatioDisplay: null,
   renderSpreadDisplay: null,
-  renderVbapMode: null,
+  renderEvaluationMode: null,
   renderRenderBackend: null,
   renderVbapCartesian: null,
   renderVbapPolar: null,
@@ -128,7 +128,7 @@ export function flushUI() {
   }
 
   if (dirty.vbapMode) {
-    flushCallbacks.renderVbapMode?.();
+    flushCallbacks.renderEvaluationMode?.();
     dirty.vbapMode = false;
   }
 

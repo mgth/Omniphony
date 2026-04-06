@@ -108,7 +108,7 @@ export function renderVbapStatus() {
   }
 }
 
-export function renderVbapMode() {
+export function renderEvaluationMode() {
   const backend = app.renderBackendState.effective || app.renderBackendState.selection || 'vbap';
   const allowedModes = allowedEvaluationModesForBackend(backend);
   const selection = typeof app.evaluationModeState.selection === 'string' ? app.evaluationModeState.selection : null;
@@ -133,7 +133,7 @@ export function renderVbapMode() {
   }
 }
 
-export function updateVbapMode() {
+export function updateEvaluationMode() {
   dirty.vbapMode = true;
   scheduleUIFlush();
 }
@@ -154,7 +154,7 @@ export function renderRenderBackend() {
           : '—';
   }
   applyRendererBackendVisibility(visibleBackend);
-  renderVbapMode();
+  renderEvaluationMode();
 }
 
 export function updateRenderBackend() {
