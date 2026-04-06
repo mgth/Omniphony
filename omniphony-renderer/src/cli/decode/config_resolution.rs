@@ -113,16 +113,18 @@ pub(super) fn merge_render_config(
         }
     }
     if args.vbap_cart_x_size.is_none() {
-        args.vbap_cart_x_size = cfg.vbap_cart_x_size;
+        args.vbap_cart_x_size = cfg.evaluation_cartesian_x_size.or(cfg.vbap_cart_x_size);
     }
     if args.vbap_cart_y_size.is_none() {
-        args.vbap_cart_y_size = cfg.vbap_cart_y_size;
+        args.vbap_cart_y_size = cfg.evaluation_cartesian_y_size.or(cfg.vbap_cart_y_size);
     }
     if args.vbap_cart_z_size.is_none() {
-        args.vbap_cart_z_size = cfg.vbap_cart_z_size;
+        args.vbap_cart_z_size = cfg.evaluation_cartesian_z_size.or(cfg.vbap_cart_z_size);
     }
     if args.vbap_cart_z_neg_size.is_none() {
-        args.vbap_cart_z_neg_size = cfg.vbap_cart_z_neg_size;
+        args.vbap_cart_z_neg_size = cfg
+            .evaluation_cartesian_z_neg_size
+            .or(cfg.vbap_cart_z_neg_size);
     }
     if !arg_sources.is_explicit("vbap_allow_negative_z")
         && !arg_sources.is_explicit("no_vbap_allow_negative_z")
@@ -352,6 +354,10 @@ pub(super) fn effective_to_config(
         },
         render_backend: None,
         render_evaluation_mode: None,
+        evaluation_cartesian_x_size: args.vbap_cart_x_size,
+        evaluation_cartesian_y_size: args.vbap_cart_y_size,
+        evaluation_cartesian_z_size: args.vbap_cart_z_size,
+        evaluation_cartesian_z_neg_size: args.vbap_cart_z_neg_size,
         vbap_cart_x_size: args.vbap_cart_x_size,
         vbap_cart_y_size: args.vbap_cart_y_size,
         vbap_cart_z_size: args.vbap_cart_z_size,

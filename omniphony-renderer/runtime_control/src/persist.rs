@@ -115,11 +115,19 @@ pub fn save_live_config(
         ),
     };
     if effective_cartesian {
+        render.evaluation_cartesian_x_size = Some(live.evaluation.cartesian.x_size.max(1));
+        render.evaluation_cartesian_y_size = Some(live.evaluation.cartesian.y_size.max(1));
+        render.evaluation_cartesian_z_size = Some(live.evaluation.cartesian.z_size.max(1));
+        render.evaluation_cartesian_z_neg_size = Some(live.evaluation.cartesian.z_neg_size);
         render.vbap_cart_x_size = Some(live.evaluation.cartesian.x_size.max(1));
         render.vbap_cart_y_size = Some(live.evaluation.cartesian.y_size.max(1));
         render.vbap_cart_z_size = Some(live.evaluation.cartesian.z_size.max(1));
         render.vbap_cart_z_neg_size = Some(live.evaluation.cartesian.z_neg_size);
     } else {
+        render.evaluation_cartesian_x_size = None;
+        render.evaluation_cartesian_y_size = None;
+        render.evaluation_cartesian_z_size = None;
+        render.evaluation_cartesian_z_neg_size = None;
         render.vbap_cart_x_size = None;
         render.vbap_cart_y_size = None;
         render.vbap_cart_z_size = None;
