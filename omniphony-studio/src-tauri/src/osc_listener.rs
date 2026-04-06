@@ -1055,6 +1055,46 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
 
+            OscEvent::StateDebugSpeakerHeatmapMeta { value } => (
+                Some((
+                    "speaker_heatmap:meta",
+                    serde_json::from_str(&value).unwrap_or_else(|_| serde_json::json!({})),
+                )),
+                removed_ids,
+            ),
+
+            OscEvent::StateDebugSpeakerHeatmapSliceXy { value } => (
+                Some((
+                    "speaker_heatmap:slice_xy",
+                    serde_json::from_str(&value).unwrap_or_else(|_| serde_json::json!({})),
+                )),
+                removed_ids,
+            ),
+
+            OscEvent::StateDebugSpeakerHeatmapSliceXz { value } => (
+                Some((
+                    "speaker_heatmap:slice_xz",
+                    serde_json::from_str(&value).unwrap_or_else(|_| serde_json::json!({})),
+                )),
+                removed_ids,
+            ),
+
+            OscEvent::StateDebugSpeakerHeatmapSliceYz { value } => (
+                Some((
+                    "speaker_heatmap:slice_yz",
+                    serde_json::from_str(&value).unwrap_or_else(|_| serde_json::json!({})),
+                )),
+                removed_ids,
+            ),
+
+            OscEvent::StateDebugSpeakerHeatmapUnavailable { value } => (
+                Some((
+                    "speaker_heatmap:unavailable",
+                    serde_json::from_str(&value).unwrap_or_else(|_| serde_json::json!({})),
+                )),
+                removed_ids,
+            ),
+
             OscEvent::StateSnapshotComplete => {
                 s.osc_snapshot_ready = true;
                 let snapshot = serde_json::to_value(&*s).unwrap_or(serde_json::Value::Null);

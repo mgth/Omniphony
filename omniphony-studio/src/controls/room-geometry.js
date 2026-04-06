@@ -756,6 +756,9 @@ export function applyRoomRatioToScene() {
   fitScreenToUpperHalf();
   updateRoomDimensionGuides();
   updateVbapCartesianFaceGrid();
+  if (typeof flushCallbacks.refreshSpeakerHeatmapScene === 'function') {
+    flushCallbacks.refreshSpeakerHeatmapScene();
+  }
 }
 
 // ---------------------------------------------------------------------------

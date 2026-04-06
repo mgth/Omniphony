@@ -87,6 +87,7 @@ import {
 } from './scene/materials.js';
 
 import { createLabelSprite, setLabelSpriteText, updateSpeakerLabelsFromSelection } from './scene/labels.js';
+import { requestSpeakerHeatmapIfNeeded, refreshSpeakerHeatmapScene } from './scene/speaker-heatmap.js';
 
 import {
   speakerGizmo,
@@ -650,6 +651,7 @@ export function updateSpeakerVisualsFromState(index) {
 
   if (selectedSpeakerIndex === index) {
     updateSpeakerGizmo();
+    refreshSpeakerHeatmapScene();
   }
 }
 
@@ -1157,6 +1159,7 @@ export function setSelectedSpeaker(index) {
   updateSpeakerGizmo();
   updateSpeakerControlsUI();
   updateControlsForEditMode();
+  requestSpeakerHeatmapIfNeeded();
 }
 
 export function updateControlsForEditMode() {

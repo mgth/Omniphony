@@ -1,4 +1,5 @@
 use rosc::{OscMessage, OscType};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::context::RuntimeControlContext;
@@ -42,6 +43,36 @@ pub struct ControlEffects {
     pub speaker_layout_broadcast: Option<renderer::speaker_layout::SpeakerLayout>,
     pub broadcasts: Vec<BroadcastUpdate>,
     pub log_message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpeakerHeatmapRequest {
+    request_id: u64,
+    speaker_index: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct SpeakerHeatmapMetaPayload {
+    request_id: u64,
+    speaker_index: usize,
+    speaker_position: [f32; 3],
+}
+
+#[derive(Debug, Serialize)]
+struct SpeakerHeatmapSlicePayload {
+    request_id: u64,
+    speaker_index: usize,
+    fixed_axis_value: f32,
+    axis_a: Vec<f32>,
+    axis_b: Vec<f32>,
+    values: Vec<f32>,
+}
+
+#[derive(Debug, Serialize)]
+struct SpeakerHeatmapUnavailablePayload {
+    request_id: u64,
+    speaker_index: usize,
+    reason: &'static str,
 }
 
 fn parse_bool_arg(arg: Option<&OscType>) -> Option<bool> {
@@ -291,6 +322,116 @@ pub fn apply_simple_osc_control(
                     "OSC: render_evaluation_mode -> {}",
                     live.requested_evaluation_mode().as_str()
                 ));
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/debug/speaker_heatmap/request" {
+        let request = parse_string_arg(msg.args.first())
+            .and_then(|value| serde_json::from_str::<SpeakerHeatmapRequest>(&value).ok());
+        if let Some(request) = request {
+            let topology = ctx.renderer.active_topology();
+            let unavailable_reason = match topology
+                .speaker_layout
+                .speakers
+                .get(request.speaker_index)
+            {
+                None => Some("speaker_not_found"),
+                Some(_)
+                    if topology.backend.evaluation_mode()
+                        != renderer::render_backend::EffectiveEvaluationMode::PrecomputedCartesian =>
+                {
+                    Some("evaluation_mode_not_precomputed_cartesian")
+                }
+                Some(speaker)
+                    if topology
+                        .backend_speaker_index_for_layout_speaker(request.speaker_index)
+                        .is_none() =>
+                {
+                    let _ = speaker;
+                    Some("speaker_not_spatializable")
+                }
+                _ => None,
+            };
+
+            if let Some(reason) = unavailable_reason {
+                let json = serde_json::to_string(&SpeakerHeatmapUnavailablePayload {
+                    request_id: request.request_id,
+                    speaker_index: request.speaker_index,
+                    reason,
+                })
+                .unwrap_or_else(|_| "{}".to_string());
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/debug/speaker_heatmap/unavailable".to_string(),
+                    value: BroadcastValue::String(json),
+                });
+                return Some(effects);
+            }
+
+            if let Some(speaker) = topology.speaker_layout.speakers.get(request.speaker_index) {
+                if let Some(backend_speaker_index) =
+                    topology.backend_speaker_index_for_layout_speaker(request.speaker_index)
+                {
+                    if let Some(slices) = topology.backend.cartesian_slices_for_speaker(
+                        backend_speaker_index,
+                        [speaker.x, speaker.y, speaker.z],
+                    ) {
+                        let meta = serde_json::to_string(&SpeakerHeatmapMetaPayload {
+                            request_id: request.request_id,
+                            speaker_index: request.speaker_index,
+                            speaker_position: [speaker.x, speaker.y, speaker.z],
+                        })
+                        .unwrap_or_else(|_| "{}".to_string());
+                        effects.broadcasts.push(BroadcastUpdate {
+                            addr: "/omniphony/state/debug/speaker_heatmap/meta".to_string(),
+                            value: BroadcastValue::String(meta),
+                        });
+                        for (addr_suffix, fixed_axis_value, axis_a, axis_b, values) in [
+                            (
+                                "slice_xy",
+                                slices.speaker_position[2],
+                                slices.x_positions.clone(),
+                                slices.y_positions.clone(),
+                                slices.xy_values,
+                            ),
+                            (
+                                "slice_xz",
+                                slices.speaker_position[1],
+                                slices.x_positions.clone(),
+                                slices.z_positions.clone(),
+                                slices.xz_values,
+                            ),
+                            (
+                                "slice_yz",
+                                slices.speaker_position[0],
+                                slices.y_positions.clone(),
+                                slices.z_positions.clone(),
+                                slices.yz_values,
+                            ),
+                        ] {
+                            let json = serde_json::to_string(&SpeakerHeatmapSlicePayload {
+                                request_id: request.request_id,
+                                speaker_index: request.speaker_index,
+                                fixed_axis_value,
+                                axis_a,
+                                axis_b,
+                                values,
+                            })
+                            .unwrap_or_else(|_| "{}".to_string());
+                            effects.broadcasts.push(BroadcastUpdate {
+                                addr: format!(
+                                    "/omniphony/state/debug/speaker_heatmap/{addr_suffix}"
+                                ),
+                                value: BroadcastValue::String(json),
+                            });
+                        }
+                        effects.log_message = Some(format!(
+                            "OSC: speaker heatmap requested -> speaker={} request_id={}",
+                            request.speaker_index, request.request_id
+                        ));
+                    }
+                }
             }
         }
         return Some(effects);

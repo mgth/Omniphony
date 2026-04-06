@@ -419,6 +419,19 @@ impl RenderTopology {
             backend_to_speaker_mapping,
         })
     }
+
+    pub fn backend_speaker_index_for_layout_speaker(&self, speaker_index: usize) -> Option<usize> {
+        match self.backend_to_speaker_mapping.as_ref() {
+            None => {
+                if speaker_index < self.num_speakers {
+                    Some(speaker_index)
+                } else {
+                    None
+                }
+            }
+            Some(mapping) => mapping.iter().position(|&mapped| mapped == speaker_index),
+        }
+    }
 }
 
 #[cfg(feature = "saf_vbap")]

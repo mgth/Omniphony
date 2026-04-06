@@ -64,11 +64,18 @@ import { updateConfigSavedUI } from './controls/config.js';
 import { updateRoomRatioDisplay, applyRoomRatio } from './controls/room-geometry.js';
 import { normalizeLogLevel, renderLogLevelControl, logState, pushLog } from './log.js';
 import { applyInitState } from './init.js';
+import {
+  handleSpeakerHeatmapMeta,
+  handleSpeakerHeatmapSlice,
+  handleSpeakerHeatmapUnavailable,
+  requestSpeakerHeatmapIfNeeded,
+} from './scene/speaker-heatmap.js';
 
 export function setupTauriBridge() {
   listen('state:snapshot_ready', ({ payload }) => {
     if (payload && typeof payload === 'object') {
       applyInitState(payload);
+      requestSpeakerHeatmapIfNeeded();
     }
   });
 
@@ -78,6 +85,7 @@ export function setupTauriBridge() {
 
   listen('layouts:update', ({ payload }) => {
     hydrateLayoutSelect(payload.layouts || [], payload.selectedLayoutKey);
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('layout:selected', ({ payload }) => {
@@ -85,6 +93,7 @@ export function setupTauriBridge() {
       const layoutSelectEl = document.getElementById('layoutSelect');
       if (layoutSelectEl) layoutSelectEl.value = payload.key;
       renderLayout(payload.key);
+      requestSpeakerHeatmapIfNeeded();
     }
   });
 
@@ -419,6 +428,7 @@ export function setupTauriBridge() {
     app.vbapRecomputing = false;
     renderVbapStatus();
     updateRenderBackend();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('render_evaluation_mode', ({ payload }) => {
@@ -435,6 +445,7 @@ export function setupTauriBridge() {
     app.vbapRecomputing = false;
     renderVbapStatus();
     updateEvaluationMode();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('vbap:recomputing', ({ payload }) => {
@@ -446,24 +457,48 @@ export function setupTauriBridge() {
     const value = Number(payload.value);
     app.vbapCartesianState.xSize = value > 0 ? value : null;
     updateVbapCartesian();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('render_evaluation:cartesian:y_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.ySize = value > 0 ? value : null;
     updateVbapCartesian();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('render_evaluation:cartesian:z_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.zSize = value > 0 ? value : null;
     updateVbapCartesian();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('render_evaluation:cartesian:z_neg_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.zNegSize = value >= 0 ? value : 0;
     updateVbapCartesian();
+    requestSpeakerHeatmapIfNeeded();
+  });
+
+  listen('speaker_heatmap:meta', ({ payload }) => {
+    handleSpeakerHeatmapMeta(payload);
+  });
+
+  listen('speaker_heatmap:slice_xy', ({ payload }) => {
+    handleSpeakerHeatmapSlice('xy', payload);
+  });
+
+  listen('speaker_heatmap:slice_xz', ({ payload }) => {
+    handleSpeakerHeatmapSlice('xz', payload);
+  });
+
+  listen('speaker_heatmap:slice_yz', ({ payload }) => {
+    handleSpeakerHeatmapSlice('yz', payload);
+  });
+
+  listen('speaker_heatmap:unavailable', ({ payload }) => {
+    handleSpeakerHeatmapUnavailable(payload);
   });
 
   listen('render_evaluation:polar:azimuth_resolution', ({ payload }) => {

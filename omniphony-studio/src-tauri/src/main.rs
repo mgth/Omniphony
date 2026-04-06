@@ -669,6 +669,25 @@ fn control_render_evaluation_position_interpolation(state: State<SharedState>, e
 }
 
 #[tauri::command]
+fn request_speaker_heatmap(state: State<SharedState>, speaker_index: i32, request_id: i32) {
+    if speaker_index < 0 || request_id < 0 {
+        return;
+    }
+    let value = serde_json::json!({
+        "speaker_index": speaker_index,
+        "request_id": request_id,
+    })
+    .to_string();
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/debug/speaker_heatmap/request".to_string(),
+            value,
+        },
+    );
+}
+
+#[tauri::command]
 fn control_distance_diffuse_enabled(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,
@@ -2051,6 +2070,7 @@ fn main() {
             control_render_evaluation_polar_distance_res,
             control_render_evaluation_polar_distance_max,
             control_render_evaluation_position_interpolation,
+            request_speaker_heatmap,
             control_distance_diffuse_enabled,
             control_distance_diffuse_threshold,
             control_distance_diffuse_curve,

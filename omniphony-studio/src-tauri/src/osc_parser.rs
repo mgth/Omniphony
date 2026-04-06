@@ -240,6 +240,16 @@ pub enum OscEvent {
     StateRenderEvaluationMode { value: String },
     #[serde(rename = "state:render_evaluation_mode:effective")]
     StateRenderEvaluationModeEffective { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:meta")]
+    StateDebugSpeakerHeatmapMeta { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:slice_xy")]
+    StateDebugSpeakerHeatmapSliceXy { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:slice_xz")]
+    StateDebugSpeakerHeatmapSliceXz { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:slice_yz")]
+    StateDebugSpeakerHeatmapSliceYz { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:unavailable")]
+    StateDebugSpeakerHeatmapUnavailable { value: String },
     #[serde(rename = "state:snapshot_complete")]
     StateSnapshotComplete,
     #[serde(rename = "state:loudness")]
@@ -731,6 +741,17 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             Some(OscEvent::StateRenderEvaluationModeEffective {
                 value: raw_args.first().and_then(unwrap_string)?,
             })
+        }
+        (5, "debug") if parts[3] == "speaker_heatmap" => {
+            let value = raw_args.first().and_then(unwrap_string)?;
+            match parts[4] {
+                "meta" => Some(OscEvent::StateDebugSpeakerHeatmapMeta { value }),
+                "slice_xy" => Some(OscEvent::StateDebugSpeakerHeatmapSliceXy { value }),
+                "slice_xz" => Some(OscEvent::StateDebugSpeakerHeatmapSliceXz { value }),
+                "slice_yz" => Some(OscEvent::StateDebugSpeakerHeatmapSliceYz { value }),
+                "unavailable" => Some(OscEvent::StateDebugSpeakerHeatmapUnavailable { value }),
+                _ => None,
+            }
         }
         (4, "spread") => {
             let value = to_number(args[0])?;
