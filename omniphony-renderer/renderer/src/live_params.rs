@@ -320,14 +320,13 @@ pub fn parse_room_ratio(s: &str) -> [f32; 3] {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct VbapRebuildParams {
+pub struct VbapModelRebuildParams {
     pub az_res_deg: i32,
     pub el_res_deg: i32,
     pub spread_resolution: f32,
     pub distance_max: f32,
     pub position_interpolation: bool,
     pub table_mode: VbapTableMode,
-    pub preferred_evaluation_mode: PreferredEvaluationMode,
     pub cartesian_default_x_size: usize,
     pub cartesian_default_y_size: usize,
     pub cartesian_default_z_size: usize,
@@ -336,15 +335,18 @@ pub struct VbapRebuildParams {
     pub distance_model: crate::spatial_vbap::DistanceModel,
 }
 
-impl VbapRebuildParams {
+#[derive(Debug, Clone, Copy)]
+pub struct BackendRebuildParams {
+    pub gain_model_kind: GainModelKind,
+    pub preferred_evaluation_mode: PreferredEvaluationMode,
+    pub allow_negative_z: bool,
+    pub vbap: Option<VbapModelRebuildParams>,
+}
+
+impl BackendRebuildParams {
     pub fn preferred_evaluation_mode(&self) -> PreferredEvaluationMode {
         self.preferred_evaluation_mode
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum BackendRebuildParams {
-    Vbap(VbapRebuildParams),
 }
 
 #[cfg(feature = "saf_vbap")]
@@ -678,8 +680,9 @@ impl RendererControl {
             });
         }
 
-        let rebuild = self.backend_rebuild_params?;
-        let BackendRebuildParams::Vbap(rebuild) = rebuild;
+        let rebuild_params = self.backend_rebuild_params?;
+        let preferred_evaluation_mode = rebuild_params.preferred_evaluation_mode();
+        let rebuild = rebuild_params.vbap?;
         let positions = layout
             .spatializable_positions_for_room(
                 live.room_ratio,
@@ -691,7 +694,7 @@ impl RendererControl {
 
         let table_mode = match live.evaluation_mode {
             LiveEvaluationMode::Realtime => return None,
-            LiveEvaluationMode::Auto => match rebuild.preferred_evaluation_mode() {
+            LiveEvaluationMode::Auto => match preferred_evaluation_mode {
                 PreferredEvaluationMode::PrecomputedPolar => crate::spatial_vbap::VbapTableMode::Polar,
                 PreferredEvaluationMode::PrecomputedCartesian => crate::spatial_vbap::VbapTableMode::Cartesian {
                     x_size: live

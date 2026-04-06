@@ -173,12 +173,7 @@ pub fn build_live_state_bundle(
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/vbap/allow_negative_z".to_string(),
             args: vec![OscType::Int(
-                if control
-                    .backend_rebuild_params
-                    .map(|p| match p {
-                        renderer::live_params::BackendRebuildParams::Vbap(p) => p.allow_negative_z,
-                    })
-                    .unwrap_or(true)
+                if control.backend_rebuild_params.map(|p| p.allow_negative_z).unwrap_or(true)
                 {
                     1
                 } else {

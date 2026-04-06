@@ -108,9 +108,9 @@ pub fn save_live_config(
         LiveEvaluationMode::PrecomputedPolar => false,
         LiveEvaluationMode::Realtime => false,
         LiveEvaluationMode::Auto => matches!(
-            control.backend_rebuild_params.map(|p| match p {
-                renderer::live_params::BackendRebuildParams::Vbap(p) => p.preferred_evaluation_mode,
-            }),
+            control
+                .backend_rebuild_params
+                .map(|p| p.preferred_evaluation_mode),
             Some(PreferredEvaluationMode::PrecomputedCartesian)
         ),
     };

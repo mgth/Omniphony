@@ -590,23 +590,25 @@ impl SpatialRenderer {
             live_params,
             topology,
             editable_layout,
-            Some(crate::live_params::BackendRebuildParams::Vbap(
-                crate::live_params::VbapRebuildParams {
+            Some(crate::live_params::BackendRebuildParams {
+                gain_model_kind: RenderBackendKind::Vbap.as_gain_model_kind(),
+                preferred_evaluation_mode,
+                allow_negative_z,
+                vbap: Some(crate::live_params::VbapModelRebuildParams {
                     az_res_deg,
                     el_res_deg,
                     spread_resolution,
                     distance_max,
                     position_interpolation: vbap_position_interpolation,
                     table_mode,
-                    preferred_evaluation_mode,
                     cartesian_default_x_size,
                     cartesian_default_y_size,
                     cartesian_default_z_size,
                     cartesian_default_z_neg_size,
-                    allow_negative_z,
                     distance_model,
-                },
-            )),
+                    allow_negative_z,
+                }),
+            }),
         );
 
         Ok(Self::finish_construction(
@@ -787,16 +789,19 @@ impl SpatialRenderer {
             &topology.bed_to_speaker_mapping,
         );
         let rebuild_params =
-            crate::live_params::BackendRebuildParams::Vbap(crate::live_params::VbapRebuildParams {
+            crate::live_params::BackendRebuildParams {
+                gain_model_kind: RenderBackendKind::Vbap.as_gain_model_kind(),
+                preferred_evaluation_mode: PreferredEvaluationMode::from_vbap_table_mode(
+                    vbap_table_mode,
+                ),
+                allow_negative_z,
+                vbap: Some(crate::live_params::VbapModelRebuildParams {
                 az_res_deg: vbap_azimuth_resolution,
                 el_res_deg: vbap_elevation_resolution,
                 spread_resolution,
                 distance_max,
                 position_interpolation: vbap_position_interpolation,
                 table_mode: vbap_table_mode,
-                preferred_evaluation_mode: PreferredEvaluationMode::from_vbap_table_mode(
-                    vbap_table_mode,
-                ),
                 cartesian_default_x_size: match vbap_table_mode {
                     VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
                     VbapTableMode::Polar => 1,
@@ -813,9 +818,10 @@ impl SpatialRenderer {
                     VbapTableMode::Cartesian { z_neg_size, .. } => z_neg_size,
                     VbapTableMode::Polar => 0,
                 },
-                allow_negative_z,
                 distance_model,
-            });
+                allow_negative_z,
+            }),
+            };
         let editable_layout = topology.speaker_layout.clone();
         let control =
             RendererControl::new(live_params, topology, editable_layout, Some(rebuild_params));
