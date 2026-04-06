@@ -1,6 +1,6 @@
 use crate::cli::command::{
     Cli, LogFormat, LogLevel, OutputBackend, RampModeArg, RenderArgSources, RenderArgs,
-    VbapTableModeArg,
+    EvaluationModeArg,
 };
 use anyhow::Result;
 
@@ -59,14 +59,14 @@ pub(super) fn merge_render_config(
             args.osc_port = p;
         }
     }
-    if !arg_sources.is_explicit("vbap_azimuth_resolution") {
+    if !arg_sources.is_explicit("evaluation_polar_azimuth_resolution") {
         if let Some(v) = cfg.vbap_azimuth_resolution {
-            args.vbap_azimuth_resolution = v;
+            args.evaluation_polar_azimuth_resolution = v;
         }
     }
-    if !arg_sources.is_explicit("vbap_elevation_resolution") {
+    if !arg_sources.is_explicit("evaluation_polar_elevation_resolution") {
         if let Some(v) = cfg.vbap_elevation_resolution {
-            args.vbap_elevation_resolution = v;
+            args.evaluation_polar_elevation_resolution = v;
         }
     }
     if !arg_sources.is_explicit("vbap_spread") {
@@ -74,60 +74,48 @@ pub(super) fn merge_render_config(
             args.vbap_spread = v;
         }
     }
-    if !arg_sources.is_explicit("vbap_distance_res") {
+    if !arg_sources.is_explicit("evaluation_polar_distance_res") {
         if let Some(v) = cfg.vbap_distance_res {
-            args.vbap_distance_res = v;
+            args.evaluation_polar_distance_res = v;
         }
     }
-    if !arg_sources.is_explicit("vbap_distance_max") {
+    if !arg_sources.is_explicit("evaluation_polar_distance_max") {
         if let Some(v) = cfg.vbap_distance_max {
-            args.vbap_distance_max = v;
+            args.evaluation_polar_distance_max = v;
         }
     }
-    if !arg_sources.is_explicit("vbap_position_interpolation")
-        && !arg_sources.is_explicit("no_vbap_position_interpolation")
+    if !arg_sources.is_explicit("render_evaluation_position_interpolation")
+        && !arg_sources.is_explicit("no_render_evaluation_position_interpolation")
     {
-        args.vbap_position_interpolation = cfg
-            .render_evaluation_position_interpolation
-            .or(cfg.vbap_position_interpolation)
-            .unwrap_or(true);
-    } else if args.no_vbap_position_interpolation {
-        args.vbap_position_interpolation = false;
+        args.render_evaluation_position_interpolation =
+            cfg.render_evaluation_position_interpolation.unwrap_or(true);
+    } else if args.no_render_evaluation_position_interpolation {
+        args.render_evaluation_position_interpolation = false;
     }
-    if !arg_sources.is_explicit("vbap_table_mode") {
+    if !arg_sources.is_explicit("render_evaluation_mode") {
         if let Some(ref v) = cfg.render_evaluation_mode {
-            args.vbap_table_mode = if v.eq_ignore_ascii_case("precomputed_cartesian")
+            if v.eq_ignore_ascii_case("precomputed_cartesian")
                 || v.eq_ignore_ascii_case("cartesian")
             {
-                VbapTableModeArg::Cartesian
+                args.render_evaluation_mode = EvaluationModeArg::Cartesian;
             } else if v.eq_ignore_ascii_case("precomputed_polar")
                 || v.eq_ignore_ascii_case("polar")
             {
-                VbapTableModeArg::Polar
-            } else {
-                args.vbap_table_mode
-            };
-        } else if let Some(ref v) = cfg.vbap_table_mode {
-            args.vbap_table_mode = if v.eq_ignore_ascii_case("cartesian") {
-                VbapTableModeArg::Cartesian
-            } else {
-                VbapTableModeArg::Polar
-            };
+                args.render_evaluation_mode = EvaluationModeArg::Polar;
+            }
         }
     }
-    if args.vbap_cart_x_size.is_none() {
-        args.vbap_cart_x_size = cfg.evaluation_cartesian_x_size.or(cfg.vbap_cart_x_size);
+    if args.evaluation_cartesian_x_size.is_none() {
+        args.evaluation_cartesian_x_size = cfg.evaluation_cartesian_x_size;
     }
-    if args.vbap_cart_y_size.is_none() {
-        args.vbap_cart_y_size = cfg.evaluation_cartesian_y_size.or(cfg.vbap_cart_y_size);
+    if args.evaluation_cartesian_y_size.is_none() {
+        args.evaluation_cartesian_y_size = cfg.evaluation_cartesian_y_size;
     }
-    if args.vbap_cart_z_size.is_none() {
-        args.vbap_cart_z_size = cfg.evaluation_cartesian_z_size.or(cfg.vbap_cart_z_size);
+    if args.evaluation_cartesian_z_size.is_none() {
+        args.evaluation_cartesian_z_size = cfg.evaluation_cartesian_z_size;
     }
-    if args.vbap_cart_z_neg_size.is_none() {
-        args.vbap_cart_z_neg_size = cfg
-            .evaluation_cartesian_z_neg_size
-            .or(cfg.vbap_cart_z_neg_size);
+    if args.evaluation_cartesian_z_neg_size.is_none() {
+        args.evaluation_cartesian_z_neg_size = cfg.evaluation_cartesian_z_neg_size;
     }
     if !arg_sources.is_explicit("vbap_allow_negative_z")
         && !arg_sources.is_explicit("no_vbap_allow_negative_z")
@@ -320,13 +308,13 @@ pub(super) fn effective_to_config(
         speaker_layout: None,
         current_layout,
         vbap_table: args.vbap_table.clone(),
-        vbap_azimuth_resolution: if args.vbap_azimuth_resolution != 360 {
-            Some(args.vbap_azimuth_resolution)
+        vbap_azimuth_resolution: if args.evaluation_polar_azimuth_resolution != 360 {
+            Some(args.evaluation_polar_azimuth_resolution)
         } else {
             None
         },
-        vbap_elevation_resolution: if args.vbap_elevation_resolution != 180 {
-            Some(args.vbap_elevation_resolution)
+        vbap_elevation_resolution: if args.evaluation_polar_elevation_resolution != 180 {
+            Some(args.evaluation_polar_elevation_resolution)
         } else {
             None
         },
@@ -335,41 +323,31 @@ pub(super) fn effective_to_config(
         } else {
             None
         },
-        vbap_distance_res: if args.vbap_distance_res != 8 {
-            Some(args.vbap_distance_res)
+        vbap_distance_res: if args.evaluation_polar_distance_res != 8 {
+            Some(args.evaluation_polar_distance_res)
         } else {
             None
         },
-        vbap_distance_max: if (args.vbap_distance_max - 2.0).abs() > f32::EPSILON {
-            Some(args.vbap_distance_max)
+        vbap_distance_max: if (args.evaluation_polar_distance_max - 2.0).abs() > f32::EPSILON {
+            Some(args.evaluation_polar_distance_max)
         } else {
             None
         },
-        vbap_position_interpolation: if args.vbap_position_interpolation {
-            None
-        } else {
-            Some(false)
-        },
-        render_evaluation_position_interpolation: if args.vbap_position_interpolation {
+        render_evaluation_position_interpolation: if args.render_evaluation_position_interpolation {
             Some(true)
         } else {
             None
         },
-        vbap_table_mode: if args.vbap_table_mode != VbapTableModeArg::Polar {
-            Some(format!("{:?}", args.vbap_table_mode).to_lowercase())
+        render_backend: None,
+        render_evaluation_mode: if args.render_evaluation_mode != EvaluationModeArg::Polar {
+            Some(format!("{:?}", args.render_evaluation_mode).to_lowercase())
         } else {
             None
         },
-        render_backend: None,
-        render_evaluation_mode: None,
-        evaluation_cartesian_x_size: args.vbap_cart_x_size,
-        evaluation_cartesian_y_size: args.vbap_cart_y_size,
-        evaluation_cartesian_z_size: args.vbap_cart_z_size,
-        evaluation_cartesian_z_neg_size: args.vbap_cart_z_neg_size,
-        vbap_cart_x_size: args.vbap_cart_x_size,
-        vbap_cart_y_size: args.vbap_cart_y_size,
-        vbap_cart_z_size: args.vbap_cart_z_size,
-        vbap_cart_z_neg_size: args.vbap_cart_z_neg_size,
+        evaluation_cartesian_x_size: args.evaluation_cartesian_x_size,
+        evaluation_cartesian_y_size: args.evaluation_cartesian_y_size,
+        evaluation_cartesian_z_size: args.evaluation_cartesian_z_size,
+        evaluation_cartesian_z_neg_size: args.evaluation_cartesian_z_neg_size,
         vbap_allow_negative_z: if args.vbap_allow_negative_z {
             Some(true)
         } else if args.no_vbap_allow_negative_z {

@@ -1,4 +1,6 @@
-use crate::spatial_vbap::{DistanceModel, Gains, VbapPanner, adm_to_spherical};
+use crate::spatial_vbap::{
+    DistanceModel, Gains, VbapPanner, adm_to_spherical, spherical_to_adm,
+};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 
@@ -83,13 +85,6 @@ impl EffectiveEvaluationMode {
         }
     }
 
-    pub fn legacy_vbap_mode_name(self) -> &'static str {
-        match self {
-            Self::Realtime => "distance",
-            Self::PrecomputedPolar => "polar",
-            Self::PrecomputedCartesian => "cartesian",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -114,7 +109,32 @@ pub struct RenderResponse {
     pub gains: Gains,
 }
 
-pub trait GainModel {
+#[derive(Clone, Copy)]
+pub struct CartesianEvaluationConfig {
+    pub x_size: usize,
+    pub y_size: usize,
+    pub z_size: usize,
+    pub z_neg_size: usize,
+}
+
+#[derive(Clone, Copy)]
+pub struct PolarEvaluationConfig {
+    pub azimuth_values: usize,
+    pub elevation_values: usize,
+    pub distance_values: usize,
+    pub distance_max: f32,
+    pub allow_negative_z: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct EvaluationBuildConfig {
+    pub request_template: RenderRequest,
+    pub position_interpolation: bool,
+    pub cartesian: CartesianEvaluationConfig,
+    pub polar: PolarEvaluationConfig,
+}
+
+pub trait GainModel: Send + Sync + 'static {
     fn kind(&self) -> GainModelKind;
     fn speaker_count(&self) -> usize;
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
@@ -126,10 +146,12 @@ pub trait GainModel {
 }
 
 pub trait EvaluationStrategy<M: GainModel> {
-    type Prepared;
-
     fn effective_mode(&self) -> EffectiveEvaluationMode;
-    fn prepare(self, model: M) -> Self::Prepared;
+    fn prepare(
+        self,
+        model: M,
+        config: &EvaluationBuildConfig,
+    ) -> Result<Box<dyn PreparedEvaluator>>;
 }
 
 pub enum GainModelInstance {
@@ -146,24 +168,36 @@ impl GainModelInstance {
     }
 }
 
-pub struct PrecomputedVbapEvaluator {
-    model: VbapBackend,
+pub trait PreparedEvaluator: Send + Sync {
+    fn speaker_count(&self) -> usize;
+    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
+    fn save_to_file(
+        &self,
+        path: &std::path::Path,
+        speaker_layout: &SpeakerLayout,
+    ) -> Result<()>;
 }
 
-impl PrecomputedVbapEvaluator {
-    pub fn new(model: VbapBackend) -> Self {
+pub struct RealtimeEvaluator<M: GainModel> {
+    model: M,
+}
+
+impl<M: GainModel> RealtimeEvaluator<M> {
+    pub fn new(model: M) -> Self {
         Self { model }
     }
+}
 
-    pub fn speaker_count(&self) -> usize {
+impl<M: GainModel> PreparedEvaluator for RealtimeEvaluator<M> {
+    fn speaker_count(&self) -> usize {
         self.model.speaker_count()
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
         self.model.compute_gains(req)
     }
 
-    pub fn save_to_file(
+    fn save_to_file(
         &self,
         path: &std::path::Path,
         speaker_layout: &SpeakerLayout,
@@ -172,24 +206,67 @@ impl PrecomputedVbapEvaluator {
     }
 }
 
-pub struct RealtimeExperimentalDistanceEvaluator {
-    model: ExperimentalDistanceBackend,
+pub struct SampledCartesianEvaluator<M: GainModel> {
+    model: M,
+    x_positions: Vec<f32>,
+    y_positions: Vec<f32>,
+    z_positions: Vec<f32>,
+    gains: Vec<f32>,
+    speaker_count: usize,
+    position_interpolation: bool,
 }
 
-impl RealtimeExperimentalDistanceEvaluator {
-    pub fn new(model: ExperimentalDistanceBackend) -> Self {
-        Self { model }
+impl<M: GainModel> SampledCartesianEvaluator<M> {
+    pub fn new(model: M, config: &EvaluationBuildConfig) -> Self {
+        let x_positions = evenly_spaced_axis(config.cartesian.x_size.max(2), -1.0, 1.0);
+        let y_positions = evenly_spaced_axis(config.cartesian.y_size.max(2), -1.0, 1.0);
+        let z_positions = cartesian_z_axis(
+            config.cartesian.z_size.max(2),
+            config.cartesian.z_neg_size,
+        );
+        let speaker_count = model.speaker_count();
+        let mut gains =
+            Vec::with_capacity(x_positions.len() * y_positions.len() * z_positions.len() * speaker_count);
+        let mut request = config.request_template;
+        for &z in &z_positions {
+            for &y in &y_positions {
+                for &x in &x_positions {
+                    request.adm_position = [x as f64, y as f64, z as f64];
+                    gains.extend_from_slice(&model.compute_gains(&request).gains);
+                }
+            }
+        }
+        Self {
+            model,
+            x_positions,
+            y_positions,
+            z_positions,
+            gains,
+            speaker_count,
+            position_interpolation: config.position_interpolation,
+        }
+    }
+}
+
+impl<M: GainModel> PreparedEvaluator for SampledCartesianEvaluator<M> {
+    fn speaker_count(&self) -> usize {
+        self.speaker_count
     }
 
-    pub fn speaker_count(&self) -> usize {
-        self.model.speaker_count()
+    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        let gains = sample_cartesian_table(
+            &self.gains,
+            self.speaker_count,
+            &self.x_positions,
+            &self.y_positions,
+            &self.z_positions,
+            req.adm_position.map(|value| value as f32),
+            self.position_interpolation,
+        );
+        RenderResponse { gains }
     }
 
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        self.model.compute_gains(req)
-    }
-
-    pub fn save_to_file(
+    fn save_to_file(
         &self,
         path: &std::path::Path,
         speaker_layout: &SpeakerLayout,
@@ -198,83 +275,153 @@ impl RealtimeExperimentalDistanceEvaluator {
     }
 }
 
-pub enum PreparedEvaluator {
-    PrecomputedVbap(PrecomputedVbapEvaluator),
-    RealtimeExperimentalDistance(RealtimeExperimentalDistanceEvaluator),
+pub struct SampledPolarEvaluator<M: GainModel> {
+    model: M,
+    azimuth_positions: Vec<f32>,
+    elevation_positions: Vec<f32>,
+    distance_positions: Vec<f32>,
+    gains: Vec<f32>,
+    speaker_count: usize,
+    position_interpolation: bool,
 }
 
-pub struct PrecomputedVbapStrategy {
-    mode: EffectiveEvaluationMode,
-}
-
-impl PrecomputedVbapStrategy {
-    pub fn new(mode: EffectiveEvaluationMode) -> Self {
-        Self { mode }
+impl<M: GainModel> SampledPolarEvaluator<M> {
+    pub fn new(model: M, config: &EvaluationBuildConfig) -> Self {
+        let azimuth_positions = polar_azimuth_axis(config.polar.azimuth_values.max(2));
+        let elevation_positions = polar_elevation_axis(
+            config.polar.elevation_values.max(2),
+            config.polar.allow_negative_z,
+        );
+        let distance_positions = evenly_spaced_axis(
+            config.polar.distance_values.max(2),
+            0.0,
+            config.polar.distance_max.max(0.01),
+        );
+        let speaker_count = model.speaker_count();
+        let mut gains = Vec::with_capacity(
+            azimuth_positions.len()
+                * elevation_positions.len()
+                * distance_positions.len()
+                * speaker_count,
+        );
+        let mut request = config.request_template;
+        for &distance in &distance_positions {
+            for &elevation in &elevation_positions {
+                for &azimuth in &azimuth_positions {
+                    let (x, y, z) = spherical_to_adm(azimuth, elevation, distance);
+                    request.adm_position = [x as f64, y as f64, z as f64];
+                    gains.extend_from_slice(&model.compute_gains(&request).gains);
+                }
+            }
+        }
+        Self {
+            model,
+            azimuth_positions,
+            elevation_positions,
+            distance_positions,
+            gains,
+            speaker_count,
+            position_interpolation: config.position_interpolation,
+        }
     }
 }
 
-impl EvaluationStrategy<VbapBackend> for PrecomputedVbapStrategy {
-    type Prepared = PreparedEvaluator;
-
-    fn effective_mode(&self) -> EffectiveEvaluationMode {
-        self.mode
+impl<M: GainModel> PreparedEvaluator for SampledPolarEvaluator<M> {
+    fn speaker_count(&self) -> usize {
+        self.speaker_count
     }
 
-    fn prepare(self, model: VbapBackend) -> Self::Prepared {
-        PreparedEvaluator::PrecomputedVbap(PrecomputedVbapEvaluator::new(model))
+    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        let (azimuth, elevation, distance) = adm_to_spherical(
+            req.adm_position[0] as f32,
+            req.adm_position[1] as f32,
+            req.adm_position[2] as f32,
+        );
+        let gains = sample_polar_table(
+            &self.gains,
+            self.speaker_count,
+            &self.azimuth_positions,
+            &self.elevation_positions,
+            &self.distance_positions,
+            [azimuth, elevation, distance],
+            self.position_interpolation,
+        );
+        RenderResponse { gains }
+    }
+
+    fn save_to_file(
+        &self,
+        path: &std::path::Path,
+        speaker_layout: &SpeakerLayout,
+    ) -> Result<()> {
+        self.model.save_to_file(path, speaker_layout)
     }
 }
 
-pub struct RealtimeExperimentalDistanceStrategy;
+pub struct RealtimeStrategy;
 
-impl EvaluationStrategy<ExperimentalDistanceBackend> for RealtimeExperimentalDistanceStrategy {
-    type Prepared = PreparedEvaluator;
-
+impl<M: GainModel> EvaluationStrategy<M> for RealtimeStrategy {
     fn effective_mode(&self) -> EffectiveEvaluationMode {
         EffectiveEvaluationMode::Realtime
     }
 
-    fn prepare(self, model: ExperimentalDistanceBackend) -> Self::Prepared {
-        PreparedEvaluator::RealtimeExperimentalDistance(
-            RealtimeExperimentalDistanceEvaluator::new(model),
-        )
+    fn prepare(
+        self,
+        model: M,
+        _config: &EvaluationBuildConfig,
+    ) -> Result<Box<dyn PreparedEvaluator>> {
+        Ok(Box::new(RealtimeEvaluator::new(model)))
+    }
+}
+
+pub struct PrecomputedCartesianStrategy;
+
+impl<M: GainModel> EvaluationStrategy<M> for PrecomputedCartesianStrategy {
+    fn effective_mode(&self) -> EffectiveEvaluationMode {
+        EffectiveEvaluationMode::PrecomputedCartesian
+    }
+
+    fn prepare(
+        self,
+        model: M,
+        config: &EvaluationBuildConfig,
+    ) -> Result<Box<dyn PreparedEvaluator>> {
+        Ok(Box::new(SampledCartesianEvaluator::new(model, config)))
+    }
+}
+
+pub struct PrecomputedPolarStrategy;
+
+impl<M: GainModel> EvaluationStrategy<M> for PrecomputedPolarStrategy {
+    fn effective_mode(&self) -> EffectiveEvaluationMode {
+        EffectiveEvaluationMode::PrecomputedPolar
+    }
+
+    fn prepare(
+        self,
+        model: M,
+        config: &EvaluationBuildConfig,
+    ) -> Result<Box<dyn PreparedEvaluator>> {
+        Ok(Box::new(SampledPolarEvaluator::new(model, config)))
     }
 }
 
 pub struct PreparedRenderEngine {
     gain_model_kind: GainModelKind,
     evaluation_mode: EffectiveEvaluationMode,
-    evaluator: PreparedEvaluator,
+    evaluator: Box<dyn PreparedEvaluator>,
 }
 
 impl PreparedRenderEngine {
     pub fn new(
         gain_model_kind: GainModelKind,
         evaluation_mode: EffectiveEvaluationMode,
-        evaluator: PreparedEvaluator,
+        evaluator: Box<dyn PreparedEvaluator>,
     ) -> Self {
         Self {
             gain_model_kind,
             evaluation_mode,
             evaluator,
-        }
-    }
-
-    pub fn vbap(backend: VbapBackend, evaluation_mode: EffectiveEvaluationMode) -> Self {
-        let strategy = PrecomputedVbapStrategy::new(evaluation_mode);
-        Self {
-            gain_model_kind: GainModelKind::Vbap,
-            evaluation_mode: strategy.effective_mode(),
-            evaluator: strategy.prepare(backend),
-        }
-    }
-
-    pub fn experimental_distance(backend: ExperimentalDistanceBackend) -> Self {
-        let strategy = RealtimeExperimentalDistanceStrategy;
-        Self {
-            gain_model_kind: GainModelKind::ExperimentalDistance,
-            evaluation_mode: strategy.effective_mode(),
-            evaluator: strategy.prepare(backend),
         }
     }
 
@@ -291,23 +438,11 @@ impl PreparedRenderEngine {
     }
 
     pub fn speaker_count(&self) -> usize {
-        match &self.evaluator {
-            PreparedEvaluator::PrecomputedVbap(evaluator) => evaluator.speaker_count(),
-            PreparedEvaluator::RealtimeExperimentalDistance(evaluator) => evaluator.speaker_count(),
-        }
+        self.evaluator.speaker_count()
     }
 
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        match &self.evaluator {
-            PreparedEvaluator::PrecomputedVbap(evaluator) => evaluator.compute_gains(req),
-            PreparedEvaluator::RealtimeExperimentalDistance(evaluator) => {
-                evaluator.compute_gains(req)
-            }
-        }
-    }
-
-    pub fn legacy_vbap_mode_name(&self) -> &'static str {
-        self.evaluation_mode.legacy_vbap_mode_name()
+        self.evaluator.compute_gains(req)
     }
 
     pub fn save_to_file(
@@ -315,45 +450,398 @@ impl PreparedRenderEngine {
         path: &std::path::Path,
         speaker_layout: &SpeakerLayout,
     ) -> Result<()> {
-        match &self.evaluator {
-            PreparedEvaluator::PrecomputedVbap(evaluator) => {
-                evaluator.save_to_file(path, speaker_layout)
-            }
-            PreparedEvaluator::RealtimeExperimentalDistance(evaluator) => {
-                evaluator.save_to_file(path, speaker_layout)
-            }
-        }
+        self.evaluator.save_to_file(path, speaker_layout)
     }
 }
 
 pub fn build_prepared_render_engine(
     model: GainModelInstance,
     evaluation_mode: EffectiveEvaluationMode,
+    config: &EvaluationBuildConfig,
 ) -> Result<PreparedRenderEngine> {
     match (model, evaluation_mode) {
-        (GainModelInstance::Vbap(model), mode @ EffectiveEvaluationMode::PrecomputedPolar)
-        | (GainModelInstance::Vbap(model), mode @ EffectiveEvaluationMode::PrecomputedCartesian) => {
-            let strategy = PrecomputedVbapStrategy::new(mode);
+        (GainModelInstance::Vbap(model), EffectiveEvaluationMode::Realtime) => {
+            let strategy = RealtimeStrategy;
             Ok(PreparedRenderEngine::new(
                 GainModelKind::Vbap,
-                strategy.effective_mode(),
-                strategy.prepare(model),
+                EffectiveEvaluationMode::Realtime,
+                strategy.prepare(model, config)?,
+            ))
+        }
+        (GainModelInstance::Vbap(model), EffectiveEvaluationMode::PrecomputedCartesian) => {
+            let strategy = PrecomputedCartesianStrategy;
+            Ok(PreparedRenderEngine::new(
+                GainModelKind::Vbap,
+                EffectiveEvaluationMode::PrecomputedCartesian,
+                strategy.prepare(model, config)?,
+            ))
+        }
+        (GainModelInstance::Vbap(model), EffectiveEvaluationMode::PrecomputedPolar) => {
+            let strategy = PrecomputedPolarStrategy;
+            Ok(PreparedRenderEngine::new(
+                GainModelKind::Vbap,
+                EffectiveEvaluationMode::PrecomputedPolar,
+                strategy.prepare(model, config)?,
             ))
         }
         (GainModelInstance::ExperimentalDistance(model), EffectiveEvaluationMode::Realtime) => {
-            let strategy = RealtimeExperimentalDistanceStrategy;
+            let strategy = RealtimeStrategy;
             Ok(PreparedRenderEngine::new(
                 GainModelKind::ExperimentalDistance,
-                strategy.effective_mode(),
-                strategy.prepare(model),
+                EffectiveEvaluationMode::Realtime,
+                strategy.prepare(model, config)?,
             ))
         }
-        (model, mode) => Err(anyhow::anyhow!(
-            "Unsupported render engine combination: gain_model={} evaluation_mode={}",
-            model.kind().as_str(),
-            mode.as_str()
-        )),
+        (
+            GainModelInstance::ExperimentalDistance(model),
+            EffectiveEvaluationMode::PrecomputedCartesian,
+        ) => {
+            let strategy = PrecomputedCartesianStrategy;
+            Ok(PreparedRenderEngine::new(
+                GainModelKind::ExperimentalDistance,
+                EffectiveEvaluationMode::PrecomputedCartesian,
+                strategy.prepare(model, config)?,
+            ))
+        }
+        (
+            GainModelInstance::ExperimentalDistance(model),
+            EffectiveEvaluationMode::PrecomputedPolar,
+        ) => {
+            let strategy = PrecomputedPolarStrategy;
+            Ok(PreparedRenderEngine::new(
+                GainModelKind::ExperimentalDistance,
+                EffectiveEvaluationMode::PrecomputedPolar,
+                strategy.prepare(model, config)?,
+            ))
+        }
     }
+}
+
+#[derive(Clone, Copy)]
+struct AxisSample {
+    lower: usize,
+    upper: usize,
+    fraction: f32,
+}
+
+fn evenly_spaced_axis(count: usize, min: f32, max: f32) -> Vec<f32> {
+    if count <= 1 {
+        return vec![min];
+    }
+    let step = (max - min) / (count.saturating_sub(1) as f32);
+    (0..count).map(|index| min + step * index as f32).collect()
+}
+
+fn cartesian_z_axis(z_size: usize, z_neg_size: usize) -> Vec<f32> {
+    let mut values = Vec::with_capacity(z_neg_size + z_size);
+    if z_neg_size > 0 {
+        for index in 0..z_neg_size {
+            let t = (index + 1) as f32 / z_neg_size as f32;
+            values.push(-1.0 + (t - 1.0 / z_neg_size as f32));
+        }
+    }
+    values.extend(evenly_spaced_axis(z_size.max(2), 0.0, 1.0));
+    values
+}
+
+fn polar_azimuth_axis(count: usize) -> Vec<f32> {
+    let count = count.max(2);
+    let step = 360.0 / count as f32;
+    (0..count).map(|index| -180.0 + step * index as f32).collect()
+}
+
+fn polar_elevation_axis(count: usize, allow_negative_z: bool) -> Vec<f32> {
+    if allow_negative_z {
+        evenly_spaced_axis(count.max(2), -90.0, 90.0)
+    } else {
+        evenly_spaced_axis(count.max(2), 0.0, 90.0)
+    }
+}
+
+fn sample_cartesian_table(
+    table: &[f32],
+    speaker_count: usize,
+    x_positions: &[f32],
+    y_positions: &[f32],
+    z_positions: &[f32],
+    position: [f32; 3],
+    interpolate: bool,
+) -> Gains {
+    let x = sample_axis(x_positions, position[0].clamp(-1.0, 1.0), interpolate);
+    let y = sample_axis(y_positions, position[1].clamp(-1.0, 1.0), interpolate);
+    let z = sample_axis(z_positions, position[2].clamp(-1.0, 1.0), interpolate);
+    let mut gains = Gains::zeroed(speaker_count);
+    if !interpolate {
+        write_flat_sample(
+            table,
+            speaker_count,
+            x_positions.len(),
+            y_positions.len(),
+            x.lower,
+            y.lower,
+            z.lower,
+            &mut gains,
+        );
+        return gains;
+    }
+
+    for (iz, wz) in [(z.lower, 1.0 - z.fraction), (z.upper, z.fraction)] {
+        for (iy, wy) in [(y.lower, 1.0 - y.fraction), (y.upper, y.fraction)] {
+            for (ix, wx) in [(x.lower, 1.0 - x.fraction), (x.upper, x.fraction)] {
+                let weight = wx * wy * wz;
+                if weight <= 0.0 {
+                    continue;
+                }
+                accumulate_flat_sample(
+                    table,
+                    speaker_count,
+                    x_positions.len(),
+                    y_positions.len(),
+                    ix,
+                    iy,
+                    iz,
+                    weight,
+                    &mut gains,
+                );
+            }
+        }
+    }
+    gains
+}
+
+fn sample_polar_table(
+    table: &[f32],
+    speaker_count: usize,
+    azimuth_positions: &[f32],
+    elevation_positions: &[f32],
+    distance_positions: &[f32],
+    position: [f32; 3],
+    interpolate: bool,
+) -> Gains {
+    let azimuth = sample_wrapped_axis(azimuth_positions, wrap_degrees(position[0]), interpolate);
+    let elevation = sample_axis(
+        elevation_positions,
+        position[1].clamp(
+            *elevation_positions.first().unwrap_or(&-90.0),
+            *elevation_positions.last().unwrap_or(&90.0),
+        ),
+        interpolate,
+    );
+    let distance = sample_axis(
+        distance_positions,
+        position[2].clamp(0.0, *distance_positions.last().unwrap_or(&0.0)),
+        interpolate,
+    );
+    let mut gains = Gains::zeroed(speaker_count);
+    if !interpolate {
+        write_flat_sample(
+            table,
+            speaker_count,
+            azimuth_positions.len(),
+            elevation_positions.len(),
+            azimuth.lower,
+            elevation.lower,
+            distance.lower,
+            &mut gains,
+        );
+        return gains;
+    }
+
+    for (id, wd) in [
+        (distance.lower, 1.0 - distance.fraction),
+        (distance.upper, distance.fraction),
+    ] {
+        for (ie, we) in [
+            (elevation.lower, 1.0 - elevation.fraction),
+            (elevation.upper, elevation.fraction),
+        ] {
+            for (ia, wa) in [
+                (azimuth.lower, 1.0 - azimuth.fraction),
+                (azimuth.upper, azimuth.fraction),
+            ] {
+                let weight = wa * we * wd;
+                if weight <= 0.0 {
+                    continue;
+                }
+                accumulate_flat_sample(
+                    table,
+                    speaker_count,
+                    azimuth_positions.len(),
+                    elevation_positions.len(),
+                    ia,
+                    ie,
+                    id,
+                    weight,
+                    &mut gains,
+                );
+            }
+        }
+    }
+    gains
+}
+
+fn write_flat_sample(
+    table: &[f32],
+    speaker_count: usize,
+    x_len: usize,
+    y_len: usize,
+    x_index: usize,
+    y_index: usize,
+    z_index: usize,
+    gains: &mut Gains,
+) {
+    let offset = flat_sample_offset(speaker_count, x_len, y_len, x_index, y_index, z_index);
+    for speaker in 0..speaker_count {
+        gains.set(speaker, table[offset + speaker]);
+    }
+}
+
+fn accumulate_flat_sample(
+    table: &[f32],
+    speaker_count: usize,
+    x_len: usize,
+    y_len: usize,
+    x_index: usize,
+    y_index: usize,
+    z_index: usize,
+    weight: f32,
+    gains: &mut Gains,
+) {
+    let offset = flat_sample_offset(speaker_count, x_len, y_len, x_index, y_index, z_index);
+    for speaker in 0..speaker_count {
+        gains[speaker] += table[offset + speaker] * weight;
+    }
+}
+
+fn flat_sample_offset(
+    speaker_count: usize,
+    x_len: usize,
+    y_len: usize,
+    x_index: usize,
+    y_index: usize,
+    z_index: usize,
+) -> usize {
+    (((z_index * y_len) + y_index) * x_len + x_index) * speaker_count
+}
+
+fn sample_axis(values: &[f32], position: f32, interpolate: bool) -> AxisSample {
+    if values.len() <= 1 {
+        return AxisSample {
+            lower: 0,
+            upper: 0,
+            fraction: 0.0,
+        };
+    }
+    if !interpolate {
+        let nearest = values
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| ((*a - position).abs()).total_cmp(&((*b - position).abs())))
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        return AxisSample {
+            lower: nearest,
+            upper: nearest,
+            fraction: 0.0,
+        };
+    }
+    if position <= values[0] {
+        return AxisSample {
+            lower: 0,
+            upper: 0,
+            fraction: 0.0,
+        };
+    }
+    let upper = values.partition_point(|value| *value < position);
+    if upper >= values.len() {
+        let last = values.len() - 1;
+        return AxisSample {
+            lower: last,
+            upper: last,
+            fraction: 0.0,
+        };
+    }
+    let lower = upper.saturating_sub(1);
+    let span = (values[upper] - values[lower]).max(1e-6);
+    AxisSample {
+        lower,
+        upper,
+        fraction: ((position - values[lower]) / span).clamp(0.0, 1.0),
+    }
+}
+
+fn sample_wrapped_axis(values: &[f32], position: f32, interpolate: bool) -> AxisSample {
+    if values.len() <= 1 {
+        return AxisSample {
+            lower: 0,
+            upper: 0,
+            fraction: 0.0,
+        };
+    }
+    if !interpolate {
+        let nearest = values
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                wrapped_angle_distance(**a, position).total_cmp(&wrapped_angle_distance(**b, position))
+            })
+            .map(|(index, _)| index)
+            .unwrap_or(0);
+        return AxisSample {
+            lower: nearest,
+            upper: nearest,
+            fraction: 0.0,
+        };
+    }
+    let mut best = AxisSample {
+        lower: 0,
+        upper: 0,
+        fraction: 0.0,
+    };
+    let mut best_distance = f32::MAX;
+    for index in 0..values.len() {
+        let next = (index + 1) % values.len();
+        let start = values[index];
+        let end = if next == 0 {
+            values[0] + 360.0
+        } else {
+            values[next]
+        };
+        let value = if position < start { position + 360.0 } else { position };
+        if value < start || value > end {
+            continue;
+        }
+        let span = (end - start).max(1e-6);
+        return AxisSample {
+            lower: index,
+            upper: next,
+            fraction: ((value - start) / span).clamp(0.0, 1.0),
+        };
+    }
+    for (index, axis) in values.iter().enumerate() {
+        let distance = wrapped_angle_distance(*axis, position);
+        if distance < best_distance {
+            best_distance = distance;
+            best = AxisSample {
+                lower: index,
+                upper: index,
+                fraction: 0.0,
+            };
+        }
+    }
+    best
+}
+
+#[inline]
+fn wrap_degrees(value: f32) -> f32 {
+    let wrapped = (value + 180.0).rem_euclid(360.0) - 180.0;
+    if wrapped == -180.0 { 180.0 } else { wrapped }
+}
+
+#[inline]
+fn wrapped_angle_distance(a: f32, b: f32) -> f32 {
+    let delta = (a - b).abs().rem_euclid(360.0);
+    delta.min(360.0 - delta)
 }
 
 pub struct VbapBackend {

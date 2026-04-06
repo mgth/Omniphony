@@ -89,11 +89,6 @@ pub fn save_live_config(
     } else {
         None
     };
-    render.vbap_position_interpolation = if live.evaluation.position_interpolation {
-        None
-    } else {
-        Some(false)
-    };
     render.render_backend = match live.backend_kind {
         renderer::render_backend::RenderBackendKind::Vbap => None,
         other => Some(other.as_str().to_string()),
@@ -101,12 +96,6 @@ pub fn save_live_config(
     render.render_evaluation_mode = match live.requested_evaluation_mode() {
         LiveEvaluationMode::Auto => None,
         other => Some(other.as_str().to_string()),
-    };
-    render.vbap_table_mode = match live.requested_evaluation_mode() {
-        LiveEvaluationMode::Auto => None,
-        LiveEvaluationMode::PrecomputedPolar => Some("polar".to_string()),
-        LiveEvaluationMode::PrecomputedCartesian => Some("cartesian".to_string()),
-        LiveEvaluationMode::Realtime => None,
     };
     let effective_cartesian = match live.requested_evaluation_mode() {
         LiveEvaluationMode::PrecomputedCartesian => true,
@@ -124,19 +113,11 @@ pub fn save_live_config(
         render.evaluation_cartesian_y_size = Some(live.evaluation.cartesian.y_size.max(1));
         render.evaluation_cartesian_z_size = Some(live.evaluation.cartesian.z_size.max(1));
         render.evaluation_cartesian_z_neg_size = Some(live.evaluation.cartesian.z_neg_size);
-        render.vbap_cart_x_size = Some(live.evaluation.cartesian.x_size.max(1));
-        render.vbap_cart_y_size = Some(live.evaluation.cartesian.y_size.max(1));
-        render.vbap_cart_z_size = Some(live.evaluation.cartesian.z_size.max(1));
-        render.vbap_cart_z_neg_size = Some(live.evaluation.cartesian.z_neg_size);
     } else {
         render.evaluation_cartesian_x_size = None;
         render.evaluation_cartesian_y_size = None;
         render.evaluation_cartesian_z_size = None;
         render.evaluation_cartesian_z_neg_size = None;
-        render.vbap_cart_x_size = None;
-        render.vbap_cart_y_size = None;
-        render.vbap_cart_z_size = None;
-        render.vbap_cart_z_neg_size = None;
     }
     render.spread_from_distance = if live.spread_from_distance { Some(true) } else { None };
     render.spread_distance_range = if (live.spread_distance_range - 1.0).abs() > 1e-4 {

@@ -336,28 +336,24 @@ pub enum OscEvent {
     StateDistanceDiffuseThreshold { value: f64 },
     #[serde(rename = "state:distance_diffuse:curve")]
     StateDistanceDiffuseCurve { value: f64 },
-    #[serde(rename = "state:vbap:cart:x_size")]
-    StateVbapCartXSize { value: u32 },
-    #[serde(rename = "state:vbap:cart:y_size")]
-    StateVbapCartYSize { value: u32 },
-    #[serde(rename = "state:vbap:cart:z_size")]
-    StateVbapCartZSize { value: u32 },
-    #[serde(rename = "state:vbap:cart:z_neg_size")]
-    StateVbapCartZNegSize { value: u32 },
-    #[serde(rename = "state:vbap:table_mode")]
-    StateVbapTableMode { value: String },
-    #[serde(rename = "state:vbap:effective_mode")]
-    StateVbapEffectiveMode { value: String },
-    #[serde(rename = "state:vbap:polar:azimuth_resolution")]
-    StateVbapPolarAzimuthResolution { value: u32 },
-    #[serde(rename = "state:vbap:polar:elevation_resolution")]
-    StateVbapPolarElevationResolution { value: u32 },
-    #[serde(rename = "state:vbap:polar:distance_res")]
-    StateVbapPolarDistanceRes { value: u32 },
-    #[serde(rename = "state:vbap:polar:distance_max")]
-    StateVbapPolarDistanceMax { value: f64 },
-    #[serde(rename = "state:vbap:position_interpolation")]
-    StateVbapPositionInterpolation { enabled: bool },
+    #[serde(rename = "state:render_evaluation:cartesian:x_size")]
+    StateRenderEvaluationCartesianXSize { value: u32 },
+    #[serde(rename = "state:render_evaluation:cartesian:y_size")]
+    StateRenderEvaluationCartesianYSize { value: u32 },
+    #[serde(rename = "state:render_evaluation:cartesian:z_size")]
+    StateRenderEvaluationCartesianZSize { value: u32 },
+    #[serde(rename = "state:render_evaluation:cartesian:z_neg_size")]
+    StateRenderEvaluationCartesianZNegSize { value: u32 },
+    #[serde(rename = "state:render_evaluation:polar:azimuth_resolution")]
+    StateRenderEvaluationPolarAzimuthResolution { value: u32 },
+    #[serde(rename = "state:render_evaluation:polar:elevation_resolution")]
+    StateRenderEvaluationPolarElevationResolution { value: u32 },
+    #[serde(rename = "state:render_evaluation:polar:distance_res")]
+    StateRenderEvaluationPolarDistanceRes { value: u32 },
+    #[serde(rename = "state:render_evaluation:polar:distance_max")]
+    StateRenderEvaluationPolarDistanceMax { value: f64 },
+    #[serde(rename = "state:render_evaluation:position_interpolation")]
+    StateRenderEvaluationPositionInterpolation { enabled: bool },
     #[serde(rename = "state:vbap:allow_negative_z")]
     StateVbapAllowNegativeZ { enabled: bool },
     #[serde(rename = "state:speakers:recomputing")]
@@ -761,42 +757,34 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             }),
             _ => None,
         },
-        (5, "vbap") if parts[3] == "cart" => {
+        (5, "render_evaluation") if parts[3] == "cartesian" => {
             let value = to_number(args[0])?.max(0.0) as u32;
             match parts[4] {
-                "x_size" => Some(OscEvent::StateVbapCartXSize { value }),
-                "y_size" => Some(OscEvent::StateVbapCartYSize { value }),
-                "z_size" => Some(OscEvent::StateVbapCartZSize { value }),
-                "z_neg_size" => Some(OscEvent::StateVbapCartZNegSize { value }),
+                "x_size" => Some(OscEvent::StateRenderEvaluationCartesianXSize { value }),
+                "y_size" => Some(OscEvent::StateRenderEvaluationCartesianYSize { value }),
+                "z_size" => Some(OscEvent::StateRenderEvaluationCartesianZSize { value }),
+                "z_neg_size" => Some(OscEvent::StateRenderEvaluationCartesianZNegSize { value }),
                 _ => None,
             }
         }
-        (4, "vbap") if parts[3] == "table_mode" => {
-            let value = raw_args.first().and_then(unwrap_string)?;
-            Some(OscEvent::StateVbapTableMode { value })
-        }
-        (4, "vbap") if parts[3] == "effective_mode" => {
-            let value = raw_args.first().and_then(unwrap_string)?;
-            Some(OscEvent::StateVbapEffectiveMode { value })
-        }
-        (4, "vbap") if parts[3] == "position_interpolation" => {
-            Some(OscEvent::StateVbapPositionInterpolation {
+        (4, "render_evaluation") if parts[3] == "position_interpolation" => {
+            Some(OscEvent::StateRenderEvaluationPositionInterpolation {
                 enabled: to_number(args[0])? != 0.0,
             })
         }
-        (5, "vbap") if parts[3] == "polar" => match parts[4] {
+        (5, "render_evaluation") if parts[3] == "polar" => match parts[4] {
             "azimuth_resolution" => {
                 let value = to_number(args[0])?.max(0.0) as u32;
-                Some(OscEvent::StateVbapPolarAzimuthResolution { value })
+                Some(OscEvent::StateRenderEvaluationPolarAzimuthResolution { value })
             }
             "elevation_resolution" => {
                 let value = to_number(args[0])?.max(0.0) as u32;
-                Some(OscEvent::StateVbapPolarElevationResolution { value })
+                Some(OscEvent::StateRenderEvaluationPolarElevationResolution { value })
             }
-            "distance_res" => Some(OscEvent::StateVbapPolarDistanceRes {
+            "distance_res" => Some(OscEvent::StateRenderEvaluationPolarDistanceRes {
                 value: to_number(args[0])?.max(0.0) as u32,
             }),
-            "distance_max" => Some(OscEvent::StateVbapPolarDistanceMax {
+            "distance_max" => Some(OscEvent::StateRenderEvaluationPolarDistanceMax {
                 value: to_number(args[0])?.max(0.0),
             }),
             _ => None,

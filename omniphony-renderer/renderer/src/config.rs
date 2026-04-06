@@ -52,10 +52,6 @@ pub struct RenderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vbap_distance_max: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_position_interpolation: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_table_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub render_backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_evaluation_mode: Option<String>,
@@ -69,14 +65,6 @@ pub struct RenderConfig {
     pub evaluation_cartesian_z_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evaluation_cartesian_z_neg_size: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_cart_x_size: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_cart_y_size: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_cart_z_size: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vbap_cart_z_neg_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vbap_allow_negative_z: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

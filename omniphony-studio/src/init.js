@@ -125,18 +125,6 @@ export function applyInitState(payload) {
     }
   }
   updateVbapCartesian();
-  if (payload.vbapMode && typeof payload.vbapMode.selection === 'string') {
-    const selection = payload.vbapMode.selection.trim().toLowerCase();
-    if (selection === 'auto' || selection === 'polar' || selection === 'cartesian') {
-      app.vbapModeState.selection = selection;
-    }
-  }
-  if (payload.vbapMode && typeof payload.vbapMode.effectiveMode === 'string') {
-    const effectiveMode = payload.vbapMode.effectiveMode.trim().toLowerCase();
-    if (effectiveMode === 'polar' || effectiveMode === 'cartesian') {
-      app.vbapModeState.effectiveMode = effectiveMode;
-    }
-  }
   if (payload.renderBackendState && typeof payload.renderBackendState === 'object') {
     if (typeof payload.renderBackendState.selection === 'string') {
       const selection = payload.renderBackendState.selection.trim().toLowerCase();
@@ -163,23 +151,6 @@ export function applyInitState(payload) {
       if (['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(effective)) {
         app.evaluationModeState.effective = effective;
       }
-    }
-  } else {
-    if (app.renderBackendState.selection === 'experimental_distance') {
-      app.evaluationModeState.selection = 'realtime';
-    } else if (app.vbapModeState.selection === 'auto') {
-      app.evaluationModeState.selection = 'auto';
-    } else if (app.vbapModeState.selection === 'polar') {
-      app.evaluationModeState.selection = 'precomputed_polar';
-    } else if (app.vbapModeState.selection === 'cartesian') {
-      app.evaluationModeState.selection = 'precomputed_cartesian';
-    }
-    if (app.renderBackendState.effective === 'experimental_distance') {
-      app.evaluationModeState.effective = 'realtime';
-    } else if (app.vbapModeState.effectiveMode === 'polar') {
-      app.evaluationModeState.effective = 'precomputed_polar';
-    } else if (app.vbapModeState.effectiveMode === 'cartesian') {
-      app.evaluationModeState.effective = 'precomputed_cartesian';
     }
   }
   updateRenderBackend();

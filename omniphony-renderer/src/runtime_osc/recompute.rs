@@ -92,12 +92,6 @@ pub(crate) fn trigger_layout_recompute(
                             "/omniphony/state/render_evaluation_mode/effective",
                             effective_evaluation_mode,
                         );
-                        broadcast_string(
-                            &socket_clone,
-                            &clients_clone,
-                            "/omniphony/state/vbap/effective_mode",
-                            control_clone.active_topology().backend.legacy_vbap_mode_name(),
-                        );
                         broadcast_int(
                             &socket_clone,
                             &clients_clone,

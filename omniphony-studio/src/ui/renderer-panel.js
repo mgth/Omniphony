@@ -34,41 +34,25 @@ export function rendererPanelMarkup() {
           </div>
         </div>
         <div id="rendererSectionContent" class="conditional-params">
-          <div style="margin-top:0.25rem;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03);display:grid;gap:0.3rem">
-          <div class="control-row" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:center">
-            <label for="renderBackendSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">Render backend</label>
-            <div style="display:flex;align-items:center;gap:0.35rem">
-              <select id="renderBackendSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
-                <option value="vbap">VBAP</option>
-                <option value="experimental_distance">Distance</option>
-              </select>
-              <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
-            </div>
-          </div>
-          <div class="control-row" id="renderEvaluationModeRow" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:center">
-            <label for="renderEvaluationModeSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">Evaluation mode</label>
-            <div style="display:flex;align-items:center;gap:0.35rem">
-              <select id="renderEvaluationModeSelect" class="delay-input" style="width:auto;min-width:13rem;text-align:left">
-                <option value="auto">Auto</option>
-                <option value="realtime">Realtime</option>
-                <option value="precomputed_polar">Precomputed polar</option>
-                <option value="precomputed_cartesian">Precomputed cartesian</option>
-              </select>
-              <div id="renderEvaluationModeEffective" class="vbap-step" style="min-width:8rem;text-align:right">—</div>
-            </div>
-          </div>
-          <div class="info-section" id="vbapSection" style="margin:0;padding:0;border:none;background:none">
-            <div id="vbapSectionContent" class="conditional-params open">
-            <div class="control-row" style="margin-top:0.25rem;grid-template-columns:1fr auto;align-items:center">
-              <div style="display:flex;align-items:center;gap:0.45rem;min-width:0">
-                <label style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="vbap.title">VBAP</label>
-                <div id="vbapStatus" class="vbap-status" style="margin:0;font-size:11px;min-width:0">—</div>
+          <div style="margin-top:0.25rem;display:grid;gap:0.35rem">
+          <div class="info-section" id="evaluationSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Evaluation</div>
+              <div style="display:flex;align-items:center;gap:0.35rem">
+                <select id="renderEvaluationModeSelect" class="delay-input" style="width:auto;min-width:13rem;text-align:left">
+                  <option value="auto">Auto</option>
+                  <option value="realtime">Realtime</option>
+                  <option value="precomputed_polar">Precomputed polar</option>
+                  <option value="precomputed_cartesian">Precomputed cartesian</option>
+                </select>
+                <div id="renderEvaluationModeEffective" class="vbap-step" style="min-width:8rem;text-align:right">—</div>
               </div>
-              <div id="vbapModeLegacyHint" class="vbap-step" style="min-width:5.4rem;text-align:right">VBAP</div>
             </div>
+            <div id="evaluationSectionContent" class="conditional-params open">
             <div style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
-              <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:start">
-                <label style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.cart">VBAP cart</label>
+              <div id="renderEvaluationCartesianBlock">
+              <div class="control-row" id="renderEvaluationCartesianRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:start">
+                <label style="font-size:12px;white-space:nowrap;color:#ffffff">Cartesian grid</label>
                 <div style="display:flex;flex-direction:column;gap:0.15rem;align-items:stretch">
                   <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.15rem">
                     <input id="vbapCartXSizeInput" class="delay-input" type="number" min="1" step="1" placeholder="X" />
@@ -84,8 +68,10 @@ export function rendererPanelMarkup() {
                   </div>
                 </div>
               </div>
-              <div class="control-row" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:start">
-                <label style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.polar">VBAP polar</label>
+              </div>
+              <div id="renderEvaluationPolarBlock">
+              <div class="control-row" id="renderEvaluationPolarRow" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:start">
+                <label style="font-size:12px;white-space:nowrap;color:#ffffff">Polar grid</label>
                 <div style="display:flex;flex-direction:column;gap:0.15rem;align-items:stretch">
                   <div class="vbap-polar-grid">
                     <input id="vbapPolarAzimuthResolutionInput" class="delay-input" type="number" min="1" step="1" placeholder="az n" style="grid-column:1;grid-row:1" />
@@ -102,16 +88,33 @@ export function rendererPanelMarkup() {
                   </div>
                 </div>
               </div>
+              </div>
+            </div>
+            <div class="inline-toggle" id="renderEvaluationPositionInterpolationRow" style="margin-top:0.25rem;display:flex;align-items:center;gap:0.35rem">
+              <div class="title-with-info" style="min-width:0">
+                <span style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.positionInterpolation">Position interpolation</span>
+                <button id="vbapPositionInterpolationInfoBtn" type="button" class="info-icon-btn" data-i18n-title="vbap.positionInterpolationInfoButton" title="VBAP position interpolation info">i</button>
+              </div>
+              <input id="vbapPositionInterpolationToggleEl" type="checkbox" />
             </div>
             </div>
           </div>
-          <div class="inline-toggle" id="renderEvaluationPositionInterpolationRow" style="margin-top:0.1rem;display:flex;align-items:center;gap:0.35rem">
-            <div class="title-with-info" style="min-width:0">
-              <span style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.positionInterpolation">Position interpolation</span>
-              <button id="vbapPositionInterpolationInfoBtn" type="button" class="info-icon-btn" data-i18n-title="vbap.positionInterpolationInfoButton" title="VBAP position interpolation info">i</button>
+          <div class="info-section" id="backendParametersSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div style="display:flex;align-items:center;gap:0.45rem;min-width:0">
+                <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Backend</div>
+                <div id="vbapStatus" class="vbap-status" style="margin:0;font-size:11px;min-width:0">—</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:0.35rem">
+              <select id="renderBackendSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
+                <option value="vbap">VBAP</option>
+                <option value="experimental_distance">Distance</option>
+              </select>
+              <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
             </div>
-            <input id="vbapPositionInterpolationToggleEl" type="checkbox" />
           </div>
+            <div id="backendParametersSectionContent" class="conditional-params open">
+          <div id="backendSpecificParamsSection">
           <div class="control-row" id="rampModeRow" style="margin-top:0.3rem;grid-template-columns:1fr auto;align-items:center">
             <div class="title-with-info" style="min-width:0;font-size:12px;font-weight:600">
               <label for="rampModeSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="audio.rampMode">Ramp mode</label>
@@ -187,6 +190,9 @@ export function rendererPanelMarkup() {
                 <input id="spreadDistanceCurveSlider" type="range" min="0.1" max="3.0" step="0.05" value="1.0" class="gain-slider" />
               </div>
             </div>
+          </div>
+          </div>
+          </div>
           </div>
           </div>
         </div>

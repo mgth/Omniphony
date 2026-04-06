@@ -107,13 +107,6 @@ pub struct VbapPolar {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct VbapMode {
-    pub selection: Option<String>,
-    #[serde(rename = "effectiveMode")]
-    pub effective_mode: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RenderBackendState {
     pub selection: Option<String>,
     pub effective: Option<String>,
@@ -230,8 +223,6 @@ pub struct AppState {
     pub vbap_cartesian: VbapCartesian,
     #[serde(rename = "vbapPolar")]
     pub vbap_polar: VbapPolar,
-    #[serde(rename = "vbapMode")]
-    pub vbap_mode: VbapMode,
     #[serde(rename = "renderBackendState")]
     pub render_backend_state: RenderBackendState,
     #[serde(rename = "renderEvaluationModeState")]
@@ -439,7 +430,6 @@ impl Default for AppState {
             distance_model: DistanceModelState::default(),
             vbap_cartesian: VbapCartesian::default(),
             vbap_polar: VbapPolar::default(),
-            vbap_mode: VbapMode::default(),
             render_backend_state: RenderBackendState::default(),
             render_evaluation_mode_state: RenderEvaluationModeState::default(),
             vbap_allow_negative_z: None,

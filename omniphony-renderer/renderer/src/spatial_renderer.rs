@@ -66,11 +66,12 @@
 
 use crate::live_params::{
     CartesianEvaluationParams, EvaluationLiveParams, LiveEvaluationMode, LiveParams,
-    LiveVbapTableMode, PolarEvaluationParams, PreferredEvaluationMode, RampMode, RenderTopology,
+    PolarEvaluationParams, PreferredEvaluationMode, RampMode, RenderTopology,
     RendererControl,
 };
 use crate::render_backend::{
-    EffectiveEvaluationMode, GainModelInstance, RenderBackendKind, RenderRequest, VbapBackend,
+    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
+    GainModelInstance, PolarEvaluationConfig, RenderBackendKind, RenderRequest, VbapBackend,
     build_prepared_render_engine,
 };
 use crate::spatial_vbap::VbapTableMode;
@@ -87,6 +88,55 @@ pub struct RenderedFrame {
     /// `(channel_idx, gains)` — `gains[speaker_idx]` is the gain applied to that speaker.
     /// Ordered by `channel_idx`. Empty if no objects were spatialized this frame.
     pub object_gains: Vec<(usize, Gains)>,
+}
+
+fn evaluation_build_config(
+    request_template: RenderRequest,
+    position_interpolation: bool,
+    table_mode: VbapTableMode,
+    azimuth_resolution: i32,
+    elevation_resolution: i32,
+    distance_step: f32,
+    distance_max: f32,
+    allow_negative_z: bool,
+) -> EvaluationBuildConfig {
+    let cartesian = match table_mode {
+        VbapTableMode::Cartesian {
+            x_size,
+            y_size,
+            z_size,
+            z_neg_size,
+        } => CartesianEvaluationConfig {
+            x_size,
+            y_size,
+            z_size,
+            z_neg_size,
+        },
+        VbapTableMode::Polar => CartesianEvaluationConfig {
+            x_size: 2,
+            y_size: 2,
+            z_size: 2,
+            z_neg_size: usize::from(allow_negative_z),
+        },
+    };
+    let azimuth_values = (360 / azimuth_resolution.max(1)).max(2) as usize;
+    let elevation_span = if allow_negative_z { 180 } else { 90 };
+    let elevation_values = (elevation_span / elevation_resolution.max(1)).max(2) as usize;
+    let distance_values = ((distance_max.max(0.01) / distance_step.max(0.01)).round() as usize)
+        .max(1)
+        + 1;
+    EvaluationBuildConfig {
+        request_template,
+        position_interpolation,
+        cartesian,
+        polar: PolarEvaluationConfig {
+            azimuth_values,
+            elevation_values,
+            distance_values,
+            distance_max,
+            allow_negative_z,
+        },
+    }
 }
 
 /// Format-agnostic spatial metadata for one audio channel (bed or object).
@@ -532,6 +582,31 @@ impl SpatialRenderer {
                         EffectiveEvaluationMode::PrecomputedCartesian
                     }
                 },
+                &evaluation_build_config(
+                    RenderRequest {
+                        adm_position: [0.0, 0.0, 0.0],
+                        spread_min,
+                        spread_max,
+                        spread_from_distance,
+                        spread_distance_range,
+                        spread_distance_curve,
+                        room_ratio,
+                        room_ratio_rear,
+                        room_ratio_lower,
+                        room_ratio_center_blend,
+                        use_distance_diffuse: distance_diffuse,
+                        distance_diffuse_threshold,
+                        distance_diffuse_curve,
+                        distance_model,
+                    },
+                    vbap_position_interpolation,
+                    table_mode,
+                    az_res_deg,
+                    el_res_deg,
+                    distance_step,
+                    distance_max,
+                    allow_negative_z,
+                ),
             )?),
             speaker_layout,
         )?;
@@ -729,6 +804,31 @@ impl SpatialRenderer {
                         EffectiveEvaluationMode::PrecomputedCartesian
                     }
                 },
+                &evaluation_build_config(
+                    RenderRequest {
+                        adm_position: [0.0, 0.0, 0.0],
+                        spread_min,
+                        spread_max,
+                        spread_from_distance,
+                        spread_distance_range,
+                        spread_distance_curve,
+                        room_ratio,
+                        room_ratio_rear,
+                        room_ratio_lower,
+                        room_ratio_center_blend,
+                        use_distance_diffuse: distance_diffuse,
+                        distance_diffuse_threshold,
+                        distance_diffuse_curve,
+                        distance_model,
+                    },
+                    vbap_position_interpolation,
+                    vbap_table_mode,
+                    vbap_azimuth_resolution,
+                    vbap_elevation_resolution,
+                    distance_step,
+                    distance_max,
+                    allow_negative_z,
+                ),
             )?),
             speaker_layout,
         )?;
@@ -956,12 +1056,6 @@ impl SpatialRenderer {
                     distance_res: (distance_max / distance_res.max(0.01)).round() as i32,
                     distance_max: distance_max.max(0.01),
                 },
-            },
-            vbap_table_mode: match initial_evaluation_mode {
-                LiveEvaluationMode::Auto => LiveVbapTableMode::Auto,
-                LiveEvaluationMode::PrecomputedPolar => LiveVbapTableMode::Polar,
-                LiveEvaluationMode::PrecomputedCartesian => LiveVbapTableMode::Cartesian,
-                LiveEvaluationMode::Realtime => LiveVbapTableMode::Auto,
             },
             use_loudness,
             distance_model,

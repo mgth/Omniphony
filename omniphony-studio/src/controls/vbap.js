@@ -17,12 +17,13 @@ const renderBackendEffectiveEl = inRendererPanel('renderBackendEffective');
 const renderEvaluationModeSelectEl = inRendererPanel('renderEvaluationModeSelect');
 const renderEvaluationModeEffectiveEl = inRendererPanel('renderEvaluationModeEffective');
 const rendererSummaryEl = inRendererPanel('rendererSummary');
-const vbapSectionEl = inRendererPanel('vbapSection');
+const backendParametersSectionEl = inRendererPanel('backendParametersSection');
+const backendSpecificParamsSectionEl = inRendererPanel('backendSpecificParamsSection');
+const evaluationSectionEl = inRendererPanel('evaluationSection');
 const distanceModelControlRowEl = inRendererPanel('distanceModelControlRow');
 const spreadSectionEl = inRendererPanel('spreadSection');
 const distanceDiffuseSectionEl = inRendererPanel('distanceDiffuseSection');
 const spreadFromDistanceSectionEl = inRendererPanel('spreadFromDistanceSection');
-const renderEvaluationPositionInterpolationRowEl = inRendererPanel('renderEvaluationPositionInterpolationRow');
 const vbapCartXSizeInputEl = inRendererPanel('vbapCartXSizeInput');
 const vbapCartYSizeInputEl = inRendererPanel('vbapCartYSizeInput');
 const vbapCartZSizeInputEl = inRendererPanel('vbapCartZSizeInput');
@@ -61,8 +62,14 @@ function renderVbapCartesianGridToggle() {
 
 function applyRendererBackendVisibility(backend) {
   const isVbap = backend !== 'experimental_distance';
-  if (vbapSectionEl) {
-    vbapSectionEl.style.display = isVbap ? '' : 'none';
+  if (backendParametersSectionEl) {
+    backendParametersSectionEl.style.display = '';
+  }
+  if (evaluationSectionEl) {
+    evaluationSectionEl.style.display = '';
+  }
+  if (backendSpecificParamsSectionEl) {
+    backendSpecificParamsSectionEl.style.display = isVbap ? '' : 'none';
   }
   if (distanceModelControlRowEl) {
     distanceModelControlRowEl.style.display = isVbap ? '' : 'none';
@@ -79,17 +86,24 @@ function applyRendererBackendVisibility(backend) {
 }
 
 function applyEvaluationModeVisibility(mode) {
-  const showsPrecomputedControls = mode === 'auto' || mode === 'precomputed_polar' || mode === 'precomputed_cartesian';
+  const showsCartesian = mode === 'precomputed_cartesian';
+  const showsPolar = mode === 'precomputed_polar';
+  const showsInterpolation = showsCartesian || showsPolar;
+  const renderEvaluationCartesianBlockEl = inRendererPanel('renderEvaluationCartesianBlock');
+  const renderEvaluationPolarBlockEl = inRendererPanel('renderEvaluationPolarBlock');
+  const renderEvaluationPositionInterpolationRowEl = inRendererPanel('renderEvaluationPositionInterpolationRow');
+  if (renderEvaluationCartesianBlockEl) {
+    renderEvaluationCartesianBlockEl.hidden = !showsCartesian;
+    renderEvaluationCartesianBlockEl.style.setProperty('display', showsCartesian ? '' : 'none', 'important');
+  }
+  if (renderEvaluationPolarBlockEl) {
+    renderEvaluationPolarBlockEl.hidden = !showsPolar;
+    renderEvaluationPolarBlockEl.style.setProperty('display', showsPolar ? '' : 'none', 'important');
+  }
   if (renderEvaluationPositionInterpolationRowEl) {
-    renderEvaluationPositionInterpolationRowEl.style.display = showsPrecomputedControls ? '' : 'none';
+    renderEvaluationPositionInterpolationRowEl.hidden = !showsInterpolation;
+    renderEvaluationPositionInterpolationRowEl.style.setProperty('display', showsInterpolation ? '' : 'none', 'important');
   }
-}
-
-function allowedEvaluationModesForBackend(backend) {
-  if (backend === 'experimental_distance') {
-    return ['realtime'];
-  }
-  return ['auto', 'precomputed_polar', 'precomputed_cartesian'];
 }
 
 function formatEvaluationModeLabel(mode) {
@@ -118,14 +132,13 @@ export function renderVbapStatus() {
 
 export function renderEvaluationMode() {
   const backend = app.renderBackendState.effective || app.renderBackendState.selection || 'vbap';
-  const allowedModes = allowedEvaluationModesForBackend(backend);
+  const allowedModes = ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'];
   const selection = typeof app.evaluationModeState.selection === 'string' ? app.evaluationModeState.selection : null;
   const effectiveMode = typeof app.evaluationModeState.effective === 'string' ? app.evaluationModeState.effective : null;
+  const nextValue = allowedModes.includes(selection) ? selection : allowedModes[0];
   if (renderEvaluationModeSelectEl) {
-    const nextValue = allowedModes.includes(selection) ? selection : allowedModes[0];
     renderEvaluationModeSelectEl.value = nextValue;
-    renderEvaluationModeSelectEl.disabled = allowedModes.length === 1;
-    applyEvaluationModeVisibility(nextValue);
+    renderEvaluationModeSelectEl.disabled = false;
   }
   if (renderEvaluationModeEffectiveEl) {
     renderEvaluationModeEffectiveEl.textContent = formatEvaluationModeLabel(effectiveMode);
@@ -140,7 +153,7 @@ export function renderEvaluationMode() {
         : '—';
     rendererSummaryEl.textContent = `${backendText} / ${tf('renderer.summary', { mode: modeText })}`;
   }
-  applyEvaluationModeVisibility(effectiveMode || selection || allowedModes[0]);
+  applyEvaluationModeVisibility(nextValue);
 }
 
 export function updateEvaluationMode() {

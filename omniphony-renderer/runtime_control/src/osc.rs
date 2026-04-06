@@ -272,22 +272,12 @@ pub fn apply_simple_osc_control(
             parse_string_arg(msg.args.first()).and_then(|value| LiveEvaluationMode::from_str(&value));
         if let Some(requested) = requested {
             let mut live = ctx.renderer.live.write().unwrap();
-            let accepted = match live.backend_kind {
-                RenderBackendKind::Vbap => {
-                    if requested != LiveEvaluationMode::Realtime {
-                        if live.evaluation.mode != requested {
-                            live.set_evaluation_mode(requested);
-                            effects.mark_dirty = true;
-                            effects.trigger_layout_recompute = true;
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                }
-                RenderBackendKind::ExperimentalDistance => requested == LiveEvaluationMode::Realtime,
-            };
-            if accepted {
+            if live.evaluation.mode != requested {
+                live.set_evaluation_mode(requested);
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+            }
+            {
                 if live.backend_kind == RenderBackendKind::Vbap {
                     effects.mark_dirty = true;
                 }
@@ -853,56 +843,35 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr
-        .strip_prefix("/omniphony/control/vbap/cart/")
-        .or_else(|| addr.strip_prefix("/omniphony/control/render_evaluation/cartesian/"))
-    {
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/render_evaluation/cartesian/") {
         let size = match msg.args.first() {
             Some(OscType::Int(i)) => Some((*i).max(1) as usize),
             Some(OscType::Float(f)) => Some((*f).round().max(1.0) as usize),
             _ => None,
         };
         if let Some(size) = size {
-            let (legacy_state_addr, evaluation_state_addr) = match rest {
+            let state_addr = match rest {
                 "x_size" => {
                     ctx.renderer.live.write().unwrap().evaluation.cartesian.x_size = size;
-                    (
-                        Some("/omniphony/state/vbap/cart/x_size"),
-                        Some("/omniphony/state/render_evaluation/cartesian/x_size"),
-                    )
+                    Some("/omniphony/state/render_evaluation/cartesian/x_size")
                 }
                 "y_size" => {
                     ctx.renderer.live.write().unwrap().evaluation.cartesian.y_size = size;
-                    (
-                        Some("/omniphony/state/vbap/cart/y_size"),
-                        Some("/omniphony/state/render_evaluation/cartesian/y_size"),
-                    )
+                    Some("/omniphony/state/render_evaluation/cartesian/y_size")
                 }
                 "z_size" => {
                     ctx.renderer.live.write().unwrap().evaluation.cartesian.z_size = size;
-                    (
-                        Some("/omniphony/state/vbap/cart/z_size"),
-                        Some("/omniphony/state/render_evaluation/cartesian/z_size"),
-                    )
+                    Some("/omniphony/state/render_evaluation/cartesian/z_size")
                 }
                 "z_neg_size" => {
                     ctx.renderer.live.write().unwrap().evaluation.cartesian.z_neg_size = size;
-                    (
-                        Some("/omniphony/state/vbap/cart/z_neg_size"),
-                        Some("/omniphony/state/render_evaluation/cartesian/z_neg_size"),
-                    )
+                    Some("/omniphony/state/render_evaluation/cartesian/z_neg_size")
                 }
-                _ => (None, None),
+                _ => None,
             };
-            if let Some(state_addr) = legacy_state_addr {
+            if let Some(state_addr) = state_addr {
                 effects.mark_dirty = true;
                 effects.trigger_layout_recompute = true;
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: state_addr.to_string(),
-                    value: BroadcastValue::Int(size as i32),
-                });
-            }
-            if let Some(state_addr) = evaluation_state_addr {
                 effects.broadcasts.push(BroadcastUpdate {
                     addr: state_addr.to_string(),
                     value: BroadcastValue::Int(size as i32),
@@ -912,43 +881,11 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/vbap/table_mode" {
-        if let Some(OscType::String(mode)) = msg.args.first() {
-            if let Some(mode) = renderer::live_params::LiveVbapTableMode::from_str(mode) {
-                let evaluation_mode =
-                    renderer::live_params::LiveEvaluationMode::from_vbap_table_mode(mode);
-                ctx.renderer.live.write().unwrap().set_evaluation_mode(evaluation_mode);
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: "/omniphony/state/vbap/table_mode".to_string(),
-                    value: BroadcastValue::String(mode.as_str().to_string()),
-                });
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: "/omniphony/state/render_evaluation_mode".to_string(),
-                    value: BroadcastValue::String(evaluation_mode.as_str().to_string()),
-                });
-                effects.log_message = Some(format!(
-                    "OSC: vbap/table_mode -> {} (legacy; render_evaluation_mode={})",
-                    mode.as_str(),
-                    evaluation_mode.as_str()
-                ));
-            }
-        }
-        return Some(effects);
-    }
-
-    if addr == "/omniphony/control/vbap/position_interpolation"
-        || addr == "/omniphony/control/render_evaluation/position_interpolation"
-    {
+    if addr == "/omniphony/control/render_evaluation/position_interpolation" {
         if let Some(enabled) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().unwrap().evaluation.position_interpolation = enabled;
             effects.mark_dirty = true;
             effects.trigger_layout_recompute = true;
-            effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/vbap/position_interpolation".to_string(),
-                value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
-            });
             effects.broadcasts.push(BroadcastUpdate {
                 addr: "/omniphony/state/render_evaluation/position_interpolation".to_string(),
                 value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
@@ -957,10 +894,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr
-        .strip_prefix("/omniphony/control/vbap/polar/")
-        .or_else(|| addr.strip_prefix("/omniphony/control/render_evaluation/polar/"))
-    {
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/render_evaluation/polar/") {
         match rest {
             "azimuth_resolution" | "elevation_resolution" => {
                 let res = match msg.args.first() {
@@ -969,36 +903,22 @@ pub fn apply_simple_osc_control(
                     _ => None,
                 };
                 if let Some(res) = res {
-                    let (legacy_state_addr, evaluation_state_addr) = match rest {
+                    let state_addr = match rest {
                         "azimuth_resolution" => {
                             ctx.renderer.live.write().unwrap().evaluation.polar.azimuth_values =
                                 res;
-                            (
-                                Some("/omniphony/state/vbap/polar/azimuth_resolution"),
-                                Some("/omniphony/state/render_evaluation/polar/azimuth_resolution"),
-                            )
+                            Some("/omniphony/state/render_evaluation/polar/azimuth_resolution")
                         }
                         "elevation_resolution" => {
                             ctx.renderer.live.write().unwrap().evaluation.polar.elevation_values =
                                 res;
-                            (
-                                Some("/omniphony/state/vbap/polar/elevation_resolution"),
-                                Some(
-                                    "/omniphony/state/render_evaluation/polar/elevation_resolution",
-                                ),
-                            )
+                            Some("/omniphony/state/render_evaluation/polar/elevation_resolution")
                         }
-                        _ => (None, None),
+                        _ => None,
                     };
-                    if let Some(state_addr) = legacy_state_addr {
+                    if let Some(state_addr) = state_addr {
                         effects.mark_dirty = true;
                         effects.trigger_layout_recompute = true;
-                        effects.broadcasts.push(BroadcastUpdate {
-                            addr: state_addr.to_string(),
-                            value: BroadcastValue::Int(res),
-                        });
-                    }
-                    if let Some(state_addr) = evaluation_state_addr {
                         effects.broadcasts.push(BroadcastUpdate {
                             addr: state_addr.to_string(),
                             value: BroadcastValue::Int(res),
@@ -1017,10 +937,6 @@ pub fn apply_simple_osc_control(
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
                     effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/vbap/polar/distance_res".to_string(),
-                        value: BroadcastValue::Int(res),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
                         addr: "/omniphony/state/render_evaluation/polar/distance_res".to_string(),
                         value: BroadcastValue::Int(res),
                     });
@@ -1036,10 +952,6 @@ pub fn apply_simple_osc_control(
                     ctx.renderer.live.write().unwrap().evaluation.polar.distance_max = max_v;
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/vbap/polar/distance_max".to_string(),
-                        value: BroadcastValue::Float(max_v),
-                    });
                     effects.broadcasts.push(BroadcastUpdate {
                         addr: "/omniphony/state/render_evaluation/polar/distance_max".to_string(),
                         value: BroadcastValue::Float(max_v),

@@ -116,7 +116,7 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateVbapCartesian();
-      invoke('control_vbap_cart_x_size', { value });
+      invoke('control_render_evaluation_cartesian_x_size', { value });
     });
   }
 
@@ -127,7 +127,7 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateVbapCartesian();
-      invoke('control_vbap_cart_y_size', { value });
+      invoke('control_render_evaluation_cartesian_y_size', { value });
     });
   }
 
@@ -138,7 +138,7 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateVbapCartesian();
-      invoke('control_vbap_cart_z_size', { value });
+      invoke('control_render_evaluation_cartesian_z_size', { value });
     });
   }
 
@@ -149,7 +149,7 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateVbapCartesian();
-      invoke('control_vbap_cart_z_neg_size', { value });
+      invoke('control_render_evaluation_cartesian_z_neg_size', { value });
     });
   }
 
@@ -167,7 +167,6 @@ export function setupRendererPanelListeners() {
       if (!['vbap', 'experimental_distance'].includes(value)) return;
       if (app.renderBackendState.selection === value) return;
       app.renderBackendState.selection = value;
-      app.evaluationModeState.selection = value === 'experimental_distance' ? 'realtime' : 'auto';
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateRenderBackend();
@@ -177,11 +176,8 @@ export function setupRendererPanelListeners() {
 
   if (renderEvaluationModeSelectEl) {
     renderEvaluationModeSelectEl.addEventListener('change', () => {
-      const backend = app.renderBackendState.effective || app.renderBackendState.selection || 'vbap';
       const value = String(renderEvaluationModeSelectEl.value || '').trim().toLowerCase();
-      const allowed = backend === 'experimental_distance'
-        ? ['realtime']
-        : ['auto', 'precomputed_polar', 'precomputed_cartesian'];
+      const allowed = ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'];
       if (!allowed.includes(value)) return;
       if (app.evaluationModeState.selection === value) return;
       app.evaluationModeState.selection = value;
@@ -199,7 +195,7 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateVbapPolar();
-      invoke('control_vbap_polar_azimuth_resolution', { value });
+      invoke('control_render_evaluation_polar_azimuth_resolution', { value });
     });
   }
 
@@ -210,7 +206,7 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateVbapPolar();
-      invoke('control_vbap_polar_elevation_resolution', { value });
+      invoke('control_render_evaluation_polar_elevation_resolution', { value });
     });
   }
 
@@ -221,7 +217,7 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateVbapPolar();
-      invoke('control_vbap_polar_distance_res', { value });
+      invoke('control_render_evaluation_polar_distance_res', { value });
     });
   }
 
@@ -232,7 +228,7 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateVbapPolar();
-      invoke('control_vbap_polar_distance_max', { value });
+      invoke('control_render_evaluation_polar_distance_max', { value });
     });
   }
 
@@ -243,7 +239,7 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateVbapPositionInterpolation();
-      invoke('control_vbap_position_interpolation', { enable: enabled ? 1 : 0 });
+      invoke('control_render_evaluation_position_interpolation', { enable: enabled ? 1 : 0 });
     });
   }
 

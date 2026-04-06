@@ -404,9 +404,7 @@ export function setupTauriBridge() {
   listen('render_backend', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.renderBackendState.selection = ['vbap', 'experimental_distance'].includes(value) ? value : null;
-    if (value === 'experimental_distance') {
-      app.evaluationModeState.selection = 'realtime';
-    } else if (!['auto', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.selection)) {
+    if (!['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.selection)) {
       app.evaluationModeState.selection = 'auto';
     }
     updateRenderBackend();
@@ -415,11 +413,11 @@ export function setupTauriBridge() {
   listen('render_backend:effective', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.renderBackendState.effective = ['vbap', 'experimental_distance'].includes(value) ? value : null;
-    if (value === 'experimental_distance') {
-      app.evaluationModeState.effective = 'realtime';
-    } else if (!['precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
+    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
       app.evaluationModeState.effective = null;
     }
+    app.vbapRecomputing = false;
+    renderVbapStatus();
     updateRenderBackend();
   });
 
@@ -434,6 +432,8 @@ export function setupTauriBridge() {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.evaluationModeState.effective =
       ['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
+    app.vbapRecomputing = false;
+    renderVbapStatus();
     updateEvaluationMode();
   });
 
@@ -442,72 +442,55 @@ export function setupTauriBridge() {
     renderVbapStatus();
   });
 
-  listen('vbap:cart:x_size', ({ payload }) => {
+  listen('render_evaluation:cartesian:x_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.xSize = value > 0 ? value : null;
     updateVbapCartesian();
   });
 
-  listen('vbap:cart:y_size', ({ payload }) => {
+  listen('render_evaluation:cartesian:y_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.ySize = value > 0 ? value : null;
     updateVbapCartesian();
   });
 
-  listen('vbap:cart:z_size', ({ payload }) => {
+  listen('render_evaluation:cartesian:z_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.zSize = value > 0 ? value : null;
     updateVbapCartesian();
   });
 
-  listen('vbap:cart:z_neg_size', ({ payload }) => {
+  listen('render_evaluation:cartesian:z_neg_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.zNegSize = value >= 0 ? value : 0;
     updateVbapCartesian();
   });
 
-  listen('vbap:table_mode', ({ payload }) => {
-    const value = String(payload?.value ?? '').trim().toLowerCase();
-    app.vbapModeState.selection = ['auto', 'polar', 'cartesian'].includes(value) ? value : null;
-    if (value === 'auto') app.evaluationModeState.selection = 'auto';
-    else if (value === 'polar') app.evaluationModeState.selection = 'precomputed_polar';
-    else if (value === 'cartesian') app.evaluationModeState.selection = 'precomputed_cartesian';
-    updateEvaluationMode();
-  });
-
-  listen('vbap:effective_mode', ({ payload }) => {
-    const value = String(payload?.value ?? '').trim().toLowerCase();
-    app.vbapModeState.effectiveMode = ['polar', 'cartesian'].includes(value) ? value : null;
-    if (value === 'polar') app.evaluationModeState.effective = 'precomputed_polar';
-    else if (value === 'cartesian') app.evaluationModeState.effective = 'precomputed_cartesian';
-    updateEvaluationMode();
-  });
-
-  listen('vbap:polar:azimuth_resolution', ({ payload }) => {
+  listen('render_evaluation:polar:azimuth_resolution', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapPolarState.azimuthResolution = value > 0 ? value : null;
     updateVbapPolar();
   });
 
-  listen('vbap:polar:elevation_resolution', ({ payload }) => {
+  listen('render_evaluation:polar:elevation_resolution', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapPolarState.elevationResolution = value > 0 ? value : null;
     updateVbapPolar();
   });
 
-  listen('vbap:polar:distance_res', ({ payload }) => {
+  listen('render_evaluation:polar:distance_res', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapPolarState.distanceRes = value > 0 ? value : null;
     updateVbapPolar();
   });
 
-  listen('vbap:polar:distance_max', ({ payload }) => {
+  listen('render_evaluation:polar:distance_max', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapPolarState.distanceMax = value > 0 ? value : null;
     updateVbapPolar();
   });
 
-  listen('vbap:position_interpolation', ({ payload }) => {
+  listen('render_evaluation:position_interpolation', ({ payload }) => {
     app.vbapPositionInterpolation = payload.enabled === true;
     updateVbapPositionInterpolation();
   });

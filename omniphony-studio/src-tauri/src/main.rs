@@ -537,66 +537,45 @@ fn control_distance_model(state: State<SharedState>, value: String) {
 }
 
 #[tauri::command]
-fn control_vbap_cart_x_size(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_cartesian_x_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/cart/x_size".to_string(),
+            address: "/omniphony/control/render_evaluation/cartesian/x_size".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_cart_y_size(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_cartesian_y_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/cart/y_size".to_string(),
+            address: "/omniphony/control/render_evaluation/cartesian/y_size".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_cart_z_size(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_cartesian_z_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/cart/z_size".to_string(),
+            address: "/omniphony/control/render_evaluation/cartesian/z_size".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_cart_z_neg_size(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_cartesian_z_neg_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/cart/z_neg_size".to_string(),
+            address: "/omniphony/control/render_evaluation/cartesian/z_neg_size".to_string(),
             value: value.max(0),
-        },
-    );
-}
-
-#[tauri::command]
-fn control_vbap_table_mode(state: State<SharedState>, mode: String) {
-    let normalized = mode.trim().to_ascii_lowercase();
-    if !matches!(normalized.as_str(), "auto" | "polar" | "cartesian") {
-        return;
-    }
-    let evaluation_mode = match normalized.as_str() {
-        "auto" => "auto",
-        "polar" => "precomputed_polar",
-        "cartesian" => "precomputed_cartesian",
-        _ => return,
-    };
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: "/omniphony/control/render_evaluation_mode".to_string(),
-            value: evaluation_mode.to_string(),
         },
     );
 }
@@ -635,51 +614,51 @@ fn control_render_evaluation_mode(state: State<SharedState>, value: String) {
 }
 
 #[tauri::command]
-fn control_vbap_polar_azimuth_resolution(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_polar_azimuth_resolution(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/polar/azimuth_resolution".to_string(),
+            address: "/omniphony/control/render_evaluation/polar/azimuth_resolution".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_polar_elevation_resolution(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_polar_elevation_resolution(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/polar/elevation_resolution".to_string(),
+            address: "/omniphony/control/render_evaluation/polar/elevation_resolution".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_polar_distance_res(state: State<SharedState>, value: i32) {
+fn control_render_evaluation_polar_distance_res(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/polar/distance_res".to_string(),
+            address: "/omniphony/control/render_evaluation/polar/distance_res".to_string(),
             value: value.max(1),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_polar_distance_max(state: State<SharedState>, value: f32) {
+fn control_render_evaluation_polar_distance_max(state: State<SharedState>, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/vbap/polar/distance_max".to_string(),
+            address: "/omniphony/control/render_evaluation/polar/distance_max".to_string(),
             value: value.max(0.01),
         },
     );
 }
 
 #[tauri::command]
-fn control_vbap_position_interpolation(state: State<SharedState>, enable: i32) {
+fn control_render_evaluation_position_interpolation(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -2061,18 +2040,17 @@ fn main() {
             control_spread_distance_range,
             control_spread_distance_curve,
             control_distance_model,
-            control_vbap_cart_x_size,
-            control_vbap_cart_y_size,
-            control_vbap_cart_z_size,
-            control_vbap_cart_z_neg_size,
-            control_vbap_table_mode,
+            control_render_evaluation_cartesian_x_size,
+            control_render_evaluation_cartesian_y_size,
+            control_render_evaluation_cartesian_z_size,
+            control_render_evaluation_cartesian_z_neg_size,
             control_render_backend,
             control_render_evaluation_mode,
-            control_vbap_polar_azimuth_resolution,
-            control_vbap_polar_elevation_resolution,
-            control_vbap_polar_distance_res,
-            control_vbap_polar_distance_max,
-            control_vbap_position_interpolation,
+            control_render_evaluation_polar_azimuth_resolution,
+            control_render_evaluation_polar_elevation_resolution,
+            control_render_evaluation_polar_distance_res,
+            control_render_evaluation_polar_distance_max,
+            control_render_evaluation_position_interpolation,
             control_distance_diffuse_enabled,
             control_distance_diffuse_threshold,
             control_distance_diffuse_curve,

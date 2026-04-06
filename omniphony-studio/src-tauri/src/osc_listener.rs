@@ -1450,112 +1450,91 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapCartXSize { value } => {
+            OscEvent::StateRenderEvaluationCartesianXSize { value } => {
                 s.vbap_cartesian.x_size = Some(value);
                 (
-                    Some(("vbap:cart:x_size", serde_json::json!({ "value": value }))),
+                    Some((
+                        "render_evaluation:cartesian:x_size",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapCartYSize { value } => {
+            OscEvent::StateRenderEvaluationCartesianYSize { value } => {
                 s.vbap_cartesian.y_size = Some(value);
                 (
-                    Some(("vbap:cart:y_size", serde_json::json!({ "value": value }))),
+                    Some((
+                        "render_evaluation:cartesian:y_size",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapCartZSize { value } => {
+            OscEvent::StateRenderEvaluationCartesianZSize { value } => {
                 s.vbap_cartesian.z_size = Some(value);
                 (
-                    Some(("vbap:cart:z_size", serde_json::json!({ "value": value }))),
+                    Some((
+                        "render_evaluation:cartesian:z_size",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapCartZNegSize { value } => {
+            OscEvent::StateRenderEvaluationCartesianZNegSize { value } => {
                 s.vbap_cartesian.z_neg_size = Some(value);
                 (
                     Some((
-                        "vbap:cart:z_neg_size",
+                        "render_evaluation:cartesian:z_neg_size",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapTableMode { value } => {
-                s.vbap_mode.selection = Some(value.clone());
-                s.render_evaluation_mode_state.selection = Some(
-                    match value.as_str() {
-                        "polar" => "precomputed_polar",
-                        "cartesian" => "precomputed_cartesian",
-                        _ => "auto",
-                    }
-                    .to_string(),
-                );
-                (
-                    Some(("vbap:table_mode", serde_json::json!({ "value": value }))),
-                    removed_ids,
-                )
-            }
-            OscEvent::StateVbapEffectiveMode { value } => {
-                s.vbap_mode.effective_mode = Some(value.clone());
-                s.render_evaluation_mode_state.effective = Some(
-                    match value.as_str() {
-                        "polar" => "precomputed_polar",
-                        "cartesian" => "precomputed_cartesian",
-                        _ => "realtime",
-                    }
-                    .to_string(),
-                );
-                (
-                    Some(("vbap:effective_mode", serde_json::json!({ "value": value }))),
-                    removed_ids,
-                )
-            }
-            OscEvent::StateVbapPolarAzimuthResolution { value } => {
+            OscEvent::StateRenderEvaluationPolarAzimuthResolution { value } => {
                 s.vbap_polar.azimuth_resolution = Some(value);
                 (
                     Some((
-                        "vbap:polar:azimuth_resolution",
+                        "render_evaluation:polar:azimuth_resolution",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapPolarElevationResolution { value } => {
+            OscEvent::StateRenderEvaluationPolarElevationResolution { value } => {
                 s.vbap_polar.elevation_resolution = Some(value);
                 (
                     Some((
-                        "vbap:polar:elevation_resolution",
+                        "render_evaluation:polar:elevation_resolution",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapPolarDistanceRes { value } => {
+            OscEvent::StateRenderEvaluationPolarDistanceRes { value } => {
                 s.vbap_polar.distance_res = Some(value);
                 (
                     Some((
-                        "vbap:polar:distance_res",
+                        "render_evaluation:polar:distance_res",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapPolarDistanceMax { value } => {
+            OscEvent::StateRenderEvaluationPolarDistanceMax { value } => {
                 s.vbap_polar.distance_max = Some(value);
                 (
                     Some((
-                        "vbap:polar:distance_max",
+                        "render_evaluation:polar:distance_max",
                         serde_json::json!({ "value": value }),
                     )),
                     removed_ids,
                 )
             }
-            OscEvent::StateVbapPositionInterpolation { enabled } => {
+            OscEvent::StateRenderEvaluationPositionInterpolation { enabled } => {
                 s.vbap_polar.position_interpolation = Some(enabled);
                 (
                     Some((
-                        "vbap:position_interpolation",
+                        "render_evaluation:position_interpolation",
                         serde_json::json!({ "enabled": enabled }),
                     )),
                     removed_ids,

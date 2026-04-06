@@ -107,62 +107,24 @@ pub fn build_live_state_bundle(
             args: vec![OscType::Float(live.spread_distance_curve)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/cart/x_size".to_string(),
-            args: vec![OscType::Int(live.evaluation.cartesian.x_size as i32)],
-        }),
-        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/cartesian/x_size".to_string(),
             args: vec![OscType::Int(live.evaluation.cartesian.x_size as i32)],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/cart/y_size".to_string(),
-            args: vec![OscType::Int(live.evaluation.cartesian.y_size as i32)],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/cartesian/y_size".to_string(),
             args: vec![OscType::Int(live.evaluation.cartesian.y_size as i32)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/cart/z_size".to_string(),
-            args: vec![OscType::Int(live.evaluation.cartesian.z_size as i32)],
-        }),
-        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/cartesian/z_size".to_string(),
             args: vec![OscType::Int(live.evaluation.cartesian.z_size as i32)],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/cart/z_neg_size".to_string(),
-            args: vec![OscType::Int(live.evaluation.cartesian.z_neg_size as i32)],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/cartesian/z_neg_size".to_string(),
             args: vec![OscType::Int(live.evaluation.cartesian.z_neg_size as i32)],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/table_mode".to_string(),
-            args: vec![OscType::String(
-                match live.requested_evaluation_mode() {
-                    renderer::live_params::LiveEvaluationMode::Auto => "auto",
-                    renderer::live_params::LiveEvaluationMode::PrecomputedPolar => "polar",
-                    renderer::live_params::LiveEvaluationMode::PrecomputedCartesian => "cartesian",
-                    renderer::live_params::LiveEvaluationMode::Realtime => "auto",
-                }
-                .to_string(),
-            )],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/position_interpolation".to_string(),
-            args: vec![OscType::Int(if live.evaluation.position_interpolation { 1 } else { 0 })],
-        }),
-        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/position_interpolation".to_string(),
             args: vec![OscType::Int(if live.evaluation.position_interpolation { 1 } else { 0 })],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/effective_mode".to_string(),
-            args: vec![OscType::String(
-                active_topology.backend.legacy_vbap_mode_name().to_string(),
-            )],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/log_level".to_string(),
@@ -175,32 +137,16 @@ pub fn build_live_state_bundle(
             args: vec![OscType::String(live.ramp_mode.as_str().to_string())],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/polar/azimuth_resolution".to_string(),
-            args: vec![OscType::Int(live.evaluation.polar.azimuth_values.max(1))],
-        }),
-        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/polar/azimuth_resolution".to_string(),
             args: vec![OscType::Int(live.evaluation.polar.azimuth_values.max(1))],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/polar/elevation_resolution".to_string(),
-            args: vec![OscType::Int(live.evaluation.polar.elevation_values.max(1))],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/polar/elevation_resolution".to_string(),
             args: vec![OscType::Int(live.evaluation.polar.elevation_values.max(1))],
         }),
         OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/polar/distance_res".to_string(),
-            args: vec![OscType::Int(live.evaluation.polar.distance_res.max(1))],
-        }),
-        OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/polar/distance_res".to_string(),
             args: vec![OscType::Int(live.evaluation.polar.distance_res.max(1))],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/vbap/polar/distance_max".to_string(),
-            args: vec![OscType::Float(live.evaluation.polar.distance_max.max(0.01))],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/polar/distance_max".to_string(),
