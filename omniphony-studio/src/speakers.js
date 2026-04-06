@@ -1604,6 +1604,7 @@ export function renderLayout(key) {
     speakerMeshes.push(mesh);
 
     const label = createLabelSprite(String(speaker.id || index));
+    label.userData.speakerIndex = index;
     label.position.set(scenePosition.x, scenePosition.y + 0.12, scenePosition.z);
     scene.add(label);
     speakerLabels.push(label);
@@ -1697,6 +1698,50 @@ export function decayMeters(nowMs) {
 // Hydrate layout <select> dropdown from layout list
 // ---------------------------------------------------------------------------
 
+function canPatchCurrentLayout(key, layout) {
+  if (!layout || get_currentLayoutKey() !== key) {
+    return false;
+  }
+  const currentSpeakers = get_currentLayoutSpeakers();
+  const nextSpeakers = Array.isArray(layout.speakers) ? layout.speakers : [];
+  if (currentSpeakers.length !== nextSpeakers.length) {
+    return false;
+  }
+  for (let index = 0; index < nextSpeakers.length; index += 1) {
+    const currentId = String(currentSpeakers[index]?.id ?? index);
+    const nextId = String(nextSpeakers[index]?.id ?? index);
+    if (currentId !== nextId) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function patchCurrentLayout(key) {
+  const layout = layoutsByKey.get(key);
+  if (!layout) {
+    return false;
+  }
+  const nextSpeakers = Array.isArray(layout.speakers) ? layout.speakers : [];
+  set_currentLayoutKey(key);
+  set_currentLayoutSpeakers(nextSpeakers);
+  sceneState.metersPerUnit = Math.max(0.01, Number(layout.radius_m) || 1.0);
+  speakerDelays.clear();
+  nextSpeakers.forEach((speaker, index) => {
+    hydrateSpeakerCoordinateState(speaker);
+    speakerDelays.set(String(index), speaker.delay_ms ?? 0);
+    updateSpeakerVisualsFromState(index);
+  });
+  sourceMeshes.forEach((_, id) => {
+    updateEffectiveRenderDecoration(id);
+  });
+  updateSpeakerColorsFromSelection();
+  refreshOverlayLists();
+  renderSpeakersList();
+  renderSpeakerEditor();
+  return true;
+}
+
 export function hydrateLayoutSelect(layouts, selectedLayoutKey) {
   const layoutSelectEl = document.getElementById('layoutSelect');
 
@@ -1717,11 +1762,19 @@ export function hydrateLayoutSelect(layouts, selectedLayoutKey) {
 
   if (selectedLayoutKey && layoutsByKey.has(selectedLayoutKey)) {
     if (layoutSelectEl) layoutSelectEl.value = selectedLayoutKey;
-    renderLayout(selectedLayoutKey);
+    if (!canPatchCurrentLayout(selectedLayoutKey, layoutsByKey.get(selectedLayoutKey))) {
+      renderLayout(selectedLayoutKey);
+    } else {
+      patchCurrentLayout(selectedLayoutKey);
+    }
   } else if (layouts.length > 0) {
     const firstKey = layouts[0].key;
     if (layoutSelectEl) layoutSelectEl.value = firstKey;
-    renderLayout(firstKey);
+    if (!canPatchCurrentLayout(firstKey, layoutsByKey.get(firstKey))) {
+      renderLayout(firstKey);
+    } else {
+      patchCurrentLayout(firstKey);
+    }
   } else {
     set_currentLayoutKey(null);
     set_currentLayoutSpeakers([]);

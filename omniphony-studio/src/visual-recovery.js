@@ -7,6 +7,26 @@ import { rebuildRoomDimensionGuideResources, updateRoomDimensionGuides } from '.
 import { rebindPointerListeners } from './picking.js';
 
 let recoveryCanvas = null;
+const visualRecoveryStats = {
+  rebuilds: 0,
+  reasons: {},
+  recentReasons: []
+};
+
+function attachVisualRecoveryDebugHandle() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const existing = window.omniphonyDebug && typeof window.omniphonyDebug === 'object'
+    ? window.omniphonyDebug
+    : {};
+  window.omniphonyDebug = {
+    ...existing,
+    visualRecoveryStats
+  };
+}
+
+attachVisualRecoveryDebugHandle();
 
 function onContextLost(event) {
   event.preventDefault();
@@ -70,6 +90,12 @@ function flagObjectResources(object) {
 }
 
 export function rebuildVisualResources(reason = 'manual') {
+  visualRecoveryStats.rebuilds += 1;
+  visualRecoveryStats.reasons[reason] = (visualRecoveryStats.reasons[reason] || 0) + 1;
+  visualRecoveryStats.recentReasons.push({ t: Date.now(), reason });
+  if (visualRecoveryStats.recentReasons.length > 40) {
+    visualRecoveryStats.recentReasons.shift();
+  }
   if (rendererContextIsLost()) {
     pushLog('warn', `Skipped visual rebuild (${reason}) because the WebGL context is currently lost.`);
     return;
