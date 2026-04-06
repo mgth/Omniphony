@@ -114,9 +114,72 @@ pub struct RenderResponse {
     pub gains: Gains,
 }
 
+pub trait GainModel {
+    fn kind(&self) -> GainModelKind;
+    fn speaker_count(&self) -> usize;
+    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
+    fn save_to_file(
+        &self,
+        path: &std::path::Path,
+        speaker_layout: &SpeakerLayout,
+    ) -> Result<()>;
+}
+
+pub struct PrecomputedVbapEvaluator {
+    model: VbapBackend,
+}
+
+impl PrecomputedVbapEvaluator {
+    pub fn new(model: VbapBackend) -> Self {
+        Self { model }
+    }
+
+    pub fn speaker_count(&self) -> usize {
+        self.model.speaker_count()
+    }
+
+    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        self.model.compute_gains(req)
+    }
+
+    pub fn save_to_file(
+        &self,
+        path: &std::path::Path,
+        speaker_layout: &SpeakerLayout,
+    ) -> Result<()> {
+        self.model.save_to_file(path, speaker_layout)
+    }
+}
+
+pub struct RealtimeExperimentalDistanceEvaluator {
+    model: ExperimentalDistanceBackend,
+}
+
+impl RealtimeExperimentalDistanceEvaluator {
+    pub fn new(model: ExperimentalDistanceBackend) -> Self {
+        Self { model }
+    }
+
+    pub fn speaker_count(&self) -> usize {
+        self.model.speaker_count()
+    }
+
+    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        self.model.compute_gains(req)
+    }
+
+    pub fn save_to_file(
+        &self,
+        path: &std::path::Path,
+        speaker_layout: &SpeakerLayout,
+    ) -> Result<()> {
+        self.model.save_to_file(path, speaker_layout)
+    }
+}
+
 pub enum PreparedEvaluator {
-    Vbap(VbapBackend),
-    ExperimentalDistance(ExperimentalDistanceBackend),
+    PrecomputedVbap(PrecomputedVbapEvaluator),
+    RealtimeExperimentalDistance(RealtimeExperimentalDistanceEvaluator),
 }
 
 pub struct PreparedRenderEngine {
@@ -130,7 +193,7 @@ impl PreparedRenderEngine {
         Self {
             gain_model_kind: GainModelKind::Vbap,
             evaluation_mode,
-            evaluator: PreparedEvaluator::Vbap(backend),
+            evaluator: PreparedEvaluator::PrecomputedVbap(PrecomputedVbapEvaluator::new(backend)),
         }
     }
 
@@ -138,7 +201,9 @@ impl PreparedRenderEngine {
         Self {
             gain_model_kind: GainModelKind::ExperimentalDistance,
             evaluation_mode: EffectiveEvaluationMode::Realtime,
-            evaluator: PreparedEvaluator::ExperimentalDistance(backend),
+            evaluator: PreparedEvaluator::RealtimeExperimentalDistance(
+                RealtimeExperimentalDistanceEvaluator::new(backend),
+            ),
         }
     }
 
@@ -156,15 +221,17 @@ impl PreparedRenderEngine {
 
     pub fn speaker_count(&self) -> usize {
         match &self.evaluator {
-            PreparedEvaluator::Vbap(backend) => backend.speaker_count(),
-            PreparedEvaluator::ExperimentalDistance(backend) => backend.speaker_count(),
+            PreparedEvaluator::PrecomputedVbap(evaluator) => evaluator.speaker_count(),
+            PreparedEvaluator::RealtimeExperimentalDistance(evaluator) => evaluator.speaker_count(),
         }
     }
 
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
         match &self.evaluator {
-            PreparedEvaluator::Vbap(backend) => backend.compute_gains(req),
-            PreparedEvaluator::ExperimentalDistance(backend) => backend.compute_gains(req),
+            PreparedEvaluator::PrecomputedVbap(evaluator) => evaluator.compute_gains(req),
+            PreparedEvaluator::RealtimeExperimentalDistance(evaluator) => {
+                evaluator.compute_gains(req)
+            }
         }
     }
 
@@ -178,9 +245,11 @@ impl PreparedRenderEngine {
         speaker_layout: &SpeakerLayout,
     ) -> Result<()> {
         match &self.evaluator {
-            PreparedEvaluator::Vbap(backend) => backend.save_to_file(path, speaker_layout),
-            PreparedEvaluator::ExperimentalDistance(backend) => {
-                backend.save_to_file(path, speaker_layout)
+            PreparedEvaluator::PrecomputedVbap(evaluator) => {
+                evaluator.save_to_file(path, speaker_layout)
+            }
+            PreparedEvaluator::RealtimeExperimentalDistance(evaluator) => {
+                evaluator.save_to_file(path, speaker_layout)
             }
         }
     }
@@ -314,6 +383,28 @@ impl VbapBackend {
     }
 }
 
+impl GainModel for VbapBackend {
+    fn kind(&self) -> GainModelKind {
+        GainModelKind::Vbap
+    }
+
+    fn speaker_count(&self) -> usize {
+        VbapBackend::speaker_count(self)
+    }
+
+    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        VbapBackend::compute_gains(self, req)
+    }
+
+    fn save_to_file(
+        &self,
+        path: &std::path::Path,
+        speaker_layout: &SpeakerLayout,
+    ) -> Result<()> {
+        VbapBackend::save_to_file(self, path, speaker_layout)
+    }
+}
+
 impl ExperimentalDistanceBackend {
     pub fn new(speaker_positions: Vec<[f32; 3]>) -> Self {
         Self { speaker_positions }
@@ -385,6 +476,28 @@ impl ExperimentalDistanceBackend {
         Err(anyhow::anyhow!(
             "Saving a precomputed table is only supported for the VBAP backend"
         ))
+    }
+}
+
+impl GainModel for ExperimentalDistanceBackend {
+    fn kind(&self) -> GainModelKind {
+        GainModelKind::ExperimentalDistance
+    }
+
+    fn speaker_count(&self) -> usize {
+        ExperimentalDistanceBackend::speaker_count(self)
+    }
+
+    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        ExperimentalDistanceBackend::compute_gains(self, req)
+    }
+
+    fn save_to_file(
+        &self,
+        path: &std::path::Path,
+        speaker_layout: &SpeakerLayout,
+    ) -> Result<()> {
+        ExperimentalDistanceBackend::save_to_file(self, path, speaker_layout)
     }
 }
 
