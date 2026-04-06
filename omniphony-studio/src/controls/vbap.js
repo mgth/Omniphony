@@ -18,6 +18,11 @@ const vbapModeCartesianBtnEl = inRendererPanel('vbapModeCartesianBtn');
 const renderBackendSelectEl = inRendererPanel('renderBackendSelect');
 const renderBackendEffectiveEl = inRendererPanel('renderBackendEffective');
 const rendererSummaryEl = inRendererPanel('rendererSummary');
+const vbapSectionEl = inRendererPanel('vbapSection');
+const distanceModelControlRowEl = inRendererPanel('distanceModelControlRow');
+const spreadSectionEl = inRendererPanel('spreadSection');
+const distanceDiffuseSectionEl = inRendererPanel('distanceDiffuseSection');
+const spreadFromDistanceSectionEl = inRendererPanel('spreadFromDistanceSection');
 const vbapCartXSizeInputEl = inRendererPanel('vbapCartXSizeInput');
 const vbapCartYSizeInputEl = inRendererPanel('vbapCartYSizeInput');
 const vbapCartZSizeInputEl = inRendererPanel('vbapCartZSizeInput');
@@ -51,6 +56,25 @@ function updateVbapCartesianFaceGrid() {
 function renderVbapCartesianGridToggle() {
   if (typeof flushCallbacks.renderVbapCartesianGridToggle === 'function') {
     flushCallbacks.renderVbapCartesianGridToggle();
+  }
+}
+
+function applyRendererBackendVisibility(backend) {
+  const isVbap = backend !== 'experimental_distance';
+  if (vbapSectionEl) {
+    vbapSectionEl.style.display = isVbap ? '' : 'none';
+  }
+  if (distanceModelControlRowEl) {
+    distanceModelControlRowEl.style.display = isVbap ? '' : 'none';
+  }
+  if (spreadSectionEl) {
+    spreadSectionEl.style.display = isVbap ? '' : 'none';
+  }
+  if (distanceDiffuseSectionEl) {
+    distanceDiffuseSectionEl.style.display = isVbap ? '' : 'none';
+  }
+  if (spreadFromDistanceSectionEl) {
+    spreadFromDistanceSectionEl.style.display = isVbap ? '' : 'none';
   }
 }
 
@@ -104,6 +128,7 @@ export function updateVbapMode() {
 export function renderRenderBackend() {
   const selection = typeof app.renderBackendState.selection === 'string' ? app.renderBackendState.selection : 'vbap';
   const effective = typeof app.renderBackendState.effective === 'string' ? app.renderBackendState.effective : null;
+  const visibleBackend = effective || selection;
   if (renderBackendSelectEl) {
     renderBackendSelectEl.value = selection;
   }
@@ -115,6 +140,7 @@ export function renderRenderBackend() {
           ? 'VBAP'
           : '—';
   }
+  applyRendererBackendVisibility(visibleBackend);
 }
 
 export function updateRenderBackend() {

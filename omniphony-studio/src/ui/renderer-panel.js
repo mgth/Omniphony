@@ -35,6 +35,16 @@ export function rendererPanelMarkup() {
         </div>
         <div id="rendererSectionContent" class="conditional-params">
           <div style="margin-top:0.25rem;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03);display:grid;gap:0.3rem">
+          <div class="control-row" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:center">
+            <label for="renderBackendSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">Render backend</label>
+            <div style="display:flex;align-items:center;gap:0.35rem">
+              <select id="renderBackendSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
+                <option value="vbap">VBAP</option>
+                <option value="experimental_distance">Distance</option>
+              </select>
+              <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
+            </div>
+          </div>
           <div class="info-section" id="vbapSection" style="margin:0;padding:0;border:none;background:none">
             <div id="vbapSectionContent" class="conditional-params open">
             <div class="control-row" style="margin-top:0.25rem;grid-template-columns:1fr auto;align-items:center">
@@ -46,16 +56,6 @@ export function rendererPanelMarkup() {
                 <button id="vbapModeAutoBtn" type="button" class="toggle-btn" data-i18n="common.auto" style="padding:0.15rem 0.45rem;font-size:11px">Auto</button>
                 <button id="vbapModePolarBtn" type="button" class="toggle-btn" data-i18n="common.polarShort" style="padding:0.15rem 0.45rem;font-size:11px">Polar</button>
                 <button id="vbapModeCartesianBtn" type="button" class="toggle-btn" data-i18n="common.cartesianShort" style="padding:0.15rem 0.45rem;font-size:11px">Cartesian</button>
-              </div>
-            </div>
-            <div class="control-row" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:center">
-              <label for="renderBackendSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">Render backend</label>
-              <div style="display:flex;align-items:center;gap:0.35rem">
-                <select id="renderBackendSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
-                  <option value="vbap">VBAP</option>
-                  <option value="experimental_distance">Distance</option>
-                </select>
-                <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
               </div>
             </div>
             <div style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
@@ -104,7 +104,7 @@ export function rendererPanelMarkup() {
             </div>
             </div>
           </div>
-          <div class="control-row" style="margin-top:0.3rem;grid-template-columns:1fr auto;align-items:center">
+          <div class="control-row" id="rampModeRow" style="margin-top:0.3rem;grid-template-columns:1fr auto;align-items:center">
             <div class="title-with-info" style="min-width:0;font-size:12px;font-weight:600">
               <label for="rampModeSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="audio.rampMode">Ramp mode</label>
               <button id="rampModeInfoBtn" type="button" class="info-icon-btn" data-i18n-title="rampMode.infoButton" title="Ramp mode info">i</button>
@@ -115,7 +115,7 @@ export function rendererPanelMarkup() {
               <option value="sample" data-i18n="audio.rampModeSample">Per sample</option>
             </select>
           </div>
-          <div class="control-row" style="margin-top:0.2rem;grid-template-columns:1fr auto;align-items:center">
+          <div class="control-row" id="distanceModelControlRow" style="margin-top:0.2rem;grid-template-columns:1fr auto;align-items:center">
             <label for="distanceModelSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="distance.model">Distance model</label>
             <select id="distanceModelSelect" class="delay-input" style="min-width:11rem">
               <option value="none" data-i18n="distance.model.none">None</option>
