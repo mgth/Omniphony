@@ -73,7 +73,14 @@ import { renderDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { renderConfigSavedUI } from './controls/config.js';
 import { renderLatencyDisplay, renderLatencyMeterUI, renderRenderTimeUI, renderResampleRatioDisplay } from './controls/latency.js';
 import { renderAudioFormatDisplay, applyAudioSampleRateNow } from './controls/audio.js';
-import { updateObjectContributionUI, updateSpeakerContributionUI, getObjectDisplayName, sourceCallbacks, setSelectedSource } from './sources.js';
+import {
+  updateObjectContributionUI,
+  updateSpeakerContributionUI,
+  getObjectDisplayName,
+  refreshEffectiveRenderDecorations,
+  sourceCallbacks,
+  setSelectedSource
+} from './sources.js';
 import { updateVbapCartesianFaceGrid, renderVbapCartesianGridToggle } from './scene/gizmos.js';
 import { updateObjectMeterUI, updateObjectPositionUI, updateObjectLabelUI } from './flush.js';
 import {
@@ -105,7 +112,7 @@ flushCallbacks.updateObjectContributionUI = updateObjectContributionUI;
 flushCallbacks.updateSpeakerContributionUI = updateSpeakerContributionUI;
 flushCallbacks.getObjectDisplayName = getObjectDisplayName;
 flushCallbacks.applyAudioSampleRateNow = applyAudioSampleRateNow;
-flushCallbacks.refreshEffectiveRenderVisibility = refreshEffectiveRenderVisibility;
+flushCallbacks.refreshEffectiveRenderVisibility = refreshEffectiveRenderDecorations;
 flushCallbacks.updateVbapCartesianFaceGrid = updateVbapCartesianFaceGrid;
 flushCallbacks.renderVbapCartesianGridToggle = renderVbapCartesianGridToggle;
 flushCallbacks.applyRoomRatio = applyRoomRatio;
