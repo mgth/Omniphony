@@ -66,19 +66,21 @@
           <input id="oscListenPortInput" type="number" min="0" max="65535" value="0" />
         </div>
         <div class="osc-config-actions">
-          <button id="oscConfigApplyBtn" data-i18n="osc.connect" style="background:rgba(80,200,120,0.2);border:1px solid rgba(80,200,120,0.4);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Connect</button>
-          <button id="oscServiceBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Install service</button>
-          <button id="oscRestartServiceBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Restart service</button>
-          <button id="oscRestartPipewireBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Restart PipeWire</button>
-          <button id="oscLaunchRendererBtn" type="button" style="background:rgba(88,160,255,0.18);border:1px solid rgba(88,160,255,0.38);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.7rem;cursor:pointer">Launch orender</button>
+          <button id="oscConfigApplyBtn" class="ui-btn ui-btn-success" data-i18n="osc.connect">Connect</button>
+          <button id="oscServiceBtn" type="button" class="ui-btn">Install service</button>
+          <button id="oscRestartServiceBtn" type="button" class="ui-btn">Restart service</button>
+          <button id="oscRestartPipewireBtn" type="button" class="ui-btn">Restart PipeWire</button>
+          <button id="oscLaunchRendererBtn" type="button" class="ui-btn ui-btn-accent">Launch orender</button>
         </div>
       </div>
       </div>
       <div id="audioInputPanelMount"></div>
       <div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid rgba(255, 255, 255, 0.12)"></div>
       <div id="roomGeometryPanelRoot">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.25rem">
-        <div style="font-size:12px;font-weight:600" data-i18n="room.title">Room Geometry</div>
+      <div class="panel-header" style="margin-top:0.25rem">
+        <div class="panel-header-main">
+        <div class="panel-title" style="font-size:12px;font-weight:600" data-i18n="room.title">Room Geometry</div>
+        </div>
         <div style="display:flex;align-items:center;gap:0.35rem">
           <button id="roomGeometryInfoBtn" type="button" class="info-icon-btn" data-i18n-title="room.infoButton" title="Room Geometry info">i</button>
           <button id="roomGeometryToggleBtn" type="button" class="panel-toggle-btn" data-i18n-title="room.title" title="Room Geometry">▸</button>
@@ -158,14 +160,16 @@
           <span id="roomRatioCenterBlendValue" style="min-width:3.5rem;text-align:right;font-size:11px;color:#d9ecff;cursor:default" data-i18n-title="room.centerBlend.resetTitle" title="Double click to reset 50/50">50/50</span>
         </div>
         <div style="margin-top:0.2rem;display:flex;justify-content:flex-end;gap:0.35rem">
-          <button id="roomGeometryCancelBtn" data-i18n="common.cancel" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.5rem;cursor:pointer">Cancel</button>
+          <button id="roomGeometryCancelBtn" class="ui-btn" data-i18n="common.cancel">Cancel</button>
         </div>
       </div>
       </div>
       <div id="displayPanelRoot">
       <div class="info-section" id="displaySection">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-          <div class="info-title" style="margin:0" data-i18n="section.display">Display</div>
+        <div class="panel-header">
+          <div class="panel-header-main">
+          <div class="info-title panel-title" data-i18n="section.display">Display</div>
+          </div>
           <button id="displaySectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
         </div>
         <div id="displaySectionContent" class="conditional-params">
@@ -244,11 +248,13 @@
       <div id="audioPanelMount"></div>
       <div id="rendererPanelMount"></div>
       <div class="info-section" id="speakersSection">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-          <div class="info-title" style="margin:0" data-i18n="section.speakers">Speakers</div>
+        <div class="panel-header">
+          <div class="panel-header-main">
+          <div class="info-title panel-title" data-i18n="section.speakers">Speakers</div>
+          </div>
           <div style="display:flex;align-items:center;gap:0.35rem">
-            <button id="importLayoutBtn" data-i18n="config.import" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Import layout</button>
-            <button id="exportLayoutBtn" data-i18n="config.export" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Export layout</button>
+            <button id="importLayoutBtn" class="ui-btn ui-btn-primary" data-i18n="config.import">Import layout</button>
+            <button id="exportLayoutBtn" class="ui-btn ui-btn-primary" data-i18n="config.export">Export layout</button>
             <button id="speakerAddBtn" type="button" class="toggle-btn">+ Add</button>
           </div>
         </div>

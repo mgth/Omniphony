@@ -1,14 +1,16 @@
+import { panelHeader, primaryButton, secondaryButton } from './ui-primitives.js';
+
 export function audioPanelMarkup() {
   return `
       <div id="audioPanelRoot">
       <div class="info-section" id="audioOutputSection">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-          <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
-            <div class="info-title" style="margin:0" data-i18n="section.audioOutput">Audio Output</div>
-            <div id="audioOutputSummary" style="display:none;min-width:0;flex:1 1 auto;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
-          </div>
-          <button id="audioOutputSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
-        </div>
+        ${panelHeader({
+          titleKey: 'section.audioOutput',
+          titleText: 'Audio Output',
+          summaryId: 'audioOutputSummary',
+          summaryText: '—',
+          toggleId: 'audioOutputSectionToggleBtn'
+        })}
         <div id="audioOutputSectionContent" class="conditional-params">
           <div class="inline-toggle">
             <div id="loudnessInfo">source loudness: — | target loudness: — | correction: —</div>
@@ -21,14 +23,14 @@ export function audioPanelMarkup() {
               <select id="audioOutputDeviceSelect" class="delay-input" style="flex:1 1 auto;min-width:0">
                 <option value="">Default</option>
               </select>
-              <button id="refreshOutputDevicesBtn" type="button" data-i18n-title="audio.refreshDevices" title="Refresh device list" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.1rem 0.45rem;cursor:pointer;flex-shrink:0">↺</button>
+              ${secondaryButton({ id: 'refreshOutputDevicesBtn', text: '↺', title: 'Refresh device list', titleKey: 'audio.refreshDevices', compact: true, extraClass: 'audio-device-refresh-btn' })}
             </div>
           </div>
           <div class="control-row" style="margin-top:0.3rem;grid-template-columns:auto 1fr">
             <label for="audioSampleRateInput" style="font-size:12px;white-space:nowrap" data-i18n="audio.sampleRate">Sample rate</label>
             <div id="audioSampleRateControl" style="position:relative;display:flex;align-items:center;gap:0.2rem;flex:1 1 auto;min-width:0">
               <input id="audioSampleRateInput" class="delay-input" type="text" inputmode="numeric" value="0" style="flex:1 1 auto;min-width:0" />
-              <button id="audioSampleRateMenuBtn" type="button" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.1rem 0.45rem;cursor:pointer">▾</button>
+              ${secondaryButton({ id: 'audioSampleRateMenuBtn', text: '▾', compact: true })}
               <div id="audioSampleRateMenu" style="position:absolute;left:0;right:0;top:calc(100% + 0.2rem);display:none;z-index:20;background:rgba(10,11,16,0.96);border:1px solid rgba(255,255,255,0.2);border-radius:8px;padding:0.2rem;max-height:180px;overflow:auto"></div>
             </div>
           </div>
@@ -82,7 +84,7 @@ export function audioPanelMarkup() {
             <label for="latencyTargetInput" style="font-size:12px;white-space:nowrap" data-i18n="audio.targetLatency">Target latency</label>
             <div style="display:flex;align-items:center;gap:0.35rem">
               <input id="latencyTargetInput" class="delay-input" type="number" min="1" step="1" value="500" style="width:5.5rem" />
-              <button id="latencyTargetApplyBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer" data-i18n="adaptive.apply">Apply</button>
+              ${primaryButton({ id: 'latencyTargetApplyBtn', text: 'Apply', textKey: 'adaptive.apply' })}
               <span aria-hidden="true" data-i18n-title="telemetry.targetMarkerTitle" title="Latency gauge target marker" style="display:inline-block;width:0.38rem;height:0.38rem;border-radius:50%;background:#52e2a2;box-shadow:0 0 0 1px rgba(255,255,255,0.14)"></span>
             </div>
             <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.35rem;min-width:0">
@@ -128,8 +130,8 @@ export function audioPanelMarkup() {
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;grid-column:1 / -1">
                   <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:#8fa6bd" data-i18n="adaptive.resamplingController">Local resampling controller</div>
                   <div style="display:flex;align-items:center;gap:0.4rem">
-                    <button id="adaptivePauseBtn" type="button" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">⏸ Pause</button>
-                    <button id="adaptiveRatioResetBtn" type="button" style="display:none;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer" data-i18n="adaptive.resetRatio">Reset ratio</button>
+                    ${secondaryButton({ id: 'adaptivePauseBtn', text: '⏸ Pause' })}
+                    ${secondaryButton({ id: 'adaptiveRatioResetBtn', text: 'Reset ratio', textKey: 'adaptive.resetRatio', extraClass: 'adaptive-ratio-reset-btn' })}
                   </div>
                 </div>
               </div>
@@ -163,8 +165,8 @@ export function audioPanelMarkup() {
               </div>
             </div>
             <div style="margin-top:0.3rem;display:flex;justify-content:flex-end;gap:0.35rem">
-              <button id="adaptiveResamplingAdvancedCancelBtn" data-i18n="common.cancel" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Cancel</button>
-              <button id="adaptiveResamplingAdvancedApplyBtn" data-i18n="adaptive.apply" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Apply</button>
+              ${secondaryButton({ id: 'adaptiveResamplingAdvancedCancelBtn', text: 'Cancel', textKey: 'common.cancel' })}
+              ${primaryButton({ id: 'adaptiveResamplingAdvancedApplyBtn', text: 'Apply', textKey: 'adaptive.apply' })}
             </div>
           </div>
         </div>

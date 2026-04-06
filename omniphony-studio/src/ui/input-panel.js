@@ -1,14 +1,16 @@
+import { panelHeader, primaryButton, secondaryButton } from './ui-primitives.js';
+
 export function inputPanelMarkup() {
   return `
       <div id="inputPanelRoot">
       <div class="info-section" id="audioInputSection">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-          <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
-            <div class="info-title" style="margin:0" data-i18n="section.audioInput">Audio Input</div>
-            <div id="inputSummary" style="display:none;min-width:0;flex:1 1 auto;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Pipe bridge • active Pipe bridge • pipe</div>
-          </div>
-          <button id="inputSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
-        </div>
+        ${panelHeader({
+          titleKey: 'section.audioInput',
+          titleText: 'Audio Input',
+          summaryId: 'inputSummary',
+          summaryText: 'Pipe bridge • active Pipe bridge • pipe',
+          toggleId: 'inputSectionToggleBtn'
+        })}
         <div id="inputSectionContent" class="conditional-params">
         <div class="input-panel-shell">
           <div id="inputStatusInfo" class="input-panel-status">requested Pipe bridge • active Pipe bridge • —</div>
@@ -28,7 +30,7 @@ export function inputPanelMarkup() {
               <label for="oscBridgePathInput" data-i18n="input.bridgeBinary">Bridge</label>
               <div style="display:flex;align-items:center;gap:0.4rem;min-width:0">
                 <input id="oscBridgePathInput" type="text" value="" spellcheck="false" placeholder="Auto-detect" data-i18n-placeholder="input.autoDetect" class="delay-input" style="min-width:0;flex:1 1 auto" />
-                <button id="oscBridgeBrowseBtn" type="button" data-i18n="input.browse" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Browse</button>
+                ${secondaryButton({ id: 'oscBridgeBrowseBtn', text: 'Browse', textKey: 'input.browse' })}
               </div>
             </div>
             <div class="input-panel-row">
@@ -65,7 +67,7 @@ export function inputPanelMarkup() {
               <label for="inputLayoutInput" data-i18n="input.layout">Layout</label>
               <div style="display:flex;align-items:center;gap:0.4rem;min-width:0">
                 <input id="inputLayoutInput" class="delay-input" type="text" placeholder="No imported layout" data-i18n-placeholder="input.noImportedLayout" readonly style="min-width:0;flex:1 1 auto" />
-                <button id="inputLayoutBrowseBtn" type="button" data-i18n="input.import" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.2rem 0.6rem;cursor:pointer">Import</button>
+                ${secondaryButton({ id: 'inputLayoutBrowseBtn', text: 'Import', textKey: 'input.import' })}
               </div>
             </div>
             <div class="input-panel-inline-grid">
@@ -103,8 +105,8 @@ export function inputPanelMarkup() {
             </div>
           </div>
           <div class="input-panel-actions">
-            <button id="inputRefreshBtn" type="button" data-i18n="input.refresh" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#cfd9e8;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Refresh</button>
-            <button id="inputApplyBtn" type="button" data-i18n="input.apply" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#d9ecff;border-radius:6px;font-size:12px;padding:0.15rem 0.6rem;cursor:pointer">Apply</button>
+            ${secondaryButton({ id: 'inputRefreshBtn', text: 'Refresh', textKey: 'input.refresh' })}
+            ${primaryButton({ id: 'inputApplyBtn', text: 'Apply', textKey: 'input.apply' })}
           </div>
         </div>
         </div>

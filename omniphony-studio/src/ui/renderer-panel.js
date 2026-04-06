@@ -3,9 +3,9 @@ export function rendererPanelMarkup() {
       <div id="rendererPanelRoot">
       <div class="info-section" id="rendererSection">
         <div style="display:grid;gap:0.2rem">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-            <div style="display:flex;align-items:center;gap:0.5rem;min-width:0;flex:1 1 auto">
-            <div class="info-title" style="margin:0" data-i18n="section.renderer">Renderer</div>
+          <div class="panel-header">
+            <div class="panel-header-main">
+            <div class="info-title panel-title" data-i18n="section.renderer">Renderer</div>
             <div id="rendererPerfWrap" style="display:none;min-width:180px;flex:0 0 auto">
               <div style="display:grid;gap:0.18rem;min-width:180px">
                 <div style="display:grid;grid-template-columns:180px max-content;align-items:center;gap:0.35rem">
@@ -30,7 +30,7 @@ export function rendererPanelMarkup() {
             <button id="rendererSectionToggleBtn" type="button" class="panel-toggle-btn">▸</button>
           </div>
           <div style="display:flex;justify-content:flex-end;min-width:0">
-            <div id="rendererSummary" style="display:none;min-width:0;font-size:11px;color:#9eb4c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+            <div id="rendererSummary" class="panel-summary" style="display:none;flex:0 1 auto">—</div>
           </div>
         </div>
         <div id="rendererSectionContent" class="conditional-params">

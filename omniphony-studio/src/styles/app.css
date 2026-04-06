@@ -90,6 +90,83 @@
         letter-spacing: 0.12em;
       }
 
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.4rem;
+      }
+
+      .panel-header-main {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+
+      .panel-title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+
+      .panel-title {
+        margin: 0;
+      }
+
+      .panel-summary {
+        min-width: 0;
+        flex: 1 1 auto;
+        font-size: 11px;
+        color: #9eb4c8;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .ui-btn {
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.2);
+        color: #cfd9e8;
+        border-radius: 6px;
+        font-size: 12px;
+        padding: 0.15rem 0.6rem;
+        cursor: pointer;
+      }
+
+      .ui-btn-primary {
+        background: rgba(255,255,255,0.1);
+        border-color: rgba(255,255,255,0.25);
+        color: #d9ecff;
+      }
+
+      .ui-btn-success {
+        background: rgba(80,200,120,0.2);
+        border-color: rgba(80,200,120,0.4);
+        color: #d9ecff;
+      }
+
+      .ui-btn-accent {
+        background: rgba(88,160,255,0.18);
+        border-color: rgba(88,160,255,0.38);
+        color: #d9ecff;
+      }
+
+      .ui-btn-compact {
+        padding: 0.1rem 0.45rem;
+      }
+
+      .audio-device-refresh-btn {
+        flex-shrink: 0;
+      }
+
+      .adaptive-ratio-reset-btn {
+        display: none;
+      }
+
       .about-logo-row {
         display: flex;
         align-items: center;
