@@ -4,12 +4,12 @@ use anyhow::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RenderBackendKind {
+pub enum GainModelKind {
     Vbap,
     ExperimentalDistance,
 }
 
-impl RenderBackendKind {
+impl GainModelKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Vbap => "vbap",
@@ -24,6 +24,45 @@ impl RenderBackendKind {
                 Some(Self::ExperimentalDistance)
             }
             _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderBackendKind {
+    Vbap,
+    ExperimentalDistance,
+}
+
+impl RenderBackendKind {
+    pub fn as_str(self) -> &'static str {
+        GainModelKind::from(self).as_str()
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        GainModelKind::from_str(value).map(Self::from)
+    }
+
+    pub fn as_gain_model_kind(self) -> GainModelKind {
+        self.into()
+    }
+}
+
+impl From<GainModelKind> for RenderBackendKind {
+    fn from(value: GainModelKind) -> Self {
+        match value {
+            GainModelKind::Vbap => Self::Vbap,
+            GainModelKind::ExperimentalDistance => Self::ExperimentalDistance,
+        }
+    }
+}
+
+impl From<RenderBackendKind> for GainModelKind {
+    fn from(value: RenderBackendKind) -> Self {
+        match value {
+            RenderBackendKind::Vbap => Self::Vbap,
+            RenderBackendKind::ExperimentalDistance => Self::ExperimentalDistance,
         }
     }
 }

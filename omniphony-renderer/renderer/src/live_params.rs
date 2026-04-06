@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::render_backend::{RenderBackend, RenderBackendKind};
+use crate::render_backend::{GainModelKind, RenderBackend, RenderBackendKind};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
@@ -50,6 +50,43 @@ impl LiveVbapTableMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveEvaluationMode {
+    Auto,
+    Realtime,
+    PrecomputedPolar,
+    PrecomputedCartesian,
+}
+
+impl LiveEvaluationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Realtime => "realtime",
+            Self::PrecomputedPolar => "precomputed_polar",
+            Self::PrecomputedCartesian => "precomputed_cartesian",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "realtime" | "direct" => Some(Self::Realtime),
+            "precomputed_polar" | "polar" => Some(Self::PrecomputedPolar),
+            "precomputed_cartesian" | "cartesian" => Some(Self::PrecomputedCartesian),
+            _ => None,
+        }
+    }
+
+    pub fn from_vbap_table_mode(mode: LiveVbapTableMode) -> Self {
+        match mode {
+            LiveVbapTableMode::Auto => Self::Auto,
+            LiveVbapTableMode::Polar => Self::PrecomputedPolar,
+            LiveVbapTableMode::Cartesian => Self::PrecomputedCartesian,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VbapBackendMode {
     Polar,
     Cartesian,
@@ -60,6 +97,21 @@ impl VbapBackendMode {
         match mode {
             VbapTableMode::Polar => Self::Polar,
             VbapTableMode::Cartesian { .. } => Self::Cartesian,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreferredEvaluationMode {
+    PrecomputedPolar,
+    PrecomputedCartesian,
+}
+
+impl PreferredEvaluationMode {
+    pub fn from_vbap_table_mode(mode: VbapTableMode) -> Self {
+        match mode {
+            VbapTableMode::Polar => Self::PrecomputedPolar,
+            VbapTableMode::Cartesian { .. } => Self::PrecomputedCartesian,
         }
     }
 }
@@ -242,6 +294,19 @@ pub struct LiveParams {
     pub distance_diffuse_curve: f32,
 }
 
+impl LiveParams {
+    pub fn gain_model_kind(&self) -> GainModelKind {
+        self.backend_kind.as_gain_model_kind()
+    }
+
+    pub fn requested_evaluation_mode(&self) -> LiveEvaluationMode {
+        match self.gain_model_kind() {
+            GainModelKind::Vbap => LiveEvaluationMode::from_vbap_table_mode(self.vbap_table_mode),
+            GainModelKind::ExperimentalDistance => LiveEvaluationMode::Realtime,
+        }
+    }
+}
+
 /// Parse a `"width,length,height"` string into `[f32; 3]`.
 /// Returns `[1.0, 1.0, 1.0]` on any parse error.
 pub fn parse_room_ratio(s: &str) -> [f32; 3] {
@@ -268,6 +333,12 @@ pub struct VbapRebuildParams {
     pub cartesian_default_z_neg_size: usize,
     pub allow_negative_z: bool,
     pub distance_model: crate::spatial_vbap::DistanceModel,
+}
+
+impl VbapRebuildParams {
+    pub fn preferred_evaluation_mode(&self) -> PreferredEvaluationMode {
+        PreferredEvaluationMode::from_vbap_table_mode(self.table_mode)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -434,6 +505,20 @@ impl TopologyBuildPlan {
         }
     }
 
+    pub fn gain_model_kind(&self) -> GainModelKind {
+        self.backend_kind().as_gain_model_kind()
+    }
+
+    pub fn evaluation_mode(&self) -> LiveEvaluationMode {
+        match self {
+            Self::Vbap(plan) => match plan.table_mode {
+                VbapTableMode::Polar => LiveEvaluationMode::PrecomputedPolar,
+                VbapTableMode::Cartesian { .. } => LiveEvaluationMode::PrecomputedCartesian,
+            },
+            Self::ExperimentalDistance(_) => LiveEvaluationMode::Realtime,
+        }
+    }
+
     pub fn layout(&self) -> &SpeakerLayout {
         match self {
             Self::Vbap(plan) => &plan.layout,
@@ -444,7 +529,8 @@ impl TopologyBuildPlan {
     pub fn log_summary(&self) -> String {
         match self {
             Self::Vbap(plan) => format!(
-                "backend=vbap azimuth_resolution={} elevation_resolution={} distance_res={} distance_max={} mode={:?}",
+                "gain_model=vbap evaluation_mode={} azimuth_resolution={} elevation_resolution={} distance_res={} distance_max={} mode={:?}",
+                self.evaluation_mode().as_str(),
                 plan.azimuth_resolution,
                 plan.elevation_resolution,
                 plan.distance_res,
@@ -452,7 +538,8 @@ impl TopologyBuildPlan {
                 plan.table_mode
             ),
             Self::ExperimentalDistance(plan) => format!(
-                "backend=experimental_distance speakers={}",
+                "gain_model=experimental_distance evaluation_mode={} speakers={}",
+                self.evaluation_mode().as_str(),
                 plan.speaker_positions.len()
             ),
         }
@@ -575,7 +662,7 @@ impl RendererControl {
     pub fn prepare_topology_rebuild(&self) -> Option<TopologyBuildPlan> {
         let layout = self.editable_layout();
         let live = self.live.read().unwrap();
-        if live.backend_kind == RenderBackendKind::ExperimentalDistance {
+        if live.gain_model_kind() == GainModelKind::ExperimentalDistance {
             let speaker_positions = layout
                 .speakers
                 .iter()
@@ -601,10 +688,11 @@ impl RendererControl {
             )
             .0;
 
-        let table_mode = match live.vbap_table_mode {
-            LiveVbapTableMode::Auto => match rebuild.preferred_table_mode {
-                VbapBackendMode::Polar => crate::spatial_vbap::VbapTableMode::Polar,
-                VbapBackendMode::Cartesian => crate::spatial_vbap::VbapTableMode::Cartesian {
+        let table_mode = match live.requested_evaluation_mode() {
+            LiveEvaluationMode::Realtime => return None,
+            LiveEvaluationMode::Auto => match rebuild.preferred_evaluation_mode() {
+                PreferredEvaluationMode::PrecomputedPolar => crate::spatial_vbap::VbapTableMode::Polar,
+                PreferredEvaluationMode::PrecomputedCartesian => crate::spatial_vbap::VbapTableMode::Cartesian {
                     x_size: live
                         .vbap_cart_x_size
                         .max(rebuild.cartesian_default_x_size)
@@ -625,8 +713,8 @@ impl RendererControl {
                         .max(rebuild.cartesian_default_z_neg_size),
                 },
             },
-            LiveVbapTableMode::Polar => crate::spatial_vbap::VbapTableMode::Polar,
-            LiveVbapTableMode::Cartesian => crate::spatial_vbap::VbapTableMode::Cartesian {
+            LiveEvaluationMode::PrecomputedPolar => crate::spatial_vbap::VbapTableMode::Polar,
+            LiveEvaluationMode::PrecomputedCartesian => crate::spatial_vbap::VbapTableMode::Cartesian {
                 x_size: live
                     .vbap_cart_x_size
                     .max(rebuild.cartesian_default_x_size)
