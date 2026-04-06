@@ -87,7 +87,10 @@ pub(super) fn merge_render_config(
     if !arg_sources.is_explicit("vbap_position_interpolation")
         && !arg_sources.is_explicit("no_vbap_position_interpolation")
     {
-        args.vbap_position_interpolation = cfg.vbap_position_interpolation.unwrap_or(true);
+        args.vbap_position_interpolation = cfg
+            .render_evaluation_position_interpolation
+            .or(cfg.vbap_position_interpolation)
+            .unwrap_or(true);
     } else if args.no_vbap_position_interpolation {
         args.vbap_position_interpolation = false;
     }
@@ -346,6 +349,11 @@ pub(super) fn effective_to_config(
             None
         } else {
             Some(false)
+        },
+        render_evaluation_position_interpolation: if args.vbap_position_interpolation {
+            Some(true)
+        } else {
+            None
         },
         vbap_table_mode: if args.vbap_table_mode != VbapTableModeArg::Polar {
             Some(format!("{:?}", args.vbap_table_mode).to_lowercase())

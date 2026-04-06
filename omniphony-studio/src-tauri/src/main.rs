@@ -683,7 +683,7 @@ fn control_vbap_position_interpolation(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/vbap/position_interpolation".to_string(),
+            address: "/omniphony/control/render_evaluation/position_interpolation".to_string(),
             value: if enable != 0 { 1 } else { 0 },
         },
     );

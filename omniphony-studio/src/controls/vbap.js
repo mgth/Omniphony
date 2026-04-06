@@ -22,6 +22,7 @@ const distanceModelControlRowEl = inRendererPanel('distanceModelControlRow');
 const spreadSectionEl = inRendererPanel('spreadSection');
 const distanceDiffuseSectionEl = inRendererPanel('distanceDiffuseSection');
 const spreadFromDistanceSectionEl = inRendererPanel('spreadFromDistanceSection');
+const renderEvaluationPositionInterpolationRowEl = inRendererPanel('renderEvaluationPositionInterpolationRow');
 const vbapCartXSizeInputEl = inRendererPanel('vbapCartXSizeInput');
 const vbapCartYSizeInputEl = inRendererPanel('vbapCartYSizeInput');
 const vbapCartZSizeInputEl = inRendererPanel('vbapCartZSizeInput');
@@ -77,6 +78,13 @@ function applyRendererBackendVisibility(backend) {
   }
 }
 
+function applyEvaluationModeVisibility(mode) {
+  const showsPrecomputedControls = mode === 'auto' || mode === 'precomputed_polar' || mode === 'precomputed_cartesian';
+  if (renderEvaluationPositionInterpolationRowEl) {
+    renderEvaluationPositionInterpolationRowEl.style.display = showsPrecomputedControls ? '' : 'none';
+  }
+}
+
 function allowedEvaluationModesForBackend(backend) {
   if (backend === 'experimental_distance') {
     return ['realtime'];
@@ -117,6 +125,7 @@ export function renderEvaluationMode() {
     const nextValue = allowedModes.includes(selection) ? selection : allowedModes[0];
     renderEvaluationModeSelectEl.value = nextValue;
     renderEvaluationModeSelectEl.disabled = allowedModes.length === 1;
+    applyEvaluationModeVisibility(nextValue);
   }
   if (renderEvaluationModeEffectiveEl) {
     renderEvaluationModeEffectiveEl.textContent = formatEvaluationModeLabel(effectiveMode);
@@ -131,6 +140,7 @@ export function renderEvaluationMode() {
         : '—';
     rendererSummaryEl.textContent = `${backendText} / ${tf('renderer.summary', { mode: modeText })}`;
   }
+  applyEvaluationModeVisibility(effectiveMode || selection || allowedModes[0]);
 }
 
 export function updateEvaluationMode() {

@@ -188,6 +188,7 @@ pub struct PolarEvaluationParams {
 #[derive(Clone, Copy)]
 pub struct EvaluationLiveParams {
     pub mode: LiveEvaluationMode,
+    pub position_interpolation: bool,
     pub cartesian: CartesianEvaluationParams,
     pub polar: PolarEvaluationParams,
 }
@@ -231,9 +232,6 @@ pub struct LiveParams {
     /// Legacy compatibility mirror for the old VBAP table-mode UI/OSC surface.
     /// Keep in sync with `evaluation.mode` while the old protocol still exists.
     pub vbap_table_mode: LiveVbapTableMode,
-
-    /// Interpolate between neighbouring VBAP table positions during lookup.
-    pub vbap_position_interpolation: bool,
 
     /// Apply dialogue normalisation gain stored in the renderer.
     pub use_loudness: bool,
@@ -324,7 +322,6 @@ pub struct VbapModelRebuildParams {
     pub el_res_deg: i32,
     pub spread_resolution: f32,
     pub distance_max: f32,
-    pub position_interpolation: bool,
     pub table_mode: VbapTableMode,
     pub cartesian_default_x_size: usize,
     pub cartesian_default_y_size: usize,
@@ -800,7 +797,7 @@ impl RendererControl {
                 elevation_resolution,
                 distance_res,
                 distance_max,
-                position_interpolation: live.vbap_position_interpolation,
+                position_interpolation: live.evaluation.position_interpolation,
                 table_mode,
                 allow_negative_z: rebuild.allow_negative_z,
                 distance_model: live.distance_model,

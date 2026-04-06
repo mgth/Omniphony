@@ -84,7 +84,12 @@ pub fn save_live_config(
     } else {
         None
     };
-    render.vbap_position_interpolation = if live.vbap_position_interpolation {
+    render.render_evaluation_position_interpolation = if live.evaluation.position_interpolation {
+        Some(true)
+    } else {
+        None
+    };
+    render.vbap_position_interpolation = if live.evaluation.position_interpolation {
         None
     } else {
         Some(false)

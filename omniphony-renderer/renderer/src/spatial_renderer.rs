@@ -600,7 +600,6 @@ impl SpatialRenderer {
                     el_res_deg,
                     spread_resolution,
                     distance_max,
-                    position_interpolation: vbap_position_interpolation,
                     table_mode,
                     cartesian_default_x_size,
                     cartesian_default_y_size,
@@ -801,7 +800,6 @@ impl SpatialRenderer {
                 el_res_deg: vbap_elevation_resolution,
                 spread_resolution,
                 distance_max,
-                position_interpolation: vbap_position_interpolation,
                 table_mode: vbap_table_mode,
                 cartesian_default_x_size: match vbap_table_mode {
                     VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
@@ -943,6 +941,7 @@ impl SpatialRenderer {
             backend_kind: RenderBackendKind::Vbap,
             evaluation: EvaluationLiveParams {
                 mode: initial_evaluation_mode,
+                position_interpolation: vbap_position_interpolation,
                 cartesian: CartesianEvaluationParams {
                     x_size: cartesian_default_x_size.max(1),
                     y_size: cartesian_default_y_size.max(1),
@@ -964,7 +963,6 @@ impl SpatialRenderer {
                 LiveEvaluationMode::PrecomputedCartesian => LiveVbapTableMode::Cartesian,
                 LiveEvaluationMode::Realtime => LiveVbapTableMode::Auto,
             },
-            vbap_position_interpolation,
             use_loudness,
             distance_model,
             speakers: speaker_live,

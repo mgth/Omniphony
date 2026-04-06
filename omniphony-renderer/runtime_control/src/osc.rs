@@ -938,13 +938,19 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/vbap/position_interpolation" {
+    if addr == "/omniphony/control/vbap/position_interpolation"
+        || addr == "/omniphony/control/render_evaluation/position_interpolation"
+    {
         if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().unwrap().vbap_position_interpolation = enabled;
+            ctx.renderer.live.write().unwrap().evaluation.position_interpolation = enabled;
             effects.mark_dirty = true;
             effects.trigger_layout_recompute = true;
             effects.broadcasts.push(BroadcastUpdate {
                 addr: "/omniphony/state/vbap/position_interpolation".to_string(),
+                value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
+            });
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/render_evaluation/position_interpolation".to_string(),
                 value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
             });
         }

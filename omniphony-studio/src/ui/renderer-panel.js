@@ -102,15 +102,15 @@ export function rendererPanelMarkup() {
                   </div>
                 </div>
               </div>
-              <div class="inline-toggle" style="margin-top:0.1rem;display:flex;align-items:center;gap:0.35rem">
-                <div class="title-with-info" style="min-width:0">
-                  <span style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.positionInterpolation">Position interpolation</span>
-                  <button id="vbapPositionInterpolationInfoBtn" type="button" class="info-icon-btn" data-i18n-title="vbap.positionInterpolationInfoButton" title="VBAP position interpolation info">i</button>
-                </div>
-                <input id="vbapPositionInterpolationToggleEl" type="checkbox" />
-              </div>
             </div>
             </div>
+          </div>
+          <div class="inline-toggle" id="renderEvaluationPositionInterpolationRow" style="margin-top:0.1rem;display:flex;align-items:center;gap:0.35rem">
+            <div class="title-with-info" style="min-width:0">
+              <span style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="vbap.positionInterpolation">Position interpolation</span>
+              <button id="vbapPositionInterpolationInfoBtn" type="button" class="info-icon-btn" data-i18n-title="vbap.positionInterpolationInfoButton" title="VBAP position interpolation info">i</button>
+            </div>
+            <input id="vbapPositionInterpolationToggleEl" type="checkbox" />
           </div>
           <div class="control-row" id="rampModeRow" style="margin-top:0.3rem;grid-template-columns:1fr auto;align-items:center">
             <div class="title-with-info" style="min-width:0;font-size:12px;font-weight:600">

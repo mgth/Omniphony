@@ -152,7 +152,11 @@ pub fn build_live_state_bundle(
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/vbap/position_interpolation".to_string(),
-            args: vec![OscType::Int(if live.vbap_position_interpolation { 1 } else { 0 })],
+            args: vec![OscType::Int(if live.evaluation.position_interpolation { 1 } else { 0 })],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/render_evaluation/position_interpolation".to_string(),
+            args: vec![OscType::Int(if live.evaluation.position_interpolation { 1 } else { 0 })],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/vbap/effective_mode".to_string(),
