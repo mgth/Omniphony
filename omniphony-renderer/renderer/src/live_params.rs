@@ -396,9 +396,9 @@ impl VbapTopologyBuildPlan {
         .map_err(|e| anyhow::anyhow!("Failed to precompute VBAP effect tables: {}", e))?;
 
         RenderTopology::new(
-            Arc::new(RenderBackend::Vbap(crate::render_backend::VbapBackend::new(
-                vbap,
-            ))),
+            Arc::new(RenderBackend::Vbap(
+                crate::render_backend::VbapBackend::new(vbap),
+            )),
             self.layout.clone(),
         )
     }
@@ -416,16 +416,14 @@ impl TopologyBuildPlan {
     pub fn build_topology(&self) -> Result<RenderTopology> {
         match self {
             Self::Vbap(plan) => plan.build_topology(),
-            Self::ExperimentalDistance(plan) => {
-                RenderTopology::new(
-                    Arc::new(RenderBackend::ExperimentalDistance(
-                        crate::render_backend::ExperimentalDistanceBackend::new(
-                            plan.speaker_positions.clone(),
-                        ),
-                    )),
-                    plan.layout.clone(),
-                )
-            }
+            Self::ExperimentalDistance(plan) => RenderTopology::new(
+                Arc::new(RenderBackend::ExperimentalDistance(
+                    crate::render_backend::ExperimentalDistanceBackend::new(
+                        plan.speaker_positions.clone(),
+                    ),
+                )),
+                plan.layout.clone(),
+            ),
         }
     }
 

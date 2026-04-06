@@ -5,9 +5,9 @@
 //! table-generation code can use it interchangeably with the table-lookup
 //! backend.
 
+use super::Gains;
 use super::gain_source::VbapGainSource;
 use super::saf_ffi;
-use super::Gains;
 use std::ffi::c_int;
 
 /// Safe wrapper around SAF's speaker triangulation and VBAP gain matrices.

@@ -119,7 +119,10 @@ pub struct RenderConfig {
     pub adaptive_resampling_enable_far_mode: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_force_silence_in_far_mode: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", alias = "adaptive_resampling_hard_recover_in_far_mode")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "adaptive_resampling_hard_recover_in_far_mode"
+    )]
     pub adaptive_resampling_hard_recover_high_in_far_mode: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adaptive_resampling_hard_recover_low_in_far_mode: Option<bool>,
