@@ -282,19 +282,19 @@ pub struct RenderArgs {
     pub vbap_table_mode: VbapTableModeArg,
 
     /// Cartesian VBAP cell count on X axis (used only when --vbap-table-mode cartesian)
-    #[arg(long, value_name = "SIZE")]
+    #[arg(long, visible_alias = "evaluation-cartesian-x-size", value_name = "SIZE")]
     pub vbap_cart_x_size: Option<usize>,
 
     /// Cartesian VBAP cell count on Y axis (used only when --vbap-table-mode cartesian)
-    #[arg(long, value_name = "SIZE")]
+    #[arg(long, visible_alias = "evaluation-cartesian-y-size", value_name = "SIZE")]
     pub vbap_cart_y_size: Option<usize>,
 
     /// Cartesian VBAP cell count on Z axis (used only when --vbap-table-mode cartesian)
-    #[arg(long, value_name = "SIZE")]
+    #[arg(long, visible_alias = "evaluation-cartesian-z-size", value_name = "SIZE")]
     pub vbap_cart_z_size: Option<usize>,
 
     /// Cartesian VBAP cell count on negative Z axis (used only when --vbap-table-mode cartesian)
-    #[arg(long, value_name = "SIZE")]
+    #[arg(long, visible_alias = "evaluation-cartesian-z-neg-size", value_name = "SIZE")]
     pub vbap_cart_z_neg_size: Option<usize>,
 
     /// Allow negative Z values for VBAP tables (floor below listener).
