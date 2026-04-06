@@ -125,6 +125,13 @@ pub trait GainModel {
     ) -> Result<()>;
 }
 
+pub trait EvaluationStrategy<M: GainModel> {
+    type Prepared;
+
+    fn effective_mode(&self) -> EffectiveEvaluationMode;
+    fn prepare(self, model: M) -> Self::Prepared;
+}
+
 pub struct PrecomputedVbapEvaluator {
     model: VbapBackend,
 }
@@ -182,6 +189,44 @@ pub enum PreparedEvaluator {
     RealtimeExperimentalDistance(RealtimeExperimentalDistanceEvaluator),
 }
 
+pub struct PrecomputedVbapStrategy {
+    mode: EffectiveEvaluationMode,
+}
+
+impl PrecomputedVbapStrategy {
+    pub fn new(mode: EffectiveEvaluationMode) -> Self {
+        Self { mode }
+    }
+}
+
+impl EvaluationStrategy<VbapBackend> for PrecomputedVbapStrategy {
+    type Prepared = PreparedEvaluator;
+
+    fn effective_mode(&self) -> EffectiveEvaluationMode {
+        self.mode
+    }
+
+    fn prepare(self, model: VbapBackend) -> Self::Prepared {
+        PreparedEvaluator::PrecomputedVbap(PrecomputedVbapEvaluator::new(model))
+    }
+}
+
+pub struct RealtimeExperimentalDistanceStrategy;
+
+impl EvaluationStrategy<ExperimentalDistanceBackend> for RealtimeExperimentalDistanceStrategy {
+    type Prepared = PreparedEvaluator;
+
+    fn effective_mode(&self) -> EffectiveEvaluationMode {
+        EffectiveEvaluationMode::Realtime
+    }
+
+    fn prepare(self, model: ExperimentalDistanceBackend) -> Self::Prepared {
+        PreparedEvaluator::RealtimeExperimentalDistance(
+            RealtimeExperimentalDistanceEvaluator::new(model),
+        )
+    }
+}
+
 pub struct PreparedRenderEngine {
     gain_model_kind: GainModelKind,
     evaluation_mode: EffectiveEvaluationMode,
@@ -189,21 +234,33 @@ pub struct PreparedRenderEngine {
 }
 
 impl PreparedRenderEngine {
+    pub fn new(
+        gain_model_kind: GainModelKind,
+        evaluation_mode: EffectiveEvaluationMode,
+        evaluator: PreparedEvaluator,
+    ) -> Self {
+        Self {
+            gain_model_kind,
+            evaluation_mode,
+            evaluator,
+        }
+    }
+
     pub fn vbap(backend: VbapBackend, evaluation_mode: EffectiveEvaluationMode) -> Self {
+        let strategy = PrecomputedVbapStrategy::new(evaluation_mode);
         Self {
             gain_model_kind: GainModelKind::Vbap,
-            evaluation_mode,
-            evaluator: PreparedEvaluator::PrecomputedVbap(PrecomputedVbapEvaluator::new(backend)),
+            evaluation_mode: strategy.effective_mode(),
+            evaluator: strategy.prepare(backend),
         }
     }
 
     pub fn experimental_distance(backend: ExperimentalDistanceBackend) -> Self {
+        let strategy = RealtimeExperimentalDistanceStrategy;
         Self {
             gain_model_kind: GainModelKind::ExperimentalDistance,
-            evaluation_mode: EffectiveEvaluationMode::Realtime,
-            evaluator: PreparedEvaluator::RealtimeExperimentalDistance(
-                RealtimeExperimentalDistanceEvaluator::new(backend),
-            ),
+            evaluation_mode: strategy.effective_mode(),
+            evaluator: strategy.prepare(backend),
         }
     }
 
