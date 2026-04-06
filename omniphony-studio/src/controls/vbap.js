@@ -12,11 +12,10 @@ import { inRendererPanel } from '../ui/panel-roots.js';
 
 // DOM refs
 const vbapStatusEl = inRendererPanel('vbapStatus');
-const vbapModeAutoBtnEl = inRendererPanel('vbapModeAutoBtn');
-const vbapModePolarBtnEl = inRendererPanel('vbapModePolarBtn');
-const vbapModeCartesianBtnEl = inRendererPanel('vbapModeCartesianBtn');
 const renderBackendSelectEl = inRendererPanel('renderBackendSelect');
 const renderBackendEffectiveEl = inRendererPanel('renderBackendEffective');
+const renderEvaluationModeSelectEl = inRendererPanel('renderEvaluationModeSelect');
+const renderEvaluationModeEffectiveEl = inRendererPanel('renderEvaluationModeEffective');
 const rendererSummaryEl = inRendererPanel('rendererSummary');
 const vbapSectionEl = inRendererPanel('vbapSection');
 const distanceModelControlRowEl = inRendererPanel('distanceModelControlRow');
@@ -78,6 +77,23 @@ function applyRendererBackendVisibility(backend) {
   }
 }
 
+function allowedEvaluationModesForBackend(backend) {
+  if (backend === 'experimental_distance') {
+    return ['realtime'];
+  }
+  return ['auto', 'precomputed_polar', 'precomputed_cartesian'];
+}
+
+function formatEvaluationModeLabel(mode) {
+  switch (mode) {
+    case 'auto': return 'Auto';
+    case 'realtime': return 'Realtime';
+    case 'precomputed_polar': return 'Polar';
+    case 'precomputed_cartesian': return 'Cartesian';
+    default: return '—';
+  }
+}
+
 export function renderVbapStatus() {
   if (!vbapStatusEl) return;
   vbapStatusEl.classList.remove('computing', 'ready');
@@ -93,24 +109,21 @@ export function renderVbapStatus() {
 }
 
 export function renderVbapMode() {
-  const selection = typeof app.vbapModeState.selection === 'string' ? app.vbapModeState.selection : null;
-  const effectiveMode = typeof app.vbapModeState.effectiveMode === 'string' ? app.vbapModeState.effectiveMode : null;
-  if (vbapModeAutoBtnEl) vbapModeAutoBtnEl.classList.toggle('active', selection === 'auto');
-  if (vbapModePolarBtnEl) {
-    vbapModePolarBtnEl.classList.toggle('active', selection === 'polar');
-    vbapModePolarBtnEl.classList.toggle('effective', effectiveMode === 'polar');
+  const backend = app.renderBackendState.effective || app.renderBackendState.selection || 'vbap';
+  const allowedModes = allowedEvaluationModesForBackend(backend);
+  const selection = typeof app.evaluationModeState.selection === 'string' ? app.evaluationModeState.selection : null;
+  const effectiveMode = typeof app.evaluationModeState.effective === 'string' ? app.evaluationModeState.effective : null;
+  if (renderEvaluationModeSelectEl) {
+    const nextValue = allowedModes.includes(selection) ? selection : allowedModes[0];
+    renderEvaluationModeSelectEl.value = nextValue;
+    renderEvaluationModeSelectEl.disabled = allowedModes.length === 1;
   }
-  if (vbapModeCartesianBtnEl) {
-    vbapModeCartesianBtnEl.classList.toggle('active', selection === 'cartesian');
-    vbapModeCartesianBtnEl.classList.toggle('effective', effectiveMode === 'cartesian');
+  if (renderEvaluationModeEffectiveEl) {
+    renderEvaluationModeEffectiveEl.textContent = formatEvaluationModeLabel(effectiveMode);
   }
   if (rendererSummaryEl) {
     const mode = effectiveMode || selection;
-    let modeText = '—';
-    if (mode === 'auto') modeText = vbapModeAutoBtnEl?.textContent?.trim() || 'Auto';
-    if (mode === 'polar') modeText = vbapModePolarBtnEl?.textContent?.trim() || 'Polar';
-    if (mode === 'cartesian') modeText = vbapModeCartesianBtnEl?.textContent?.trim() || 'Cartesian';
-    const backend = app.renderBackendState.effective || app.renderBackendState.selection;
+    const modeText = formatEvaluationModeLabel(mode);
     const backendText = backend === 'experimental_distance'
       ? 'Distance'
       : backend === 'vbap'
@@ -141,6 +154,7 @@ export function renderRenderBackend() {
           : '—';
   }
   applyRendererBackendVisibility(visibleBackend);
+  renderVbapMode();
 }
 
 export function updateRenderBackend() {

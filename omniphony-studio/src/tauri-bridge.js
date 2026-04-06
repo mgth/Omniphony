@@ -404,13 +404,37 @@ export function setupTauriBridge() {
   listen('render_backend', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.renderBackendState.selection = ['vbap', 'experimental_distance'].includes(value) ? value : null;
+    if (value === 'experimental_distance') {
+      app.evaluationModeState.selection = 'realtime';
+    } else if (!['auto', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.selection)) {
+      app.evaluationModeState.selection = 'auto';
+    }
     updateRenderBackend();
   });
 
   listen('render_backend:effective', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.renderBackendState.effective = ['vbap', 'experimental_distance'].includes(value) ? value : null;
+    if (value === 'experimental_distance') {
+      app.evaluationModeState.effective = 'realtime';
+    } else if (!['precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
+      app.evaluationModeState.effective = null;
+    }
     updateRenderBackend();
+  });
+
+  listen('render_evaluation_mode', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    app.evaluationModeState.selection =
+      ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
+    updateVbapMode();
+  });
+
+  listen('render_evaluation_mode:effective', ({ payload }) => {
+    const value = String(payload?.value ?? '').trim().toLowerCase();
+    app.evaluationModeState.effective =
+      ['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
+    updateVbapMode();
   });
 
   listen('vbap:recomputing', ({ payload }) => {
@@ -445,12 +469,17 @@ export function setupTauriBridge() {
   listen('vbap:table_mode', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.vbapModeState.selection = ['auto', 'polar', 'cartesian'].includes(value) ? value : null;
+    if (value === 'auto') app.evaluationModeState.selection = 'auto';
+    else if (value === 'polar') app.evaluationModeState.selection = 'precomputed_polar';
+    else if (value === 'cartesian') app.evaluationModeState.selection = 'precomputed_cartesian';
     updateVbapMode();
   });
 
   listen('vbap:effective_mode', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.vbapModeState.effectiveMode = ['polar', 'cartesian'].includes(value) ? value : null;
+    if (value === 'polar') app.evaluationModeState.effective = 'precomputed_polar';
+    else if (value === 'cartesian') app.evaluationModeState.effective = 'precomputed_cartesian';
     updateVbapMode();
   });
 

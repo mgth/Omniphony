@@ -45,6 +45,18 @@ export function rendererPanelMarkup() {
               <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
             </div>
           </div>
+          <div class="control-row" id="renderEvaluationModeRow" style="margin-top:0.1rem;grid-template-columns:1fr auto;align-items:center">
+            <label for="renderEvaluationModeSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff">Evaluation mode</label>
+            <div style="display:flex;align-items:center;gap:0.35rem">
+              <select id="renderEvaluationModeSelect" class="delay-input" style="width:auto;min-width:13rem;text-align:left">
+                <option value="auto">Auto</option>
+                <option value="realtime">Realtime</option>
+                <option value="precomputed_polar">Precomputed polar</option>
+                <option value="precomputed_cartesian">Precomputed cartesian</option>
+              </select>
+              <div id="renderEvaluationModeEffective" class="vbap-step" style="min-width:8rem;text-align:right">—</div>
+            </div>
+          </div>
           <div class="info-section" id="vbapSection" style="margin:0;padding:0;border:none;background:none">
             <div id="vbapSectionContent" class="conditional-params open">
             <div class="control-row" style="margin-top:0.25rem;grid-template-columns:1fr auto;align-items:center">
@@ -52,11 +64,7 @@ export function rendererPanelMarkup() {
                 <label style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="vbap.title">VBAP</label>
                 <div id="vbapStatus" class="vbap-status" style="margin:0;font-size:11px;min-width:0">—</div>
               </div>
-              <div style="display:flex;gap:0.2rem;align-items:center">
-                <button id="vbapModeAutoBtn" type="button" class="toggle-btn" data-i18n="common.auto" style="padding:0.15rem 0.45rem;font-size:11px">Auto</button>
-                <button id="vbapModePolarBtn" type="button" class="toggle-btn" data-i18n="common.polarShort" style="padding:0.15rem 0.45rem;font-size:11px">Polar</button>
-                <button id="vbapModeCartesianBtn" type="button" class="toggle-btn" data-i18n="common.cartesianShort" style="padding:0.15rem 0.45rem;font-size:11px">Cartesian</button>
-              </div>
+              <div id="vbapModeLegacyHint" class="vbap-step" style="min-width:5.4rem;text-align:right">VBAP</div>
             </div>
             <div style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
               <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:start">

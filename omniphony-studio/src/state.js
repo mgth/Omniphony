@@ -103,6 +103,7 @@ export const app = {
   vbapCartesianState: { xSize: null, ySize: null, zSize: null, zNegSize: 0 },
   vbapPolarState: { azimuthResolution: null, elevationResolution: null, distanceRes: null, distanceMax: null },
   vbapModeState: { selection: null, effectiveMode: null },
+  evaluationModeState: { selection: null, effective: null },
   renderBackendState: { selection: null, effective: null },
   vbapPositionInterpolation: null,
   vbapAllowNegativeZ: null,

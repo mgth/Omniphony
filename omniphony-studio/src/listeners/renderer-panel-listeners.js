@@ -19,10 +19,8 @@ export function setupRendererPanelListeners() {
   const vbapCartZSizeInputEl = document.getElementById('vbapCartZSizeInput');
   const vbapCartZNegSizeInputEl = document.getElementById('vbapCartZNegSizeInput');
   const vbapCartesianGridToggleBtnEl = document.getElementById('vbapCartesianGridToggleBtn');
-  const vbapModeAutoBtnEl = document.getElementById('vbapModeAutoBtn');
-  const vbapModePolarBtnEl = document.getElementById('vbapModePolarBtn');
-  const vbapModeCartesianBtnEl = document.getElementById('vbapModeCartesianBtn');
   const renderBackendSelectEl = document.getElementById('renderBackendSelect');
+  const renderEvaluationModeSelectEl = document.getElementById('renderEvaluationModeSelect');
   const vbapPolarAzimuthResolutionInputEl = document.getElementById('vbapPolarAzimuthResolutionInput');
   const vbapPolarElevationResolutionInputEl = document.getElementById('vbapPolarElevationResolutionInput');
   const vbapPolarDistanceResInputEl = document.getElementById('vbapPolarDistanceResInput');
@@ -163,30 +161,34 @@ export function setupRendererPanelListeners() {
     });
   }
 
-  [
-    ['auto', vbapModeAutoBtnEl],
-    ['polar', vbapModePolarBtnEl],
-    ['cartesian', vbapModeCartesianBtnEl]
-  ].forEach(([mode, button]) => {
-    if (!button) return;
-    button.addEventListener('click', () => {
-      if (app.vbapModeState.selection === mode) return;
-      app.vbapModeState.selection = mode;
-      updateVbapMode();
-      invoke('control_vbap_table_mode', { mode });
-    });
-  });
-
   if (renderBackendSelectEl) {
     renderBackendSelectEl.addEventListener('change', () => {
       const value = String(renderBackendSelectEl.value || '').trim().toLowerCase();
       if (!['vbap', 'experimental_distance'].includes(value)) return;
       if (app.renderBackendState.selection === value) return;
       app.renderBackendState.selection = value;
+      app.evaluationModeState.selection = value === 'experimental_distance' ? 'realtime' : 'auto';
       app.vbapRecomputing = true;
       renderVbapStatus();
       updateRenderBackend();
       invoke('control_render_backend', { value });
+    });
+  }
+
+  if (renderEvaluationModeSelectEl) {
+    renderEvaluationModeSelectEl.addEventListener('change', () => {
+      const backend = app.renderBackendState.effective || app.renderBackendState.selection || 'vbap';
+      const value = String(renderEvaluationModeSelectEl.value || '').trim().toLowerCase();
+      const allowed = backend === 'experimental_distance'
+        ? ['realtime']
+        : ['auto', 'precomputed_polar', 'precomputed_cartesian'];
+      if (!allowed.includes(value)) return;
+      if (app.evaluationModeState.selection === value) return;
+      app.evaluationModeState.selection = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateVbapMode();
+      invoke('control_render_evaluation_mode', { value });
     });
   }
 

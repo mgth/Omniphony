@@ -120,6 +120,12 @@ pub struct RenderBackendState {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct RenderEvaluationModeState {
+    pub selection: Option<String>,
+    pub effective: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct OutputDeviceOption {
     pub value: String,
     pub label: String,
@@ -228,6 +234,8 @@ pub struct AppState {
     pub vbap_mode: VbapMode,
     #[serde(rename = "renderBackendState")]
     pub render_backend_state: RenderBackendState,
+    #[serde(rename = "renderEvaluationModeState")]
+    pub render_evaluation_mode_state: RenderEvaluationModeState,
     #[serde(rename = "vbapAllowNegativeZ")]
     pub vbap_allow_negative_z: Option<bool>,
     #[serde(rename = "adaptiveResampling")]
@@ -433,6 +441,7 @@ impl Default for AppState {
             vbap_polar: VbapPolar::default(),
             vbap_mode: VbapMode::default(),
             render_backend_state: RenderBackendState::default(),
+            render_evaluation_mode_state: RenderEvaluationModeState::default(),
             vbap_allow_negative_z: None,
             adaptive_resampling: Some(0),
             adaptive_resampling_enable_far_mode: Some(1),

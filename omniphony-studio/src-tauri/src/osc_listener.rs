@@ -1036,6 +1036,25 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
 
+            OscEvent::StateRenderEvaluationMode { value } => {
+                s.render_evaluation_mode_state.selection = Some(value.clone());
+                (
+                    Some(("render_evaluation_mode", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+
+            OscEvent::StateRenderEvaluationModeEffective { value } => {
+                s.render_evaluation_mode_state.effective = Some(value.clone());
+                (
+                    Some((
+                        "render_evaluation_mode:effective",
+                        serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
+
             OscEvent::StateSnapshotComplete => {
                 s.osc_snapshot_ready = true;
                 let snapshot = serde_json::to_value(&*s).unwrap_or(serde_json::Value::Null);

@@ -23,6 +23,20 @@ fn input_backend_name(backend: InputBackend) -> &'static str {
     }
 }
 
+fn effective_evaluation_mode_name(
+    effective_backend: &str,
+    effective_mode: &str,
+) -> &'static str {
+    match effective_backend {
+        "experimental_distance" => "realtime",
+        _ => match effective_mode {
+            "polar" => "precomputed_polar",
+            "cartesian" => "precomputed_cartesian",
+            _ => "realtime",
+        },
+    }
+}
+
 fn input_map_mode_name(mode: InputMapMode) -> &'static str {
     match mode {
         InputMapMode::SevenOneFixed => "7.1-fixed",
@@ -62,6 +76,8 @@ pub fn build_live_state_bundle(
     let active_topology = control.active_topology();
     let effective_mode = active_topology.backend.effective_mode_name();
     let effective_backend = active_topology.backend.kind().as_str();
+    let effective_evaluation_mode =
+        effective_evaluation_mode_name(effective_backend, effective_mode);
 
     let mut messages = vec![
         OscPacket::Message(OscMessage {
@@ -71,6 +87,16 @@ pub fn build_live_state_bundle(
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_backend/effective".to_string(),
             args: vec![OscType::String(effective_backend.to_string())],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/render_evaluation_mode".to_string(),
+            args: vec![OscType::String(
+                live.requested_evaluation_mode().as_str().to_string(),
+            )],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/render_evaluation_mode/effective".to_string(),
+            args: vec![OscType::String(effective_evaluation_mode.to_string())],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/gain".to_string(),

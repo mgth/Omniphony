@@ -236,6 +236,10 @@ pub enum OscEvent {
     StateRenderBackend { value: String },
     #[serde(rename = "state:render_backend:effective")]
     StateRenderBackendEffective { value: String },
+    #[serde(rename = "state:render_evaluation_mode")]
+    StateRenderEvaluationMode { value: String },
+    #[serde(rename = "state:render_evaluation_mode:effective")]
+    StateRenderEvaluationModeEffective { value: String },
     #[serde(rename = "state:snapshot_complete")]
     StateSnapshotComplete,
     #[serde(rename = "state:loudness")]
@@ -685,6 +689,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (3, "render_backend") => Some(OscEvent::StateRenderBackend {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
+        (3, "render_evaluation_mode") => Some(OscEvent::StateRenderEvaluationMode {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
         (3, "snapshot_complete") => Some(OscEvent::StateSnapshotComplete),
         (3, "loudness") => Some(OscEvent::StateLoudness {
             enabled: to_number(args[0])? != 0.0,
@@ -721,6 +728,11 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         }
         (4, "render_backend") if parts[3] == "effective" => {
             Some(OscEvent::StateRenderBackendEffective {
+                value: raw_args.first().and_then(unwrap_string)?,
+            })
+        }
+        (4, "render_evaluation_mode") if parts[3] == "effective" => {
+            Some(OscEvent::StateRenderEvaluationModeEffective {
                 value: raw_args.first().and_then(unwrap_string)?,
             })
         }

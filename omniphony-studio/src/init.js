@@ -151,6 +151,37 @@ export function applyInitState(payload) {
       }
     }
   }
+  if (payload.renderEvaluationModeState && typeof payload.renderEvaluationModeState === 'object') {
+    if (typeof payload.renderEvaluationModeState.selection === 'string') {
+      const selection = payload.renderEvaluationModeState.selection.trim().toLowerCase();
+      if (['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(selection)) {
+        app.evaluationModeState.selection = selection;
+      }
+    }
+    if (typeof payload.renderEvaluationModeState.effective === 'string') {
+      const effective = payload.renderEvaluationModeState.effective.trim().toLowerCase();
+      if (['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(effective)) {
+        app.evaluationModeState.effective = effective;
+      }
+    }
+  } else {
+    if (app.renderBackendState.selection === 'experimental_distance') {
+      app.evaluationModeState.selection = 'realtime';
+    } else if (app.vbapModeState.selection === 'auto') {
+      app.evaluationModeState.selection = 'auto';
+    } else if (app.vbapModeState.selection === 'polar') {
+      app.evaluationModeState.selection = 'precomputed_polar';
+    } else if (app.vbapModeState.selection === 'cartesian') {
+      app.evaluationModeState.selection = 'precomputed_cartesian';
+    }
+    if (app.renderBackendState.effective === 'experimental_distance') {
+      app.evaluationModeState.effective = 'realtime';
+    } else if (app.vbapModeState.effectiveMode === 'polar') {
+      app.evaluationModeState.effective = 'precomputed_polar';
+    } else if (app.vbapModeState.effectiveMode === 'cartesian') {
+      app.evaluationModeState.effective = 'precomputed_cartesian';
+    }
+  }
   updateRenderBackend();
   updateVbapMode();
   if (payload.vbapPolar) {
