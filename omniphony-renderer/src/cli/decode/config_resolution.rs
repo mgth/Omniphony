@@ -92,7 +92,19 @@ pub(super) fn merge_render_config(
         args.vbap_position_interpolation = false;
     }
     if !arg_sources.is_explicit("vbap_table_mode") {
-        if let Some(ref v) = cfg.vbap_table_mode {
+        if let Some(ref v) = cfg.render_evaluation_mode {
+            args.vbap_table_mode = if v.eq_ignore_ascii_case("precomputed_cartesian")
+                || v.eq_ignore_ascii_case("cartesian")
+            {
+                VbapTableModeArg::Cartesian
+            } else if v.eq_ignore_ascii_case("precomputed_polar")
+                || v.eq_ignore_ascii_case("polar")
+            {
+                VbapTableModeArg::Polar
+            } else {
+                args.vbap_table_mode
+            };
+        } else if let Some(ref v) = cfg.vbap_table_mode {
             args.vbap_table_mode = if v.eq_ignore_ascii_case("cartesian") {
                 VbapTableModeArg::Cartesian
             } else {
@@ -339,6 +351,7 @@ pub(super) fn effective_to_config(
             None
         },
         render_backend: None,
+        render_evaluation_mode: None,
         vbap_cart_x_size: args.vbap_cart_x_size,
         vbap_cart_y_size: args.vbap_cart_y_size,
         vbap_cart_z_size: args.vbap_cart_z_size,

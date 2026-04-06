@@ -12,6 +12,7 @@ use audio_output::{
     AdaptiveResamplingConfig, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig,
 };
 use renderer::render_backend::RenderBackendKind;
+use renderer::live_params::LiveEvaluationMode;
 use renderer::metering::AudioMeter;
 use renderer::speaker_layout::SpeakerLayout;
 use std::sync::Arc;
@@ -483,16 +484,62 @@ fn init_spatial_renderer(
     };
 
     log::info!("VBAP spatial rendering enabled");
-    if let Some(configured_backend) = render_cfg
+    let configured_backend = render_cfg
         .and_then(|cfg| cfg.render_backend.as_deref())
-        .and_then(RenderBackendKind::from_str)
-    {
+        .and_then(RenderBackendKind::from_str);
+    let configured_evaluation = render_cfg
+        .and_then(|cfg| cfg.render_evaluation_mode.as_deref())
+        .and_then(LiveEvaluationMode::from_str);
+    if configured_backend.is_some() || configured_evaluation.is_some() {
         let control = renderer.renderer_control();
+        let mut requires_rebuild = false;
         {
             let mut live = control.live.write().unwrap();
-            live.backend_kind = configured_backend;
+            if let Some(configured_backend) = configured_backend {
+                if live.backend_kind != configured_backend {
+                    live.backend_kind = configured_backend;
+                    requires_rebuild = true;
+                }
+            }
+            if let Some(configured_evaluation) = configured_evaluation {
+                match (live.backend_kind, configured_evaluation) {
+                    (RenderBackendKind::Vbap, LiveEvaluationMode::Auto) => {
+                        if live.vbap_table_mode != renderer::live_params::LiveVbapTableMode::Auto {
+                            live.vbap_table_mode = renderer::live_params::LiveVbapTableMode::Auto;
+                            requires_rebuild = true;
+                        }
+                    }
+                    (RenderBackendKind::Vbap, LiveEvaluationMode::PrecomputedPolar) => {
+                        if live.vbap_table_mode != renderer::live_params::LiveVbapTableMode::Polar {
+                            live.vbap_table_mode = renderer::live_params::LiveVbapTableMode::Polar;
+                            requires_rebuild = true;
+                        }
+                    }
+                    (RenderBackendKind::Vbap, LiveEvaluationMode::PrecomputedCartesian) => {
+                        if live.vbap_table_mode
+                            != renderer::live_params::LiveVbapTableMode::Cartesian
+                        {
+                            live.vbap_table_mode =
+                                renderer::live_params::LiveVbapTableMode::Cartesian;
+                            requires_rebuild = true;
+                        }
+                    }
+                    (RenderBackendKind::Vbap, LiveEvaluationMode::Realtime) => {
+                        log::warn!(
+                            "Ignoring render_evaluation_mode=realtime for VBAP: realtime VBAP evaluation is not implemented yet"
+                        );
+                    }
+                    (RenderBackendKind::ExperimentalDistance, LiveEvaluationMode::Realtime) => {}
+                    (RenderBackendKind::ExperimentalDistance, other) => {
+                        log::warn!(
+                            "Ignoring render_evaluation_mode={} for experimental_distance: only realtime is supported",
+                            other.as_str()
+                        );
+                    }
+                }
+            }
         }
-        if configured_backend != RenderBackendKind::Vbap {
+        if requires_rebuild {
             if let Some(plan) = control.prepare_topology_rebuild() {
                 let topology = plan.build_topology()?;
                 control.publish_topology(topology);

@@ -6,7 +6,9 @@ use audio_input::{
     InputSampleFormat,
 };
 use audio_output::AudioControl;
-use renderer::live_params::{LiveVbapTableMode, RampMode, RendererControl, VbapBackendMode};
+use renderer::live_params::{
+    LiveEvaluationMode, LiveVbapTableMode, RampMode, RendererControl, VbapBackendMode,
+};
 
 use crate::snapshot::build_live_state_bundle;
 
@@ -91,6 +93,10 @@ pub fn save_live_config(
     };
     render.render_backend = match live.backend_kind {
         renderer::render_backend::RenderBackendKind::Vbap => None,
+        other => Some(other.as_str().to_string()),
+    };
+    render.render_evaluation_mode = match live.requested_evaluation_mode() {
+        LiveEvaluationMode::Auto => None,
         other => Some(other.as_str().to_string()),
     };
     render.vbap_table_mode = match live.vbap_table_mode {
