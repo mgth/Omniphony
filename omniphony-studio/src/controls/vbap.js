@@ -153,7 +153,10 @@ export function renderEvaluationMode() {
         : '—';
     rendererSummaryEl.textContent = `${backendText} / ${tf('renderer.summary', { mode: modeText })}`;
   }
-  applyEvaluationModeVisibility(nextValue);
+  const visibleMode = nextValue === 'auto'
+    ? (effectiveMode || nextValue)
+    : nextValue;
+  applyEvaluationModeVisibility(visibleMode);
 }
 
 export function updateEvaluationMode() {

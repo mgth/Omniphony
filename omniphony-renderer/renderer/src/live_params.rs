@@ -19,9 +19,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::render_backend::{
-    EvaluationBuildConfig, GainModelKind, PreparedRenderEngine, RenderBackendKind, RenderRequest,
-};
+use crate::render_backend::{GainModelKind, PreparedRenderEngine, RenderBackendKind};
+#[cfg(feature = "saf_vbap")]
+use crate::render_backend::{EvaluationBuildConfig, RenderRequest};
 #[cfg(feature = "saf_vbap")]
 use crate::render_backend::{GainModelInstance, build_prepared_render_engine};
 use crate::spatial_vbap::VbapTableMode;
@@ -300,6 +300,7 @@ impl BackendRebuildParams {
     }
 }
 
+#[cfg(feature = "saf_vbap")]
 fn effective_live_evaluation_mode(
     requested: LiveEvaluationMode,
     preferred: PreferredEvaluationMode,
@@ -315,10 +316,12 @@ fn effective_live_evaluation_mode(
     }
 }
 
+#[cfg(feature = "saf_vbap")]
 fn rebuild_params_allow_negative_z(params: Option<BackendRebuildParams>) -> bool {
     params.map(|value| value.allow_negative_z).unwrap_or(false)
 }
 
+#[cfg(feature = "saf_vbap")]
 fn evaluation_build_config_from_live(
     live: &LiveParams,
     allow_negative_z: bool,
