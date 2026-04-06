@@ -1483,6 +1483,14 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateVbapTableMode { value } => {
                 s.vbap_mode.selection = Some(value.clone());
+                s.render_evaluation_mode_state.selection = Some(
+                    match value.as_str() {
+                        "polar" => "precomputed_polar",
+                        "cartesian" => "precomputed_cartesian",
+                        _ => "auto",
+                    }
+                    .to_string(),
+                );
                 (
                     Some(("vbap:table_mode", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -1490,6 +1498,14 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateVbapEffectiveMode { value } => {
                 s.vbap_mode.effective_mode = Some(value.clone());
+                s.render_evaluation_mode_state.effective = Some(
+                    match value.as_str() {
+                        "polar" => "precomputed_polar",
+                        "cartesian" => "precomputed_cartesian",
+                        _ => "realtime",
+                    }
+                    .to_string(),
+                );
                 (
                     Some(("vbap:effective_mode", serde_json::json!({ "value": value }))),
                     removed_ids,

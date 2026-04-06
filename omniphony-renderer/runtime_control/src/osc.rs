@@ -896,6 +896,8 @@ pub fn apply_simple_osc_control(
     if addr == "/omniphony/control/vbap/table_mode" {
         if let Some(OscType::String(mode)) = msg.args.first() {
             if let Some(mode) = renderer::live_params::LiveVbapTableMode::from_str(mode) {
+                let evaluation_mode =
+                    renderer::live_params::LiveEvaluationMode::from_vbap_table_mode(mode);
                 ctx.renderer.live.write().unwrap().vbap_table_mode = mode;
                 effects.mark_dirty = true;
                 effects.trigger_layout_recompute = true;
@@ -903,6 +905,15 @@ pub fn apply_simple_osc_control(
                     addr: "/omniphony/state/vbap/table_mode".to_string(),
                     value: BroadcastValue::String(mode.as_str().to_string()),
                 });
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/render_evaluation_mode".to_string(),
+                    value: BroadcastValue::String(evaluation_mode.as_str().to_string()),
+                });
+                effects.log_message = Some(format!(
+                    "OSC: vbap/table_mode -> {} (legacy; render_evaluation_mode={})",
+                    mode.as_str(),
+                    evaluation_mode.as_str()
+                ));
             }
         }
         return Some(effects);

@@ -586,11 +586,17 @@ fn control_vbap_table_mode(state: State<SharedState>, mode: String) {
     if !matches!(normalized.as_str(), "auto" | "polar" | "cartesian") {
         return;
     }
+    let evaluation_mode = match normalized.as_str() {
+        "auto" => "auto",
+        "polar" => "precomputed_polar",
+        "cartesian" => "precomputed_cartesian",
+        _ => return,
+    };
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/vbap/table_mode".to_string(),
-            value: normalized,
+            address: "/omniphony/control/render_evaluation_mode".to_string(),
+            value: evaluation_mode.to_string(),
         },
     );
 }
