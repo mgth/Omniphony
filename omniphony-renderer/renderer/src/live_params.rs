@@ -169,6 +169,29 @@ impl Default for SpeakerLiveParams {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct CartesianEvaluationParams {
+    pub x_size: usize,
+    pub y_size: usize,
+    pub z_size: usize,
+    pub z_neg_size: usize,
+}
+
+#[derive(Clone, Copy)]
+pub struct PolarEvaluationParams {
+    pub azimuth_values: i32,
+    pub elevation_values: i32,
+    pub distance_res: i32,
+    pub distance_max: f32,
+}
+
+#[derive(Clone, Copy)]
+pub struct EvaluationLiveParams {
+    pub mode: LiveEvaluationMode,
+    pub cartesian: CartesianEvaluationParams,
+    pub polar: PolarEvaluationParams,
+}
+
 /// Live-tunable rendering parameters.
 ///
 /// Written (exclusively) by the OSC listener thread, read via snapshot by the
@@ -202,36 +225,12 @@ pub struct LiveParams {
     /// Requested spatial render backend.
     pub backend_kind: RenderBackendKind,
 
-    /// Cartesian VBAP table size on X axis (live-editable via OSC).
-    pub vbap_cart_x_size: usize,
-
-    /// Cartesian VBAP table size on Y axis (live-editable via OSC).
-    pub vbap_cart_y_size: usize,
-
-    /// Cartesian VBAP table size on Z axis (live-editable via OSC).
-    pub vbap_cart_z_size: usize,
-
-    /// Cartesian VBAP table size on negative Z axis (live-editable via OSC).
-    pub vbap_cart_z_neg_size: usize,
-
-    /// Requested evaluation mode for the current gain model.
-    pub evaluation_mode: LiveEvaluationMode,
+    /// Requested evaluation parameters for the current gain model.
+    pub evaluation: EvaluationLiveParams,
 
     /// Legacy compatibility mirror for the old VBAP table-mode UI/OSC surface.
-    /// Keep in sync with `evaluation_mode` while the old protocol still exists.
+    /// Keep in sync with `evaluation.mode` while the old protocol still exists.
     pub vbap_table_mode: LiveVbapTableMode,
-
-    /// Polar VBAP azimuth granularity in degrees.
-    pub vbap_polar_azimuth_values: i32,
-
-    /// Polar VBAP elevation granularity in degrees.
-    pub vbap_polar_elevation_values: i32,
-
-    /// VBAP distance-table granularity as number of values across full distance range.
-    pub vbap_polar_distance_res: i32,
-
-    /// Maximum distance covered by polar VBAP precomputed table.
-    pub vbap_polar_distance_max: f32,
 
     /// Interpolate between neighbouring VBAP table positions during lookup.
     pub vbap_position_interpolation: bool,
@@ -287,7 +286,7 @@ pub struct LiveParams {
 
 impl LiveParams {
     pub fn set_evaluation_mode(&mut self, mode: LiveEvaluationMode) {
-        self.evaluation_mode = mode;
+        self.evaluation.mode = mode;
         self.vbap_table_mode = match mode {
             LiveEvaluationMode::Auto => LiveVbapTableMode::Auto,
             LiveEvaluationMode::PrecomputedPolar => LiveVbapTableMode::Polar,
@@ -302,7 +301,7 @@ impl LiveParams {
 
     pub fn requested_evaluation_mode(&self) -> LiveEvaluationMode {
         match self.gain_model_kind() {
-            GainModelKind::Vbap => self.evaluation_mode,
+            GainModelKind::Vbap => self.evaluation.mode,
             GainModelKind::ExperimentalDistance => LiveEvaluationMode::Realtime,
         }
     }
@@ -692,64 +691,81 @@ impl RendererControl {
             )
             .0;
 
-        let table_mode = match live.evaluation_mode {
+        let table_mode = match live.evaluation.mode {
             LiveEvaluationMode::Realtime => return None,
             LiveEvaluationMode::Auto => match preferred_evaluation_mode {
                 PreferredEvaluationMode::PrecomputedPolar => crate::spatial_vbap::VbapTableMode::Polar,
                 PreferredEvaluationMode::PrecomputedCartesian => crate::spatial_vbap::VbapTableMode::Cartesian {
                     x_size: live
-                        .vbap_cart_x_size
+                        .evaluation
+                        .cartesian
+                        .x_size
                         .max(rebuild.cartesian_default_x_size)
                         .max(1)
                         + 1,
                     y_size: live
-                        .vbap_cart_y_size
+                        .evaluation
+                        .cartesian
+                        .y_size
                         .max(rebuild.cartesian_default_y_size)
                         .max(1)
                         + 1,
                     z_size: live
-                        .vbap_cart_z_size
+                        .evaluation
+                        .cartesian
+                        .z_size
                         .max(rebuild.cartesian_default_z_size)
                         .max(1)
                         + 1,
                     z_neg_size: live
-                        .vbap_cart_z_neg_size
+                        .evaluation
+                        .cartesian
+                        .z_neg_size
                         .max(rebuild.cartesian_default_z_neg_size),
                 },
             },
             LiveEvaluationMode::PrecomputedPolar => crate::spatial_vbap::VbapTableMode::Polar,
             LiveEvaluationMode::PrecomputedCartesian => crate::spatial_vbap::VbapTableMode::Cartesian {
                 x_size: live
-                    .vbap_cart_x_size
+                    .evaluation
+                    .cartesian
+                    .x_size
                     .max(rebuild.cartesian_default_x_size)
                     .max(1)
                     + 1,
                 y_size: live
-                    .vbap_cart_y_size
+                    .evaluation
+                    .cartesian
+                    .y_size
                     .max(rebuild.cartesian_default_y_size)
                     .max(1)
                     + 1,
                 z_size: live
-                    .vbap_cart_z_size
+                    .evaluation
+                    .cartesian
+                    .z_size
                     .max(rebuild.cartesian_default_z_size)
                     .max(1)
                     + 1,
                 z_neg_size: live
-                    .vbap_cart_z_neg_size
+                    .evaluation
+                    .cartesian
+                    .z_neg_size
                     .max(rebuild.cartesian_default_z_neg_size),
             },
         };
-        let azimuth_resolution = if live.vbap_polar_azimuth_values > 0 {
-            ((360.0f32 / (live.vbap_polar_azimuth_values as f32)).round() as i32).clamp(1, 360)
+        let azimuth_resolution = if live.evaluation.polar.azimuth_values > 0 {
+            ((360.0f32 / (live.evaluation.polar.azimuth_values as f32)).round() as i32)
+                .clamp(1, 360)
         } else {
             rebuild.az_res_deg.clamp(1, 360)
         };
-        let elevation_resolution = if live.vbap_polar_elevation_values > 0 {
+        let elevation_resolution = if live.evaluation.polar.elevation_values > 0 {
             (((if rebuild.allow_negative_z {
                 180.0
             } else {
                 90.0
-            }) / (live.vbap_polar_elevation_values as f32))
+            }) / (live.evaluation.polar.elevation_values as f32))
                 .round() as i32)
                 .clamp(1, if rebuild.allow_negative_z { 180 } else { 90 })
         } else {
@@ -757,13 +773,13 @@ impl RendererControl {
                 .el_res_deg
                 .clamp(1, if rebuild.allow_negative_z { 180 } else { 90 })
         };
-        let distance_max = if live.vbap_polar_distance_max > 0.0 {
-            live.vbap_polar_distance_max
+        let distance_max = if live.evaluation.polar.distance_max > 0.0 {
+            live.evaluation.polar.distance_max
         } else {
             rebuild.distance_max.max(0.01)
         };
-        let distance_res = if live.vbap_polar_distance_res > 0 {
-            distance_max / (live.vbap_polar_distance_res as f32)
+        let distance_res = if live.evaluation.polar.distance_res > 0 {
+            distance_max / (live.evaluation.polar.distance_res as f32)
         } else if rebuild.spread_resolution > 0.0 {
             rebuild.spread_resolution
         } else {

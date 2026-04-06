@@ -506,19 +506,19 @@ fn init_spatial_renderer(
             if let Some(configured_evaluation) = configured_evaluation {
                 match (live.backend_kind, configured_evaluation) {
                     (RenderBackendKind::Vbap, LiveEvaluationMode::Auto) => {
-                        if live.evaluation_mode != LiveEvaluationMode::Auto {
+                        if live.evaluation.mode != LiveEvaluationMode::Auto {
                             live.set_evaluation_mode(LiveEvaluationMode::Auto);
                             requires_rebuild = true;
                         }
                     }
                     (RenderBackendKind::Vbap, LiveEvaluationMode::PrecomputedPolar) => {
-                        if live.evaluation_mode != LiveEvaluationMode::PrecomputedPolar {
+                        if live.evaluation.mode != LiveEvaluationMode::PrecomputedPolar {
                             live.set_evaluation_mode(LiveEvaluationMode::PrecomputedPolar);
                             requires_rebuild = true;
                         }
                     }
                     (RenderBackendKind::Vbap, LiveEvaluationMode::PrecomputedCartesian) => {
-                        if live.evaluation_mode != LiveEvaluationMode::PrecomputedCartesian {
+                        if live.evaluation.mode != LiveEvaluationMode::PrecomputedCartesian {
                             live.set_evaluation_mode(LiveEvaluationMode::PrecomputedCartesian);
                             requires_rebuild = true;
                         }

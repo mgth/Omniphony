@@ -275,7 +275,7 @@ pub fn apply_simple_osc_control(
             let accepted = match live.backend_kind {
                 RenderBackendKind::Vbap => {
                     if requested != LiveEvaluationMode::Realtime {
-                        if live.evaluation_mode != requested {
+                        if live.evaluation.mode != requested {
                             live.set_evaluation_mode(requested);
                             effects.mark_dirty = true;
                             effects.trigger_layout_recompute = true;
@@ -862,19 +862,19 @@ pub fn apply_simple_osc_control(
         if let Some(size) = size {
             let state_addr = match rest {
                 "x_size" => {
-                    ctx.renderer.live.write().unwrap().vbap_cart_x_size = size;
+                    ctx.renderer.live.write().unwrap().evaluation.cartesian.x_size = size;
                     Some("/omniphony/state/vbap/cart/x_size")
                 }
                 "y_size" => {
-                    ctx.renderer.live.write().unwrap().vbap_cart_y_size = size;
+                    ctx.renderer.live.write().unwrap().evaluation.cartesian.y_size = size;
                     Some("/omniphony/state/vbap/cart/y_size")
                 }
                 "z_size" => {
-                    ctx.renderer.live.write().unwrap().vbap_cart_z_size = size;
+                    ctx.renderer.live.write().unwrap().evaluation.cartesian.z_size = size;
                     Some("/omniphony/state/vbap/cart/z_size")
                 }
                 "z_neg_size" => {
-                    ctx.renderer.live.write().unwrap().vbap_cart_z_neg_size = size;
+                    ctx.renderer.live.write().unwrap().evaluation.cartesian.z_neg_size = size;
                     Some("/omniphony/state/vbap/cart/z_neg_size")
                 }
                 _ => None,
@@ -941,11 +941,13 @@ pub fn apply_simple_osc_control(
                 if let Some(res) = res {
                     let state_addr = match rest {
                         "azimuth_resolution" => {
-                            ctx.renderer.live.write().unwrap().vbap_polar_azimuth_values = res;
+                            ctx.renderer.live.write().unwrap().evaluation.polar.azimuth_values =
+                                res;
                             Some("/omniphony/state/vbap/polar/azimuth_resolution")
                         }
                         "elevation_resolution" => {
-                            ctx.renderer.live.write().unwrap().vbap_polar_elevation_values = res;
+                            ctx.renderer.live.write().unwrap().evaluation.polar.elevation_values =
+                                res;
                             Some("/omniphony/state/vbap/polar/elevation_resolution")
                         }
                         _ => None,
@@ -967,7 +969,7 @@ pub fn apply_simple_osc_control(
                     _ => None,
                 };
                 if let Some(res) = res {
-                    ctx.renderer.live.write().unwrap().vbap_polar_distance_res = res;
+                    ctx.renderer.live.write().unwrap().evaluation.polar.distance_res = res;
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
                     effects.broadcasts.push(BroadcastUpdate {
@@ -983,7 +985,7 @@ pub fn apply_simple_osc_control(
                     _ => None,
                 };
                 if let Some(max_v) = max_v {
-                    ctx.renderer.live.write().unwrap().vbap_polar_distance_max = max_v;
+                    ctx.renderer.live.write().unwrap().evaluation.polar.distance_max = max_v;
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
                     effects.broadcasts.push(BroadcastUpdate {

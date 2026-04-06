@@ -64,23 +64,23 @@ pub fn save_live_config(
     } else {
         None
     };
-    render.vbap_azimuth_resolution = if live.vbap_polar_azimuth_values != 360 {
-        Some(live.vbap_polar_azimuth_values.max(1))
+    render.vbap_azimuth_resolution = if live.evaluation.polar.azimuth_values != 360 {
+        Some(live.evaluation.polar.azimuth_values.max(1))
     } else {
         None
     };
-    render.vbap_elevation_resolution = if live.vbap_polar_elevation_values != 180 {
-        Some(live.vbap_polar_elevation_values.max(1))
+    render.vbap_elevation_resolution = if live.evaluation.polar.elevation_values != 180 {
+        Some(live.evaluation.polar.elevation_values.max(1))
     } else {
         None
     };
-    render.vbap_distance_res = if live.vbap_polar_distance_res != 8 {
-        Some(live.vbap_polar_distance_res.max(1))
+    render.vbap_distance_res = if live.evaluation.polar.distance_res != 8 {
+        Some(live.evaluation.polar.distance_res.max(1))
     } else {
         None
     };
-    render.vbap_distance_max = if (live.vbap_polar_distance_max - 2.0).abs() > 1e-4 {
-        Some(live.vbap_polar_distance_max.max(0.01))
+    render.vbap_distance_max = if (live.evaluation.polar.distance_max - 2.0).abs() > 1e-4 {
+        Some(live.evaluation.polar.distance_max.max(0.01))
     } else {
         None
     };
@@ -115,10 +115,10 @@ pub fn save_live_config(
         ),
     };
     if effective_cartesian {
-        render.vbap_cart_x_size = Some(live.vbap_cart_x_size.max(1));
-        render.vbap_cart_y_size = Some(live.vbap_cart_y_size.max(1));
-        render.vbap_cart_z_size = Some(live.vbap_cart_z_size.max(1));
-        render.vbap_cart_z_neg_size = Some(live.vbap_cart_z_neg_size);
+        render.vbap_cart_x_size = Some(live.evaluation.cartesian.x_size.max(1));
+        render.vbap_cart_y_size = Some(live.evaluation.cartesian.y_size.max(1));
+        render.vbap_cart_z_size = Some(live.evaluation.cartesian.z_size.max(1));
+        render.vbap_cart_z_neg_size = Some(live.evaluation.cartesian.z_neg_size);
     } else {
         render.vbap_cart_x_size = None;
         render.vbap_cart_y_size = None;

@@ -65,8 +65,9 @@
 //! ```
 
 use crate::live_params::{
-    LiveEvaluationMode, LiveParams, LiveVbapTableMode, PreferredEvaluationMode, RampMode,
-    RenderTopology, RendererControl,
+    CartesianEvaluationParams, EvaluationLiveParams, LiveEvaluationMode, LiveParams,
+    LiveVbapTableMode, PolarEvaluationParams, PreferredEvaluationMode, RampMode, RenderTopology,
+    RendererControl,
 };
 use crate::render_backend::{
     EffectiveEvaluationMode, GainModelInstance, RenderBackendKind, RenderRequest, VbapBackend,
@@ -940,23 +941,29 @@ impl SpatialRenderer {
             spread_distance_curve,
             ramp_mode,
             backend_kind: RenderBackendKind::Vbap,
-            evaluation_mode: initial_evaluation_mode,
-            vbap_cart_x_size: cartesian_default_x_size.max(1),
-            vbap_cart_y_size: cartesian_default_y_size.max(1),
-            vbap_cart_z_size: cartesian_default_z_size.max(1),
-            vbap_cart_z_neg_size: cartesian_default_z_neg_size,
+            evaluation: EvaluationLiveParams {
+                mode: initial_evaluation_mode,
+                cartesian: CartesianEvaluationParams {
+                    x_size: cartesian_default_x_size.max(1),
+                    y_size: cartesian_default_y_size.max(1),
+                    z_size: cartesian_default_z_size.max(1),
+                    z_neg_size: cartesian_default_z_neg_size,
+                },
+                polar: PolarEvaluationParams {
+                    azimuth_values: (360.0 / az_res_deg.max(1) as f32).round() as i32,
+                    elevation_values: (((if allow_negative_z { 180.0 } else { 90.0 })
+                        / el_res_deg.max(1) as f32)
+                        .round() as i32),
+                    distance_res: (distance_max / distance_res.max(0.01)).round() as i32,
+                    distance_max: distance_max.max(0.01),
+                },
+            },
             vbap_table_mode: match initial_evaluation_mode {
                 LiveEvaluationMode::Auto => LiveVbapTableMode::Auto,
                 LiveEvaluationMode::PrecomputedPolar => LiveVbapTableMode::Polar,
                 LiveEvaluationMode::PrecomputedCartesian => LiveVbapTableMode::Cartesian,
                 LiveEvaluationMode::Realtime => LiveVbapTableMode::Auto,
             },
-            vbap_polar_azimuth_values: (360.0 / az_res_deg.max(1) as f32).round() as i32,
-            vbap_polar_elevation_values: (((if allow_negative_z { 180.0 } else { 90.0 })
-                / el_res_deg.max(1) as f32)
-                .round() as i32),
-            vbap_polar_distance_res: (distance_max / distance_res.max(0.01)).round() as i32,
-            vbap_polar_distance_max: distance_max.max(0.01),
             vbap_position_interpolation,
             use_loudness,
             distance_model,
