@@ -180,7 +180,8 @@ pub fn spawn_live_input_manager(
                 && !sys::ShutdownHandle::is_requested()
                 && !sys::ShutdownHandle::is_restart_from_config_requested()
             {
-                if bootstrap || input_control.take_apply_pending() {
+                let apply_requested = input_control.take_apply_pending();
+                if bootstrap || apply_requested {
                     bootstrap = false;
                     reconcile_live_input(
                         &tx,

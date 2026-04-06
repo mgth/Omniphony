@@ -1315,19 +1315,32 @@ fn resolve_orender_launch_spec(
         .ok_or_else(|| "failed to resolve workspace root".to_string())?
         .to_path_buf();
 
-    let orender_path = orender_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .or_else(|| first_existing_path(&bundled_orender_candidates(app)))
-        .or_else(|| {
-            first_existing_path(&[
-                repo_root.join("omniphony-renderer/target/release/orender"),
-                repo_root.join("omniphony-renderer/target/debug/orender"),
-            ])
-        })
+    let repo_orender_candidates = [
+        repo_root.join("omniphony-renderer/target/release/orender"),
+        repo_root.join("omniphony-renderer/target/debug/orender"),
+    ];
+
+    let orender_path = if cfg!(debug_assertions) {
+        first_existing_path(&repo_orender_candidates)
+            .or_else(|| {
+                orender_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(PathBuf::from)
+                    .filter(|path| path.exists())
+            })
+            .or_else(|| first_existing_path(&bundled_orender_candidates(app)))
+    } else {
+        orender_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+            .or_else(|| first_existing_path(&bundled_orender_candidates(app)))
+            .or_else(|| first_existing_path(&repo_orender_candidates))
+    }
         .or_else(|| {
             let lookup_cmd = if cfg!(target_os = "windows") {
                 "where"
