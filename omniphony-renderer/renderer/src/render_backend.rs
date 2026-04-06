@@ -67,6 +67,31 @@ impl From<RenderBackendKind> for GainModelKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveEvaluationMode {
+    Realtime,
+    PrecomputedPolar,
+    PrecomputedCartesian,
+}
+
+impl EffectiveEvaluationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Realtime => "realtime",
+            Self::PrecomputedPolar => "precomputed_polar",
+            Self::PrecomputedCartesian => "precomputed_cartesian",
+        }
+    }
+
+    pub fn legacy_vbap_mode_name(self) -> &'static str {
+        match self {
+            Self::Realtime => "distance",
+            Self::PrecomputedPolar => "polar",
+            Self::PrecomputedCartesian => "cartesian",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RenderRequest {
     pub adm_position: [f64; 3],
@@ -89,38 +114,62 @@ pub struct RenderResponse {
     pub gains: Gains,
 }
 
-pub enum RenderBackend {
+pub enum PreparedEvaluator {
     Vbap(VbapBackend),
     ExperimentalDistance(ExperimentalDistanceBackend),
 }
 
-impl RenderBackend {
-    pub fn kind(&self) -> RenderBackendKind {
-        match self {
-            Self::Vbap(_) => RenderBackendKind::Vbap,
-            Self::ExperimentalDistance(_) => RenderBackendKind::ExperimentalDistance,
+pub struct PreparedRenderEngine {
+    gain_model_kind: GainModelKind,
+    evaluation_mode: EffectiveEvaluationMode,
+    evaluator: PreparedEvaluator,
+}
+
+impl PreparedRenderEngine {
+    pub fn vbap(backend: VbapBackend, evaluation_mode: EffectiveEvaluationMode) -> Self {
+        Self {
+            gain_model_kind: GainModelKind::Vbap,
+            evaluation_mode,
+            evaluator: PreparedEvaluator::Vbap(backend),
         }
     }
 
+    pub fn experimental_distance(backend: ExperimentalDistanceBackend) -> Self {
+        Self {
+            gain_model_kind: GainModelKind::ExperimentalDistance,
+            evaluation_mode: EffectiveEvaluationMode::Realtime,
+            evaluator: PreparedEvaluator::ExperimentalDistance(backend),
+        }
+    }
+
+    pub fn kind(&self) -> RenderBackendKind {
+        self.gain_model_kind.into()
+    }
+
+    pub fn gain_model_kind(&self) -> GainModelKind {
+        self.gain_model_kind
+    }
+
+    pub fn evaluation_mode(&self) -> EffectiveEvaluationMode {
+        self.evaluation_mode
+    }
+
     pub fn speaker_count(&self) -> usize {
-        match self {
-            Self::Vbap(backend) => backend.speaker_count(),
-            Self::ExperimentalDistance(backend) => backend.speaker_count(),
+        match &self.evaluator {
+            PreparedEvaluator::Vbap(backend) => backend.speaker_count(),
+            PreparedEvaluator::ExperimentalDistance(backend) => backend.speaker_count(),
         }
     }
 
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        match self {
-            Self::Vbap(backend) => backend.compute_gains(req),
-            Self::ExperimentalDistance(backend) => backend.compute_gains(req),
+        match &self.evaluator {
+            PreparedEvaluator::Vbap(backend) => backend.compute_gains(req),
+            PreparedEvaluator::ExperimentalDistance(backend) => backend.compute_gains(req),
         }
     }
 
-    pub fn effective_mode_name(&self) -> &'static str {
-        match self {
-            Self::Vbap(backend) => backend.effective_mode_name(),
-            Self::ExperimentalDistance(backend) => backend.effective_mode_name(),
-        }
+    pub fn legacy_vbap_mode_name(&self) -> &'static str {
+        self.evaluation_mode.legacy_vbap_mode_name()
     }
 
     pub fn save_to_file(
@@ -128,9 +177,11 @@ impl RenderBackend {
         path: &std::path::Path,
         speaker_layout: &SpeakerLayout,
     ) -> Result<()> {
-        match self {
-            Self::Vbap(backend) => backend.save_to_file(path, speaker_layout),
-            Self::ExperimentalDistance(backend) => backend.save_to_file(path, speaker_layout),
+        match &self.evaluator {
+            PreparedEvaluator::Vbap(backend) => backend.save_to_file(path, speaker_layout),
+            PreparedEvaluator::ExperimentalDistance(backend) => {
+                backend.save_to_file(path, speaker_layout)
+            }
         }
     }
 }
@@ -252,13 +303,6 @@ impl VbapBackend {
         RenderResponse { gains }
     }
 
-    pub fn effective_mode_name(&self) -> &'static str {
-        match self.panner.table_mode() {
-            crate::spatial_vbap::VbapTableMode::Polar => "polar",
-            crate::spatial_vbap::VbapTableMode::Cartesian { .. } => "cartesian",
-        }
-    }
-
     pub fn save_to_file(
         &self,
         path: &std::path::Path,
@@ -331,10 +375,6 @@ impl ExperimentalDistanceBackend {
         }
 
         RenderResponse { gains }
-    }
-
-    pub fn effective_mode_name(&self) -> &'static str {
-        "distance"
     }
 
     pub fn save_to_file(

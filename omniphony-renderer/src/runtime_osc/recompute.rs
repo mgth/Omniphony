@@ -5,20 +5,6 @@ use renderer::live_params::RendererControl;
 use super::client_registry::OscClientRegistry;
 use super::transport::{broadcast_fff, broadcast_int, broadcast_string};
 
-fn effective_evaluation_mode_name(
-    effective_backend: &str,
-    effective_mode: &str,
-) -> &'static str {
-    match effective_backend {
-        "experimental_distance" => "realtime",
-        _ => match effective_mode {
-            "polar" => "precomputed_polar",
-            "cartesian" => "precomputed_cartesian",
-            _ => "realtime",
-        },
-    }
-}
-
 pub(crate) fn trigger_layout_recompute(
     control: &Arc<RendererControl>,
     socket: &Arc<std::net::UdpSocket>,
@@ -87,12 +73,13 @@ pub(crate) fn trigger_layout_recompute(
                             "Render backend {:?} updated with new speaker layout",
                             rebuild_plan_for_thread.backend_kind()
                         );
-                        let effective_mode =
-                            control_clone.active_topology().backend.effective_mode_name();
                         let effective_backend =
                             control_clone.active_topology().backend.kind().as_str();
-                        let effective_evaluation_mode =
-                            effective_evaluation_mode_name(effective_backend, effective_mode);
+                        let effective_evaluation_mode = control_clone
+                            .active_topology()
+                            .backend
+                            .evaluation_mode()
+                            .as_str();
                         broadcast_string(
                             &socket_clone,
                             &clients_clone,
@@ -109,7 +96,7 @@ pub(crate) fn trigger_layout_recompute(
                             &socket_clone,
                             &clients_clone,
                             "/omniphony/state/vbap/effective_mode",
-                            effective_mode,
+                            control_clone.active_topology().backend.legacy_vbap_mode_name(),
                         );
                         broadcast_int(
                             &socket_clone,

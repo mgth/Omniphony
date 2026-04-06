@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::render_backend::{GainModelKind, RenderBackend, RenderBackendKind};
+use crate::render_backend::{GainModelKind, PreparedRenderEngine, RenderBackendKind};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
@@ -359,7 +359,7 @@ pub struct ExperimentalDistanceTopologyBuildPlan {
 /// mappings that tie both together.
 pub struct RenderTopology {
     pub speaker_layout: SpeakerLayout,
-    pub backend: Arc<RenderBackend>,
+    pub backend: Arc<PreparedRenderEngine>,
     pub backend_to_speaker_mapping: Option<Vec<usize>>,
     pub bed_to_speaker_mapping: HashMap<usize, usize>,
     pub num_speakers: usize,
@@ -367,7 +367,7 @@ pub struct RenderTopology {
 }
 
 impl RenderTopology {
-    pub fn new(backend: Arc<RenderBackend>, speaker_layout: SpeakerLayout) -> Result<Self> {
+    pub fn new(backend: Arc<PreparedRenderEngine>, speaker_layout: SpeakerLayout) -> Result<Self> {
         let num_speakers = speaker_layout.num_speakers();
         let (_, spatializable_mapping) = speaker_layout.spatializable_positions();
         let num_spatializable = spatializable_mapping.len();
@@ -466,8 +466,14 @@ impl VbapTopologyBuildPlan {
         .map_err(|e| anyhow::anyhow!("Failed to precompute VBAP effect tables: {}", e))?;
 
         RenderTopology::new(
-            Arc::new(RenderBackend::Vbap(
+            Arc::new(PreparedRenderEngine::vbap(
                 crate::render_backend::VbapBackend::new(vbap),
+                match self.table_mode {
+                    VbapTableMode::Polar => crate::render_backend::EffectiveEvaluationMode::PrecomputedPolar,
+                    VbapTableMode::Cartesian { .. } => {
+                        crate::render_backend::EffectiveEvaluationMode::PrecomputedCartesian
+                    }
+                },
             )),
             self.layout.clone(),
         )
@@ -487,7 +493,7 @@ impl TopologyBuildPlan {
         match self {
             Self::Vbap(plan) => plan.build_topology(),
             Self::ExperimentalDistance(plan) => RenderTopology::new(
-                Arc::new(RenderBackend::ExperimentalDistance(
+                Arc::new(PreparedRenderEngine::experimental_distance(
                     crate::render_backend::ExperimentalDistanceBackend::new(
                         plan.speaker_positions.clone(),
                     ),
