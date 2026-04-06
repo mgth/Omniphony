@@ -349,9 +349,9 @@ pub enum BackendRebuildParams {
 
 #[cfg(feature = "saf_vbap")]
 #[derive(Clone)]
-pub struct ExperimentalDistanceTopologyBuildPlan {
-    pub layout: SpeakerLayout,
-    pub speaker_positions: Vec<[f32; 3]>,
+pub enum GainModelBuildPlan {
+    Vbap(VbapTopologyBuildPlan),
+    ExperimentalDistance { speaker_positions: Vec<[f32; 3]> },
 }
 
 /// Immutable render-time snapshot published atomically to the audio thread.
@@ -484,34 +484,35 @@ impl VbapTopologyBuildPlan {
 
 #[cfg(feature = "saf_vbap")]
 #[derive(Clone)]
-pub enum TopologyBuildPlan {
-    Vbap(VbapTopologyBuildPlan),
-    ExperimentalDistance(ExperimentalDistanceTopologyBuildPlan),
+pub struct TopologyBuildPlan {
+    pub layout: SpeakerLayout,
+    pub gain_model: GainModelBuildPlan,
+    pub evaluation_mode: LiveEvaluationMode,
 }
 
 #[cfg(feature = "saf_vbap")]
 impl TopologyBuildPlan {
     pub fn build_topology(&self) -> Result<RenderTopology> {
-        match self {
-            Self::Vbap(plan) => plan.build_topology(),
-            Self::ExperimentalDistance(plan) => RenderTopology::new(
+        match &self.gain_model {
+            GainModelBuildPlan::Vbap(plan) => plan.build_topology(),
+            GainModelBuildPlan::ExperimentalDistance { speaker_positions } => RenderTopology::new(
                 Arc::new(build_prepared_render_engine(
                     GainModelInstance::ExperimentalDistance(
                         crate::render_backend::ExperimentalDistanceBackend::new(
-                            plan.speaker_positions.clone(),
+                            speaker_positions.clone(),
                         ),
                     ),
                     crate::render_backend::EffectiveEvaluationMode::Realtime,
                 )?),
-                plan.layout.clone(),
+                self.layout.clone(),
             ),
         }
     }
 
     pub fn backend_kind(&self) -> RenderBackendKind {
-        match self {
-            Self::Vbap(_) => RenderBackendKind::Vbap,
-            Self::ExperimentalDistance(_) => RenderBackendKind::ExperimentalDistance,
+        match self.gain_model {
+            GainModelBuildPlan::Vbap(_) => RenderBackendKind::Vbap,
+            GainModelBuildPlan::ExperimentalDistance { .. } => RenderBackendKind::ExperimentalDistance,
         }
     }
 
@@ -520,25 +521,16 @@ impl TopologyBuildPlan {
     }
 
     pub fn evaluation_mode(&self) -> LiveEvaluationMode {
-        match self {
-            Self::Vbap(plan) => match plan.table_mode {
-                VbapTableMode::Polar => LiveEvaluationMode::PrecomputedPolar,
-                VbapTableMode::Cartesian { .. } => LiveEvaluationMode::PrecomputedCartesian,
-            },
-            Self::ExperimentalDistance(_) => LiveEvaluationMode::Realtime,
-        }
+        self.evaluation_mode
     }
 
     pub fn layout(&self) -> &SpeakerLayout {
-        match self {
-            Self::Vbap(plan) => &plan.layout,
-            Self::ExperimentalDistance(plan) => &plan.layout,
-        }
+        &self.layout
     }
 
     pub fn log_summary(&self) -> String {
-        match self {
-            Self::Vbap(plan) => format!(
+        match &self.gain_model {
+            GainModelBuildPlan::Vbap(plan) => format!(
                 "gain_model=vbap evaluation_mode={} azimuth_resolution={} elevation_resolution={} distance_res={} distance_max={} mode={:?}",
                 self.evaluation_mode().as_str(),
                 plan.azimuth_resolution,
@@ -547,10 +539,10 @@ impl TopologyBuildPlan {
                 plan.distance_max,
                 plan.table_mode
             ),
-            Self::ExperimentalDistance(plan) => format!(
+            GainModelBuildPlan::ExperimentalDistance { speaker_positions } => format!(
                 "gain_model=experimental_distance evaluation_mode={} speakers={}",
                 self.evaluation_mode().as_str(),
-                plan.speaker_positions.len()
+                speaker_positions.len()
             ),
         }
     }
@@ -679,12 +671,11 @@ impl RendererControl {
                 .filter(|speaker| speaker.spatialize)
                 .map(|speaker| [speaker.x, speaker.y, speaker.z])
                 .collect();
-            return Some(TopologyBuildPlan::ExperimentalDistance(
-                ExperimentalDistanceTopologyBuildPlan {
-                    layout,
-                    speaker_positions,
-                },
-            ));
+            return Some(TopologyBuildPlan {
+                layout,
+                gain_model: GainModelBuildPlan::ExperimentalDistance { speaker_positions },
+                evaluation_mode: LiveEvaluationMode::Realtime,
+            });
         }
 
         let rebuild = self.backend_rebuild_params?;
@@ -776,30 +767,39 @@ impl RendererControl {
             0.25
         };
 
-        Some(TopologyBuildPlan::Vbap(VbapTopologyBuildPlan {
-            layout,
-            positions,
-            azimuth_resolution,
-            elevation_resolution,
-            distance_res,
-            distance_max,
-            position_interpolation: live.vbap_position_interpolation,
-            table_mode,
-            allow_negative_z: rebuild.allow_negative_z,
-            distance_model: live.distance_model,
-            spread_min: live.spread_min,
-            spread_max: live.spread_max,
-            spread_from_distance: live.spread_from_distance,
-            spread_distance_range: live.spread_distance_range,
-            spread_distance_curve: live.spread_distance_curve,
-            room_ratio: live.room_ratio,
-            room_ratio_rear: live.room_ratio_rear,
-            room_ratio_lower: live.room_ratio_lower,
-            room_ratio_center_blend: live.room_ratio_center_blend,
-            diffuse: live.use_distance_diffuse,
-            diffuse_thr: live.distance_diffuse_threshold,
-            diffuse_curve: live.distance_diffuse_curve,
-        }))
+        let evaluation_mode = match table_mode {
+            VbapTableMode::Polar => LiveEvaluationMode::PrecomputedPolar,
+            VbapTableMode::Cartesian { .. } => LiveEvaluationMode::PrecomputedCartesian,
+        };
+
+        Some(TopologyBuildPlan {
+            layout: layout.clone(),
+            gain_model: GainModelBuildPlan::Vbap(VbapTopologyBuildPlan {
+                layout,
+                positions,
+                azimuth_resolution,
+                elevation_resolution,
+                distance_res,
+                distance_max,
+                position_interpolation: live.vbap_position_interpolation,
+                table_mode,
+                allow_negative_z: rebuild.allow_negative_z,
+                distance_model: live.distance_model,
+                spread_min: live.spread_min,
+                spread_max: live.spread_max,
+                spread_from_distance: live.spread_from_distance,
+                spread_distance_range: live.spread_distance_range,
+                spread_distance_curve: live.spread_distance_curve,
+                room_ratio: live.room_ratio,
+                room_ratio_rear: live.room_ratio_rear,
+                room_ratio_lower: live.room_ratio_lower,
+                room_ratio_center_blend: live.room_ratio_center_blend,
+                diffuse: live.use_distance_diffuse,
+                diffuse_thr: live.distance_diffuse_threshold,
+                diffuse_curve: live.distance_diffuse_curve,
+            }),
+            evaluation_mode,
+        })
     }
 
     /// Mark live params as dirty (changed since last save) and return the new state.
