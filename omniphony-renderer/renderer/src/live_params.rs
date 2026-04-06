@@ -87,21 +87,6 @@ impl LiveEvaluationMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VbapBackendMode {
-    Polar,
-    Cartesian,
-}
-
-impl VbapBackendMode {
-    pub fn from_table_mode(mode: VbapTableMode) -> Self {
-        match mode {
-            VbapTableMode::Polar => Self::Polar,
-            VbapTableMode::Cartesian { .. } => Self::Cartesian,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreferredEvaluationMode {
     PrecomputedPolar,
     PrecomputedCartesian,
@@ -227,7 +212,11 @@ pub struct LiveParams {
     /// Cartesian VBAP table size on negative Z axis (live-editable via OSC).
     pub vbap_cart_z_neg_size: usize,
 
-    /// UI-selected VBAP table mode.
+    /// Requested evaluation mode for the current gain model.
+    pub evaluation_mode: LiveEvaluationMode,
+
+    /// Legacy compatibility mirror for the old VBAP table-mode UI/OSC surface.
+    /// Keep in sync with `evaluation_mode` while the old protocol still exists.
     pub vbap_table_mode: LiveVbapTableMode,
 
     /// Polar VBAP azimuth granularity in degrees.
@@ -295,13 +284,23 @@ pub struct LiveParams {
 }
 
 impl LiveParams {
+    pub fn set_evaluation_mode(&mut self, mode: LiveEvaluationMode) {
+        self.evaluation_mode = mode;
+        self.vbap_table_mode = match mode {
+            LiveEvaluationMode::Auto => LiveVbapTableMode::Auto,
+            LiveEvaluationMode::PrecomputedPolar => LiveVbapTableMode::Polar,
+            LiveEvaluationMode::PrecomputedCartesian => LiveVbapTableMode::Cartesian,
+            LiveEvaluationMode::Realtime => self.vbap_table_mode,
+        };
+    }
+
     pub fn gain_model_kind(&self) -> GainModelKind {
         self.backend_kind.as_gain_model_kind()
     }
 
     pub fn requested_evaluation_mode(&self) -> LiveEvaluationMode {
         match self.gain_model_kind() {
-            GainModelKind::Vbap => LiveEvaluationMode::from_vbap_table_mode(self.vbap_table_mode),
+            GainModelKind::Vbap => self.evaluation_mode,
             GainModelKind::ExperimentalDistance => LiveEvaluationMode::Realtime,
         }
     }
@@ -326,7 +325,7 @@ pub struct VbapRebuildParams {
     pub distance_max: f32,
     pub position_interpolation: bool,
     pub table_mode: VbapTableMode,
-    pub preferred_table_mode: VbapBackendMode,
+    pub preferred_evaluation_mode: PreferredEvaluationMode,
     pub cartesian_default_x_size: usize,
     pub cartesian_default_y_size: usize,
     pub cartesian_default_z_size: usize,
@@ -337,7 +336,7 @@ pub struct VbapRebuildParams {
 
 impl VbapRebuildParams {
     pub fn preferred_evaluation_mode(&self) -> PreferredEvaluationMode {
-        PreferredEvaluationMode::from_vbap_table_mode(self.table_mode)
+        self.preferred_evaluation_mode
     }
 }
 
@@ -688,7 +687,7 @@ impl RendererControl {
             )
             .0;
 
-        let table_mode = match live.requested_evaluation_mode() {
+        let table_mode = match live.evaluation_mode {
             LiveEvaluationMode::Realtime => return None,
             LiveEvaluationMode::Auto => match rebuild.preferred_evaluation_mode() {
                 PreferredEvaluationMode::PrecomputedPolar => crate::spatial_vbap::VbapTableMode::Polar,

@@ -444,21 +444,23 @@ fn init_spatial_renderer(
                 args.distance_diffuse_curve,
                 match preferred_vbap_table_mode {
                     bridge_api::RVbapTableMode::Polar => {
-                        renderer::live_params::VbapBackendMode::Polar
+                        renderer::live_params::PreferredEvaluationMode::PrecomputedPolar
                     }
                     bridge_api::RVbapTableMode::Cartesian => {
-                        renderer::live_params::VbapBackendMode::Cartesian
+                        renderer::live_params::PreferredEvaluationMode::PrecomputedCartesian
                     }
                 },
                 if vbap_table_mode_explicit {
                     match args.vbap_table_mode {
-                        VbapTableModeArg::Polar => renderer::live_params::LiveVbapTableMode::Polar,
+                        VbapTableModeArg::Polar => {
+                            renderer::live_params::LiveEvaluationMode::PrecomputedPolar
+                        }
                         VbapTableModeArg::Cartesian => {
-                            renderer::live_params::LiveVbapTableMode::Cartesian
+                            renderer::live_params::LiveEvaluationMode::PrecomputedCartesian
                         }
                     }
                 } else {
-                    renderer::live_params::LiveVbapTableMode::Auto
+                    renderer::live_params::LiveEvaluationMode::Auto
                 },
                 args.vbap_cart_x_size
                     .unwrap_or(vbap_cartesian_defaults.x_size as usize),
@@ -504,23 +506,20 @@ fn init_spatial_renderer(
             if let Some(configured_evaluation) = configured_evaluation {
                 match (live.backend_kind, configured_evaluation) {
                     (RenderBackendKind::Vbap, LiveEvaluationMode::Auto) => {
-                        if live.vbap_table_mode != renderer::live_params::LiveVbapTableMode::Auto {
-                            live.vbap_table_mode = renderer::live_params::LiveVbapTableMode::Auto;
+                        if live.evaluation_mode != LiveEvaluationMode::Auto {
+                            live.set_evaluation_mode(LiveEvaluationMode::Auto);
                             requires_rebuild = true;
                         }
                     }
                     (RenderBackendKind::Vbap, LiveEvaluationMode::PrecomputedPolar) => {
-                        if live.vbap_table_mode != renderer::live_params::LiveVbapTableMode::Polar {
-                            live.vbap_table_mode = renderer::live_params::LiveVbapTableMode::Polar;
+                        if live.evaluation_mode != LiveEvaluationMode::PrecomputedPolar {
+                            live.set_evaluation_mode(LiveEvaluationMode::PrecomputedPolar);
                             requires_rebuild = true;
                         }
                     }
                     (RenderBackendKind::Vbap, LiveEvaluationMode::PrecomputedCartesian) => {
-                        if live.vbap_table_mode
-                            != renderer::live_params::LiveVbapTableMode::Cartesian
-                        {
-                            live.vbap_table_mode =
-                                renderer::live_params::LiveVbapTableMode::Cartesian;
+                        if live.evaluation_mode != LiveEvaluationMode::PrecomputedCartesian {
+                            live.set_evaluation_mode(LiveEvaluationMode::PrecomputedCartesian);
                             requires_rebuild = true;
                         }
                     }

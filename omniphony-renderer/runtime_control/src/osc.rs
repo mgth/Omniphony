@@ -6,7 +6,7 @@ use audio_input::{
     InputBackend, InputClockMode, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
 };
 use renderer::render_backend::RenderBackendKind;
-use renderer::live_params::{LiveEvaluationMode, LiveVbapTableMode};
+use renderer::live_params::LiveEvaluationMode;
 
 #[derive(Debug, Clone, Default)]
 pub struct SpeakerPatch {
@@ -272,26 +272,24 @@ pub fn apply_simple_osc_control(
             parse_string_arg(msg.args.first()).and_then(|value| LiveEvaluationMode::from_str(&value));
         if let Some(requested) = requested {
             let mut live = ctx.renderer.live.write().unwrap();
-            let effective_requested = match live.backend_kind {
-                RenderBackendKind::Vbap => match requested {
-                    LiveEvaluationMode::Auto => Some(LiveVbapTableMode::Auto),
-                    LiveEvaluationMode::PrecomputedPolar => Some(LiveVbapTableMode::Polar),
-                    LiveEvaluationMode::PrecomputedCartesian => Some(LiveVbapTableMode::Cartesian),
-                    LiveEvaluationMode::Realtime => None,
-                },
-                RenderBackendKind::ExperimentalDistance => {
-                    if requested == LiveEvaluationMode::Realtime {
-                        Some(live.vbap_table_mode)
+            let accepted = match live.backend_kind {
+                RenderBackendKind::Vbap => {
+                    if requested != LiveEvaluationMode::Realtime {
+                        if live.evaluation_mode != requested {
+                            live.set_evaluation_mode(requested);
+                            effects.mark_dirty = true;
+                            effects.trigger_layout_recompute = true;
+                        }
+                        true
                     } else {
-                        None
+                        false
                     }
                 }
+                RenderBackendKind::ExperimentalDistance => requested == LiveEvaluationMode::Realtime,
             };
-            if let Some(next_mode) = effective_requested {
-                if live.backend_kind == RenderBackendKind::Vbap && live.vbap_table_mode != next_mode {
-                    live.vbap_table_mode = next_mode;
+            if accepted {
+                if live.backend_kind == RenderBackendKind::Vbap {
                     effects.mark_dirty = true;
-                    effects.trigger_layout_recompute = true;
                 }
                 effects.broadcasts.push(BroadcastUpdate {
                     addr: "/omniphony/state/render_evaluation_mode".to_string(),
@@ -898,7 +896,7 @@ pub fn apply_simple_osc_control(
             if let Some(mode) = renderer::live_params::LiveVbapTableMode::from_str(mode) {
                 let evaluation_mode =
                     renderer::live_params::LiveEvaluationMode::from_vbap_table_mode(mode);
-                ctx.renderer.live.write().unwrap().vbap_table_mode = mode;
+                ctx.renderer.live.write().unwrap().set_evaluation_mode(evaluation_mode);
                 effects.mark_dirty = true;
                 effects.trigger_layout_recompute = true;
                 effects.broadcasts.push(BroadcastUpdate {

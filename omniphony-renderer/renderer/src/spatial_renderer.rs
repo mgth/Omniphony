@@ -49,8 +49,8 @@
 //!     false,                 // distance_diffuse
 //!     1.0,                   // distance_diffuse_threshold
 //!     1.0,                   // distance_diffuse_curve
-//!     omniphony_renderer::live_params::VbapBackendMode::Polar,      // bridge preferred mode
-//!     omniphony_renderer::live_params::LiveVbapTableMode::Polar,    // initial live selection
+//!     omniphony_renderer::live_params::PreferredEvaluationMode::PrecomputedPolar, // bridge preferred mode
+//!     omniphony_renderer::live_params::LiveEvaluationMode::PrecomputedPolar,      // initial live selection
 //!     31,                    // cartesian default x size
 //!     31,                    // cartesian default y size
 //!     15,                    // cartesian default z size
@@ -65,7 +65,8 @@
 //! ```
 
 use crate::live_params::{
-    LiveParams, LiveVbapTableMode, RampMode, RenderTopology, RendererControl, VbapBackendMode,
+    LiveEvaluationMode, LiveParams, LiveVbapTableMode, PreferredEvaluationMode, RampMode,
+    RenderTopology, RendererControl,
 };
 use crate::render_backend::{RenderBackend, RenderBackendKind, RenderRequest, VbapBackend};
 use crate::spatial_vbap::VbapTableMode;
@@ -460,8 +461,8 @@ impl SpatialRenderer {
         distance_diffuse: bool,
         distance_diffuse_threshold: f32,
         distance_diffuse_curve: f32,
-        preferred_table_mode: VbapBackendMode,
-        initial_table_mode: LiveVbapTableMode,
+        preferred_evaluation_mode: PreferredEvaluationMode,
+        initial_evaluation_mode: LiveEvaluationMode,
         cartesian_default_x_size: usize,
         cartesian_default_y_size: usize,
         cartesian_default_z_size: usize,
@@ -542,7 +543,7 @@ impl SpatialRenderer {
             .collect();
         let live_params = Self::build_live_params_and_log(
             &topology.speaker_layout,
-            initial_table_mode,
+            initial_evaluation_mode,
             az_res_deg,
             el_res_deg,
             distance_step,
@@ -586,7 +587,7 @@ impl SpatialRenderer {
                     distance_max,
                     position_interpolation: vbap_position_interpolation,
                     table_mode,
-                    preferred_table_mode,
+                    preferred_evaluation_mode,
                     cartesian_default_x_size,
                     cartesian_default_y_size,
                     cartesian_default_z_size,
@@ -721,8 +722,8 @@ impl SpatialRenderer {
         let live_params = Self::build_live_params_and_log(
             &topology.speaker_layout,
             match vbap_table_mode {
-                VbapTableMode::Polar => LiveVbapTableMode::Polar,
-                VbapTableMode::Cartesian { .. } => LiveVbapTableMode::Cartesian,
+                VbapTableMode::Polar => LiveEvaluationMode::PrecomputedPolar,
+                VbapTableMode::Cartesian { .. } => LiveEvaluationMode::PrecomputedCartesian,
             },
             vbap_azimuth_resolution,
             vbap_elevation_resolution,
@@ -774,7 +775,9 @@ impl SpatialRenderer {
                 distance_max,
                 position_interpolation: vbap_position_interpolation,
                 table_mode: vbap_table_mode,
-                preferred_table_mode: VbapBackendMode::from_table_mode(vbap_table_mode),
+                preferred_evaluation_mode: PreferredEvaluationMode::from_vbap_table_mode(
+                    vbap_table_mode,
+                ),
                 cartesian_default_x_size: match vbap_table_mode {
                     VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
                     VbapTableMode::Polar => 1,
@@ -816,7 +819,7 @@ impl SpatialRenderer {
     #[allow(clippy::too_many_arguments)]
     fn build_live_params_and_log(
         speaker_layout: &SpeakerLayout,
-        initial_table_mode: LiveVbapTableMode,
+        initial_evaluation_mode: LiveEvaluationMode,
         az_res_deg: i32,
         el_res_deg: i32,
         distance_res: f32,
@@ -912,11 +915,17 @@ impl SpatialRenderer {
             spread_distance_curve,
             ramp_mode,
             backend_kind: RenderBackendKind::Vbap,
+            evaluation_mode: initial_evaluation_mode,
             vbap_cart_x_size: cartesian_default_x_size.max(1),
             vbap_cart_y_size: cartesian_default_y_size.max(1),
             vbap_cart_z_size: cartesian_default_z_size.max(1),
             vbap_cart_z_neg_size: cartesian_default_z_neg_size,
-            vbap_table_mode: initial_table_mode,
+            vbap_table_mode: match initial_evaluation_mode {
+                LiveEvaluationMode::Auto => LiveVbapTableMode::Auto,
+                LiveEvaluationMode::PrecomputedPolar => LiveVbapTableMode::Polar,
+                LiveEvaluationMode::PrecomputedCartesian => LiveVbapTableMode::Cartesian,
+                LiveEvaluationMode::Realtime => LiveVbapTableMode::Auto,
+            },
             vbap_polar_azimuth_values: (360.0 / az_res_deg.max(1) as f32).round() as i32,
             vbap_polar_elevation_values: (((if allow_negative_z { 180.0 } else { 90.0 })
                 / el_res_deg.max(1) as f32)
@@ -1804,8 +1813,8 @@ mod tests {
             false,
             1.0,
             1.0,
-            VbapBackendMode::Polar,
-            LiveVbapTableMode::Polar,
+            PreferredEvaluationMode::PrecomputedPolar,
+            LiveEvaluationMode::PrecomputedPolar,
             31,
             31,
             15,

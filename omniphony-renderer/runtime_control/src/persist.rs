@@ -6,9 +6,7 @@ use audio_input::{
     InputSampleFormat,
 };
 use audio_output::AudioControl;
-use renderer::live_params::{
-    LiveEvaluationMode, LiveVbapTableMode, RampMode, RendererControl, VbapBackendMode,
-};
+use renderer::live_params::{LiveEvaluationMode, RampMode, RendererControl, PreferredEvaluationMode};
 
 use crate::snapshot::build_live_state_bundle;
 
@@ -99,19 +97,21 @@ pub fn save_live_config(
         LiveEvaluationMode::Auto => None,
         other => Some(other.as_str().to_string()),
     };
-    render.vbap_table_mode = match live.vbap_table_mode {
-        LiveVbapTableMode::Auto => None,
-        LiveVbapTableMode::Polar => Some("polar".to_string()),
-        LiveVbapTableMode::Cartesian => Some("cartesian".to_string()),
+    render.vbap_table_mode = match live.requested_evaluation_mode() {
+        LiveEvaluationMode::Auto => None,
+        LiveEvaluationMode::PrecomputedPolar => Some("polar".to_string()),
+        LiveEvaluationMode::PrecomputedCartesian => Some("cartesian".to_string()),
+        LiveEvaluationMode::Realtime => None,
     };
-    let effective_cartesian = match live.vbap_table_mode {
-        LiveVbapTableMode::Cartesian => true,
-        LiveVbapTableMode::Polar => false,
-        LiveVbapTableMode::Auto => matches!(
+    let effective_cartesian = match live.requested_evaluation_mode() {
+        LiveEvaluationMode::PrecomputedCartesian => true,
+        LiveEvaluationMode::PrecomputedPolar => false,
+        LiveEvaluationMode::Realtime => false,
+        LiveEvaluationMode::Auto => matches!(
             control.backend_rebuild_params.map(|p| match p {
-                renderer::live_params::BackendRebuildParams::Vbap(p) => p.preferred_table_mode,
+                renderer::live_params::BackendRebuildParams::Vbap(p) => p.preferred_evaluation_mode,
             }),
-            Some(VbapBackendMode::Cartesian)
+            Some(PreferredEvaluationMode::PrecomputedCartesian)
         ),
     };
     if effective_cartesian {

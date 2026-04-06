@@ -140,7 +140,15 @@ pub fn build_live_state_bundle(
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/vbap/table_mode".to_string(),
-            args: vec![OscType::String(live.vbap_table_mode.as_str().to_string())],
+            args: vec![OscType::String(
+                match live.requested_evaluation_mode() {
+                    renderer::live_params::LiveEvaluationMode::Auto => "auto",
+                    renderer::live_params::LiveEvaluationMode::PrecomputedPolar => "polar",
+                    renderer::live_params::LiveEvaluationMode::PrecomputedCartesian => "cartesian",
+                    renderer::live_params::LiveEvaluationMode::Realtime => "auto",
+                }
+                .to_string(),
+            )],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/vbap/position_interpolation".to_string(),
