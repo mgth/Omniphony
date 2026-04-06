@@ -132,6 +132,20 @@ pub trait EvaluationStrategy<M: GainModel> {
     fn prepare(self, model: M) -> Self::Prepared;
 }
 
+pub enum GainModelInstance {
+    Vbap(VbapBackend),
+    ExperimentalDistance(ExperimentalDistanceBackend),
+}
+
+impl GainModelInstance {
+    pub fn kind(&self) -> GainModelKind {
+        match self {
+            Self::Vbap(_) => GainModelKind::Vbap,
+            Self::ExperimentalDistance(_) => GainModelKind::ExperimentalDistance,
+        }
+    }
+}
+
 pub struct PrecomputedVbapEvaluator {
     model: VbapBackend,
 }
@@ -309,6 +323,36 @@ impl PreparedRenderEngine {
                 evaluator.save_to_file(path, speaker_layout)
             }
         }
+    }
+}
+
+pub fn build_prepared_render_engine(
+    model: GainModelInstance,
+    evaluation_mode: EffectiveEvaluationMode,
+) -> Result<PreparedRenderEngine> {
+    match (model, evaluation_mode) {
+        (GainModelInstance::Vbap(model), mode @ EffectiveEvaluationMode::PrecomputedPolar)
+        | (GainModelInstance::Vbap(model), mode @ EffectiveEvaluationMode::PrecomputedCartesian) => {
+            let strategy = PrecomputedVbapStrategy::new(mode);
+            Ok(PreparedRenderEngine::new(
+                GainModelKind::Vbap,
+                strategy.effective_mode(),
+                strategy.prepare(model),
+            ))
+        }
+        (GainModelInstance::ExperimentalDistance(model), EffectiveEvaluationMode::Realtime) => {
+            let strategy = RealtimeExperimentalDistanceStrategy;
+            Ok(PreparedRenderEngine::new(
+                GainModelKind::ExperimentalDistance,
+                strategy.effective_mode(),
+                strategy.prepare(model),
+            ))
+        }
+        (model, mode) => Err(anyhow::anyhow!(
+            "Unsupported render engine combination: gain_model={} evaluation_mode={}",
+            model.kind().as_str(),
+            mode.as_str()
+        )),
     }
 }
 

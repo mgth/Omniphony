@@ -69,7 +69,8 @@ use crate::live_params::{
     RenderTopology, RendererControl,
 };
 use crate::render_backend::{
-    EffectiveEvaluationMode, PreparedRenderEngine, RenderBackendKind, RenderRequest, VbapBackend,
+    EffectiveEvaluationMode, GainModelInstance, RenderBackendKind, RenderRequest, VbapBackend,
+    build_prepared_render_engine,
 };
 use crate::spatial_vbap::VbapTableMode;
 use crate::spatial_vbap::{DistanceModel, Gains, VbapPanner, adm_to_spherical};
@@ -522,15 +523,15 @@ impl SpatialRenderer {
         }
         let vbap_triangles = vbap.num_triangles();
         let topology = RenderTopology::new(
-            Arc::new(PreparedRenderEngine::vbap(
-                VbapBackend::new(vbap),
+            Arc::new(build_prepared_render_engine(
+                GainModelInstance::Vbap(VbapBackend::new(vbap)),
                 match table_mode {
                     VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
                     VbapTableMode::Cartesian { .. } => {
                         EffectiveEvaluationMode::PrecomputedCartesian
                     }
                 },
-            )),
+            )?),
             speaker_layout,
         )?;
 
@@ -718,15 +719,15 @@ impl SpatialRenderer {
             distance_model
         );
         let topology = RenderTopology::new(
-            Arc::new(PreparedRenderEngine::vbap(
-                VbapBackend::new(vbap),
+            Arc::new(build_prepared_render_engine(
+                GainModelInstance::Vbap(VbapBackend::new(vbap)),
                 match vbap_table_mode {
                     VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
                     VbapTableMode::Cartesian { .. } => {
                         EffectiveEvaluationMode::PrecomputedCartesian
                     }
                 },
-            )),
+            )?),
             speaker_layout,
         )?;
 

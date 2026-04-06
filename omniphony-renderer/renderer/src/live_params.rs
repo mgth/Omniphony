@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::render_backend::{GainModelKind, PreparedRenderEngine, RenderBackendKind};
+#[cfg(feature = "saf_vbap")]
+use crate::render_backend::{GainModelInstance, build_prepared_render_engine};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
@@ -466,15 +468,15 @@ impl VbapTopologyBuildPlan {
         .map_err(|e| anyhow::anyhow!("Failed to precompute VBAP effect tables: {}", e))?;
 
         RenderTopology::new(
-            Arc::new(PreparedRenderEngine::vbap(
-                crate::render_backend::VbapBackend::new(vbap),
+            Arc::new(build_prepared_render_engine(
+                GainModelInstance::Vbap(crate::render_backend::VbapBackend::new(vbap)),
                 match self.table_mode {
                     VbapTableMode::Polar => crate::render_backend::EffectiveEvaluationMode::PrecomputedPolar,
                     VbapTableMode::Cartesian { .. } => {
                         crate::render_backend::EffectiveEvaluationMode::PrecomputedCartesian
                     }
                 },
-            )),
+            )?),
             self.layout.clone(),
         )
     }
@@ -493,11 +495,14 @@ impl TopologyBuildPlan {
         match self {
             Self::Vbap(plan) => plan.build_topology(),
             Self::ExperimentalDistance(plan) => RenderTopology::new(
-                Arc::new(PreparedRenderEngine::experimental_distance(
-                    crate::render_backend::ExperimentalDistanceBackend::new(
-                        plan.speaker_positions.clone(),
+                Arc::new(build_prepared_render_engine(
+                    GainModelInstance::ExperimentalDistance(
+                        crate::render_backend::ExperimentalDistanceBackend::new(
+                            plan.speaker_positions.clone(),
+                        ),
                     ),
-                )),
+                    crate::render_backend::EffectiveEvaluationMode::Realtime,
+                )?),
                 plan.layout.clone(),
             ),
         }
