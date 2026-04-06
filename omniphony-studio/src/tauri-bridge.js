@@ -35,7 +35,15 @@ import {
 } from './speakers.js';
 
 import {
-  updateRenderTimeUI
+  setLatencyInstantMs,
+  updateLatencyDisplay,
+  updateLatencyMeterUI,
+  updateRenderTimeUI,
+  setRenderTimeMs,
+  setDecodeTimeMs,
+  setWriteTimeMs,
+  setFrameDurationMs,
+  updateResampleRatioDisplay
 } from './controls/latency.js';
 import { updateMasterGainUI, updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.js';
 import { updateSpreadDisplay } from './controls/spread.js';
@@ -56,7 +64,6 @@ import { updateConfigSavedUI } from './controls/config.js';
 import { updateRoomRatioDisplay, applyRoomRatio } from './controls/room-geometry.js';
 import { normalizeLogLevel, renderLogLevelControl, logState, pushLog } from './log.js';
 import { applyInitState } from './init.js';
-import { applyRuntimeAudioEvent } from './runtime-audio-state.js';
 
 export function setupTauriBridge() {
   listen('state:snapshot_ready', ({ payload }) => {
@@ -486,19 +493,46 @@ export function setupTauriBridge() {
   // -----------------------------------------------------------------------
 
   listen('decode:time_ms', ({ payload }) => {
-    applyRuntimeAudioEvent('decode:time_ms', payload);
+    const value = Number(payload?.value);
+    if (Number.isFinite(value)) {
+      setDecodeTimeMs(value);
+    } else {
+      app.decodeTimeMs = null;
+      app.decodeTimeWindow = [];
+    }
+    updateRenderTimeUI();
   });
 
   listen('render:time_ms', ({ payload }) => {
-    applyRuntimeAudioEvent('render:time_ms', payload);
+    const value = Number(payload?.value);
+    if (Number.isFinite(value)) {
+      setRenderTimeMs(value);
+    } else {
+      app.renderTimeMs = null;
+      app.renderTimeWindow = [];
+    }
+    updateRenderTimeUI();
   });
 
   listen('write:time_ms', ({ payload }) => {
-    applyRuntimeAudioEvent('write:time_ms', payload);
+    const value = Number(payload?.value);
+    if (Number.isFinite(value)) {
+      setWriteTimeMs(value);
+    } else {
+      app.writeTimeMs = null;
+      app.writeTimeWindow = [];
+    }
+    updateRenderTimeUI();
   });
 
   listen('frame:duration_ms', ({ payload }) => {
-    applyRuntimeAudioEvent('frame:duration_ms', payload);
+    const value = Number(payload?.value);
+    if (Number.isFinite(value)) {
+      setFrameDurationMs(value);
+    } else {
+      app.frameDurationMs = null;
+    }
+    updateRenderTimeUI();
   });
 
   // -----------------------------------------------------------------------
@@ -650,23 +684,31 @@ export function setupTauriBridge() {
   // -----------------------------------------------------------------------
 
   listen('latency', ({ payload }) => {
-    applyRuntimeAudioEvent('latency', payload);
+    app.latencyMs = Number(payload.value);
+    updateLatencyDisplay();
+    updateLatencyMeterUI();
   });
 
   listen('latency:instant', ({ payload }) => {
-    applyRuntimeAudioEvent('latency:instant', payload);
+    setLatencyInstantMs(payload.value);
+    updateLatencyDisplay();
+    updateLatencyMeterUI();
   });
 
   listen('latency:control', ({ payload }) => {
-    applyRuntimeAudioEvent('latency:control', payload);
+    app.latencyControlMs = Number(payload.value);
+    updateLatencyDisplay();
   });
 
   listen('latency:target', ({ payload }) => {
-    applyRuntimeAudioEvent('latency:target', payload);
+    app.latencyTargetMs = Number(payload.value);
+    updateLatencyDisplay();
+    updateLatencyMeterUI();
   });
 
   listen('latency:requested', ({ payload }) => {
-    applyRuntimeAudioEvent('latency:requested', payload);
+    app.latencyRequestedMs = Number(payload.value);
+    updateLatencyDisplay();
   });
 
   // -----------------------------------------------------------------------
@@ -674,7 +716,8 @@ export function setupTauriBridge() {
   // -----------------------------------------------------------------------
 
   listen('resample_ratio', ({ payload }) => {
-    applyRuntimeAudioEvent('resample_ratio', payload);
+    app.resampleRatio = Number(payload.value);
+    updateResampleRatioDisplay();
   });
 
   // -----------------------------------------------------------------------
@@ -682,35 +725,54 @@ export function setupTauriBridge() {
   // -----------------------------------------------------------------------
 
   listen('audio:sample_rate', ({ payload }) => {
-    applyRuntimeAudioEvent('audio:sample_rate', payload);
+    const v = Number(payload.value);
+    app.audioSampleRate = Number.isFinite(v) && v > 0 ? Math.round(v) : null;
+    updateAudioFormatDisplay();
   });
 
   listen('state:ramp_mode', ({ payload }) => {
-    applyRuntimeAudioEvent('state:ramp_mode', payload);
+    const next = String(payload?.value || '').trim().toLowerCase();
+    if (next === 'off' || next === 'frame' || next === 'sample') {
+      app.rampMode = next;
+      updateAudioFormatDisplay();
+    }
   });
 
   listen('audio:output_device', ({ payload }) => {
-    applyRuntimeAudioEvent('audio:output_device', payload);
+    app.audioOutputDevice = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
+    updateAudioFormatDisplay();
   });
 
   listen('audio:output_device:requested', ({ payload }) => {
-    applyRuntimeAudioEvent('audio:output_device:requested', payload);
+    app.audioOutputDevice = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
+    updateAudioFormatDisplay();
   });
 
   listen('audio:output_device:effective', ({ payload }) => {
-    applyRuntimeAudioEvent('audio:output_device:effective', payload);
+    app.audioOutputDeviceEffective = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
+    updateAudioFormatDisplay();
   });
 
   listen('audio:output_devices', ({ payload }) => {
-    applyRuntimeAudioEvent('audio:output_devices', payload);
+    app.audioOutputDevices = Array.isArray(payload.values)
+      ? payload.values
+        .map((entry) => ({
+          value: String(entry?.value || '').trim(),
+          label: String(entry?.label || entry?.value || '').trim()
+        }))
+        .filter((entry) => entry.value.length > 0)
+      : [];
+    updateAudioFormatDisplay();
   });
 
   listen('audio:sample_format', ({ payload }) => {
-    applyRuntimeAudioEvent('audio:sample_format', payload);
+    app.audioSampleFormat = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
+    updateAudioFormatDisplay();
   });
 
   listen('audio:error', ({ payload }) => {
-    applyRuntimeAudioEvent('audio:error', payload);
+    app.audioError = typeof payload.value === 'string' ? (payload.value.trim() || null) : null;
+    updateAudioFormatDisplay();
   });
 
   // -----------------------------------------------------------------------

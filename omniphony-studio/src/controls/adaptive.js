@@ -7,6 +7,7 @@
 import { app, dirty } from '../state.js';
 import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
+import { t } from '../i18n.js';
 
 // DOM refs
 const adaptiveResamplingToggleEl = document.getElementById('adaptiveResamplingToggle');
