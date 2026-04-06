@@ -420,6 +420,8 @@ export function updateRenderTimeUI() {
 export function applyLatencyTargetNow() {
   const requested = Math.max(1, Math.round(Number(latencyTargetInputEl?.value) || 0));
   app.latencyRequestedMs = requested;
+  app.latencyTargetMs = requested;
+  app.latencyMs = requested;
   app.latencyTargetDirty = false;
   app.latencyTargetEditing = false;
   updateLatencyDisplay();

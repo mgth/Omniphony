@@ -57,13 +57,6 @@ struct OrenderLaunchSpec {
     args: Vec<String>,
 }
 
-#[derive(serde::Deserialize)]
-struct LaunchAudioPrefs {
-    audio_output_device: Option<String>,
-    audio_sample_rate: Option<i32>,
-    ramp_mode: Option<String>,
-}
-
 const ORENDER_SERVICE_NAME: &str = "omniphony-renderer";
 
 // ── Tauri commands ────────────────────────────────────────────────────────
@@ -111,45 +104,6 @@ fn save_osc_config(state: State<SharedState>, config: OscConfig) -> Result<(), S
         },
     );
     Ok(())
-}
-
-#[tauri::command]
-fn save_launch_audio_prefs(
-    state: State<SharedState>,
-    prefs: LaunchAudioPrefs,
-) -> Result<(), String> {
-    let mut cfg = load_config(&state.config_dir);
-    cfg.audio_output_device = prefs
-        .audio_output_device
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    cfg.audio_sample_rate = prefs
-        .audio_sample_rate
-        .filter(|value| *value > 0)
-        .map(|value| value as u32);
-    cfg.ramp_mode = prefs
-        .ramp_mode
-        .as_deref()
-        .map(str::trim)
-        .map(|value| value.to_ascii_lowercase())
-        .filter(|value| matches!(value.as_str(), "off" | "frame" | "sample"));
-    save_config(&state.config_dir, &cfg)
-}
-
-#[tauri::command]
-fn save_input_pipe_pref(
-    state: State<SharedState>,
-    input_pipe: Option<String>,
-) -> Result<(), String> {
-    let mut cfg = load_config(&state.config_dir);
-    cfg.input_pipe = input_pipe
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    save_config(&state.config_dir, &cfg)
 }
 
 #[tauri::command]
@@ -1361,22 +1315,12 @@ fn resolve_orender_launch_spec(
         .ok_or_else(|| "failed to resolve workspace root".to_string())?
         .to_path_buf();
 
-    let mut cfg = load_config(&state.config_dir);
-
     let orender_path = orender_path
         .as_deref()
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .filter(|path| path.exists())
-        .or_else(|| {
-            cfg.orender_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.exists())
-        })
         .or_else(|| first_existing_path(&bundled_orender_candidates(app)))
         .or_else(|| {
             first_existing_path(&[
@@ -1413,14 +1357,6 @@ fn resolve_orender_launch_spec(
         .map(PathBuf::from)
         .filter(|path| path.exists())
         .or_else(|| {
-            cfg.bridge_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-                .filter(|path| path.exists())
-        })
-        .or_else(|| {
             first_existing_path(&[
                 workspace_root.join("truehd-bridge/target/release/libtruehd_bridge.so"),
                 repo_root.join("omniphony-renderer/target/release/libtruehd_bridge.so"),
@@ -1428,13 +1364,7 @@ fn resolve_orender_launch_spec(
         })
         .ok_or_else(|| "a bridge plugin is required to launch orender".to_string())?;
 
-    let input_path = cfg
-        .input_pipe
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(default_orender_input_path);
+    let input_path = default_orender_input_path();
 
     let mut args = vec![
         "render".to_string(),
@@ -1481,40 +1411,15 @@ fn resolve_orender_launch_spec(
         }
     }
 
-    if let Some(output_device) = cfg
-        .audio_output_device
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        args.push("--output-device".to_string());
-        args.push(output_device.to_string());
-    }
-
-    if let Some(output_sample_rate) = cfg.audio_sample_rate.filter(|value| *value > 0) {
-        args.push("--output-sample-rate".to_string());
-        args.push(output_sample_rate.to_string());
-    }
-
-    if let Some(ramp_mode) = cfg
-        .ramp_mode
-        .as_deref()
-        .map(str::trim)
-        .map(|value| value.to_ascii_lowercase())
-        .filter(|value| matches!(value.as_str(), "off" | "frame" | "sample"))
-    {
-        args.push("--ramp-mode".to_string());
-        args.push(ramp_mode);
-    }
-
-    cfg.host = host.trim().to_string();
-    cfg.osc_rx_port = osc_rx_port;
-    cfg.osc_port = osc_port;
-    cfg.osc_metering_enabled = osc_metering_enabled;
-    cfg.bridge_path = Some(bridge_path.display().to_string());
-    cfg.orender_path = Some(orender_path.display().to_string());
-    cfg.input_pipe = Some(input_path.display().to_string());
-    let _ = save_config(&state.config_dir, &cfg);
+    let _ = save_config(
+        &state.config_dir,
+        &OscConfig {
+            host: host.trim().to_string(),
+            osc_rx_port,
+            osc_port,
+            osc_metering_enabled,
+        },
+    );
 
     Ok(OrenderLaunchSpec { orender_path, args })
 }
@@ -2075,8 +1980,6 @@ fn main() {
             get_osc_config,
             get_about_info,
             save_osc_config,
-            save_launch_audio_prefs,
-            save_input_pipe_pref,
             launch_orender,
             stop_orender,
             get_orender_service_status,

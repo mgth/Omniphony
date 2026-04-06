@@ -171,6 +171,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
         output_backend: OutputBackend,
         input_sample_rate: u32,
     ) {
+        let effective_output_device = self.runtime.output_device.clone();
         let (effective_rate, sample_format) = effective_audio_state(
             output_backend,
             input_sample_rate,
@@ -179,14 +180,17 @@ impl<'a> WriterLifecycleCoordinator<'a> {
 
         if self.output.last_audio_sample_rate_hz == Some(effective_rate)
             && self.output.last_audio_sample_format.as_deref() == Some(sample_format)
+            && self.output.last_audio_output_device == effective_output_device
         {
             return;
         }
 
         self.output.last_audio_sample_rate_hz = Some(effective_rate);
         self.output.last_audio_sample_format = Some(sample_format.to_string());
+        self.output.last_audio_output_device = effective_output_device.clone();
 
         if let Some(control) = self.audio_control {
+            control.set_effective_output_device(effective_output_device);
             control.set_audio_state(effective_rate, sample_format);
         }
         if self

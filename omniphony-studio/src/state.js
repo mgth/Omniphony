@@ -117,7 +117,7 @@ export const app = {
   distanceModel: 'none',
 
   // Master
-  masterGain: 1,
+  masterGain: null,
 
   // Loudness
   loudnessEnabled: null,
@@ -165,6 +165,7 @@ export const app = {
   audioSampleRate: null,
   rampMode: 'sample',
   audioOutputDevice: null,
+  audioOutputDeviceEffective: null,
   audioOutputDevices: [],
   orenderInputPipe: null,
   audioSampleFormat: null,
@@ -192,6 +193,7 @@ export const app = {
 
   // OSC
   oscMeteringEnabled: false,
+  oscSnapshotReady: false,
   oscStatusState: 'initializing',
   oscConfigAutoOpenTimer: null,
   oscLaunchPending: false,

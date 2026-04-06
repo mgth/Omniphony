@@ -237,8 +237,12 @@ export function setupUIListeners() {
 
   if (masterGainSliderEl) {
     masterGainSliderEl.addEventListener('input', () => {
+      if (!app.oscSnapshotReady) {
+        updateMasterGainUI();
+        return;
+      }
       const value = Number(masterGainSliderEl.value);
-      if (!Number.isFinite(value)) {
+      if (!Number.isFinite(value) || value <= 0) {
         return;
       }
       app.masterGain = value;
@@ -247,6 +251,10 @@ export function setupUIListeners() {
     });
 
     masterGainSliderEl.addEventListener('dblclick', () => {
+      if (!app.oscSnapshotReady) {
+        updateMasterGainUI();
+        return;
+      }
       app.masterGain = 1;
       updateMasterGainUI();
       invoke('control_master_gain', { gain: app.masterGain });

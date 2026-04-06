@@ -154,3 +154,11 @@ export function setRendererSectionOpen(open) {
     rendererSectionToggleBtnEl.textContent = app.rendererSectionOpen ? '▾' : '▸';
   }
 }
+
+export function collapseRuntimeSections() {
+  setTelemetryGaugesOpen(false);
+  setDisplaySectionOpen(false);
+  setAudioOutputSectionOpen(false);
+  setInputSectionOpen(false);
+  setRendererSectionOpen(false);
+}

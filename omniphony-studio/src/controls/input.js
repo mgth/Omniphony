@@ -1,5 +1,4 @@
 import { app } from '../state.js';
-import { invoke } from '@tauri-apps/api/core';
 import { t, tf } from '../i18n.js';
 
 const inputModeSelectEl = document.getElementById('inputModeSelect');
@@ -227,8 +226,5 @@ export function updateInputControlUI() {
 export function persistInputPipeNow() {
   const value = String(inputPipeInputEl?.value || '').trim();
   app.orenderInputPipe = value || null;
-  return invoke('save_input_pipe_pref', { inputPipe: app.orenderInputPipe })
-    .catch((e) => {
-      console.error('[save_input_pipe_pref]', e);
-    });
+  return Promise.resolve();
 }

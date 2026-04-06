@@ -15,6 +15,8 @@ import { t, tf } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
 import { pushLog, normalizeLogError, normalizeLogLevel, logState } from '../log.js';
 import { invoke } from '@tauri-apps/api/core';
+import { syncRuntimeConnectionLock } from '../runtime-connection.js';
+import { collapseRuntimeSections } from '../modals.js';
 
 // DOM refs
 const statusEl = document.getElementById('status');
@@ -39,6 +41,7 @@ const oscLaunchRendererBtnEl = document.getElementById('oscLaunchRendererBtn');
 // ---------------------------------------------------------------------------
 
 export function renderOscStatus() {
+  syncRuntimeConnectionLock();
   if (statusEl) statusEl.textContent = t(`status.${app.oscStatusState}`);
   if (pipeStatusEl && document.activeElement !== pipeStatusEl) {
     pipeStatusEl.value = app.orenderInputPipe || '';
@@ -150,22 +153,7 @@ export function loadOscConfigIntoPanel() {
     if (oscHostInputEl) oscHostInputEl.value = cfg.host;
     if (oscRxPortInputEl) oscRxPortInputEl.value = String(cfg.osc_rx_port);
     if (oscListenPortInputEl) oscListenPortInputEl.value = String(cfg.osc_port);
-    if (oscBridgePathInputEl) oscBridgePathInputEl.value = String(cfg.bridge_path || '');
     if (oscMeteringToggleEl) oscMeteringToggleEl.checked = Boolean(cfg.osc_metering_enabled);
-    app.oscConfiguredOrenderPath = String(cfg.orender_path || '').trim();
-    app.orenderInputPipe = String(cfg.input_pipe || app.orenderInputPipe || '').trim() || null;
-    if (typeof cfg.audio_output_device === 'string') {
-      app.audioOutputDevice = cfg.audio_output_device.trim() || null;
-    }
-    if (typeof cfg.audio_sample_rate === 'number') {
-      app.audioSampleRate = cfg.audio_sample_rate > 0 ? cfg.audio_sample_rate : null;
-    }
-    if (typeof cfg.ramp_mode === 'string') {
-      const next = cfg.ramp_mode.trim().toLowerCase();
-      if (['off', 'frame', 'sample'].includes(next)) {
-        app.rampMode = next;
-      }
-    }
     app.oscConfigBaselineKey = oscConfigStateKey();
     dirty.audioFormat = true;
     scheduleUIFlush();
@@ -179,9 +167,7 @@ export function readOscConfigForm() {
     host: oscHostInputEl?.value.trim() || '127.0.0.1',
     osc_rx_port: Math.max(1, Math.min(65535, parseInt(oscRxPortInputEl?.value || '9000', 10))),
     osc_port: Math.max(0, Math.min(65535, parseInt(oscListenPortInputEl?.value || '0', 10))),
-    osc_metering_enabled: Boolean(oscMeteringToggleEl?.checked),
-    bridge_path: (oscBridgePathInputEl?.value || '').trim() || null,
-    orender_path: app.oscConfiguredOrenderPath || null
+    osc_metering_enabled: Boolean(oscMeteringToggleEl?.checked)
   };
 }
 
@@ -202,6 +188,10 @@ export function setOscStatus(next) {
   const changed = app.oscStatusState !== next;
   const previous = app.oscStatusState;
   app.oscStatusState = next;
+  if (next !== 'connected') {
+    app.oscSnapshotReady = false;
+    collapseRuntimeSections();
+  }
   renderOscStatus();
   if (next === 'connected') {
     clearOscConfigAutoOpenTimer();
@@ -209,6 +199,9 @@ export function setOscStatus(next) {
       app.oscLaunchPending = false;
       closeOscConfigPanel();
     }
+  } else if (next === 'initializing') {
+    clearOscConfigAutoOpenTimer();
+    openOscConfigPanel();
   } else if (next === 'reconnecting') {
     if (previous === 'initializing' || app.oscLaunchPending) {
       scheduleOscConfigAutoOpen();
@@ -234,8 +227,8 @@ export function launchOrenderFromPanel(orenderPathOverride = null) {
     oscRxPort: config.osc_rx_port,
     oscPort: config.osc_port,
     oscMeteringEnabled: config.osc_metering_enabled,
-    bridgePath: config.bridge_path,
-    orenderPath: orenderPathOverride || config.orender_path,
+    bridgePath: (oscBridgePathInputEl?.value || '').trim() || null,
+    orenderPath: orenderPathOverride || app.oscConfiguredOrenderPath || null,
     logLevel: normalizeLogLevel(logState.backendLogLevel)
   };
   app.oscLaunchPending = true;
@@ -274,8 +267,8 @@ export function installOrenderServiceFromPanel() {
     oscRxPort: config.osc_rx_port,
     oscPort: config.osc_port,
     oscMeteringEnabled: config.osc_metering_enabled,
-    bridgePath: config.bridge_path,
-    orenderPath: app.oscConfiguredOrenderPath || config.orender_path,
+    bridgePath: (oscBridgePathInputEl?.value || '').trim() || null,
+    orenderPath: app.oscConfiguredOrenderPath || null,
     logLevel: normalizeLogLevel(logState.backendLogLevel)
   };
   app.orenderServicePending = true;

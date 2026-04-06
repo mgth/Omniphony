@@ -248,6 +248,10 @@ loadOscConfigIntoPanel();
 // Fetch initial state from backend
 invoke('get_state')
   .then((payload) => {
+    if (app.oscSnapshotReady && payload && payload.oscSnapshotReady === false) {
+      pushLog('debug', 'Ignoring stale initial state after live OSC snapshot');
+      return;
+    }
     applyInitState(payload);
     pushLog('info', t('log.stateLoaded'));
   })

@@ -236,6 +236,8 @@ pub enum OscEvent {
     StateRenderBackend { value: String },
     #[serde(rename = "state:render_backend:effective")]
     StateRenderBackendEffective { value: String },
+    #[serde(rename = "state:snapshot_complete")]
+    StateSnapshotComplete,
     #[serde(rename = "state:loudness")]
     StateLoudness { enabled: bool },
     #[serde(rename = "state:loudness:source")]
@@ -270,6 +272,10 @@ pub enum OscEvent {
     StateRampMode { value: String },
     #[serde(rename = "state:audio:output_device")]
     StateAudioOutputDevice { value: String },
+    #[serde(rename = "state:audio:output_device:requested")]
+    StateAudioOutputDeviceRequested { value: String },
+    #[serde(rename = "state:audio:output_device:effective")]
+    StateAudioOutputDeviceEffective { value: String },
     #[serde(rename = "state:audio:output_devices")]
     StateAudioOutputDevices { values: Vec<String> },
     #[serde(rename = "state:audio:sample_format")]
@@ -679,6 +685,7 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (3, "render_backend") => Some(OscEvent::StateRenderBackend {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
+        (3, "snapshot_complete") => Some(OscEvent::StateSnapshotComplete),
         (3, "loudness") => Some(OscEvent::StateLoudness {
             enabled: to_number(args[0])? != 0.0,
         }),
@@ -869,6 +876,17 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             "error" => {
                 let value = raw_args.first().and_then(unwrap_string)?;
                 Some(OscEvent::StateAudioError { value })
+            }
+            _ => None,
+        },
+        (5, "audio") if parts[3] == "output_device" => match parts[4] {
+            "requested" => {
+                let value = raw_args.first().and_then(unwrap_string)?;
+                Some(OscEvent::StateAudioOutputDeviceRequested { value })
+            }
+            "effective" => {
+                let value = raw_args.first().and_then(unwrap_string)?;
+                Some(OscEvent::StateAudioOutputDeviceEffective { value })
             }
             _ => None,
         },

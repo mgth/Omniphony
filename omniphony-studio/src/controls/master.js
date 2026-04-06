@@ -21,10 +21,13 @@ const distanceModelSelectEl = document.getElementById('distanceModelSelect');
 
 export function renderMasterGainUI() {
   if (masterGainSliderEl) {
-    masterGainSliderEl.value = String(app.masterGain);
+    const hasValue = Number.isFinite(app.masterGain) && app.masterGain > 0;
+    masterGainSliderEl.disabled = !app.oscSnapshotReady || !hasValue;
+    masterGainSliderEl.value = String(hasValue ? app.masterGain : 1);
   }
   if (masterGainBoxEl) {
-    masterGainBoxEl.textContent = linearToDb(app.masterGain);
+    const hasValue = Number.isFinite(app.masterGain) && app.masterGain > 0;
+    masterGainBoxEl.textContent = hasValue ? linearToDb(app.masterGain) : '—';
   }
 }
 

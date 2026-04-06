@@ -23,10 +23,10 @@ import {
   refreshOverlayLists
 } from './speakers.js';
 
-import { setLatencyInstantMs, updateLatencyDisplay, updateLatencyMeterUI, updateRenderTimeUI, setRenderTimeMs, setDecodeTimeMs, setWriteTimeMs, updateResampleRatioDisplay } from './controls/latency.js';
 import { updateMasterGainUI, updateMasterMeterUI } from './controls/master.js';
 import { updateSpreadDisplay } from './controls/spread.js';
 import {
+  updateRenderBackend,
   updateVbapMode,
   updateVbapCartesian,
   updateVbapPolar,
@@ -42,8 +42,14 @@ import { updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.
 import { updateRoomRatioDisplay, applyRoomRatio, applyRoomRatioToScene } from './controls/room-geometry.js';
 import { updateConfigSavedUI } from './controls/config.js';
 import { normalizeLogLevel, renderLogLevelControl, logState } from './log.js';
+import { applyRuntimeAudioStateSnapshot } from './runtime-audio-state.js';
+import { syncRuntimeConnectionLock } from './runtime-connection.js';
 
 export function applyInitState(payload) {
+  if (typeof payload.oscSnapshotReady === 'boolean') {
+    app.oscSnapshotReady = payload.oscSnapshotReady;
+    syncRuntimeConnectionLock();
+  }
   speakerMuted.clear();
   objectMuted.clear();
   speakerManualMuted.clear();
@@ -131,6 +137,21 @@ export function applyInitState(payload) {
       app.vbapModeState.effectiveMode = effectiveMode;
     }
   }
+  if (payload.renderBackendState && typeof payload.renderBackendState === 'object') {
+    if (typeof payload.renderBackendState.selection === 'string') {
+      const selection = payload.renderBackendState.selection.trim().toLowerCase();
+      if (selection === 'vbap' || selection === 'experimental_distance') {
+        app.renderBackendState.selection = selection;
+      }
+    }
+    if (typeof payload.renderBackendState.effective === 'string') {
+      const effective = payload.renderBackendState.effective.trim().toLowerCase();
+      if (effective === 'vbap' || effective === 'experimental_distance') {
+        app.renderBackendState.effective = effective;
+      }
+    }
+  }
+  updateRenderBackend();
   updateVbapMode();
   if (payload.vbapPolar) {
     if (typeof payload.vbapPolar.azimuthResolution === 'number') {
@@ -255,62 +276,7 @@ export function applyInitState(payload) {
     app.configSaved = payload.configSaved !== 0;
   }
   updateConfigSavedUI();
-  if (typeof payload.latencyMs === 'number') {
-    app.latencyMs = payload.latencyMs;
-  }
-  if (typeof payload.latencyInstantMs === 'number') {
-    setLatencyInstantMs(payload.latencyInstantMs);
-  }
-  if (typeof payload.latencyControlMs === 'number') {
-    app.latencyControlMs = payload.latencyControlMs;
-  }
-  if (typeof payload.latencyTargetMs === 'number') {
-    app.latencyTargetMs = payload.latencyTargetMs;
-  }
-  if (typeof payload.latencyRequestedMs === 'number') {
-    app.latencyRequestedMs = payload.latencyRequestedMs;
-  }
-  if (typeof payload.decodeTimeMs === 'number') {
-    app.decodeTimeMs = payload.decodeTimeMs;
-  }
-  if (typeof payload.renderTimeMs === 'number') {
-    app.renderTimeMs = payload.renderTimeMs;
-  }
-  if (typeof payload.writeTimeMs === 'number') {
-    app.writeTimeMs = payload.writeTimeMs;
-  }
-  if (typeof payload.frameDurationMs === 'number') {
-    app.frameDurationMs = payload.frameDurationMs;
-  }
-  if (typeof payload.resampleRatio === 'number') {
-    app.resampleRatio = payload.resampleRatio;
-  }
-  if (typeof payload.audioSampleRate === 'number') {
-    app.audioSampleRate = payload.audioSampleRate > 0 ? payload.audioSampleRate : null;
-  }
-  if (typeof payload.rampMode === 'string') {
-    const next = payload.rampMode.trim().toLowerCase();
-    if (next === 'off' || next === 'frame' || next === 'sample') {
-      app.rampMode = next;
-    }
-  }
-  if (typeof payload.audioOutputDevice === 'string') {
-    app.audioOutputDevice = payload.audioOutputDevice.trim() || null;
-  }
-  if (Array.isArray(payload.audioOutputDevices)) {
-    app.audioOutputDevices = payload.audioOutputDevices
-      .map((entry) => ({
-        value: String(entry?.value || '').trim(),
-        label: String(entry?.label || entry?.value || '').trim()
-      }))
-      .filter((entry) => entry.value.length > 0);
-  }
-  if (typeof payload.audioSampleFormat === 'string') {
-    app.audioSampleFormat = payload.audioSampleFormat.trim() || null;
-  }
-  if (typeof payload.audioError === 'string') {
-    app.audioError = payload.audioError.trim() || null;
-  }
+  applyRuntimeAudioStateSnapshot(payload);
   if (typeof payload.inputMode === 'string') {
     const value = payload.inputMode.trim().toLowerCase();
     if (value === 'bridge' || value === 'pipe_bridge' || value === 'live' || value === 'pipewire' || value === 'pipewire_bridge') {
@@ -380,8 +346,9 @@ export function applyInitState(payload) {
     const s = payload.oscStatus;
     if (s === 'initializing' || s === 'connected' || s === 'reconnecting' || s === 'error') {
       setOscStatus(s);
-    }
   }
+  syncRuntimeConnectionLock();
+}
   if (typeof payload.oscMeteringEnabled === 'number') {
     app.oscMeteringEnabled = payload.oscMeteringEnabled !== 0;
     const oscMeteringToggleEl = document.getElementById('oscMeteringToggle');
@@ -390,10 +357,6 @@ export function applyInitState(payload) {
   if (typeof payload.logLevel === 'string') {
     logState.backendLogLevel = normalizeLogLevel(payload.logLevel);
   }
-  updateLatencyDisplay();
-  updateLatencyMeterUI();
-  updateResampleRatioDisplay();
-  updateAudioFormatDisplay();
   updateInputControlUI();
   updateMasterMeterUI();
   renderLogLevelControl();
