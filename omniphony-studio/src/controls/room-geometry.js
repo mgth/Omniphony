@@ -15,46 +15,47 @@ import { updateVbapCartesianFaceGrid } from '../scene/gizmos.js';
 import { updateSourceDecorations } from '../sources.js';
 import { rebuildTrailGeometry } from '../trails.js';
 import { renderSpeakerEditor } from '../speakers.js';
+import { inDisplayPanel, inRoomGeometryPanel, roomGeometryPanelQueryAll } from '../ui/panel-roots.js';
 
 const ROOM_GEOM_PREFS_STORAGE_KEY = 'spatialviz.room_geometry_prefs';
 const TRAIL_PREFS_STORAGE_KEY = 'spatialviz.trail_prefs';
 const EFFECTIVE_RENDER_PREFS_STORAGE_KEY = 'spatialviz.effective_render_prefs';
 
 // DOM refs
-const roomGeometrySummaryEl = document.getElementById('roomGeometrySummary');
-const roomGeometrySummaryScaleEl = document.getElementById('roomGeometrySummaryScale');
-const roomGeometrySummarySizeEl = document.getElementById('roomGeometrySummarySize');
-const roomGeometrySummaryRatioEl = document.getElementById('roomGeometrySummaryRatio');
-const roomDimWidthInputEl = document.getElementById('roomDimWidthInput');
-const roomDimLengthInputEl = document.getElementById('roomDimLengthInput');
-const roomDimHeightInputEl = document.getElementById('roomDimHeightInput');
-const roomDimRearInputEl = document.getElementById('roomDimRearInput');
-const roomDimLowerInputEl = document.getElementById('roomDimLowerInput');
-const roomRatioWidthInputEl = document.getElementById('roomRatioWidthInput');
-const roomRatioLengthInputEl = document.getElementById('roomRatioLengthInput');
-const roomRatioHeightInputEl = document.getElementById('roomRatioHeightInput');
-const roomRatioRearInputEl = document.getElementById('roomRatioRearInput');
-const roomRatioLowerInputEl = document.getElementById('roomRatioLowerInput');
-const roomRatioCenterBlendSliderEl = document.getElementById('roomRatioCenterBlendSlider');
-const roomRatioCenterBlendValueEl = document.getElementById('roomRatioCenterBlendValue');
-const roomMasterAxisInputs = Array.from(document.querySelectorAll('input[name="roomMasterAxis"]'));
-const roomDriverWidthEl = document.getElementById('roomDriverWidth');
-const roomDriverLengthEl = document.getElementById('roomDriverLength');
-const roomDriverHeightEl = document.getElementById('roomDriverHeight');
-const roomDriverRearEl = document.getElementById('roomDriverRear');
-const roomDriverLowerEl = document.getElementById('roomDriverLower');
-const roomMasterMpuWidthEl = document.getElementById('roomMasterMpuWidth');
-const roomMasterMpuLengthEl = document.getElementById('roomMasterMpuLength');
-const roomMasterMpuRearEl = document.getElementById('roomMasterMpuRear');
-const roomMasterMpuHeightEl = document.getElementById('roomMasterMpuHeight');
-const roomMasterMpuLowerEl = document.getElementById('roomMasterMpuLower');
-const roomGeometryCancelBtnEl = document.getElementById('roomGeometryCancelBtn');
-const trailToggleEl = document.getElementById('trailToggle');
-const trailModeSelectEl = document.getElementById('trailModeSelect');
-const trailTtlSliderEl = document.getElementById('trailTtlSlider');
-const trailTtlValEl = document.getElementById('trailTtlVal');
-const effectiveRenderToggleEl = document.getElementById('effectiveRenderToggle');
-const objectColorsToggleEl = document.getElementById('objectColorsToggle');
+const roomGeometrySummaryEl = inRoomGeometryPanel('roomGeometrySummary');
+const roomGeometrySummaryScaleEl = inRoomGeometryPanel('roomGeometrySummaryScale');
+const roomGeometrySummarySizeEl = inRoomGeometryPanel('roomGeometrySummarySize');
+const roomGeometrySummaryRatioEl = inRoomGeometryPanel('roomGeometrySummaryRatio');
+const roomDimWidthInputEl = inRoomGeometryPanel('roomDimWidthInput');
+const roomDimLengthInputEl = inRoomGeometryPanel('roomDimLengthInput');
+const roomDimHeightInputEl = inRoomGeometryPanel('roomDimHeightInput');
+const roomDimRearInputEl = inRoomGeometryPanel('roomDimRearInput');
+const roomDimLowerInputEl = inRoomGeometryPanel('roomDimLowerInput');
+const roomRatioWidthInputEl = inRoomGeometryPanel('roomRatioWidthInput');
+const roomRatioLengthInputEl = inRoomGeometryPanel('roomRatioLengthInput');
+const roomRatioHeightInputEl = inRoomGeometryPanel('roomRatioHeightInput');
+const roomRatioRearInputEl = inRoomGeometryPanel('roomRatioRearInput');
+const roomRatioLowerInputEl = inRoomGeometryPanel('roomRatioLowerInput');
+const roomRatioCenterBlendSliderEl = inRoomGeometryPanel('roomRatioCenterBlendSlider');
+const roomRatioCenterBlendValueEl = inRoomGeometryPanel('roomRatioCenterBlendValue');
+const roomMasterAxisInputs = roomGeometryPanelQueryAll('input[name="roomMasterAxis"]');
+const roomDriverWidthEl = inRoomGeometryPanel('roomDriverWidth');
+const roomDriverLengthEl = inRoomGeometryPanel('roomDriverLength');
+const roomDriverHeightEl = inRoomGeometryPanel('roomDriverHeight');
+const roomDriverRearEl = inRoomGeometryPanel('roomDriverRear');
+const roomDriverLowerEl = inRoomGeometryPanel('roomDriverLower');
+const roomMasterMpuWidthEl = inRoomGeometryPanel('roomMasterMpuWidth');
+const roomMasterMpuLengthEl = inRoomGeometryPanel('roomMasterMpuLength');
+const roomMasterMpuRearEl = inRoomGeometryPanel('roomMasterMpuRear');
+const roomMasterMpuHeightEl = inRoomGeometryPanel('roomMasterMpuHeight');
+const roomMasterMpuLowerEl = inRoomGeometryPanel('roomMasterMpuLower');
+const roomGeometryCancelBtnEl = inRoomGeometryPanel('roomGeometryCancelBtn');
+const trailToggleEl = inDisplayPanel('trailToggle');
+const trailModeSelectEl = inDisplayPanel('trailModeSelect');
+const trailTtlSliderEl = inDisplayPanel('trailTtlSlider');
+const trailTtlValEl = inDisplayPanel('trailTtlVal');
+const effectiveRenderToggleEl = inDisplayPanel('effectiveRenderToggle');
+const objectColorsToggleEl = inDisplayPanel('objectColorsToggle');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -581,9 +582,9 @@ export function updateRoomRatioDisplay() {
 
 export function setRoomGeometryExpanded(expanded) {
   app.roomGeometryExpanded = Boolean(expanded);
-  const roomGeometryFormEl = document.getElementById('roomGeometryForm');
-  const roomGeometrySummaryEl = document.getElementById('roomGeometrySummary');
-  const roomGeometryToggleBtnEl = document.getElementById('roomGeometryToggleBtn');
+  const roomGeometryFormEl = inRoomGeometryPanel('roomGeometryForm');
+  const roomGeometrySummaryEl = inRoomGeometryPanel('roomGeometrySummary');
+  const roomGeometryToggleBtnEl = inRoomGeometryPanel('roomGeometryToggleBtn');
   if (roomGeometryFormEl) {
     roomGeometryFormEl.classList.toggle('open', app.roomGeometryExpanded);
   }

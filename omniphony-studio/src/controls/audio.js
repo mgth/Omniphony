@@ -8,14 +8,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { app, dirty, AUDIO_SAMPLE_RATE_PRESETS } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
+import { inAudioPanel } from '../ui/panel-roots.js';
 
 // DOM refs
-const audioFormatInfoEl = document.getElementById('audioFormatInfo');
-const audioOutputDeviceSelectEl = document.getElementById('audioOutputDeviceSelect');
-const rampModeSelectEl = document.getElementById('rampModeSelect');
-const audioSampleRateInputEl = document.getElementById('audioSampleRateInput');
-const audioSampleRateMenuEl = document.getElementById('audioSampleRateMenu');
-const audioOutputSummaryEl = document.getElementById('audioOutputSummary');
+const audioFormatInfoEl = inAudioPanel('audioFormatInfo');
+const audioOutputDeviceSelectEl = inAudioPanel('audioOutputDeviceSelect');
+const rampModeSelectEl = inAudioPanel('rampModeSelect');
+const audioSampleRateInputEl = inAudioPanel('audioSampleRateInput');
+const audioSampleRateMenuEl = inAudioPanel('audioSampleRateMenu');
+const audioOutputSummaryEl = inAudioPanel('audioOutputSummary');
 
 export function renderAudioFormatDisplay() {
   if (audioFormatInfoEl) {

@@ -9,15 +9,16 @@ import { t, tf } from '../i18n.js';
 import { formatNumber } from '../coordinates.js';
 import { linearToDb, dbToLinear } from '../mute-solo.js';
 import { scheduleUIFlush } from '../flush.js';
+import { inAudioPanel, inRendererPanel } from '../ui/panel-roots.js';
 
 // DOM refs
-const masterGainSliderEl = document.getElementById('masterGainSlider');
-const masterGainBoxEl = document.getElementById('masterGainBox');
-const masterMeterTextEl = document.getElementById('masterMeterText');
-const masterMeterFillEl = document.getElementById('masterMeterFill');
-const loudnessInfoEl = document.getElementById('loudnessInfo');
-const loudnessToggleEl = document.getElementById('loudnessToggle');
-const distanceModelSelectEl = document.getElementById('distanceModelSelect');
+const masterGainSliderEl = inAudioPanel('masterGainSlider');
+const masterGainBoxEl = inAudioPanel('masterGainBox');
+const masterMeterTextEl = inAudioPanel('masterMeterText');
+const masterMeterFillEl = inAudioPanel('masterMeterFill');
+const loudnessInfoEl = inAudioPanel('loudnessInfo');
+const loudnessToggleEl = inAudioPanel('loudnessToggle');
+const distanceModelSelectEl = inRendererPanel('distanceModelSelect');
 
 export function renderMasterGainUI() {
   if (masterGainSliderEl) {

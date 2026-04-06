@@ -17,24 +17,25 @@ import { pushLog, normalizeLogError, normalizeLogLevel, logState } from '../log.
 import { invoke } from '@tauri-apps/api/core';
 import { syncRuntimeConnectionLock } from '../runtime-connection.js';
 import { collapseRuntimeSections } from '../modals.js';
+import { inObjectsPanel, inOscPanel } from '../ui/panel-roots.js';
 
 // DOM refs
-const statusEl = document.getElementById('status');
-const pipeStatusEl = document.getElementById('pipeStatus');
-const oscStatusDotEl = document.getElementById('oscStatusDot');
-const oscConfigToggleBtnEl = document.getElementById('oscConfigToggleBtn');
-const oscConfigFormEl = document.getElementById('oscConfigForm');
-const oscHostInputEl = document.getElementById('oscHostInput');
-const oscRxPortInputEl = document.getElementById('oscRxPortInput');
-const oscListenPortInputEl = document.getElementById('oscListenPortInput');
-const oscBridgePathInputEl = document.getElementById('oscBridgePathInput');
-const oscBridgeBrowseBtnEl = document.getElementById('oscBridgeBrowseBtn');
-const oscMeteringToggleEl = document.getElementById('oscMeteringToggle');
-const oscConfigApplyBtnEl = document.getElementById('oscConfigApplyBtn');
-const oscServiceBtnEl = document.getElementById('oscServiceBtn');
-const oscRestartServiceBtnEl = document.getElementById('oscRestartServiceBtn');
-const oscRestartPipewireBtnEl = document.getElementById('oscRestartPipewireBtn');
-const oscLaunchRendererBtnEl = document.getElementById('oscLaunchRendererBtn');
+const statusEl = inOscPanel('status');
+const pipeStatusEl = inOscPanel('pipeStatus');
+const oscStatusDotEl = inOscPanel('oscStatusDot');
+const oscConfigToggleBtnEl = inOscPanel('oscConfigToggleBtn');
+const oscConfigFormEl = inOscPanel('oscConfigForm');
+const oscHostInputEl = inOscPanel('oscHostInput');
+const oscRxPortInputEl = inOscPanel('oscRxPortInput');
+const oscListenPortInputEl = inOscPanel('oscListenPortInput');
+const oscBridgePathInputEl = inOscPanel('oscBridgePathInput');
+const oscBridgeBrowseBtnEl = inOscPanel('oscBridgeBrowseBtn');
+const oscMeteringToggleEl = inObjectsPanel('oscMeteringToggle');
+const oscConfigApplyBtnEl = inOscPanel('oscConfigApplyBtn');
+const oscServiceBtnEl = inOscPanel('oscServiceBtn');
+const oscRestartServiceBtnEl = inOscPanel('oscRestartServiceBtn');
+const oscRestartPipewireBtnEl = inOscPanel('oscRestartPipewireBtn');
+const oscLaunchRendererBtnEl = inOscPanel('oscLaunchRendererBtn');
 
 // ---------------------------------------------------------------------------
 // OSC status rendering

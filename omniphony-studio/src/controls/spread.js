@@ -8,19 +8,20 @@ import { app, dirty } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
+import { inRendererPanel } from '../ui/panel-roots.js';
 
 // DOM refs
-const spreadInfoEl = document.getElementById('spreadInfo');
-const spreadMinSliderEl = document.getElementById('spreadMinSlider');
-const spreadMaxSliderEl = document.getElementById('spreadMaxSlider');
-const spreadMinValEl = document.getElementById('spreadMinVal');
-const spreadMaxValEl = document.getElementById('spreadMaxVal');
-const spreadFromDistanceToggleEl = document.getElementById('spreadFromDistanceToggle');
-const spreadFromDistanceParamsEl = document.getElementById('spreadFromDistanceParams');
-const spreadDistanceRangeSliderEl = document.getElementById('spreadDistanceRangeSlider');
-const spreadDistanceRangeValEl = document.getElementById('spreadDistanceRangeVal');
-const spreadDistanceCurveSliderEl = document.getElementById('spreadDistanceCurveSlider');
-const spreadDistanceCurveValEl = document.getElementById('spreadDistanceCurveVal');
+const spreadInfoEl = inRendererPanel('spreadInfo');
+const spreadMinSliderEl = inRendererPanel('spreadMinSlider');
+const spreadMaxSliderEl = inRendererPanel('spreadMaxSlider');
+const spreadMinValEl = inRendererPanel('spreadMinVal');
+const spreadMaxValEl = inRendererPanel('spreadMaxVal');
+const spreadFromDistanceToggleEl = inRendererPanel('spreadFromDistanceToggle');
+const spreadFromDistanceParamsEl = inRendererPanel('spreadFromDistanceParams');
+const spreadDistanceRangeSliderEl = inRendererPanel('spreadDistanceRangeSlider');
+const spreadDistanceRangeValEl = inRendererPanel('spreadDistanceRangeVal');
+const spreadDistanceCurveSliderEl = inRendererPanel('spreadDistanceCurveSlider');
+const spreadDistanceCurveValEl = inRendererPanel('spreadDistanceCurveVal');
 
 export function renderSpreadDisplay() {
   if (!spreadInfoEl) return;

@@ -7,16 +7,17 @@
 import { app, dirty } from '../state.js';
 import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
+import { inRendererInfoModals, inRendererPanel } from '../ui/panel-roots.js';
 
 // DOM refs
-const distanceDiffuseToggleEl = document.getElementById('distanceDiffuseToggle');
-const distanceDiffuseParamsEl = document.getElementById('distanceDiffuseParams');
-const distanceDiffuseThresholdSliderEl = document.getElementById('distanceDiffuseThresholdSlider');
-const distanceDiffuseThresholdValEl = document.getElementById('distanceDiffuseThresholdVal');
-const distanceDiffuseCurveSliderEl = document.getElementById('distanceDiffuseCurveSlider');
-const distanceDiffuseCurveValEl = document.getElementById('distanceDiffuseCurveVal');
-const distanceDiffuseInfoModalEl = document.getElementById('distanceDiffuseInfoModal');
-const spreadFromDistanceInfoModalEl = document.getElementById('spreadFromDistanceInfoModal');
+const distanceDiffuseToggleEl = inRendererPanel('distanceDiffuseToggle');
+const distanceDiffuseParamsEl = inRendererPanel('distanceDiffuseParams');
+const distanceDiffuseThresholdSliderEl = inRendererPanel('distanceDiffuseThresholdSlider');
+const distanceDiffuseThresholdValEl = inRendererPanel('distanceDiffuseThresholdVal');
+const distanceDiffuseCurveSliderEl = inRendererPanel('distanceDiffuseCurveSlider');
+const distanceDiffuseCurveValEl = inRendererPanel('distanceDiffuseCurveVal');
+const distanceDiffuseInfoModalEl = inRendererInfoModals('distanceDiffuseInfoModal');
+const spreadFromDistanceInfoModalEl = inRendererInfoModals('spreadFromDistanceInfoModal');
 
 export function renderDistanceDiffuseUI() {
   if (distanceDiffuseToggleEl) {
