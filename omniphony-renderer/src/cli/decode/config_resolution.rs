@@ -338,6 +338,7 @@ pub(super) fn effective_to_config(
         } else {
             None
         },
+        render_backend: None,
         vbap_cart_x_size: args.vbap_cart_x_size,
         vbap_cart_y_size: args.vbap_cart_y_size,
         vbap_cart_z_size: args.vbap_cart_z_size,

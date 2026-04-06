@@ -89,6 +89,10 @@ pub fn save_live_config(
     } else {
         Some(false)
     };
+    render.render_backend = match live.backend_kind {
+        renderer::render_backend::RenderBackendKind::Vbap => None,
+        other => Some(other.as_str().to_string()),
+    };
     render.vbap_table_mode = match live.vbap_table_mode {
         LiveVbapTableMode::Auto => None,
         LiveVbapTableMode::Polar => Some("polar".to_string()),

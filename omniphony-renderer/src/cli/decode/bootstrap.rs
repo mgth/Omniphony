@@ -11,6 +11,7 @@ use audio_output::pipewire::{PipewireBufferConfig, list_pipewire_output_devices}
 use audio_output::{
     AdaptiveResamplingConfig, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig,
 };
+use renderer::render_backend::RenderBackendKind;
 use renderer::metering::AudioMeter;
 use renderer::speaker_layout::SpeakerLayout;
 use std::sync::Arc;
@@ -285,6 +286,7 @@ fn resolve_vbap_table_mode(
 fn init_spatial_renderer(
     handler: &mut DecodeHandler,
     args: &RenderArgs,
+    render_cfg: Option<&renderer::config::RenderConfig>,
     current_layout_from_config: &Option<SpeakerLayout>,
     vbap_cartesian_defaults: bridge_api::RVbapCartesianDefaults,
     preferred_vbap_table_mode: bridge_api::RVbapTableMode,
@@ -481,6 +483,22 @@ fn init_spatial_renderer(
     };
 
     log::info!("VBAP spatial rendering enabled");
+    if let Some(configured_backend) = render_cfg
+        .and_then(|cfg| cfg.render_backend.as_deref())
+        .and_then(RenderBackendKind::from_str)
+    {
+        let control = renderer.renderer_control();
+        {
+            let mut live = control.live.write().unwrap();
+            live.backend_kind = configured_backend;
+        }
+        if configured_backend != RenderBackendKind::Vbap {
+            if let Some(plan) = control.prepare_topology_rebuild() {
+                let topology = plan.build_topology()?;
+                control.publish_topology(topology);
+            }
+        }
+    }
     handler.spatial_renderer = Some(renderer);
     Ok(())
 }
@@ -626,6 +644,7 @@ pub fn init_render_handler(
     init_spatial_renderer(
         handler,
         args,
+        render_cfg.as_ref(),
         &current_layout_from_config,
         vbap_cartesian_defaults,
         preferred_vbap_table_mode,
