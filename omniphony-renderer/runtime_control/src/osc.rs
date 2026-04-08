@@ -436,6 +436,30 @@ pub fn apply_simple_osc_control(
                                 .to_string(),
                         ),
                     });
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/room_ratio".to_string(),
+                        value: BroadcastValue::Fff(
+                            live.room_ratio[0],
+                            live.room_ratio[1],
+                            live.room_ratio[2],
+                        ),
+                    });
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/room_ratio_rear".to_string(),
+                        value: BroadcastValue::Float(live.room_ratio_rear),
+                    });
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/room_ratio_lower".to_string(),
+                        value: BroadcastValue::Float(live.room_ratio_lower),
+                    });
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/room_ratio_center_blend".to_string(),
+                        value: BroadcastValue::Float(live.room_ratio_center_blend),
+                    });
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/distance_model".to_string(),
+                        value: BroadcastValue::String(live.distance_model.to_string()),
+                    });
                     effects.log_message =
                         Some(format!("OSC: render_evaluation_mode/from_file -> {}", path));
                 }

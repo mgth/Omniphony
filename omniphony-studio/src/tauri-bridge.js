@@ -61,7 +61,11 @@ import { updateAdaptiveResamplingUI } from './controls/adaptive.js';
 import { updateDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { renderOscStatus, setOscStatus } from './controls/osc.js';
 import { updateConfigSavedUI } from './controls/config.js';
-import { updateRoomRatioDisplay, applyRoomRatio } from './controls/room-geometry.js';
+import {
+  updateRoomRatioDisplay,
+  applyRoomRatio,
+  refreshRoomGeometryInputState
+} from './controls/room-geometry.js';
 import { normalizeLogLevel, renderLogLevelControl, logState, pushLog } from './log.js';
 import { applyInitState } from './init.js';
 import {
@@ -440,6 +444,8 @@ export function setupTauriBridge() {
     }
     updateRenderBackend();
     updateEvaluationMode();
+    refreshRoomGeometryInputState();
+    renderSpeakerEditor();
     requestSpeakerHeatmapIfNeeded();
   });
 
@@ -454,6 +460,8 @@ export function setupTauriBridge() {
       app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
     }
     updateRenderBackend();
+    refreshRoomGeometryInputState();
+    renderSpeakerEditor();
   });
 
   listen('render_backend:effective', ({ payload }) => {
@@ -465,6 +473,8 @@ export function setupTauriBridge() {
     app.vbapRecomputing = false;
     renderVbapStatus();
     updateRenderBackend();
+    refreshRoomGeometryInputState();
+    renderSpeakerEditor();
     requestSpeakerHeatmapIfNeeded();
   });
 

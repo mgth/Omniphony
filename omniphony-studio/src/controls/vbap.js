@@ -219,9 +219,12 @@ export function renderRenderBackend() {
     renderBackendSelectEl.disabled = app.renderBackendState.frozenSpeakers === true;
   }
   if (restoreBackendBtnEl) {
-    const visible = app.renderBackendState.restoreBackendAvailable === true;
+    const visible = visibleBackend === 'from_file';
     restoreBackendBtnEl.style.display = visible ? '' : 'none';
-    restoreBackendBtnEl.disabled = !visible || app.vbapRecomputing === true;
+    restoreBackendBtnEl.disabled =
+      !visible
+      || app.renderBackendState.restoreBackendAvailable !== true
+      || app.vbapRecomputing === true;
   }
   if (renderBackendEffectiveEl) {
     renderBackendEffectiveEl.textContent = backendLabel(effective);
