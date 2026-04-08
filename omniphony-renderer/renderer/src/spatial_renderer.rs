@@ -546,30 +546,6 @@ impl SpatialRenderer {
         } else {
             0.25
         };
-        let vbap = vbap
-            .precompute_effect_tables(
-                distance_step,
-                distance_max,
-                spread_min.clamp(0.0, 1.0),
-                spread_max.clamp(0.0, 1.0),
-                distance_model,
-                spread_from_distance,
-                spread_distance_range,
-                spread_distance_curve,
-                distance_diffuse,
-                distance_diffuse_threshold,
-                distance_diffuse_curve,
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to precompute VBAP effect tables: {}", e))?;
-        if !vbap.has_precomputed_effects() {
-            return Err(anyhow::anyhow!(
-                "VBAP panner created without precomputed effect tables"
-            ));
-        }
         let vbap_triangles = vbap.num_triangles();
         let topology = RenderTopology::new(
             Arc::new(build_prepared_render_engine(
@@ -754,30 +730,7 @@ impl SpatialRenderer {
         };
         let vbap = vbap
             .with_negative_z(allow_negative_z)
-            .with_position_interpolation(vbap_position_interpolation)
-            .precompute_effect_tables(
-                distance_step,
-                distance_max,
-                spread_min.clamp(0.0, 1.0),
-                spread_max.clamp(0.0, 1.0),
-                distance_model,
-                spread_from_distance,
-                spread_distance_range,
-                spread_distance_curve,
-                distance_diffuse,
-                distance_diffuse_threshold,
-                distance_diffuse_curve,
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to precompute VBAP effect tables: {}", e))?;
-        if !vbap.has_precomputed_effects() {
-            return Err(anyhow::anyhow!(
-                "Loaded VBAP panner without precomputed effect tables"
-            ));
-        }
+            .with_position_interpolation(vbap_position_interpolation);
         let vbap_num_speakers = vbap.num_speakers();
         let vbap_num_triangles = vbap.num_triangles();
         let vbap_table_mode = vbap.table_mode();
@@ -1536,18 +1489,6 @@ impl SpatialRenderer {
                 };
 
                 let compute_object_gains = |rendering_position: [f64; 3]| {
-                    let scaled_x = rendering_position[0] as f32 * live.room_ratio[0];
-                    let scaled_y = map_depth_with_room_ratios(
-                        rendering_position[1] as f32,
-                        live.room_ratio[1],
-                        live.room_ratio_rear,
-                        live.room_ratio_center_blend,
-                    );
-                    let scaled_z = if rendering_position[2] >= 0.0 {
-                        rendering_position[2] as f32 * live.room_ratio[2]
-                    } else {
-                        rendering_position[2] as f32 * live.room_ratio_lower
-                    };
                     let final_gains = topology
                         .backend
                         .compute_gains(&RenderRequest {
@@ -1567,7 +1508,7 @@ impl SpatialRenderer {
                             distance_model: self.distance_model,
                         })
                         .gains;
-                    (scaled_x, scaled_y, scaled_z, final_gains)
+                    final_gains
                 };
 
                 // Fast path: with per-frame or disabled ramping, the position is constant
@@ -1581,7 +1522,7 @@ impl SpatialRenderer {
                     ) {
                         &state.render_gain_cache.gains
                     } else {
-                        let (_, _, _, final_gains) = compute_object_gains(rendering_position);
+                        let final_gains = compute_object_gains(rendering_position);
                         state.render_gain_cache.gains.clear();
                         state
                             .render_gain_cache
@@ -1715,7 +1656,7 @@ impl SpatialRenderer {
                     let rendering_position = state.current.position;
                     let _ramping = state.process_ramp(1);
                     state.render_gain_cache.valid = false;
-                    let (_, _, _, final_gains) = compute_object_gains(rendering_position);
+                    let final_gains = compute_object_gains(rendering_position);
 
                     // Mix object into speaker channels with interpolated gains (ramped if moving)
                     // Apply metadata gain + per-object live gain.

@@ -301,6 +301,10 @@ pub struct CartesianSpeakerHeatmapVolume {
 
 impl SampledCartesianEvaluator {
     pub fn new(model: Box<dyn GainModel>, config: &EvaluationBuildConfig) -> Self {
+        // Intentionally sample and query the precomputed cartesian evaluator in native
+        // ADM coordinates. The backend remains responsible for any room/depth transforms,
+        // so the runtime can read gains directly from object positions without converting
+        // into a backend-specific "effect space" first.
         let x_positions = evenly_spaced_axis(config.cartesian.x_size.max(2), -1.0, 1.0);
         let y_positions = evenly_spaced_axis(config.cartesian.y_size.max(2), -1.0, 1.0);
         let z_positions =
@@ -336,6 +340,8 @@ impl PreparedEvaluator for SampledCartesianEvaluator {
     }
 
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        // Read the table directly from native ADM coordinates. This avoids a render-time
+        // round-trip through spherical/effect-space conversions for the cartesian path.
         let gains = sample_cartesian_table(
             &self.gains,
             self.speaker_count,

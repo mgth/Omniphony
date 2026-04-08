@@ -658,13 +658,22 @@ impl VbapPanner {
         spread: f32,
         distance_model: DistanceModel,
     ) -> Gains {
-        let z = if self.allow_negative_z { z } else { z.max(0.0) };
         if self.precomputed_effects {
-            return match self.table_mode {
-                VbapTableMode::Cartesian { .. } => self.get_gains_from_cartesian_cache(x, y, z),
-                VbapTableMode::Polar => self.get_gains_from_polar_distance_cache(x, y, z),
-            };
+            return self.get_gains_cartesian_cached(x, y, z);
         }
+
+        self.get_gains_cartesian_raw(x, y, z, spread, distance_model)
+    }
+
+    pub fn get_gains_cartesian_raw(
+        &self,
+        x: f32,
+        y: f32,
+        z: f32,
+        spread: f32,
+        distance_model: DistanceModel,
+    ) -> Gains {
+        let z = if self.allow_negative_z { z } else { z.max(0.0) };
 
         let distance = (x * x + y * y + z * z).sqrt();
         let gains = match self.table_mode {
@@ -679,6 +688,14 @@ impl VbapPanner {
             &gains,
             calculate_distance_attenuation(distance, distance_model),
         )
+    }
+
+    pub fn get_gains_cartesian_cached(&self, x: f32, y: f32, z: f32) -> Gains {
+        let z = if self.allow_negative_z { z } else { z.max(0.0) };
+        match self.table_mode {
+            VbapTableMode::Cartesian { .. } => self.get_gains_from_cartesian_cache(x, y, z),
+            VbapTableMode::Polar => self.get_gains_from_polar_distance_cache(x, y, z),
+        }
     }
 
     /// Get VBAP gains with dynamic spread (interpolated between pre-computed tables).
