@@ -24,7 +24,10 @@ use crate::backend_registry::{TopologyBuildPlan, prepare_topology_build_plan};
 use crate::render_backend::backend_descriptor_by_id;
 #[cfg(feature = "saf_vbap")]
 use crate::render_backend::{EvaluationBuildConfig, RenderRequest};
-use crate::render_backend::{GainModelKind, PreparedRenderEngine, RenderBackendKind};
+use crate::render_backend::{
+    BackendRestoreSnapshot, GainModelKind, PreparedRenderEngine, RenderBackendKind,
+    SerializedEvaluationMode,
+};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
@@ -451,7 +454,7 @@ pub struct RendererControl {
     ///
     /// `None` when the renderer was constructed from a pre-loaded table (`from_vbap`),
     /// because recomputation is not supported in that case.
-    pub backend_rebuild_params: Option<BackendRebuildParams>,
+    pub backend_rebuild_params: RwLock<Option<BackendRebuildParams>>,
 
     /// `true` while a VBAP recompute is running in the background.
     pub recomputing: AtomicBool,
@@ -493,7 +496,7 @@ impl RendererControl {
             live: RwLock::new(live),
             topology: ArcSwap::new(Arc::new(initial_topology)),
             editable_layout: Mutex::new(editable_layout),
-            backend_rebuild_params,
+            backend_rebuild_params: RwLock::new(backend_rebuild_params),
             recomputing: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
@@ -530,6 +533,14 @@ impl RendererControl {
         self.topology.store(Arc::new(topology));
     }
 
+    pub fn backend_rebuild_params(&self) -> Option<BackendRebuildParams> {
+        *self.backend_rebuild_params.read().unwrap()
+    }
+
+    pub fn set_backend_rebuild_params(&self, params: Option<BackendRebuildParams>) {
+        *self.backend_rebuild_params.write().unwrap() = params;
+    }
+
     pub fn mark_object_params_dirty(&self) {
         self.object_params_generation
             .fetch_add(1, Ordering::Relaxed);
@@ -544,16 +555,47 @@ impl RendererControl {
     pub fn prepare_topology_rebuild(&self) -> Option<TopologyBuildPlan> {
         let layout = self.editable_layout();
         let live = self.live.read().unwrap();
-        let evaluation_build_config = evaluation_build_config_from_live(
-            &live,
-            rebuild_params_allow_negative_z(self.backend_rebuild_params),
-        );
+        let backend_rebuild_params = self.backend_rebuild_params();
+        let evaluation_build_config =
+            evaluation_build_config_from_live(&live, rebuild_params_allow_negative_z(backend_rebuild_params));
         prepare_topology_build_plan(
             layout,
             &live,
-            self.backend_rebuild_params,
+            backend_rebuild_params,
             evaluation_build_config,
         )
+    }
+
+    pub fn restore_backend_from_active_artifact(&self) -> Result<()> {
+        let active_topology = self.active_topology();
+        let snapshot = active_topology
+            .backend
+            .backend_restore_snapshot()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("active from-file evaluator does not carry a backend restore snapshot"))?;
+
+        *self.editable_layout.lock().unwrap() = active_topology.speaker_layout.clone();
+        self.set_backend_rebuild_params(Some(backend_rebuild_params_from_restore_snapshot(
+            &snapshot,
+        )?));
+
+        let mut live = self.live.write().unwrap();
+        live.backend_id = snapshot.backend_id.clone();
+        live.evaluation.mode = live_evaluation_mode_from_serialized(snapshot.evaluation_mode);
+        live.evaluation.position_interpolation = snapshot.position_interpolation;
+        live.evaluation.cartesian = CartesianEvaluationParams {
+            x_size: snapshot.cartesian_x_size.max(1),
+            y_size: snapshot.cartesian_y_size.max(1),
+            z_size: snapshot.cartesian_z_size.max(1),
+            z_neg_size: snapshot.cartesian_z_neg_size,
+        };
+        live.evaluation.polar = PolarEvaluationParams {
+            azimuth_values: snapshot.polar_azimuth_values.max(2) as i32,
+            elevation_values: snapshot.polar_elevation_values.max(2) as i32,
+            distance_res: snapshot.polar_distance_res.max(1) as i32,
+            distance_max: snapshot.polar_distance_max.max(0.01),
+        };
+        Ok(())
     }
 
     /// Mark live params as dirty (changed since last save) and return the new state.
@@ -581,4 +623,69 @@ impl RendererControl {
     pub fn requested_ramp_mode(&self) -> RampMode {
         *self.requested_ramp_mode.lock().unwrap()
     }
+}
+
+fn live_evaluation_mode_from_serialized(mode: SerializedEvaluationMode) -> LiveEvaluationMode {
+    match mode {
+        SerializedEvaluationMode::PrecomputedCartesian => LiveEvaluationMode::PrecomputedCartesian,
+        SerializedEvaluationMode::PrecomputedPolar => LiveEvaluationMode::PrecomputedPolar,
+    }
+}
+
+fn preferred_evaluation_mode_from_serialized(mode: SerializedEvaluationMode) -> PreferredEvaluationMode {
+    match mode {
+        SerializedEvaluationMode::PrecomputedCartesian => PreferredEvaluationMode::PrecomputedCartesian,
+        SerializedEvaluationMode::PrecomputedPolar => PreferredEvaluationMode::PrecomputedPolar,
+    }
+}
+
+fn backend_rebuild_params_from_restore_snapshot(
+    snapshot: &BackendRestoreSnapshot,
+) -> Result<BackendRebuildParams> {
+    let descriptor = backend_descriptor_by_id(snapshot.backend_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("unknown backend id in restore snapshot: {}", snapshot.backend_id))?;
+    let preferred_evaluation_mode =
+        preferred_evaluation_mode_from_serialized(snapshot.evaluation_mode);
+    let backend_id = descriptor.id;
+
+    let vbap = match descriptor.kind {
+        RenderBackendKind::Vbap => Some(VbapModelRebuildParams {
+            az_res_deg: (360.0 / snapshot.polar_azimuth_values.max(2) as f32)
+                .round()
+                .max(1.0) as i32,
+            el_res_deg: (((if snapshot.allow_negative_z { 180.0 } else { 90.0 })
+                / snapshot.polar_elevation_values.max(2) as f32)
+                .round()
+                .max(1.0)) as i32,
+            spread_resolution: snapshot.polar_distance_max.max(0.01)
+                / snapshot.polar_distance_res.max(1) as f32,
+            distance_max: snapshot.polar_distance_max.max(0.01),
+            table_mode: match snapshot.evaluation_mode {
+                SerializedEvaluationMode::PrecomputedCartesian => VbapTableMode::Cartesian {
+                    x_size: snapshot.cartesian_x_size.max(1) + 1,
+                    y_size: snapshot.cartesian_y_size.max(1) + 1,
+                    z_size: snapshot.cartesian_z_size.max(1) + 1,
+                    z_neg_size: snapshot.cartesian_z_neg_size,
+                },
+                SerializedEvaluationMode::PrecomputedPolar => VbapTableMode::Polar,
+            },
+            cartesian_default_x_size: snapshot.cartesian_x_size.max(1),
+            cartesian_default_y_size: snapshot.cartesian_y_size.max(1),
+            cartesian_default_z_size: snapshot.cartesian_z_size.max(1),
+            cartesian_default_z_neg_size: snapshot.cartesian_z_neg_size,
+            distance_model: crate::spatial_vbap::DistanceModel::None,
+            allow_negative_z: snapshot.allow_negative_z,
+        }),
+        RenderBackendKind::ExperimentalDistance => None,
+        RenderBackendKind::FromFile => {
+            anyhow::bail!("cannot restore backend to from_file")
+        }
+    };
+
+    Ok(BackendRebuildParams {
+        backend_id,
+        preferred_evaluation_mode,
+        allow_negative_z: snapshot.allow_negative_z,
+        vbap,
+    })
 }

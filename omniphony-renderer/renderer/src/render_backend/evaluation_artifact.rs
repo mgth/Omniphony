@@ -7,8 +7,8 @@ use std::io::{Cursor, Read, Write};
 
 use super::{
     BackendCapabilities, CartesianSpeakerHeatmapSlices, CartesianSpeakerHeatmapVolume,
-    EffectiveEvaluationMode, PreparedEvaluator, RenderRequest, RenderResponse,
-    sample_cartesian_table, sample_polar_table,
+    EffectiveEvaluationMode, EvaluationBuildConfig, PreparedEvaluator, RenderRequest,
+    RenderResponse, sample_cartesian_table, sample_polar_table,
 };
 use crate::speaker_layout::SpeakerLayout;
 
@@ -69,6 +69,23 @@ pub struct EvaluationArtifactMetadata {
     pub position_interpolation: bool,
     pub backend_restore_payload: Option<Vec<u8>>,
     pub domain: EvaluationArtifactDomainMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendRestoreSnapshot {
+    pub backend_id: String,
+    pub backend_label: String,
+    pub evaluation_mode: SerializedEvaluationMode,
+    pub position_interpolation: bool,
+    pub allow_negative_z: bool,
+    pub cartesian_x_size: usize,
+    pub cartesian_y_size: usize,
+    pub cartesian_z_size: usize,
+    pub cartesian_z_neg_size: usize,
+    pub polar_azimuth_values: usize,
+    pub polar_elevation_values: usize,
+    pub polar_distance_res: usize,
+    pub polar_distance_max: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +200,17 @@ impl LoadedEvaluationArtifact {
 
     pub fn position_interpolation(&self) -> bool {
         self.metadata().position_interpolation
+    }
+
+    pub fn has_backend_restore_snapshot(&self) -> bool {
+        self.metadata().backend_restore_payload.is_some()
+    }
+
+    pub fn backend_restore_snapshot(&self) -> Option<BackendRestoreSnapshot> {
+        self.metadata()
+            .backend_restore_payload
+            .as_ref()
+            .and_then(|payload| serde_json::from_slice::<BackendRestoreSnapshot>(payload).ok())
     }
 
     pub fn capabilities(&self) -> BackendCapabilities {
@@ -312,13 +340,14 @@ impl LoadedEvaluationArtifact {
         speaker_layout: &SpeakerLayout,
         frozen_request: RenderRequest,
         position_interpolation: bool,
+        backend_restore_snapshot: Option<&BackendRestoreSnapshot>,
         x_positions: &[f32],
         y_positions: &[f32],
         z_positions: &[f32],
         gains: &[f32],
         speaker_count: usize,
-    ) -> Self {
-        Self::Cartesian(CartesianArtifact {
+    ) -> Result<Self> {
+        Ok(Self::Cartesian(CartesianArtifact {
             metadata: EvaluationArtifactMetadata {
                 source_backend_id: source_backend_id.to_string(),
                 source_backend_label: source_backend_label.to_string(),
@@ -326,7 +355,7 @@ impl LoadedEvaluationArtifact {
                 speaker_layout: speaker_layout.clone(),
                 frozen_request: frozen_request.into(),
                 position_interpolation,
-                backend_restore_payload: None,
+                backend_restore_payload: encode_backend_restore_snapshot(backend_restore_snapshot)?,
                 domain: EvaluationArtifactDomainMetadata::Cartesian {
                     speaker_count,
                     x_count: x_positions.len(),
@@ -338,7 +367,7 @@ impl LoadedEvaluationArtifact {
             y_positions: y_positions.to_vec(),
             z_positions: z_positions.to_vec(),
             gains: gains.to_vec(),
-        })
+        }))
     }
 
     pub fn from_sampled_polar(
@@ -347,13 +376,14 @@ impl LoadedEvaluationArtifact {
         speaker_layout: &SpeakerLayout,
         frozen_request: RenderRequest,
         position_interpolation: bool,
+        backend_restore_snapshot: Option<&BackendRestoreSnapshot>,
         azimuth_positions: &[f32],
         elevation_positions: &[f32],
         distance_positions: &[f32],
         gains: &[f32],
         speaker_count: usize,
-    ) -> Self {
-        Self::Polar(PolarArtifact {
+    ) -> Result<Self> {
+        Ok(Self::Polar(PolarArtifact {
             metadata: EvaluationArtifactMetadata {
                 source_backend_id: source_backend_id.to_string(),
                 source_backend_label: source_backend_label.to_string(),
@@ -361,7 +391,7 @@ impl LoadedEvaluationArtifact {
                 speaker_layout: speaker_layout.clone(),
                 frozen_request: frozen_request.into(),
                 position_interpolation,
-                backend_restore_payload: None,
+                backend_restore_payload: encode_backend_restore_snapshot(backend_restore_snapshot)?,
                 domain: EvaluationArtifactDomainMetadata::Polar {
                     speaker_count,
                     azimuth_count: azimuth_positions.len(),
@@ -373,7 +403,7 @@ impl LoadedEvaluationArtifact {
             elevation_positions: elevation_positions.to_vec(),
             distance_positions: distance_positions.to_vec(),
             gains: gains.to_vec(),
-        })
+        }))
     }
 }
 
@@ -448,14 +478,51 @@ impl PreparedEvaluator for EvaluationArtifactEvaluator {
 pub fn build_from_artifact_render_engine(
     artifact: LoadedEvaluationArtifact,
 ) -> super::PreparedRenderEngine {
+    let backend_restore_snapshot = artifact.backend_restore_snapshot();
     super::PreparedRenderEngine::new(
         super::GainModelKind::FromFile,
         "from_file",
         "From File",
         artifact.capabilities(),
         EffectiveEvaluationMode::FromFile,
+        backend_restore_snapshot,
         Box::new(EvaluationArtifactEvaluator::new(artifact)),
     )
+}
+
+pub fn build_backend_restore_snapshot(
+    source_backend_id: &str,
+    source_backend_label: &str,
+    mode: SerializedEvaluationMode,
+    config: &EvaluationBuildConfig,
+) -> Option<BackendRestoreSnapshot> {
+    match source_backend_id {
+        "vbap" | "experimental_distance" => Some(BackendRestoreSnapshot {
+            backend_id: source_backend_id.to_string(),
+            backend_label: source_backend_label.to_string(),
+            evaluation_mode: mode,
+            position_interpolation: config.position_interpolation,
+            allow_negative_z: config.polar.allow_negative_z,
+            cartesian_x_size: config.cartesian.x_size.saturating_sub(1),
+            cartesian_y_size: config.cartesian.y_size.saturating_sub(1),
+            cartesian_z_size: config.cartesian.z_size.saturating_sub(1),
+            cartesian_z_neg_size: config.cartesian.z_neg_size,
+            polar_azimuth_values: config.polar.azimuth_values.max(2),
+            polar_elevation_values: config.polar.elevation_values.max(2),
+            polar_distance_res: config.polar.distance_values.saturating_sub(1).max(1),
+            polar_distance_max: config.polar.distance_max.max(0.01),
+        }),
+        _ => None,
+    }
+}
+
+fn encode_backend_restore_snapshot(
+    snapshot: Option<&BackendRestoreSnapshot>,
+) -> Result<Option<Vec<u8>>> {
+    match snapshot {
+        Some(snapshot) => Ok(Some(serde_json::to_vec(snapshot)?)),
+        None => Ok(None),
+    }
 }
 
 fn compress(payload: &[u8]) -> Result<Vec<u8>> {

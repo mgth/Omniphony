@@ -596,6 +596,17 @@ fn control_render_backend(state: State<SharedState>, value: String) {
 }
 
 #[tauri::command]
+fn control_restore_render_backend(state: State<SharedState>) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/render_backend/restore".to_string(),
+            value: 1,
+        },
+    );
+}
+
+#[tauri::command]
 fn control_render_evaluation_mode(state: State<SharedState>, value: String) {
     let normalized = value.trim().to_ascii_lowercase();
     if !matches!(
@@ -2072,6 +2083,7 @@ fn main() {
             control_render_evaluation_cartesian_z_size,
             control_render_evaluation_cartesian_z_neg_size,
             control_render_backend,
+            control_restore_render_backend,
             control_render_evaluation_mode,
             control_render_evaluation_polar_azimuth_resolution,
             control_render_evaluation_polar_elevation_resolution,

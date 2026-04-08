@@ -13,6 +13,7 @@ import { inRendererPanel } from '../ui/panel-roots.js';
 // DOM refs
 const vbapStatusEl = inRendererPanel('vbapStatus');
 const renderBackendSelectEl = inRendererPanel('renderBackendSelect');
+const restoreBackendBtnEl = inRendererPanel('restoreBackendBtn');
 const renderBackendEffectiveEl = inRendererPanel('renderBackendEffective');
 const renderEvaluationModeSelectEl = inRendererPanel('renderEvaluationModeSelect');
 const renderEvaluationModeEffectiveEl = inRendererPanel('renderEvaluationModeEffective');
@@ -206,6 +207,11 @@ export function renderRenderBackend() {
   if (renderBackendSelectEl) {
     renderBackendSelectEl.value = selection;
     renderBackendSelectEl.disabled = app.renderBackendState.frozenSpeakers === true;
+  }
+  if (restoreBackendBtnEl) {
+    const visible = app.renderBackendState.restoreBackendAvailable === true;
+    restoreBackendBtnEl.style.display = visible ? '' : 'none';
+    restoreBackendBtnEl.disabled = !visible || app.vbapRecomputing === true;
   }
   if (renderBackendEffectiveEl) {
     renderBackendEffectiveEl.textContent = backendLabel(effective);

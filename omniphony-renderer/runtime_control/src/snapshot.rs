@@ -101,7 +101,7 @@ pub fn build_render_backend_state_snapshot(
             == renderer::render_backend::EffectiveEvaluationMode::FromFile,
         frozen_speakers: backend.evaluation_mode()
             == renderer::render_backend::EffectiveEvaluationMode::FromFile,
-        restore_backend_available: false,
+        restore_backend_available: backend.has_backend_restore_snapshot(),
     }
 }
 
@@ -226,7 +226,7 @@ pub fn build_live_state_bundle(
             addr: "/omniphony/state/vbap/allow_negative_z".to_string(),
             args: vec![OscType::Int(
                 if control
-                    .backend_rebuild_params
+                    .backend_rebuild_params()
                     .map(|p| p.allow_negative_z)
                     .unwrap_or(true)
                 {

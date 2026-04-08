@@ -327,6 +327,42 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == "/omniphony/control/render_backend/restore" {
+        match ctx.renderer.restore_backend_from_active_artifact() {
+            Ok(()) => {
+                let live = ctx.renderer.live.read().unwrap();
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/render_backend".to_string(),
+                    value: BroadcastValue::String(live.backend_id().to_string()),
+                });
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/render_evaluation_mode".to_string(),
+                    value: BroadcastValue::String(
+                        live.requested_evaluation_mode().as_str().to_string(),
+                    ),
+                });
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/render_backend/state".to_string(),
+                    value: BroadcastValue::String(build_render_backend_state_json(
+                        &live,
+                        &ctx.renderer.active_topology(),
+                    )),
+                });
+                effects.log_message = Some(format!(
+                    "OSC: render_backend/restore -> {}",
+                    live.backend_id()
+                ));
+            }
+            Err(err) => {
+                effects.log_message =
+                    Some(format!("OSC: render_backend/restore failed: {err}"));
+            }
+        }
+        return Some(effects);
+    }
+
     if addr == "/omniphony/control/render_evaluation_mode" {
         let requested = parse_string_arg(msg.args.first())
             .and_then(|value| LiveEvaluationMode::from_str(&value));

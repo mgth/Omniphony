@@ -110,21 +110,39 @@ pub struct VbapPolar {
 pub struct BackendCapabilitiesState {
     #[serde(rename = "supportsRealtime", alias = "supports_realtime")]
     pub supports_realtime: bool,
-    #[serde(rename = "supportsPrecomputedPolar", alias = "supports_precomputed_polar")]
+    #[serde(
+        rename = "supportsPrecomputedPolar",
+        alias = "supports_precomputed_polar"
+    )]
     pub supports_precomputed_polar: bool,
-    #[serde(rename = "supportsPrecomputedCartesian", alias = "supports_precomputed_cartesian")]
+    #[serde(
+        rename = "supportsPrecomputedCartesian",
+        alias = "supports_precomputed_cartesian"
+    )]
     pub supports_precomputed_cartesian: bool,
-    #[serde(rename = "supportsPositionInterpolation", alias = "supports_position_interpolation")]
+    #[serde(
+        rename = "supportsPositionInterpolation",
+        alias = "supports_position_interpolation"
+    )]
     pub supports_position_interpolation: bool,
     #[serde(rename = "supportsDistanceModel", alias = "supports_distance_model")]
     pub supports_distance_model: bool,
     #[serde(rename = "supportsSpread", alias = "supports_spread")]
     pub supports_spread: bool,
-    #[serde(rename = "supportsSpreadFromDistance", alias = "supports_spread_from_distance")]
+    #[serde(
+        rename = "supportsSpreadFromDistance",
+        alias = "supports_spread_from_distance"
+    )]
     pub supports_spread_from_distance: bool,
-    #[serde(rename = "supportsDistanceDiffuse", alias = "supports_distance_diffuse")]
+    #[serde(
+        rename = "supportsDistanceDiffuse",
+        alias = "supports_distance_diffuse"
+    )]
     pub supports_distance_diffuse: bool,
-    #[serde(rename = "supportsHeatmapCartesian", alias = "supports_heatmap_cartesian")]
+    #[serde(
+        rename = "supportsHeatmapCartesian",
+        alias = "supports_heatmap_cartesian"
+    )]
     pub supports_heatmap_cartesian: bool,
     #[serde(rename = "supportsTableExport", alias = "supports_table_export")]
     pub supports_table_export: bool,
@@ -143,7 +161,10 @@ pub struct RenderBackendState {
     pub frozen_room_ratio: bool,
     #[serde(rename = "frozenSpeakers", alias = "frozen_speakers")]
     pub frozen_speakers: bool,
-    #[serde(rename = "restoreBackendAvailable", alias = "restore_backend_available")]
+    #[serde(
+        rename = "restoreBackendAvailable",
+        alias = "restore_backend_available"
+    )]
     pub restore_backend_available: bool,
 }
 

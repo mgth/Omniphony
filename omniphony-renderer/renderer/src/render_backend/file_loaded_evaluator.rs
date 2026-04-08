@@ -402,6 +402,7 @@ pub fn build_from_file_render_engine(
         "VBAP",
         FileLoadedEvaluator::capabilities(),
         EffectiveEvaluationMode::FromFile,
+        None,
         Box::new(FileLoadedEvaluator::new(
             file,
             allow_negative_z,

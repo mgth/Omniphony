@@ -110,6 +110,7 @@ export function rendererPanelMarkup() {
                 <option value="vbap">VBAP</option>
                 <option value="experimental_distance">Distance</option>
               </select>
+              <button id="restoreBackendBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Restore backend</button>
               <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
             </div>
           </div>

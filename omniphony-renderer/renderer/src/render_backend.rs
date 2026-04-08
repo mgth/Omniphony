@@ -9,7 +9,8 @@ use anyhow::Result;
 use serde::Serialize;
 
 pub use evaluation_artifact::{
-    LoadedEvaluationArtifact, SerializedEvaluationMode, build_from_artifact_render_engine,
+    BackendRestoreSnapshot, LoadedEvaluationArtifact, SerializedEvaluationMode,
+    build_backend_restore_snapshot, build_from_artifact_render_engine,
 };
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
 pub use file_loaded_evaluator::{LoadedVbapFile, build_from_file_render_engine};
@@ -300,6 +301,7 @@ pub struct SampledCartesianEvaluator {
     speaker_count: usize,
     position_interpolation: bool,
     frozen_request: RenderRequest,
+    backend_restore_snapshot: Option<BackendRestoreSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -343,6 +345,12 @@ impl SampledCartesianEvaluator {
                 }
             }
         }
+        let backend_restore_snapshot = build_backend_restore_snapshot(
+            model.backend_id(),
+            model.backend_label(),
+            SerializedEvaluationMode::PrecomputedCartesian,
+            config,
+        );
         Self {
             model,
             x_positions,
@@ -352,6 +360,7 @@ impl SampledCartesianEvaluator {
             speaker_count,
             position_interpolation: config.position_interpolation,
             frozen_request: config.request_template,
+            backend_restore_snapshot,
         }
     }
 }
@@ -383,12 +392,14 @@ impl PreparedEvaluator for SampledCartesianEvaluator {
             speaker_layout,
             self.frozen_request,
             self.position_interpolation,
+            self.backend_restore_snapshot.as_ref(),
             &self.x_positions,
             &self.y_positions,
             &self.z_positions,
             &self.gains,
             self.speaker_count,
         )
+        ?
         .save_to_file(path)
     }
 
@@ -537,6 +548,7 @@ pub struct SampledPolarEvaluator {
     speaker_count: usize,
     position_interpolation: bool,
     frozen_request: RenderRequest,
+    backend_restore_snapshot: Option<BackendRestoreSnapshot>,
 }
 
 impl SampledPolarEvaluator {
@@ -568,6 +580,12 @@ impl SampledPolarEvaluator {
                 }
             }
         }
+        let backend_restore_snapshot = build_backend_restore_snapshot(
+            model.backend_id(),
+            model.backend_label(),
+            SerializedEvaluationMode::PrecomputedPolar,
+            config,
+        );
         Self {
             model,
             azimuth_positions,
@@ -577,6 +595,7 @@ impl SampledPolarEvaluator {
             speaker_count,
             position_interpolation: config.position_interpolation,
             frozen_request: config.request_template,
+            backend_restore_snapshot,
         }
     }
 }
@@ -611,12 +630,14 @@ impl PreparedEvaluator for SampledPolarEvaluator {
             speaker_layout,
             self.frozen_request,
             self.position_interpolation,
+            self.backend_restore_snapshot.as_ref(),
             &self.azimuth_positions,
             &self.elevation_positions,
             &self.distance_positions,
             &self.gains,
             self.speaker_count,
         )
+        ?
         .save_to_file(path)
     }
 }
@@ -675,6 +696,7 @@ pub struct PreparedRenderEngine {
     backend_label: &'static str,
     capabilities: BackendCapabilities,
     evaluation_mode: EffectiveEvaluationMode,
+    backend_restore_snapshot: Option<BackendRestoreSnapshot>,
     evaluator: Box<dyn PreparedEvaluator>,
 }
 
@@ -685,6 +707,7 @@ impl PreparedRenderEngine {
         backend_label: &'static str,
         capabilities: BackendCapabilities,
         evaluation_mode: EffectiveEvaluationMode,
+        backend_restore_snapshot: Option<BackendRestoreSnapshot>,
         evaluator: Box<dyn PreparedEvaluator>,
     ) -> Self {
         Self {
@@ -693,6 +716,7 @@ impl PreparedRenderEngine {
             backend_label,
             capabilities,
             evaluation_mode,
+            backend_restore_snapshot,
             evaluator,
         }
     }
@@ -719,6 +743,14 @@ impl PreparedRenderEngine {
 
     pub fn evaluation_mode(&self) -> EffectiveEvaluationMode {
         self.evaluation_mode
+    }
+
+    pub fn has_backend_restore_snapshot(&self) -> bool {
+        self.backend_restore_snapshot.is_some()
+    }
+
+    pub fn backend_restore_snapshot(&self) -> Option<&BackendRestoreSnapshot> {
+        self.backend_restore_snapshot.as_ref()
     }
 
     pub fn speaker_count(&self) -> usize {
@@ -784,6 +816,7 @@ pub fn build_prepared_render_engine(
         backend_label,
         capabilities,
         evaluation_mode,
+        None,
         evaluator,
     ))
 }

@@ -20,6 +20,7 @@ export function setupRendererPanelListeners() {
   const vbapCartZNegSizeInputEl = document.getElementById('vbapCartZNegSizeInput');
   const vbapCartesianGridToggleBtnEl = document.getElementById('vbapCartesianGridToggleBtn');
   const renderBackendSelectEl = document.getElementById('renderBackendSelect');
+  const restoreBackendBtnEl = document.getElementById('restoreBackendBtn');
   const renderEvaluationModeSelectEl = document.getElementById('renderEvaluationModeSelect');
   const vbapPolarAzimuthResolutionInputEl = document.getElementById('vbapPolarAzimuthResolutionInput');
   const vbapPolarElevationResolutionInputEl = document.getElementById('vbapPolarElevationResolutionInput');
@@ -171,6 +172,16 @@ export function setupRendererPanelListeners() {
       renderVbapStatus();
       updateRenderBackend();
       invoke('control_render_backend', { value });
+    });
+  }
+
+  if (restoreBackendBtnEl) {
+    restoreBackendBtnEl.addEventListener('click', () => {
+      if (app.renderBackendState.restoreBackendAvailable !== true) return;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateRenderBackend();
+      invoke('control_restore_render_backend');
     });
   }
 
