@@ -69,12 +69,14 @@ use crate::live_params::{
     PolarEvaluationParams, RampMode, RenderTopology, RendererControl,
 };
 use crate::render_backend::{
-    LoadedVbapFile, RenderBackendKind, RenderRequest, build_from_file_render_engine,
+    LoadedEvaluationArtifact, LoadedVbapFile, RenderBackendKind, RenderRequest,
+    SerializedEvaluationMode, build_from_artifact_render_engine, build_from_file_render_engine,
 };
 use crate::spatial_vbap::VbapTableMode;
 use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
+use std::str::FromStr;
 use std::sync::Arc;
 
 #[cfg(feature = "saf_vbap")]
@@ -706,6 +708,135 @@ impl SpatialRenderer {
     /// * `distance_diffuse` - Enable distance-based antipodal diffuse blending
     /// * `distance_diffuse_threshold` - ADM distance at which blend reaches 100% direct
     /// * `distance_diffuse_curve` - Curve exponent for the blend weight
+    pub fn from_evaluation_artifact(
+        artifact: LoadedEvaluationArtifact,
+        sample_rate: u32,
+        log_object_positions: bool,
+        master_gain_db: f32,
+        auto_gain: bool,
+        use_loudness: bool,
+    ) -> Result<Self> {
+        let speaker_layout = artifact.speaker_layout().clone();
+        let frozen = artifact.frozen_request().clone();
+        let distance_model = DistanceModel::from_str(&frozen.distance_model)
+            .map_err(|e| anyhow::anyhow!("Invalid frozen distance model in artifact: {}", e))?;
+        let initial_evaluation_mode = match artifact.mode() {
+            SerializedEvaluationMode::PrecomputedCartesian => {
+                LiveEvaluationMode::PrecomputedCartesian
+            }
+            SerializedEvaluationMode::PrecomputedPolar => LiveEvaluationMode::PrecomputedPolar,
+        };
+        let (
+            az_res_deg,
+            el_res_deg,
+            distance_res,
+            distance_max,
+            allow_negative_z,
+            cartesian_x,
+            cartesian_y,
+            cartesian_z,
+            cartesian_z_neg,
+        ) = match artifact.mode() {
+            SerializedEvaluationMode::PrecomputedCartesian => {
+                let (x_count, y_count, z_count) =
+                    artifact.cartesian_dimensions().unwrap_or((2, 2, 2));
+                (
+                    1,
+                    1,
+                    0.25,
+                    2.0,
+                    true,
+                    x_count.max(1),
+                    y_count.max(1),
+                    z_count.max(1),
+                    0,
+                )
+            }
+            SerializedEvaluationMode::PrecomputedPolar => {
+                let (az_count, el_count, distance_count) =
+                    artifact.polar_dimensions().unwrap_or((2, 2, 2));
+                let allow_negative_z = el_count > 2;
+                let az_res_deg = (360.0 / az_count.max(1) as f32).round().max(1.0) as i32;
+                let elevation_span = if allow_negative_z { 180.0 } else { 90.0 };
+                let el_res_deg = (elevation_span / el_count.max(1) as f32).round().max(1.0) as i32;
+                let distance_max = 2.0;
+                let distance_res = distance_max / distance_count.max(1) as f32;
+                (
+                    az_res_deg,
+                    el_res_deg,
+                    distance_res,
+                    distance_max,
+                    allow_negative_z,
+                    1,
+                    1,
+                    1,
+                    0,
+                )
+            }
+        };
+        let spread_resolution = 0.0;
+        let topology = RenderTopology::new(
+            Arc::new(build_from_artifact_render_engine(artifact)),
+            speaker_layout,
+        )?;
+        let excluded: Vec<&str> = topology
+            .speaker_layout
+            .speakers
+            .iter()
+            .filter(|s| !s.spatialize)
+            .map(|s| s.name.as_str())
+            .collect();
+        let mut live_params = Self::build_live_params_and_log(
+            &topology.speaker_layout,
+            initial_evaluation_mode,
+            az_res_deg,
+            el_res_deg,
+            distance_res,
+            distance_max,
+            allow_negative_z,
+            topology
+                .backend
+                .capabilities()
+                .supports_position_interpolation,
+            cartesian_x,
+            cartesian_y,
+            cartesian_z,
+            cartesian_z_neg,
+            master_gain_db,
+            frozen.spread_min,
+            frozen.spread_max,
+            frozen.spread_from_distance,
+            frozen.spread_distance_range,
+            frozen.spread_distance_curve,
+            RampMode::Sample,
+            use_loudness,
+            distance_model,
+            frozen.room_ratio,
+            frozen.room_ratio_rear,
+            frozen.room_ratio_lower,
+            frozen.room_ratio_center_blend,
+            frozen.use_distance_diffuse,
+            frozen.distance_diffuse_threshold,
+            frozen.distance_diffuse_curve,
+            auto_gain,
+            &excluded,
+            &topology.bed_to_speaker_mapping,
+        );
+        live_params.backend_id = RenderBackendKind::FromFile.as_str().to_string();
+        let editable_layout = topology.speaker_layout.clone();
+        let control = RendererControl::new(live_params, topology, editable_layout, None);
+
+        Ok(Self::finish_construction(
+            control.active_topology().speaker_layout.num_speakers(),
+            spread_resolution,
+            sample_rate,
+            distance_model,
+            log_object_positions,
+            auto_gain,
+            control,
+        ))
+    }
+
     pub fn from_vbap_file(
         loaded_file: LoadedVbapFile,
         speaker_layout: SpeakerLayout,
