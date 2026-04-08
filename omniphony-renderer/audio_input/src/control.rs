@@ -144,7 +144,8 @@ impl InputControl {
     }
 
     pub fn set_output_rate_adjust(&self, rate: f32) {
-        self.output_rate_adjust.store(rate.to_bits(), Ordering::Relaxed);
+        self.output_rate_adjust
+            .store(rate.to_bits(), Ordering::Relaxed);
     }
 
     pub fn output_rate_adjust_atomic(&self) -> Arc<AtomicU32> {
@@ -152,7 +153,8 @@ impl InputControl {
     }
 
     pub fn register_direct_trigger_target(&self, capture_rate_hz: u32) {
-        self.input_trigger_rate_hz.store(capture_rate_hz, Ordering::Relaxed);
+        self.input_trigger_rate_hz
+            .store(capture_rate_hz, Ordering::Relaxed);
     }
 
     pub fn input_trigger_rate_hz(&self) -> u32 {

@@ -199,6 +199,22 @@
               <div data-i18n="display.objectColors">Object colors</div>
               <input id="objectColorsToggle" type="checkbox" />
             </div>
+            <div class="inline-toggle" style="margin-top:0">
+              <div>Heatmap slices</div>
+              <input id="speakerHeatmapSlicesToggle" type="checkbox" />
+            </div>
+            <div class="inline-toggle" style="margin-top:0">
+              <div>Heatmap volume</div>
+              <input id="speakerHeatmapVolumeToggle" type="checkbox" />
+            </div>
+            <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+              <label for="speakerHeatmapSampleCountInput" style="font-size:12px;white-space:nowrap">Heatmap values</label>
+              <input id="speakerHeatmapSampleCountInput" type="number" min="128" max="20000" step="128" value="3072" style="flex:1;min-width:0" />
+            </div>
+            <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
+              <label for="speakerHeatmapMaxSphereSizeSlider" style="font-size:12px;white-space:nowrap">Max sphere size <span id="speakerHeatmapMaxSphereSizeVal">0.062</span></label>
+              <input id="speakerHeatmapMaxSphereSizeSlider" type="range" min="0.01" max="0.2" step="0.002" value="0.062" class="gain-slider" />
+            </div>
             <div id="trailSection" style="display:grid;gap:0.3rem">
               <div class="inline-toggle" style="margin-top:0">
                 <div class="title-with-info" style="min-width:0">

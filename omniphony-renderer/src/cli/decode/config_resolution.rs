@@ -1,6 +1,6 @@
 use crate::cli::command::{
-    Cli, LogFormat, LogLevel, OutputBackend, RampModeArg, RenderArgSources, RenderArgs,
-    EvaluationModeArg,
+    Cli, EvaluationModeArg, LogFormat, LogLevel, OutputBackend, RampModeArg, RenderArgSources,
+    RenderArgs,
 };
 use anyhow::Result;
 
@@ -98,8 +98,7 @@ pub(super) fn merge_render_config(
                 || v.eq_ignore_ascii_case("cartesian")
             {
                 args.render_evaluation_mode = EvaluationModeArg::Cartesian;
-            } else if v.eq_ignore_ascii_case("precomputed_polar")
-                || v.eq_ignore_ascii_case("polar")
+            } else if v.eq_ignore_ascii_case("precomputed_polar") || v.eq_ignore_ascii_case("polar")
             {
                 args.render_evaluation_mode = EvaluationModeArg::Polar;
             }

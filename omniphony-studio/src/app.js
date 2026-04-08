@@ -23,6 +23,7 @@ import {
   BRASSEMPOUY_TARGET_MAX_DIMENSION, brassempouyAssetUrl
 } from './scene/setup.js';
 import './scene/axes.js';
+import { refreshSpeakerHeatmapScene } from './scene/speaker-heatmap.js';
 
 // ── Domain modules (imported for side-effects & to register into state) ─────
 import {
@@ -113,6 +114,7 @@ flushCallbacks.updateSpeakerContributionUI = updateSpeakerContributionUI;
 flushCallbacks.getObjectDisplayName = getObjectDisplayName;
 flushCallbacks.applyAudioSampleRateNow = applyAudioSampleRateNow;
 flushCallbacks.refreshEffectiveRenderVisibility = refreshEffectiveRenderDecorations;
+flushCallbacks.refreshSpeakerHeatmapScene = refreshSpeakerHeatmapScene;
 flushCallbacks.updateVbapCartesianFaceGrid = updateVbapCartesianFaceGrid;
 flushCallbacks.renderVbapCartesianGridToggle = renderVbapCartesianGridToggle;
 flushCallbacks.applyRoomRatio = applyRoomRatio;

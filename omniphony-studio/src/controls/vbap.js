@@ -60,8 +60,24 @@ function renderVbapCartesianGridToggle() {
   }
 }
 
+function backendCapabilities() {
+  return app.renderBackendState.capabilities || null;
+}
+
+function backendLabel(backend) {
+  if (backend === (app.renderBackendState.effective || '')) {
+    return app.renderBackendState.effectiveLabel || backend || '—';
+  }
+  if (backend === 'vbap') return 'VBAP';
+  if (backend === 'experimental_distance') return 'Distance';
+  return backend || '—';
+}
+
 function applyRendererBackendVisibility(backend) {
-  const isVbap = backend !== 'experimental_distance';
+  const capabilities = backendCapabilities();
+  const supportsDistanceModel = capabilities?.supportsDistanceModel === true;
+  const supportsSpread = capabilities?.supportsSpread === true;
+  const supportsDistanceDiffuse = capabilities?.supportsDistanceDiffuse === true;
   if (backendParametersSectionEl) {
     backendParametersSectionEl.style.display = '';
   }
@@ -69,25 +85,30 @@ function applyRendererBackendVisibility(backend) {
     evaluationSectionEl.style.display = '';
   }
   if (backendSpecificParamsSectionEl) {
-    backendSpecificParamsSectionEl.style.display = isVbap ? '' : 'none';
+    backendSpecificParamsSectionEl.style.display =
+      supportsDistanceModel || supportsSpread || supportsDistanceDiffuse ? '' : 'none';
   }
   if (distanceModelControlRowEl) {
-    distanceModelControlRowEl.style.display = isVbap ? '' : 'none';
+    distanceModelControlRowEl.style.display = supportsDistanceModel ? '' : 'none';
   }
   if (spreadSectionEl) {
-    spreadSectionEl.style.display = isVbap ? '' : 'none';
+    spreadSectionEl.style.display = supportsSpread ? '' : 'none';
   }
   if (distanceDiffuseSectionEl) {
-    distanceDiffuseSectionEl.style.display = isVbap ? '' : 'none';
+    distanceDiffuseSectionEl.style.display = supportsDistanceDiffuse ? '' : 'none';
   }
   if (spreadFromDistanceSectionEl) {
-    spreadFromDistanceSectionEl.style.display = isVbap ? '' : 'none';
+    spreadFromDistanceSectionEl.style.display =
+      capabilities?.supportsSpreadFromDistance === true ? '' : 'none';
   }
 }
 
 function applyEvaluationModeVisibility(mode) {
-  const showsCartesian = mode === 'precomputed_cartesian';
-  const showsPolar = mode === 'precomputed_polar';
+  const capabilities = backendCapabilities();
+  const showsCartesian =
+    mode === 'precomputed_cartesian' && capabilities?.supportsPrecomputedCartesian === true;
+  const showsPolar =
+    mode === 'precomputed_polar' && capabilities?.supportsPrecomputedPolar === true;
   const showsInterpolation = showsCartesian || showsPolar;
   const renderEvaluationCartesianBlockEl = inRendererPanel('renderEvaluationCartesianBlock');
   const renderEvaluationPolarBlockEl = inRendererPanel('renderEvaluationPolarBlock');
@@ -132,11 +153,27 @@ export function renderVbapStatus() {
 
 export function renderEvaluationMode() {
   const backend = app.renderBackendState.effective || app.renderBackendState.selection || 'vbap';
-  const allowedModes = ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'];
+  const allowedModes = Array.isArray(app.renderBackendState.allowedEvaluationModes)
+    && app.renderBackendState.allowedEvaluationModes.length > 0
+    ? app.renderBackendState.allowedEvaluationModes
+    : ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'];
   const selection = typeof app.evaluationModeState.selection === 'string' ? app.evaluationModeState.selection : null;
   const effectiveMode = typeof app.evaluationModeState.effective === 'string' ? app.evaluationModeState.effective : null;
   const nextValue = allowedModes.includes(selection) ? selection : allowedModes[0];
   if (renderEvaluationModeSelectEl) {
+    const currentOptions = Array.from(renderEvaluationModeSelectEl.options).map((option) => option.value);
+    if (
+      currentOptions.length !== allowedModes.length
+      || currentOptions.some((value, index) => value !== allowedModes[index])
+    ) {
+      renderEvaluationModeSelectEl.innerHTML = '';
+      allowedModes.forEach((mode) => {
+        const option = document.createElement('option');
+        option.value = mode;
+        option.textContent = formatEvaluationModeLabel(mode);
+        renderEvaluationModeSelectEl.append(option);
+      });
+    }
     renderEvaluationModeSelectEl.value = nextValue;
     renderEvaluationModeSelectEl.disabled = false;
   }
@@ -146,11 +183,7 @@ export function renderEvaluationMode() {
   if (rendererSummaryEl) {
     const mode = effectiveMode || selection;
     const modeText = formatEvaluationModeLabel(mode);
-    const backendText = backend === 'experimental_distance'
-      ? 'Distance'
-      : backend === 'vbap'
-        ? 'VBAP'
-        : '—';
+    const backendText = backendLabel(backend);
     rendererSummaryEl.textContent = `${backendText} / ${tf('renderer.summary', { mode: modeText })}`;
   }
   const visibleMode = nextValue === 'auto'
@@ -172,12 +205,7 @@ export function renderRenderBackend() {
     renderBackendSelectEl.value = selection;
   }
   if (renderBackendEffectiveEl) {
-    renderBackendEffectiveEl.textContent =
-      effective === 'experimental_distance'
-        ? 'Distance'
-        : effective === 'vbap'
-          ? 'VBAP'
-          : '—';
+    renderBackendEffectiveEl.textContent = backendLabel(effective);
   }
   applyRendererBackendVisibility(visibleBackend);
   renderEvaluationMode();

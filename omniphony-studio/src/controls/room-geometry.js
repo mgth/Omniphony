@@ -56,6 +56,11 @@ const trailTtlSliderEl = inDisplayPanel('trailTtlSlider');
 const trailTtlValEl = inDisplayPanel('trailTtlVal');
 const effectiveRenderToggleEl = inDisplayPanel('effectiveRenderToggle');
 const objectColorsToggleEl = inDisplayPanel('objectColorsToggle');
+const speakerHeatmapSlicesToggleEl = inDisplayPanel('speakerHeatmapSlicesToggle');
+const speakerHeatmapVolumeToggleEl = inDisplayPanel('speakerHeatmapVolumeToggle');
+const speakerHeatmapSampleCountInputEl = inDisplayPanel('speakerHeatmapSampleCountInput');
+const speakerHeatmapMaxSphereSizeSliderEl = inDisplayPanel('speakerHeatmapMaxSphereSizeSlider');
+const speakerHeatmapMaxSphereSizeValEl = inDisplayPanel('speakerHeatmapMaxSphereSizeVal');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -118,7 +123,11 @@ export function persistEffectiveRenderPrefs() {
   try {
     localStorage.setItem(EFFECTIVE_RENDER_PREFS_STORAGE_KEY, JSON.stringify({
       enabled: app.effectiveRenderEnabled,
-      objectColors: app.objectColorsEnabled
+      objectColors: app.objectColorsEnabled,
+      speakerHeatmapSlicesEnabled: app.speakerHeatmapSlicesEnabled,
+      speakerHeatmapVolumeEnabled: app.speakerHeatmapVolumeEnabled,
+      speakerHeatmapSampleCount: app.speakerHeatmapSampleCount,
+      speakerHeatmapMaxSphereSize: app.speakerHeatmapMaxSphereSize
     }));
   } catch (_e) {
     // Ignore storage errors (private mode, quota, etc.).
@@ -146,6 +155,21 @@ export function applyEffectiveRenderPrefsToUi() {
   }
   if (objectColorsToggleEl) {
     objectColorsToggleEl.checked = app.objectColorsEnabled;
+  }
+  if (speakerHeatmapSlicesToggleEl) {
+    speakerHeatmapSlicesToggleEl.checked = app.speakerHeatmapSlicesEnabled;
+  }
+  if (speakerHeatmapVolumeToggleEl) {
+    speakerHeatmapVolumeToggleEl.checked = app.speakerHeatmapVolumeEnabled;
+  }
+  if (speakerHeatmapSampleCountInputEl) {
+    speakerHeatmapSampleCountInputEl.value = String(app.speakerHeatmapSampleCount);
+  }
+  if (speakerHeatmapMaxSphereSizeSliderEl) {
+    speakerHeatmapMaxSphereSizeSliderEl.value = String(app.speakerHeatmapMaxSphereSize);
+  }
+  if (speakerHeatmapMaxSphereSizeValEl) {
+    speakerHeatmapMaxSphereSizeValEl.textContent = app.speakerHeatmapMaxSphereSize.toFixed(3);
   }
 }
 
@@ -176,6 +200,20 @@ export function loadEffectiveRenderPrefs() {
       const parsed = JSON.parse(raw);
       app.effectiveRenderEnabled = Boolean(parsed?.enabled);
       app.objectColorsEnabled = Boolean(parsed?.objectColors);
+      if (typeof parsed?.speakerHeatmapSlicesEnabled === 'boolean') {
+        app.speakerHeatmapSlicesEnabled = parsed.speakerHeatmapSlicesEnabled;
+      }
+      if (typeof parsed?.speakerHeatmapVolumeEnabled === 'boolean') {
+        app.speakerHeatmapVolumeEnabled = parsed.speakerHeatmapVolumeEnabled;
+      }
+      const sampleCount = Number(parsed?.speakerHeatmapSampleCount);
+      if (Number.isFinite(sampleCount)) {
+        app.speakerHeatmapSampleCount = Math.max(128, Math.min(20000, Math.round(sampleCount)));
+      }
+      const maxSphereSize = Number(parsed?.speakerHeatmapMaxSphereSize);
+      if (Number.isFinite(maxSphereSize)) {
+        app.speakerHeatmapMaxSphereSize = Math.max(0.01, Math.min(0.2, maxSphereSize));
+      }
     }
   } catch (_e) {
     // Ignore malformed payloads.
@@ -756,6 +794,9 @@ export function applyRoomRatioToScene() {
   fitScreenToUpperHalf();
   updateRoomDimensionGuides();
   updateVbapCartesianFaceGrid();
+  if (typeof flushCallbacks.refreshSpeakerHeatmapScene === 'function') {
+    flushCallbacks.refreshSpeakerHeatmapScene();
+  }
 }
 
 // ---------------------------------------------------------------------------

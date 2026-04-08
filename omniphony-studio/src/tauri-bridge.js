@@ -64,11 +64,19 @@ import { updateConfigSavedUI } from './controls/config.js';
 import { updateRoomRatioDisplay, applyRoomRatio } from './controls/room-geometry.js';
 import { normalizeLogLevel, renderLogLevelControl, logState, pushLog } from './log.js';
 import { applyInitState } from './init.js';
+import {
+  handleSpeakerHeatmapMeta,
+  handleSpeakerHeatmapSlice,
+  handleSpeakerHeatmapVolumeChunk,
+  handleSpeakerHeatmapUnavailable,
+  requestSpeakerHeatmapIfNeeded,
+} from './scene/speaker-heatmap.js';
 
 export function setupTauriBridge() {
   listen('state:snapshot_ready', ({ payload }) => {
     if (payload && typeof payload === 'object') {
       applyInitState(payload);
+      requestSpeakerHeatmapIfNeeded();
     }
   });
 
@@ -78,6 +86,7 @@ export function setupTauriBridge() {
 
   listen('layouts:update', ({ payload }) => {
     hydrateLayoutSelect(payload.layouts || [], payload.selectedLayoutKey);
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('layout:selected', ({ payload }) => {
@@ -85,6 +94,7 @@ export function setupTauriBridge() {
       const layoutSelectEl = document.getElementById('layoutSelect');
       if (layoutSelectEl) layoutSelectEl.value = payload.key;
       renderLayout(payload.key);
+      requestSpeakerHeatmapIfNeeded();
     }
   });
 
@@ -401,24 +411,54 @@ export function setupTauriBridge() {
   // VBAP
   // -----------------------------------------------------------------------
 
+  listen('render_backend:state', ({ payload }) => {
+    const selection = String(payload?.selection ?? '').trim().toLowerCase();
+    const effective = String(payload?.effective ?? '').trim().toLowerCase();
+    const effectiveLabel = String(payload?.effectiveLabel ?? '').trim();
+    app.renderBackendState.selection = selection || null;
+    app.renderBackendState.effective = effective || null;
+    app.renderBackendState.effectiveLabel = effectiveLabel || null;
+    app.renderBackendState.capabilities = payload?.capabilities && typeof payload.capabilities === 'object'
+      ? payload.capabilities
+      : null;
+    app.renderBackendState.allowedEvaluationModes = Array.isArray(payload?.allowedEvaluationModes)
+      ? payload.allowedEvaluationModes
+        .map((value) => String(value ?? '').trim().toLowerCase())
+        .filter((value) => value.length > 0)
+      : [];
+    if (!app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')) {
+      app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
+    }
+    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
+      app.evaluationModeState.effective = null;
+    }
+    updateRenderBackend();
+    updateEvaluationMode();
+    requestSpeakerHeatmapIfNeeded();
+  });
+
   listen('render_backend', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
-    app.renderBackendState.selection = ['vbap', 'experimental_distance'].includes(value) ? value : null;
-    if (!['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.selection)) {
-      app.evaluationModeState.selection = 'auto';
+    app.renderBackendState.selection = value || null;
+    if (
+      app.renderBackendState.allowedEvaluationModes.length > 0
+      && !app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')
+    ) {
+      app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
     }
     updateRenderBackend();
   });
 
   listen('render_backend:effective', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
-    app.renderBackendState.effective = ['vbap', 'experimental_distance'].includes(value) ? value : null;
+    app.renderBackendState.effective = value || null;
     if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
       app.evaluationModeState.effective = null;
     }
     app.vbapRecomputing = false;
     renderVbapStatus();
     updateRenderBackend();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('render_evaluation_mode', ({ payload }) => {
@@ -435,6 +475,7 @@ export function setupTauriBridge() {
     app.vbapRecomputing = false;
     renderVbapStatus();
     updateEvaluationMode();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('vbap:recomputing', ({ payload }) => {
@@ -446,24 +487,52 @@ export function setupTauriBridge() {
     const value = Number(payload.value);
     app.vbapCartesianState.xSize = value > 0 ? value : null;
     updateVbapCartesian();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('render_evaluation:cartesian:y_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.ySize = value > 0 ? value : null;
     updateVbapCartesian();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('render_evaluation:cartesian:z_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.zSize = value > 0 ? value : null;
     updateVbapCartesian();
+    requestSpeakerHeatmapIfNeeded();
   });
 
   listen('render_evaluation:cartesian:z_neg_size', ({ payload }) => {
     const value = Number(payload.value);
     app.vbapCartesianState.zNegSize = value >= 0 ? value : 0;
     updateVbapCartesian();
+    requestSpeakerHeatmapIfNeeded();
+  });
+
+  listen('speaker_heatmap:meta', ({ payload }) => {
+    handleSpeakerHeatmapMeta(payload);
+  });
+
+  listen('speaker_heatmap:slice_xy', ({ payload }) => {
+    handleSpeakerHeatmapSlice('xy', payload);
+  });
+
+  listen('speaker_heatmap:slice_xz', ({ payload }) => {
+    handleSpeakerHeatmapSlice('xz', payload);
+  });
+
+  listen('speaker_heatmap:slice_yz', ({ payload }) => {
+    handleSpeakerHeatmapSlice('yz', payload);
+  });
+
+  listen('speaker_heatmap:volume_chunk', ({ payload }) => {
+    handleSpeakerHeatmapVolumeChunk(payload);
+  });
+
+  listen('speaker_heatmap:unavailable', ({ payload }) => {
+    handleSpeakerHeatmapUnavailable(payload);
   });
 
   listen('render_evaluation:polar:azimuth_resolution', ({ payload }) => {

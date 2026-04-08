@@ -107,9 +107,38 @@ pub struct VbapPolar {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct BackendCapabilitiesState {
+    #[serde(rename = "supportsRealtime")]
+    pub supports_realtime: bool,
+    #[serde(rename = "supportsPrecomputedPolar")]
+    pub supports_precomputed_polar: bool,
+    #[serde(rename = "supportsPrecomputedCartesian")]
+    pub supports_precomputed_cartesian: bool,
+    #[serde(rename = "supportsPositionInterpolation")]
+    pub supports_position_interpolation: bool,
+    #[serde(rename = "supportsDistanceModel")]
+    pub supports_distance_model: bool,
+    #[serde(rename = "supportsSpread")]
+    pub supports_spread: bool,
+    #[serde(rename = "supportsSpreadFromDistance")]
+    pub supports_spread_from_distance: bool,
+    #[serde(rename = "supportsDistanceDiffuse")]
+    pub supports_distance_diffuse: bool,
+    #[serde(rename = "supportsHeatmapCartesian")]
+    pub supports_heatmap_cartesian: bool,
+    #[serde(rename = "supportsTableExport")]
+    pub supports_table_export: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RenderBackendState {
     pub selection: Option<String>,
     pub effective: Option<String>,
+    #[serde(rename = "effectiveLabel")]
+    pub effective_label: Option<String>,
+    pub capabilities: Option<BackendCapabilitiesState>,
+    #[serde(rename = "allowedEvaluationModes")]
+    pub allowed_evaluation_modes: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

@@ -4,8 +4,10 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use crate::{AdaptiveControlStep, AdaptiveControllerState, AdaptiveResamplingConfig, compute_adaptive_step};
 use crate::{ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, ADAPTIVE_BAND_NONE};
+use crate::{
+    AdaptiveControlStep, AdaptiveControllerState, AdaptiveResamplingConfig, compute_adaptive_step,
+};
 
 pub const MAX_INTEGRAL_TERM: f64 = 0.0002;
 const LOW_RECOVER_SETTLE_STABLE_MS: f32 = 200.0;
@@ -145,10 +147,7 @@ pub fn update_latency_metrics(
     }
 }
 
-pub fn reset_adaptive_runtime(
-    state: &mut AdaptiveRuntimeState,
-    base_ratio: f64,
-) -> ResetOutcome {
+pub fn reset_adaptive_runtime(state: &mut AdaptiveRuntimeState, base_ratio: f64) -> ResetOutcome {
     state.controller_state.accumulated_drift = 0.0;
     state.startup_low_recover_active = false;
     state.low_recover_phase = LowRecoverPhase::Inactive;
@@ -274,10 +273,14 @@ fn compute_low_recover_settle_trim_plan(
     effective_resample_ratio: f64,
     channel_count: usize,
 ) -> HardRecoverPlan {
-    let tolerance_input_samples =
-        align_samples_to_audio_frame((callback_input_domain_samples / 4).max(channel_count), channel_count);
-    let max_trim_input_samples =
-        align_samples_to_audio_frame((callback_input_domain_samples / 2).max(channel_count), channel_count);
+    let tolerance_input_samples = align_samples_to_audio_frame(
+        (callback_input_domain_samples / 4).max(channel_count),
+        channel_count,
+    );
+    let max_trim_input_samples = align_samples_to_audio_frame(
+        (callback_input_domain_samples / 2).max(channel_count),
+        channel_count,
+    );
     let overshoot_input_samples = control_available.saturating_sub(target_buffer_fill);
     let desired_consume_input_samples = if overshoot_input_samples > tolerance_input_samples {
         overshoot_input_samples
@@ -336,12 +339,11 @@ pub fn update_far_mode_state(
             .max(channel_count),
         channel_count,
     );
-    let low_recover_entry_threshold =
-        target_buffer_fill.saturating_sub(tolerance_input_samples);
+    let low_recover_entry_threshold = target_buffer_fill.saturating_sub(tolerance_input_samples);
     let low_recover_exit_threshold = low_recover_entry_threshold;
 
-    let low_recover_enabled = adaptive_config.hard_recover_low_in_far_mode
-        || state.startup_low_recover_active;
+    let low_recover_enabled =
+        adaptive_config.hard_recover_low_in_far_mode || state.startup_low_recover_active;
 
     if !far_mode_enabled || !low_recover_enabled {
         state.low_recover_phase = LowRecoverPhase::Inactive;
@@ -404,9 +406,9 @@ pub fn update_far_mode_state(
         state.far_mode_fade_total_frames = 0;
     } else if state.far_mode_was_muted {
         state.far_mode_was_muted = false;
-        state.far_mode_fade_total_frames =
-            ((output_sample_rate as u64 * adaptive_config.far_mode_return_fade_in_ms as u64)
-                / 1000) as usize;
+        state.far_mode_fade_total_frames = ((output_sample_rate as u64
+            * adaptive_config.far_mode_return_fade_in_ms as u64)
+            / 1000) as usize;
         state.far_mode_fade_remaining_frames = state.far_mode_fade_total_frames;
     }
 
@@ -512,9 +514,10 @@ pub fn compute_hard_recover_high_plan(
     effective_resample_ratio: f64,
     channel_count: usize,
 ) -> HardRecoverPlan {
-    let desired_consume_input_samples =
-        (callback_input_domain_samples as i64 + control_available as i64 - target_buffer_fill as i64)
-            .max(0) as usize;
+    let desired_consume_input_samples = (callback_input_domain_samples as i64
+        + control_available as i64
+        - target_buffer_fill as i64)
+        .max(0) as usize;
     let desired_consume_input_samples =
         align_samples_to_audio_frame(desired_consume_input_samples, channel_count);
     let desired_consume_output_samples =

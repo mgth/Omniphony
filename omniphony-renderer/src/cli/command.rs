@@ -268,11 +268,17 @@ pub struct RenderArgs {
 
     /// Interpolate between neighbouring VBAP table positions during lookup.
     /// Disable this to use nearest-cell lookup for lower CPU cost.
-    #[arg(long = "render-evaluation-position-interpolation", conflicts_with = "no_render_evaluation_position_interpolation")]
+    #[arg(
+        long = "render-evaluation-position-interpolation",
+        conflicts_with = "no_render_evaluation_position_interpolation"
+    )]
     pub render_evaluation_position_interpolation: bool,
 
     /// Disable interpolation between neighbouring VBAP table positions.
-    #[arg(long = "no-render-evaluation-position-interpolation", conflicts_with = "render_evaluation_position_interpolation")]
+    #[arg(
+        long = "no-render-evaluation-position-interpolation",
+        conflicts_with = "render_evaluation_position_interpolation"
+    )]
     pub no_render_evaluation_position_interpolation: bool,
 
     /// VBAP pre-computed table mode.

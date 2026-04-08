@@ -6,7 +6,9 @@ use audio_input::{
     InputSampleFormat,
 };
 use audio_output::AudioControl;
-use renderer::live_params::{LiveEvaluationMode, RampMode, RendererControl, PreferredEvaluationMode};
+use renderer::live_params::{
+    LiveEvaluationMode, PreferredEvaluationMode, RampMode, RendererControl,
+};
 
 use crate::snapshot::build_live_state_bundle;
 
@@ -89,9 +91,9 @@ pub fn save_live_config(
     } else {
         None
     };
-    render.render_backend = match live.backend_kind {
-        renderer::render_backend::RenderBackendKind::Vbap => None,
-        other => Some(other.as_str().to_string()),
+    render.render_backend = match live.backend_id() {
+        "vbap" => None,
+        other => Some(other.to_string()),
     };
     render.render_evaluation_mode = match live.requested_evaluation_mode() {
         LiveEvaluationMode::Auto => None,
@@ -119,7 +121,11 @@ pub fn save_live_config(
         render.evaluation_cartesian_z_size = None;
         render.evaluation_cartesian_z_neg_size = None;
     }
-    render.spread_from_distance = if live.spread_from_distance { Some(true) } else { None };
+    render.spread_from_distance = if live.spread_from_distance {
+        Some(true)
+    } else {
+        None
+    };
     render.spread_distance_range = if (live.spread_distance_range - 1.0).abs() > 1e-4 {
         Some(live.spread_distance_range)
     } else {
@@ -148,13 +154,16 @@ pub fn save_live_config(
     render.room_ratio_rear = Some(r);
     render.room_ratio_lower = Some(lower);
     render.room_ratio_center_blend = Some(cb);
-    render.distance_diffuse = if live.use_distance_diffuse { Some(true) } else { None };
-    render.distance_diffuse_threshold =
-        if (live.distance_diffuse_threshold - 1.0).abs() > 1e-4 {
-            Some(live.distance_diffuse_threshold)
-        } else {
-            None
-        };
+    render.distance_diffuse = if live.use_distance_diffuse {
+        Some(true)
+    } else {
+        None
+    };
+    render.distance_diffuse_threshold = if (live.distance_diffuse_threshold - 1.0).abs() > 1e-4 {
+        Some(live.distance_diffuse_threshold)
+    } else {
+        None
+    };
     render.distance_diffuse_curve = if (live.distance_diffuse_curve - 1.0).abs() > 1e-4 {
         Some(live.distance_diffuse_curve)
     } else {

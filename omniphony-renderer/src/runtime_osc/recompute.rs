@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use renderer::live_params::RendererControl;
+use runtime_control::snapshot::build_render_backend_state_json;
 
 use super::client_registry::OscClientRegistry;
 use super::transport::{broadcast_fff, broadcast_int, broadcast_string};
@@ -70,8 +71,8 @@ pub(crate) fn trigger_layout_recompute(
                             .recomputing
                             .store(false, std::sync::atomic::Ordering::Relaxed);
                         log::info!(
-                            "Render backend {:?} updated with new speaker layout",
-                            rebuild_plan_for_thread.backend_kind()
+                            "Render backend {} updated with new speaker layout",
+                            rebuild_plan_for_thread.backend_id()
                         );
                         let effective_backend =
                             control_clone.active_topology().backend.kind().as_str();
@@ -80,11 +81,22 @@ pub(crate) fn trigger_layout_recompute(
                             .backend
                             .evaluation_mode()
                             .as_str();
+                        let render_backend_state_json = {
+                            let live = control_clone.live.read().unwrap();
+                            let topology = control_clone.active_topology();
+                            build_render_backend_state_json(&live, &topology)
+                        };
                         broadcast_string(
                             &socket_clone,
                             &clients_clone,
                             "/omniphony/state/render_backend/effective",
                             effective_backend,
+                        );
+                        broadcast_string(
+                            &socket_clone,
+                            &clients_clone,
+                            "/omniphony/state/render_backend/state",
+                            &render_backend_state_json,
                         );
                         broadcast_string(
                             &socket_clone,
@@ -98,7 +110,9 @@ pub(crate) fn trigger_layout_recompute(
                             "/omniphony/state/speakers/recomputing",
                             0,
                         );
-                        for (idx, speaker) in rebuild_plan_for_thread.layout().speakers.iter().enumerate() {
+                        for (idx, speaker) in
+                            rebuild_plan_for_thread.layout().speakers.iter().enumerate()
+                        {
                             broadcast_fff(
                                 &socket_clone,
                                 &clients_clone,

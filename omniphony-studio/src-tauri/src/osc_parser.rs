@@ -236,10 +236,24 @@ pub enum OscEvent {
     StateRenderBackend { value: String },
     #[serde(rename = "state:render_backend:effective")]
     StateRenderBackendEffective { value: String },
+    #[serde(rename = "state:render_backend:state")]
+    StateRenderBackendState { value: String },
     #[serde(rename = "state:render_evaluation_mode")]
     StateRenderEvaluationMode { value: String },
     #[serde(rename = "state:render_evaluation_mode:effective")]
     StateRenderEvaluationModeEffective { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:meta")]
+    StateDebugSpeakerHeatmapMeta { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:slice_xy")]
+    StateDebugSpeakerHeatmapSliceXy { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:slice_xz")]
+    StateDebugSpeakerHeatmapSliceXz { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:slice_yz")]
+    StateDebugSpeakerHeatmapSliceYz { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:volume_chunk")]
+    StateDebugSpeakerHeatmapVolumeChunk { value: String },
+    #[serde(rename = "state:debug:speaker_heatmap:unavailable")]
+    StateDebugSpeakerHeatmapUnavailable { value: String },
     #[serde(rename = "state:snapshot_complete")]
     StateSnapshotComplete,
     #[serde(rename = "state:loudness")]
@@ -727,10 +741,25 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 value: raw_args.first().and_then(unwrap_string)?,
             })
         }
+        (4, "render_backend") if parts[3] == "state" => Some(OscEvent::StateRenderBackendState {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
         (4, "render_evaluation_mode") if parts[3] == "effective" => {
             Some(OscEvent::StateRenderEvaluationModeEffective {
                 value: raw_args.first().and_then(unwrap_string)?,
             })
+        }
+        (5, "debug") if parts[3] == "speaker_heatmap" => {
+            let value = raw_args.first().and_then(unwrap_string)?;
+            match parts[4] {
+                "meta" => Some(OscEvent::StateDebugSpeakerHeatmapMeta { value }),
+                "slice_xy" => Some(OscEvent::StateDebugSpeakerHeatmapSliceXy { value }),
+                "slice_xz" => Some(OscEvent::StateDebugSpeakerHeatmapSliceXz { value }),
+                "slice_yz" => Some(OscEvent::StateDebugSpeakerHeatmapSliceYz { value }),
+                "volume_chunk" => Some(OscEvent::StateDebugSpeakerHeatmapVolumeChunk { value }),
+                "unavailable" => Some(OscEvent::StateDebugSpeakerHeatmapUnavailable { value }),
+                _ => None,
+            }
         }
         (4, "spread") => {
             let value = to_number(args[0])?;
