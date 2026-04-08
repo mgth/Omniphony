@@ -42,7 +42,7 @@ impl VbapBackend {
             req.spread_min.clamp(0.0, 1.0)
         };
 
-        let direct_gains = self.panner.get_gains_cartesian_raw(
+        let direct_gains = self.panner.get_gains_cartesian(
             scaled_x,
             scaled_y,
             scaled_z,
@@ -59,7 +59,7 @@ impl VbapBackend {
             let alpha = 0.5 + 0.5 * t;
             let w_direct = alpha.sqrt();
             let w_mirror = (1.0 - alpha).sqrt();
-            let mirror_gains = self.panner.get_gains_cartesian_raw(
+            let mirror_gains = self.panner.get_gains_cartesian(
                 -scaled_x,
                 -scaled_y,
                 scaled_z,

@@ -717,8 +717,6 @@ impl VbapPanner {
             allow_negative_z: true,
             position_interpolation: true,
             cartesian_cache: None,
-            polar_distance_cache: None,
-            precomputed_effects: false,
             #[cfg(feature = "saf_vbap")]
             speaker_dirs_deg: None,
         };

@@ -39,7 +39,7 @@
 //! ```
 
 // SAF bindings - only available with the historical "saf_vbap" feature flag
-use super::coords::{adm_to_spherical, spherical_to_adm};
+use super::coords::adm_to_spherical;
 use super::distance::{DistanceModel, calculate_distance_attenuation};
 
 // Include the generated FFI bindings
@@ -123,23 +123,9 @@ struct CartesianCache {
     x_coords: Vec<f32>,
     y_coords: Vec<f32>,
     z_coords: Vec<f32>,
-    effect_space: bool,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
     // One flattened XYZ gain table per spread table.
     // Layout per table: [z][y][x][speaker]
     tables: Vec<Vec<f32>>,
-}
-
-#[derive(Clone)]
-struct PolarDistanceCache {
-    d_size: usize,
-    d_step: f32,
-    d_max: f32,
-    // Flattened: [d][el][az][speaker]
-    table: Vec<f32>,
 }
 
 /// Stack-allocated gain vector, replacing `Vec<f32>` in the VBAP hot path.
@@ -253,8 +239,6 @@ pub struct VbapPanner {
     allow_negative_z: bool,
     position_interpolation: bool,
     cartesian_cache: Option<CartesianCache>,
-    polar_distance_cache: Option<PolarDistanceCache>,
-    precomputed_effects: bool,
     #[cfg(feature = "saf_vbap")]
     speaker_dirs_deg: Option<Vec<[f32; 2]>>,
 }
