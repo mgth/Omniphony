@@ -128,27 +128,41 @@ export function applyInitState(payload) {
   if (payload.renderBackendState && typeof payload.renderBackendState === 'object') {
     if (typeof payload.renderBackendState.selection === 'string') {
       const selection = payload.renderBackendState.selection.trim().toLowerCase();
-      if (selection === 'vbap' || selection === 'experimental_distance') {
+      if (selection === 'vbap' || selection === 'experimental_distance' || selection === 'from_file') {
         app.renderBackendState.selection = selection;
       }
     }
     if (typeof payload.renderBackendState.effective === 'string') {
       const effective = payload.renderBackendState.effective.trim().toLowerCase();
-      if (effective === 'vbap' || effective === 'experimental_distance') {
+      if (effective === 'vbap' || effective === 'experimental_distance' || effective === 'from_file') {
         app.renderBackendState.effective = effective;
       }
     }
+    app.renderBackendState.effectiveLabel = typeof payload.renderBackendState.effectiveLabel === 'string'
+      ? payload.renderBackendState.effectiveLabel
+      : null;
+    app.renderBackendState.capabilities = payload.renderBackendState.capabilities && typeof payload.renderBackendState.capabilities === 'object'
+      ? payload.renderBackendState.capabilities
+      : null;
+    app.renderBackendState.allowedEvaluationModes = Array.isArray(payload.renderBackendState.allowedEvaluationModes)
+      ? payload.renderBackendState.allowedEvaluationModes
+        .map((value) => String(value ?? '').trim().toLowerCase())
+        .filter((value) => value.length > 0)
+      : [];
+    app.renderBackendState.frozenRoomRatio = payload.renderBackendState.frozenRoomRatio === true;
+    app.renderBackendState.frozenSpeakers = payload.renderBackendState.frozenSpeakers === true;
+    app.renderBackendState.restoreBackendAvailable = payload.renderBackendState.restoreBackendAvailable === true;
   }
   if (payload.renderEvaluationModeState && typeof payload.renderEvaluationModeState === 'object') {
     if (typeof payload.renderEvaluationModeState.selection === 'string') {
       const selection = payload.renderEvaluationModeState.selection.trim().toLowerCase();
-      if (['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(selection)) {
+      if (['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(selection)) {
         app.evaluationModeState.selection = selection;
       }
     }
     if (typeof payload.renderEvaluationModeState.effective === 'string') {
       const effective = payload.renderEvaluationModeState.effective.trim().toLowerCase();
-      if (['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(effective)) {
+      if (['realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(effective)) {
         app.evaluationModeState.effective = effective;
       }
     }

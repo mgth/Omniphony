@@ -108,7 +108,10 @@ export const app = {
     effective: null,
     effectiveLabel: null,
     capabilities: null,
-    allowedEvaluationModes: []
+    allowedEvaluationModes: [],
+    frozenRoomRatio: false,
+    frozenSpeakers: false,
+    restoreBackendAvailable: false
   },
   vbapPositionInterpolation: null,
   vbapAllowNegativeZ: null,
@@ -282,6 +285,14 @@ export const app = {
   // Meter decay
   lastMeterDecayAt: 0
 };
+
+export function isRoomRatioFrozen() {
+  return app.renderBackendState.frozenRoomRatio === true;
+}
+
+export function isSpeakerLayoutFrozen() {
+  return app.renderBackendState.frozenSpeakers === true;
+}
 
 // ---------------------------------------------------------------------------
 // Constants

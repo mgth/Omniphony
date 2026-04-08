@@ -70,6 +70,7 @@ function backendLabel(backend) {
   }
   if (backend === 'vbap') return 'VBAP';
   if (backend === 'experimental_distance') return 'Distance';
+  if (backend === 'from_file') return 'From File';
   return backend || '—';
 }
 
@@ -133,6 +134,7 @@ function formatEvaluationModeLabel(mode) {
     case 'realtime': return 'Realtime';
     case 'precomputed_polar': return 'Polar';
     case 'precomputed_cartesian': return 'Cartesian';
+    case 'from_file': return 'From File';
     default: return '—';
   }
 }
@@ -175,7 +177,7 @@ export function renderEvaluationMode() {
       });
     }
     renderEvaluationModeSelectEl.value = nextValue;
-    renderEvaluationModeSelectEl.disabled = false;
+    renderEvaluationModeSelectEl.disabled = allowedModes.length <= 1 && allowedModes[0] === 'from_file';
   }
   if (renderEvaluationModeEffectiveEl) {
     renderEvaluationModeEffectiveEl.textContent = formatEvaluationModeLabel(effectiveMode);
@@ -203,10 +205,20 @@ export function renderRenderBackend() {
   const visibleBackend = effective || selection;
   if (renderBackendSelectEl) {
     renderBackendSelectEl.value = selection;
+    renderBackendSelectEl.disabled = app.renderBackendState.frozenSpeakers === true;
   }
   if (renderBackendEffectiveEl) {
     renderBackendEffectiveEl.textContent = backendLabel(effective);
   }
+  const layoutSelectEl = document.getElementById('layoutSelect');
+  const importLayoutBtnEl = document.getElementById('importLayoutBtn');
+  const exportLayoutBtnEl = document.getElementById('exportLayoutBtn');
+  const layoutFrozen = app.renderBackendState.frozenSpeakers === true;
+  if (layoutSelectEl) {
+    layoutSelectEl.disabled = layoutFrozen || layoutSelectEl.options.length === 0;
+  }
+  if (importLayoutBtnEl) importLayoutBtnEl.disabled = layoutFrozen;
+  if (exportLayoutBtnEl) exportLayoutBtnEl.disabled = layoutFrozen;
   applyRendererBackendVisibility(visibleBackend);
   renderEvaluationMode();
 }

@@ -60,6 +60,9 @@ pub struct RenderBackendStateSnapshot {
     pub effective_label: String,
     pub capabilities: renderer::render_backend::BackendCapabilities,
     pub allowed_evaluation_modes: Vec<String>,
+    pub frozen_room_ratio: bool,
+    pub frozen_speakers: bool,
+    pub restore_backend_available: bool,
 }
 
 fn allowed_evaluation_modes(
@@ -94,6 +97,11 @@ pub fn build_render_backend_state_snapshot(
         effective_label: backend.backend_label().to_string(),
         capabilities,
         allowed_evaluation_modes: allowed_evaluation_modes(backend, capabilities),
+        frozen_room_ratio: backend.evaluation_mode()
+            == renderer::render_backend::EffectiveEvaluationMode::FromFile,
+        frozen_speakers: backend.evaluation_mode()
+            == renderer::render_backend::EffectiveEvaluationMode::FromFile,
+        restore_backend_available: false,
     }
 }
 

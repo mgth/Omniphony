@@ -5,7 +5,7 @@
  */
 
 import * as THREE from 'three';
-import { app, dirty, layoutsByKey, sourceMeshes, sourcePositionsRaw, speakerMeshes, speakerLabels } from '../state.js';
+import { app, dirty, isRoomRatioFrozen, layoutsByKey, sourceMeshes, sourcePositionsRaw, speakerMeshes, speakerLabels } from '../state.js';
 import { formatNumber, normalizedOmniphonyToScenePosition, hydrateSpeakerCoordinateState } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 import { flushCallbacks } from '../flush.js';
@@ -341,6 +341,14 @@ export function roomGeometryStateKey(state) {
 }
 
 export function updateRoomGeometryButtonsState() {
+  if (isRoomRatioFrozen()) {
+    if (roomGeometryCancelBtnEl) {
+      roomGeometryCancelBtnEl.disabled = true;
+      roomGeometryCancelBtnEl.style.opacity = '0.55';
+      roomGeometryCancelBtnEl.style.cursor = 'default';
+    }
+    return;
+  }
   const currentKey = roomGeometryStateKey();
   const unchanged = app.roomGeometryBaselineKey !== '' && currentKey === app.roomGeometryBaselineKey;
   if (roomGeometryCancelBtnEl) {
@@ -351,6 +359,9 @@ export function updateRoomGeometryButtonsState() {
 }
 
 export function applyRoomGeometryNow() {
+  if (isRoomRatioFrozen()) {
+    return;
+  }
   const preview = computeRoomGeometryFromInputs();
   app.roomMasterAxis = preview.master;
   const width = preview.ratio.width;
@@ -563,6 +574,7 @@ function syncRoomMasterAxisUI() {
 export function refreshRoomGeometryInputState() {
   const axes = ['width', 'length', 'height', 'rear', 'lower'];
   syncRoomMasterAxisUI();
+  const frozen = isRoomRatioFrozen();
 
   axes.forEach((axis) => {
     const isMaster = axis === app.roomMasterAxis;
@@ -573,13 +585,22 @@ export function refreshRoomGeometryInputState() {
 
     if (driverEl) {
       setRoomDriverValue(axis, driver);
-      driverEl.disabled = isMaster;
+      driverEl.disabled = frozen || isMaster;
     }
     const sizeEditable = isMaster || driver === 'size';
     const ratioEditable = isMaster || driver === 'ratio';
-    setRoomFieldEditable(sizeEl, sizeEditable);
-    setRoomFieldEditable(ratioEl, ratioEditable);
+    setRoomFieldEditable(sizeEl, !frozen && sizeEditable);
+    setRoomFieldEditable(ratioEl, !frozen && ratioEditable);
   });
+  roomMasterAxisInputs.forEach((input) => {
+    input.disabled = frozen;
+  });
+  if (roomRatioCenterBlendSliderEl) {
+    roomRatioCenterBlendSliderEl.disabled = frozen;
+  }
+  if (roomGeometryCancelBtnEl) {
+    roomGeometryCancelBtnEl.disabled = frozen || roomGeometryCancelBtnEl.disabled;
+  }
   updateRoomGeometryLivePreview();
   updateRoomGeometryButtonsState();
 }

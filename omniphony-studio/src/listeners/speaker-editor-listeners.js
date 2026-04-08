@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { app, speakerBaseGains, speakerDelays } from '../state.js';
+import { app, isSpeakerLayoutFrozen, speakerBaseGains, speakerDelays } from '../state.js';
 import {
   renderSpeakerEditor, requestAddSpeaker, requestMoveSpeaker, requestRemoveSpeaker,
   applySpeakerCartesianEdit, applySpeakerPolarEdit,
@@ -36,6 +36,7 @@ export function setupSpeakerEditorListeners() {
 
   if (editModeSelectEl) {
     editModeSelectEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
       app.activeEditMode = editModeSelectEl.value;
       updateSpeakerGizmo();
       updateControlsForEditMode();
@@ -44,6 +45,7 @@ export function setupSpeakerEditorListeners() {
 
   if (speakerEditCartesianGizmoBtnEl) {
     speakerEditCartesianGizmoBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       app.activeEditMode = 'cartesian';
       if (editModeSelectEl) editModeSelectEl.value = 'cartesian';
@@ -58,30 +60,35 @@ export function setupSpeakerEditorListeners() {
 
   if (speakerAddBtnEl) {
     speakerAddBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       requestAddSpeaker();
     });
   }
 
   if (speakerMoveUpBtnEl) {
     speakerMoveUpBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       requestMoveSpeaker(-1);
     });
   }
 
   if (speakerMoveDownBtnEl) {
     speakerMoveDownBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       requestMoveSpeaker(1);
     });
   }
 
   if (speakerRemoveBtnEl) {
     speakerRemoveBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       requestRemoveSpeaker();
     });
   }
 
   if (speakerEditPolarGizmoBtnEl) {
     speakerEditPolarGizmoBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       app.activeEditMode = 'polar';
       if (editModeSelectEl) editModeSelectEl.value = 'polar';
@@ -96,6 +103,7 @@ export function setupSpeakerEditorListeners() {
 
   if (speakerEditGainSliderEl) {
     speakerEditGainSliderEl.addEventListener('input', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       const id = String(app.selectedSpeakerIndex);
       const value = Number(speakerEditGainSliderEl.value);
@@ -105,6 +113,7 @@ export function setupSpeakerEditorListeners() {
       renderSpeakerEditor();
     });
     speakerEditGainSliderEl.addEventListener('dblclick', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       speakerEditGainSliderEl.value = '1';
       const id = String(app.selectedSpeakerIndex);
@@ -116,6 +125,7 @@ export function setupSpeakerEditorListeners() {
 
   if (speakerEditDelayMsInputEl) {
     speakerEditDelayMsInputEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       const id = String(app.selectedSpeakerIndex);
       const value = Math.max(0, Number(speakerEditDelayMsInputEl.value) || 0);
@@ -128,6 +138,7 @@ export function setupSpeakerEditorListeners() {
 
   if (speakerEditDelaySamplesInputEl) {
     speakerEditDelaySamplesInputEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       const id = String(app.selectedSpeakerIndex);
       const samples = Math.max(0, Math.round(Number(speakerEditDelaySamplesInputEl.value) || 0));
@@ -140,18 +151,21 @@ export function setupSpeakerEditorListeners() {
 
   if (speakerEditAutoDelayBtnEl) {
     speakerEditAutoDelayBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       computeAndApplySpeakerDelays();
     });
   }
 
   if (speakerEditDelayToDistanceBtnEl) {
     speakerEditDelayToDistanceBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       adjustSpeakerDistancesFromDelays();
     });
   }
 
   if (speakerEditNameInputEl) {
     speakerEditNameInputEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       const speaker = app.currentLayoutSpeakers[app.selectedSpeakerIndex];
       if (!speaker) return;
@@ -167,6 +181,7 @@ export function setupSpeakerEditorListeners() {
   function bindSpeakerCoordChange(inputEl, getter) {
     if (!inputEl) return;
     inputEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       getter(app.selectedSpeakerIndex);
     });
@@ -216,6 +231,7 @@ export function setupSpeakerEditorListeners() {
 
   if (speakerEditSpatializeToggleEl) {
     speakerEditSpatializeToggleEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       const index = app.selectedSpeakerIndex;
       const nextSpatialize = speakerEditSpatializeToggleEl.checked ? 1 : 0;
@@ -228,6 +244,7 @@ export function setupSpeakerEditorListeners() {
 
   if (speakerEditCartesianModeEl) {
     speakerEditCartesianModeEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null || !speakerEditCartesianModeEl.checked) return;
       setSpeakerCoordMode(app.selectedSpeakerIndex, 'cartesian');
     });
@@ -235,6 +252,7 @@ export function setupSpeakerEditorListeners() {
 
   if (speakerEditPolarModeEl) {
     speakerEditPolarModeEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null || !speakerEditPolarModeEl.checked) return;
       setSpeakerCoordMode(app.selectedSpeakerIndex, 'polar');
     });
