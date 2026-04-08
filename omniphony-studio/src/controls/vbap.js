@@ -14,6 +14,7 @@ import { inRendererPanel } from '../ui/panel-roots.js';
 const vbapStatusEl = inRendererPanel('vbapStatus');
 const renderBackendSelectEl = inRendererPanel('renderBackendSelect');
 const restoreBackendBtnEl = inRendererPanel('restoreBackendBtn');
+const exportEvaluationArtifactBtnEl = inRendererPanel('exportEvaluationArtifactBtn');
 const renderBackendEffectiveEl = inRendererPanel('renderBackendEffective');
 const renderEvaluationModeSelectEl = inRendererPanel('renderEvaluationModeSelect');
 const renderEvaluationModeEffectiveEl = inRendererPanel('renderEvaluationModeEffective');
@@ -189,6 +190,14 @@ export function renderEvaluationMode() {
     }
     renderEvaluationModeSelectEl.value = nextValue;
     renderEvaluationModeSelectEl.disabled = allowedModes.length <= 1 && allowedModes[0] === 'from_file';
+  }
+  if (exportEvaluationArtifactBtnEl) {
+    const exportable =
+      effectiveMode === 'precomputed_polar'
+      || effectiveMode === 'precomputed_cartesian'
+      || effectiveMode === 'from_file';
+    exportEvaluationArtifactBtnEl.style.display = exportable ? '' : 'none';
+    exportEvaluationArtifactBtnEl.disabled = !exportable || app.vbapRecomputing === true;
   }
   if (renderEvaluationModeEffectiveEl) {
     renderEvaluationModeEffectiveEl.textContent = formatEvaluationModeLabel(effectiveMode);

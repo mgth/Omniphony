@@ -39,6 +39,7 @@ export function rendererPanelMarkup() {
             <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Evaluation</div>
               <div style="display:flex;align-items:center;gap:0.35rem">
+                <button id="exportEvaluationArtifactBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Export</button>
                 <select id="renderEvaluationModeSelect" class="delay-input" style="width:auto;min-width:13rem;text-align:left">
                   <option value="auto">Auto</option>
                   <option value="realtime">Realtime</option>
