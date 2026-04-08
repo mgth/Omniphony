@@ -107,6 +107,9 @@ impl TopologyBuildPlan {
             LiveEvaluationMode::PrecomputedCartesian => {
                 EffectiveEvaluationMode::PrecomputedCartesian
             }
+            LiveEvaluationMode::FromFile => {
+                unreachable!("from_file evaluation mode does not build a backend topology")
+            }
             LiveEvaluationMode::Auto => unreachable!("topology build plan must resolve auto mode"),
         };
         RenderTopology::new(
@@ -251,6 +254,9 @@ pub fn prepare_topology_build_plan(
                 },
                 LiveEvaluationMode::Auto => {
                     unreachable!("evaluation mode must be resolved before building")
+                }
+                LiveEvaluationMode::FromFile => {
+                    unreachable!("from_file evaluation mode does not build a backend plan")
                 }
             };
             let azimuth_resolution = if live.evaluation.polar.azimuth_values > 0 {

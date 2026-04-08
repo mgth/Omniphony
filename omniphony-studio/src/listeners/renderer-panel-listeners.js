@@ -188,6 +188,22 @@ export function setupRendererPanelListeners() {
   if (renderEvaluationModeSelectEl) {
     renderEvaluationModeSelectEl.addEventListener('change', () => {
       const value = String(renderEvaluationModeSelectEl.value || '').trim().toLowerCase();
+      if (value === 'from_file') {
+        invoke('pick_import_evaluation_artifact_path')
+          .then((path) => {
+            const trimmed = typeof path === 'string' ? path.trim() : '';
+            if (!trimmed) {
+              updateEvaluationMode();
+              return;
+            }
+            invoke('control_import_evaluation_artifact', { path: trimmed });
+          })
+          .catch((e) => {
+            console.error('[from_file import]', e);
+            updateEvaluationMode();
+          });
+        return;
+      }
       const allowed = Array.isArray(app.renderBackendState.allowedEvaluationModes)
         && app.renderBackendState.allowedEvaluationModes.length > 0
         ? app.renderBackendState.allowedEvaluationModes

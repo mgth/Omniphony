@@ -160,17 +160,27 @@ export function renderEvaluationMode() {
     && app.renderBackendState.allowedEvaluationModes.length > 0
     ? app.renderBackendState.allowedEvaluationModes
     : ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'];
+  const selectionModes = allowedModes.includes('from_file')
+    ? allowedModes
+    : [...allowedModes, 'from_file'];
   const selection = typeof app.evaluationModeState.selection === 'string' ? app.evaluationModeState.selection : null;
   const effectiveMode = typeof app.evaluationModeState.effective === 'string' ? app.evaluationModeState.effective : null;
-  const nextValue = allowedModes.includes(selection) ? selection : allowedModes[0];
+  const visibleModes = [...selectionModes];
+  if (selection && !visibleModes.includes(selection)) {
+    visibleModes.push(selection);
+  }
+  if (effectiveMode && !visibleModes.includes(effectiveMode)) {
+    visibleModes.push(effectiveMode);
+  }
+  const nextValue = visibleModes.includes(selection) ? selection : visibleModes[0];
   if (renderEvaluationModeSelectEl) {
     const currentOptions = Array.from(renderEvaluationModeSelectEl.options).map((option) => option.value);
     if (
-      currentOptions.length !== allowedModes.length
-      || currentOptions.some((value, index) => value !== allowedModes[index])
+      currentOptions.length !== visibleModes.length
+      || currentOptions.some((value, index) => value !== visibleModes[index])
     ) {
       renderEvaluationModeSelectEl.innerHTML = '';
-      allowedModes.forEach((mode) => {
+      visibleModes.forEach((mode) => {
         const option = document.createElement('option');
         option.value = mode;
         option.textContent = formatEvaluationModeLabel(mode);

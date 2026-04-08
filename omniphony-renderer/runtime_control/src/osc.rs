@@ -392,6 +392,64 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == "/omniphony/control/render_evaluation_mode/from_file" {
+        if let Some(path) = parse_string_arg(msg.args.first()) {
+            match ctx
+                .renderer
+                .load_evaluation_artifact_from_file(std::path::Path::new(&path))
+            {
+                Ok(layout) => {
+                    let live = ctx.renderer.live.read().unwrap();
+                    effects.mark_dirty = true;
+                    effects.speaker_layout_broadcast = Some(layout);
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/render_backend".to_string(),
+                        value: BroadcastValue::String(live.backend_id().to_string()),
+                    });
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/render_backend/effective".to_string(),
+                        value: BroadcastValue::String(
+                            ctx.renderer.active_topology().backend.kind().as_str().to_string(),
+                        ),
+                    });
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/render_backend/state".to_string(),
+                        value: BroadcastValue::String(build_render_backend_state_json(
+                            &live,
+                            &ctx.renderer.active_topology(),
+                        )),
+                    });
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/render_evaluation_mode".to_string(),
+                        value: BroadcastValue::String(
+                            live.requested_evaluation_mode().as_str().to_string(),
+                        ),
+                    });
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/render_evaluation_mode/effective".to_string(),
+                        value: BroadcastValue::String(
+                            ctx.renderer
+                                .active_topology()
+                                .backend
+                                .evaluation_mode()
+                                .as_str()
+                                .to_string(),
+                        ),
+                    });
+                    effects.log_message =
+                        Some(format!("OSC: render_evaluation_mode/from_file -> {}", path));
+                }
+                Err(err) => {
+                    effects.log_message = Some(format!(
+                        "OSC: render_evaluation_mode/from_file failed: {}",
+                        err
+                    ));
+                }
+            }
+        }
+        return Some(effects);
+    }
+
     if addr == "/omniphony/control/debug/speaker_heatmap/request" {
         let request = parse_string_arg(msg.args.first())
             .and_then(|value| serde_json::from_str::<SpeakerHeatmapRequest>(&value).ok());

@@ -16,6 +16,7 @@ use anyhow::Result;
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -25,8 +26,8 @@ use crate::render_backend::backend_descriptor_by_id;
 #[cfg(feature = "saf_vbap")]
 use crate::render_backend::{EvaluationBuildConfig, RenderRequest};
 use crate::render_backend::{
-    BackendRestoreSnapshot, GainModelKind, PreparedRenderEngine, RenderBackendKind,
-    SerializedEvaluationMode,
+    BackendRestoreSnapshot, GainModelKind, LoadedEvaluationArtifact, PreparedRenderEngine,
+    RenderBackendKind, SerializedEvaluationMode, build_from_artifact_render_engine,
 };
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
@@ -37,6 +38,7 @@ pub enum LiveEvaluationMode {
     Realtime,
     PrecomputedPolar,
     PrecomputedCartesian,
+    FromFile,
 }
 
 impl LiveEvaluationMode {
@@ -46,6 +48,7 @@ impl LiveEvaluationMode {
             Self::Realtime => "realtime",
             Self::PrecomputedPolar => "precomputed_polar",
             Self::PrecomputedCartesian => "precomputed_cartesian",
+            Self::FromFile => "from_file",
         }
     }
 
@@ -55,6 +58,7 @@ impl LiveEvaluationMode {
             "realtime" | "direct" => Some(Self::Realtime),
             "precomputed_polar" | "polar" => Some(Self::PrecomputedPolar),
             "precomputed_cartesian" | "cartesian" => Some(Self::PrecomputedCartesian),
+            "from_file" => Some(Self::FromFile),
             _ => None,
         }
     }
@@ -596,6 +600,108 @@ impl RendererControl {
             distance_max: snapshot.polar_distance_max.max(0.01),
         };
         Ok(())
+    }
+
+    pub fn load_evaluation_artifact_from_file(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<SpeakerLayout> {
+        let artifact = LoadedEvaluationArtifact::load_from_file(path)?;
+        let speaker_layout = artifact.speaker_layout().clone();
+        let active_speaker_count = self.active_topology().speaker_layout.num_speakers();
+        if speaker_layout.num_speakers() != active_speaker_count {
+            anyhow::bail!(
+                "from_file artifact speaker count mismatch: renderer has {} speakers, file has {}",
+                active_speaker_count,
+                speaker_layout.num_speakers()
+            );
+        }
+
+        let frozen = artifact.frozen_request().clone();
+        let distance_model =
+            crate::spatial_vbap::DistanceModel::from_str(&frozen.distance_model)
+                .map_err(|e| anyhow::anyhow!("invalid frozen distance model in artifact: {}", e))?;
+        let position_interpolation = artifact.position_interpolation();
+        let polar_distance_max = artifact
+            .backend_restore_snapshot()
+            .map(|snapshot| snapshot.polar_distance_max.max(0.01))
+            .unwrap_or(2.0);
+
+        let cartesian = match artifact.cartesian_dimensions() {
+            Some((x_count, y_count, z_count)) => CartesianEvaluationParams {
+                x_size: x_count.max(1),
+                y_size: y_count.max(1),
+                z_size: z_count.max(1),
+                z_neg_size: 0,
+            },
+            None => CartesianEvaluationParams {
+                x_size: 1,
+                y_size: 1,
+                z_size: 1,
+                z_neg_size: 0,
+            },
+        };
+        let polar = match artifact.polar_dimensions() {
+            Some((az_count, el_count, distance_count)) => PolarEvaluationParams {
+                azimuth_values: az_count.max(2) as i32,
+                elevation_values: el_count.max(2) as i32,
+                distance_res: distance_count.saturating_sub(1).max(1) as i32,
+                distance_max: polar_distance_max,
+            },
+            None => PolarEvaluationParams {
+                azimuth_values: 2,
+                elevation_values: 2,
+                distance_res: 1,
+                distance_max: polar_distance_max,
+            },
+        };
+
+        let mut speaker_live = std::collections::HashMap::new();
+        for (idx, spk) in speaker_layout.speakers.iter().enumerate() {
+            if spk.delay_ms != 0.0 {
+                speaker_live.insert(
+                    idx,
+                    SpeakerLiveParams {
+                        delay_ms: spk.delay_ms.max(0.0),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        let topology = RenderTopology::new(
+            Arc::new(build_from_artifact_render_engine(artifact)),
+            speaker_layout.clone(),
+        )?;
+
+        {
+            let mut live = self.live.write().unwrap();
+            live.backend_id = RenderBackendKind::FromFile.as_str().to_string();
+            live.evaluation.mode = LiveEvaluationMode::FromFile;
+            live.evaluation.position_interpolation = position_interpolation;
+            live.evaluation.cartesian = cartesian;
+            live.evaluation.polar = polar;
+            live.spread_min = frozen.spread_min;
+            live.spread_max = frozen.spread_max;
+            live.spread_from_distance = frozen.spread_from_distance;
+            live.spread_distance_range = frozen.spread_distance_range;
+            live.spread_distance_curve = frozen.spread_distance_curve;
+            live.distance_model = distance_model;
+            live.room_ratio = frozen.room_ratio;
+            live.room_ratio_rear = frozen.room_ratio_rear;
+            live.room_ratio_lower = frozen.room_ratio_lower;
+            live.room_ratio_center_blend = frozen.room_ratio_center_blend;
+            live.use_distance_diffuse = frozen.use_distance_diffuse;
+            live.distance_diffuse_threshold = frozen.distance_diffuse_threshold;
+            live.distance_diffuse_curve = frozen.distance_diffuse_curve;
+            live.speakers = speaker_live;
+        }
+
+        *self.editable_layout.lock().unwrap() = speaker_layout.clone();
+        self.set_backend_rebuild_params(None);
+        self.publish_topology(topology);
+        self.mark_speaker_params_dirty();
+        Ok(speaker_layout)
     }
 
     /// Mark live params as dirty (changed since last save) and return the new state.

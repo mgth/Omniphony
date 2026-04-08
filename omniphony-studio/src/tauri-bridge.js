@@ -429,7 +429,10 @@ export function setupTauriBridge() {
     app.renderBackendState.frozenRoomRatio = payload?.frozenRoomRatio === true;
     app.renderBackendState.frozenSpeakers = payload?.frozenSpeakers === true;
     app.renderBackendState.restoreBackendAvailable = payload?.restoreBackendAvailable === true;
-    if (!app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')) {
+    if (
+      app.evaluationModeState.selection !== 'from_file'
+      && !app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')
+    ) {
       app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
     }
     if (!['realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(app.evaluationModeState.effective)) {
@@ -445,6 +448,7 @@ export function setupTauriBridge() {
     app.renderBackendState.selection = value || null;
     if (
       app.renderBackendState.allowedEvaluationModes.length > 0
+      && app.evaluationModeState.selection !== 'from_file'
       && !app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')
     ) {
       app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';

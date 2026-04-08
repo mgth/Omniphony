@@ -104,6 +104,7 @@ pub(crate) fn handle_control_message(
             _ => None,
         };
         export_current_layout(control, requested_name);
+        return;
     }
 }
 
