@@ -1,3 +1,4 @@
+pub mod backend_registry;
 pub mod config;
 pub mod delay_line;
 pub mod live_params;

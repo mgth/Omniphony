@@ -6,8 +6,10 @@ use crate::context::RuntimeControlContext;
 use audio_input::{
     InputBackend, InputClockMode, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
 };
-use renderer::render_backend::RenderBackendKind;
 use renderer::live_params::LiveEvaluationMode;
+use renderer::render_backend::RenderBackendKind;
+
+use crate::snapshot::build_render_backend_state_json;
 
 #[derive(Debug, Clone, Default)]
 pub struct SpeakerPatch {
@@ -49,6 +51,8 @@ pub struct ControlEffects {
 struct SpeakerHeatmapRequest {
     request_id: u64,
     speaker_index: usize,
+    mode: String,
+    max_samples: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,6 +79,15 @@ struct SpeakerHeatmapUnavailablePayload {
     reason: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct SpeakerHeatmapVolumeChunkPayload {
+    request_id: u64,
+    speaker_index: usize,
+    chunk_index: usize,
+    chunk_count: usize,
+    samples: Vec<f32>,
+}
+
 fn parse_bool_arg(arg: Option<&OscType>) -> Option<bool> {
     match arg {
         Some(OscType::Int(i)) => Some(*i != 0),
@@ -86,8 +99,8 @@ fn parse_bool_arg(arg: Option<&OscType>) -> Option<bool> {
 fn parse_positive_u32_arg(arg: Option<&OscType>) -> Option<u32> {
     match arg {
         Some(OscType::Int(i)) if *i > 0 => Some(*i as u32),
-                    Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u32),
-            _ => None,
+        Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u32),
+        _ => None,
     }
 }
 
@@ -137,7 +150,9 @@ fn parse_string_arg(arg: Option<&OscType>) -> Option<String> {
     }
 }
 
-fn parse_input_layout_arg(arg: Option<&OscType>) -> Option<renderer::speaker_layout::SpeakerLayout> {
+fn parse_input_layout_arg(
+    arg: Option<&OscType>,
+) -> Option<renderer::speaker_layout::SpeakerLayout> {
     let raw = parse_string_arg(arg)?;
     serde_yaml_ng::from_str::<renderer::speaker_layout::SpeakerLayout>(&raw).ok()
 }
@@ -248,8 +263,10 @@ pub fn apply_simple_osc_control(
                     addr: "/omniphony/state/audio/output_devices".to_string(),
                     value: BroadcastValue::String(json),
                 });
-                effects.log_message =
-                    Some(format!("OSC: output_devices/refresh → {} device(s)", devices.len()));
+                effects.log_message = Some(format!(
+                    "OSC: output_devices/refresh → {} device(s)",
+                    devices.len()
+                ));
             }
         }
         return Some(effects);
@@ -279,17 +296,24 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/render_backend" {
-        let requested =
-            parse_string_arg(msg.args.first()).and_then(|value| RenderBackendKind::from_str(&value));
+        let requested = parse_string_arg(msg.args.first())
+            .and_then(|value| RenderBackendKind::from_str(&value));
         if let Some(requested) = requested {
             let mut live = ctx.renderer.live.write().unwrap();
-            if live.backend_kind != requested {
-                live.backend_kind = requested;
+            if live.backend_id() != requested.as_str() {
+                live.backend_id = requested.as_str().to_string();
                 effects.mark_dirty = true;
                 effects.trigger_layout_recompute = true;
                 effects.broadcasts.push(BroadcastUpdate {
                     addr: "/omniphony/state/render_backend".to_string(),
                     value: BroadcastValue::String(requested.as_str().to_string()),
+                });
+                effects.broadcasts.push(BroadcastUpdate {
+                    addr: "/omniphony/state/render_backend/state".to_string(),
+                    value: BroadcastValue::String(build_render_backend_state_json(
+                        &live,
+                        &ctx.renderer.active_topology(),
+                    )),
                 });
                 effects.log_message =
                     Some(format!("OSC: render_backend -> {}", requested.as_str()));
@@ -299,8 +323,8 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/render_evaluation_mode" {
-        let requested =
-            parse_string_arg(msg.args.first()).and_then(|value| LiveEvaluationMode::from_str(&value));
+        let requested = parse_string_arg(msg.args.first())
+            .and_then(|value| LiveEvaluationMode::from_str(&value));
         if let Some(requested) = requested {
             let mut live = ctx.renderer.live.write().unwrap();
             if live.evaluation.mode != requested {
@@ -309,7 +333,7 @@ pub fn apply_simple_osc_control(
                 effects.trigger_layout_recompute = true;
             }
             {
-                if live.backend_kind == RenderBackendKind::Vbap {
+                if live.backend_kind() == Some(RenderBackendKind::Vbap) {
                     effects.mark_dirty = true;
                 }
                 effects.broadcasts.push(BroadcastUpdate {
@@ -331,6 +355,8 @@ pub fn apply_simple_osc_control(
         let request = parse_string_arg(msg.args.first())
             .and_then(|value| serde_json::from_str::<SpeakerHeatmapRequest>(&value).ok());
         if let Some(request) = request {
+            let mode = request.mode.trim().to_ascii_lowercase();
+            let max_samples = request.max_samples.unwrap_or(3072).clamp(128, 20000);
             let topology = ctx.renderer.active_topology();
             let unavailable_reason = match topology
                 .speaker_layout
@@ -373,20 +399,68 @@ pub fn apply_simple_osc_control(
                 if let Some(backend_speaker_index) =
                     topology.backend_speaker_index_for_layout_speaker(request.speaker_index)
                 {
-                    if let Some(slices) = topology.backend.cartesian_slices_for_speaker(
+                    let meta = serde_json::to_string(&SpeakerHeatmapMetaPayload {
+                        request_id: request.request_id,
+                        speaker_index: request.speaker_index,
+                        speaker_position: [speaker.x, speaker.y, speaker.z],
+                    })
+                    .unwrap_or_else(|_| "{}".to_string());
+                    effects.broadcasts.push(BroadcastUpdate {
+                        addr: "/omniphony/state/debug/speaker_heatmap/meta".to_string(),
+                        value: BroadcastValue::String(meta),
+                    });
+
+                    if mode == "volume" {
+                        if let Some(volume) = topology.backend.cartesian_volume_for_speaker(
+                            backend_speaker_index,
+                            0.0,
+                            max_samples,
+                        ) {
+                            // Keep OSC/UDP packets comfortably below MTU once the JSON payload
+                            // wraps the float array. Large chunks were getting fragmented and
+                            // dropped, which left Studio waiting forever for the missing chunk.
+                            const CHUNK_FLOATS: usize = 16 * 4;
+                            let chunk_count = volume.samples.len().div_ceil(CHUNK_FLOATS).max(1);
+                            if volume.samples.is_empty() {
+                                let json =
+                                    serde_json::to_string(&SpeakerHeatmapVolumeChunkPayload {
+                                        request_id: request.request_id,
+                                        speaker_index: request.speaker_index,
+                                        chunk_index: 0,
+                                        chunk_count: 1,
+                                        samples: Vec::new(),
+                                    })
+                                    .unwrap_or_else(|_| "{}".to_string());
+                                effects.broadcasts.push(BroadcastUpdate {
+                                    addr: "/omniphony/state/debug/speaker_heatmap/volume_chunk"
+                                        .to_string(),
+                                    value: BroadcastValue::String(json),
+                                });
+                            } else {
+                                for (chunk_index, chunk) in
+                                    volume.samples.chunks(CHUNK_FLOATS).enumerate()
+                                {
+                                    let json =
+                                        serde_json::to_string(&SpeakerHeatmapVolumeChunkPayload {
+                                            request_id: request.request_id,
+                                            speaker_index: request.speaker_index,
+                                            chunk_index,
+                                            chunk_count,
+                                            samples: chunk.to_vec(),
+                                        })
+                                        .unwrap_or_else(|_| "{}".to_string());
+                                    effects.broadcasts.push(BroadcastUpdate {
+                                        addr: "/omniphony/state/debug/speaker_heatmap/volume_chunk"
+                                            .to_string(),
+                                        value: BroadcastValue::String(json),
+                                    });
+                                }
+                            }
+                        }
+                    } else if let Some(slices) = topology.backend.cartesian_slices_for_speaker(
                         backend_speaker_index,
                         [speaker.x, speaker.y, speaker.z],
                     ) {
-                        let meta = serde_json::to_string(&SpeakerHeatmapMetaPayload {
-                            request_id: request.request_id,
-                            speaker_index: request.speaker_index,
-                            speaker_position: [speaker.x, speaker.y, speaker.z],
-                        })
-                        .unwrap_or_else(|_| "{}".to_string());
-                        effects.broadcasts.push(BroadcastUpdate {
-                            addr: "/omniphony/state/debug/speaker_heatmap/meta".to_string(),
-                            value: BroadcastValue::String(meta),
-                        });
                         for (addr_suffix, fixed_axis_value, axis_a, axis_b, values) in [
                             (
                                 "slice_xy",
@@ -426,11 +500,11 @@ pub fn apply_simple_osc_control(
                                 value: BroadcastValue::String(json),
                             });
                         }
-                        effects.log_message = Some(format!(
-                            "OSC: speaker heatmap requested -> speaker={} request_id={}",
-                            request.speaker_index, request.request_id
-                        ));
                     }
+                    effects.log_message = Some(format!(
+                        "OSC: speaker heatmap requested -> speaker={} mode={} request_id={}",
+                        request.speaker_index, mode, request.request_id
+                    ));
                 }
             }
         }
@@ -786,8 +860,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms"
-                    .to_string(),
+                addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms".to_string(),
                 value: BroadcastValue::Float(value as f32),
             });
         }
@@ -852,8 +925,7 @@ pub fn apply_simple_osc_control(
             audio.set_requested_adaptive_resampling_update_interval_callbacks(value);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/adaptive_resampling/update_interval_callbacks"
-                    .to_string(),
+                addr: "/omniphony/state/adaptive_resampling/update_interval_callbacks".to_string(),
                 value: BroadcastValue::Float(value as f32),
             });
         }
@@ -872,7 +944,6 @@ pub fn apply_simple_osc_control(
         }
         return Some(effects);
     }
-
 
     if addr == "/omniphony/control/adaptive_resampling/pause" {
         let paused = parse_bool_arg(msg.args.first());
@@ -910,7 +981,8 @@ pub fn apply_simple_osc_control(
 
     if addr == "/omniphony/control/layout/radius_m" {
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
-            ctx.renderer.with_editable_layout(|layout| layout.radius_m = v);
+            ctx.renderer
+                .with_editable_layout(|layout| layout.radius_m = v);
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
                 addr: "/omniphony/state/layout/radius_m".to_string(),
@@ -993,19 +1065,43 @@ pub fn apply_simple_osc_control(
         if let Some(size) = size {
             let state_addr = match rest {
                 "x_size" => {
-                    ctx.renderer.live.write().unwrap().evaluation.cartesian.x_size = size;
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .evaluation
+                        .cartesian
+                        .x_size = size;
                     Some("/omniphony/state/render_evaluation/cartesian/x_size")
                 }
                 "y_size" => {
-                    ctx.renderer.live.write().unwrap().evaluation.cartesian.y_size = size;
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .evaluation
+                        .cartesian
+                        .y_size = size;
                     Some("/omniphony/state/render_evaluation/cartesian/y_size")
                 }
                 "z_size" => {
-                    ctx.renderer.live.write().unwrap().evaluation.cartesian.z_size = size;
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .evaluation
+                        .cartesian
+                        .z_size = size;
                     Some("/omniphony/state/render_evaluation/cartesian/z_size")
                 }
                 "z_neg_size" => {
-                    ctx.renderer.live.write().unwrap().evaluation.cartesian.z_neg_size = size;
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .evaluation
+                        .cartesian
+                        .z_neg_size = size;
                     Some("/omniphony/state/render_evaluation/cartesian/z_neg_size")
                 }
                 _ => None,
@@ -1024,7 +1120,12 @@ pub fn apply_simple_osc_control(
 
     if addr == "/omniphony/control/render_evaluation/position_interpolation" {
         if let Some(enabled) = parse_bool_arg(msg.args.first()) {
-            ctx.renderer.live.write().unwrap().evaluation.position_interpolation = enabled;
+            ctx.renderer
+                .live
+                .write()
+                .unwrap()
+                .evaluation
+                .position_interpolation = enabled;
             effects.mark_dirty = true;
             effects.trigger_layout_recompute = true;
             effects.broadcasts.push(BroadcastUpdate {
@@ -1046,13 +1147,23 @@ pub fn apply_simple_osc_control(
                 if let Some(res) = res {
                     let state_addr = match rest {
                         "azimuth_resolution" => {
-                            ctx.renderer.live.write().unwrap().evaluation.polar.azimuth_values =
-                                res;
+                            ctx.renderer
+                                .live
+                                .write()
+                                .unwrap()
+                                .evaluation
+                                .polar
+                                .azimuth_values = res;
                             Some("/omniphony/state/render_evaluation/polar/azimuth_resolution")
                         }
                         "elevation_resolution" => {
-                            ctx.renderer.live.write().unwrap().evaluation.polar.elevation_values =
-                                res;
+                            ctx.renderer
+                                .live
+                                .write()
+                                .unwrap()
+                                .evaluation
+                                .polar
+                                .elevation_values = res;
                             Some("/omniphony/state/render_evaluation/polar/elevation_resolution")
                         }
                         _ => None,
@@ -1074,7 +1185,13 @@ pub fn apply_simple_osc_control(
                     _ => None,
                 };
                 if let Some(res) = res {
-                    ctx.renderer.live.write().unwrap().evaluation.polar.distance_res = res;
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .evaluation
+                        .polar
+                        .distance_res = res;
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
                     effects.broadcasts.push(BroadcastUpdate {
@@ -1090,7 +1207,13 @@ pub fn apply_simple_osc_control(
                     _ => None,
                 };
                 if let Some(max_v) = max_v {
-                    ctx.renderer.live.write().unwrap().evaluation.polar.distance_max = max_v;
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .evaluation
+                        .polar
+                        .distance_max = max_v;
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
                     effects.broadcasts.push(BroadcastUpdate {
@@ -1217,7 +1340,11 @@ pub fn apply_simple_osc_control(
             }
             "threshold" => {
                 if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(1e-6)) {
-                    ctx.renderer.live.write().unwrap().distance_diffuse_threshold = v;
+                    ctx.renderer
+                        .live
+                        .write()
+                        .unwrap()
+                        .distance_diffuse_threshold = v;
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
                     effects.broadcasts.push(BroadcastUpdate {

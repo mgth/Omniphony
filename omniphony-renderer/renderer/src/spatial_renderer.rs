@@ -66,12 +66,11 @@
 
 use crate::live_params::{
     CartesianEvaluationParams, EvaluationLiveParams, LiveEvaluationMode, LiveParams,
-    PolarEvaluationParams, PreferredEvaluationMode, RampMode, RenderTopology,
-    RendererControl,
+    PolarEvaluationParams, PreferredEvaluationMode, RampMode, RenderTopology, RendererControl,
 };
 use crate::render_backend::{
     CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
-    GainModelInstance, PolarEvaluationConfig, RenderBackendKind, RenderRequest, VbapBackend,
+    PolarEvaluationConfig, RenderBackendKind, RenderRequest, VbapBackend,
     build_prepared_render_engine,
 };
 use crate::spatial_vbap::VbapTableMode;
@@ -122,9 +121,8 @@ fn evaluation_build_config(
     let azimuth_values = (360 / azimuth_resolution.max(1)).max(2) as usize;
     let elevation_span = if allow_negative_z { 180 } else { 90 };
     let elevation_values = (elevation_span / elevation_resolution.max(1)).max(2) as usize;
-    let distance_values = ((distance_max.max(0.01) / distance_step.max(0.01)).round() as usize)
-        .max(1)
-        + 1;
+    let distance_values =
+        ((distance_max.max(0.01) / distance_step.max(0.01)).round() as usize).max(1) + 1;
     EvaluationBuildConfig {
         request_template,
         position_interpolation,
@@ -575,7 +573,7 @@ impl SpatialRenderer {
         let vbap_triangles = vbap.num_triangles();
         let topology = RenderTopology::new(
             Arc::new(build_prepared_render_engine(
-                GainModelInstance::Vbap(VbapBackend::new(vbap)),
+                Box::new(VbapBackend::new(vbap)),
                 match table_mode {
                     VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
                     VbapTableMode::Cartesian { .. } => {
@@ -667,7 +665,7 @@ impl SpatialRenderer {
             topology,
             editable_layout,
             Some(crate::live_params::BackendRebuildParams {
-                gain_model_kind: RenderBackendKind::Vbap.as_gain_model_kind(),
+                backend_id: RenderBackendKind::Vbap.as_str(),
                 preferred_evaluation_mode,
                 allow_negative_z,
                 vbap: Some(crate::live_params::VbapModelRebuildParams {
@@ -797,7 +795,7 @@ impl SpatialRenderer {
         );
         let topology = RenderTopology::new(
             Arc::new(build_prepared_render_engine(
-                GainModelInstance::Vbap(VbapBackend::new(vbap)),
+                Box::new(VbapBackend::new(vbap)),
                 match vbap_table_mode {
                     VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
                     VbapTableMode::Cartesian { .. } => {
@@ -888,14 +886,13 @@ impl SpatialRenderer {
             &excluded,
             &topology.bed_to_speaker_mapping,
         );
-        let rebuild_params =
-            crate::live_params::BackendRebuildParams {
-                gain_model_kind: RenderBackendKind::Vbap.as_gain_model_kind(),
-                preferred_evaluation_mode: PreferredEvaluationMode::from_vbap_table_mode(
-                    vbap_table_mode,
-                ),
-                allow_negative_z,
-                vbap: Some(crate::live_params::VbapModelRebuildParams {
+        let rebuild_params = crate::live_params::BackendRebuildParams {
+            backend_id: RenderBackendKind::Vbap.as_str(),
+            preferred_evaluation_mode: PreferredEvaluationMode::from_vbap_table_mode(
+                vbap_table_mode,
+            ),
+            allow_negative_z,
+            vbap: Some(crate::live_params::VbapModelRebuildParams {
                 az_res_deg: vbap_azimuth_resolution,
                 el_res_deg: vbap_elevation_resolution,
                 spread_resolution,
@@ -920,7 +917,7 @@ impl SpatialRenderer {
                 distance_model,
                 allow_negative_z,
             }),
-            };
+        };
         let editable_layout = topology.speaker_layout.clone();
         let control =
             RendererControl::new(live_params, topology, editable_layout, Some(rebuild_params));
@@ -1038,7 +1035,7 @@ impl SpatialRenderer {
             spread_distance_range,
             spread_distance_curve,
             ramp_mode,
-            backend_kind: RenderBackendKind::Vbap,
+            backend_id: RenderBackendKind::Vbap.as_str().to_string(),
             evaluation: EvaluationLiveParams {
                 mode: initial_evaluation_mode,
                 position_interpolation: vbap_position_interpolation,

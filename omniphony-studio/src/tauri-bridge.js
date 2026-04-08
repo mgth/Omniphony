@@ -67,6 +67,7 @@ import { applyInitState } from './init.js';
 import {
   handleSpeakerHeatmapMeta,
   handleSpeakerHeatmapSlice,
+  handleSpeakerHeatmapVolumeChunk,
   handleSpeakerHeatmapUnavailable,
   requestSpeakerHeatmapIfNeeded,
 } from './scene/speaker-heatmap.js';
@@ -410,18 +411,47 @@ export function setupTauriBridge() {
   // VBAP
   // -----------------------------------------------------------------------
 
+  listen('render_backend:state', ({ payload }) => {
+    const selection = String(payload?.selection ?? '').trim().toLowerCase();
+    const effective = String(payload?.effective ?? '').trim().toLowerCase();
+    const effectiveLabel = String(payload?.effectiveLabel ?? '').trim();
+    app.renderBackendState.selection = selection || null;
+    app.renderBackendState.effective = effective || null;
+    app.renderBackendState.effectiveLabel = effectiveLabel || null;
+    app.renderBackendState.capabilities = payload?.capabilities && typeof payload.capabilities === 'object'
+      ? payload.capabilities
+      : null;
+    app.renderBackendState.allowedEvaluationModes = Array.isArray(payload?.allowedEvaluationModes)
+      ? payload.allowedEvaluationModes
+        .map((value) => String(value ?? '').trim().toLowerCase())
+        .filter((value) => value.length > 0)
+      : [];
+    if (!app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')) {
+      app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
+    }
+    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
+      app.evaluationModeState.effective = null;
+    }
+    updateRenderBackend();
+    updateEvaluationMode();
+    requestSpeakerHeatmapIfNeeded();
+  });
+
   listen('render_backend', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
-    app.renderBackendState.selection = ['vbap', 'experimental_distance'].includes(value) ? value : null;
-    if (!['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.selection)) {
-      app.evaluationModeState.selection = 'auto';
+    app.renderBackendState.selection = value || null;
+    if (
+      app.renderBackendState.allowedEvaluationModes.length > 0
+      && !app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')
+    ) {
+      app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
     }
     updateRenderBackend();
   });
 
   listen('render_backend:effective', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
-    app.renderBackendState.effective = ['vbap', 'experimental_distance'].includes(value) ? value : null;
+    app.renderBackendState.effective = value || null;
     if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
       app.evaluationModeState.effective = null;
     }
@@ -495,6 +525,10 @@ export function setupTauriBridge() {
 
   listen('speaker_heatmap:slice_yz', ({ payload }) => {
     handleSpeakerHeatmapSlice('yz', payload);
+  });
+
+  listen('speaker_heatmap:volume_chunk', ({ payload }) => {
+    handleSpeakerHeatmapVolumeChunk(payload);
   });
 
   listen('speaker_heatmap:unavailable', ({ payload }) => {

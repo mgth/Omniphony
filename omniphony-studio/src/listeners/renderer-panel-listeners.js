@@ -164,7 +164,7 @@ export function setupRendererPanelListeners() {
   if (renderBackendSelectEl) {
     renderBackendSelectEl.addEventListener('change', () => {
       const value = String(renderBackendSelectEl.value || '').trim().toLowerCase();
-      if (!['vbap', 'experimental_distance'].includes(value)) return;
+      if (!value) return;
       if (app.renderBackendState.selection === value) return;
       app.renderBackendState.selection = value;
       app.vbapRecomputing = true;
@@ -177,7 +177,10 @@ export function setupRendererPanelListeners() {
   if (renderEvaluationModeSelectEl) {
     renderEvaluationModeSelectEl.addEventListener('change', () => {
       const value = String(renderEvaluationModeSelectEl.value || '').trim().toLowerCase();
-      const allowed = ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'];
+      const allowed = Array.isArray(app.renderBackendState.allowedEvaluationModes)
+        && app.renderBackendState.allowedEvaluationModes.length > 0
+        ? app.renderBackendState.allowedEvaluationModes
+        : ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'];
       if (!allowed.includes(value)) return;
       if (app.evaluationModeState.selection === value) return;
       app.evaluationModeState.selection = value;

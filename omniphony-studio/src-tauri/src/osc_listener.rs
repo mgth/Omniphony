@@ -1031,15 +1031,38 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             OscEvent::StateRenderBackendEffective { value } => {
                 s.render_backend_state.effective = Some(value.clone());
                 (
-                    Some(("render_backend:effective", serde_json::json!({ "value": value }))),
+                    Some((
+                        "render_backend:effective",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
+            }
+
+            OscEvent::StateRenderBackendState { value } => {
+                if let Ok(parsed) =
+                    serde_json::from_str::<crate::app_state::RenderBackendState>(&value)
+                {
+                    s.render_backend_state = parsed.clone();
+                    (
+                        Some((
+                            "render_backend:state",
+                            serde_json::to_value(parsed).unwrap_or_else(|_| serde_json::json!({})),
+                        )),
+                        removed_ids,
+                    )
+                } else {
+                    (None, removed_ids)
+                }
             }
 
             OscEvent::StateRenderEvaluationMode { value } => {
                 s.render_evaluation_mode_state.selection = Some(value.clone());
                 (
-                    Some(("render_evaluation_mode", serde_json::json!({ "value": value }))),
+                    Some((
+                        "render_evaluation_mode",
+                        serde_json::json!({ "value": value }),
+                    )),
                     removed_ids,
                 )
             }
@@ -1082,6 +1105,14 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             OscEvent::StateDebugSpeakerHeatmapSliceYz { value } => (
                 Some((
                     "speaker_heatmap:slice_yz",
+                    serde_json::from_str(&value).unwrap_or_else(|_| serde_json::json!({})),
+                )),
+                removed_ids,
+            ),
+
+            OscEvent::StateDebugSpeakerHeatmapVolumeChunk { value } => (
+                Some((
+                    "speaker_heatmap:volume_chunk",
                     serde_json::from_str(&value).unwrap_or_else(|_| serde_json::json!({})),
                 )),
                 removed_ids,
@@ -1146,40 +1177,28 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             OscEvent::StateLatencyInstant { value } => {
                 let rounded = s.set_latency_instant_value(value);
                 (
-                    Some((
-                        "latency:instant",
-                        serde_json::json!({ "value": rounded }),
-                    )),
+                    Some(("latency:instant", serde_json::json!({ "value": rounded }))),
                     removed_ids,
                 )
             }
             OscEvent::StateLatencyControl { value } => {
                 let rounded = s.set_latency_control_value(value);
                 (
-                    Some((
-                        "latency:control",
-                        serde_json::json!({ "value": rounded }),
-                    )),
+                    Some(("latency:control", serde_json::json!({ "value": rounded }))),
                     removed_ids,
                 )
             }
             OscEvent::StateLatencyTarget { value } => {
                 let rounded = s.set_latency_target_value(value);
                 (
-                    Some((
-                        "latency:target",
-                        serde_json::json!({ "value": rounded }),
-                    )),
+                    Some(("latency:target", serde_json::json!({ "value": rounded }))),
                     removed_ids,
                 )
             }
             OscEvent::StateLatencyTargetRequested { value } => {
                 let rounded = s.set_latency_requested_value(value);
                 (
-                    Some((
-                        "latency:requested",
-                        serde_json::json!({ "value": rounded }),
-                    )),
+                    Some(("latency:requested", serde_json::json!({ "value": rounded }))),
                     removed_ids,
                 )
             }

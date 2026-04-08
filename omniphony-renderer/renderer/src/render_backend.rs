@@ -1,9 +1,35 @@
-use crate::spatial_vbap::{
-    DistanceModel, Gains, VbapPanner, adm_to_spherical, spherical_to_adm,
-};
+mod experimental_distance_backend;
+mod vbap_backend;
+
+use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical, spherical_to_adm};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use serde::Serialize;
+
+pub use experimental_distance_backend::ExperimentalDistanceBackend;
+pub use vbap_backend::VbapBackend;
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct BackendCapabilities {
+    pub supports_realtime: bool,
+    pub supports_precomputed_polar: bool,
+    pub supports_precomputed_cartesian: bool,
+    pub supports_position_interpolation: bool,
+    pub supports_distance_model: bool,
+    pub supports_spread: bool,
+    pub supports_spread_from_distance: bool,
+    pub supports_distance_diffuse: bool,
+    pub supports_heatmap_cartesian: bool,
+    pub supports_table_export: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BackendDescriptor {
+    pub kind: RenderBackendKind,
+    pub gain_model_kind: GainModelKind,
+    pub id: &'static str,
+    pub label: &'static str,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -14,18 +40,16 @@ pub enum GainModelKind {
 
 impl GainModelKind {
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Vbap => "vbap",
-            Self::ExperimentalDistance => "experimental_distance",
-        }
+        backend_descriptor_by_gain_model_kind(self).id
     }
 
     pub fn from_str(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "vbap" => Some(Self::Vbap),
-            "experimental_distance" | "distance" | "distance_based" => {
-                Some(Self::ExperimentalDistance)
-            }
+        let normalized = value.trim().to_ascii_lowercase();
+        if let Some(descriptor) = backend_descriptor_by_id(&normalized) {
+            return Some(descriptor.gain_model_kind);
+        }
+        match normalized.as_str() {
+            "distance" | "distance_based" => Some(Self::ExperimentalDistance),
             _ => None,
         }
     }
@@ -40,15 +64,26 @@ pub enum RenderBackendKind {
 
 impl RenderBackendKind {
     pub fn as_str(self) -> &'static str {
-        GainModelKind::from(self).as_str()
+        backend_descriptor(self).id
     }
 
     pub fn from_str(value: &str) -> Option<Self> {
-        GainModelKind::from_str(value).map(Self::from)
+        let normalized = value.trim().to_ascii_lowercase();
+        if let Some(descriptor) = backend_descriptor_by_id(&normalized) {
+            return Some(descriptor.kind);
+        }
+        match normalized.as_str() {
+            "distance" | "distance_based" => Some(Self::ExperimentalDistance),
+            _ => None,
+        }
     }
 
     pub fn as_gain_model_kind(self) -> GainModelKind {
-        self.into()
+        backend_descriptor(self).gain_model_kind
+    }
+
+    pub fn label(self) -> &'static str {
+        backend_descriptor(self).label
     }
 }
 
@@ -63,11 +98,47 @@ impl From<GainModelKind> for RenderBackendKind {
 
 impl From<RenderBackendKind> for GainModelKind {
     fn from(value: RenderBackendKind) -> Self {
-        match value {
-            RenderBackendKind::Vbap => Self::Vbap,
-            RenderBackendKind::ExperimentalDistance => Self::ExperimentalDistance,
-        }
+        value.as_gain_model_kind()
     }
+}
+
+const BACKEND_DESCRIPTORS: [BackendDescriptor; 2] = [
+    BackendDescriptor {
+        kind: RenderBackendKind::Vbap,
+        gain_model_kind: GainModelKind::Vbap,
+        id: "vbap",
+        label: "VBAP",
+    },
+    BackendDescriptor {
+        kind: RenderBackendKind::ExperimentalDistance,
+        gain_model_kind: GainModelKind::ExperimentalDistance,
+        id: "experimental_distance",
+        label: "Distance",
+    },
+];
+
+pub fn backend_descriptors() -> &'static [BackendDescriptor] {
+    &BACKEND_DESCRIPTORS
+}
+
+pub fn backend_descriptor(kind: RenderBackendKind) -> &'static BackendDescriptor {
+    backend_descriptors()
+        .iter()
+        .find(|descriptor| descriptor.kind == kind)
+        .expect("missing backend descriptor")
+}
+
+pub fn backend_descriptor_by_gain_model_kind(kind: GainModelKind) -> &'static BackendDescriptor {
+    backend_descriptors()
+        .iter()
+        .find(|descriptor| descriptor.gain_model_kind == kind)
+        .expect("missing backend descriptor")
+}
+
+pub fn backend_descriptor_by_id(id: &str) -> Option<&'static BackendDescriptor> {
+    backend_descriptors()
+        .iter()
+        .find(|descriptor| descriptor.id == id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +156,6 @@ impl EffectiveEvaluationMode {
             Self::PrecomputedCartesian => "precomputed_cartesian",
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -137,46 +207,27 @@ pub struct EvaluationBuildConfig {
 
 pub trait GainModel: Send + Sync + 'static {
     fn kind(&self) -> GainModelKind;
+    fn backend_id(&self) -> &'static str;
+    fn backend_label(&self) -> &'static str;
+    fn capabilities(&self) -> BackendCapabilities;
     fn speaker_count(&self) -> usize;
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
-    fn save_to_file(
-        &self,
-        path: &std::path::Path,
-        speaker_layout: &SpeakerLayout,
-    ) -> Result<()>;
+    fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()>;
 }
 
-pub trait EvaluationStrategy<M: GainModel> {
+pub trait EvaluationStrategy {
     fn effective_mode(&self) -> EffectiveEvaluationMode;
     fn prepare(
         self,
-        model: M,
+        model: Box<dyn GainModel>,
         config: &EvaluationBuildConfig,
     ) -> Result<Box<dyn PreparedEvaluator>>;
-}
-
-pub enum GainModelInstance {
-    Vbap(VbapBackend),
-    ExperimentalDistance(ExperimentalDistanceBackend),
-}
-
-impl GainModelInstance {
-    pub fn kind(&self) -> GainModelKind {
-        match self {
-            Self::Vbap(_) => GainModelKind::Vbap,
-            Self::ExperimentalDistance(_) => GainModelKind::ExperimentalDistance,
-        }
-    }
 }
 
 pub trait PreparedEvaluator: Send + Sync {
     fn speaker_count(&self) -> usize;
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse;
-    fn save_to_file(
-        &self,
-        path: &std::path::Path,
-        speaker_layout: &SpeakerLayout,
-    ) -> Result<()>;
+    fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()>;
     fn cartesian_slices_for_speaker(
         &self,
         speaker_index: usize,
@@ -185,19 +236,28 @@ pub trait PreparedEvaluator: Send + Sync {
         let _ = (speaker_index, speaker_position);
         None
     }
+    fn cartesian_volume_for_speaker(
+        &self,
+        speaker_index: usize,
+        threshold: f32,
+        max_samples: usize,
+    ) -> Option<CartesianSpeakerHeatmapVolume> {
+        let _ = (speaker_index, threshold, max_samples);
+        None
+    }
 }
 
-pub struct RealtimeEvaluator<M: GainModel> {
-    model: M,
+pub struct RealtimeEvaluator {
+    model: Box<dyn GainModel>,
 }
 
-impl<M: GainModel> RealtimeEvaluator<M> {
-    pub fn new(model: M) -> Self {
+impl RealtimeEvaluator {
+    pub fn new(model: Box<dyn GainModel>) -> Self {
         Self { model }
     }
 }
 
-impl<M: GainModel> PreparedEvaluator for RealtimeEvaluator<M> {
+impl PreparedEvaluator for RealtimeEvaluator {
     fn speaker_count(&self) -> usize {
         self.model.speaker_count()
     }
@@ -206,17 +266,13 @@ impl<M: GainModel> PreparedEvaluator for RealtimeEvaluator<M> {
         self.model.compute_gains(req)
     }
 
-    fn save_to_file(
-        &self,
-        path: &std::path::Path,
-        speaker_layout: &SpeakerLayout,
-    ) -> Result<()> {
+    fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         self.model.save_to_file(path, speaker_layout)
     }
 }
 
-pub struct SampledCartesianEvaluator<M: GainModel> {
-    model: M,
+pub struct SampledCartesianEvaluator {
+    model: Box<dyn GainModel>,
     x_positions: Vec<f32>,
     y_positions: Vec<f32>,
     z_positions: Vec<f32>,
@@ -237,17 +293,22 @@ pub struct CartesianSpeakerHeatmapSlices {
     pub yz_values: Vec<f32>,
 }
 
-impl<M: GainModel> SampledCartesianEvaluator<M> {
-    pub fn new(model: M, config: &EvaluationBuildConfig) -> Self {
+#[derive(Debug, Clone, Serialize)]
+pub struct CartesianSpeakerHeatmapVolume {
+    pub speaker_index: usize,
+    pub samples: Vec<f32>,
+}
+
+impl SampledCartesianEvaluator {
+    pub fn new(model: Box<dyn GainModel>, config: &EvaluationBuildConfig) -> Self {
         let x_positions = evenly_spaced_axis(config.cartesian.x_size.max(2), -1.0, 1.0);
         let y_positions = evenly_spaced_axis(config.cartesian.y_size.max(2), -1.0, 1.0);
-        let z_positions = cartesian_z_axis(
-            config.cartesian.z_size.max(2),
-            config.cartesian.z_neg_size,
-        );
+        let z_positions =
+            cartesian_z_axis(config.cartesian.z_size.max(2), config.cartesian.z_neg_size);
         let speaker_count = model.speaker_count();
-        let mut gains =
-            Vec::with_capacity(x_positions.len() * y_positions.len() * z_positions.len() * speaker_count);
+        let mut gains = Vec::with_capacity(
+            x_positions.len() * y_positions.len() * z_positions.len() * speaker_count,
+        );
         let mut request = config.request_template;
         for &z in &z_positions {
             for &y in &y_positions {
@@ -269,7 +330,7 @@ impl<M: GainModel> SampledCartesianEvaluator<M> {
     }
 }
 
-impl<M: GainModel> PreparedEvaluator for SampledCartesianEvaluator<M> {
+impl PreparedEvaluator for SampledCartesianEvaluator {
     fn speaker_count(&self) -> usize {
         self.speaker_count
     }
@@ -287,11 +348,7 @@ impl<M: GainModel> PreparedEvaluator for SampledCartesianEvaluator<M> {
         RenderResponse { gains }
     }
 
-    fn save_to_file(
-        &self,
-        path: &std::path::Path,
-        speaker_layout: &SpeakerLayout,
-    ) -> Result<()> {
+    fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         self.model.save_to_file(path, speaker_layout)
     }
 
@@ -363,10 +420,76 @@ impl<M: GainModel> PreparedEvaluator for SampledCartesianEvaluator<M> {
             yz_values,
         })
     }
+
+    fn cartesian_volume_for_speaker(
+        &self,
+        speaker_index: usize,
+        threshold: f32,
+        max_samples: usize,
+    ) -> Option<CartesianSpeakerHeatmapVolume> {
+        if speaker_index >= self.speaker_count {
+            return None;
+        }
+        let mut weighted_samples = Vec::new();
+        let threshold = threshold.max(0.0);
+        for (z_index, &z) in self.z_positions.iter().enumerate() {
+            for (y_index, &y) in self.y_positions.iter().enumerate() {
+                for (x_index, &x) in self.x_positions.iter().enumerate() {
+                    let value = read_flat_sample_value(
+                        &self.gains,
+                        self.speaker_count,
+                        self.x_positions.len(),
+                        self.y_positions.len(),
+                        x_index,
+                        y_index,
+                        z_index,
+                        speaker_index,
+                    );
+                    if value >= threshold {
+                        weighted_samples.push((value, [x, y, z], x_index, y_index, z_index));
+                    }
+                }
+            }
+        }
+        if max_samples > 0 && weighted_samples.len() > max_samples {
+            let max_value = weighted_samples
+                .iter()
+                .map(|(value, _, _, _, _)| *value)
+                .fold(0.0_f32, f32::max)
+                .max(f32::EPSILON);
+            let mut scored = Vec::with_capacity(weighted_samples.len());
+            for sample @ (value, _position, x_index, y_index, z_index) in
+                weighted_samples.into_iter()
+            {
+                // Weighted deterministic reservoir sampling.
+                // We soften the distribution with sqrt so medium gains remain visible.
+                let weight = (value / max_value).clamp(0.0, 1.0).sqrt().max(1e-6);
+                let unit =
+                    deterministic_unit_float_3d(x_index as u32, y_index as u32, z_index as u32)
+                        as f64;
+                let key = unit.ln() / (weight as f64);
+                scored.push((key, sample));
+            }
+            scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+            weighted_samples = scored
+                .into_iter()
+                .take(max_samples)
+                .map(|(_, sample)| sample)
+                .collect();
+        }
+        let mut samples = Vec::with_capacity(weighted_samples.len() * 4);
+        for (value, [x, y, z], _x_index, _y_index, _z_index) in weighted_samples {
+            samples.extend_from_slice(&[x, y, z, value]);
+        }
+        Some(CartesianSpeakerHeatmapVolume {
+            speaker_index,
+            samples,
+        })
+    }
 }
 
-pub struct SampledPolarEvaluator<M: GainModel> {
-    model: M,
+pub struct SampledPolarEvaluator {
+    model: Box<dyn GainModel>,
     azimuth_positions: Vec<f32>,
     elevation_positions: Vec<f32>,
     distance_positions: Vec<f32>,
@@ -375,8 +498,8 @@ pub struct SampledPolarEvaluator<M: GainModel> {
     position_interpolation: bool,
 }
 
-impl<M: GainModel> SampledPolarEvaluator<M> {
-    pub fn new(model: M, config: &EvaluationBuildConfig) -> Self {
+impl SampledPolarEvaluator {
+    pub fn new(model: Box<dyn GainModel>, config: &EvaluationBuildConfig) -> Self {
         let azimuth_positions = polar_azimuth_axis(config.polar.azimuth_values.max(2));
         let elevation_positions = polar_elevation_axis(
             config.polar.elevation_values.max(2),
@@ -416,7 +539,7 @@ impl<M: GainModel> SampledPolarEvaluator<M> {
     }
 }
 
-impl<M: GainModel> PreparedEvaluator for SampledPolarEvaluator<M> {
+impl PreparedEvaluator for SampledPolarEvaluator {
     fn speaker_count(&self) -> usize {
         self.speaker_count
     }
@@ -439,25 +562,21 @@ impl<M: GainModel> PreparedEvaluator for SampledPolarEvaluator<M> {
         RenderResponse { gains }
     }
 
-    fn save_to_file(
-        &self,
-        path: &std::path::Path,
-        speaker_layout: &SpeakerLayout,
-    ) -> Result<()> {
+    fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         self.model.save_to_file(path, speaker_layout)
     }
 }
 
 pub struct RealtimeStrategy;
 
-impl<M: GainModel> EvaluationStrategy<M> for RealtimeStrategy {
+impl EvaluationStrategy for RealtimeStrategy {
     fn effective_mode(&self) -> EffectiveEvaluationMode {
         EffectiveEvaluationMode::Realtime
     }
 
     fn prepare(
         self,
-        model: M,
+        model: Box<dyn GainModel>,
         _config: &EvaluationBuildConfig,
     ) -> Result<Box<dyn PreparedEvaluator>> {
         Ok(Box::new(RealtimeEvaluator::new(model)))
@@ -466,14 +585,14 @@ impl<M: GainModel> EvaluationStrategy<M> for RealtimeStrategy {
 
 pub struct PrecomputedCartesianStrategy;
 
-impl<M: GainModel> EvaluationStrategy<M> for PrecomputedCartesianStrategy {
+impl EvaluationStrategy for PrecomputedCartesianStrategy {
     fn effective_mode(&self) -> EffectiveEvaluationMode {
         EffectiveEvaluationMode::PrecomputedCartesian
     }
 
     fn prepare(
         self,
-        model: M,
+        model: Box<dyn GainModel>,
         config: &EvaluationBuildConfig,
     ) -> Result<Box<dyn PreparedEvaluator>> {
         Ok(Box::new(SampledCartesianEvaluator::new(model, config)))
@@ -482,14 +601,14 @@ impl<M: GainModel> EvaluationStrategy<M> for PrecomputedCartesianStrategy {
 
 pub struct PrecomputedPolarStrategy;
 
-impl<M: GainModel> EvaluationStrategy<M> for PrecomputedPolarStrategy {
+impl EvaluationStrategy for PrecomputedPolarStrategy {
     fn effective_mode(&self) -> EffectiveEvaluationMode {
         EffectiveEvaluationMode::PrecomputedPolar
     }
 
     fn prepare(
         self,
-        model: M,
+        model: Box<dyn GainModel>,
         config: &EvaluationBuildConfig,
     ) -> Result<Box<dyn PreparedEvaluator>> {
         Ok(Box::new(SampledPolarEvaluator::new(model, config)))
@@ -498,6 +617,9 @@ impl<M: GainModel> EvaluationStrategy<M> for PrecomputedPolarStrategy {
 
 pub struct PreparedRenderEngine {
     gain_model_kind: GainModelKind,
+    backend_id: &'static str,
+    backend_label: &'static str,
+    capabilities: BackendCapabilities,
     evaluation_mode: EffectiveEvaluationMode,
     evaluator: Box<dyn PreparedEvaluator>,
 }
@@ -505,11 +627,17 @@ pub struct PreparedRenderEngine {
 impl PreparedRenderEngine {
     pub fn new(
         gain_model_kind: GainModelKind,
+        backend_id: &'static str,
+        backend_label: &'static str,
+        capabilities: BackendCapabilities,
         evaluation_mode: EffectiveEvaluationMode,
         evaluator: Box<dyn PreparedEvaluator>,
     ) -> Self {
         Self {
             gain_model_kind,
+            backend_id,
+            backend_label,
+            capabilities,
             evaluation_mode,
             evaluator,
         }
@@ -521,6 +649,18 @@ impl PreparedRenderEngine {
 
     pub fn gain_model_kind(&self) -> GainModelKind {
         self.gain_model_kind
+    }
+
+    pub fn backend_id(&self) -> &'static str {
+        self.backend_id
+    }
+
+    pub fn backend_label(&self) -> &'static str {
+        self.backend_label
+    }
+
+    pub fn capabilities(&self) -> BackendCapabilities {
+        self.capabilities
     }
 
     pub fn evaluation_mode(&self) -> EffectiveEvaluationMode {
@@ -551,69 +691,44 @@ impl PreparedRenderEngine {
         self.evaluator
             .cartesian_slices_for_speaker(speaker_index, speaker_position)
     }
+
+    pub fn cartesian_volume_for_speaker(
+        &self,
+        speaker_index: usize,
+        threshold: f32,
+        max_samples: usize,
+    ) -> Option<CartesianSpeakerHeatmapVolume> {
+        self.evaluator
+            .cartesian_volume_for_speaker(speaker_index, threshold, max_samples)
+    }
 }
 
 pub fn build_prepared_render_engine(
-    model: GainModelInstance,
+    model: Box<dyn GainModel>,
     evaluation_mode: EffectiveEvaluationMode,
     config: &EvaluationBuildConfig,
 ) -> Result<PreparedRenderEngine> {
-    match (model, evaluation_mode) {
-        (GainModelInstance::Vbap(model), EffectiveEvaluationMode::Realtime) => {
-            let strategy = RealtimeStrategy;
-            Ok(PreparedRenderEngine::new(
-                GainModelKind::Vbap,
-                EffectiveEvaluationMode::Realtime,
-                strategy.prepare(model, config)?,
-            ))
+    let gain_model_kind = model.kind();
+    let backend_id = model.backend_id();
+    let backend_label = model.backend_label();
+    let capabilities = model.capabilities();
+    let evaluator = match evaluation_mode {
+        EffectiveEvaluationMode::Realtime => RealtimeStrategy.prepare(model, config)?,
+        EffectiveEvaluationMode::PrecomputedCartesian => {
+            PrecomputedCartesianStrategy.prepare(model, config)?
         }
-        (GainModelInstance::Vbap(model), EffectiveEvaluationMode::PrecomputedCartesian) => {
-            let strategy = PrecomputedCartesianStrategy;
-            Ok(PreparedRenderEngine::new(
-                GainModelKind::Vbap,
-                EffectiveEvaluationMode::PrecomputedCartesian,
-                strategy.prepare(model, config)?,
-            ))
+        EffectiveEvaluationMode::PrecomputedPolar => {
+            PrecomputedPolarStrategy.prepare(model, config)?
         }
-        (GainModelInstance::Vbap(model), EffectiveEvaluationMode::PrecomputedPolar) => {
-            let strategy = PrecomputedPolarStrategy;
-            Ok(PreparedRenderEngine::new(
-                GainModelKind::Vbap,
-                EffectiveEvaluationMode::PrecomputedPolar,
-                strategy.prepare(model, config)?,
-            ))
-        }
-        (GainModelInstance::ExperimentalDistance(model), EffectiveEvaluationMode::Realtime) => {
-            let strategy = RealtimeStrategy;
-            Ok(PreparedRenderEngine::new(
-                GainModelKind::ExperimentalDistance,
-                EffectiveEvaluationMode::Realtime,
-                strategy.prepare(model, config)?,
-            ))
-        }
-        (
-            GainModelInstance::ExperimentalDistance(model),
-            EffectiveEvaluationMode::PrecomputedCartesian,
-        ) => {
-            let strategy = PrecomputedCartesianStrategy;
-            Ok(PreparedRenderEngine::new(
-                GainModelKind::ExperimentalDistance,
-                EffectiveEvaluationMode::PrecomputedCartesian,
-                strategy.prepare(model, config)?,
-            ))
-        }
-        (
-            GainModelInstance::ExperimentalDistance(model),
-            EffectiveEvaluationMode::PrecomputedPolar,
-        ) => {
-            let strategy = PrecomputedPolarStrategy;
-            Ok(PreparedRenderEngine::new(
-                GainModelKind::ExperimentalDistance,
-                EffectiveEvaluationMode::PrecomputedPolar,
-                strategy.prepare(model, config)?,
-            ))
-        }
-    }
+    };
+    Ok(PreparedRenderEngine::new(
+        gain_model_kind,
+        backend_id,
+        backend_label,
+        capabilities,
+        evaluation_mode,
+        evaluator,
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -631,6 +746,20 @@ fn evenly_spaced_axis(count: usize, min: f32, max: f32) -> Vec<f32> {
     (0..count).map(|index| min + step * index as f32).collect()
 }
 
+fn deterministic_unit_float_3d(x: u32, y: u32, z: u32) -> f32 {
+    fn splitmix64(mut state: u64) -> u64 {
+        state = state.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z ^ (z >> 31)
+    }
+
+    let seed = ((x as u64) << 42) ^ ((y as u64) << 21) ^ (z as u64) ^ 0x6a09e667f3bcc909;
+    let mixed = splitmix64(seed);
+    ((mixed as f64 + 1.0) / (u64::MAX as f64 + 2.0)) as f32
+}
+
 fn cartesian_z_axis(z_size: usize, z_neg_size: usize) -> Vec<f32> {
     let mut values = Vec::with_capacity(z_neg_size + z_size);
     if z_neg_size > 0 {
@@ -646,7 +775,9 @@ fn cartesian_z_axis(z_size: usize, z_neg_size: usize) -> Vec<f32> {
 fn polar_azimuth_axis(count: usize) -> Vec<f32> {
     let count = count.max(2);
     let step = 360.0 / count as f32;
-    (0..count).map(|index| -180.0 + step * index as f32).collect()
+    (0..count)
+        .map(|index| -180.0 + step * index as f32)
+        .collect()
 }
 
 fn polar_elevation_axis(count: usize, allow_negative_z: bool) -> Vec<f32> {
@@ -946,7 +1077,8 @@ fn sample_wrapped_axis(values: &[f32], position: f32, interpolate: bool) -> Axis
             .iter()
             .enumerate()
             .min_by(|(_, a), (_, b)| {
-                wrapped_angle_distance(**a, position).total_cmp(&wrapped_angle_distance(**b, position))
+                wrapped_angle_distance(**a, position)
+                    .total_cmp(&wrapped_angle_distance(**b, position))
             })
             .map(|(index, _)| index)
             .unwrap_or(0);
@@ -970,7 +1102,11 @@ fn sample_wrapped_axis(values: &[f32], position: f32, interpolate: bool) -> Axis
         } else {
             values[next]
         };
-        let value = if position < start { position + 360.0 } else { position };
+        let value = if position < start {
+            position + 360.0
+        } else {
+            position
+        };
         if value < start || value > end {
             continue;
         }
@@ -1005,402 +1141,4 @@ fn wrap_degrees(value: f32) -> f32 {
 fn wrapped_angle_distance(a: f32, b: f32) -> f32 {
     let delta = (a - b).abs().rem_euclid(360.0);
     delta.min(360.0 - delta)
-}
-
-pub struct VbapBackend {
-    panner: VbapPanner,
-}
-
-pub struct ExperimentalDistanceBackend {
-    speaker_positions: Vec<[f32; 3]>,
-}
-
-#[derive(Clone, Copy)]
-struct ExperimentalSpeakerCandidate {
-    index: usize,
-    transformed_position: [f32; 3],
-    distance: f32,
-}
-
-const EXPERIMENTAL_DISTANCE_FLOOR: f32 = 0.05;
-const EXPERIMENTAL_MIN_ACTIVE_SPEAKERS: usize = 2;
-const EXPERIMENTAL_MAX_ACTIVE_SPEAKERS: usize = 8;
-const EXPERIMENTAL_POSITION_ERROR_FLOOR: f32 = 0.08;
-const EXPERIMENTAL_POSITION_ERROR_NEAREST_SCALE: f32 = 0.75;
-const EXPERIMENTAL_POSITION_ERROR_SPAN_SCALE: f32 = 0.3;
-
-impl VbapBackend {
-    pub fn new(panner: VbapPanner) -> Self {
-        Self { panner }
-    }
-
-    pub fn speaker_count(&self) -> usize {
-        self.panner.num_speakers()
-    }
-
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let rendering_position = req.adm_position;
-        let scaled_x = rendering_position[0] as f32 * req.room_ratio[0];
-        let scaled_y = map_depth_with_room_ratios(
-            rendering_position[1] as f32,
-            req.room_ratio[1],
-            req.room_ratio_rear,
-            req.room_ratio_center_blend,
-        );
-        let scaled_z = if rendering_position[2] >= 0.0 {
-            rendering_position[2] as f32 * req.room_ratio[2]
-        } else {
-            rendering_position[2] as f32 * req.room_ratio_lower
-        };
-
-        let gains = if self.panner.has_precomputed_effects() {
-            self.panner.get_gains_cartesian(
-                rendering_position[0] as f32,
-                rendering_position[1] as f32,
-                rendering_position[2] as f32,
-                0.0,
-                req.distance_model,
-            )
-        } else {
-            let effective_spread = if req.spread_from_distance {
-                let (_, _, dist) = adm_to_spherical(scaled_x, scaled_y, scaled_z);
-                let t = (1.0 - dist / req.spread_distance_range)
-                    .clamp(0.0, 1.0)
-                    .powf(req.spread_distance_curve);
-                (req.spread_min + t * (req.spread_max - req.spread_min)).clamp(0.0, 1.0)
-            } else {
-                req.spread_min.clamp(0.0, 1.0)
-            };
-
-            let direct_gains = self.panner.get_gains_cartesian(
-                scaled_x,
-                scaled_y,
-                scaled_z,
-                effective_spread,
-                req.distance_model,
-            );
-
-            if req.use_distance_diffuse {
-                let [rx, ry, rz] = rendering_position;
-                let adm_dist = ((rx * rx + ry * ry + rz * rz) as f32).sqrt();
-                let t = (adm_dist / req.distance_diffuse_threshold.max(1e-6))
-                    .min(1.0)
-                    .powf(req.distance_diffuse_curve);
-                let alpha = 0.5 + 0.5 * t;
-                let w_direct = alpha.sqrt();
-                let w_mirror = (1.0 - alpha).sqrt();
-                let mirror_gains = self.panner.get_gains_cartesian(
-                    -scaled_x,
-                    -scaled_y,
-                    scaled_z,
-                    effective_spread,
-                    req.distance_model,
-                );
-
-                let n = direct_gains.len();
-                let mut blended = Gains::zeroed(n);
-                let mut energy_direct = 0.0f32;
-                let mut energy_blended = 0.0f32;
-                for i in 0..n {
-                    let g = w_direct * direct_gains[i] + w_mirror * mirror_gains[i];
-                    blended.set(i, g);
-                    energy_direct += direct_gains[i] * direct_gains[i];
-                    energy_blended += g * g;
-                }
-
-                if energy_blended > 1e-12 {
-                    let scale = (energy_direct / energy_blended).sqrt();
-                    for g in blended.iter_mut() {
-                        *g *= scale;
-                    }
-                }
-
-                blended
-            } else {
-                direct_gains
-            }
-        };
-
-        RenderResponse { gains }
-    }
-
-    pub fn save_to_file(
-        &self,
-        path: &std::path::Path,
-        speaker_layout: &SpeakerLayout,
-    ) -> Result<()> {
-        self.panner
-            .save_to_file(path, speaker_layout)
-            .map_err(|e| anyhow::anyhow!("Failed to save VBAP table: {}", e))
-    }
-}
-
-impl GainModel for VbapBackend {
-    fn kind(&self) -> GainModelKind {
-        GainModelKind::Vbap
-    }
-
-    fn speaker_count(&self) -> usize {
-        VbapBackend::speaker_count(self)
-    }
-
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        VbapBackend::compute_gains(self, req)
-    }
-
-    fn save_to_file(
-        &self,
-        path: &std::path::Path,
-        speaker_layout: &SpeakerLayout,
-    ) -> Result<()> {
-        VbapBackend::save_to_file(self, path, speaker_layout)
-    }
-}
-
-impl ExperimentalDistanceBackend {
-    pub fn new(speaker_positions: Vec<[f32; 3]>) -> Self {
-        Self { speaker_positions }
-    }
-
-    pub fn speaker_count(&self) -> usize {
-        self.speaker_positions.len()
-    }
-
-    pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let target = transform_position(
-            req.adm_position.map(|v| v as f32),
-            req.room_ratio,
-            req.room_ratio_rear,
-            req.room_ratio_lower,
-            req.room_ratio_center_blend,
-        );
-
-        let mut candidates = Vec::with_capacity(self.speaker_positions.len());
-        let mut nearest = None::<(usize, f32)>;
-        for (index, speaker) in self.speaker_positions.iter().copied().enumerate() {
-            let transformed_position = transform_position(
-                speaker,
-                req.room_ratio,
-                req.room_ratio_rear,
-                req.room_ratio_lower,
-                req.room_ratio_center_blend,
-            );
-            let distance = euclidean_distance(target, transformed_position);
-            match nearest {
-                Some((_, best_distance)) if distance >= best_distance => {}
-                _ => nearest = Some((index, distance)),
-            }
-            candidates.push(ExperimentalSpeakerCandidate {
-                index,
-                transformed_position,
-                distance,
-            });
-        }
-
-        let mut gains = Gains::zeroed(self.speaker_positions.len());
-        let Some((nearest_index, nearest_distance)) = nearest else {
-            return RenderResponse { gains };
-        };
-
-        if nearest_distance <= f32::EPSILON {
-            gains.set(nearest_index, 1.0);
-            return RenderResponse { gains };
-        }
-
-        candidates.sort_unstable_by(|a, b| a.distance.total_cmp(&b.distance));
-        let active_count = select_experimental_active_count(target, &candidates);
-        let energy = write_experimental_subset_gains(&mut gains, &candidates[..active_count]);
-        if energy > 1e-12 {
-            let norm = energy.sqrt();
-            for gain in gains.iter_mut() {
-                *gain /= norm;
-            }
-        }
-
-        RenderResponse { gains }
-    }
-
-    pub fn save_to_file(
-        &self,
-        _path: &std::path::Path,
-        _speaker_layout: &SpeakerLayout,
-    ) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Saving a precomputed table is only supported for the VBAP backend"
-        ))
-    }
-}
-
-impl GainModel for ExperimentalDistanceBackend {
-    fn kind(&self) -> GainModelKind {
-        GainModelKind::ExperimentalDistance
-    }
-
-    fn speaker_count(&self) -> usize {
-        ExperimentalDistanceBackend::speaker_count(self)
-    }
-
-    fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        ExperimentalDistanceBackend::compute_gains(self, req)
-    }
-
-    fn save_to_file(
-        &self,
-        path: &std::path::Path,
-        speaker_layout: &SpeakerLayout,
-    ) -> Result<()> {
-        ExperimentalDistanceBackend::save_to_file(self, path, speaker_layout)
-    }
-}
-
-#[inline]
-fn transform_position(
-    position: [f32; 3],
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
-) -> [f32; 3] {
-    [
-        position[0] * room_ratio[0],
-        map_depth_with_room_ratios(
-            position[1],
-            room_ratio[1],
-            room_ratio_rear,
-            room_ratio_center_blend,
-        ),
-        if position[2] >= 0.0 {
-            position[2] * room_ratio[2]
-        } else {
-            position[2] * room_ratio_lower
-        },
-    ]
-}
-
-#[inline]
-fn euclidean_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
-}
-
-#[inline]
-fn experimental_distance_weight(distance: f32) -> f32 {
-    let clamped = distance.max(EXPERIMENTAL_DISTANCE_FLOOR);
-    1.0 / (clamped * clamped.sqrt())
-}
-
-fn write_experimental_subset_gains(
-    gains: &mut Gains,
-    candidates: &[ExperimentalSpeakerCandidate],
-) -> f32 {
-    let mut energy = 0.0f32;
-    for candidate in candidates {
-        let weight = experimental_distance_weight(candidate.distance);
-        gains.set(candidate.index, weight);
-        energy += weight * weight;
-    }
-    energy
-}
-
-fn select_experimental_active_count(
-    target: [f32; 3],
-    candidates: &[ExperimentalSpeakerCandidate],
-) -> usize {
-    if candidates.is_empty() {
-        return 0;
-    }
-
-    let min_active = candidates
-        .len()
-        .min(EXPERIMENTAL_MIN_ACTIVE_SPEAKERS.max(1));
-    let max_active = candidates
-        .len()
-        .min(EXPERIMENTAL_MAX_ACTIVE_SPEAKERS.max(1));
-    let nearest_distance = candidates[0].distance;
-    let mut best_count = 1usize;
-    let mut best_error = f32::MAX;
-
-    // Stop once the energy-weighted barycenter lands close enough to the target.
-    for count in 1..=max_active {
-        let subset = &candidates[..count];
-        let reconstructed = reconstruct_experimental_position(subset);
-        let error = euclidean_distance(target, reconstructed);
-        if error < best_error {
-            best_error = error;
-            best_count = count;
-        }
-
-        if count >= min_active {
-            let span = candidate_subset_span(subset);
-            let threshold = EXPERIMENTAL_POSITION_ERROR_FLOOR
-                .max(nearest_distance * EXPERIMENTAL_POSITION_ERROR_NEAREST_SCALE)
-                .max(span * EXPERIMENTAL_POSITION_ERROR_SPAN_SCALE);
-            if error <= threshold {
-                return count;
-            }
-        }
-    }
-
-    best_count.max(min_active.min(max_active))
-}
-
-fn reconstruct_experimental_position(candidates: &[ExperimentalSpeakerCandidate]) -> [f32; 3] {
-    let mut weighted = [0.0f32; 3];
-    let mut energy = 0.0f32;
-    for candidate in candidates {
-        let weight = experimental_distance_weight(candidate.distance);
-        let contribution = weight * weight;
-        weighted[0] += candidate.transformed_position[0] * contribution;
-        weighted[1] += candidate.transformed_position[1] * contribution;
-        weighted[2] += candidate.transformed_position[2] * contribution;
-        energy += contribution;
-    }
-
-    if energy <= 1e-12 {
-        return candidates[0].transformed_position;
-    }
-
-    [
-        weighted[0] / energy,
-        weighted[1] / energy,
-        weighted[2] / energy,
-    ]
-}
-
-fn candidate_subset_span(candidates: &[ExperimentalSpeakerCandidate]) -> f32 {
-    let mut span = 0.0f32;
-    for i in 0..candidates.len() {
-        for j in (i + 1)..candidates.len() {
-            span = span.max(euclidean_distance(
-                candidates[i].transformed_position,
-                candidates[j].transformed_position,
-            ));
-        }
-    }
-    span
-}
-
-#[inline]
-fn map_depth_with_room_ratios(
-    depth: f32,
-    front_ratio: f32,
-    rear_ratio: f32,
-    center_blend: f32,
-) -> f32 {
-    let d = depth.clamp(-1.0, 1.0);
-    let blend = center_blend.clamp(0.0, 1.0);
-    let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
-    if d >= 0.0 {
-        let t = d;
-        let a = center_ratio - front_ratio;
-        let b = 2.0 * (front_ratio - center_ratio);
-        a * t * t * t + b * t * t + center_ratio * t
-    } else {
-        let t = -d;
-        let a = center_ratio - rear_ratio;
-        let b = 2.0 * (rear_ratio - center_ratio);
-        -(a * t * t * t + b * t * t + center_ratio * t)
-    }
 }

@@ -5,8 +5,9 @@ use audio_input::{
     InputSampleFormat,
 };
 use audio_output::AudioControl;
-use renderer::live_params::RendererControl;
+use renderer::live_params::{LiveParams, RenderTopology, RendererControl};
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType};
+use serde::Serialize;
 
 fn input_mode_name(mode: InputMode) -> &'static str {
     match mode {
@@ -52,6 +53,54 @@ fn input_clock_mode_name(mode: InputClockMode) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RenderBackendStateSnapshot {
+    pub selection: String,
+    pub effective: String,
+    pub effective_label: String,
+    pub capabilities: renderer::render_backend::BackendCapabilities,
+    pub allowed_evaluation_modes: Vec<String>,
+}
+
+fn allowed_evaluation_modes(
+    capabilities: renderer::render_backend::BackendCapabilities,
+) -> Vec<String> {
+    let mut modes = vec!["auto".to_string()];
+    if capabilities.supports_realtime {
+        modes.push("realtime".to_string());
+    }
+    if capabilities.supports_precomputed_polar {
+        modes.push("precomputed_polar".to_string());
+    }
+    if capabilities.supports_precomputed_cartesian {
+        modes.push("precomputed_cartesian".to_string());
+    }
+    modes
+}
+
+pub fn build_render_backend_state_snapshot(
+    live: &LiveParams,
+    active_topology: &RenderTopology,
+) -> RenderBackendStateSnapshot {
+    let backend = &active_topology.backend;
+    let capabilities = backend.capabilities();
+    RenderBackendStateSnapshot {
+        selection: live.backend_id().to_string(),
+        effective: backend.backend_id().to_string(),
+        effective_label: backend.backend_label().to_string(),
+        capabilities,
+        allowed_evaluation_modes: allowed_evaluation_modes(capabilities),
+    }
+}
+
+pub fn build_render_backend_state_json(
+    live: &LiveParams,
+    active_topology: &RenderTopology,
+) -> String {
+    serde_json::to_string(&build_render_backend_state_snapshot(live, active_topology))
+        .unwrap_or_else(|_| "{}".to_string())
+}
+
 pub fn build_live_state_bundle(
     control: &Arc<RendererControl>,
     audio_control: Option<&Arc<AudioControl>>,
@@ -62,15 +111,20 @@ pub fn build_live_state_bundle(
     let active_topology = control.active_topology();
     let effective_backend = active_topology.backend.kind().as_str();
     let effective_evaluation_mode = active_topology.backend.evaluation_mode().as_str();
+    let render_backend_state_json = build_render_backend_state_json(&live, &active_topology);
 
     let mut messages = vec![
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_backend".to_string(),
-            args: vec![OscType::String(live.backend_kind.as_str().to_string())],
+            args: vec![OscType::String(live.backend_id().to_string())],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_backend/effective".to_string(),
             args: vec![OscType::String(effective_backend.to_string())],
+        }),
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/render_backend/state".to_string(),
+            args: vec![OscType::String(render_backend_state_json)],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation_mode".to_string(),
@@ -124,7 +178,11 @@ pub fn build_live_state_bundle(
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/render_evaluation/position_interpolation".to_string(),
-            args: vec![OscType::Int(if live.evaluation.position_interpolation { 1 } else { 0 })],
+            args: vec![OscType::Int(if live.evaluation.position_interpolation {
+                1
+            } else {
+                0
+            })],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/log_level".to_string(),
@@ -155,7 +213,10 @@ pub fn build_live_state_bundle(
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/vbap/allow_negative_z".to_string(),
             args: vec![OscType::Int(
-                if control.backend_rebuild_params.map(|p| p.allow_negative_z).unwrap_or(true)
+                if control
+                    .backend_rebuild_params
+                    .map(|p| p.allow_negative_z)
+                    .unwrap_or(true)
                 {
                     1
                 } else {
@@ -205,7 +266,16 @@ pub fn build_live_state_bundle(
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/config/saved".to_string(),
-            args: vec![OscType::Int(if control.config_dirty.load(std::sync::atomic::Ordering::Relaxed) { 0 } else { 1 })],
+            args: vec![OscType::Int(
+                if control
+                    .config_dirty
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    0
+                } else {
+                    1
+                },
+            )],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/layout/radius_m".to_string(),
@@ -227,7 +297,11 @@ pub fn build_live_state_bundle(
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/enable_far_mode".to_string(),
-                args: vec![OscType::Int(if requested.adaptive.enable_far_mode { 1 } else { 0 })],
+                args: vec![OscType::Int(if requested.adaptive.enable_far_mode {
+                    1
+                } else {
+                    0
+                })],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/kp_near".to_string(),
@@ -249,27 +323,53 @@ pub fn build_live_state_bundle(
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/update_interval_callbacks".to_string(),
-                args: vec![OscType::Float(requested.adaptive.update_interval_callbacks as f32)],
+                args: vec![OscType::Float(
+                    requested.adaptive.update_interval_callbacks as f32,
+                )],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/near_far_threshold_ms".to_string(),
-                args: vec![OscType::Float(requested.adaptive.near_far_threshold_ms as f32)],
+                args: vec![OscType::Float(
+                    requested.adaptive.near_far_threshold_ms as f32,
+                )],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/force_silence_in_far_mode".to_string(),
-                args: vec![OscType::Int(if requested.adaptive.force_silence_in_far_mode { 1 } else { 0 })],
+                args: vec![OscType::Int(
+                    if requested.adaptive.force_silence_in_far_mode {
+                        1
+                    } else {
+                        0
+                    },
+                )],
             }),
             OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/adaptive_resampling/hard_recover_high_in_far_mode".to_string(),
-                args: vec![OscType::Int(if requested.adaptive.hard_recover_high_in_far_mode { 1 } else { 0 })],
+                addr: "/omniphony/state/adaptive_resampling/hard_recover_high_in_far_mode"
+                    .to_string(),
+                args: vec![OscType::Int(
+                    if requested.adaptive.hard_recover_high_in_far_mode {
+                        1
+                    } else {
+                        0
+                    },
+                )],
             }),
             OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/adaptive_resampling/hard_recover_low_in_far_mode".to_string(),
-                args: vec![OscType::Int(if requested.adaptive.hard_recover_low_in_far_mode { 1 } else { 0 })],
+                addr: "/omniphony/state/adaptive_resampling/hard_recover_low_in_far_mode"
+                    .to_string(),
+                args: vec![OscType::Int(
+                    if requested.adaptive.hard_recover_low_in_far_mode {
+                        1
+                    } else {
+                        0
+                    },
+                )],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/far_mode_return_fade_in_ms".to_string(),
-                args: vec![OscType::Float(requested.adaptive.far_mode_return_fade_in_ms as f32)],
+                args: vec![OscType::Float(
+                    requested.adaptive.far_mode_return_fade_in_ms as f32,
+                )],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/adaptive_resampling/pause".to_string(),
@@ -344,7 +444,11 @@ pub fn build_live_state_bundle(
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/input/apply_pending".to_string(),
-                args: vec![OscType::Int(if input_control.is_apply_pending() { 1 } else { 0 })],
+                args: vec![OscType::Int(if input_control.is_apply_pending() {
+                    1
+                } else {
+                    0
+                })],
             }),
             OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/input/active_mode".to_string(),

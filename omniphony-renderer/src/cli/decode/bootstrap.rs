@@ -11,9 +11,9 @@ use audio_output::pipewire::{PipewireBufferConfig, list_pipewire_output_devices}
 use audio_output::{
     AdaptiveResamplingConfig, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig,
 };
-use renderer::render_backend::RenderBackendKind;
 use renderer::live_params::LiveEvaluationMode;
 use renderer::metering::AudioMeter;
+use renderer::render_backend::RenderBackendKind;
 use renderer::speaker_layout::SpeakerLayout;
 use std::sync::Arc;
 
@@ -499,8 +499,8 @@ fn init_spatial_renderer(
         {
             let mut live = control.live.write().unwrap();
             if let Some(configured_backend) = configured_backend {
-                if live.backend_kind != configured_backend {
-                    live.backend_kind = configured_backend;
+                if live.backend_id() != configured_backend.as_str() {
+                    live.backend_id = configured_backend.as_str().to_string();
                     requires_rebuild = true;
                 }
             }
