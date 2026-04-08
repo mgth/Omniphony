@@ -63,8 +63,12 @@ pub struct RenderBackendStateSnapshot {
 }
 
 fn allowed_evaluation_modes(
+    backend: &renderer::render_backend::PreparedRenderEngine,
     capabilities: renderer::render_backend::BackendCapabilities,
 ) -> Vec<String> {
+    if backend.evaluation_mode() == renderer::render_backend::EffectiveEvaluationMode::FromFile {
+        return vec!["from_file".to_string()];
+    }
     let mut modes = vec!["auto".to_string()];
     if capabilities.supports_realtime {
         modes.push("realtime".to_string());
@@ -89,7 +93,7 @@ pub fn build_render_backend_state_snapshot(
         effective: backend.backend_id().to_string(),
         effective_label: backend.backend_label().to_string(),
         capabilities,
-        allowed_evaluation_modes: allowed_evaluation_modes(capabilities),
+        allowed_evaluation_modes: allowed_evaluation_modes(backend, capabilities),
     }
 }
 

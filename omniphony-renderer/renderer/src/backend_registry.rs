@@ -54,18 +54,27 @@ impl VbapTopologyBuildPlan {
         &self,
         _evaluation_mode: LiveEvaluationMode,
     ) -> Result<Box<dyn GainModel>> {
-        let vbap = crate::spatial_vbap::VbapPanner::new_with_mode(
-            &self.positions,
-            self.azimuth_resolution,
-            self.elevation_resolution,
-            0.0,
-            self.table_mode,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to create VBAP panner: {}", e))?
-        .with_negative_z(self.allow_negative_z)
-        .with_position_interpolation(self.position_interpolation);
+        #[cfg(not(feature = "saf_vbap"))]
+        {
+            anyhow::bail!(
+                "VBAP backend construction requires the `saf_vbap` feature; use from-file evaluation or enable saf_vbap"
+            );
+        }
+        #[cfg(feature = "saf_vbap")]
+        {
+            let vbap = crate::spatial_vbap::VbapPanner::new_with_mode(
+                &self.positions,
+                self.azimuth_resolution,
+                self.elevation_resolution,
+                0.0,
+                self.table_mode,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to create VBAP panner: {}", e))?
+            .with_negative_z(self.allow_negative_z)
+            .with_position_interpolation(self.position_interpolation);
 
-        Ok(Box::new(crate::render_backend::VbapBackend::new(vbap)))
+            Ok(Box::new(crate::render_backend::VbapBackend::new(vbap)))
+        }
     }
 }
 

@@ -66,18 +66,26 @@
 
 use crate::live_params::{
     CartesianEvaluationParams, EvaluationLiveParams, LiveEvaluationMode, LiveParams,
-    PolarEvaluationParams, PreferredEvaluationMode, RampMode, RenderTopology, RendererControl,
+    PolarEvaluationParams, RampMode, RenderTopology, RendererControl,
 };
 use crate::render_backend::{
-    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
-    PolarEvaluationConfig, RenderBackendKind, RenderRequest, VbapBackend,
-    build_prepared_render_engine,
+    LoadedVbapFile, RenderBackendKind, RenderRequest, build_from_file_render_engine,
 };
 use crate::spatial_vbap::VbapTableMode;
-use crate::spatial_vbap::{DistanceModel, Gains, VbapPanner, adm_to_spherical};
+use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use std::sync::Arc;
+
+#[cfg(feature = "saf_vbap")]
+use crate::live_params::PreferredEvaluationMode;
+#[cfg(feature = "saf_vbap")]
+use crate::render_backend::{
+    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
+    PolarEvaluationConfig, VbapBackend, build_prepared_render_engine,
+};
+#[cfg(feature = "saf_vbap")]
+use crate::spatial_vbap::VbapPanner;
 
 /// Output of a single rendered frame.
 pub struct RenderedFrame {
@@ -89,6 +97,7 @@ pub struct RenderedFrame {
     pub object_gains: Vec<(usize, Gains)>,
 }
 
+#[cfg(feature = "saf_vbap")]
 fn evaluation_build_config(
     request_template: RenderRequest,
     position_interpolation: bool,
@@ -484,7 +493,7 @@ impl SpatialRenderer {
     /// * `distance_diffuse_curve` - Curve exponent for the blend weight
     ///
     /// **Note:** This method requires the `saf_vbap` feature to generate VBAP tables.
-    /// Without saf_vbap, use `from_vbap()` to load pre-generated tables.
+    /// Without saf_vbap, use `from_vbap_file()` to load pre-generated tables.
     #[cfg(feature = "saf_vbap")]
     pub fn new(
         speaker_layout: SpeakerLayout,
@@ -671,14 +680,15 @@ impl SpatialRenderer {
         ))
     }
 
-    /// Create a new spatial renderer from a pre-loaded VBAP panner
+    /// Create a new spatial renderer from a pre-loaded VBAP evaluation file
     ///
-    /// This allows using pre-computed VBAP gain tables loaded from disk,
-    /// which is much faster than computing them at runtime.
+    /// This uses a serialized evaluation table directly, without constructing a VBAP backend.
+    /// The loaded file becomes the active evaluator, which preserves the original lookup data
+    /// and keeps the file-loading path independent from backend implementations.
     ///
     /// # Arguments
     ///
-    /// * `vbap` - Pre-loaded VBAP panner (from VbapPanner::load_from_file)
+    /// * `loaded_file` - Pre-loaded VBAP evaluation file
     /// * `speaker_layout` - Speaker configuration (must match the VBAP table)
     /// * `sample_rate` - Sample rate in Hz (for ramp timing)
     /// * `distance_model` - Distance attenuation model
@@ -696,8 +706,8 @@ impl SpatialRenderer {
     /// * `distance_diffuse` - Enable distance-based antipodal diffuse blending
     /// * `distance_diffuse_threshold` - ADM distance at which blend reaches 100% direct
     /// * `distance_diffuse_curve` - Curve exponent for the blend weight
-    pub fn from_vbap(
-        vbap: VbapPanner,
+    pub fn from_vbap_file(
+        loaded_file: LoadedVbapFile,
         speaker_layout: SpeakerLayout,
         sample_rate: u32,
         allow_negative_z: bool,
@@ -722,21 +732,17 @@ impl SpatialRenderer {
         distance_diffuse_curve: f32,
     ) -> Result<Self> {
         let num_speakers = speaker_layout.num_speakers();
-        let spread_resolution = vbap.spread_resolution();
+        let spread_resolution = loaded_file.spread_resolution();
         let distance_step = if spread_resolution > 0.0 {
             spread_resolution
         } else {
             0.25
         };
-        let vbap = vbap
-            .with_negative_z(allow_negative_z)
-            .with_position_interpolation(vbap_position_interpolation);
-        let vbap_num_speakers = vbap.num_speakers();
-        let vbap_num_triangles = vbap.num_triangles();
-        let vbap_table_mode = vbap.table_mode();
-        let vbap_azimuth_resolution = vbap.azimuth_resolution();
-        let vbap_elevation_resolution = vbap.elevation_resolution();
-        let vbap_position_interpolation = vbap.position_interpolation();
+        let vbap_num_speakers = loaded_file.num_speakers();
+        let vbap_num_triangles = loaded_file.num_triangles();
+        let vbap_table_mode = VbapTableMode::Polar;
+        let vbap_azimuth_resolution = loaded_file.azimuth_resolution();
+        let vbap_elevation_resolution = loaded_file.elevation_resolution();
 
         log::info!(
             "Created spatial renderer from pre-loaded VBAP table: {} total speakers, {} in VBAP table, {} triangles, spread_res={}, distance_model={}",
@@ -747,40 +753,11 @@ impl SpatialRenderer {
             distance_model
         );
         let topology = RenderTopology::new(
-            Arc::new(build_prepared_render_engine(
-                Box::new(VbapBackend::new(vbap)),
-                match vbap_table_mode {
-                    VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
-                    VbapTableMode::Cartesian { .. } => {
-                        EffectiveEvaluationMode::PrecomputedCartesian
-                    }
-                },
-                &evaluation_build_config(
-                    RenderRequest {
-                        adm_position: [0.0, 0.0, 0.0],
-                        spread_min,
-                        spread_max,
-                        spread_from_distance,
-                        spread_distance_range,
-                        spread_distance_curve,
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                        use_distance_diffuse: distance_diffuse,
-                        distance_diffuse_threshold,
-                        distance_diffuse_curve,
-                        distance_model,
-                    },
-                    vbap_position_interpolation,
-                    vbap_table_mode,
-                    vbap_azimuth_resolution,
-                    vbap_elevation_resolution,
-                    distance_step,
-                    distance_max,
-                    allow_negative_z,
-                ),
-            )?),
+            Arc::new(build_from_file_render_engine(
+                loaded_file,
+                allow_negative_z,
+                vbap_position_interpolation,
+            )),
             speaker_layout,
         )?;
 
@@ -839,41 +816,8 @@ impl SpatialRenderer {
             &excluded,
             &topology.bed_to_speaker_mapping,
         );
-        let rebuild_params = crate::live_params::BackendRebuildParams {
-            backend_id: RenderBackendKind::Vbap.as_str(),
-            preferred_evaluation_mode: PreferredEvaluationMode::from_vbap_table_mode(
-                vbap_table_mode,
-            ),
-            allow_negative_z,
-            vbap: Some(crate::live_params::VbapModelRebuildParams {
-                az_res_deg: vbap_azimuth_resolution,
-                el_res_deg: vbap_elevation_resolution,
-                spread_resolution,
-                distance_max,
-                table_mode: vbap_table_mode,
-                cartesian_default_x_size: match vbap_table_mode {
-                    VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
-                    VbapTableMode::Polar => 1,
-                },
-                cartesian_default_y_size: match vbap_table_mode {
-                    VbapTableMode::Cartesian { y_size, .. } => y_size.saturating_sub(1),
-                    VbapTableMode::Polar => 1,
-                },
-                cartesian_default_z_size: match vbap_table_mode {
-                    VbapTableMode::Cartesian { z_size, .. } => z_size.saturating_sub(1),
-                    VbapTableMode::Polar => 1,
-                },
-                cartesian_default_z_neg_size: match vbap_table_mode {
-                    VbapTableMode::Cartesian { z_neg_size, .. } => z_neg_size,
-                    VbapTableMode::Polar => 0,
-                },
-                distance_model,
-                allow_negative_z,
-            }),
-        };
         let editable_layout = topology.speaker_layout.clone();
-        let control =
-            RendererControl::new(live_params, topology, editable_layout, Some(rebuild_params));
+        let control = RendererControl::new(live_params, topology, editable_layout, None);
 
         Ok(Self::finish_construction(
             num_speakers,
@@ -1845,8 +1789,10 @@ impl SpatialRenderer {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "saf_vbap")]
     use super::*;
 
+    #[cfg(feature = "saf_vbap")]
     #[test]
     fn test_renderer_creation() {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();

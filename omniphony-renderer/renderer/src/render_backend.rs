@@ -1,4 +1,5 @@
 mod experimental_distance_backend;
+mod file_loaded_evaluator;
 mod vbap_backend;
 
 use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical, spherical_to_adm};
@@ -7,6 +8,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
+pub use file_loaded_evaluator::{LoadedVbapFile, build_from_file_render_engine};
 pub use vbap_backend::VbapBackend;
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -146,6 +148,7 @@ pub enum EffectiveEvaluationMode {
     Realtime,
     PrecomputedPolar,
     PrecomputedCartesian,
+    FromFile,
 }
 
 impl EffectiveEvaluationMode {
@@ -154,6 +157,7 @@ impl EffectiveEvaluationMode {
             Self::Realtime => "realtime",
             Self::PrecomputedPolar => "precomputed_polar",
             Self::PrecomputedCartesian => "precomputed_cartesian",
+            Self::FromFile => "from_file",
         }
     }
 }
@@ -725,6 +729,9 @@ pub fn build_prepared_render_engine(
         }
         EffectiveEvaluationMode::PrecomputedPolar => {
             PrecomputedPolarStrategy.prepare(model, config)?
+        }
+        EffectiveEvaluationMode::FromFile => {
+            unreachable!("from_file evaluator is built without a gain model")
         }
     };
     Ok(PreparedRenderEngine::new(

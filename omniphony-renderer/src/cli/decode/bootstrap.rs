@@ -304,8 +304,9 @@ fn init_spatial_renderer(
         return Ok(());
     }
 
+    use renderer::render_backend::LoadedVbapFile;
     use renderer::spatial_renderer::SpatialRenderer;
-    use renderer::spatial_vbap::{DistanceModel, VbapPanner};
+    use renderer::spatial_vbap::DistanceModel;
     use std::str::FromStr;
 
     let distance_model = DistanceModel::from_str(&args.vbap_distance_model)
@@ -338,20 +339,19 @@ fn init_spatial_renderer(
             vbap_table_path.display()
         );
         let start_time = std::time::Instant::now();
-        let (vbap, loaded_layout) = VbapPanner::load_from_file(vbap_table_path)
+        let loaded_file = LoadedVbapFile::load_from_file(vbap_table_path)
             .map_err(|e| anyhow::anyhow!("Failed to load VBAP table: {}", e))?;
-        let vbap = vbap.with_negative_z(vbap_allow_negative_z);
         let elapsed = start_time.elapsed();
         log::info!(
             "VBAP table loaded in {:.3}s (az={}°, el={}°, spread_res={}, {} triangles)",
             elapsed.as_secs_f64(),
-            vbap.azimuth_resolution(),
-            vbap.elevation_resolution(),
-            vbap.spread_resolution(),
-            vbap.num_triangles()
+            loaded_file.azimuth_resolution(),
+            loaded_file.elevation_resolution(),
+            loaded_file.spread_resolution(),
+            loaded_file.num_triangles()
         );
 
-        let layout = if let Some(layout) = loaded_layout {
+        let layout = if let Some(layout) = loaded_file.speaker_layout().cloned() {
             log::info!(
                 "Using speaker layout from VBAP table: {} speakers ({})",
                 layout.num_speakers(),
@@ -369,8 +369,8 @@ fn init_spatial_renderer(
             layout.speaker_names().join(", ")
         );
 
-        SpatialRenderer::from_vbap(
-            vbap,
+        SpatialRenderer::from_vbap_file(
+            loaded_file,
             layout,
             48000,
             vbap_allow_negative_z,

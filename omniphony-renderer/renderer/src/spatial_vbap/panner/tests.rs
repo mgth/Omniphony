@@ -1,5 +1,8 @@
 use super::*;
+use crate::render_backend::{LoadedVbapFile, RenderRequest, build_from_file_render_engine};
+use crate::spatial_vbap::spherical_to_adm;
 
+#[cfg(feature = "saf_vbap")]
 fn load_yaml_layout(name: &str) -> crate::speaker_layout::SpeakerLayout {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -21,36 +24,53 @@ fn test_vbap_load_compressed() {
         return;
     }
 
-    let result = VbapPanner::load_from_file(path);
+    let result = LoadedVbapFile::load_from_file(path);
     assert!(
         result.is_ok(),
         "Failed to load compressed VBAP table: {:?}",
         result.err()
     );
 
-    let (panner, _layout) = result.unwrap();
-    assert_eq!(panner.num_speakers(), 12, "Expected 12 speakers");
+    let file = result.unwrap();
+    assert_eq!(file.num_speakers(), 12, "Expected 12 speakers");
     assert_eq!(
-        panner.azimuth_resolution(),
+        file.azimuth_resolution(),
         1,
         "Expected 1° azimuth resolution"
     );
     assert_eq!(
-        panner.elevation_resolution(),
+        file.elevation_resolution(),
         1,
         "Expected 1° elevation resolution"
     );
-    assert_eq!(panner.num_triangles(), 22, "Expected 22 triangles");
+    assert_eq!(file.num_triangles(), 22, "Expected 22 triangles");
 
     println!("Successfully loaded compressed VBAP table!");
-    println!("  Speakers: {}", panner.num_speakers());
-    println!("  Triangles: {}", panner.num_triangles());
-    println!("  Azimuth res: {}°", panner.azimuth_resolution());
-    println!("  Elevation res: {}°", panner.elevation_resolution());
-    println!("  Spread res: {}", panner.spread_resolution());
+    println!("  Speakers: {}", file.num_speakers());
+    println!("  Triangles: {}", file.num_triangles());
+    println!("  Azimuth res: {}°", file.azimuth_resolution());
+    println!("  Elevation res: {}°", file.elevation_resolution());
+    println!("  Spread res: {}", file.spread_resolution());
 
-    // Test that we can get gains from the loaded panner
-    let gains = panner.get_gains(0.0, 0.0);
+    let evaluator = build_from_file_render_engine(file, true, true);
+    let gains = evaluator
+        .compute_gains(&RenderRequest {
+            adm_position: [0.0, 1.0, 0.0],
+            spread_min: 0.0,
+            spread_max: 0.0,
+            spread_from_distance: false,
+            spread_distance_range: 1.0,
+            spread_distance_curve: 1.0,
+            room_ratio: [1.0, 1.0, 1.0],
+            room_ratio_rear: 1.0,
+            room_ratio_lower: 1.0,
+            room_ratio_center_blend: 0.0,
+            use_distance_diffuse: false,
+            distance_diffuse_threshold: 1.0,
+            distance_diffuse_curve: 1.0,
+            distance_model: DistanceModel::None,
+        })
+        .gains;
     assert_eq!(gains.len(), 12, "Expected 12 gain values");
 
     // Check power normalization
@@ -64,6 +84,7 @@ fn test_vbap_load_compressed() {
     println!("  Gain computation test passed!");
 }
 
+#[cfg(feature = "saf_vbap")]
 #[test]
 fn test_vbap_panner_creation() {
     // Use a real preset with height speakers so 3D triangulation is valid.
@@ -78,6 +99,7 @@ fn test_vbap_panner_creation() {
     assert!(panner.num_triangles() > 0);
 }
 
+#[cfg(feature = "saf_vbap")]
 #[test]
 fn test_vbap_gain_computation() {
     let layout = load_yaml_layout("7.1.4.yaml");
@@ -98,6 +120,7 @@ fn test_vbap_gain_computation() {
     );
 }
 
+#[cfg(feature = "saf_vbap")]
 #[test]
 fn test_vbap_error_cases() {
     // Too few speakers
@@ -323,15 +346,12 @@ fn test_vbap_8_0_gains_diagnostic() {
         return;
     }
 
-    let (panner, layout_opt) = VbapPanner::load_from_file(path).unwrap();
-    let layout = layout_opt.unwrap();
+    let loaded_file = LoadedVbapFile::load_from_file(path).unwrap();
+    let layout = loaded_file.speaker_layout().cloned().unwrap();
+    let evaluator = build_from_file_render_engine(loaded_file, true, true);
 
     let names: Vec<&str> = layout.speakers.iter().map(|s| s.name.as_str()).collect();
-    println!("Speakers ({}): {:?}", panner.num_speakers(), names);
-    println!(
-        "n_az={}, n_el={}, n_gtable={}",
-        panner.n_az, panner.n_el, panner.n_gtable
-    );
+    println!("Speakers ({}): {:?}", layout.speakers.len(), names);
 
     // Test positions: (x, y, z) in ADM coordinates
     let test_positions = [
@@ -349,58 +369,61 @@ fn test_vbap_8_0_gains_diagnostic() {
     for (x, y, z, label) in &test_positions {
         let (az, el, dist) = adm_to_spherical(*x, *y, *z);
 
-        // Test both code paths
-        let gains_direct = panner.get_gains(az, el);
-        let gains_spread = panner.get_gains_with_spread(az, el, 0.0);
-        let gains_cart = panner.get_gains_cartesian(*x, *y, *z, 0.0, DistanceModel::None);
+        let gains_cart = evaluator
+            .compute_gains(&RenderRequest {
+                adm_position: [*x as f64, *y as f64, *z as f64],
+                spread_min: 0.0,
+                spread_max: 0.0,
+                spread_from_distance: false,
+                spread_distance_range: 1.0,
+                spread_distance_curve: 1.0,
+                room_ratio: [1.0, 1.0, 1.0],
+                room_ratio_rear: 1.0,
+                room_ratio_lower: 1.0,
+                room_ratio_center_blend: 0.0,
+                use_distance_diffuse: false,
+                distance_diffuse_threshold: 1.0,
+                distance_diffuse_curve: 1.0,
+                distance_model: DistanceModel::None,
+            })
+            .gains;
 
         println!(
             "\n--- {} (ADM: {},{},{}) -> (az:{:.1}, el:{:.1}, d:{:.2}) ---",
             label, x, y, z, az, el, dist
         );
 
-        print!("  get_gains:            ");
-        for (i, g) in gains_direct.iter().enumerate() {
-            if *g > 0.001 {
-                print!("{}={:.3} ", names[i], g);
-            }
-        }
-        println!();
-
-        print!("  get_gains_with_spread:");
-        for (i, g) in gains_spread.iter().enumerate() {
-            if *g > 0.001 {
-                print!("{}={:.3} ", names[i], g);
-            }
-        }
-        println!();
-
-        print!("  get_gains_cartesian:  ");
+        print!("  from_file gains:      ");
         for (i, g) in gains_cart.iter().enumerate() {
             if *g > 0.001 {
                 print!("{}={:.3} ", names[i], g);
             }
         }
         println!();
-
-        // Check: are gains_direct and gains_spread the same?
-        let mut diff = 0.0f32;
-        for i in 0..gains_direct.len() {
-            diff += (gains_direct[i] - gains_spread[i]).abs();
-        }
-        if diff > 0.01 {
-            println!(
-                "  *** MISMATCH between get_gains and get_gains_with_spread! diff={:.4}",
-                diff
-            );
-        }
     }
 
     // Test stability: same position 10 times should give identical gains
     println!("\n--- Stability test (front center x10) ---");
     let mut prev_gains: Option<Gains> = None;
     for i in 0..10 {
-        let gains = panner.get_gains_cartesian(0.0, 1.0, 0.0, 0.0, DistanceModel::None);
+        let gains = evaluator
+            .compute_gains(&RenderRequest {
+                adm_position: [0.0, 1.0, 0.0],
+                spread_min: 0.0,
+                spread_max: 0.0,
+                spread_from_distance: false,
+                spread_distance_range: 1.0,
+                spread_distance_curve: 1.0,
+                room_ratio: [1.0, 1.0, 1.0],
+                room_ratio_rear: 1.0,
+                room_ratio_lower: 1.0,
+                room_ratio_center_blend: 0.0,
+                use_distance_diffuse: false,
+                distance_diffuse_threshold: 1.0,
+                distance_diffuse_curve: 1.0,
+                distance_model: DistanceModel::None,
+            })
+            .gains;
         if let Some(ref prev) = prev_gains {
             let mut diff = 0.0f32;
             for j in 0..gains.len() {
