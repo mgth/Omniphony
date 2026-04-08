@@ -972,6 +972,12 @@
         max-height: var(--panel-open-max-height-large);
       }
 
+      #rendererSectionContent.conditional-params.open {
+        max-height: none;
+        overflow: visible;
+        scrollbar-gutter: auto;
+      }
+
       .info-list {
         max-height: none;
         overflow: visible;
