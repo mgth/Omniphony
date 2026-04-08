@@ -18,20 +18,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     ADAPTIVE_BAND_FAR, ADAPTIVE_BAND_NEAR, AdaptiveResamplingConfig,
-    LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, adaptive_runtime_state_code,
-    adaptive_runtime_state_name_from_code, clamp_ratio_for_local_resampler,
-    local_resampler_ratio_bounds,
+    LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
     adaptive_runtime::{
         AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
-        adaptive_runtime_state_name, compute_hard_recover_high_plan,
-        discard_ring_samples, note_refill_or_underrun, far_mode_band_from_latency,
-        output_to_input_domain_samples, paused_rate_adjust, postprocess_interleaved_output,
-        reset_adaptive_runtime,
+        adaptive_runtime_state_name, compute_hard_recover_high_plan, discard_ring_samples,
+        far_mode_band_from_latency, note_refill_or_underrun, output_to_input_domain_samples,
+        paused_rate_adjust, postprocess_interleaved_output, reset_adaptive_runtime,
         run_adaptive_servo, should_run_adaptive_servo, update_far_mode_state,
         update_latency_metrics, zero_pad_tail,
     },
-    ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
+    adaptive_runtime_state_code, adaptive_runtime_state_name_from_code,
+    clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
+    ring_buffer_io::{flush_ring_buffer, push_samples_with_backpressure},
 };
 
 // FFI bindings for PipeWire thread-safe rate control and stream timing
@@ -465,13 +464,8 @@ impl PipewireWriter {
 
         let max_buffer_fill = self.max_buffer_samples;
         let buffer_before = self.sample_buffer.len();
-        let report = push_samples_with_backpressure(
-            &self.sample_buffer,
-            samples,
-            max_buffer_fill,
-            10,
-            200,
-        );
+        let report =
+            push_samples_with_backpressure(&self.sample_buffer, samples, max_buffer_fill, 10, 200);
         if report.timed_out {
             log::warn!(
                 "Buffer drain timeout after 2s - dropping {} remaining samples to prevent OOM",
@@ -520,7 +514,10 @@ impl PipewireWriter {
             Some(Duration::from_millis(500)),
         );
         if report.timed_out {
-            log::warn!("Flush timeout - {} samples remaining", report.remaining_samples);
+            log::warn!(
+                "Flush timeout - {} samples remaining",
+                report.remaining_samples
+            );
         } else if report.stalled {
             log::debug!(
                 "Flush: buffer stalled at {} samples, draining",
@@ -862,7 +859,8 @@ fn run_pipewire_loop(
     let samples_per_ms_f64 = samples_per_ms as f64;
     let mut fast_catchup_threshold =
         (adaptive_config_snapshot.near_far_threshold_ms as usize).saturating_mul(samples_per_ms);
-    let mut adaptive_update_interval = adaptive_config_snapshot.update_interval_callbacks.max(1) as u64;
+    let mut adaptive_update_interval =
+        adaptive_config_snapshot.update_interval_callbacks.max(1) as u64;
 
     log::info!(
         "PipeWire buffer thresholds ({}ch): latency={}ms max={}ms quantum={}fr | \

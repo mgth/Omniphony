@@ -5,6 +5,7 @@ import { rebuildTrailGeometry, createTrailRenderable } from '../trails.js';
 import { scene } from '../scene/setup.js';
 import { updateSourceSelectionStyles } from '../sources.js';
 import { refreshOverlayLists } from '../speakers.js';
+import { requestSpeakerHeatmapIfNeeded } from '../scene/speaker-heatmap.js';
 
 export function setupTrailsAndDisplayListeners() {
   const trailToggleEl = document.getElementById('trailToggle');
@@ -14,6 +15,11 @@ export function setupTrailsAndDisplayListeners() {
   const trailTtlSliderEl = document.getElementById('trailTtlSlider');
   const trailTtlValEl = document.getElementById('trailTtlVal');
   const localeSelectEl = document.getElementById('localeSelect');
+  const speakerHeatmapSlicesToggleEl = document.getElementById('speakerHeatmapSlicesToggle');
+  const speakerHeatmapVolumeToggleEl = document.getElementById('speakerHeatmapVolumeToggle');
+  const speakerHeatmapSampleCountInputEl = document.getElementById('speakerHeatmapSampleCountInput');
+  const speakerHeatmapMaxSphereSizeSliderEl = document.getElementById('speakerHeatmapMaxSphereSizeSlider');
+  const speakerHeatmapMaxSphereSizeValEl = document.getElementById('speakerHeatmapMaxSphereSizeVal');
 
   if (trailToggleEl) {
     trailToggleEl.addEventListener('change', () => {
@@ -81,6 +87,51 @@ export function setupTrailsAndDisplayListeners() {
   if (localeSelectEl) {
     localeSelectEl.addEventListener('change', () => {
       setLocale(localeSelectEl.value || 'auto');
+    });
+  }
+
+  if (speakerHeatmapSlicesToggleEl) {
+    speakerHeatmapSlicesToggleEl.checked = app.speakerHeatmapSlicesEnabled;
+    speakerHeatmapSlicesToggleEl.addEventListener('change', () => {
+      app.speakerHeatmapSlicesEnabled = speakerHeatmapSlicesToggleEl.checked;
+      requestSpeakerHeatmapIfNeeded();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  if (speakerHeatmapVolumeToggleEl) {
+    speakerHeatmapVolumeToggleEl.checked = app.speakerHeatmapVolumeEnabled;
+    speakerHeatmapVolumeToggleEl.addEventListener('change', () => {
+      app.speakerHeatmapVolumeEnabled = speakerHeatmapVolumeToggleEl.checked;
+      requestSpeakerHeatmapIfNeeded();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  if (speakerHeatmapSampleCountInputEl) {
+    speakerHeatmapSampleCountInputEl.value = String(app.speakerHeatmapSampleCount);
+    speakerHeatmapSampleCountInputEl.addEventListener('change', () => {
+      const nextCount = Number(speakerHeatmapSampleCountInputEl.value);
+      app.speakerHeatmapSampleCount = Math.max(128, Math.min(20000, Math.round(Number.isFinite(nextCount) ? nextCount : 3072)));
+      speakerHeatmapSampleCountInputEl.value = String(app.speakerHeatmapSampleCount);
+      requestSpeakerHeatmapIfNeeded();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  if (speakerHeatmapMaxSphereSizeSliderEl) {
+    speakerHeatmapMaxSphereSizeSliderEl.value = String(app.speakerHeatmapMaxSphereSize);
+    if (speakerHeatmapMaxSphereSizeValEl) {
+      speakerHeatmapMaxSphereSizeValEl.textContent = app.speakerHeatmapMaxSphereSize.toFixed(3);
+    }
+    speakerHeatmapMaxSphereSizeSliderEl.addEventListener('input', () => {
+      const nextSize = Number(speakerHeatmapMaxSphereSizeSliderEl.value);
+      app.speakerHeatmapMaxSphereSize = Math.max(0.01, Math.min(0.2, Number.isFinite(nextSize) ? nextSize : 0.062));
+      if (speakerHeatmapMaxSphereSizeValEl) {
+        speakerHeatmapMaxSphereSizeValEl.textContent = app.speakerHeatmapMaxSphereSize.toFixed(3);
+      }
+      requestSpeakerHeatmapIfNeeded();
+      persistEffectiveRenderPrefs();
     });
   }
 }

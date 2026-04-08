@@ -519,8 +519,7 @@ pub fn process_pipewire_bridge_chunk_metrics<F>(
     F: FnOnce() -> (usize, usize),
 {
     let has_spdif_sync = chunk.windows(4).any(|w| {
-        u16::from_le_bytes([w[0], w[1]]) == 0xF872
-            && u16::from_le_bytes([w[2], w[3]]) == 0x4E1F
+        u16::from_le_bytes([w[0], w[1]]) == 0xF872 && u16::from_le_bytes([w[2], w[3]]) == 0x4E1F
     });
     metrics.bytes_since_log += chunk.len();
     metrics.buffers_since_log += 1;
@@ -721,7 +720,16 @@ unsafe fn pw_core_create_object_raw(
     let Some(create_object) = methods.create_object else {
         return std::ptr::null_mut();
     };
-    unsafe { create_object((*iface).cb.data, factory_name, type_name, version, props, user_data_size) }
+    unsafe {
+        create_object(
+            (*iface).cb.data,
+            factory_name,
+            type_name,
+            version,
+            props,
+            user_data_size,
+        )
+    }
 }
 
 unsafe extern "C" fn pipewire_bridge_adapter_proxy_destroy(data: *mut c_void) {
@@ -800,7 +808,9 @@ unsafe extern "C" fn pipewire_bridge_adapter_proxy_bound_props(
                 continue;
             }
             let key = unsafe { CStr::from_ptr(item.key) }.to_string_lossy();
-            let value = unsafe { CStr::from_ptr(item.value) }.to_string_lossy().into_owned();
+            let value = unsafe { CStr::from_ptr(item.value) }
+                .to_string_lossy()
+                .into_owned();
             if key.as_ref() == "object.serial" {
                 *state.object_serial.borrow_mut() = Some(value);
             } else if key.as_ref() == "node.name" {

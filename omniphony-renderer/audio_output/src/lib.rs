@@ -1,9 +1,11 @@
-pub mod control;
 pub mod adaptive_runtime;
+pub mod control;
 pub mod resampler_fifo;
 pub mod ring_buffer_io;
 
-pub use control::{AppliedAudioOutputState, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig};
+pub use control::{
+    AppliedAudioOutputState, AudioControl, OutputDeviceOption, RequestedAudioOutputConfig,
+};
 
 #[derive(Debug, Clone)]
 pub struct AdaptiveResamplingConfig {
@@ -123,7 +125,11 @@ pub fn compute_adaptive_step(
     samples_per_ms: f64,
 ) -> AdaptiveControlStep {
     let drift = available_samples as i64 - target_buffer_fill as i64;
-    let drift_ms = if samples_per_ms > 0.0 { drift as f64 / samples_per_ms } else { drift as f64 };
+    let drift_ms = if samples_per_ms > 0.0 {
+        drift as f64 / samples_per_ms
+    } else {
+        drift as f64
+    };
     let max_adjust = config.max_adjust.max(0.0);
     let min_consume_adjust = (1.0 - max_adjust).max(0.000_001);
     let max_consume_adjust = 1.0 + max_adjust;
@@ -132,7 +138,8 @@ pub fn compute_adaptive_step(
     if drift.unsigned_abs() as usize > deadband_samples {
         // When the error crosses the target, dump most of the integral energy so the
         // controller does not keep pushing in the old direction for several callbacks.
-        if state.accumulated_drift != 0.0 && drift_ms != 0.0
+        if state.accumulated_drift != 0.0
+            && drift_ms != 0.0
             && state.accumulated_drift.signum() != drift_ms.signum()
         {
             state.accumulated_drift *= config.integral_discharge_ratio.clamp(0.0, 1.0);

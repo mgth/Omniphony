@@ -144,12 +144,11 @@ pub fn run_pipewire_bridge_client_node_backend(
     let node_name_value = CString::new(config.node_name.clone()).expect("valid CString");
     let node_description_value =
         CString::new(config.node_description.clone()).expect("valid CString");
-    let media_name_value =
-        CString::new(config.node_description.clone()).expect("valid CString");
+    let media_name_value = CString::new(config.node_description.clone()).expect("valid CString");
     let port_group_value = CString::new("stream.0").expect("valid CString");
     let port_name_value = CString::new("playback_FL").expect("valid CString");
-    let port_alias_value = CString::new(format!("{}:playback_FL", config.node_description))
-        .expect("valid CString");
+    let port_alias_value =
+        CString::new(format!("{}:playback_FL", config.node_description)).expect("valid CString");
     let port_audio_channel_value = CString::new("FL").expect("valid CString");
     let props = build_pipewire_bridge_stream_properties(
         &config.node_name,
@@ -193,22 +192,38 @@ pub fn run_pipewire_bridge_client_node_backend(
             n_params: 0,
         },
         node_params: [
-            spa_param_info(spa::sys::SPA_PARAM_Props, spa::sys::SPA_PARAM_INFO_READWRITE),
-            spa_param_info(spa::sys::SPA_PARAM_EnumFormat, spa::sys::SPA_PARAM_INFO_READ),
+            spa_param_info(
+                spa::sys::SPA_PARAM_Props,
+                spa::sys::SPA_PARAM_INFO_READWRITE,
+            ),
+            spa_param_info(
+                spa::sys::SPA_PARAM_EnumFormat,
+                spa::sys::SPA_PARAM_INFO_READ,
+            ),
             spa_param_info(spa::sys::SPA_PARAM_Format, spa::sys::SPA_PARAM_INFO_WRITE),
-            spa_param_info(spa::sys::SPA_PARAM_EnumPortConfig, spa::sys::SPA_PARAM_INFO_READ),
+            spa_param_info(
+                spa::sys::SPA_PARAM_EnumPortConfig,
+                spa::sys::SPA_PARAM_INFO_READ,
+            ),
             spa_param_info(
                 spa::sys::SPA_PARAM_PortConfig,
                 spa::sys::SPA_PARAM_INFO_READWRITE,
             ),
-            spa_param_info(spa::sys::SPA_PARAM_Latency, spa::sys::SPA_PARAM_INFO_READWRITE),
+            spa_param_info(
+                spa::sys::SPA_PARAM_Latency,
+                spa::sys::SPA_PARAM_INFO_READWRITE,
+            ),
             spa_param_info(
                 spa::sys::SPA_PARAM_ProcessLatency,
                 spa::sys::SPA_PARAM_INFO_READWRITE,
             ),
             spa_param_info(spa::sys::SPA_PARAM_Tag, spa::sys::SPA_PARAM_INFO_READWRITE),
         ],
-        node_props: spa::sys::spa_dict { flags: 0, n_items: 7, items: std::ptr::null() },
+        node_props: spa::sys::spa_dict {
+            flags: 0,
+            n_items: 7,
+            items: std::ptr::null(),
+        },
         node_prop_items: [
             spa::sys::spa_dict_item {
                 key: pw::keys::NODE_NAME.as_ptr().cast(),
@@ -240,15 +255,25 @@ pub fn run_pipewire_bridge_client_node_backend(
             },
         ],
         port_params: [
-            spa_param_info(spa::sys::SPA_PARAM_EnumFormat, spa::sys::SPA_PARAM_INFO_READ),
+            spa_param_info(
+                spa::sys::SPA_PARAM_EnumFormat,
+                spa::sys::SPA_PARAM_INFO_READ,
+            ),
             spa_param_info(spa::sys::SPA_PARAM_Meta, spa::sys::SPA_PARAM_INFO_READ),
             spa_param_info(spa::sys::SPA_PARAM_IO, spa::sys::SPA_PARAM_INFO_READ),
             spa_param_info(spa::sys::SPA_PARAM_Format, spa::sys::SPA_PARAM_INFO_WRITE),
             spa_param_info(spa::sys::SPA_PARAM_Buffers, 0),
-            spa_param_info(spa::sys::SPA_PARAM_Latency, spa::sys::SPA_PARAM_INFO_READWRITE),
+            spa_param_info(
+                spa::sys::SPA_PARAM_Latency,
+                spa::sys::SPA_PARAM_INFO_READWRITE,
+            ),
             spa_param_info(spa::sys::SPA_PARAM_Tag, spa::sys::SPA_PARAM_INFO_READWRITE),
         ],
-        port_props: spa::sys::spa_dict { flags: 0, n_items: 5, items: std::ptr::null() },
+        port_props: spa::sys::spa_dict {
+            flags: 0,
+            n_items: 5,
+            items: std::ptr::null(),
+        },
         port_prop_items: [
             spa::sys::spa_dict_item {
                 key: b"format.dsp\0".as_ptr().cast(),
@@ -295,7 +320,10 @@ pub fn run_pipewire_bridge_client_node_backend(
         latency_param_bytes: build_pipewire_bridge_latency_pod()?,
         process_latency_param_bytes: build_pipewire_bridge_process_latency_pod()?,
         tag_param_bytes: build_pipewire_bridge_tag_pod(spa::sys::SPA_DIRECTION_INPUT)?,
-        buffers_param_bytes: build_pipewire_bridge_buffers_pod(config.channels, config.sample_rate_hz)?,
+        buffers_param_bytes: build_pipewire_bridge_buffers_pod(
+            config.channels,
+            config.sample_rate_hz,
+        )?,
         io_buffers_param_bytes: build_pipewire_bridge_io_buffers_pod()?,
         mapped_mems: Vec::new(),
         transport_ptr: std::ptr::null_mut(),
@@ -339,10 +367,19 @@ pub fn run_pipewire_bridge_client_node_backend(
     let mut port_param_ptrs = [
         state.enum_format_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
         state.meta_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.io_buffers_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
+        state
+            .io_buffers_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
         state.format_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.buffers_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.latency_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
+        state
+            .buffers_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
+        state
+            .latency_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
         state.tag_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
     ];
 
@@ -398,7 +435,10 @@ pub fn run_pipewire_bridge_client_node_backend(
     };
     if add_listener_res < 0 {
         unsafe { pw::sys::pw_proxy_destroy(client_node.cast()) };
-        anyhow::bail!("Failed to add PipeWire client-node listener: {}", add_listener_res);
+        anyhow::bail!(
+            "Failed to add PipeWire client-node listener: {}",
+            add_listener_res
+        );
     }
     let core_listener_res = unsafe {
         pw_core_add_listener_raw(
@@ -427,7 +467,12 @@ pub fn run_pipewire_bridge_client_node_backend(
     let pw_node = unsafe { pw_client_node_get_node_raw(client_node, pw::sys::PW_VERSION_NODE, 0) };
     if !pw_node.is_null() {
         let node_listener_res = unsafe {
-            pw_node_add_listener_raw(pw_node, &mut state.node_hook, &node_events, state_ptr.cast())
+            pw_node_add_listener_raw(
+                pw_node,
+                &mut state.node_hook,
+                &node_events,
+                state_ptr.cast(),
+            )
         };
         log::debug!(
             "PipeWire bridge client-node node_add_listener: node={} result={} pw_node={:p}",
@@ -453,10 +498,19 @@ pub fn run_pipewire_bridge_client_node_backend(
         state.props_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
         state.enum_format_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
         state.format_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.enum_port_config_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
+        state
+            .enum_port_config_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
         state.port_config_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.latency_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.process_latency_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
+        state
+            .latency_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
+        state
+            .process_latency_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
         state.tag_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
     ];
     let update_res = unsafe {
@@ -529,7 +583,16 @@ unsafe fn pw_core_create_object_raw(
     let Some(create_object) = methods.create_object else {
         return std::ptr::null_mut();
     };
-    unsafe { create_object((*iface).cb.data, factory_name, type_name, version, props, user_data_size) }
+    unsafe {
+        create_object(
+            (*iface).cb.data,
+            factory_name,
+            type_name,
+            version,
+            props,
+            user_data_size,
+        )
+    }
 }
 
 unsafe fn pw_core_add_listener_raw(
@@ -605,7 +668,17 @@ unsafe fn pw_client_node_port_update_raw(
     let Some(port_update) = methods.port_update else {
         return -libc::ENOTSUP;
     };
-    unsafe { port_update((*iface).cb.data, direction, port_id, change_mask, n_params, params, info) }
+    unsafe {
+        port_update(
+            (*iface).cb.data,
+            direction,
+            port_id,
+            change_mask,
+            n_params,
+            params,
+            info,
+        )
+    }
 }
 
 unsafe fn pw_client_node_set_active_raw(
@@ -633,7 +706,16 @@ unsafe fn pw_client_node_port_buffers_raw(
     let Some(port_buffers) = methods.port_buffers else {
         return -libc::ENOTSUP;
     };
-    unsafe { port_buffers((*iface).cb.data, direction, port_id, mix_id, n_buffers, buffers) }
+    unsafe {
+        port_buffers(
+            (*iface).cb.data,
+            direction,
+            port_id,
+            mix_id,
+            n_buffers,
+            buffers,
+        )
+    }
 }
 
 unsafe fn pw_node_add_listener_raw(
@@ -669,10 +751,19 @@ fn pipewire_bridge_client_node_refresh_configured_state(
         state.props_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
         state.enum_format_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
         state.format_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.enum_port_config_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
+        state
+            .enum_port_config_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
         state.port_config_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.latency_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.process_latency_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
+        state
+            .latency_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
+        state
+            .process_latency_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
         state.tag_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
     ];
     let node_res = unsafe {
@@ -688,10 +779,19 @@ fn pipewire_bridge_client_node_refresh_configured_state(
     let mut port_param_ptrs = [
         state.enum_format_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
         state.meta_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.io_buffers_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
+        state
+            .io_buffers_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
         state.format_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.buffers_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
-        state.latency_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
+        state
+            .buffers_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
+        state
+            .latency_param_bytes
+            .as_ptr()
+            .cast::<spa::sys::spa_pod>(),
         state.tag_param_bytes.as_ptr().cast::<spa::sys::spa_pod>(),
     ];
     let port_res = unsafe {
@@ -762,8 +862,11 @@ fn pipewire_bridge_client_node_mark_activation_ready(state: &mut PipewireBridgeC
         return;
     }
 
-    let activation =
-        unsafe { &mut *(state.activation_ptr.cast::<PipewireBridgePwNodeActivation>()) };
+    let activation = unsafe {
+        &mut *(state
+            .activation_ptr
+            .cast::<PipewireBridgePwNodeActivation>())
+    };
 
     unsafe {
         std::ptr::write_volatile(&mut activation.client_version, PW_VERSION_NODE_ACTIVATION);
@@ -818,7 +921,9 @@ unsafe extern "C" fn pipewire_bridge_client_node_core_error(
     let message = if message.is_null() {
         "<null>"
     } else {
-        unsafe { CStr::from_ptr(message) }.to_str().unwrap_or("<invalid utf8>")
+        unsafe { CStr::from_ptr(message) }
+            .to_str()
+            .unwrap_or("<invalid utf8>")
     };
     log::warn!(
         "PipeWire bridge client-node core error: node={} id={} seq={} res={} message={}",
@@ -1309,7 +1414,10 @@ unsafe extern "C" fn pipewire_bridge_client_node_port_set_mix_info(
 
 unsafe extern "C" fn pipewire_bridge_client_node_proxy_destroy(data: *mut c_void) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::debug!("PipeWire bridge client-node proxy destroy: node={}", state.config.node_name);
+    log::debug!(
+        "PipeWire bridge client-node proxy destroy: node={}",
+        state.config.node_name
+    );
 }
 
 unsafe extern "C" fn pipewire_bridge_client_node_proxy_bound(data: *mut c_void, global_id: u32) {
@@ -1323,7 +1431,10 @@ unsafe extern "C" fn pipewire_bridge_client_node_proxy_bound(data: *mut c_void, 
 
 unsafe extern "C" fn pipewire_bridge_client_node_proxy_removed(data: *mut c_void) {
     let state = unsafe { &*(data as *mut PipewireBridgeClientNodeState) };
-    log::debug!("PipeWire bridge client-node proxy removed: node={}", state.config.node_name);
+    log::debug!(
+        "PipeWire bridge client-node proxy removed: node={}",
+        state.config.node_name
+    );
 }
 
 unsafe extern "C" fn pipewire_bridge_client_node_proxy_done(data: *mut c_void, seq: i32) {

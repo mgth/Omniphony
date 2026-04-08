@@ -1,8 +1,8 @@
-use crate::{InputClockMode, InputControl};
 use crate::pipewire_pods::{
     build_pipewire_bridge_buffers_pod, build_pipewire_bridge_format_pod,
     build_pipewire_bridge_stream_properties,
 };
+use crate::{InputClockMode, InputControl};
 use anyhow::{Result, anyhow};
 use pipewire as pw;
 use pw::spa;
@@ -787,10 +787,9 @@ where
     )?;
     let format_pod =
         Pod::from_bytes(&format_values).ok_or_else(|| anyhow!("Invalid PipeWire format pod"))?;
-    let buffers_values =
-        build_pipewire_bridge_buffers_pod(config.channels, config.sample_rate_hz)?;
-    let buffers_pod = Pod::from_bytes(&buffers_values)
-        .ok_or_else(|| anyhow!("Invalid PipeWire buffers pod"))?;
+    let buffers_values = build_pipewire_bridge_buffers_pod(config.channels, config.sample_rate_hz)?;
+    let buffers_pod =
+        Pod::from_bytes(&buffers_values).ok_or_else(|| anyhow!("Invalid PipeWire buffers pod"))?;
     let mut params = [format_pod, buffers_pod];
 
     let mut stream_flags =
@@ -836,11 +835,14 @@ where
     {
         if direct_trigger_active.load(Ordering::Relaxed) {
             let pending = input_control.pending_input_triggers();
-            let trigger_interval = current_direct_pw_driver_trigger_interval(input_control.as_ref());
-            let _ = mainloop.loop_().iterate(next_direct_pw_stream_driver_timeout(
-                pending.as_ref(),
-                next_direct_trigger_at,
-            ));
+            let trigger_interval =
+                current_direct_pw_driver_trigger_interval(input_control.as_ref());
+            let _ = mainloop
+                .loop_()
+                .iterate(next_direct_pw_stream_driver_timeout(
+                    pending.as_ref(),
+                    next_direct_trigger_at,
+                ));
             drain_direct_pw_stream_driver_trigger(
                 &stream,
                 pending.as_ref(),
