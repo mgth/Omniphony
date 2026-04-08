@@ -287,11 +287,15 @@ export const app = {
 };
 
 export function isRoomRatioFrozen() {
-  return app.renderBackendState.frozenRoomRatio === true;
+  return app.renderBackendState.frozenRoomRatio === true
+    || app.evaluationModeState.effective === 'from_file'
+    || app.renderBackendState.effective === 'from_file';
 }
 
 export function isSpeakerLayoutFrozen() {
-  return app.renderBackendState.frozenSpeakers === true;
+  return app.renderBackendState.frozenSpeakers === true
+    || app.evaluationModeState.effective === 'from_file'
+    || app.renderBackendState.effective === 'from_file';
 }
 
 // ---------------------------------------------------------------------------

@@ -199,6 +199,29 @@ fn pick_import_evaluation_artifact_path() -> Option<String> {
 }
 
 #[tauri::command]
+fn pick_export_evaluation_artifact_path(suggested_name: Option<String>) -> Option<String> {
+    let file_name = suggested_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let lowered = s.to_ascii_lowercase();
+            if lowered.ends_with(".oevl") {
+                s.to_string()
+            } else {
+                format!("{s}.oevl")
+            }
+        })
+        .unwrap_or_else(|| "evaluation.oevl".to_string());
+
+    FileDialog::new()
+        .add_filter("Omniphony evaluator", &["oevl"])
+        .set_file_name(&file_name)
+        .save_file()
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn pick_bridge_path() -> Option<String> {
     FileDialog::new()
         .set_title("Select bridge library")
@@ -1073,6 +1096,21 @@ fn control_import_evaluation_artifact(state: State<SharedState>, path: String) {
         &state.osc_tx,
         OscControlMsg::SendString {
             address: "/omniphony/control/render_evaluation_mode/from_file".to_string(),
+            value: trimmed.to_string(),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_export_evaluation_artifact(state: State<SharedState>, path: String) {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/render_evaluation/export".to_string(),
             value: trimmed.to_string(),
         },
     );
@@ -2072,6 +2110,7 @@ fn main() {
             pick_import_layout_path,
             pick_export_layout_path,
             pick_import_evaluation_artifact_path,
+            pick_export_evaluation_artifact_path,
             pick_bridge_path,
             pick_orender_path,
             export_layout_to_path,
@@ -2159,6 +2198,7 @@ fn main() {
             control_input_refresh,
             control_export_layout,
             control_import_evaluation_artifact,
+            control_export_evaluation_artifact,
             control_audio_sample_rate,
         ])
         .run(tauri::generate_context!())

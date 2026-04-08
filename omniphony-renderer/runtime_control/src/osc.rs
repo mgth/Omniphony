@@ -301,6 +301,11 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/render_backend" {
+        if is_from_file_frozen(ctx) {
+            effects.log_message =
+                Some("OSC: ignored render_backend while from_file evaluator is active".to_string());
+            return Some(effects);
+        }
         let requested = parse_string_arg(msg.args.first())
             .and_then(|value| RenderBackendKind::from_str(&value));
         if let Some(requested) = requested {

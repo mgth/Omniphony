@@ -704,6 +704,16 @@ impl RendererControl {
         Ok(speaker_layout)
     }
 
+    pub fn export_active_evaluation_artifact_to_file(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let topology = self.active_topology();
+        topology
+            .backend
+            .save_to_file(path, &topology.speaker_layout)
+    }
+
     /// Mark live params as dirty (changed since last save) and return the new state.
     pub fn mark_dirty(&self) {
         self.config_dirty.store(true, Ordering::Relaxed);

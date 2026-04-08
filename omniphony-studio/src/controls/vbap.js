@@ -66,6 +66,11 @@ function backendCapabilities() {
   return app.renderBackendState.capabilities || null;
 }
 
+function fromFileActive() {
+  return app.evaluationModeState.effective === 'from_file'
+    || app.renderBackendState.effective === 'from_file';
+}
+
 function backendLabel(backend) {
   if (backend === (app.renderBackendState.effective || '')) {
     return app.renderBackendState.effectiveLabel || backend || '—';
@@ -223,12 +228,13 @@ export function renderRenderBackend() {
   const selection = typeof app.renderBackendState.selection === 'string' ? app.renderBackendState.selection : 'vbap';
   const effective = typeof app.renderBackendState.effective === 'string' ? app.renderBackendState.effective : null;
   const visibleBackend = effective || selection;
+  const frozen = fromFileActive() || app.renderBackendState.frozenSpeakers === true;
   if (renderBackendSelectEl) {
     renderBackendSelectEl.value = selection;
-    renderBackendSelectEl.disabled = app.renderBackendState.frozenSpeakers === true;
+    renderBackendSelectEl.disabled = frozen;
   }
   if (restoreBackendBtnEl) {
-    const visible = visibleBackend === 'from_file';
+    const visible = fromFileActive();
     restoreBackendBtnEl.style.display = visible ? '' : 'none';
     restoreBackendBtnEl.disabled =
       !visible
@@ -241,7 +247,7 @@ export function renderRenderBackend() {
   const layoutSelectEl = document.getElementById('layoutSelect');
   const importLayoutBtnEl = document.getElementById('importLayoutBtn');
   const exportLayoutBtnEl = document.getElementById('exportLayoutBtn');
-  const layoutFrozen = app.renderBackendState.frozenSpeakers === true;
+  const layoutFrozen = frozen;
   if (layoutSelectEl) {
     layoutSelectEl.disabled = layoutFrozen || layoutSelectEl.options.length === 0;
   }

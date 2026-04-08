@@ -444,7 +444,7 @@ export function setupTauriBridge() {
     }
     updateRenderBackend();
     updateEvaluationMode();
-    refreshRoomGeometryInputState();
+    updateRoomRatioDisplay();
     renderSpeakerEditor();
     requestSpeakerHeatmapIfNeeded();
   });
@@ -460,7 +460,7 @@ export function setupTauriBridge() {
       app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
     }
     updateRenderBackend();
-    refreshRoomGeometryInputState();
+    updateRoomRatioDisplay();
     renderSpeakerEditor();
   });
 
@@ -473,7 +473,7 @@ export function setupTauriBridge() {
     app.vbapRecomputing = false;
     renderVbapStatus();
     updateRenderBackend();
-    refreshRoomGeometryInputState();
+    updateRoomRatioDisplay();
     renderSpeakerEditor();
     requestSpeakerHeatmapIfNeeded();
   });
