@@ -945,31 +945,15 @@
 
       .conditional-params.open {
         gap: 0.2rem;
-        max-height: var(--panel-open-max-height);
+        max-height: none;
         opacity: 1;
         pointer-events: auto;
-        overflow-x: hidden;
-        overflow-y: auto;
-        scrollbar-gutter: stable;
+        overflow: visible;
+        scrollbar-gutter: auto;
       }
 
       #inputSectionContent {
         min-height: 0;
-      }
-
-      #inputSectionContent.conditional-params.open {
-        max-height: var(--panel-open-max-height-large);
-      }
-
-      #displaySectionContent.conditional-params.open,
-      #audioOutputSectionContent.conditional-params.open,
-      #rendererSectionContent.conditional-params.open,
-      #trailSectionContent.conditional-params.open,
-      #vbapSectionContent.conditional-params.open,
-      #spreadSectionContent.conditional-params.open,
-      #distanceDiffuseParams.conditional-params.open,
-      #spreadFromDistanceParams.conditional-params.open {
-        max-height: var(--panel-open-max-height-large);
       }
 
       .info-list {
@@ -1656,8 +1640,7 @@
       #speakersOverlayScroll::-webkit-scrollbar,
       .osc-config-form.open::-webkit-scrollbar,
       .room-geometry-form.open::-webkit-scrollbar,
-      .telemetry-gauges-form.open::-webkit-scrollbar,
-      .conditional-params.open::-webkit-scrollbar {
+      .telemetry-gauges-form.open::-webkit-scrollbar {
         width: 10px;
       }
 
@@ -1665,8 +1648,7 @@
       #speakersOverlayScroll::-webkit-scrollbar-track,
       .osc-config-form.open::-webkit-scrollbar-track,
       .room-geometry-form.open::-webkit-scrollbar-track,
-      .telemetry-gauges-form.open::-webkit-scrollbar-track,
-      .conditional-params.open::-webkit-scrollbar-track {
+      .telemetry-gauges-form.open::-webkit-scrollbar-track {
         background: rgba(255, 255, 255, 0.04);
         border-radius: 999px;
       }
@@ -1675,8 +1657,7 @@
       #speakersOverlayScroll::-webkit-scrollbar-thumb,
       .osc-config-form.open::-webkit-scrollbar-thumb,
       .room-geometry-form.open::-webkit-scrollbar-thumb,
-      .telemetry-gauges-form.open::-webkit-scrollbar-thumb,
-      .conditional-params.open::-webkit-scrollbar-thumb {
+      .telemetry-gauges-form.open::-webkit-scrollbar-thumb {
         background: rgba(217, 236, 255, 0.22);
         border-radius: 999px;
         border: 2px solid transparent;

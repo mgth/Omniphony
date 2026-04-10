@@ -44,7 +44,9 @@ export function rendererPanelMarkup() {
                   <option value="realtime">Realtime</option>
                   <option value="precomputed_polar">Precomputed polar</option>
                   <option value="precomputed_cartesian">Precomputed cartesian</option>
+                  <option value="from_file">From file</option>
                 </select>
+                <button id="exportEvaluationArtifactBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Export</button>
                 <div id="renderEvaluationModeEffective" class="vbap-step" style="min-width:8rem;text-align:right">—</div>
               </div>
             </div>
@@ -110,6 +112,7 @@ export function rendererPanelMarkup() {
                 <option value="vbap">VBAP</option>
                 <option value="experimental_distance">Distance</option>
               </select>
+              <button id="restoreBackendBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Restore backend</button>
               <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
             </div>
           </div>

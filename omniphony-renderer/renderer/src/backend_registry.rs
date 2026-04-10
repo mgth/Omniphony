@@ -52,45 +52,29 @@ pub struct VbapTopologyBuildPlan {
 impl VbapTopologyBuildPlan {
     pub fn build_gain_model(
         &self,
-        evaluation_mode: LiveEvaluationMode,
+        _evaluation_mode: LiveEvaluationMode,
     ) -> Result<Box<dyn GainModel>> {
-        let vbap = crate::spatial_vbap::VbapPanner::new_with_mode(
-            &self.positions,
-            self.azimuth_resolution,
-            self.elevation_resolution,
-            0.0,
-            self.table_mode,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to create VBAP panner: {}", e))?
-        .with_negative_z(self.allow_negative_z)
-        .with_position_interpolation(self.position_interpolation);
+        #[cfg(not(feature = "saf_vbap"))]
+        {
+            anyhow::bail!(
+                "VBAP backend construction requires the `saf_vbap` feature; use from-file evaluation or enable saf_vbap"
+            );
+        }
+        #[cfg(feature = "saf_vbap")]
+        {
+            let vbap = crate::spatial_vbap::VbapPanner::new_with_mode(
+                &self.positions,
+                self.azimuth_resolution,
+                self.elevation_resolution,
+                0.0,
+                self.table_mode,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to create VBAP panner: {}", e))?
+            .with_negative_z(self.allow_negative_z)
+            .with_position_interpolation(self.position_interpolation);
 
-        let vbap = match evaluation_mode {
-            LiveEvaluationMode::Realtime => vbap,
-            LiveEvaluationMode::PrecomputedPolar
-            | LiveEvaluationMode::PrecomputedCartesian
-            | LiveEvaluationMode::Auto => vbap
-                .precompute_effect_tables(
-                    self.distance_res,
-                    self.distance_max,
-                    self.spread_min,
-                    self.spread_max,
-                    self.distance_model,
-                    self.spread_from_distance,
-                    self.spread_distance_range,
-                    self.spread_distance_curve,
-                    self.diffuse,
-                    self.diffuse_thr,
-                    self.diffuse_curve,
-                    self.room_ratio,
-                    self.room_ratio_rear,
-                    self.room_ratio_lower,
-                    self.room_ratio_center_blend,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to precompute VBAP effect tables: {}", e))?,
-        };
-
-        Ok(Box::new(crate::render_backend::VbapBackend::new(vbap)))
+            Ok(Box::new(crate::render_backend::VbapBackend::new(vbap)))
+        }
     }
 }
 
@@ -122,6 +106,9 @@ impl TopologyBuildPlan {
             LiveEvaluationMode::PrecomputedPolar => EffectiveEvaluationMode::PrecomputedPolar,
             LiveEvaluationMode::PrecomputedCartesian => {
                 EffectiveEvaluationMode::PrecomputedCartesian
+            }
+            LiveEvaluationMode::FromFile => {
+                unreachable!("from_file evaluation mode does not build a backend topology")
             }
             LiveEvaluationMode::Auto => unreachable!("topology build plan must resolve auto mode"),
         };
@@ -267,6 +254,9 @@ pub fn prepare_topology_build_plan(
                 },
                 LiveEvaluationMode::Auto => {
                     unreachable!("evaluation mode must be resolved before building")
+                }
+                LiveEvaluationMode::FromFile => {
+                    unreachable!("from_file evaluation mode does not build a backend plan")
                 }
             };
             let azimuth_resolution = if live.evaluation.polar.azimuth_values > 0 {

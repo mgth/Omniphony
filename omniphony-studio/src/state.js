@@ -108,7 +108,10 @@ export const app = {
     effective: null,
     effectiveLabel: null,
     capabilities: null,
-    allowedEvaluationModes: []
+    allowedEvaluationModes: [],
+    frozenRoomRatio: false,
+    frozenSpeakers: false,
+    restoreBackendAvailable: false
   },
   vbapPositionInterpolation: null,
   vbapAllowNegativeZ: null,
@@ -282,6 +285,18 @@ export const app = {
   // Meter decay
   lastMeterDecayAt: 0
 };
+
+export function isRoomRatioFrozen() {
+  return app.renderBackendState.frozenRoomRatio === true
+    || app.evaluationModeState.effective === 'from_file'
+    || app.renderBackendState.effective === 'from_file';
+}
+
+export function isSpeakerLayoutFrozen() {
+  return app.renderBackendState.frozenSpeakers === true
+    || app.evaluationModeState.effective === 'from_file'
+    || app.renderBackendState.effective === 'from_file';
+}
 
 // ---------------------------------------------------------------------------
 // Constants

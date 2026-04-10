@@ -13,6 +13,8 @@ import { inRendererPanel } from '../ui/panel-roots.js';
 // DOM refs
 const vbapStatusEl = inRendererPanel('vbapStatus');
 const renderBackendSelectEl = inRendererPanel('renderBackendSelect');
+const restoreBackendBtnEl = inRendererPanel('restoreBackendBtn');
+const exportEvaluationArtifactBtnEl = inRendererPanel('exportEvaluationArtifactBtn');
 const renderBackendEffectiveEl = inRendererPanel('renderBackendEffective');
 const renderEvaluationModeSelectEl = inRendererPanel('renderEvaluationModeSelect');
 const renderEvaluationModeEffectiveEl = inRendererPanel('renderEvaluationModeEffective');
@@ -64,12 +66,18 @@ function backendCapabilities() {
   return app.renderBackendState.capabilities || null;
 }
 
+function fromFileActive() {
+  return app.evaluationModeState.effective === 'from_file'
+    || app.renderBackendState.effective === 'from_file';
+}
+
 function backendLabel(backend) {
   if (backend === (app.renderBackendState.effective || '')) {
     return app.renderBackendState.effectiveLabel || backend || '—';
   }
   if (backend === 'vbap') return 'VBAP';
   if (backend === 'experimental_distance') return 'Distance';
+  if (backend === 'from_file') return 'From File';
   return backend || '—';
 }
 
@@ -133,6 +141,7 @@ function formatEvaluationModeLabel(mode) {
     case 'realtime': return 'Realtime';
     case 'precomputed_polar': return 'Polar';
     case 'precomputed_cartesian': return 'Cartesian';
+    case 'from_file': return 'From File';
     default: return '—';
   }
 }
@@ -157,17 +166,27 @@ export function renderEvaluationMode() {
     && app.renderBackendState.allowedEvaluationModes.length > 0
     ? app.renderBackendState.allowedEvaluationModes
     : ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'];
+  const selectionModes = allowedModes.includes('from_file')
+    ? allowedModes
+    : [...allowedModes, 'from_file'];
   const selection = typeof app.evaluationModeState.selection === 'string' ? app.evaluationModeState.selection : null;
   const effectiveMode = typeof app.evaluationModeState.effective === 'string' ? app.evaluationModeState.effective : null;
-  const nextValue = allowedModes.includes(selection) ? selection : allowedModes[0];
+  const visibleModes = [...selectionModes];
+  if (selection && !visibleModes.includes(selection)) {
+    visibleModes.push(selection);
+  }
+  if (effectiveMode && !visibleModes.includes(effectiveMode)) {
+    visibleModes.push(effectiveMode);
+  }
+  const nextValue = visibleModes.includes(selection) ? selection : visibleModes[0];
   if (renderEvaluationModeSelectEl) {
     const currentOptions = Array.from(renderEvaluationModeSelectEl.options).map((option) => option.value);
     if (
-      currentOptions.length !== allowedModes.length
-      || currentOptions.some((value, index) => value !== allowedModes[index])
+      currentOptions.length !== visibleModes.length
+      || currentOptions.some((value, index) => value !== visibleModes[index])
     ) {
       renderEvaluationModeSelectEl.innerHTML = '';
-      allowedModes.forEach((mode) => {
+      visibleModes.forEach((mode) => {
         const option = document.createElement('option');
         option.value = mode;
         option.textContent = formatEvaluationModeLabel(mode);
@@ -175,7 +194,15 @@ export function renderEvaluationMode() {
       });
     }
     renderEvaluationModeSelectEl.value = nextValue;
-    renderEvaluationModeSelectEl.disabled = false;
+    renderEvaluationModeSelectEl.disabled = allowedModes.length <= 1 && allowedModes[0] === 'from_file';
+  }
+  if (exportEvaluationArtifactBtnEl) {
+    const exportable =
+      effectiveMode === 'precomputed_polar'
+      || effectiveMode === 'precomputed_cartesian'
+      || effectiveMode === 'from_file';
+    exportEvaluationArtifactBtnEl.style.display = exportable ? '' : 'none';
+    exportEvaluationArtifactBtnEl.disabled = !exportable || app.vbapRecomputing === true;
   }
   if (renderEvaluationModeEffectiveEl) {
     renderEvaluationModeEffectiveEl.textContent = formatEvaluationModeLabel(effectiveMode);
@@ -201,12 +228,31 @@ export function renderRenderBackend() {
   const selection = typeof app.renderBackendState.selection === 'string' ? app.renderBackendState.selection : 'vbap';
   const effective = typeof app.renderBackendState.effective === 'string' ? app.renderBackendState.effective : null;
   const visibleBackend = effective || selection;
+  const frozen = fromFileActive() || app.renderBackendState.frozenSpeakers === true;
   if (renderBackendSelectEl) {
     renderBackendSelectEl.value = selection;
+    renderBackendSelectEl.disabled = frozen;
+  }
+  if (restoreBackendBtnEl) {
+    const visible = fromFileActive();
+    restoreBackendBtnEl.style.display = visible ? '' : 'none';
+    restoreBackendBtnEl.disabled =
+      !visible
+      || app.renderBackendState.restoreBackendAvailable !== true
+      || app.vbapRecomputing === true;
   }
   if (renderBackendEffectiveEl) {
     renderBackendEffectiveEl.textContent = backendLabel(effective);
   }
+  const layoutSelectEl = document.getElementById('layoutSelect');
+  const importLayoutBtnEl = document.getElementById('importLayoutBtn');
+  const exportLayoutBtnEl = document.getElementById('exportLayoutBtn');
+  const layoutFrozen = frozen;
+  if (layoutSelectEl) {
+    layoutSelectEl.disabled = layoutFrozen || layoutSelectEl.options.length === 0;
+  }
+  if (importLayoutBtnEl) importLayoutBtnEl.disabled = layoutFrozen;
+  if (exportLayoutBtnEl) exportLayoutBtnEl.disabled = layoutFrozen;
   applyRendererBackendVisibility(visibleBackend);
   renderEvaluationMode();
 }

@@ -16,6 +16,8 @@ pub struct SourcePosition {
     pub elevation_deg: Option<f64>,
     #[serde(rename = "distanceM", skip_serializing_if = "Option::is_none")]
     pub distance_m: Option<f64>,
+    #[serde(rename = "gainDb", skip_serializing_if = "Option::is_none")]
+    pub gain_db: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
     #[serde(rename = "directSpeakerIndex", skip_serializing_if = "Option::is_none")]
@@ -108,25 +110,43 @@ pub struct VbapPolar {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct BackendCapabilitiesState {
-    #[serde(rename = "supportsRealtime")]
+    #[serde(rename = "supportsRealtime", alias = "supports_realtime")]
     pub supports_realtime: bool,
-    #[serde(rename = "supportsPrecomputedPolar")]
+    #[serde(
+        rename = "supportsPrecomputedPolar",
+        alias = "supports_precomputed_polar"
+    )]
     pub supports_precomputed_polar: bool,
-    #[serde(rename = "supportsPrecomputedCartesian")]
+    #[serde(
+        rename = "supportsPrecomputedCartesian",
+        alias = "supports_precomputed_cartesian"
+    )]
     pub supports_precomputed_cartesian: bool,
-    #[serde(rename = "supportsPositionInterpolation")]
+    #[serde(
+        rename = "supportsPositionInterpolation",
+        alias = "supports_position_interpolation"
+    )]
     pub supports_position_interpolation: bool,
-    #[serde(rename = "supportsDistanceModel")]
+    #[serde(rename = "supportsDistanceModel", alias = "supports_distance_model")]
     pub supports_distance_model: bool,
-    #[serde(rename = "supportsSpread")]
+    #[serde(rename = "supportsSpread", alias = "supports_spread")]
     pub supports_spread: bool,
-    #[serde(rename = "supportsSpreadFromDistance")]
+    #[serde(
+        rename = "supportsSpreadFromDistance",
+        alias = "supports_spread_from_distance"
+    )]
     pub supports_spread_from_distance: bool,
-    #[serde(rename = "supportsDistanceDiffuse")]
+    #[serde(
+        rename = "supportsDistanceDiffuse",
+        alias = "supports_distance_diffuse"
+    )]
     pub supports_distance_diffuse: bool,
-    #[serde(rename = "supportsHeatmapCartesian")]
+    #[serde(
+        rename = "supportsHeatmapCartesian",
+        alias = "supports_heatmap_cartesian"
+    )]
     pub supports_heatmap_cartesian: bool,
-    #[serde(rename = "supportsTableExport")]
+    #[serde(rename = "supportsTableExport", alias = "supports_table_export")]
     pub supports_table_export: bool,
 }
 
@@ -134,11 +154,20 @@ pub struct BackendCapabilitiesState {
 pub struct RenderBackendState {
     pub selection: Option<String>,
     pub effective: Option<String>,
-    #[serde(rename = "effectiveLabel")]
+    #[serde(rename = "effectiveLabel", alias = "effective_label")]
     pub effective_label: Option<String>,
     pub capabilities: Option<BackendCapabilitiesState>,
-    #[serde(rename = "allowedEvaluationModes")]
+    #[serde(rename = "allowedEvaluationModes", alias = "allowed_evaluation_modes")]
     pub allowed_evaluation_modes: Vec<String>,
+    #[serde(rename = "frozenRoomRatio", alias = "frozen_room_ratio")]
+    pub frozen_room_ratio: bool,
+    #[serde(rename = "frozenSpeakers", alias = "frozen_speakers")]
+    pub frozen_speakers: bool,
+    #[serde(
+        rename = "restoreBackendAvailable",
+        alias = "restore_backend_available"
+    )]
+    pub restore_backend_available: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

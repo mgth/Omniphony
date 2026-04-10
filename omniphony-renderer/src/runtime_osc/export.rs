@@ -115,3 +115,33 @@ pub(crate) fn export_current_layout(control: &Arc<RendererControl>, requested_na
         ),
     }
 }
+
+pub(crate) fn export_current_evaluation_artifact(
+    control: &Arc<RendererControl>,
+    requested_path: &str,
+) {
+    let trimmed = requested_path.trim();
+    if trimmed.is_empty() {
+        log::error!("OSC: refused evaluation export to empty path");
+        return;
+    }
+    let out_path = PathBuf::from(trimmed);
+    if let Some(parent) = out_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::error!(
+                "OSC: failed to create evaluation export directory {}: {}",
+                parent.display(),
+                e
+            );
+            return;
+        }
+    }
+    match control.export_active_evaluation_artifact_to_file(&out_path) {
+        Ok(()) => log::info!("OSC: evaluation artifact exported to {}", out_path.display()),
+        Err(e) => log::error!(
+            "OSC: failed to export evaluation artifact to {}: {}",
+            out_path.display(),
+            e
+        ),
+    }
+}

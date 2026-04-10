@@ -304,8 +304,9 @@ fn init_spatial_renderer(
         return Ok(());
     }
 
+    use renderer::render_backend::{LoadedEvaluationArtifact, LoadedVbapFile};
     use renderer::spatial_renderer::SpatialRenderer;
-    use renderer::spatial_vbap::{DistanceModel, VbapPanner};
+    use renderer::spatial_vbap::DistanceModel;
     use std::str::FromStr;
 
     let distance_model = DistanceModel::from_str(&args.vbap_distance_model)
@@ -338,62 +339,87 @@ fn init_spatial_renderer(
             vbap_table_path.display()
         );
         let start_time = std::time::Instant::now();
-        let (vbap, loaded_layout) = VbapPanner::load_from_file(vbap_table_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load VBAP table: {}", e))?;
-        let vbap = vbap.with_negative_z(vbap_allow_negative_z);
-        let elapsed = start_time.elapsed();
-        log::info!(
-            "VBAP table loaded in {:.3}s (az={}°, el={}°, spread_res={}, {} triangles)",
-            elapsed.as_secs_f64(),
-            vbap.azimuth_resolution(),
-            vbap.elevation_resolution(),
-            vbap.spread_resolution(),
-            vbap.num_triangles()
-        );
+        match LoadedEvaluationArtifact::load_from_file(vbap_table_path) {
+            Ok(artifact) => {
+                let elapsed = start_time.elapsed();
+                log::info!(
+                    "Evaluation artifact loaded in {:.3}s (mode={:?}, source_backend={})",
+                    elapsed.as_secs_f64(),
+                    artifact.mode(),
+                    artifact.source_backend_id()
+                );
+                log::info!(
+                    "Using frozen speaker layout from artifact: {} speakers ({})",
+                    artifact.speaker_layout().num_speakers(),
+                    artifact.speaker_layout().speaker_names().join(", ")
+                );
+                SpatialRenderer::from_evaluation_artifact(
+                    artifact,
+                    48000,
+                    args.log_object_positions,
+                    args.master_gain,
+                    args.auto_gain,
+                    args.use_loudness,
+                )?
+            }
+            Err(_) => {
+                let loaded_file = LoadedVbapFile::load_from_file(vbap_table_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to load VBAP table: {}", e))?;
+                let elapsed = start_time.elapsed();
+                log::info!(
+                    "VBAP table loaded in {:.3}s (az={}°, el={}°, spread_res={}, {} triangles)",
+                    elapsed.as_secs_f64(),
+                    loaded_file.azimuth_resolution(),
+                    loaded_file.elevation_resolution(),
+                    loaded_file.spread_resolution(),
+                    loaded_file.num_triangles()
+                );
 
-        let layout = if let Some(layout) = loaded_layout {
-            log::info!(
-                "Using speaker layout from VBAP table: {} speakers ({})",
-                layout.num_speakers(),
-                layout.speaker_names().join(", ")
-            );
-            layout
-        } else {
-            log::warn!("VBAP table does not include speaker layout (old format)");
-            resolve_layout(args, current_layout_from_config)?
-        };
+                let layout = if let Some(layout) = loaded_file.speaker_layout().cloned() {
+                    log::info!(
+                        "Using speaker layout from VBAP table: {} speakers ({})",
+                        layout.num_speakers(),
+                        layout.speaker_names().join(", ")
+                    );
+                    layout
+                } else {
+                    log::warn!("VBAP table does not include speaker layout (old format)");
+                    resolve_layout(args, current_layout_from_config)?
+                };
 
-        log::info!(
-            "Speaker layout: {} speakers ({})",
-            layout.num_speakers(),
-            layout.speaker_names().join(", ")
-        );
+                log::info!(
+                    "Speaker layout: {} speakers ({})",
+                    layout.num_speakers(),
+                    layout.speaker_names().join(", ")
+                );
 
-        SpatialRenderer::from_vbap(
-            vbap,
-            layout,
-            48000,
-            vbap_allow_negative_z,
-            args.render_evaluation_position_interpolation,
-            distance_model,
-            args.evaluation_polar_distance_max,
-            args.spread_from_distance,
-            args.spread_distance_range,
-            args.spread_distance_curve,
-            args.vbap_spread_min,
-            args.vbap_spread_max,
-            args.log_object_positions,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-            args.master_gain,
-            args.auto_gain,
-            args.use_loudness,
-            args.distance_diffuse,
-            args.distance_diffuse_threshold,
-            args.distance_diffuse_curve,
-        )?
+                SpatialRenderer::from_vbap_file(
+                    loaded_file,
+                    layout,
+                    48000,
+                    vbap_allow_negative_z,
+                    args.render_evaluation_position_interpolation,
+                    distance_model,
+                    args.evaluation_polar_distance_max,
+                    args.spread_from_distance,
+                    args.spread_distance_range,
+                    args.spread_distance_curve,
+                    args.vbap_spread_min,
+                    args.vbap_spread_max,
+                    args.log_object_positions,
+                    room_ratio,
+                    room_ratio_rear,
+                    room_ratio_lower,
+                    room_ratio_center_blend,
+                    args.master_gain,
+                    args.auto_gain,
+                    args.use_loudness,
+                    args.distance_diffuse,
+                    args.distance_diffuse_threshold,
+                    args.distance_diffuse_curve,
+                )?
+            }
+        }
     } else {
         #[cfg(feature = "saf_vbap")]
         {

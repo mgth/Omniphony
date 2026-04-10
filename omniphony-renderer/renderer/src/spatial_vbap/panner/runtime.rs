@@ -28,30 +28,6 @@ impl VbapPanner {
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     #[inline]
-    fn map_depth_with_room_ratios(
-        depth: f32,
-        front_ratio: f32,
-        rear_ratio: f32,
-        center_blend: f32,
-    ) -> f32 {
-        let d = depth.clamp(-1.0, 1.0);
-        let blend = center_blend.clamp(0.0, 1.0);
-        let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
-        if d >= 0.0 {
-            let t = d;
-            let a = center_ratio - front_ratio;
-            let b = 2.0 * (front_ratio - center_ratio);
-            a * t * t * t + b * t * t + center_ratio * t
-        } else {
-            let t = -d;
-            let a = center_ratio - rear_ratio;
-            let b = 2.0 * (rear_ratio - center_ratio);
-            let mapped = a * t * t * t + b * t * t + center_ratio * t;
-            -mapped
-        }
-    }
-
-    #[inline]
     fn cartesian_total_z_points(&self, z_size: usize, z_neg_size: usize) -> usize {
         if self.allow_negative_z && z_neg_size > 0 {
             z_size + z_neg_size
@@ -157,8 +133,6 @@ impl VbapPanner {
             allow_negative_z: true,
             position_interpolation: true,
             cartesian_cache: None,
-            polar_distance_cache: None,
-            precomputed_effects: false,
             #[cfg(feature = "saf_vbap")]
             speaker_dirs_deg: Some(speaker_dirs_deg.to_vec()),
         })
@@ -187,9 +161,7 @@ impl VbapPanner {
         if self.spread_tables.iter().all(|t| t.gtable.is_empty()) {
             self.recompute_grid_dims();
         }
-        self.precomputed_effects = false;
         self.cartesian_cache = None;
-        self.polar_distance_cache = None;
         self
     }
 
@@ -208,8 +180,6 @@ impl VbapPanner {
 
     pub fn with_table_mode(mut self, table_mode: VbapTableMode) -> Result<Self, String> {
         self.table_mode = table_mode;
-        self.precomputed_effects = false;
-        self.polar_distance_cache = None;
         match table_mode {
             VbapTableMode::Polar => {
                 self.cartesian_cache = None;
@@ -235,87 +205,6 @@ impl VbapPanner {
                 );
             }
         }
-        Ok(self)
-    }
-
-    pub fn has_precomputed_effects(&self) -> bool {
-        self.precomputed_effects
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn precompute_effect_tables(
-        mut self,
-        distance_step: f32,
-        distance_max: f32,
-        spread_min: f32,
-        spread_max: f32,
-        distance_model: DistanceModel,
-        spread_from_distance: bool,
-        spread_distance_range: f32,
-        spread_distance_curve: f32,
-        distance_diffuse: bool,
-        distance_diffuse_threshold: f32,
-        distance_diffuse_curve: f32,
-        room_ratio: [f32; 3],
-        room_ratio_rear: f32,
-        room_ratio_lower: f32,
-        room_ratio_center_blend: f32,
-    ) -> Result<Self, String> {
-        if distance_step <= 0.0 {
-            return Err("distance_step must be > 0".to_string());
-        }
-        if distance_max <= 0.0 {
-            return Err("distance_max must be > 0".to_string());
-        }
-        match self.table_mode {
-            VbapTableMode::Cartesian {
-                x_size,
-                y_size,
-                z_size,
-                z_neg_size,
-            } => {
-                self.cartesian_cache = Some(self.build_cartesian_effect_cache(
-                    x_size,
-                    y_size,
-                    z_size,
-                    z_neg_size,
-                    spread_min,
-                    spread_max,
-                    distance_model,
-                    spread_from_distance,
-                    spread_distance_range,
-                    spread_distance_curve,
-                    distance_diffuse,
-                    distance_diffuse_threshold,
-                    distance_diffuse_curve,
-                    room_ratio,
-                    room_ratio_rear,
-                    room_ratio_lower,
-                    room_ratio_center_blend,
-                )?);
-                self.polar_distance_cache = None;
-            }
-            VbapTableMode::Polar => {
-                self.polar_distance_cache = Some(self.build_polar_distance_effect_cache(
-                    distance_step,
-                    distance_max,
-                    spread_min,
-                    spread_max,
-                    distance_model,
-                    spread_from_distance,
-                    spread_distance_range,
-                    spread_distance_curve,
-                    distance_diffuse,
-                    distance_diffuse_threshold,
-                    distance_diffuse_curve,
-                    room_ratio,
-                    room_ratio_rear,
-                    room_ratio_lower,
-                    room_ratio_center_blend,
-                )?);
-            }
-        }
-        self.precomputed_effects = true;
         Ok(self)
     }
 
@@ -364,291 +253,11 @@ impl VbapPanner {
             x_coords,
             y_coords,
             z_coords,
-            effect_space: false,
-            room_ratio: [1.0, 1.0, 1.0],
-            room_ratio_rear: 1.0,
-            room_ratio_lower: 1.0,
-            room_ratio_center_blend: 0.5,
             tables,
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn build_cartesian_effect_cache(
-        &self,
-        x_size: usize,
-        y_size: usize,
-        z_size: usize,
-        z_neg_size: usize,
-        spread_min: f32,
-        spread_max: f32,
-        distance_model: DistanceModel,
-        spread_from_distance: bool,
-        spread_distance_range: f32,
-        spread_distance_curve: f32,
-        distance_diffuse: bool,
-        distance_diffuse_threshold: f32,
-        distance_diffuse_curve: f32,
-        room_ratio: [f32; 3],
-        room_ratio_rear: f32,
-        room_ratio_lower: f32,
-        room_ratio_center_blend: f32,
-    ) -> Result<CartesianCache, String> {
-        let total_z_points = self.cartesian_total_z_points(z_size, z_neg_size);
-        let grid_points = x_size * y_size * total_z_points;
-        let mut table = Vec::with_capacity(grid_points * self.n_speakers);
-        let raw_x_coords: Vec<f32> = (0..x_size)
-            .map(|xi| -1.0 + 2.0 * (xi as f32) / ((x_size - 1) as f32))
-            .collect();
-        let raw_y_coords: Vec<f32> = (0..y_size)
-            .map(|yi| -1.0 + 2.0 * (yi as f32) / ((y_size - 1) as f32))
-            .collect();
-        let raw_z_coords: Vec<f32> = (0..total_z_points)
-            .map(|zi| self.table_z_value(zi, z_size, z_neg_size))
-            .collect();
-        let x_coords: Vec<f32> = raw_x_coords.iter().map(|x| *x * room_ratio[0]).collect();
-        let y_coords: Vec<f32> = raw_y_coords
-            .iter()
-            .map(|y| {
-                Self::map_depth_with_room_ratios(
-                    *y,
-                    room_ratio[1],
-                    room_ratio_rear,
-                    room_ratio_center_blend,
-                )
-            })
-            .collect();
-        let z_coords: Vec<f32> = raw_z_coords
-            .iter()
-            .map(|z| {
-                if *z >= 0.0 {
-                    *z * room_ratio[2]
-                } else {
-                    *z * room_ratio_lower
-                }
-            })
-            .collect();
-
-        let gain_source = self.make_gain_source()?;
-
-        for &z in &raw_z_coords {
-            for &y in &raw_y_coords {
-                for &x in &raw_x_coords {
-                    let gains = self.compute_effect_gains(
-                        &*gain_source,
-                        x,
-                        y,
-                        z,
-                        spread_min,
-                        spread_max,
-                        distance_model,
-                        spread_from_distance,
-                        spread_distance_range,
-                        spread_distance_curve,
-                        distance_diffuse,
-                        distance_diffuse_threshold,
-                        distance_diffuse_curve,
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                    )?;
-                    table.extend_from_slice(&gains[..]);
-                }
-            }
-        }
-
-        Ok(CartesianCache {
-            x_size,
-            y_size,
-            x_coords,
-            y_coords,
-            z_coords,
-            effect_space: true,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-            tables: vec![table],
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn build_polar_distance_effect_cache(
-        &self,
-        distance_step: f32,
-        distance_max: f32,
-        spread_min: f32,
-        spread_max: f32,
-        distance_model: DistanceModel,
-        spread_from_distance: bool,
-        spread_distance_range: f32,
-        spread_distance_curve: f32,
-        distance_diffuse: bool,
-        distance_diffuse_threshold: f32,
-        distance_diffuse_curve: f32,
-        room_ratio: [f32; 3],
-        room_ratio_rear: f32,
-        room_ratio_lower: f32,
-        room_ratio_center_blend: f32,
-    ) -> Result<PolarDistanceCache, String> {
-        let max_dist = distance_max.max(1e-6);
-        let d_size = ((max_dist / distance_step).ceil() as usize) + 1;
-        let mut table = Vec::with_capacity(d_size * self.n_el * self.n_az * self.n_speakers);
-
-        let gain_source = self.make_gain_source()?;
-
-        for di in 0..d_size {
-            let d = (di as f32 * distance_step).min(max_dist);
-            for el in 0..self.n_el {
-                let elevation = self.elevation_from_index(el);
-                for az in 0..self.n_az {
-                    let azimuth = (az as f32 * self.az_res_deg as f32) - 180.0;
-                    let (x, y, z) = spherical_to_adm(azimuth, elevation, d);
-                    let gains = self.compute_effect_gains(
-                        &*gain_source,
-                        x,
-                        y,
-                        z,
-                        spread_min,
-                        spread_max,
-                        distance_model,
-                        spread_from_distance,
-                        spread_distance_range,
-                        spread_distance_curve,
-                        distance_diffuse,
-                        distance_diffuse_threshold,
-                        distance_diffuse_curve,
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                    )?;
-                    table.extend_from_slice(&gains[..]);
-                }
-            }
-        }
-
-        Ok(PolarDistanceCache {
-            d_size,
-            d_step: distance_step,
-            d_max: max_dist,
-            table,
-        })
-    }
-
-    // ── Unified effect gains computation ────────────────────────────────────
-
-    /// Compute VBAP gains for a position with all effects applied (spread,
-    /// distance model, diffuse blending, room ratio scaling).
-    ///
-    /// This replaces the former pair of `compute_effect_gains_for_position`
-    /// (non-SAF) and `compute_effect_gains_for_position_with_layout` (SAF)
-    /// by delegating gain lookup to the [`VbapGainSource`] trait.
-    #[allow(clippy::too_many_arguments)]
-    fn compute_effect_gains(
-        &self,
-        gain_source: &dyn gain_source::VbapGainSource,
-        x: f32,
-        y: f32,
-        z: f32,
-        spread_min: f32,
-        spread_max: f32,
-        distance_model: DistanceModel,
-        spread_from_distance: bool,
-        spread_distance_range: f32,
-        spread_distance_curve: f32,
-        distance_diffuse: bool,
-        distance_diffuse_threshold: f32,
-        distance_diffuse_curve: f32,
-        room_ratio: [f32; 3],
-        room_ratio_rear: f32,
-        room_ratio_lower: f32,
-        room_ratio_center_blend: f32,
-    ) -> Result<Gains, String> {
-        let scaled_x = x * room_ratio[0];
-        let scaled_y = Self::map_depth_with_room_ratios(
-            y,
-            room_ratio[1],
-            room_ratio_rear,
-            room_ratio_center_blend,
-        );
-        let scaled_z = if z >= 0.0 {
-            z * room_ratio[2]
-        } else {
-            z * room_ratio_lower
-        };
-        let (azimuth, elevation, distance) = adm_to_spherical(scaled_x, scaled_y, scaled_z);
-        let spread = if spread_from_distance {
-            let normalized = 1.0 - (distance / spread_distance_range.max(1e-6));
-            let t = normalized
-                .clamp(0.0, 1.0)
-                .powf(spread_distance_curve.max(0.0));
-            (spread_min + t * (spread_max - spread_min)).clamp(0.0, 1.0)
-        } else {
-            spread_min.clamp(0.0, 1.0)
-        };
-
-        let direct = gain_source.compute_gains(azimuth, elevation, spread)?;
-        let directional = if distance_diffuse {
-            let mirror = gain_source.compute_gains(-azimuth, elevation, spread)?;
-            let raw_distance = (x * x + y * y + z * z).sqrt();
-            let t = (raw_distance / distance_diffuse_threshold.max(1e-6))
-                .min(1.0)
-                .powf(distance_diffuse_curve);
-            let alpha = 0.5 + 0.5 * t;
-            let w_direct = alpha.sqrt();
-            let w_mirror = (1.0 - alpha).sqrt();
-            let mut blended = Gains::zeroed(self.n_speakers);
-            let mut e_direct = 0.0f32;
-            let mut e_blended = 0.0f32;
-            for i in 0..self.n_speakers {
-                let g = w_direct * direct[i] + w_mirror * mirror[i];
-                blended.set(i, g);
-                e_direct += direct[i] * direct[i];
-                e_blended += g * g;
-            }
-            if e_blended > 1e-12 && e_direct > 0.0 {
-                let scale = (e_direct / e_blended).sqrt();
-                for i in 0..self.n_speakers {
-                    blended.set(i, blended[i] * scale);
-                }
-            }
-            blended
-        } else {
-            direct
-        };
-
-        Ok(VbapPanner::apply_gain(
-            &directional,
-            calculate_distance_attenuation(distance, distance_model),
-        ))
-    }
-
     // ── Runtime lookup ──────────────────────────────────────────────────────
-
-    pub fn get_gains_cartesian_spread_from_distance(
-        &self,
-        x: f32,
-        y: f32,
-        z: f32,
-        distance_model: DistanceModel,
-        spread_distance_range: f32,
-        spread_distance_curve: f32,
-    ) -> Gains {
-        let z = if self.allow_negative_z { z } else { z.max(0.0) };
-        let (final_azimuth, final_elevation, final_distance) = adm_to_spherical(x, y, z);
-
-        let normalized = 1.0 - (final_distance / spread_distance_range);
-        let spread = normalized.max(0.0).min(1.0).powf(spread_distance_curve);
-
-        let gains = self.get_gains_with_spread(final_azimuth, final_elevation, spread);
-
-        VbapPanner::apply_gain(
-            &gains,
-            calculate_distance_attenuation(final_distance, distance_model),
-        )
-    }
 
     pub fn get_gains_cartesian(
         &self,
@@ -659,12 +268,6 @@ impl VbapPanner {
         distance_model: DistanceModel,
     ) -> Gains {
         let z = if self.allow_negative_z { z } else { z.max(0.0) };
-        if self.precomputed_effects {
-            return match self.table_mode {
-                VbapTableMode::Cartesian { .. } => self.get_gains_from_cartesian_cache(x, y, z),
-                VbapTableMode::Polar => self.get_gains_from_polar_distance_cache(x, y, z),
-            };
-        }
 
         let distance = (x * x + y * y + z * z).sqrt();
         let gains = match self.table_mode {
@@ -742,34 +345,9 @@ impl VbapPanner {
             z.clamp(0.0, 1.0)
         };
 
-        let query_x = if cache.effect_space {
-            raw_x * cache.room_ratio[0]
-        } else {
-            raw_x
-        };
-        let query_y = if cache.effect_space {
-            Self::map_depth_with_room_ratios(
-                raw_y,
-                cache.room_ratio[1],
-                cache.room_ratio_rear,
-                cache.room_ratio_center_blend,
-            )
-        } else {
-            raw_y
-        };
-        let query_z = if cache.effect_space {
-            if raw_z >= 0.0 {
-                raw_z * cache.room_ratio[2]
-            } else {
-                raw_z * cache.room_ratio_lower
-            }
-        } else {
-            raw_z
-        };
-
-        let (x0, x1, tx) = Self::axis_lookup(&cache.x_coords, query_x);
-        let (y0, y1, ty) = Self::axis_lookup(&cache.y_coords, query_y);
-        let (z0, z1, tz) = Self::axis_lookup(&cache.z_coords, query_z);
+        let (x0, x1, tx) = Self::axis_lookup(&cache.x_coords, raw_x);
+        let (y0, y1, ty) = Self::axis_lookup(&cache.y_coords, raw_y);
+        let (z0, z1, tz) = Self::axis_lookup(&cache.z_coords, raw_z);
 
         if !self.position_interpolation {
             return self.lookup_cartesian_nearest(
@@ -878,57 +456,6 @@ impl VbapPanner {
             let c0 = c00 * (1.0 - ty) + c10 * ty;
             let c1 = c01 * (1.0 - ty) + c11 * ty;
             out.data[s] = c0 * (1.0 - tz) + c1 * tz;
-        }
-        out
-    }
-
-    fn get_gains_from_polar_distance_cache(&self, x: f32, y: f32, z: f32) -> Gains {
-        let Some(cache) = self.polar_distance_cache.as_ref() else {
-            let z = if self.allow_negative_z { z } else { z.max(0.0) };
-            let (azimuth, elevation, _) = adm_to_spherical(x, y, z);
-            return self.get_gains_with_spread(azimuth, elevation, 0.0);
-        };
-
-        let z = if self.allow_negative_z { z } else { z.max(0.0) };
-        let (azimuth, elevation, distance) = adm_to_spherical(x, y, z);
-        let (az0, az1, azt) = self.get_azimuth_idx(azimuth);
-        let (el0, el1, elt) = self.get_elevation_idx(elevation);
-        let fd = (distance.min(cache.d_max) / cache.d_step).clamp(0.0, (cache.d_size - 1) as f32);
-        let d0 = fd.floor() as usize;
-        let d1 = fd.ceil() as usize;
-        let dt = fd - d0 as f32;
-
-        let idx = |d: usize, el: usize, az: usize| -> usize {
-            ((d * self.n_el + el) * self.n_az + az) * self.n_speakers
-        };
-
-        if !self.position_interpolation {
-            let az = Self::nearest_idx(az0, az1, azt);
-            let el = Self::nearest_idx(el0, el1, elt);
-            let d = Self::nearest_idx(d0, d1, dt);
-            return Gains::from_slice(
-                &cache.table[idx(d, el, az)..idx(d, el, az) + self.n_speakers],
-            );
-        }
-
-        let mut out = Gains::new(self.n_speakers);
-        for s in 0..self.n_speakers {
-            let c000 = cache.table[idx(d0, el0, az0) + s];
-            let c100 = cache.table[idx(d0, el0, az1) + s];
-            let c010 = cache.table[idx(d0, el1, az0) + s];
-            let c110 = cache.table[idx(d0, el1, az1) + s];
-            let c001 = cache.table[idx(d1, el0, az0) + s];
-            let c101 = cache.table[idx(d1, el0, az1) + s];
-            let c011 = cache.table[idx(d1, el1, az0) + s];
-            let c111 = cache.table[idx(d1, el1, az1) + s];
-
-            let c00 = c000 * (1.0 - azt) + c100 * azt;
-            let c10 = c010 * (1.0 - azt) + c110 * azt;
-            let c01 = c001 * (1.0 - azt) + c101 * azt;
-            let c11 = c011 * (1.0 - azt) + c111 * azt;
-            let c0 = c00 * (1.0 - elt) + c10 * elt;
-            let c1 = c01 * (1.0 - elt) + c11 * elt;
-            out.data[s] = c0 * (1.0 - dt) + c1 * dt;
         }
         out
     }

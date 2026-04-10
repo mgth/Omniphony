@@ -1,4 +1,4 @@
-import { app } from '../state.js';
+import { app, isRoomRatioFrozen } from '../state.js';
 import {
   persistRoomGeometryPrefs, getRoomCenterBlendFromInput, renderRoomCenterBlendControl,
   normalizeRoomGeometryInputDisplays, updateRoomGeometryButtonsState,
@@ -37,6 +37,7 @@ export function setupRoomGeometryListeners() {
 
   if (roomGeometryCancelBtnEl) {
     roomGeometryCancelBtnEl.addEventListener('click', () => {
+      if (isRoomRatioFrozen()) return;
       if (roomGeometryCancelBtnEl.disabled || !app.roomGeometryBaselineKey) return;
       if (app.roomGeometryApplyTimer !== null) {
         clearTimeout(app.roomGeometryApplyTimer);
@@ -52,6 +53,7 @@ export function setupRoomGeometryListeners() {
 
   roomMasterAxisInputs.forEach((input) => {
     input.addEventListener('change', () => {
+      if (isRoomRatioFrozen()) return;
       if (!input.checked) return;
       app.roomMasterAxis = input.value;
       refreshRoomGeometryInputState();
@@ -71,6 +73,7 @@ export function setupRoomGeometryListeners() {
   ].forEach(([axis, el]) => {
     if (!el) return;
     el.addEventListener('change', () => {
+      if (isRoomRatioFrozen()) return;
       app.roomAxisDrivers[axis] = getRoomDriverValue(axis);
       refreshRoomGeometryInputState();
       persistRoomGeometryPrefs();
@@ -94,11 +97,13 @@ export function setupRoomGeometryListeners() {
   ].forEach((el) => {
     if (!el) return;
     el.addEventListener('input', () => {
+      if (isRoomRatioFrozen()) return;
       updateRoomGeometryLivePreview();
       updateRoomGeometryButtonsState();
       scheduleRoomGeometryApply();
     });
     el.addEventListener('change', () => {
+      if (isRoomRatioFrozen()) return;
       normalizeRoomGeometryInputDisplays();
       updateRoomGeometryLivePreview();
       updateRoomGeometryButtonsState();
@@ -108,18 +113,21 @@ export function setupRoomGeometryListeners() {
 
   if (roomRatioCenterBlendSliderEl) {
     roomRatioCenterBlendSliderEl.addEventListener('input', () => {
+      if (isRoomRatioFrozen()) return;
       renderRoomCenterBlendControl(getRoomCenterBlendFromInput());
       updateRoomGeometryLivePreview();
       updateRoomGeometryButtonsState();
       scheduleRoomGeometryApply();
     });
     roomRatioCenterBlendSliderEl.addEventListener('change', () => {
+      if (isRoomRatioFrozen()) return;
       renderRoomCenterBlendControl(getRoomCenterBlendFromInput());
       updateRoomGeometryLivePreview();
       updateRoomGeometryButtonsState();
       applyRoomGeometryNow();
     });
     roomRatioCenterBlendSliderEl.addEventListener('dblclick', () => {
+      if (isRoomRatioFrozen()) return;
       renderRoomCenterBlendControl(0.5);
       updateRoomGeometryLivePreview();
       updateRoomGeometryButtonsState();
@@ -129,6 +137,7 @@ export function setupRoomGeometryListeners() {
 
   if (roomRatioCenterBlendValueEl) {
     roomRatioCenterBlendValueEl.addEventListener('dblclick', () => {
+      if (isRoomRatioFrozen()) return;
       renderRoomCenterBlendControl(0.5);
       updateRoomGeometryLivePreview();
       updateRoomGeometryButtonsState();

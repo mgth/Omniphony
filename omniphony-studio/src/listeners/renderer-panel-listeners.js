@@ -20,6 +20,8 @@ export function setupRendererPanelListeners() {
   const vbapCartZNegSizeInputEl = document.getElementById('vbapCartZNegSizeInput');
   const vbapCartesianGridToggleBtnEl = document.getElementById('vbapCartesianGridToggleBtn');
   const renderBackendSelectEl = document.getElementById('renderBackendSelect');
+  const restoreBackendBtnEl = document.getElementById('restoreBackendBtn');
+  const exportEvaluationArtifactBtnEl = document.getElementById('exportEvaluationArtifactBtn');
   const renderEvaluationModeSelectEl = document.getElementById('renderEvaluationModeSelect');
   const vbapPolarAzimuthResolutionInputEl = document.getElementById('vbapPolarAzimuthResolutionInput');
   const vbapPolarElevationResolutionInputEl = document.getElementById('vbapPolarElevationResolutionInput');
@@ -174,9 +176,56 @@ export function setupRendererPanelListeners() {
     });
   }
 
+  if (restoreBackendBtnEl) {
+    restoreBackendBtnEl.addEventListener('click', () => {
+      if (app.renderBackendState.restoreBackendAvailable !== true) return;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateRenderBackend();
+      invoke('control_restore_render_backend');
+    });
+  }
+
+  if (exportEvaluationArtifactBtnEl) {
+    exportEvaluationArtifactBtnEl.addEventListener('click', () => {
+      const effectiveMode = String(app.evaluationModeState.effective || '').trim().toLowerCase();
+      if (!['precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(effectiveMode)) {
+        return;
+      }
+      const suggestedName = effectiveMode === 'from_file'
+        ? 'evaluation-from-file.oevl'
+        : `evaluation-${effectiveMode}.oevl`;
+      invoke('pick_export_evaluation_artifact_path', { suggestedName })
+        .then((path) => {
+          const trimmed = typeof path === 'string' ? path.trim() : '';
+          if (!trimmed) return;
+          invoke('control_export_evaluation_artifact', { path: trimmed });
+        })
+        .catch((e) => {
+          console.error('[evaluation export]', e);
+        });
+    });
+  }
+
   if (renderEvaluationModeSelectEl) {
     renderEvaluationModeSelectEl.addEventListener('change', () => {
       const value = String(renderEvaluationModeSelectEl.value || '').trim().toLowerCase();
+      if (value === 'from_file') {
+        invoke('pick_import_evaluation_artifact_path')
+          .then((path) => {
+            const trimmed = typeof path === 'string' ? path.trim() : '';
+            if (!trimmed) {
+              updateEvaluationMode();
+              return;
+            }
+            invoke('control_import_evaluation_artifact', { path: trimmed });
+          })
+          .catch((e) => {
+            console.error('[from_file import]', e);
+            updateEvaluationMode();
+          });
+        return;
+      }
       const allowed = Array.isArray(app.renderBackendState.allowedEvaluationModes)
         && app.renderBackendState.allowedEvaluationModes.length > 0
         ? app.renderBackendState.allowedEvaluationModes

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { app } from '../state.js';
+import { app, isSpeakerLayoutFrozen } from '../state.js';
 import { tf } from '../i18n.js';
 import { pushLog, normalizeLogError } from '../log.js';
 import { updateConfigSavedUI } from '../controls/config.js';
@@ -16,6 +16,7 @@ export function setupLayoutListeners() {
 
   if (exportLayoutBtnEl) {
     exportLayoutBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       const fallbackName = sanitizeLayoutExportName(defaultLayoutExportNameFromSpeakers(app.currentLayoutSpeakers));
       invoke('pick_export_layout_path', { suggestedName: fallbackName })
         .then((path) => {
@@ -37,6 +38,7 @@ export function setupLayoutListeners() {
 
   if (importLayoutBtnEl) {
     importLayoutBtnEl.addEventListener('click', () => {
+      if (isSpeakerLayoutFrozen()) return;
       invoke('pick_import_layout_path')
         .then((path) => {
           const trimmed = typeof path === 'string' ? path.trim() : '';
@@ -61,6 +63,7 @@ export function setupLayoutListeners() {
 
   if (layoutSelectEl) {
     layoutSelectEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
       invoke('select_layout', { key: layoutSelectEl.value });
     });
   }

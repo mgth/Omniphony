@@ -66,18 +66,34 @@
 
 use crate::live_params::{
     CartesianEvaluationParams, EvaluationLiveParams, LiveEvaluationMode, LiveParams,
-    PolarEvaluationParams, PreferredEvaluationMode, RampMode, RenderTopology, RendererControl,
+    PolarEvaluationParams, RampMode, RenderTopology, RendererControl,
 };
+use crate::ramp_strategy::{
+    ChannelRampState, GainTableRampStrategy, PositionRampStrategy, RampContext, RampProgress,
+    RampRenderParams, RampStatus, RampStrategy, RampTarget,
+};
+#[cfg(feature = "saf_vbap")]
+use crate::render_backend::RenderRequest;
 use crate::render_backend::{
-    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
-    PolarEvaluationConfig, RenderBackendKind, RenderRequest, VbapBackend,
-    build_prepared_render_engine,
+    LoadedEvaluationArtifact, LoadedVbapFile, RenderBackendKind, SerializedEvaluationMode,
+    build_from_artifact_render_engine, build_from_file_render_engine,
 };
 use crate::spatial_vbap::VbapTableMode;
-use crate::spatial_vbap::{DistanceModel, Gains, VbapPanner, adm_to_spherical};
+use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
+use std::str::FromStr;
 use std::sync::Arc;
+
+#[cfg(feature = "saf_vbap")]
+use crate::live_params::PreferredEvaluationMode;
+#[cfg(feature = "saf_vbap")]
+use crate::render_backend::{
+    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
+    PolarEvaluationConfig, VbapBackend, build_prepared_render_engine,
+};
+#[cfg(feature = "saf_vbap")]
+use crate::spatial_vbap::VbapPanner;
 
 /// Output of a single rendered frame.
 pub struct RenderedFrame {
@@ -89,6 +105,7 @@ pub struct RenderedFrame {
     pub object_gains: Vec<(usize, Gains)>,
 }
 
+#[cfg(feature = "saf_vbap")]
 fn evaluation_build_config(
     request_template: RenderRequest,
     position_interpolation: bool,
@@ -164,176 +181,20 @@ pub struct SpatialChannelEvent {
     pub sample_pos: Option<u64>,
 }
 
-/// Grouping of spatial properties (position and spread)
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SpatialAttributes {
-    pub position: [f64; 3],
-    pub spread: f32,
-}
-
-impl Default for SpatialAttributes {
-    fn default() -> Self {
-        Self {
-            position: [0.0; 3],
-            spread: 0.0,
-        }
-    }
-}
-
-impl SpatialAttributes {
-    fn interpolate(&self, target: &Self, fraction: f64) -> Self {
-        let ts = 1.0 - fraction;
-        let tt = fraction;
-        Self {
-            position: [
-                self.position[0] * ts + target.position[0] * tt,
-                self.position[1] * ts + target.position[1] * tt,
-                self.position[2] * ts + target.position[2] * tt,
-            ],
-            spread: (self.spread as f64 * ts + target.spread as f64 * tt) as f32,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct RenderGainCache {
-    topology_identity: usize,
-    position_bits: [u64; 3],
-    room_ratio_bits: [u32; 3],
-    room_ratio_rear_bits: u32,
-    room_ratio_lower_bits: u32,
-    room_ratio_center_blend_bits: u32,
-    spread_min_bits: u32,
-    spread_max_bits: u32,
-    spread_distance_range_bits: u32,
-    spread_distance_curve_bits: u32,
-    distance_diffuse_threshold_bits: u32,
-    distance_diffuse_curve_bits: u32,
-    spread_from_distance: bool,
-    use_distance_diffuse: bool,
-    distance_model: crate::spatial_vbap::DistanceModel,
-    valid: bool,
-    gains: Vec<f32>,
-}
-
-impl RenderGainCache {
-    fn matches(
-        &self,
-        topology_identity: usize,
-        rendering_position: [f64; 3],
-        live: &LiveSnapshot<'_>,
-        distance_model: crate::spatial_vbap::DistanceModel,
-    ) -> bool {
-        self.valid
-            && self.topology_identity == topology_identity
-            && self.position_bits == rendering_position.map(f64::to_bits)
-            && self.room_ratio_bits == live.room_ratio.map(f32::to_bits)
-            && self.room_ratio_rear_bits == live.room_ratio_rear.to_bits()
-            && self.room_ratio_lower_bits == live.room_ratio_lower.to_bits()
-            && self.room_ratio_center_blend_bits == live.room_ratio_center_blend.to_bits()
-            && self.spread_min_bits == live.spread_min.to_bits()
-            && self.spread_max_bits == live.spread_max.to_bits()
-            && self.spread_distance_range_bits == live.spread_distance_range.to_bits()
-            && self.spread_distance_curve_bits == live.spread_distance_curve.to_bits()
-            && self.distance_diffuse_threshold_bits == live.distance_diffuse_threshold.to_bits()
-            && self.distance_diffuse_curve_bits == live.distance_diffuse_curve.to_bits()
-            && self.spread_from_distance == live.spread_from_distance
-            && self.use_distance_diffuse == live.use_distance_diffuse
-            && self.distance_model == distance_model
-    }
-
-    fn update_signature(
-        &mut self,
-        topology_identity: usize,
-        rendering_position: [f64; 3],
-        live: &LiveSnapshot<'_>,
-        distance_model: crate::spatial_vbap::DistanceModel,
-    ) {
-        self.topology_identity = topology_identity;
-        self.position_bits = rendering_position.map(f64::to_bits);
-        self.room_ratio_bits = live.room_ratio.map(f32::to_bits);
-        self.room_ratio_rear_bits = live.room_ratio_rear.to_bits();
-        self.room_ratio_lower_bits = live.room_ratio_lower.to_bits();
-        self.room_ratio_center_blend_bits = live.room_ratio_center_blend.to_bits();
-        self.spread_min_bits = live.spread_min.to_bits();
-        self.spread_max_bits = live.spread_max.to_bits();
-        self.spread_distance_range_bits = live.spread_distance_range.to_bits();
-        self.spread_distance_curve_bits = live.spread_distance_curve.to_bits();
-        self.distance_diffuse_threshold_bits = live.distance_diffuse_threshold.to_bits();
-        self.distance_diffuse_curve_bits = live.distance_diffuse_curve.to_bits();
-        self.spread_from_distance = live.spread_from_distance;
-        self.use_distance_diffuse = live.use_distance_diffuse;
-        self.distance_model = distance_model;
-        self.valid = true;
-    }
-}
-
 /// Per-channel state for movement detection and gain ramping
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ChannelState {
     /// Gain in dB
     gain_db: i8,
 
-    /// Current spatial attributes (position, spread)
-    current: SpatialAttributes,
-
-    /// Target spatial attributes for ramping
-    target: SpatialAttributes,
-
-    /// Ramp duration in samples from metadata.
-    ramp_length: u64,
-    /// Remaining ramp units. Interpreted according to the active ramp mode.
-    remaining_ramp_units: Option<u64>,
-
-    target_sample_index: Option<u64>,
-    render_gain_cache: RenderGainCache,
+    ramp: ChannelRampState,
 }
 
 impl Default for ChannelState {
     fn default() -> Self {
         Self {
             gain_db: -128, // -inf dB (muted)
-            current: SpatialAttributes::default(),
-            target: SpatialAttributes::default(),
-            ramp_length: 0,
-            remaining_ramp_units: None,
-            target_sample_index: None,
-            render_gain_cache: RenderGainCache::default(),
-        }
-    }
-}
-
-trait RampProcessor {
-    fn process_ramp(&mut self, step: usize) -> RampStatus;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RampStatus {
-    Ramping,
-    Finished,
-    Idle,
-}
-
-impl RampProcessor for ChannelState {
-    fn process_ramp(&mut self, step: usize) -> RampStatus {
-        if let Some(remaining_units) = self.remaining_ramp_units {
-            let step_u64 = step as u64;
-
-            if remaining_units > step_u64 {
-                let fraction = step_u64 as f64 / remaining_units as f64;
-
-                // Interpolate current state towards target
-                self.current = self.current.interpolate(&self.target, fraction);
-
-                self.remaining_ramp_units = Some(remaining_units - step_u64);
-                RampStatus::Ramping
-            } else {
-                self.current = self.target;
-                self.remaining_ramp_units = None;
-                RampStatus::Finished
-            }
-        } else {
-            RampStatus::Idle
+            ramp: ChannelRampState::default(),
         }
     }
 }
@@ -374,6 +235,7 @@ struct LiveSnapshot<'a> {
     spread_from_distance: bool,
     spread_distance_range: f32,
     spread_distance_curve: f32,
+    position_interpolation: bool,
     ramp_mode: RampMode,
     use_loudness: bool,
     speaker_params: &'a [crate::live_params::SpeakerLiveParams],
@@ -456,6 +318,9 @@ pub struct SpatialRenderer {
     /// Per-speaker delay lines — one per speaker, fixed 100 ms capacity.
     /// Owned exclusively by the render thread; no locking required.
     delay_lines: Vec<crate::delay_line::DelayLine>,
+
+    /// Optional contributor-provided ramp strategy override.
+    ramp_strategy_override: Option<Arc<dyn RampStrategy>>,
 }
 
 impl SpatialRenderer {
@@ -484,7 +349,7 @@ impl SpatialRenderer {
     /// * `distance_diffuse_curve` - Curve exponent for the blend weight
     ///
     /// **Note:** This method requires the `saf_vbap` feature to generate VBAP tables.
-    /// Without saf_vbap, use `from_vbap()` to load pre-generated tables.
+    /// Without saf_vbap, use `from_vbap_file()` to load pre-generated tables.
     #[cfg(feature = "saf_vbap")]
     pub fn new(
         speaker_layout: SpeakerLayout,
@@ -546,30 +411,6 @@ impl SpatialRenderer {
         } else {
             0.25
         };
-        let vbap = vbap
-            .precompute_effect_tables(
-                distance_step,
-                distance_max,
-                spread_min.clamp(0.0, 1.0),
-                spread_max.clamp(0.0, 1.0),
-                distance_model,
-                spread_from_distance,
-                spread_distance_range,
-                spread_distance_curve,
-                distance_diffuse,
-                distance_diffuse_threshold,
-                distance_diffuse_curve,
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to precompute VBAP effect tables: {}", e))?;
-        if !vbap.has_precomputed_effects() {
-            return Err(anyhow::anyhow!(
-                "VBAP panner created without precomputed effect tables"
-            ));
-        }
         let vbap_triangles = vbap.num_triangles();
         let topology = RenderTopology::new(
             Arc::new(build_prepared_render_engine(
@@ -695,14 +536,15 @@ impl SpatialRenderer {
         ))
     }
 
-    /// Create a new spatial renderer from a pre-loaded VBAP panner
+    /// Create a new spatial renderer from a pre-loaded VBAP evaluation file
     ///
-    /// This allows using pre-computed VBAP gain tables loaded from disk,
-    /// which is much faster than computing them at runtime.
+    /// This uses a serialized evaluation table directly, without constructing a VBAP backend.
+    /// The loaded file becomes the active evaluator, which preserves the original lookup data
+    /// and keeps the file-loading path independent from backend implementations.
     ///
     /// # Arguments
     ///
-    /// * `vbap` - Pre-loaded VBAP panner (from VbapPanner::load_from_file)
+    /// * `loaded_file` - Pre-loaded VBAP evaluation file
     /// * `speaker_layout` - Speaker configuration (must match the VBAP table)
     /// * `sample_rate` - Sample rate in Hz (for ramp timing)
     /// * `distance_model` - Distance attenuation model
@@ -720,8 +562,137 @@ impl SpatialRenderer {
     /// * `distance_diffuse` - Enable distance-based antipodal diffuse blending
     /// * `distance_diffuse_threshold` - ADM distance at which blend reaches 100% direct
     /// * `distance_diffuse_curve` - Curve exponent for the blend weight
-    pub fn from_vbap(
-        vbap: VbapPanner,
+    pub fn from_evaluation_artifact(
+        artifact: LoadedEvaluationArtifact,
+        sample_rate: u32,
+        log_object_positions: bool,
+        master_gain_db: f32,
+        auto_gain: bool,
+        use_loudness: bool,
+    ) -> Result<Self> {
+        let speaker_layout = artifact.speaker_layout().clone();
+        let frozen = artifact.frozen_request().clone();
+        let distance_model = DistanceModel::from_str(&frozen.distance_model)
+            .map_err(|e| anyhow::anyhow!("Invalid frozen distance model in artifact: {}", e))?;
+        let initial_evaluation_mode = match artifact.mode() {
+            SerializedEvaluationMode::PrecomputedCartesian => {
+                LiveEvaluationMode::PrecomputedCartesian
+            }
+            SerializedEvaluationMode::PrecomputedPolar => LiveEvaluationMode::PrecomputedPolar,
+        };
+        let (
+            az_res_deg,
+            el_res_deg,
+            distance_res,
+            distance_max,
+            allow_negative_z,
+            cartesian_x,
+            cartesian_y,
+            cartesian_z,
+            cartesian_z_neg,
+        ) = match artifact.mode() {
+            SerializedEvaluationMode::PrecomputedCartesian => {
+                let (x_count, y_count, z_count) =
+                    artifact.cartesian_dimensions().unwrap_or((2, 2, 2));
+                (
+                    1,
+                    1,
+                    0.25,
+                    2.0,
+                    true,
+                    x_count.max(1),
+                    y_count.max(1),
+                    z_count.max(1),
+                    0,
+                )
+            }
+            SerializedEvaluationMode::PrecomputedPolar => {
+                let (az_count, el_count, distance_count) =
+                    artifact.polar_dimensions().unwrap_or((2, 2, 2));
+                let allow_negative_z = el_count > 2;
+                let az_res_deg = (360.0 / az_count.max(1) as f32).round().max(1.0) as i32;
+                let elevation_span = if allow_negative_z { 180.0 } else { 90.0 };
+                let el_res_deg = (elevation_span / el_count.max(1) as f32).round().max(1.0) as i32;
+                let distance_max = 2.0;
+                let distance_res = distance_max / distance_count.max(1) as f32;
+                (
+                    az_res_deg,
+                    el_res_deg,
+                    distance_res,
+                    distance_max,
+                    allow_negative_z,
+                    1,
+                    1,
+                    1,
+                    0,
+                )
+            }
+        };
+        let spread_resolution = 0.0;
+        let topology = RenderTopology::new(
+            Arc::new(build_from_artifact_render_engine(artifact)),
+            speaker_layout,
+        )?;
+        let excluded: Vec<&str> = topology
+            .speaker_layout
+            .speakers
+            .iter()
+            .filter(|s| !s.spatialize)
+            .map(|s| s.name.as_str())
+            .collect();
+        let mut live_params = Self::build_live_params_and_log(
+            &topology.speaker_layout,
+            initial_evaluation_mode,
+            az_res_deg,
+            el_res_deg,
+            distance_res,
+            distance_max,
+            allow_negative_z,
+            topology
+                .backend
+                .capabilities()
+                .supports_position_interpolation,
+            cartesian_x,
+            cartesian_y,
+            cartesian_z,
+            cartesian_z_neg,
+            master_gain_db,
+            frozen.spread_min,
+            frozen.spread_max,
+            frozen.spread_from_distance,
+            frozen.spread_distance_range,
+            frozen.spread_distance_curve,
+            RampMode::Sample,
+            use_loudness,
+            distance_model,
+            frozen.room_ratio,
+            frozen.room_ratio_rear,
+            frozen.room_ratio_lower,
+            frozen.room_ratio_center_blend,
+            frozen.use_distance_diffuse,
+            frozen.distance_diffuse_threshold,
+            frozen.distance_diffuse_curve,
+            auto_gain,
+            &excluded,
+            &topology.bed_to_speaker_mapping,
+        );
+        live_params.backend_id = RenderBackendKind::FromFile.as_str().to_string();
+        let editable_layout = topology.speaker_layout.clone();
+        let control = RendererControl::new(live_params, topology, editable_layout, None);
+
+        Ok(Self::finish_construction(
+            control.active_topology().speaker_layout.num_speakers(),
+            spread_resolution,
+            sample_rate,
+            distance_model,
+            log_object_positions,
+            auto_gain,
+            control,
+        ))
+    }
+
+    pub fn from_vbap_file(
+        loaded_file: LoadedVbapFile,
         speaker_layout: SpeakerLayout,
         sample_rate: u32,
         allow_negative_z: bool,
@@ -746,44 +717,17 @@ impl SpatialRenderer {
         distance_diffuse_curve: f32,
     ) -> Result<Self> {
         let num_speakers = speaker_layout.num_speakers();
-        let spread_resolution = vbap.spread_resolution();
+        let spread_resolution = loaded_file.spread_resolution();
         let distance_step = if spread_resolution > 0.0 {
             spread_resolution
         } else {
             0.25
         };
-        let vbap = vbap
-            .with_negative_z(allow_negative_z)
-            .with_position_interpolation(vbap_position_interpolation)
-            .precompute_effect_tables(
-                distance_step,
-                distance_max,
-                spread_min.clamp(0.0, 1.0),
-                spread_max.clamp(0.0, 1.0),
-                distance_model,
-                spread_from_distance,
-                spread_distance_range,
-                spread_distance_curve,
-                distance_diffuse,
-                distance_diffuse_threshold,
-                distance_diffuse_curve,
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to precompute VBAP effect tables: {}", e))?;
-        if !vbap.has_precomputed_effects() {
-            return Err(anyhow::anyhow!(
-                "Loaded VBAP panner without precomputed effect tables"
-            ));
-        }
-        let vbap_num_speakers = vbap.num_speakers();
-        let vbap_num_triangles = vbap.num_triangles();
-        let vbap_table_mode = vbap.table_mode();
-        let vbap_azimuth_resolution = vbap.azimuth_resolution();
-        let vbap_elevation_resolution = vbap.elevation_resolution();
-        let vbap_position_interpolation = vbap.position_interpolation();
+        let vbap_num_speakers = loaded_file.num_speakers();
+        let vbap_num_triangles = loaded_file.num_triangles();
+        let vbap_table_mode = VbapTableMode::Polar;
+        let vbap_azimuth_resolution = loaded_file.azimuth_resolution();
+        let vbap_elevation_resolution = loaded_file.elevation_resolution();
 
         log::info!(
             "Created spatial renderer from pre-loaded VBAP table: {} total speakers, {} in VBAP table, {} triangles, spread_res={}, distance_model={}",
@@ -794,40 +738,11 @@ impl SpatialRenderer {
             distance_model
         );
         let topology = RenderTopology::new(
-            Arc::new(build_prepared_render_engine(
-                Box::new(VbapBackend::new(vbap)),
-                match vbap_table_mode {
-                    VbapTableMode::Polar => EffectiveEvaluationMode::PrecomputedPolar,
-                    VbapTableMode::Cartesian { .. } => {
-                        EffectiveEvaluationMode::PrecomputedCartesian
-                    }
-                },
-                &evaluation_build_config(
-                    RenderRequest {
-                        adm_position: [0.0, 0.0, 0.0],
-                        spread_min,
-                        spread_max,
-                        spread_from_distance,
-                        spread_distance_range,
-                        spread_distance_curve,
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                        use_distance_diffuse: distance_diffuse,
-                        distance_diffuse_threshold,
-                        distance_diffuse_curve,
-                        distance_model,
-                    },
-                    vbap_position_interpolation,
-                    vbap_table_mode,
-                    vbap_azimuth_resolution,
-                    vbap_elevation_resolution,
-                    distance_step,
-                    distance_max,
-                    allow_negative_z,
-                ),
-            )?),
+            Arc::new(build_from_file_render_engine(
+                loaded_file,
+                allow_negative_z,
+                vbap_position_interpolation,
+            )),
             speaker_layout,
         )?;
 
@@ -886,41 +801,8 @@ impl SpatialRenderer {
             &excluded,
             &topology.bed_to_speaker_mapping,
         );
-        let rebuild_params = crate::live_params::BackendRebuildParams {
-            backend_id: RenderBackendKind::Vbap.as_str(),
-            preferred_evaluation_mode: PreferredEvaluationMode::from_vbap_table_mode(
-                vbap_table_mode,
-            ),
-            allow_negative_z,
-            vbap: Some(crate::live_params::VbapModelRebuildParams {
-                az_res_deg: vbap_azimuth_resolution,
-                el_res_deg: vbap_elevation_resolution,
-                spread_resolution,
-                distance_max,
-                table_mode: vbap_table_mode,
-                cartesian_default_x_size: match vbap_table_mode {
-                    VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
-                    VbapTableMode::Polar => 1,
-                },
-                cartesian_default_y_size: match vbap_table_mode {
-                    VbapTableMode::Cartesian { y_size, .. } => y_size.saturating_sub(1),
-                    VbapTableMode::Polar => 1,
-                },
-                cartesian_default_z_size: match vbap_table_mode {
-                    VbapTableMode::Cartesian { z_size, .. } => z_size.saturating_sub(1),
-                    VbapTableMode::Polar => 1,
-                },
-                cartesian_default_z_neg_size: match vbap_table_mode {
-                    VbapTableMode::Cartesian { z_neg_size, .. } => z_neg_size,
-                    VbapTableMode::Polar => 0,
-                },
-                distance_model,
-                allow_negative_z,
-            }),
-        };
         let editable_layout = topology.speaker_layout.clone();
-        let control =
-            RendererControl::new(live_params, topology, editable_layout, Some(rebuild_params));
+        let control = RendererControl::new(live_params, topology, editable_layout, None);
 
         Ok(Self::finish_construction(
             num_speakers,
@@ -1111,6 +993,7 @@ impl SpatialRenderer {
                     .map(|_| crate::delay_line::DelayLine::new(max_delay))
                     .collect()
             },
+            ramp_strategy_override: None,
         }
     }
 
@@ -1168,6 +1051,43 @@ impl SpatialRenderer {
         Arc::clone(&self.control)
     }
 
+    pub fn set_ramp_strategy(&mut self, strategy: Arc<dyn RampStrategy>) {
+        self.ramp_strategy_override = Some(strategy);
+        self.reset_runtime_state();
+    }
+
+    pub fn clear_ramp_strategy(&mut self) {
+        self.ramp_strategy_override = None;
+        self.reset_runtime_state();
+    }
+
+    fn ramp_context<'a>(
+        &self,
+        topology_identity: usize,
+        topology: &'a RenderTopology,
+        live: &LiveSnapshot<'_>,
+    ) -> RampContext<'a> {
+        RampContext::new(
+            topology.backend.as_ref(),
+            topology_identity,
+            RampRenderParams {
+                spread_min: live.spread_min,
+                spread_max: live.spread_max,
+                spread_from_distance: live.spread_from_distance,
+                spread_distance_range: live.spread_distance_range,
+                spread_distance_curve: live.spread_distance_curve,
+                room_ratio: live.room_ratio,
+                room_ratio_rear: live.room_ratio_rear,
+                room_ratio_lower: live.room_ratio_lower,
+                room_ratio_center_blend: live.room_ratio_center_blend,
+                use_distance_diffuse: live.use_distance_diffuse,
+                distance_diffuse_threshold: live.distance_diffuse_threshold,
+                distance_diffuse_curve: live.distance_diffuse_curve,
+                distance_model: self.distance_model,
+            },
+        )
+    }
+
     /// Clear cached per-channel spatial/ramp state after a decoder reset or
     /// stream restart so stale object positions cannot leak into subsequent
     /// rendering.
@@ -1182,19 +1102,25 @@ impl SpatialRenderer {
     /// Called internally from `render_frame` when pending events are present.
     /// The `channel_idx` and `is_bed` fields of each event must already be
     /// resolved by the caller (see `SpatialChannelEvent`).
-    fn update_metadata(&self, events: &[SpatialChannelEvent]) -> Result<()> {
+    fn update_metadata(
+        &self,
+        events: &[SpatialChannelEvent],
+        strategy: &dyn RampStrategy,
+        ctx: &RampContext<'_>,
+    ) -> Result<()> {
         let mut channel_states = self.channel_states.lock().unwrap();
 
         for event in events {
             let state = channel_states
                 .entry(event.channel_idx)
                 .or_insert_with(ChannelState::default);
+            state.ramp.ensure_speaker_count(ctx.speaker_count());
 
             if let Some(gain) = event.gain_db {
                 state.gain_db = gain;
             }
             if let Some(ramp_length) = event.ramp_length {
-                state.ramp_length = ramp_length as u64;
+                state.ramp.ramp_length = ramp_length as u64;
             }
 
             // Beds are routed directly to speakers — no position state needed.
@@ -1206,28 +1132,37 @@ impl SpatialRenderer {
             let spread_changed = false;
 
             if let Some(target_position) = event.position {
-                if state.target.position != target_position || spread_changed {
+                if state.ramp.target_position != target_position || spread_changed {
+                    let current_target_spread = state.ramp.target_spread;
+                    let current_ramp_length = state.ramp.ramp_length;
                     if self.log_object_positions {
-                        let remaining_units = state.remaining_ramp_units.unwrap_or(0);
+                        let remaining_units = state.ramp.remaining_ramp_units.unwrap_or(0);
                         let sample_pos = event.sample_pos.unwrap_or(0);
-                        if state.target.position != target_position {
+                        if state.ramp.target_position != target_position {
                             log::info!(
                                 "  Obj ch{:2}: sample_pos {} remaining {} - Starting ramp over {} samples (~{}ms)",
                                 event.channel_idx,
                                 sample_pos,
                                 remaining_units,
-                                state.ramp_length,
-                                state.ramp_length as f32 / self.sample_rate as f32 * 1000.0
+                                state.ramp.ramp_length,
+                                state.ramp.ramp_length as f32 / self.sample_rate as f32 * 1000.0
                             );
                         }
                     }
-                    state.target.position = target_position;
-                    state.remaining_ramp_units = Some(state.ramp_length);
-                    state.target_sample_index = event.sample_pos;
+                    strategy.update_target(
+                        &mut state.ramp,
+                        RampTarget {
+                            position: target_position,
+                            spread: current_target_spread,
+                            ramp_length: current_ramp_length,
+                        },
+                        event.sample_pos,
+                        ctx,
+                    );
                 }
             } else if spread_changed {
-                if state.remaining_ramp_units.is_none() {
-                    state.current.spread = state.target.spread;
+                if state.ramp.remaining_ramp_units.is_none() {
+                    state.ramp.current_spread = state.ramp.target_spread;
                 }
             }
         }
@@ -1280,10 +1215,6 @@ impl SpatialRenderer {
         pending_events: &[SpatialChannelEvent],
         samples_buf: Vec<f32>,
     ) -> Result<RenderedFrame> {
-        if !pending_events.is_empty() {
-            self.update_metadata(pending_events)?;
-        }
-
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
         let live = {
             let g = self.control.live.read().unwrap();
@@ -1346,6 +1277,7 @@ impl SpatialRenderer {
                 spread_from_distance: g.spread_from_distance,
                 spread_distance_range: g.spread_distance_range,
                 spread_distance_curve: g.spread_distance_curve,
+                position_interpolation: g.evaluation.position_interpolation,
                 ramp_mode: g.ramp_mode,
                 use_loudness: g.use_loudness,
                 speaker_params: &self.speaker_params_buf[..self.num_speakers],
@@ -1363,6 +1295,21 @@ impl SpatialRenderer {
         let topology_guard = self.control.active_topology();
         let topology = &*topology_guard;
         let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
+        let ramp_context = self.ramp_context(topology_identity, topology, &live);
+        let ramp_strategy_override = self.ramp_strategy_override.clone();
+        static POSITION_STRATEGY: PositionRampStrategy = PositionRampStrategy;
+        static GAIN_TABLE_STRATEGY: GainTableRampStrategy = GainTableRampStrategy;
+        let ramp_strategy: &dyn RampStrategy = if let Some(ref strategy) = ramp_strategy_override {
+            strategy.as_ref()
+        } else if live.position_interpolation {
+            &POSITION_STRATEGY
+        } else {
+            &GAIN_TABLE_STRATEGY
+        };
+
+        if !pending_events.is_empty() {
+            self.update_metadata(pending_events, ramp_strategy, &ramp_context)?;
+        }
 
         let start_time = std::time::Instant::now();
 
@@ -1514,28 +1461,36 @@ impl SpatialRenderer {
                         continue;
                     }
                 };
+                state
+                    .ramp
+                    .ensure_speaker_count(ramp_context.speaker_count());
 
-                let frame_rendering_position = match live.ramp_mode {
-                    RampMode::Off => {
-                        state.current = state.target;
-                        state.remaining_ramp_units = None;
-                        Some((state.current.position, RampStatus::Finished))
+                let log_object_snapshot = |rendering_position: [f64; 3], final_gains: &Gains| {
+                    if !self.log_object_positions {
+                        return;
                     }
-                    RampMode::Frame => {
-                        let rendering_position = state.current.position;
-                        let ramping = state.process_ramp(sample_length);
-                        Some((rendering_position, ramping))
-                    }
-                    RampMode::Sample => {
-                        if state.remaining_ramp_units.is_none() {
-                            Some((state.current.position, RampStatus::Idle))
-                        } else {
-                            None
-                        }
-                    }
-                };
 
-                let compute_object_gains = |rendering_position: [f64; 3]| {
+                    let gains_with_names: Vec<String> = final_gains
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, g)| {
+                            let speaker_idx =
+                                if let Some(mapping) = active_backend_to_speaker_mapping {
+                                    mapping[idx]
+                                } else {
+                                    idx
+                                };
+                            format!(
+                                "{}={:.3}",
+                                active_speaker_names
+                                    .as_ref()
+                                    .expect("speaker names available for logging")[speaker_idx],
+                                g
+                            )
+                        })
+                        .collect();
+                    let active_speakers = final_gains.iter().filter(|&&g| g > 0.01).count();
+                    let spread_indicator = if live.spread_from_distance { "d" } else { "" };
                     let scaled_x = rendering_position[0] as f32 * live.room_ratio[0];
                     let scaled_y = map_depth_with_room_ratios(
                         rendering_position[1] as f32,
@@ -1548,129 +1503,181 @@ impl SpatialRenderer {
                     } else {
                         rendering_position[2] as f32 * live.room_ratio_lower
                     };
-                    let final_gains = topology
-                        .backend
-                        .compute_gains(&RenderRequest {
-                            adm_position: rendering_position,
-                            spread_min: live.spread_min,
-                            spread_max: live.spread_max,
-                            spread_from_distance: live.spread_from_distance,
-                            spread_distance_range: live.spread_distance_range,
-                            spread_distance_curve: live.spread_distance_curve,
-                            room_ratio: live.room_ratio,
-                            room_ratio_rear: live.room_ratio_rear,
-                            room_ratio_lower: live.room_ratio_lower,
-                            room_ratio_center_blend: live.room_ratio_center_blend,
-                            use_distance_diffuse: live.use_distance_diffuse,
-                            distance_diffuse_threshold: live.distance_diffuse_threshold,
-                            distance_diffuse_curve: live.distance_diffuse_curve,
-                            distance_model: self.distance_model,
-                        })
-                        .gains;
-                    (scaled_x, scaled_y, scaled_z, final_gains)
+                    let (azimuth, elevation, distance) =
+                        adm_to_spherical(scaled_x, scaled_y, scaled_z);
+
+                    log::info!(
+                        "  Obj ch{:2}: ADM({:+.2},{:+.2},{:+.2}) (az:{:+.2},el:{:+.2},d:{:+.2}) ({:+.1}dB) spread[min={:.2},max={:.2}]{} → [{}] ({} spk)",
+                        input_channel_idx,
+                        rendering_position[0],
+                        rendering_position[1],
+                        rendering_position[2],
+                        azimuth,
+                        elevation,
+                        distance,
+                        gain_db,
+                        live.spread_min,
+                        live.spread_max,
+                        spread_indicator,
+                        gains_with_names.join(", "),
+                        active_speakers
+                    );
                 };
 
-                // Fast path: with per-frame or disabled ramping, the position is constant
-                // across the whole frame so the speaker gains only need to be computed once.
-                if let Some((rendering_position, ramping)) = frame_rendering_position {
-                    let final_gains = if state.render_gain_cache.matches(
-                        topology_identity,
-                        rendering_position,
-                        &live,
-                        self.distance_model,
-                    ) {
-                        &state.render_gain_cache.gains
-                    } else {
-                        let (_, _, _, final_gains) = compute_object_gains(rendering_position);
-                        state.render_gain_cache.gains.clear();
-                        state
-                            .render_gain_cache
-                            .gains
-                            .extend(final_gains.iter().copied());
-                        state.render_gain_cache.update_signature(
-                            topology_identity,
-                            rendering_position,
-                            &live,
-                            self.distance_model,
-                        );
-                        &state.render_gain_cache.gains
-                    };
-
-                    if self.log_object_positions {
-                        match ramping {
-                            RampStatus::Ramping => {
-                                //log::info!(
-                                //    "  Obj ch{:2} RAMPED: ADM({:+.5},{:+.5},{:+.5}) ",
-                                //    input_channel_idx,
-                                //    state.current.position[0], state.current.position[1], state.current.position[2],
-                                //);
-                            }
-                            RampStatus::Finished => {
-                                // Log the movement
-                                // Map VBAP gains to actual speaker names using the mapping (if any)
-                                let gains_with_names: Vec<String> = final_gains
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(idx, g)| {
-                                        let speaker_idx = if let Some(mapping) =
-                                            active_backend_to_speaker_mapping
-                                        {
-                                            mapping[idx]
-                                        } else {
-                                            idx
-                                        };
-                                        format!(
-                                            "{}={:.3}",
-                                            active_speaker_names
-                                                .as_ref()
-                                                .expect("speaker names available for logging")
-                                                [speaker_idx],
-                                            g
-                                        )
-                                    })
-                                    .collect();
-                                let active_speakers =
-                                    final_gains.iter().filter(|&&g| g > 0.01).count();
-
-                                //                       let distance_db = 20.0 * final_distance_attenuation.log10();
-                                let spread_indicator =
-                                    if live.spread_from_distance { "d" } else { "" };
-
-                                // Log the SCALED spherical coordinates (what VBAP actually sees)
-                                let scaled_x = rendering_position[0] as f32 * live.room_ratio[0];
-                                let scaled_y = map_depth_with_room_ratios(
-                                    rendering_position[1] as f32,
-                                    live.room_ratio[1],
-                                    live.room_ratio_rear,
-                                    live.room_ratio_center_blend,
-                                );
-                                let scaled_z = if rendering_position[2] >= 0.0 {
-                                    rendering_position[2] as f32 * live.room_ratio[2]
-                                } else {
-                                    rendering_position[2] as f32 * live.room_ratio_lower
-                                };
-                                let (azimuth, elevation, distance) =
-                                    adm_to_spherical(scaled_x, scaled_y, scaled_z);
-
-                                log::info!(
-                                    "  Obj ch{:2}: ADM({:+.2},{:+.2},{:+.2}) (az:{:+.2},el:{:+.2},d:{:+.2}) ({:+.1}dB) spread[min={:.2},max={:.2}]{} → [{}] ({} spk)",
-                                    input_channel_idx,
-                                    rendering_position[0],
-                                    rendering_position[1],
-                                    rendering_position[2],
-                                    azimuth,
-                                    elevation,
-                                    distance,
-                                    gain_db,
-                                    live.spread_min,
-                                    live.spread_max,
-                                    spread_indicator,
-                                    gains_with_names.join(", "),
-                                    active_speakers
-                                );
-                            }
-                            RampStatus::Idle => {}
+                let push_monitor_gains = |out: &mut Vec<(usize, Gains)>, final_gains: &Gains| {
+                    if let Some(mapping) = active_backend_to_speaker_mapping {
+                        let mut gains = Gains::zeroed(self.num_speakers);
+                        for (backend_idx, &gain) in final_gains.iter().enumerate() {
+                            gains.set(mapping[backend_idx], gain);
                         }
+                        out.push((input_channel_idx, gains));
+                    } else {
+                        let mut gains = Gains::zeroed(self.num_speakers);
+                        for (speaker_idx, &gain) in final_gains.iter().enumerate() {
+                            gains.set(speaker_idx, gain);
+                        }
+                        out.push((input_channel_idx, gains));
+                    }
+                };
+
+                if matches!(live.ramp_mode, RampMode::Off) {
+                    state.ramp.remaining_ramp_units = None;
+                    state.ramp.start_position = state.ramp.target_position;
+                    state.ramp.current_position = state.ramp.target_position;
+                    state.ramp.current_spread = state.ramp.target_spread;
+                    state.ramp.output_position = state.ramp.target_position;
+                    state.ramp.output_gains =
+                        ramp_context.compute_gains(state.ramp.target_position);
+                    state.ramp.start_gains = state.ramp.output_gains.clone();
+                    state.ramp.target_gains = state.ramp.output_gains.clone();
+
+                    let final_gains = state.ramp.output_gains();
+                    log_object_snapshot(state.ramp.output_position, final_gains);
+                    for sample_idx in 0..sample_length {
+                        let object_sample = input_pcm
+                            [sample_idx * input_channel_count + input_channel_idx]
+                            * gain_linear
+                            * obj_gain;
+                        let out_base = sample_idx * self.num_speakers;
+                        if let Some(mapping) = active_backend_to_speaker_mapping {
+                            for (backend_idx, &gain) in final_gains.iter().enumerate() {
+                                let speaker_idx = mapping[backend_idx];
+                                output[out_base + speaker_idx] += object_sample * gain;
+                            }
+                        } else {
+                            for (speaker_idx, &gain) in final_gains.iter().enumerate() {
+                                output[out_base + speaker_idx] += object_sample * gain;
+                            }
+                        }
+                    }
+                    push_monitor_gains(&mut object_gains_out, final_gains);
+                    continue;
+                }
+
+                if let Some(progress) = state.ramp.current_progress() {
+                    match live.ramp_mode {
+                        RampMode::Frame => {
+                            let eval_status =
+                                ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
+                            let rendering_position = state.ramp.output_position;
+                            let final_gains = state.ramp.output_gains().clone();
+
+                            if self.log_object_positions
+                                && matches!(eval_status, RampStatus::Finished)
+                            {
+                                log_object_snapshot(rendering_position, &final_gains);
+                            }
+
+                            for sample_idx in 0..sample_length {
+                                let object_sample = input_pcm
+                                    [sample_idx * input_channel_count + input_channel_idx]
+                                    * gain_linear
+                                    * obj_gain;
+                                let out_base = sample_idx * self.num_speakers;
+                                if let Some(mapping) = active_backend_to_speaker_mapping {
+                                    for (backend_idx, &gain) in final_gains.iter().enumerate() {
+                                        let speaker_idx = mapping[backend_idx];
+                                        output[out_base + speaker_idx] += object_sample * gain;
+                                    }
+                                } else {
+                                    for (speaker_idx, &gain) in final_gains.iter().enumerate() {
+                                        output[out_base + speaker_idx] += object_sample * gain;
+                                    }
+                                }
+                            }
+
+                            state.ramp.commit_output_position();
+                            let final_status = state.ramp.advance_ramp(sample_length as u64);
+                            if self.log_object_positions
+                                && !matches!(eval_status, RampStatus::Finished)
+                                && matches!(final_status, RampStatus::Finished)
+                            {
+                                log_object_snapshot(state.ramp.target_position, &final_gains);
+                            }
+                            push_monitor_gains(&mut object_gains_out, &final_gains);
+                        }
+                        RampMode::Sample => {
+                            for sample_idx in 0..sample_length {
+                                let progress =
+                                    state.ramp.current_progress().unwrap_or(RampProgress {
+                                        completed_units: 0,
+                                        total_units: 0,
+                                    });
+                                let eval_status = ramp_strategy.evaluate(
+                                    &mut state.ramp,
+                                    progress,
+                                    &ramp_context,
+                                );
+                                let final_gains = state.ramp.output_gains().clone();
+                                let object_sample = input_pcm
+                                    [sample_idx * input_channel_count + input_channel_idx]
+                                    * gain_linear
+                                    * obj_gain;
+                                let out_base = sample_idx * self.num_speakers;
+
+                                if let Some(mapping) = active_backend_to_speaker_mapping {
+                                    for (backend_idx, &gain) in final_gains.iter().enumerate() {
+                                        let speaker_idx = mapping[backend_idx];
+                                        output[out_base + speaker_idx] += object_sample * gain;
+                                    }
+                                } else {
+                                    for (speaker_idx, &gain) in final_gains.iter().enumerate() {
+                                        output[out_base + speaker_idx] += object_sample * gain;
+                                    }
+                                }
+
+                                state.ramp.commit_output_position();
+                                let final_status = state.ramp.advance_ramp(1);
+
+                                if self.log_object_positions
+                                    && sample_idx == sample_length - 1
+                                    && (matches!(eval_status, RampStatus::Finished)
+                                        || matches!(final_status, RampStatus::Finished))
+                                {
+                                    log_object_snapshot(state.ramp.output_position, &final_gains);
+                                }
+
+                                if sample_idx == sample_length - 1 {
+                                    push_monitor_gains(&mut object_gains_out, &final_gains);
+                                }
+                            }
+                        }
+                        RampMode::Off => unreachable!(),
+                    }
+                } else {
+                    let eval_status = ramp_strategy.evaluate(
+                        &mut state.ramp,
+                        RampProgress {
+                            completed_units: 0,
+                            total_units: 0,
+                        },
+                        &ramp_context,
+                    );
+                    let rendering_position = state.ramp.output_position;
+                    let final_gains = state.ramp.output_gains();
+
+                    if self.log_object_positions && matches!(eval_status, RampStatus::Finished) {
+                        log_object_snapshot(rendering_position, final_gains);
                     }
 
                     for sample_idx in 0..sample_length {
@@ -1678,11 +1685,10 @@ impl SpatialRenderer {
                             [sample_idx * input_channel_count + input_channel_idx]
                             * gain_linear
                             * obj_gain;
-
                         let out_base = sample_idx * self.num_speakers;
                         if let Some(mapping) = active_backend_to_speaker_mapping {
-                            for (vbap_idx, &gain) in final_gains.iter().enumerate() {
-                                let speaker_idx = mapping[vbap_idx];
+                            for (backend_idx, &gain) in final_gains.iter().enumerate() {
+                                let speaker_idx = mapping[backend_idx];
                                 output[out_base + speaker_idx] += object_sample * gain;
                             }
                         } else {
@@ -1692,66 +1698,7 @@ impl SpatialRenderer {
                         }
                     }
 
-                    if let Some(mapping) = active_backend_to_speaker_mapping {
-                        let mut gains = Gains::zeroed(self.num_speakers);
-                        for (vbap_idx, &gain) in final_gains.iter().enumerate() {
-                            gains.set(mapping[vbap_idx], gain);
-                        }
-                        object_gains_out.push((input_channel_idx, gains));
-                    } else {
-                        let mut gains = Gains::zeroed(self.num_speakers);
-                        for (speaker_idx, &gain) in final_gains.iter().enumerate() {
-                            gains.set(speaker_idx, gain);
-                        }
-                        object_gains_out.push((input_channel_idx, gains));
-                    }
-                    continue;
-                }
-
-                // Mix object into speaker channels with interpolated gains (ramped if moving)
-                for sample_idx in 0..sample_length {
-                    // OBJECT CHANNEL: VBAP spatialization
-                    // Get channel state from cached metadata
-                    let rendering_position = state.current.position;
-                    let _ramping = state.process_ramp(1);
-                    state.render_gain_cache.valid = false;
-                    let (_, _, _, final_gains) = compute_object_gains(rendering_position);
-
-                    // Mix object into speaker channels with interpolated gains (ramped if moving)
-                    // Apply metadata gain + per-object live gain.
-                    let object_sample = input_pcm
-                        [sample_idx * input_channel_count + input_channel_idx]
-                        * gain_linear
-                        * obj_gain;
-
-                    // Apply gains to speakers
-                    // v4 format: direct iteration (SIMD friendly), gains array has all speakers
-                    // v3 format: use mapping to scatter gains to correct speaker indices
-                    let out_base = sample_idx * self.num_speakers;
-                    if let Some(mapping) = active_backend_to_speaker_mapping {
-                        // v3/runtime: use mapping
-                        for (vbap_idx, &gain) in final_gains.iter().enumerate() {
-                            let speaker_idx = mapping[vbap_idx];
-                            output[out_base + speaker_idx] += object_sample * gain;
-                        }
-                        // At the last sample, collect gains for the caller (monitoring/OSC).
-                        if sample_idx == sample_length - 1 {
-                            let mut gains = Gains::zeroed(self.num_speakers);
-                            for (vbap_idx, &gain) in final_gains.iter().enumerate() {
-                                gains.set(mapping[vbap_idx], gain);
-                            }
-                            object_gains_out.push((input_channel_idx, gains));
-                        }
-                    } else {
-                        // v4 expanded: direct iteration (gains[i] corresponds to speaker[i])
-                        for (speaker_idx, &gain) in final_gains.iter().enumerate() {
-                            output[out_base + speaker_idx] += object_sample * gain;
-                        }
-                        // At the last sample, collect gains for the caller (monitoring/OSC).
-                        if sample_idx == sample_length - 1 {
-                            object_gains_out.push((input_channel_idx, final_gains.clone()));
-                        }
-                    }
+                    push_monitor_gains(&mut object_gains_out, final_gains);
                 }
             }
         }
@@ -1904,8 +1851,10 @@ impl SpatialRenderer {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "saf_vbap")]
     use super::*;
 
+    #[cfg(feature = "saf_vbap")]
     #[test]
     fn test_renderer_creation() {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();

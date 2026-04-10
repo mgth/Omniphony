@@ -61,7 +61,11 @@ import { updateAdaptiveResamplingUI } from './controls/adaptive.js';
 import { updateDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { renderOscStatus, setOscStatus } from './controls/osc.js';
 import { updateConfigSavedUI } from './controls/config.js';
-import { updateRoomRatioDisplay, applyRoomRatio } from './controls/room-geometry.js';
+import {
+  updateRoomRatioDisplay,
+  applyRoomRatio,
+  refreshRoomGeometryInputState
+} from './controls/room-geometry.js';
 import { normalizeLogLevel, renderLogLevelControl, logState, pushLog } from './log.js';
 import { applyInitState } from './init.js';
 import {
@@ -426,14 +430,22 @@ export function setupTauriBridge() {
         .map((value) => String(value ?? '').trim().toLowerCase())
         .filter((value) => value.length > 0)
       : [];
-    if (!app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')) {
+    app.renderBackendState.frozenRoomRatio = payload?.frozenRoomRatio === true;
+    app.renderBackendState.frozenSpeakers = payload?.frozenSpeakers === true;
+    app.renderBackendState.restoreBackendAvailable = payload?.restoreBackendAvailable === true;
+    if (
+      app.evaluationModeState.selection !== 'from_file'
+      && !app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')
+    ) {
       app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
     }
-    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
+    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(app.evaluationModeState.effective)) {
       app.evaluationModeState.effective = null;
     }
     updateRenderBackend();
     updateEvaluationMode();
+    updateRoomRatioDisplay();
+    renderSpeakerEditor();
     requestSpeakerHeatmapIfNeeded();
   });
 
@@ -442,36 +454,41 @@ export function setupTauriBridge() {
     app.renderBackendState.selection = value || null;
     if (
       app.renderBackendState.allowedEvaluationModes.length > 0
+      && app.evaluationModeState.selection !== 'from_file'
       && !app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')
     ) {
       app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
     }
     updateRenderBackend();
+    updateRoomRatioDisplay();
+    renderSpeakerEditor();
   });
 
   listen('render_backend:effective', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.renderBackendState.effective = value || null;
-    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
+    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(app.evaluationModeState.effective)) {
       app.evaluationModeState.effective = null;
     }
     app.vbapRecomputing = false;
     renderVbapStatus();
     updateRenderBackend();
+    updateRoomRatioDisplay();
+    renderSpeakerEditor();
     requestSpeakerHeatmapIfNeeded();
   });
 
   listen('render_evaluation_mode', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.evaluationModeState.selection =
-      ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
+      ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(value) ? value : null;
     updateEvaluationMode();
   });
 
   listen('render_evaluation_mode:effective', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.evaluationModeState.effective =
-      ['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
+      ['realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(value) ? value : null;
     app.vbapRecomputing = false;
     renderVbapStatus();
     updateEvaluationMode();

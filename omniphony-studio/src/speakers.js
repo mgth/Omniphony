@@ -41,6 +41,7 @@ import {
   METER_DECAY_DB_PER_SEC,
   DEFAULT_SAMPLE_RATE_HZ
 } from './state.js';
+import { isSpeakerLayoutFrozen } from './state.js';
 
 import {
   hydrateSpeakerCoordinateState,
@@ -163,7 +164,10 @@ const speakerEditGainSliderEl = document.getElementById('speakerEditGainSlider')
 const speakerEditGainBoxEl = document.getElementById('speakerEditGainBox');
 const speakerEditDelayMsInputEl = document.getElementById('speakerEditDelayMsInput');
 const speakerEditDelaySamplesInputEl = document.getElementById('speakerEditDelaySamplesInput');
+const speakerEditAutoDelayBtnEl = document.getElementById('speakerEditAutoDelayBtn');
+const speakerEditDelayToDistanceBtnEl = document.getElementById('speakerEditDelayToDistanceBtn');
 const speakerEditSpatializeToggleEl = document.getElementById('speakerEditSpatializeToggle');
+const speakerAddBtnEl = document.getElementById('speakerAddBtn');
 const speakerMoveUpBtnEl = document.getElementById('speakerMoveUpBtn');
 const speakerMoveDownBtnEl = document.getElementById('speakerMoveDownBtn');
 const speakerRemoveBtnEl = document.getElementById('speakerRemoveBtn');
@@ -336,6 +340,7 @@ export function adjustSpeakerDistancesFromDelays() {
 // ---------------------------------------------------------------------------
 
 export function setSpeakerCoordMode(index, mode) {
+  if (isSpeakerLayoutFrozen()) return;
   const currentLayoutSpeakers = get_currentLayoutSpeakers();
   const speaker = currentLayoutSpeakers[index];
   if (!speaker) return;
@@ -372,13 +377,13 @@ export function updateSpeakerControlsUI() {
 
 export function updateObjectControlsUI() {
   const selectedSourceId = get_selectedSourceId();
-  const selectedSpeakerIndex = get_selectedSpeakerIndex();
   const soloTarget = getSoloTarget('object');
   objectItems.forEach((entry, id) => {
     const gainValue = getBaseGain(objectBaseGains, objectGainCache, id);
+    const metadataSilent = objectHasSilentMetadataGain(id);
     entry.muteBtn.classList.toggle('active', objectMuted.has(id));
     entry.soloBtn.classList.toggle('active', soloTarget === id);
-    updateItemClasses(entry, objectMuted.has(id), soloTarget && soloTarget !== id);
+    updateItemClasses(entry, objectMuted.has(id), Boolean((soloTarget && soloTarget !== id) || metadataSilent));
     entry.root.classList.toggle('is-selected', selectedSourceId === id);
     entry.root.classList.toggle('has-active-trail', objectHasActiveTrail(id));
     if (entry.topRight) {
@@ -429,6 +434,12 @@ export function getObjectDominantSpeakerText(id) {
 export function objectHasActiveTrail(id) {
   const trail = sourceTrails.get(String(id));
   return Boolean(trail && trail.positions.length > 0);
+}
+
+function objectHasSilentMetadataGain(id) {
+  const raw = sourcePositionsRaw.get(String(id));
+  const metadataGainDb = Number(raw?.metadataGainDb);
+  return Number.isFinite(metadataGainDb) && metadataGainDb <= -128;
 }
 
 // ---------------------------------------------------------------------------
@@ -656,6 +667,7 @@ export function updateSpeakerVisualsFromState(index) {
 }
 
 export function applySpeakerSceneCartesianEdit(index, x, y, z, sendOsc = true) {
+  if (isSpeakerLayoutFrozen()) return;
   const currentLayoutSpeakers = get_currentLayoutSpeakers();
   const speaker = currentLayoutSpeakers[index];
   if (!speaker) return;
@@ -715,6 +727,9 @@ export function renderSpeakerEditor() {
 
   const selectedSpeakerIndex = get_selectedSpeakerIndex();
   const currentLayoutSpeakers = get_currentLayoutSpeakers();
+  const frozen = isSpeakerLayoutFrozen();
+
+  if (speakerAddBtnEl) speakerAddBtnEl.disabled = frozen;
 
   if (selectedSpeakerIndex === null || !currentLayoutSpeakers[selectedSpeakerIndex]) {
     if (speakerMoveUpBtnEl) speakerMoveUpBtnEl.disabled = true;
@@ -728,9 +743,9 @@ export function renderSpeakerEditor() {
   const idx = selectedSpeakerIndex;
   const id = String(idx);
   const speaker = currentLayoutSpeakers[idx];
-  if (speakerMoveUpBtnEl) speakerMoveUpBtnEl.disabled = idx <= 0;
-  if (speakerMoveDownBtnEl) speakerMoveDownBtnEl.disabled = idx >= currentLayoutSpeakers.length - 1;
-  if (speakerRemoveBtnEl) speakerRemoveBtnEl.disabled = currentLayoutSpeakers.length === 0;
+  if (speakerMoveUpBtnEl) speakerMoveUpBtnEl.disabled = frozen || idx <= 0;
+  if (speakerMoveDownBtnEl) speakerMoveDownBtnEl.disabled = frozen || idx >= currentLayoutSpeakers.length - 1;
+  if (speakerRemoveBtnEl) speakerRemoveBtnEl.disabled = frozen || currentLayoutSpeakers.length === 0;
   const gain = getBaseGain(speakerBaseGains, speakerGainCache, id);
   const delayMs = Number(speakerDelays.get(id) ?? speaker.delay_ms ?? 0);
   const spherical = cartesianToSpherical(normalizedOmniphonyToScenePosition(speaker));
@@ -756,6 +771,27 @@ export function renderSpeakerEditor() {
   if (speakerEditDelayMsInputEl) speakerEditDelayMsInputEl.value = String(Math.max(0, delayMs));
   if (speakerEditDelaySamplesInputEl) speakerEditDelaySamplesInputEl.value = String(delayMsToSamples(delayMs));
   if (speakerEditSpatializeToggleEl) speakerEditSpatializeToggleEl.checked = getSpeakerSpatializeValue(speaker) !== 0;
+  [
+    speakerEditNameInputEl,
+    speakerEditXInputEl,
+    speakerEditYInputEl,
+    speakerEditZInputEl,
+    speakerEditAzInputEl,
+    speakerEditElInputEl,
+    speakerEditRInputEl,
+    speakerEditGainSliderEl,
+    speakerEditDelayMsInputEl,
+    speakerEditDelaySamplesInputEl,
+    speakerEditAutoDelayBtnEl,
+    speakerEditDelayToDistanceBtnEl,
+    speakerEditSpatializeToggleEl,
+    speakerEditCartesianModeEl,
+    speakerEditPolarModeEl,
+    speakerEditCartesianGizmoBtnEl,
+    speakerEditPolarGizmoBtnEl
+  ].forEach((el) => {
+    if (el) el.disabled = frozen;
+  });
   if (speakerEditCartesianGizmoBtnEl) {
     speakerEditCartesianGizmoBtnEl.classList.toggle('active', app.cartesianEditArmed && app.activeEditMode === 'cartesian');
   }
@@ -883,6 +919,7 @@ export function createObjectItem(id) {
 export function updateObjectItem(entry, id, position, name) {
   const selectedSourceId = get_selectedSourceId();
   const soloTarget = getSoloTarget('object');
+  const metadataSilent = objectHasSilentMetadataGain(id);
   if (name) {
     sourceNames.set(id, name);
   }
@@ -895,7 +932,7 @@ export function updateObjectItem(entry, id, position, name) {
   entry.gainBox.textContent = linearToDb(gainValue);
   entry.muteBtn.classList.toggle('active', objectMuted.has(id));
   entry.soloBtn.classList.toggle('active', soloTarget === id);
-  updateItemClasses(entry, objectMuted.has(id), soloTarget && soloTarget !== id);
+  updateItemClasses(entry, objectMuted.has(id), Boolean((soloTarget && soloTarget !== id) || metadataSilent));
   entry.root.classList.toggle('is-selected', selectedSourceId === id);
   updateMeterUI(entry, sourceLevels.get(id));
   updateObjectContributionUI_src(entry, id);
@@ -1306,6 +1343,7 @@ export function currentLayoutRef() {
 }
 
 export function requestAddSpeaker() {
+  if (isSpeakerLayoutFrozen()) return;
   const layout = currentLayoutRef();
   if (!layout) return;
   const selectedSpeakerIndex = get_selectedSpeakerIndex();
@@ -1337,6 +1375,7 @@ export function requestAddSpeaker() {
 }
 
 export function requestRemoveSpeaker() {
+  if (isSpeakerLayoutFrozen()) return;
   const layout = currentLayoutRef();
   const selectedSpeakerIndex = get_selectedSpeakerIndex();
   if (!layout || selectedSpeakerIndex === null) return;
@@ -1350,6 +1389,7 @@ export function requestRemoveSpeaker() {
 }
 
 export function requestMoveSpeaker(delta) {
+  if (isSpeakerLayoutFrozen()) return;
   const layout = currentLayoutRef();
   const selectedSpeakerIndex = get_selectedSpeakerIndex();
   if (!layout || selectedSpeakerIndex === null) return;
@@ -1410,6 +1450,7 @@ export function animateSpeakerListReorder(mutate) {
 }
 
 export function requestMoveSpeakerTo(from, to, sendOsc = true) {
+  if (isSpeakerLayoutFrozen()) return;
   const layout = currentLayoutRef();
   if (!layout) return;
   if (!Number.isInteger(from) || !Number.isInteger(to)) return;
@@ -1786,6 +1827,6 @@ export function hydrateLayoutSelect(layouts, selectedLayoutKey) {
   }
 
   if (layoutSelectEl) {
-    layoutSelectEl.disabled = layouts.length === 0;
+    layoutSelectEl.disabled = layouts.length === 0 || isSpeakerLayoutFrozen();
   }
 }

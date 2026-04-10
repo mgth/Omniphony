@@ -16,6 +16,7 @@ use anyhow::Result;
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -24,7 +25,10 @@ use crate::backend_registry::{TopologyBuildPlan, prepare_topology_build_plan};
 use crate::render_backend::backend_descriptor_by_id;
 #[cfg(feature = "saf_vbap")]
 use crate::render_backend::{EvaluationBuildConfig, RenderRequest};
-use crate::render_backend::{GainModelKind, PreparedRenderEngine, RenderBackendKind};
+use crate::render_backend::{
+    BackendRestoreSnapshot, GainModelKind, LoadedEvaluationArtifact, PreparedRenderEngine,
+    RenderBackendKind, SerializedEvaluationMode, build_from_artifact_render_engine,
+};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
@@ -34,6 +38,7 @@ pub enum LiveEvaluationMode {
     Realtime,
     PrecomputedPolar,
     PrecomputedCartesian,
+    FromFile,
 }
 
 impl LiveEvaluationMode {
@@ -43,6 +48,7 @@ impl LiveEvaluationMode {
             Self::Realtime => "realtime",
             Self::PrecomputedPolar => "precomputed_polar",
             Self::PrecomputedCartesian => "precomputed_cartesian",
+            Self::FromFile => "from_file",
         }
     }
 
@@ -52,6 +58,7 @@ impl LiveEvaluationMode {
             "realtime" | "direct" => Some(Self::Realtime),
             "precomputed_polar" | "polar" => Some(Self::PrecomputedPolar),
             "precomputed_cartesian" | "cartesian" => Some(Self::PrecomputedCartesian),
+            "from_file" => Some(Self::FromFile),
             _ => None,
         }
     }
@@ -451,7 +458,7 @@ pub struct RendererControl {
     ///
     /// `None` when the renderer was constructed from a pre-loaded table (`from_vbap`),
     /// because recomputation is not supported in that case.
-    pub backend_rebuild_params: Option<BackendRebuildParams>,
+    pub backend_rebuild_params: RwLock<Option<BackendRebuildParams>>,
 
     /// `true` while a VBAP recompute is running in the background.
     pub recomputing: AtomicBool,
@@ -493,7 +500,7 @@ impl RendererControl {
             live: RwLock::new(live),
             topology: ArcSwap::new(Arc::new(initial_topology)),
             editable_layout: Mutex::new(editable_layout),
-            backend_rebuild_params,
+            backend_rebuild_params: RwLock::new(backend_rebuild_params),
             recomputing: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
@@ -530,6 +537,14 @@ impl RendererControl {
         self.topology.store(Arc::new(topology));
     }
 
+    pub fn backend_rebuild_params(&self) -> Option<BackendRebuildParams> {
+        *self.backend_rebuild_params.read().unwrap()
+    }
+
+    pub fn set_backend_rebuild_params(&self, params: Option<BackendRebuildParams>) {
+        *self.backend_rebuild_params.write().unwrap() = params;
+    }
+
     pub fn mark_object_params_dirty(&self) {
         self.object_params_generation
             .fetch_add(1, Ordering::Relaxed);
@@ -544,16 +559,159 @@ impl RendererControl {
     pub fn prepare_topology_rebuild(&self) -> Option<TopologyBuildPlan> {
         let layout = self.editable_layout();
         let live = self.live.read().unwrap();
-        let evaluation_build_config = evaluation_build_config_from_live(
-            &live,
-            rebuild_params_allow_negative_z(self.backend_rebuild_params),
-        );
+        let backend_rebuild_params = self.backend_rebuild_params();
+        let evaluation_build_config =
+            evaluation_build_config_from_live(&live, rebuild_params_allow_negative_z(backend_rebuild_params));
         prepare_topology_build_plan(
             layout,
             &live,
-            self.backend_rebuild_params,
+            backend_rebuild_params,
             evaluation_build_config,
         )
+    }
+
+    pub fn restore_backend_from_active_artifact(&self) -> Result<()> {
+        let active_topology = self.active_topology();
+        let snapshot = active_topology
+            .backend
+            .backend_restore_snapshot()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("active from-file evaluator does not carry a backend restore snapshot"))?;
+
+        *self.editable_layout.lock().unwrap() = active_topology.speaker_layout.clone();
+        self.set_backend_rebuild_params(Some(backend_rebuild_params_from_restore_snapshot(
+            &snapshot,
+        )?));
+
+        let mut live = self.live.write().unwrap();
+        live.backend_id = snapshot.backend_id.clone();
+        live.evaluation.mode = live_evaluation_mode_from_serialized(snapshot.evaluation_mode);
+        live.evaluation.position_interpolation = snapshot.position_interpolation;
+        live.evaluation.cartesian = CartesianEvaluationParams {
+            x_size: snapshot.cartesian_x_size.max(1),
+            y_size: snapshot.cartesian_y_size.max(1),
+            z_size: snapshot.cartesian_z_size.max(1),
+            z_neg_size: snapshot.cartesian_z_neg_size,
+        };
+        live.evaluation.polar = PolarEvaluationParams {
+            azimuth_values: snapshot.polar_azimuth_values.max(2) as i32,
+            elevation_values: snapshot.polar_elevation_values.max(2) as i32,
+            distance_res: snapshot.polar_distance_res.max(1) as i32,
+            distance_max: snapshot.polar_distance_max.max(0.01),
+        };
+        Ok(())
+    }
+
+    pub fn load_evaluation_artifact_from_file(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<SpeakerLayout> {
+        let artifact = LoadedEvaluationArtifact::load_from_file(path)?;
+        let speaker_layout = artifact.speaker_layout().clone();
+        let active_speaker_count = self.active_topology().speaker_layout.num_speakers();
+        if speaker_layout.num_speakers() != active_speaker_count {
+            anyhow::bail!(
+                "from_file artifact speaker count mismatch: renderer has {} speakers, file has {}",
+                active_speaker_count,
+                speaker_layout.num_speakers()
+            );
+        }
+
+        let frozen = artifact.frozen_request().clone();
+        let distance_model =
+            crate::spatial_vbap::DistanceModel::from_str(&frozen.distance_model)
+                .map_err(|e| anyhow::anyhow!("invalid frozen distance model in artifact: {}", e))?;
+        let position_interpolation = artifact.position_interpolation();
+        let polar_distance_max = artifact
+            .backend_restore_snapshot()
+            .map(|snapshot| snapshot.polar_distance_max.max(0.01))
+            .unwrap_or(2.0);
+
+        let cartesian = match artifact.cartesian_dimensions() {
+            Some((x_count, y_count, z_count)) => CartesianEvaluationParams {
+                x_size: x_count.max(1),
+                y_size: y_count.max(1),
+                z_size: z_count.max(1),
+                z_neg_size: 0,
+            },
+            None => CartesianEvaluationParams {
+                x_size: 1,
+                y_size: 1,
+                z_size: 1,
+                z_neg_size: 0,
+            },
+        };
+        let polar = match artifact.polar_dimensions() {
+            Some((az_count, el_count, distance_count)) => PolarEvaluationParams {
+                azimuth_values: az_count.max(2) as i32,
+                elevation_values: el_count.max(2) as i32,
+                distance_res: distance_count.saturating_sub(1).max(1) as i32,
+                distance_max: polar_distance_max,
+            },
+            None => PolarEvaluationParams {
+                azimuth_values: 2,
+                elevation_values: 2,
+                distance_res: 1,
+                distance_max: polar_distance_max,
+            },
+        };
+
+        let mut speaker_live = std::collections::HashMap::new();
+        for (idx, spk) in speaker_layout.speakers.iter().enumerate() {
+            if spk.delay_ms != 0.0 {
+                speaker_live.insert(
+                    idx,
+                    SpeakerLiveParams {
+                        delay_ms: spk.delay_ms.max(0.0),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        let topology = RenderTopology::new(
+            Arc::new(build_from_artifact_render_engine(artifact)),
+            speaker_layout.clone(),
+        )?;
+
+        {
+            let mut live = self.live.write().unwrap();
+            live.backend_id = RenderBackendKind::FromFile.as_str().to_string();
+            live.evaluation.mode = LiveEvaluationMode::FromFile;
+            live.evaluation.position_interpolation = position_interpolation;
+            live.evaluation.cartesian = cartesian;
+            live.evaluation.polar = polar;
+            live.spread_min = frozen.spread_min;
+            live.spread_max = frozen.spread_max;
+            live.spread_from_distance = frozen.spread_from_distance;
+            live.spread_distance_range = frozen.spread_distance_range;
+            live.spread_distance_curve = frozen.spread_distance_curve;
+            live.distance_model = distance_model;
+            live.room_ratio = frozen.room_ratio;
+            live.room_ratio_rear = frozen.room_ratio_rear;
+            live.room_ratio_lower = frozen.room_ratio_lower;
+            live.room_ratio_center_blend = frozen.room_ratio_center_blend;
+            live.use_distance_diffuse = frozen.use_distance_diffuse;
+            live.distance_diffuse_threshold = frozen.distance_diffuse_threshold;
+            live.distance_diffuse_curve = frozen.distance_diffuse_curve;
+            live.speakers = speaker_live;
+        }
+
+        *self.editable_layout.lock().unwrap() = speaker_layout.clone();
+        self.set_backend_rebuild_params(None);
+        self.publish_topology(topology);
+        self.mark_speaker_params_dirty();
+        Ok(speaker_layout)
+    }
+
+    pub fn export_active_evaluation_artifact_to_file(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let topology = self.active_topology();
+        topology
+            .backend
+            .save_to_file(path, &topology.speaker_layout)
     }
 
     /// Mark live params as dirty (changed since last save) and return the new state.
@@ -581,4 +739,69 @@ impl RendererControl {
     pub fn requested_ramp_mode(&self) -> RampMode {
         *self.requested_ramp_mode.lock().unwrap()
     }
+}
+
+fn live_evaluation_mode_from_serialized(mode: SerializedEvaluationMode) -> LiveEvaluationMode {
+    match mode {
+        SerializedEvaluationMode::PrecomputedCartesian => LiveEvaluationMode::PrecomputedCartesian,
+        SerializedEvaluationMode::PrecomputedPolar => LiveEvaluationMode::PrecomputedPolar,
+    }
+}
+
+fn preferred_evaluation_mode_from_serialized(mode: SerializedEvaluationMode) -> PreferredEvaluationMode {
+    match mode {
+        SerializedEvaluationMode::PrecomputedCartesian => PreferredEvaluationMode::PrecomputedCartesian,
+        SerializedEvaluationMode::PrecomputedPolar => PreferredEvaluationMode::PrecomputedPolar,
+    }
+}
+
+fn backend_rebuild_params_from_restore_snapshot(
+    snapshot: &BackendRestoreSnapshot,
+) -> Result<BackendRebuildParams> {
+    let descriptor = backend_descriptor_by_id(snapshot.backend_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("unknown backend id in restore snapshot: {}", snapshot.backend_id))?;
+    let preferred_evaluation_mode =
+        preferred_evaluation_mode_from_serialized(snapshot.evaluation_mode);
+    let backend_id = descriptor.id;
+
+    let vbap = match descriptor.kind {
+        RenderBackendKind::Vbap => Some(VbapModelRebuildParams {
+            az_res_deg: (360.0 / snapshot.polar_azimuth_values.max(2) as f32)
+                .round()
+                .max(1.0) as i32,
+            el_res_deg: (((if snapshot.allow_negative_z { 180.0 } else { 90.0 })
+                / snapshot.polar_elevation_values.max(2) as f32)
+                .round()
+                .max(1.0)) as i32,
+            spread_resolution: snapshot.polar_distance_max.max(0.01)
+                / snapshot.polar_distance_res.max(1) as f32,
+            distance_max: snapshot.polar_distance_max.max(0.01),
+            table_mode: match snapshot.evaluation_mode {
+                SerializedEvaluationMode::PrecomputedCartesian => VbapTableMode::Cartesian {
+                    x_size: snapshot.cartesian_x_size.max(1) + 1,
+                    y_size: snapshot.cartesian_y_size.max(1) + 1,
+                    z_size: snapshot.cartesian_z_size.max(1) + 1,
+                    z_neg_size: snapshot.cartesian_z_neg_size,
+                },
+                SerializedEvaluationMode::PrecomputedPolar => VbapTableMode::Polar,
+            },
+            cartesian_default_x_size: snapshot.cartesian_x_size.max(1),
+            cartesian_default_y_size: snapshot.cartesian_y_size.max(1),
+            cartesian_default_z_size: snapshot.cartesian_z_size.max(1),
+            cartesian_default_z_neg_size: snapshot.cartesian_z_neg_size,
+            distance_model: crate::spatial_vbap::DistanceModel::None,
+            allow_negative_z: snapshot.allow_negative_z,
+        }),
+        RenderBackendKind::ExperimentalDistance => None,
+        RenderBackendKind::FromFile => {
+            anyhow::bail!("cannot restore backend to from_file")
+        }
+    };
+
+    Ok(BackendRebuildParams {
+        backend_id,
+        preferred_evaluation_mode,
+        allow_negative_z: snapshot.allow_negative_z,
+        vbap,
+    })
 }

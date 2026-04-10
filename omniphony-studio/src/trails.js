@@ -12,6 +12,8 @@ let lastTrailDecayAt = 0;
 const SOURCE_FALLBACK_COLOR = new THREE.Color(0xcc6640);
 // Mirror of sourceMaterial.color for captureTrailPointColor fallback.
 const SOURCE_MATERIAL_COLOR = new THREE.Color(0xff7c4d);
+const TRAIL_SILENT_RMS_DBFS = -100;
+const TRAIL_SILENT_GAIN_DB = -128;
 
 // ── Renderable constructors ───────────────────────────────────────────
 
@@ -115,6 +117,18 @@ export function captureTrailPointColor(mesh) {
   return [color.r, color.g, color.b];
 }
 
+function isAudibleDiffuseTrailPoint(raw) {
+  const rmsDbfs = Number(raw?.trailRmsDbfs);
+  if (Number.isFinite(rmsDbfs) && rmsDbfs <= TRAIL_SILENT_RMS_DBFS) {
+    return false;
+  }
+  const metadataGainDb = Number(raw?.metadataGainDb);
+  if (Number.isFinite(metadataGainDb) && metadataGainDb <= TRAIL_SILENT_GAIN_DB) {
+    return false;
+  }
+  return true;
+}
+
 // ── Geometry rebuilders ───────────────────────────────────────────────
 
 export function rebuildLineTrailGeometry(trail, mappedPositions, pointColors) {
@@ -139,6 +153,11 @@ export function rebuildLineTrailGeometry(trail, mappedPositions, pointColors) {
 }
 
 export function rebuildDiffuseTrailGeometry(trail, mappedPositions, pointColors, sourceScale) {
+  if (mappedPositions.length < 2) {
+    trail.line.geometry.dispose();
+    trail.line.geometry = new THREE.BufferGeometry();
+    return;
+  }
   const count = mappedPositions.length;
   const loudnessFactor = Math.pow(sourceScale, 1.8);
 
@@ -206,12 +225,15 @@ export function rebuildTrailGeometry(id) {
     ? mesh.userData.objectTrailColor.clone()
     : (mesh ? mesh.material.color.clone() : new THREE.Color(0xcc6640));
   const sourceScale = Math.max(0.0, Number(mesh?.scale.x) || 0.0);
-  const mappedPositions = trail.positions.map((raw) => mapTrailRawToScene(raw));
-  const pointColors = trail.positions.map((raw) => trailPointColorFromRaw(raw, fallbackColor));
   if (trailRenderMode === 'line') {
+    const mappedPositions = trail.positions.map((raw) => mapTrailRawToScene(raw));
+    const pointColors = trail.positions.map((raw) => trailPointColorFromRaw(raw, fallbackColor));
     rebuildLineTrailGeometry(trail, mappedPositions, pointColors);
     return;
   }
+  const audiblePositions = trail.positions.filter((raw) => isAudibleDiffuseTrailPoint(raw));
+  const mappedPositions = audiblePositions.map((raw) => mapTrailRawToScene(raw));
+  const pointColors = audiblePositions.map((raw) => trailPointColorFromRaw(raw, fallbackColor));
   rebuildDiffuseTrailGeometry(trail, mappedPositions, pointColors, sourceScale);
 }
 

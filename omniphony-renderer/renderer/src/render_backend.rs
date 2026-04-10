@@ -1,4 +1,6 @@
+mod evaluation_artifact;
 mod experimental_distance_backend;
+mod file_loaded_evaluator;
 mod vbap_backend;
 
 use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical, spherical_to_adm};
@@ -6,7 +8,12 @@ use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use serde::Serialize;
 
+pub use evaluation_artifact::{
+    BackendRestoreSnapshot, LoadedEvaluationArtifact, SerializedEvaluationMode,
+    build_backend_restore_snapshot, build_from_artifact_render_engine,
+};
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
+pub use file_loaded_evaluator::{LoadedVbapFile, build_from_file_render_engine};
 pub use vbap_backend::VbapBackend;
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -36,6 +43,7 @@ pub struct BackendDescriptor {
 pub enum GainModelKind {
     Vbap,
     ExperimentalDistance,
+    FromFile,
 }
 
 impl GainModelKind {
@@ -49,6 +57,7 @@ impl GainModelKind {
             return Some(descriptor.gain_model_kind);
         }
         match normalized.as_str() {
+            "from_file" => Some(Self::FromFile),
             "distance" | "distance_based" => Some(Self::ExperimentalDistance),
             _ => None,
         }
@@ -60,6 +69,7 @@ impl GainModelKind {
 pub enum RenderBackendKind {
     Vbap,
     ExperimentalDistance,
+    FromFile,
 }
 
 impl RenderBackendKind {
@@ -73,6 +83,7 @@ impl RenderBackendKind {
             return Some(descriptor.kind);
         }
         match normalized.as_str() {
+            "from_file" => Some(Self::FromFile),
             "distance" | "distance_based" => Some(Self::ExperimentalDistance),
             _ => None,
         }
@@ -92,6 +103,7 @@ impl From<GainModelKind> for RenderBackendKind {
         match value {
             GainModelKind::Vbap => Self::Vbap,
             GainModelKind::ExperimentalDistance => Self::ExperimentalDistance,
+            GainModelKind::FromFile => Self::FromFile,
         }
     }
 }
@@ -102,7 +114,7 @@ impl From<RenderBackendKind> for GainModelKind {
     }
 }
 
-const BACKEND_DESCRIPTORS: [BackendDescriptor; 2] = [
+const BACKEND_DESCRIPTORS: [BackendDescriptor; 3] = [
     BackendDescriptor {
         kind: RenderBackendKind::Vbap,
         gain_model_kind: GainModelKind::Vbap,
@@ -114,6 +126,12 @@ const BACKEND_DESCRIPTORS: [BackendDescriptor; 2] = [
         gain_model_kind: GainModelKind::ExperimentalDistance,
         id: "experimental_distance",
         label: "Distance",
+    },
+    BackendDescriptor {
+        kind: RenderBackendKind::FromFile,
+        gain_model_kind: GainModelKind::FromFile,
+        id: "from_file",
+        label: "From File",
     },
 ];
 
@@ -146,6 +164,7 @@ pub enum EffectiveEvaluationMode {
     Realtime,
     PrecomputedPolar,
     PrecomputedCartesian,
+    FromFile,
 }
 
 impl EffectiveEvaluationMode {
@@ -154,6 +173,7 @@ impl EffectiveEvaluationMode {
             Self::Realtime => "realtime",
             Self::PrecomputedPolar => "precomputed_polar",
             Self::PrecomputedCartesian => "precomputed_cartesian",
+            Self::FromFile => "from_file",
         }
     }
 }
@@ -267,7 +287,8 @@ impl PreparedEvaluator for RealtimeEvaluator {
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
-        self.model.save_to_file(path, speaker_layout)
+        let _ = (path, speaker_layout);
+        anyhow::bail!("only precomputed evaluators can be exported to a from-file artifact")
     }
 }
 
@@ -279,6 +300,8 @@ pub struct SampledCartesianEvaluator {
     gains: Vec<f32>,
     speaker_count: usize,
     position_interpolation: bool,
+    frozen_request: RenderRequest,
+    backend_restore_snapshot: Option<BackendRestoreSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -301,6 +324,10 @@ pub struct CartesianSpeakerHeatmapVolume {
 
 impl SampledCartesianEvaluator {
     pub fn new(model: Box<dyn GainModel>, config: &EvaluationBuildConfig) -> Self {
+        // Intentionally sample and query the precomputed cartesian evaluator in native
+        // ADM coordinates. The backend remains responsible for any room/depth transforms,
+        // so the runtime can read gains directly from object positions without converting
+        // into a backend-specific "effect space" first.
         let x_positions = evenly_spaced_axis(config.cartesian.x_size.max(2), -1.0, 1.0);
         let y_positions = evenly_spaced_axis(config.cartesian.y_size.max(2), -1.0, 1.0);
         let z_positions =
@@ -318,6 +345,12 @@ impl SampledCartesianEvaluator {
                 }
             }
         }
+        let backend_restore_snapshot = build_backend_restore_snapshot(
+            model.backend_id(),
+            model.backend_label(),
+            SerializedEvaluationMode::PrecomputedCartesian,
+            config,
+        );
         Self {
             model,
             x_positions,
@@ -326,6 +359,8 @@ impl SampledCartesianEvaluator {
             gains,
             speaker_count,
             position_interpolation: config.position_interpolation,
+            frozen_request: config.request_template,
+            backend_restore_snapshot,
         }
     }
 }
@@ -336,6 +371,8 @@ impl PreparedEvaluator for SampledCartesianEvaluator {
     }
 
     fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
+        // Read the table directly from native ADM coordinates. This avoids a render-time
+        // round-trip through spherical/effect-space conversions for the cartesian path.
         let gains = sample_cartesian_table(
             &self.gains,
             self.speaker_count,
@@ -349,7 +386,21 @@ impl PreparedEvaluator for SampledCartesianEvaluator {
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
-        self.model.save_to_file(path, speaker_layout)
+        evaluation_artifact::LoadedEvaluationArtifact::from_sampled_cartesian(
+            self.model.backend_id(),
+            self.model.backend_label(),
+            speaker_layout,
+            self.frozen_request,
+            self.position_interpolation,
+            self.backend_restore_snapshot.as_ref(),
+            &self.x_positions,
+            &self.y_positions,
+            &self.z_positions,
+            &self.gains,
+            self.speaker_count,
+        )
+        ?
+        .save_to_file(path)
     }
 
     fn cartesian_slices_for_speaker(
@@ -496,6 +547,8 @@ pub struct SampledPolarEvaluator {
     gains: Vec<f32>,
     speaker_count: usize,
     position_interpolation: bool,
+    frozen_request: RenderRequest,
+    backend_restore_snapshot: Option<BackendRestoreSnapshot>,
 }
 
 impl SampledPolarEvaluator {
@@ -527,6 +580,12 @@ impl SampledPolarEvaluator {
                 }
             }
         }
+        let backend_restore_snapshot = build_backend_restore_snapshot(
+            model.backend_id(),
+            model.backend_label(),
+            SerializedEvaluationMode::PrecomputedPolar,
+            config,
+        );
         Self {
             model,
             azimuth_positions,
@@ -535,6 +594,8 @@ impl SampledPolarEvaluator {
             gains,
             speaker_count,
             position_interpolation: config.position_interpolation,
+            frozen_request: config.request_template,
+            backend_restore_snapshot,
         }
     }
 }
@@ -563,7 +624,21 @@ impl PreparedEvaluator for SampledPolarEvaluator {
     }
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
-        self.model.save_to_file(path, speaker_layout)
+        evaluation_artifact::LoadedEvaluationArtifact::from_sampled_polar(
+            self.model.backend_id(),
+            self.model.backend_label(),
+            speaker_layout,
+            self.frozen_request,
+            self.position_interpolation,
+            self.backend_restore_snapshot.as_ref(),
+            &self.azimuth_positions,
+            &self.elevation_positions,
+            &self.distance_positions,
+            &self.gains,
+            self.speaker_count,
+        )
+        ?
+        .save_to_file(path)
     }
 }
 
@@ -621,6 +696,7 @@ pub struct PreparedRenderEngine {
     backend_label: &'static str,
     capabilities: BackendCapabilities,
     evaluation_mode: EffectiveEvaluationMode,
+    backend_restore_snapshot: Option<BackendRestoreSnapshot>,
     evaluator: Box<dyn PreparedEvaluator>,
 }
 
@@ -631,6 +707,7 @@ impl PreparedRenderEngine {
         backend_label: &'static str,
         capabilities: BackendCapabilities,
         evaluation_mode: EffectiveEvaluationMode,
+        backend_restore_snapshot: Option<BackendRestoreSnapshot>,
         evaluator: Box<dyn PreparedEvaluator>,
     ) -> Self {
         Self {
@@ -639,6 +716,7 @@ impl PreparedRenderEngine {
             backend_label,
             capabilities,
             evaluation_mode,
+            backend_restore_snapshot,
             evaluator,
         }
     }
@@ -665,6 +743,14 @@ impl PreparedRenderEngine {
 
     pub fn evaluation_mode(&self) -> EffectiveEvaluationMode {
         self.evaluation_mode
+    }
+
+    pub fn has_backend_restore_snapshot(&self) -> bool {
+        self.backend_restore_snapshot.is_some()
+    }
+
+    pub fn backend_restore_snapshot(&self) -> Option<&BackendRestoreSnapshot> {
+        self.backend_restore_snapshot.as_ref()
     }
 
     pub fn speaker_count(&self) -> usize {
@@ -720,6 +806,9 @@ pub fn build_prepared_render_engine(
         EffectiveEvaluationMode::PrecomputedPolar => {
             PrecomputedPolarStrategy.prepare(model, config)?
         }
+        EffectiveEvaluationMode::FromFile => {
+            unreachable!("from_file evaluator is built without a gain model")
+        }
     };
     Ok(PreparedRenderEngine::new(
         gain_model_kind,
@@ -727,6 +816,7 @@ pub fn build_prepared_render_engine(
         backend_label,
         capabilities,
         evaluation_mode,
+        None,
         evaluator,
     ))
 }
@@ -788,7 +878,7 @@ fn polar_elevation_axis(count: usize, allow_negative_z: bool) -> Vec<f32> {
     }
 }
 
-fn sample_cartesian_table(
+pub(crate) fn sample_cartesian_table(
     table: &[f32],
     speaker_count: usize,
     x_positions: &[f32],
@@ -889,7 +979,7 @@ fn sample_cartesian_table_speaker_value(
     value
 }
 
-fn sample_polar_table(
+pub(crate) fn sample_polar_table(
     table: &[f32],
     speaker_count: usize,
     azimuth_positions: &[f32],

@@ -32,72 +32,62 @@ impl VbapBackend {
             rendering_position[2] as f32 * req.room_ratio_lower
         };
 
-        let gains = if self.panner.has_precomputed_effects() {
-            self.panner.get_gains_cartesian(
-                rendering_position[0] as f32,
-                rendering_position[1] as f32,
-                rendering_position[2] as f32,
-                0.0,
-                req.distance_model,
-            )
+        let effective_spread = if req.spread_from_distance {
+            let (_, _, dist) = adm_to_spherical(scaled_x, scaled_y, scaled_z);
+            let t = (1.0 - dist / req.spread_distance_range)
+                .clamp(0.0, 1.0)
+                .powf(req.spread_distance_curve);
+            (req.spread_min + t * (req.spread_max - req.spread_min)).clamp(0.0, 1.0)
         } else {
-            let effective_spread = if req.spread_from_distance {
-                let (_, _, dist) = adm_to_spherical(scaled_x, scaled_y, scaled_z);
-                let t = (1.0 - dist / req.spread_distance_range)
-                    .clamp(0.0, 1.0)
-                    .powf(req.spread_distance_curve);
-                (req.spread_min + t * (req.spread_max - req.spread_min)).clamp(0.0, 1.0)
-            } else {
-                req.spread_min.clamp(0.0, 1.0)
-            };
+            req.spread_min.clamp(0.0, 1.0)
+        };
 
-            let direct_gains = self.panner.get_gains_cartesian(
-                scaled_x,
-                scaled_y,
+        let direct_gains = self.panner.get_gains_cartesian(
+            scaled_x,
+            scaled_y,
+            scaled_z,
+            effective_spread,
+            req.distance_model,
+        );
+
+        let gains = if req.use_distance_diffuse {
+            let [rx, ry, rz] = rendering_position;
+            let adm_dist = ((rx * rx + ry * ry + rz * rz) as f32).sqrt();
+            let t = (adm_dist / req.distance_diffuse_threshold.max(1e-6))
+                .min(1.0)
+                .powf(req.distance_diffuse_curve);
+            let alpha = 0.5 + 0.5 * t;
+            let w_direct = alpha.sqrt();
+            let w_mirror = (1.0 - alpha).sqrt();
+            let mirror_gains = self.panner.get_gains_cartesian(
+                -scaled_x,
+                -scaled_y,
                 scaled_z,
                 effective_spread,
                 req.distance_model,
             );
 
-            if req.use_distance_diffuse {
-                let [rx, ry, rz] = rendering_position;
-                let adm_dist = ((rx * rx + ry * ry + rz * rz) as f32).sqrt();
-                let t = (adm_dist / req.distance_diffuse_threshold.max(1e-6))
-                    .min(1.0)
-                    .powf(req.distance_diffuse_curve);
-                let alpha = 0.5 + 0.5 * t;
-                let w_direct = alpha.sqrt();
-                let w_mirror = (1.0 - alpha).sqrt();
-                let mirror_gains = self.panner.get_gains_cartesian(
-                    -scaled_x,
-                    -scaled_y,
-                    scaled_z,
-                    effective_spread,
-                    req.distance_model,
-                );
-
-                let n = direct_gains.len();
-                let mut blended = Gains::zeroed(n);
-                let mut energy_direct = 0.0f32;
-                let mut energy_blended = 0.0f32;
-                for i in 0..n {
-                    let g = w_direct * direct_gains[i] + w_mirror * mirror_gains[i];
-                    blended.set(i, g);
-                    energy_direct += direct_gains[i] * direct_gains[i];
-                    energy_blended += g * g;
-                }
-
-                if energy_blended > 1e-12 {
-                    let scale = (energy_direct / energy_blended).sqrt();
-                    for g in blended.iter_mut() {
-                        *g *= scale;
-                    }
-                }
-
-                blended
-            } else {
-                direct_gains
+            let n = direct_gains.len();
+            let mut blended = Gains::zeroed(n);
+            let mut energy_direct = 0.0f32;
+            let mut energy_blended = 0.0f32;
+            for i in 0..n {
+                let g = w_direct * direct_gains[i] + w_mirror * mirror_gains[i];
+                blended.set(i, g);
+                energy_direct += direct_gains[i] * direct_gains[i];
+                energy_blended += g * g;
             }
+
+            if energy_blended > 1e-12 {
+                let scale = (energy_direct / energy_blended).sqrt();
+                for g in blended.iter_mut() {
+                    *g *= scale;
+                }
+            }
+
+            blended
+        } else {
+            direct_gains
         };
 
         RenderResponse { gains }
