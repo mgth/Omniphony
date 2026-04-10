@@ -361,8 +361,7 @@ pub fn apply_simple_osc_control(
                 ));
             }
             Err(err) => {
-                effects.log_message =
-                    Some(format!("OSC: render_backend/restore failed: {err}"));
+                effects.log_message = Some(format!("OSC: render_backend/restore failed: {err}"));
             }
         }
         return Some(effects);
@@ -414,7 +413,12 @@ pub fn apply_simple_osc_control(
                     effects.broadcasts.push(BroadcastUpdate {
                         addr: "/omniphony/state/render_backend/effective".to_string(),
                         value: BroadcastValue::String(
-                            ctx.renderer.active_topology().backend.kind().as_str().to_string(),
+                            ctx.renderer
+                                .active_topology()
+                                .backend
+                                .kind()
+                                .as_str()
+                                .to_string(),
                         ),
                     });
                     effects.broadcasts.push(BroadcastUpdate {

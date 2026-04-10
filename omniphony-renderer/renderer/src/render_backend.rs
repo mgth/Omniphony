@@ -398,8 +398,7 @@ impl PreparedEvaluator for SampledCartesianEvaluator {
             &self.z_positions,
             &self.gains,
             self.speaker_count,
-        )
-        ?
+        )?
         .save_to_file(path)
     }
 
@@ -636,8 +635,7 @@ impl PreparedEvaluator for SampledPolarEvaluator {
             &self.distance_positions,
             &self.gains,
             self.speaker_count,
-        )
-        ?
+        )?
         .save_to_file(path)
     }
 }

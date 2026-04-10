@@ -23,12 +23,12 @@ use std::sync::{Arc, Mutex, RwLock};
 #[cfg(feature = "saf_vbap")]
 use crate::backend_registry::{TopologyBuildPlan, prepare_topology_build_plan};
 use crate::render_backend::backend_descriptor_by_id;
-#[cfg(feature = "saf_vbap")]
-use crate::render_backend::{EvaluationBuildConfig, RenderRequest};
 use crate::render_backend::{
     BackendRestoreSnapshot, GainModelKind, LoadedEvaluationArtifact, PreparedRenderEngine,
     RenderBackendKind, SerializedEvaluationMode, build_from_artifact_render_engine,
 };
+#[cfg(feature = "saf_vbap")]
+use crate::render_backend::{EvaluationBuildConfig, RenderRequest};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
@@ -560,8 +560,10 @@ impl RendererControl {
         let layout = self.editable_layout();
         let live = self.live.read().unwrap();
         let backend_rebuild_params = self.backend_rebuild_params();
-        let evaluation_build_config =
-            evaluation_build_config_from_live(&live, rebuild_params_allow_negative_z(backend_rebuild_params));
+        let evaluation_build_config = evaluation_build_config_from_live(
+            &live,
+            rebuild_params_allow_negative_z(backend_rebuild_params),
+        );
         prepare_topology_build_plan(
             layout,
             &live,
@@ -576,7 +578,11 @@ impl RendererControl {
             .backend
             .backend_restore_snapshot()
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("active from-file evaluator does not carry a backend restore snapshot"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "active from-file evaluator does not carry a backend restore snapshot"
+                )
+            })?;
 
         *self.editable_layout.lock().unwrap() = active_topology.speaker_layout.clone();
         self.set_backend_rebuild_params(Some(backend_rebuild_params_from_restore_snapshot(
@@ -704,10 +710,7 @@ impl RendererControl {
         Ok(speaker_layout)
     }
 
-    pub fn export_active_evaluation_artifact_to_file(
-        &self,
-        path: &std::path::Path,
-    ) -> Result<()> {
+    pub fn export_active_evaluation_artifact_to_file(&self, path: &std::path::Path) -> Result<()> {
         let topology = self.active_topology();
         topology
             .backend
@@ -748,9 +751,13 @@ fn live_evaluation_mode_from_serialized(mode: SerializedEvaluationMode) -> LiveE
     }
 }
 
-fn preferred_evaluation_mode_from_serialized(mode: SerializedEvaluationMode) -> PreferredEvaluationMode {
+fn preferred_evaluation_mode_from_serialized(
+    mode: SerializedEvaluationMode,
+) -> PreferredEvaluationMode {
     match mode {
-        SerializedEvaluationMode::PrecomputedCartesian => PreferredEvaluationMode::PrecomputedCartesian,
+        SerializedEvaluationMode::PrecomputedCartesian => {
+            PreferredEvaluationMode::PrecomputedCartesian
+        }
         SerializedEvaluationMode::PrecomputedPolar => PreferredEvaluationMode::PrecomputedPolar,
     }
 }
@@ -758,8 +765,12 @@ fn preferred_evaluation_mode_from_serialized(mode: SerializedEvaluationMode) -> 
 fn backend_rebuild_params_from_restore_snapshot(
     snapshot: &BackendRestoreSnapshot,
 ) -> Result<BackendRebuildParams> {
-    let descriptor = backend_descriptor_by_id(snapshot.backend_id.as_str())
-        .ok_or_else(|| anyhow::anyhow!("unknown backend id in restore snapshot: {}", snapshot.backend_id))?;
+    let descriptor = backend_descriptor_by_id(snapshot.backend_id.as_str()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown backend id in restore snapshot: {}",
+            snapshot.backend_id
+        )
+    })?;
     let preferred_evaluation_mode =
         preferred_evaluation_mode_from_serialized(snapshot.evaluation_mode);
     let backend_id = descriptor.id;
@@ -769,8 +780,11 @@ fn backend_rebuild_params_from_restore_snapshot(
             az_res_deg: (360.0 / snapshot.polar_azimuth_values.max(2) as f32)
                 .round()
                 .max(1.0) as i32,
-            el_res_deg: (((if snapshot.allow_negative_z { 180.0 } else { 90.0 })
-                / snapshot.polar_elevation_values.max(2) as f32)
+            el_res_deg: (((if snapshot.allow_negative_z {
+                180.0
+            } else {
+                90.0
+            }) / snapshot.polar_elevation_values.max(2) as f32)
                 .round()
                 .max(1.0)) as i32,
             spread_resolution: snapshot.polar_distance_max.max(0.01)
