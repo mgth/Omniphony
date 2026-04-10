@@ -1,8 +1,8 @@
 export function rendererPanelMarkup() {
   return `
-      <div id="rendererPanelRoot">
-      <div class="info-section" id="rendererSection">
-        <div style="display:grid;gap:0.2rem">
+      <div id="rendererPanelRoot" class="renderer-panel-root">
+      <div class="info-section renderer-panel-shell" id="rendererSection">
+        <div class="renderer-panel-header-block" style="display:grid;gap:0.2rem">
           <div class="panel-header">
             <div class="panel-header-main">
             <div class="info-title panel-title" data-i18n="section.renderer">Renderer</div>
@@ -34,11 +34,11 @@ export function rendererPanelMarkup() {
           </div>
         </div>
         <div id="rendererSectionContent" class="conditional-params">
-          <div style="margin-top:0.25rem;display:grid;gap:0.35rem">
-          <div class="info-section" id="evaluationSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+          <div class="renderer-panel-stack" style="margin-top:0.25rem;display:grid;gap:0.35rem">
+          <div class="info-section renderer-subpanel" id="evaluationSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Evaluation</div>
-              <div style="display:flex;align-items:center;gap:0.35rem">
+              <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
                 <select id="renderEvaluationModeSelect" class="delay-input" style="width:auto;min-width:13rem;text-align:left">
                   <option value="auto">Auto</option>
                   <option value="realtime">Realtime</option>
@@ -51,7 +51,7 @@ export function rendererPanelMarkup() {
               </div>
             </div>
             <div id="evaluationSectionContent" class="conditional-params open">
-            <div style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+            <div class="renderer-subpanel-body" style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
               <div id="renderEvaluationCartesianBlock">
               <div class="control-row" id="renderEvaluationCartesianRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:start">
                 <label style="font-size:12px;white-space:nowrap;color:#ffffff">Cartesian grid</label>
@@ -101,13 +101,13 @@ export function rendererPanelMarkup() {
             </div>
             </div>
           </div>
-          <div class="info-section" id="backendParametersSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-              <div style="display:flex;align-items:center;gap:0.45rem;min-width:0">
+          <div class="info-section renderer-subpanel" id="backendParametersSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div class="renderer-subpanel-titlebar" style="display:flex;align-items:center;gap:0.45rem;min-width:0">
                 <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Backend</div>
                 <div id="vbapStatus" class="vbap-status" style="margin:0;font-size:11px;min-width:0">—</div>
               </div>
-              <div style="display:flex;align-items:center;gap:0.35rem">
+              <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
               <select id="renderBackendSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
                 <option value="vbap">VBAP</option>
                 <option value="experimental_distance">Distance</option>

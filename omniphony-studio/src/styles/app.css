@@ -952,6 +952,74 @@
         scrollbar-gutter: auto;
       }
 
+      .renderer-panel-root,
+      .renderer-panel-root > *,
+      .renderer-panel-root .info-section,
+      .renderer-panel-root .conditional-params,
+      .renderer-panel-root .control-row,
+      .renderer-panel-root .meter-row,
+      .renderer-panel-root .inline-toggle,
+      .renderer-panel-root .title-with-info,
+      .renderer-panel-root .vbap-polar-grid,
+      .renderer-panel-root .vbap-grid-3,
+      .renderer-panel-root .renderer-panel-stack,
+      .renderer-panel-root .renderer-subpanel,
+      .renderer-panel-root .renderer-subpanel-body,
+      .renderer-panel-root .renderer-subpanel-actions,
+      .renderer-panel-root .renderer-subpanel-titlebar {
+        min-width: 0;
+        max-width: 100%;
+        box-sizing: border-box;
+      }
+
+      .renderer-panel-root .conditional-params.open {
+        overflow-x: hidden;
+      }
+
+      .renderer-panel-root .renderer-panel-header-block,
+      .renderer-panel-root .renderer-panel-stack {
+        min-width: 0;
+      }
+
+      .renderer-panel-root .panel-header-main,
+      .renderer-panel-root .renderer-subpanel-bar,
+      .renderer-panel-root .renderer-subpanel-actions,
+      .renderer-panel-root .renderer-subpanel-titlebar {
+        flex-wrap: wrap;
+      }
+
+      .renderer-panel-root .renderer-subpanel {
+        overflow: hidden;
+      }
+
+      .renderer-panel-root .renderer-subpanel-body {
+        overflow-x: hidden;
+      }
+
+      .renderer-panel-root select.delay-input,
+      .renderer-panel-root input.delay-input,
+      .renderer-panel-root .secondary-btn,
+      .renderer-panel-root .vbap-step {
+        max-width: 100%;
+      }
+
+      .renderer-panel-root .renderer-subpanel-actions > .delay-input,
+      .renderer-panel-root .renderer-subpanel-actions > select {
+        min-width: 0 !important;
+        width: min(100%, 13rem);
+      }
+
+      .renderer-panel-root #renderBackendSelect {
+        width: min(100%, 10.5rem);
+      }
+
+      .renderer-panel-root #renderEvaluationModeEffective,
+      .renderer-panel-root #renderBackendEffective,
+      .renderer-panel-root #vbapStatus {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
       #inputSectionContent {
         min-height: 0;
       }
