@@ -39,8 +39,6 @@ export function rendererPanelMarkup() {
             <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Evaluation</div>
               <div style="display:flex;align-items:center;gap:0.35rem">
-                <button id="restoreBackendBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Restore backend</button>
-                <button id="exportEvaluationArtifactBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Export</button>
                 <select id="renderEvaluationModeSelect" class="delay-input" style="width:auto;min-width:13rem;text-align:left">
                   <option value="auto">Auto</option>
                   <option value="realtime">Realtime</option>
@@ -48,6 +46,7 @@ export function rendererPanelMarkup() {
                   <option value="precomputed_cartesian">Precomputed cartesian</option>
                   <option value="from_file">From file</option>
                 </select>
+                <button id="exportEvaluationArtifactBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Export</button>
                 <div id="renderEvaluationModeEffective" class="vbap-step" style="min-width:8rem;text-align:right">—</div>
               </div>
             </div>
@@ -113,6 +112,7 @@ export function rendererPanelMarkup() {
                 <option value="vbap">VBAP</option>
                 <option value="experimental_distance">Distance</option>
               </select>
+              <button id="restoreBackendBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Restore backend</button>
               <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
             </div>
           </div>

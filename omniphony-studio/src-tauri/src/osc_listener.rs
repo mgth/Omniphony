@@ -665,6 +665,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 entry.azimuth_deg = position.azimuth_deg;
                 entry.elevation_deg = position.elevation_deg;
                 entry.distance_m = position.distance_m;
+                entry.gain_db = position.gain_db;
                 entry.generation = position.generation.or(current_generation);
                 entry.direct_speaker_index = position.direct_speaker_index;
                 if let Some(n) = name {
@@ -680,6 +681,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                             "azimuthDeg": entry.azimuth_deg,
                             "elevationDeg": entry.elevation_deg,
                             "distanceM": entry.distance_m,
+                            "gainDb": entry.gain_db,
                             "generation": entry.generation,
                             "directSpeakerIndex": entry.direct_speaker_index,
                             "name": entry.name

@@ -16,6 +16,8 @@ pub struct SourcePosition {
     pub elevation_deg: Option<f64>,
     #[serde(rename = "distanceM", skip_serializing_if = "Option::is_none")]
     pub distance_m: Option<f64>,
+    #[serde(rename = "gainDb", skip_serializing_if = "Option::is_none")]
+    pub gain_db: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
     #[serde(rename = "directSpeakerIndex", skip_serializing_if = "Option::is_none")]

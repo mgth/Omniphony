@@ -95,6 +95,8 @@ pub struct Position {
     pub elevation_deg: Option<f64>,
     #[serde(rename = "distanceM", skip_serializing_if = "Option::is_none")]
     pub distance_m: Option<f64>,
+    #[serde(rename = "gainDb", skip_serializing_if = "Option::is_none")]
+    pub gain_db: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
     #[serde(rename = "directSpeakerIndex", skip_serializing_if = "Option::is_none")]
@@ -525,6 +527,11 @@ fn parse_omniphony_object_position(
         .map(|v| v as i64)
         .filter(|&v| v >= 0)
         .map(|v| v as u32);
+    let gain_db = args
+        .get(4)
+        .copied()
+        .and_then(to_number)
+        .map(|v| v as i32);
 
     let generation = match raw_args.get(8) {
         Some(OscType::Long(v)) if *v >= 0 => Some(*v as u64),
@@ -590,6 +597,7 @@ fn parse_omniphony_object_position(
             } else {
                 None
             },
+            gain_db,
             generation,
             direct_speaker_index,
         },
@@ -1186,6 +1194,7 @@ pub fn parse_osc_message(
             } else {
                 None
             },
+            gain_db: None,
             generation: None,
             direct_speaker_index: None,
         },

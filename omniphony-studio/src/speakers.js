@@ -377,13 +377,13 @@ export function updateSpeakerControlsUI() {
 
 export function updateObjectControlsUI() {
   const selectedSourceId = get_selectedSourceId();
-  const selectedSpeakerIndex = get_selectedSpeakerIndex();
   const soloTarget = getSoloTarget('object');
   objectItems.forEach((entry, id) => {
     const gainValue = getBaseGain(objectBaseGains, objectGainCache, id);
+    const metadataSilent = objectHasSilentMetadataGain(id);
     entry.muteBtn.classList.toggle('active', objectMuted.has(id));
     entry.soloBtn.classList.toggle('active', soloTarget === id);
-    updateItemClasses(entry, objectMuted.has(id), soloTarget && soloTarget !== id);
+    updateItemClasses(entry, objectMuted.has(id), Boolean((soloTarget && soloTarget !== id) || metadataSilent));
     entry.root.classList.toggle('is-selected', selectedSourceId === id);
     entry.root.classList.toggle('has-active-trail', objectHasActiveTrail(id));
     if (entry.topRight) {
@@ -434,6 +434,12 @@ export function getObjectDominantSpeakerText(id) {
 export function objectHasActiveTrail(id) {
   const trail = sourceTrails.get(String(id));
   return Boolean(trail && trail.positions.length > 0);
+}
+
+function objectHasSilentMetadataGain(id) {
+  const raw = sourcePositionsRaw.get(String(id));
+  const metadataGainDb = Number(raw?.metadataGainDb);
+  return Number.isFinite(metadataGainDb) && metadataGainDb <= -128;
 }
 
 // ---------------------------------------------------------------------------
@@ -913,6 +919,7 @@ export function createObjectItem(id) {
 export function updateObjectItem(entry, id, position, name) {
   const selectedSourceId = get_selectedSourceId();
   const soloTarget = getSoloTarget('object');
+  const metadataSilent = objectHasSilentMetadataGain(id);
   if (name) {
     sourceNames.set(id, name);
   }
@@ -925,7 +932,7 @@ export function updateObjectItem(entry, id, position, name) {
   entry.gainBox.textContent = linearToDb(gainValue);
   entry.muteBtn.classList.toggle('active', objectMuted.has(id));
   entry.soloBtn.classList.toggle('active', soloTarget === id);
-  updateItemClasses(entry, objectMuted.has(id), soloTarget && soloTarget !== id);
+  updateItemClasses(entry, objectMuted.has(id), Boolean((soloTarget && soloTarget !== id) || metadataSilent));
   entry.root.classList.toggle('is-selected', selectedSourceId === id);
   updateMeterUI(entry, sourceLevels.get(id));
   updateObjectContributionUI_src(entry, id);

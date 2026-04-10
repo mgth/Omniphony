@@ -167,6 +167,12 @@ export function getObjectTrailColor(id) {
   return getObjectBaseColor(id).offsetHSL(0, 0.04, 0.08);
 }
 
+export function isSourceMetadataSilent(id) {
+  const raw = sourcePositionsRaw.get(String(id));
+  const metadataGainDb = Number(raw?.metadataGainDb);
+  return Number.isFinite(metadataGainDb) && metadataGainDb <= -128;
+}
+
 export function getObjectUiAccent(id) {
   const color = getObjectBaseColor(id);
   return `rgb(${Math.round(color.r * 255)}, ${Math.round(color.g * 255)}, ${Math.round(color.b * 255)})`;
@@ -282,7 +288,7 @@ export function updateEffectiveRenderDecoration(id) {
     return;
   }
 
-  if (!app.effectiveRenderEnabled) {
+  if (!app.effectiveRenderEnabled || isSourceMetadataSilent(id)) {
     marker.visible = false;
     line.visible = false;
     line.geometry.setFromPoints([]);
@@ -333,19 +339,28 @@ export function updateSourceDecorations(id) {
   const mesh = sourceMeshes.get(id);
   const label = sourceLabels.get(id);
   const outline = sourceOutlines.get(id);
+  const trail = sourceTrails.get(id);
 
   if (!mesh) {
     return;
   }
 
+  const metadataSilent = isSourceMetadataSilent(id);
+
   if (label) {
+    label.visible = !metadataSilent;
     label.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
   }
 
   if (outline) {
     const radius = 0.07 * mesh.scale.x * 1.08;
+    outline.visible = !metadataSilent;
     outline.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
     outline.scale.setScalar(radius);
+  }
+
+  if (trail?.line) {
+    trail.line.visible = app.trailsEnabled && !metadataSilent;
   }
 
   updateEffectiveRenderDecoration(id);
@@ -510,6 +525,7 @@ export function updateObjectContributionUI(entry, id) {
 
 export function updateSourceColorsFromSelection() {
   sourceMeshes.forEach((mesh, id) => {
+    const metadataSilent = isSourceMetadataSilent(id);
     const baseOpacity = Number(mesh.userData.baseOpacity ?? 0.7);
     const baseScale = Math.max(0.5, Number(mesh.userData.levelScale) || 1);
     const gains = app.selectedSpeakerIndex !== null ? (sourceGains.get(id) || null) : null;
@@ -518,8 +534,8 @@ export function updateSourceColorsFromSelection() {
     const contributionColor = speakerSelectedColor;
     const objectColor = app.objectColorsEnabled ? getObjectBaseColor(id) : sourceMaterial.color.clone();
 
+    mesh.visible = !metadataSilent;
     if (app.selectedSpeakerIndex !== null) {
-      mesh.visible = true;
       mesh.material.color.copy(objectColor);
       if (hasContribution) {
         mesh.material.color.lerp(contributionColor, Math.min(0.68, 0.22 + (0.42 * mix)));
@@ -529,7 +545,6 @@ export function updateSourceColorsFromSelection() {
         : 0.0;
       mesh.scale.setScalar(baseScale);
     } else {
-      mesh.visible = true;
       mesh.material.color.copy(objectColor);
       mesh.material.opacity = 0.0;
       mesh.scale.setScalar(baseScale);
@@ -537,7 +552,7 @@ export function updateSourceColorsFromSelection() {
 
     const outline = sourceOutlines.get(id);
     if (outline) {
-      outline.visible = true;
+      outline.visible = !metadataSilent;
       outline.material.opacity = app.selectedSpeakerIndex !== null
         ? (mix <= 1e-6 ? 0.15 : 0.25 + (0.73 * mix))
         : 0.98;
@@ -555,6 +570,7 @@ export function updateSourceSelectionStyles() {
   updateSourceColorsFromSelection();
 
   sourceMeshes.forEach((mesh, id) => {
+    const metadataSilent = isSourceMetadataSilent(id);
     const isSelected = id === app.selectedSourceId;
     const gains = app.selectedSpeakerIndex !== null ? (sourceGains.get(id) || null) : null;
     const mix = gainToMix(gains?.[app.selectedSpeakerIndex]);
@@ -579,6 +595,7 @@ export function updateSourceSelectionStyles() {
       if (isSelected) {
         outline.material.opacity = 1;
       }
+      outline.visible = !metadataSilent;
     }
 
     updateEffectiveRenderDecoration(id);
@@ -689,6 +706,7 @@ export function updateSource(id, position) {
   const mesh = getSourceMesh(id);
   const skipTrail = Boolean(position && position._noTrail);
   const now = performance.now();
+  const currentMeter = sourceLevels.get(String(id));
   const directSpeakerIndex = Number.isInteger(position?.directSpeakerIndex)
     ? position.directSpeakerIndex
     : null;
@@ -700,6 +718,7 @@ export function updateSource(id, position) {
     azimuthDeg: Number.isFinite(Number(position?.azimuthDeg)) ? Number(position.azimuthDeg) : undefined,
     elevationDeg: Number.isFinite(Number(position?.elevationDeg)) ? Number(position.elevationDeg) : undefined,
     distanceM: Number.isFinite(Number(position?.distanceM)) ? Number(position.distanceM) : undefined,
+    metadataGainDb: Number.isFinite(Number(position?.gainDb)) ? Number(position.gainDb) : undefined,
     directSpeakerIndex,
     t: now
   });
@@ -723,6 +742,7 @@ export function updateSource(id, position) {
   if (trail && !skipTrail) {
     trail.positions.push({
       ...raw,
+      trailRmsDbfs: Number.isFinite(Number(currentMeter?.rmsDbfs)) ? Number(currentMeter.rmsDbfs) : undefined,
       trailColor: sourceCallbacks.captureTrailPointColor?.(mesh)
     });
     if (app.trailsEnabled) {
@@ -744,6 +764,7 @@ export function updateSource(id, position) {
   } else {
     sourceCallbacks.updateObjectPositionUI?.(key, raw);
     sourceCallbacks.updateObjectLabelUI?.(key);
+    sourceCallbacks.updateObjectControlsUI?.();
   }
   const entry = objectItems.get(key);
   if (entry) {
