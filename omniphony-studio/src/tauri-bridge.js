@@ -68,6 +68,7 @@ import {
 } from './controls/room-geometry.js';
 import { normalizeLogLevel, renderLogLevelControl, logState, pushLog } from './log.js';
 import { applyInitState } from './init.js';
+import { setInputSectionOpen } from './modals.js';
 import {
   handleSpeakerHeatmapMeta,
   handleSpeakerHeatmapSlice,
@@ -306,6 +307,16 @@ export function setupTauriBridge() {
     updateInputControlUI();
   });
 
+  listen('input:node', ({ payload }) => {
+    app.inputNode = String(payload?.value ?? '').trim() || null;
+    updateInputControlUI();
+  });
+
+  listen('input:description', ({ payload }) => {
+    app.inputDescription = String(payload?.value ?? '').trim() || null;
+    updateInputControlUI();
+  });
+
   listen('input:stream_format', ({ payload }) => {
     app.inputStreamFormat = String(payload?.value ?? '').trim() || null;
     updateInputControlUI();
@@ -313,6 +324,14 @@ export function setupTauriBridge() {
 
   listen('input:error', ({ payload }) => {
     app.inputError = String(payload?.value ?? '').trim() || null;
+    updateInputControlUI();
+    if (app.inputError && /bridge path missing|no bridge plugin found|render\.bridge_path/i.test(app.inputError)) {
+      setInputSectionOpen(true);
+    }
+  });
+
+  listen('render:bridge_path', ({ payload }) => {
+    app.renderBridgePath = String(payload?.value ?? '').trim() || null;
     updateInputControlUI();
   });
 

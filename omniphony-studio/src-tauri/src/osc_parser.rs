@@ -314,10 +314,16 @@ pub enum OscEvent {
     StateInputChannels { value: u32 },
     #[serde(rename = "state:input:sample_rate")]
     StateInputSampleRate { value: u32 },
+    #[serde(rename = "state:input:node")]
+    StateInputNode { value: String },
+    #[serde(rename = "state:input:description")]
+    StateInputDescription { value: String },
     #[serde(rename = "state:input:stream_format")]
     StateInputStreamFormat { value: String },
     #[serde(rename = "state:input:error")]
     StateInputError { value: String },
+    #[serde(rename = "state:render:bridge_path")]
+    StateRenderBridgePath { value: String },
     #[serde(rename = "state:input:live:backend")]
     StateInputLiveBackend { value: String },
     #[serde(rename = "state:input:live:node")]
@@ -943,6 +949,12 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             "sample_rate" => Some(OscEvent::StateInputSampleRate {
                 value: to_number(args[0])?.max(0.0) as u32,
             }),
+            "node" => Some(OscEvent::StateInputNode {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
+            "description" => Some(OscEvent::StateInputDescription {
+                value: raw_args.first().and_then(unwrap_string)?,
+            }),
             "stream_format" => Some(OscEvent::StateInputStreamFormat {
                 value: raw_args.first().and_then(unwrap_string)?,
             }),
@@ -951,6 +963,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             }),
             _ => None,
         },
+        (4, "render") if parts[3] == "bridge_path" => Some(OscEvent::StateRenderBridgePath {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
         (5, "input") if parts[3] == "live" => match parts[4] {
             "backend" => Some(OscEvent::StateInputLiveBackend {
                 value: raw_args.first().and_then(unwrap_string)?,

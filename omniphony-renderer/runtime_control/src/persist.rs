@@ -40,7 +40,6 @@ pub fn save_live_config(
     let mut config = renderer::config::Config::load_or_default(&path);
     let render = config.render.get_or_insert_with(Default::default);
     let requested_bridge_path = control.bridge_path();
-    let restart_required = render.bridge_path != requested_bridge_path;
     render.bridge_path = requested_bridge_path;
 
     let mut layout_snapshot = control.editable_layout();
@@ -305,6 +304,6 @@ pub fn save_live_config(
     Ok(SaveLiveConfigResult {
         path,
         state_bundle: build_live_state_bundle(control, audio_control, input_control),
-        restart_required,
+        restart_required: false,
     })
 }

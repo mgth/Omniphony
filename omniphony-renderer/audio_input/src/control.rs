@@ -92,6 +92,7 @@ pub struct AppliedAudioInputState {
     pub channels: Option<u16>,
     pub sample_rate_hz: Option<u32>,
     pub node_name: Option<String>,
+    pub node_description: Option<String>,
     pub stream_format: Option<String>,
     pub input_error: Option<String>,
 }
@@ -104,6 +105,7 @@ impl Default for AppliedAudioInputState {
             channels: None,
             sample_rate_hz: None,
             node_name: None,
+            node_description: None,
             stream_format: None,
             input_error: None,
         }
@@ -298,6 +300,7 @@ impl InputControl {
         channels: Option<u16>,
         sample_rate_hz: Option<u32>,
         node_name: Option<String>,
+        node_description: Option<String>,
         stream_format: Option<String>,
     ) {
         self.update_applied(|applied| {
@@ -306,6 +309,7 @@ impl InputControl {
             applied.channels = channels;
             applied.sample_rate_hz = sample_rate_hz;
             applied.node_name = node_name;
+            applied.node_description = node_description;
             applied.stream_format = stream_format;
         });
     }

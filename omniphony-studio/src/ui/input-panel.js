@@ -33,6 +33,7 @@ export function inputPanelMarkup() {
                 ${secondaryButton({ id: 'oscBridgeBrowseBtn', text: 'Browse', textKey: 'input.browse' })}
               </div>
             </div>
+            <div id="oscBridgePathStatus" class="input-panel-inline-status" aria-live="polite"></div>
             <div class="input-panel-row">
               <label data-i18n="input.pipe">Pipe</label>
               <input id="pipeStatus" class="delay-input" type="text" spellcheck="false" placeholder="Auto-detect" data-i18n-placeholder="input.autoDetect" style="width:100%;min-width:0;box-sizing:border-box;text-align:left" />

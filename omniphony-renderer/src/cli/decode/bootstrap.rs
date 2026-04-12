@@ -650,6 +650,10 @@ fn init_osc_runtime(
         let ctrl = renderer.renderer_control();
         ctrl.set_input_path(Some(input_path.display().to_string()));
         ctrl.set_bridge_path(args.bridge_path.clone());
+        let persisted_bridge_path = render_cfg.as_ref().and_then(|cfg| cfg.bridge_path.clone());
+        if persisted_bridge_path != args.bridge_path {
+            ctrl.mark_dirty();
+        }
         ctrl.set_requested_ramp_mode(args.ramp_mode.into());
         ctrl.live.write().unwrap().ramp_mode = args.ramp_mode.into();
 
@@ -697,6 +701,7 @@ fn init_osc_runtime(
             input_requested.channels,
             input_requested.sample_rate_hz,
             input_requested.node_name.clone(),
+            input_requested.node_description.clone(),
             input_requested.sample_format.map(|format| match format {
                 InputSampleFormat::F32 => "f32".to_string(),
                 InputSampleFormat::S16 => "s16".to_string(),

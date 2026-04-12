@@ -206,6 +206,7 @@ impl DecodeHandler {
                     channels,
                     sample_rate_hz,
                     None,
+                    None,
                     stream_format,
                 );
             }

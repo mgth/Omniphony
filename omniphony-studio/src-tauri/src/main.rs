@@ -1427,6 +1427,17 @@ fn control_input_apply(state: State<SharedState>) {
 }
 
 #[tauri::command]
+fn control_render_bridge_path(state: State<SharedState>, value: String) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/render/bridge_path".to_string(),
+            value: value.trim().to_string(),
+        },
+    );
+}
+
+#[tauri::command]
 fn control_input_refresh(state: State<SharedState>) {
     send_control(
         &state.osc_tx,
@@ -1485,7 +1496,6 @@ fn resolve_orender_launch_spec(
     osc_rx_port: u16,
     osc_port: u16,
     osc_metering_enabled: bool,
-    bridge_path: Option<String>,
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<OrenderLaunchSpec, String> {
@@ -1497,11 +1507,6 @@ fn resolve_orender_launch_spec(
         .parent()
         .ok_or_else(|| "failed to resolve Omniphony repository root".to_string())?
         .to_path_buf();
-    let workspace_root = repo_root
-        .parent()
-        .ok_or_else(|| "failed to resolve workspace root".to_string())?
-        .to_path_buf();
-
     let repo_orender_candidates = [
         repo_root.join("omniphony-renderer/target/release/orender"),
         repo_root.join("omniphony-renderer/target/debug/orender"),
@@ -1550,28 +1555,12 @@ fn resolve_orender_launch_spec(
     })
     .ok_or_else(|| "orender binary not found".to_string())?;
 
-    let bridge_path = bridge_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
-        .or_else(|| {
-            first_existing_path(&[
-                workspace_root.join("truehd-bridge/target/release/libtruehd_bridge.so"),
-                repo_root.join("omniphony-renderer/target/release/libtruehd_bridge.so"),
-            ])
-        })
-        .ok_or_else(|| "a bridge plugin is required to launch orender".to_string())?;
-
     let input_path = default_orender_input_path();
 
     let mut args = vec![
         "render".to_string(),
         input_path.display().to_string(),
         "--continuous".to_string(),
-        "--bridge-path".to_string(),
-        bridge_path.display().to_string(),
         "--enable-vbap".to_string(),
         "--osc".to_string(),
         "--osc-host".to_string(),
@@ -1618,7 +1607,6 @@ fn resolve_orender_launch_spec(
             osc_rx_port,
             osc_port,
             osc_metering_enabled,
-            bridge_path: Some(bridge_path.display().to_string()),
         },
     );
 
@@ -1822,7 +1810,6 @@ fn install_orender_service(
     osc_rx_port: u16,
     osc_port: u16,
     osc_metering_enabled: bool,
-    bridge_path: Option<String>,
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -1835,7 +1822,6 @@ fn install_orender_service(
         osc_rx_port,
         osc_port,
         osc_metering_enabled,
-        bridge_path,
         orender_path,
         log_level,
     )?;
@@ -2059,7 +2045,6 @@ fn launch_orender(
     osc_rx_port: u16,
     osc_port: u16,
     osc_metering_enabled: bool,
-    bridge_path: Option<String>,
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -2070,7 +2055,6 @@ fn launch_orender(
         osc_rx_port,
         osc_port,
         osc_metering_enabled,
-        bridge_path,
         orender_path,
         log_level,
     )?;
@@ -2288,6 +2272,7 @@ fn main() {
             control_input_live_map,
             control_input_live_lfe_mode,
             control_input_apply,
+            control_render_bridge_path,
             control_input_refresh,
             control_export_layout,
             control_import_evaluation_artifact,

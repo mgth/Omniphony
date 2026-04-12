@@ -127,6 +127,19 @@
         text-overflow: ellipsis;
       }
 
+      .input-panel-inline-status {
+        display: none;
+        margin: -0.2rem 0 0.15rem;
+        padding-left: 7.2rem;
+        font-size: 0.8rem;
+        color: #ff7d7d;
+      }
+
+      .input-panel-danger {
+        border-color: rgba(255, 90, 90, 0.95) !important;
+        box-shadow: 0 0 0 1px rgba(255, 90, 90, 0.2);
+      }
+
       .ui-btn {
         background: rgba(255,255,255,0.08);
         border: 1px solid rgba(255,255,255,0.2);

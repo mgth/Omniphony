@@ -576,6 +576,12 @@ pub fn build_live_state_bundle(
                 args: vec![OscType::String(node_name)],
             }));
         }
+        if let Some(description) = applied.node_description {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/input/description".to_string(),
+                args: vec![OscType::String(description)],
+            }));
+        }
         if let Some(stream_format) = applied.stream_format {
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/input/stream_format".to_string(),

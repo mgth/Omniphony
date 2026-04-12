@@ -48,12 +48,21 @@ export function setupInputPanelListeners() {
           const trimmed = String(selectedPath || '').trim();
           if (trimmed && oscBridgePathInputEl) {
             oscBridgePathInputEl.value = trimmed;
-            oscBridgePathInputEl.dispatchEvent(new Event('input', { bubbles: true }));
+            oscBridgePathInputEl.dispatchEvent(new Event('change', { bubbles: true }));
           }
         })
         .catch((e) => {
           pushLog('error', `Failed to select bridge: ${normalizeLogError(e)}`);
         });
+    });
+  }
+
+  if (oscBridgePathInputEl) {
+    oscBridgePathInputEl.addEventListener('change', () => {
+      const value = String(oscBridgePathInputEl.value || '').trim();
+      app.renderBridgePath = value || null;
+      updateInputControlUI();
+      invoke('control_render_bridge_path', { value });
     });
   }
 
@@ -165,6 +174,22 @@ export function setupInputPanelListeners() {
 
   if (inputApplyBtnEl) {
     inputApplyBtnEl.addEventListener('click', () => {
+      const requestedMode = app.inputMode || 'pipe_bridge';
+      const activeMode = app.inputActiveMode || 'pipe_bridge';
+      const needsBridgeBootstrap =
+        requestedMode === 'pipe_bridge'
+        || (requestedMode === 'pipewire_bridge' && activeMode !== 'pipewire_bridge');
+      if (needsBridgeBootstrap) {
+        const value = String(oscBridgePathInputEl?.value || '').trim();
+        app.inputApplyPending = false;
+        updateInputControlUI();
+        invoke('control_render_bridge_path', { value })
+          .then(() => invoke('control_reload_config'))
+          .catch((e) => {
+            pushLog('error', `Failed to apply bridge path: ${normalizeLogError(e)}`);
+          });
+        return;
+      }
       app.inputApplyPending = true;
       updateInputControlUI();
       invoke('control_input_apply');

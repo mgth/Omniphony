@@ -4,6 +4,8 @@ import { inInputPanel } from '../ui/panel-roots.js';
 
 const inputModeSelectEl = inInputPanel('inputModeSelect');
 const inputPipeInputEl = inInputPanel('pipeStatus');
+const oscBridgePathInputEl = inInputPanel('oscBridgePathInput');
+const oscBridgePathStatusEl = inInputPanel('oscBridgePathStatus');
 const inputBackendSelectEl = inInputPanel('inputBackendSelect');
 const inputNodeInputEl = inInputPanel('inputNodeInput');
 const inputDescriptionInputEl = inInputPanel('inputDescriptionInput');
@@ -64,7 +66,32 @@ function formatClockModeLabel(value) {
   return value || '—';
 }
 
+function defaultNodePlaceholder(requestedMode) {
+  return requestedMode === 'pipewire_bridge' ? 'omniphony' : 'omniphony_input_7_1';
+}
+
+function defaultDescriptionPlaceholder(requestedMode) {
+  return requestedMode === 'pipewire_bridge'
+    ? 'Omniphony Bridge Input'
+    : 'Omniphony Input 7.1';
+}
+
+function bridgePathMissingMessage(requestedMode) {
+  if (requestedMode !== 'pipe_bridge' && requestedMode !== 'pipewire_bridge') {
+    return '';
+  }
+  const error = String(app.inputError || '').trim();
+  if (!/bridge path missing|no bridge plugin found|render\.bridge_path/i.test(error)) {
+    return '';
+  }
+  if (app.renderBridgePath) {
+    return '';
+  }
+  return 'Bridge path missing';
+}
+
 export function updateInputControlUI() {
+  const requestedMode = app.inputMode || 'pipe_bridge';
   if (inputModeSelectEl) {
     inputModeSelectEl.value = ['pipewire', 'pipewire_bridge', 'pipe_bridge'].includes(app.inputMode)
       ? app.inputMode
@@ -76,11 +103,16 @@ export function updateInputControlUI() {
   if (inputPipeInputEl && document.activeElement !== inputPipeInputEl) {
     inputPipeInputEl.value = stringOrEmpty(app.orenderInputPipe);
   }
-  if (inputNodeInputEl) {
-    inputNodeInputEl.value = stringOrEmpty(app.liveInput.node);
+  if (oscBridgePathInputEl && document.activeElement !== oscBridgePathInputEl) {
+    oscBridgePathInputEl.value = stringOrEmpty(app.renderBridgePath);
   }
-  if (inputDescriptionInputEl) {
-    inputDescriptionInputEl.value = stringOrEmpty(app.liveInput.description);
+  if (inputNodeInputEl && document.activeElement !== inputNodeInputEl) {
+    inputNodeInputEl.value = stringOrEmpty(app.liveInput.node || app.inputNode);
+    inputNodeInputEl.placeholder = defaultNodePlaceholder(requestedMode);
+  }
+  if (inputDescriptionInputEl && document.activeElement !== inputDescriptionInputEl) {
+    inputDescriptionInputEl.value = stringOrEmpty(app.liveInput.description || app.inputDescription);
+    inputDescriptionInputEl.placeholder = defaultDescriptionPlaceholder(requestedMode);
   }
   if (inputClockModeSelectEl) {
     inputClockModeSelectEl.value = ['dac', 'pipewire', 'upstream'].includes(app.liveInput.clockMode)
@@ -107,7 +139,8 @@ export function updateInputControlUI() {
     inputLfeModeSelectEl.value = ['object', 'direct', 'drop'].includes(value) ? value : 'object';
   }
 
-  const requestedMode = app.inputMode || 'pipe_bridge';
+  const showApplyPending = requestedMode !== 'pipe_bridge' && app.inputApplyPending;
+  const bridgePathMissing = bridgePathMissingMessage(requestedMode);
   const bridgeRequested = requestedMode !== 'live';
   const liveRequested = requestedMode === 'pipewire';
   const pipewireBridgeRequested = requestedMode === 'pipewire_bridge';
@@ -115,6 +148,13 @@ export function updateInputControlUI() {
 
   if (inputBridgeFieldsEl) {
     inputBridgeFieldsEl.style.display = bridgeRequested ? '' : 'none';
+  }
+  if (oscBridgePathStatusEl) {
+    oscBridgePathStatusEl.textContent = bridgePathMissing;
+    oscBridgePathStatusEl.style.display = bridgePathMissing ? 'block' : 'none';
+  }
+  if (oscBridgePathInputEl) {
+    oscBridgePathInputEl.classList.toggle('input-panel-danger', Boolean(bridgePathMissing));
   }
   if (inputLiveFieldsEl) {
     inputLiveFieldsEl.style.display = endpointRequested ? '' : 'none';
@@ -163,7 +203,7 @@ export function updateInputControlUI() {
     const activeMode = app.inputActiveMode || 'pipe_bridge';
     const requestedModeLabel = formatInputModeLabel(requestedMode);
     const activeModeLabel = formatInputModeLabel(activeMode);
-    const sync = app.inputApplyPending ? t('input.sync.pending') : t('input.sync.synced');
+    const sync = showApplyPending ? t('input.sync.pending') : t('input.sync.synced');
     const error = app.inputError ? tf('input.status.error', { error: app.inputError }) : '';
     if (liveRequested) {
       const backend = formatInputBackendLabel(app.inputBackend || app.liveInput.backend || '');
@@ -220,7 +260,7 @@ export function updateInputControlUI() {
   }
 
   if (inputApplyBtnEl) {
-    inputApplyBtnEl.textContent = app.inputApplyPending ? t('input.applyPending') : t('input.apply');
+    inputApplyBtnEl.textContent = showApplyPending ? t('input.applyPending') : t('input.apply');
   }
 }
 

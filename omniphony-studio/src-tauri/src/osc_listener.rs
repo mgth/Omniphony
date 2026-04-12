@@ -1354,6 +1354,28 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateInputNode { value } => {
+                s.input_node = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.clone())
+                };
+                (
+                    Some(("input:node", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateInputDescription { value } => {
+                s.input_description = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.clone())
+                };
+                (
+                    Some(("input:description", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
             OscEvent::StateInputStreamFormat { value } => {
                 s.input_stream_format = Some(value.clone());
                 (
@@ -1369,6 +1391,17 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 };
                 (
                     Some(("input:error", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
+            OscEvent::StateRenderBridgePath { value } => {
+                s.render_bridge_path = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.clone())
+                };
+                (
+                    Some(("render:bridge_path", serde_json::json!({ "value": value }))),
                     removed_ids,
                 )
             }

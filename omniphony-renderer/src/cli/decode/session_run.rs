@@ -231,7 +231,7 @@ fn run_idle_runtime(
     current_layout_from_config: Option<renderer::speaker_layout::SpeakerLayout>,
     evaluation_mode_explicit: bool,
     bridge_error: &anyhow::Error,
-) -> Result<()> {
+) -> Result<Option<std::path::PathBuf>> {
     let shutdown = sys::shutdown::ShutdownHandle::install()?;
     let mut handler = DecodeHandler::default();
     init_render_handler(
@@ -245,6 +245,11 @@ fn run_idle_runtime(
         evaluation_mode_explicit,
     )?;
     handler.spatial.coordinate_format = IDLE_BRIDGE_COORDINATE_FORMAT;
+    if let Some(input_control) = handler.input_control.as_ref() {
+        input_control.set_input_error(Some(
+            "Bridge path missing. Set a bridge binary path and Apply.".to_string(),
+        ));
+    }
 
     log::warn!(
         "Bridge unavailable, starting idle OSC runtime without decode/audio session: {bridge_error:#}"
@@ -265,7 +270,11 @@ fn run_idle_runtime(
         sys::notify_stopping();
     }
 
-    Ok(())
+    Ok(handler
+        .spatial_renderer
+        .as_ref()
+        .map(|renderer| renderer.renderer_control().bridge_path())
+        .unwrap_or_else(|| args.bridge_path.clone()))
 }
 
 fn effective_output_backend(
@@ -491,7 +500,7 @@ fn run_prepared_render(
     config_path: &Option<std::path::PathBuf>,
     current_layout_from_config: Option<renderer::speaker_layout::SpeakerLayout>,
     evaluation_mode_explicit: bool,
-) -> Result<()> {
+) -> Result<Option<std::path::PathBuf>> {
     let mut effective_args = args.clone();
     if !evaluation_mode_explicit {
         effective_args.render_evaluation_mode = match prepared.preferred_evaluation_mode {
@@ -539,20 +548,30 @@ fn run_prepared_render(
         manager.stop();
     }
     run_result?;
-    finalize_render_run(prepared, &mut handler, &effective_args)
+    let current_bridge_path = handler
+        .spatial_renderer
+        .as_ref()
+        .map(|renderer| renderer.renderer_control().bridge_path())
+        .unwrap_or_else(|| effective_args.bridge_path.clone());
+    finalize_render_run(prepared, &mut handler, &effective_args)?;
+    Ok(current_bridge_path)
 }
 
 pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'_>) -> Result<()> {
+    let mut restart_bridge_path_override: Option<Option<std::path::PathBuf>> = None;
     loop {
-        let (config_path, effective_args, current_layout_from_config, evaluation_mode_explicit) =
+        let (config_path, mut effective_args, current_layout_from_config, evaluation_mode_explicit) =
             resolve_effective_decode_args(args, cli, arg_sources);
+        if let Some(bridge_path) = restart_bridge_path_override.take() {
+            effective_args.bridge_path = bridge_path;
+        }
         let args = &effective_args;
 
         if maybe_save_effective_config(cli, args, &config_path)? {
             return Ok(());
         }
 
-        match prepare_render_run(args, cli) {
+        let bridge_path_after_run = match prepare_render_run(args, cli) {
             Ok(prepared) => run_prepared_render(
                 prepared,
                 args,
@@ -568,13 +587,14 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
                 &err,
             )?,
             Err(err) => return Err(err),
-        }
+        };
 
         if sys::ShutdownHandle::is_restart_from_config_requested() {
             sys::ShutdownHandle::clear_restart_from_config();
             if sys::ShutdownHandle::is_requested() {
                 return Ok(());
             }
+            restart_bridge_path_override = Some(bridge_path_after_run);
             log::info!("Restarting render pipeline from config");
             continue;
         }

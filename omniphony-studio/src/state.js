@@ -198,8 +198,11 @@ export const app = {
   inputBackend: null,
   inputChannels: null,
   inputSampleRate: null,
+  inputNode: null,
+  inputDescription: null,
   inputStreamFormat: null,
   inputError: null,
+  renderBridgePath: null,
   liveInput: {
     backend: 'pipewire',
     node: '',

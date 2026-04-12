@@ -374,10 +374,16 @@ pub struct AppState {
     pub input_channels: Option<u32>,
     #[serde(rename = "inputSampleRate")]
     pub input_sample_rate: Option<u32>,
+    #[serde(rename = "inputNode")]
+    pub input_node: Option<String>,
+    #[serde(rename = "inputDescription")]
+    pub input_description: Option<String>,
     #[serde(rename = "inputStreamFormat")]
     pub input_stream_format: Option<String>,
     #[serde(rename = "inputError")]
     pub input_error: Option<String>,
+    #[serde(rename = "renderBridgePath")]
+    pub render_bridge_path: Option<String>,
     #[serde(rename = "liveInput")]
     pub live_input: LiveInputState,
     #[serde(rename = "orenderInputPipe")]
@@ -551,8 +557,11 @@ impl Default for AppState {
             input_backend: None,
             input_channels: None,
             input_sample_rate: None,
+            input_node: None,
+            input_description: None,
             input_stream_format: None,
             input_error: None,
+            render_bridge_path: None,
             live_input: LiveInputState::default(),
             orender_input_pipe: None,
             osc_status: Some("initializing".to_string()),

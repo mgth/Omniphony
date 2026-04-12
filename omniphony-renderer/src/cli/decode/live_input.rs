@@ -226,6 +226,7 @@ pub fn spawn_live_input_manager(
                             None,
                             None,
                             None,
+                            None,
                             Some("bridge-decoded".to_string()),
                         );
                         if input_control.applied_snapshot().input_error.is_none() {
@@ -273,6 +274,7 @@ fn reconcile_live_input(
             None,
             None,
             None,
+            None,
             Some("bridge-decoded".to_string()),
         );
         input_control.set_input_error(None);
@@ -286,6 +288,7 @@ fn reconcile_live_input(
         let _ = current_capture;
         input_control.set_input_state(
             InputMode::Bridge,
+            None,
             None,
             None,
             None,
@@ -326,6 +329,7 @@ fn reconcile_live_input(
                                 None,
                                 None,
                                 None,
+                                None,
                                 Some("bridge-decoded".to_string()),
                             );
                             input_control.set_input_error(Some(err.to_string()));
@@ -343,6 +347,7 @@ fn reconcile_live_input(
                             Some(config.channels),
                             Some(config.sample_rate_hz),
                             Some(config.node_name.clone()),
+                            Some(config.node_description.clone()),
                             Some("pipewire-f32".to_string()),
                         );
                     }
@@ -353,6 +358,7 @@ fn reconcile_live_input(
                             Some(config.channels),
                             Some(config.sample_rate_hz),
                             Some(config.node_name.clone()),
+                            Some(config.node_description.clone()),
                             Some("pipewire-iec61937".to_string()),
                         );
                     }
@@ -379,6 +385,7 @@ fn reconcile_live_input(
                 }
                 input_control.set_input_state(
                     InputMode::Bridge,
+                    None,
                     None,
                     None,
                     None,

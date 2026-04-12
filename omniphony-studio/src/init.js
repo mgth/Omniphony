@@ -44,6 +44,7 @@ import { updateRoomRatioDisplay, applyRoomRatio, applyRoomRatioToScene } from '.
 import { updateConfigSavedUI } from './controls/config.js';
 import { normalizeLogLevel, renderLogLevelControl, logState } from './log.js';
 import { syncRuntimeConnectionLock } from './runtime-connection.js';
+import { setInputSectionOpen } from './modals.js';
 
 export function applyInitState(payload) {
   if (typeof payload.oscSnapshotReady === 'boolean') {
@@ -405,11 +406,20 @@ export function applyInitState(payload) {
   if (typeof payload.inputSampleRate === 'number') {
     app.inputSampleRate = payload.inputSampleRate > 0 ? payload.inputSampleRate : null;
   }
+  if (typeof payload.inputNode === 'string') {
+    app.inputNode = payload.inputNode.trim() || null;
+  }
+  if (typeof payload.inputDescription === 'string') {
+    app.inputDescription = payload.inputDescription.trim() || null;
+  }
   if (typeof payload.inputStreamFormat === 'string') {
     app.inputStreamFormat = payload.inputStreamFormat.trim() || null;
   }
   if (typeof payload.inputError === 'string') {
     app.inputError = payload.inputError.trim() || null;
+  }
+  if (typeof payload.renderBridgePath === 'string') {
+    app.renderBridgePath = payload.renderBridgePath.trim() || null;
   }
   if (payload.liveInput && typeof payload.liveInput === 'object') {
     if (typeof payload.liveInput.backend === 'string') {
@@ -467,6 +477,12 @@ export function applyInitState(payload) {
   updateResampleRatioDisplay();
   updateAudioFormatDisplay();
   updateInputControlUI();
+  if (
+    app.inputError
+    && /bridge path missing|no bridge plugin found|render\.bridge_path/i.test(app.inputError)
+  ) {
+    setInputSectionOpen(true);
+  }
   updateMasterMeterUI();
   renderLogLevelControl();
 
