@@ -715,7 +715,7 @@ fn init_osc_runtime(
     }
 
     if let (Some(renderer), Some(sender)) =
-        (&handler.spatial_renderer, &handler.telemetry.osc_sender)
+        (&handler.spatial_renderer, &mut handler.telemetry.osc_sender)
     {
         let layout = renderer.speaker_layout();
         let config_bytes = build_speaker_config_bundle(&layout)?;

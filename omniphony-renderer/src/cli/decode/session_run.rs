@@ -11,11 +11,24 @@ use crate::cli::command::{Cli, EvaluationModeArg, OutputBackend, RenderArgSource
 use anyhow::Result;
 use log::Level;
 use std::sync::mpsc;
+use std::time::Duration;
 
 const DEFAULT_DECODE_QUEUE_LATENCY_MS: u32 = 220;
 const DECODE_QUEUE_MESSAGES_PER_MS: usize = 2;
 const MIN_DECODE_QUEUE_CAPACITY: usize = 512;
 const MAX_DECODE_QUEUE_CAPACITY: usize = 8192;
+
+const IDLE_BRIDGE_COORDINATE_FORMAT: bridge_api::RCoordinateFormat =
+    bridge_api::RCoordinateFormat::Cartesian;
+const IDLE_BRIDGE_VBAP_DEFAULTS: bridge_api::RVbapCartesianDefaults =
+    bridge_api::RVbapCartesianDefaults {
+        x_size: 62,
+        y_size: 62,
+        z_size: 15,
+        allow_negative_z: false,
+    };
+const IDLE_BRIDGE_PREFERRED_EVALUATION_MODE: bridge_api::RVbapTableMode =
+    bridge_api::RVbapTableMode::Cartesian;
 
 struct PreparedDecodeRun {
     state: WriterState,
@@ -79,6 +92,16 @@ fn decode_queue_capacity(latency_target_ms: Option<u32>) -> usize {
     (target_ms as usize)
         .saturating_mul(DECODE_QUEUE_MESSAGES_PER_MS)
         .clamp(MIN_DECODE_QUEUE_CAPACITY, MAX_DECODE_QUEUE_CAPACITY)
+}
+
+fn is_bridge_unavailable_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        let text = cause.to_string();
+        text.contains("No bridge plugin found")
+            || text.contains("Bridge path '")
+            || text.contains("Failed to load bridge plugin from")
+            || text.contains("Bridge plugin is missing the `new_bridge` export")
+    })
 }
 
 fn maybe_save_effective_config(
@@ -194,6 +217,55 @@ fn prepare_render_run(args: &RenderArgs, cli: &Cli) -> Result<PreparedDecodeRun>
         vbap_cartesian_defaults,
         preferred_evaluation_mode,
     })
+}
+
+fn idle_input_path(args: &RenderArgs) -> &std::path::Path {
+    args.input
+        .as_deref()
+        .unwrap_or_else(|| std::path::Path::new("-"))
+}
+
+fn run_idle_runtime(
+    args: &RenderArgs,
+    config_path: &Option<std::path::PathBuf>,
+    current_layout_from_config: Option<renderer::speaker_layout::SpeakerLayout>,
+    evaluation_mode_explicit: bool,
+    bridge_error: &anyhow::Error,
+) -> Result<()> {
+    let shutdown = sys::shutdown::ShutdownHandle::install()?;
+    let mut handler = DecodeHandler::default();
+    init_render_handler(
+        &mut handler,
+        args,
+        idle_input_path(args),
+        config_path,
+        current_layout_from_config,
+        IDLE_BRIDGE_VBAP_DEFAULTS,
+        IDLE_BRIDGE_PREFERRED_EVALUATION_MODE,
+        evaluation_mode_explicit,
+    )?;
+    handler.spatial.coordinate_format = IDLE_BRIDGE_COORDINATE_FORMAT;
+
+    log::warn!(
+        "Bridge unavailable, starting idle OSC runtime without decode/audio session: {bridge_error:#}"
+    );
+    log::warn!(
+        "The renderer will stay idle until /omniphony/control/reload_config is requested with a valid render.bridge_path."
+    );
+
+    let _shutdown = shutdown;
+    sys::notify_ready();
+    while !sys::ShutdownHandle::is_requested() && !sys::ShutdownHandle::is_restart_from_config_requested()
+    {
+        handler.poll_runtime_state()?;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    if sys::ShutdownHandle::is_requested() {
+        sys::notify_stopping();
+    }
+
+    Ok(())
 }
 
 fn effective_output_backend(
@@ -480,14 +552,23 @@ pub fn cmd_render(args: &RenderArgs, cli: &Cli, arg_sources: &RenderArgSources<'
             return Ok(());
         }
 
-        let prepared = prepare_render_run(args, cli)?;
-        run_prepared_render(
-            prepared,
-            args,
-            &config_path,
-            current_layout_from_config,
-            evaluation_mode_explicit,
-        )?;
+        match prepare_render_run(args, cli) {
+            Ok(prepared) => run_prepared_render(
+                prepared,
+                args,
+                &config_path,
+                current_layout_from_config,
+                evaluation_mode_explicit,
+            )?,
+            Err(err) if args.osc && is_bridge_unavailable_error(&err) => run_idle_runtime(
+                args,
+                &config_path,
+                current_layout_from_config,
+                evaluation_mode_explicit,
+                &err,
+            )?,
+            Err(err) => return Err(err),
+        }
 
         if sys::ShutdownHandle::is_restart_from_config_requested() {
             sys::ShutdownHandle::clear_restart_from_config();

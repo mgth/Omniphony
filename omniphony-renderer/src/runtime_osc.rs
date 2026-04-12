@@ -5,8 +5,9 @@ use rosc::{OscMessage, OscPacket};
 use runtime_control::osc::SpeakerPatch;
 use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use renderer::live_params::RendererControl;
@@ -111,6 +112,10 @@ pub struct OscSender {
     force_full_next: Arc<AtomicBool>,
     /// Monotonic identifier for the current logical content generation.
     content_generation: u64,
+    /// Stop flag for the background OSC listener thread.
+    listener_stop: Arc<AtomicBool>,
+    /// Join handle for the background OSC listener thread.
+    listener_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl OscSender {
@@ -127,6 +132,8 @@ impl OscSender {
             prev_objects: None,
             force_full_next: Arc::new(AtomicBool::new(true)),
             content_generation: 0,
+            listener_stop: Arc::new(AtomicBool::new(false)),
+            listener_thread: Mutex::new(None),
         })
     }
 
@@ -151,7 +158,7 @@ impl OscSender {
     /// the client's send and receive ports differ).
     /// On registration the client immediately receives `config_bundle_bytes`
     /// (pre-encoded speaker layout bundle) and the current live-parameter state.
-    pub fn start_listener(&self, rx_port: u16, config_bundle_bytes: Vec<u8>) -> Result<()> {
+    pub fn start_listener(&mut self, rx_port: u16, config_bundle_bytes: Vec<u8>) -> Result<()> {
         let socket = Arc::clone(&self.socket);
         let clients = Arc::clone(&self.clients);
         let config = Arc::new(config_bundle_bytes);
@@ -159,8 +166,15 @@ impl OscSender {
         let audio_control = self.audio_control.clone();
         let input_control = self.input_control.clone();
         let force_full_next = Arc::clone(&self.force_full_next);
+        let stop = Arc::clone(&self.listener_stop);
 
-        std::thread::Builder::new()
+        if let Some(handle) = self.listener_thread.lock().unwrap().take() {
+            self.listener_stop.store(true, Ordering::Relaxed);
+            let _ = handle.join();
+            self.listener_stop.store(false, Ordering::Relaxed);
+        }
+
+        let handle = std::thread::Builder::new()
             .name("osc-listener".into())
             .spawn(move || {
                 let rx_socket = match UdpSocket::bind(format!("0.0.0.0:{}", rx_port)) {
@@ -187,6 +201,9 @@ impl OscSender {
 
                 let mut buf = [0u8; 4096];
                 loop {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
                     flush_pending_logs(&socket, &clients, &mut last_log_seq);
                     if let Some(input) = input_control.as_ref() {
                         let generation = input.state_generation();
@@ -302,6 +319,8 @@ impl OscSender {
                 }
             })?;
 
+        *self.listener_thread.lock().unwrap() = Some(handle);
+
         Ok(())
     }
 
@@ -325,5 +344,14 @@ impl OscSender {
 
     pub fn has_metering_clients(&self) -> bool {
         self.clients.is_any_metering_live()
+    }
+}
+
+impl Drop for OscSender {
+    fn drop(&mut self) {
+        self.listener_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.listener_thread.lock().unwrap().take() {
+            let _ = handle.join();
+        }
     }
 }
