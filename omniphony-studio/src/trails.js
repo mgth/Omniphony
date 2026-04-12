@@ -3,11 +3,6 @@ import { app, sourceTrails, sourcePositionsRaw, sourceMeshes, speakerMeshes, obj
 import { normalizedOmniphonyToScenePosition, mapRoomPosition, omniphonyToSceneCartesian, hydrateObjectCoordinateState } from './coordinates.js';
 import { scene } from './scene/setup.js';
 
-// ── Module-level trail state ──────────────────────────────────────────
-let trailRenderMode = 'diffuse';
-let trailPointTtlMs = 7000;
-let lastTrailDecayAt = 0;
-
 // Fallback colour used when a source mesh has no material colour.
 const SOURCE_FALLBACK_COLOR = new THREE.Color(0xcc6640);
 // Mirror of sourceMaterial.color for captureTrailPointColor fallback.
@@ -74,7 +69,7 @@ export function createLineTrailRenderable() {
 }
 
 export function createTrailRenderable() {
-  return trailRenderMode === 'line'
+  return app.trailRenderMode === 'line'
     ? createLineTrailRenderable()
     : createDiffuseTrailRenderable();
 }
@@ -225,7 +220,7 @@ export function rebuildTrailGeometry(id) {
     ? mesh.userData.objectTrailColor.clone()
     : (mesh ? mesh.material.color.clone() : new THREE.Color(0xcc6640));
   const sourceScale = Math.max(0.0, Number(mesh?.userData?.levelScale) || 0.0);
-  if (trailRenderMode === 'line') {
+  if (app.trailRenderMode === 'line') {
     const mappedPositions = trail.positions.map((raw) => mapTrailRawToScene(raw));
     const pointColors = trail.positions.map((raw) => trailPointColorFromRaw(raw, fallbackColor));
     rebuildLineTrailGeometry(trail, mappedPositions, pointColors);
@@ -263,10 +258,10 @@ export function rebuildAllTrailRenderables() {
 
 export function decayTrails(nowMs) {
   // Decay trails a few times per second; no need to run every frame.
-  if (nowMs - lastTrailDecayAt < 120) return;
-  lastTrailDecayAt = nowMs;
+  if (nowMs - app.lastTrailDecayAt < 120) return;
+  app.lastTrailDecayAt = nowMs;
 
-  const cutoff = nowMs - trailPointTtlMs;
+  const cutoff = nowMs - app.trailPointTtlMs;
   sourceTrails.forEach((trail, id) => {
     const before = trail.positions.length;
     if (before === 0) return;
@@ -287,17 +282,17 @@ export function decayTrails(nowMs) {
 // ── Accessors for module-level trail settings ─────────────────────────
 
 export function getTrailRenderMode() {
-  return trailRenderMode;
+  return app.trailRenderMode;
 }
 
 export function setTrailRenderMode(mode) {
-  trailRenderMode = mode;
+  app.trailRenderMode = mode === 'line' ? 'line' : 'diffuse';
 }
 
 export function getTrailPointTtlMs() {
-  return trailPointTtlMs;
+  return app.trailPointTtlMs;
 }
 
 export function setTrailPointTtlMs(ms) {
-  trailPointTtlMs = ms;
+  app.trailPointTtlMs = Math.max(500, Number(ms) || 0);
 }

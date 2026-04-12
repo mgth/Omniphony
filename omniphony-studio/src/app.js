@@ -37,7 +37,7 @@ import { decayMeters } from './speakers.js';
 // ── Controls ────────────────────────────────────────────────────────────────
 import { setOscStatus, loadOscConfigIntoPanel, renderOscStatus } from './controls/osc.js';
 import {
-  loadRoomGeometryPrefs, refreshRoomGeometryInputState, setRoomGeometryExpanded,
+  loadRoomGeometryPrefs, loadTrailPrefs, loadEffectiveRenderPrefs, refreshRoomGeometryInputState, setRoomGeometryExpanded,
   renderRoomRatioDisplay, refreshEffectiveRenderVisibility, updateRoomDimensionGuides, applyRoomRatio
 } from './controls/room-geometry.js';
 
@@ -161,44 +161,6 @@ onLocaleChange(() => {
   renderObjectsList();
   renderConfigSavedUI();
 });
-
-// ── Preferences ─────────────────────────────────────────────────────────────
-const TRAIL_PREFS_STORAGE_KEY = 'spatialviz.trail_prefs';
-const EFFECTIVE_RENDER_PREFS_STORAGE_KEY = 'spatialviz.effective_render_prefs';
-
-function loadTrailPrefs() {
-  try {
-    const raw = localStorage.getItem(TRAIL_PREFS_STORAGE_KEY);
-    if (!raw) return;
-    const prefs = JSON.parse(raw);
-    if (typeof prefs.enabled === 'boolean') app.trailsEnabled = prefs.enabled;
-    if (prefs.mode === 'line' || prefs.mode === 'diffuse') app.trailRenderMode = prefs.mode;
-    if (typeof prefs.ttlMs === 'number' && prefs.ttlMs >= 500) app.trailPointTtlMs = prefs.ttlMs;
-  } catch (_e) { /* ignore */ }
-}
-
-function loadEffectiveRenderPrefs() {
-  try {
-    const raw = localStorage.getItem(EFFECTIVE_RENDER_PREFS_STORAGE_KEY);
-    if (!raw) return;
-    const prefs = JSON.parse(raw);
-    if (typeof prefs.enabled === 'boolean') app.effectiveRenderEnabled = prefs.enabled;
-    if (typeof prefs.objectColors === 'boolean') app.objectColorsEnabled = prefs.objectColors;
-    if (prefs.objectDisplayMode === 'transparent-sphere' || prefs.objectDisplayMode === 'diffuse-sphere') {
-      app.objectDisplayMode = prefs.objectDisplayMode;
-    } else {
-      app.objectDisplayMode = 'circle';
-    }
-    if (typeof prefs.objectSphereSize === 'number') {
-      app.objectSphereSize = Math.max(0.03, Math.min(0.2, prefs.objectSphereSize));
-    }
-    if (typeof prefs.objectLabels === 'boolean') app.objectLabelsEnabled = prefs.objectLabels;
-    if (typeof prefs.speakerLabels === 'boolean') app.speakerLabelsEnabled = prefs.speakerLabels;
-    if (typeof prefs.speakerSize === 'number') {
-      app.speakerSize = Math.max(0.04, Math.min(0.2, prefs.speakerSize));
-    }
-  } catch (_e) { /* ignore */ }
-}
 
 // ── GLTF model loading ──────────────────────────────────────────────────────
 const gltfLoader = new GLTFLoader();
