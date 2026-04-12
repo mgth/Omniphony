@@ -137,7 +137,10 @@ pub(crate) fn export_current_evaluation_artifact(
         }
     }
     match control.export_active_evaluation_artifact_to_file(&out_path) {
-        Ok(()) => log::info!("OSC: evaluation artifact exported to {}", out_path.display()),
+        Ok(()) => log::info!(
+            "OSC: evaluation artifact exported to {}",
+            out_path.display()
+        ),
         Err(e) => log::error!(
             "OSC: failed to export evaluation artifact to {}: {}",
             out_path.display(),

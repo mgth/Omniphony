@@ -26,6 +26,7 @@ const distanceModelControlRowEl = inRendererPanel('distanceModelControlRow');
 const spreadSectionEl = inRendererPanel('spreadSection');
 const distanceDiffuseSectionEl = inRendererPanel('distanceDiffuseSection');
 const spreadFromDistanceSectionEl = inRendererPanel('spreadFromDistanceSection');
+const experimentalDistanceSectionEl = inRendererPanel('experimentalDistanceSection');
 const vbapCartXSizeInputEl = inRendererPanel('vbapCartXSizeInput');
 const vbapCartYSizeInputEl = inRendererPanel('vbapCartYSizeInput');
 const vbapCartZSizeInputEl = inRendererPanel('vbapCartZSizeInput');
@@ -44,6 +45,12 @@ const vbapPolarAzStepInfoEl = inRendererPanel('vbapPolarAzStepInfo');
 const vbapPolarElStepInfoEl = inRendererPanel('vbapPolarElStepInfo');
 const vbapPolarDistStepInfoEl = inRendererPanel('vbapPolarDistStepInfo');
 const vbapPositionInterpolationToggleEl = inRendererPanel('vbapPositionInterpolationToggleEl');
+const experimentalDistanceFloorInputEl = inRendererPanel('experimentalDistanceFloorInput');
+const experimentalDistanceMinActiveInputEl = inRendererPanel('experimentalDistanceMinActiveInput');
+const experimentalDistanceMaxActiveInputEl = inRendererPanel('experimentalDistanceMaxActiveInput');
+const experimentalDistanceErrorFloorInputEl = inRendererPanel('experimentalDistanceErrorFloorInput');
+const experimentalDistanceNearestScaleInputEl = inRendererPanel('experimentalDistanceNearestScaleInput');
+const experimentalDistanceSpanScaleInputEl = inRendererPanel('experimentalDistanceSpanScaleInput');
 
 // These are called from renderVbapCartesian but defined elsewhere in app.js.
 // They must be provided via the callback registry or imported separately.
@@ -86,6 +93,7 @@ function applyRendererBackendVisibility(backend) {
   const supportsDistanceModel = capabilities?.supportsDistanceModel === true;
   const supportsSpread = capabilities?.supportsSpread === true;
   const supportsDistanceDiffuse = capabilities?.supportsDistanceDiffuse === true;
+  const showsExperimentalDistance = backend === 'experimental_distance';
   if (backendParametersSectionEl) {
     backendParametersSectionEl.style.display = '';
   }
@@ -94,7 +102,9 @@ function applyRendererBackendVisibility(backend) {
   }
   if (backendSpecificParamsSectionEl) {
     backendSpecificParamsSectionEl.style.display =
-      supportsDistanceModel || supportsSpread || supportsDistanceDiffuse ? '' : 'none';
+      supportsDistanceModel || supportsSpread || supportsDistanceDiffuse || showsExperimentalDistance
+        ? ''
+        : 'none';
   }
   if (distanceModelControlRowEl) {
     distanceModelControlRowEl.style.display = supportsDistanceModel ? '' : 'none';
@@ -108,6 +118,9 @@ function applyRendererBackendVisibility(backend) {
   if (spreadFromDistanceSectionEl) {
     spreadFromDistanceSectionEl.style.display =
       capabilities?.supportsSpreadFromDistance === true ? '' : 'none';
+  }
+  if (experimentalDistanceSectionEl) {
+    experimentalDistanceSectionEl.style.display = showsExperimentalDistance ? '' : 'none';
   }
 }
 
@@ -254,12 +267,47 @@ export function renderRenderBackend() {
   if (importLayoutBtnEl) importLayoutBtnEl.disabled = layoutFrozen;
   if (exportLayoutBtnEl) exportLayoutBtnEl.disabled = layoutFrozen;
   applyRendererBackendVisibility(visibleBackend);
+  renderExperimentalDistanceOptions();
   renderEvaluationMode();
 }
 
 export function updateRenderBackend() {
   dirty.renderBackend = true;
+  dirty.experimentalDistance = true;
   dirty.vbapMode = true;
+  scheduleUIFlush();
+}
+
+export function renderExperimentalDistanceOptions() {
+  const state = app.renderBackendState.experimentalDistance || {};
+  if (experimentalDistanceFloorInputEl) {
+    experimentalDistanceFloorInputEl.value =
+      typeof state.distanceFloor === 'number' ? String(state.distanceFloor) : '';
+  }
+  if (experimentalDistanceMinActiveInputEl) {
+    experimentalDistanceMinActiveInputEl.value =
+      typeof state.minActiveSpeakers === 'number' ? String(state.minActiveSpeakers) : '';
+  }
+  if (experimentalDistanceMaxActiveInputEl) {
+    experimentalDistanceMaxActiveInputEl.value =
+      typeof state.maxActiveSpeakers === 'number' ? String(state.maxActiveSpeakers) : '';
+  }
+  if (experimentalDistanceErrorFloorInputEl) {
+    experimentalDistanceErrorFloorInputEl.value =
+      typeof state.positionErrorFloor === 'number' ? String(state.positionErrorFloor) : '';
+  }
+  if (experimentalDistanceNearestScaleInputEl) {
+    experimentalDistanceNearestScaleInputEl.value =
+      typeof state.positionErrorNearestScale === 'number' ? String(state.positionErrorNearestScale) : '';
+  }
+  if (experimentalDistanceSpanScaleInputEl) {
+    experimentalDistanceSpanScaleInputEl.value =
+      typeof state.positionErrorSpanScale === 'number' ? String(state.positionErrorSpanScale) : '';
+  }
+}
+
+export function updateExperimentalDistanceOptions() {
+  dirty.experimentalDistance = true;
   scheduleUIFlush();
 }
 

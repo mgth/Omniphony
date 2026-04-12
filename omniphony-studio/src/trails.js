@@ -195,10 +195,10 @@ export function rebuildDiffuseTrailGeometry(trail, mappedPositions, pointColors,
     positions[i * 3 + 1] = point.position.y;
     positions[i * 3 + 2] = point.position.z;
     const t = point.t;
-    const glow = 0.22 + (0.78 * t);
-    colors[i * 3] = (color.r * 0.35 + 0.18) * glow;
-    colors[i * 3 + 1] = (color.g * 0.65 + 0.45) * glow;
-    colors[i * 3 + 2] = (color.b * 0.85 + 0.95) * glow;
+    const glow = 0.18 + (0.82 * t);
+    colors[i * 3] = color.r * glow;
+    colors[i * 3 + 1] = color.g * glow;
+    colors[i * 3 + 2] = color.b * glow;
     sizes[i] = (6 + (20 * t)) * loudnessFactor;
     alphas[i] = 0.05 + (0.2 * t * t);
   }
@@ -224,7 +224,7 @@ export function rebuildTrailGeometry(id) {
   const fallbackColor = mesh?.userData?.objectTrailColor?.isColor
     ? mesh.userData.objectTrailColor.clone()
     : (mesh ? mesh.material.color.clone() : new THREE.Color(0xcc6640));
-  const sourceScale = Math.max(0.0, Number(mesh?.scale.x) || 0.0);
+  const sourceScale = Math.max(0.0, Number(mesh?.userData?.levelScale) || 0.0);
   if (trailRenderMode === 'line') {
     const mappedPositions = trail.positions.map((raw) => mapTrailRawToScene(raw));
     const pointColors = trail.positions.map((raw) => trailPointColorFromRaw(raw, fallbackColor));

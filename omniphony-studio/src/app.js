@@ -57,13 +57,14 @@ import { setupUIListeners } from './setup-listeners.js';
 import { setupPointerListeners } from './picking.js';
 import { setupNumericWheelEditing } from './input.js';
 import { flushUI, flushCallbacks } from './flush.js';
-import { setupVisualRecovery } from './visual-recovery.js';
+import { setupVisualRecovery, teardownVisualRecovery } from './visual-recovery.js';
 
 // ── Flush callback wiring ──────────────────────────────────────────────────
 import { renderSpreadDisplay } from './controls/spread.js';
 import {
   renderVbapStatus,
   renderEvaluationMode,
+  renderExperimentalDistanceOptions,
   renderRenderBackend,
   renderVbapCartesian,
   renderVbapPolar
@@ -95,6 +96,7 @@ flushCallbacks.renderRoomRatioDisplay = renderRoomRatioDisplay;
 flushCallbacks.renderSpreadDisplay = renderSpreadDisplay;
 flushCallbacks.renderEvaluationMode = renderEvaluationMode;
 flushCallbacks.renderRenderBackend = renderRenderBackend;
+flushCallbacks.renderExperimentalDistanceOptions = renderExperimentalDistanceOptions;
 flushCallbacks.renderVbapCartesian = renderVbapCartesian;
 flushCallbacks.renderVbapPolar = renderVbapPolar;
 flushCallbacks.renderLoudnessDisplay = renderLoudnessDisplay;
@@ -180,6 +182,19 @@ function loadEffectiveRenderPrefs() {
     const prefs = JSON.parse(raw);
     if (typeof prefs.enabled === 'boolean') app.effectiveRenderEnabled = prefs.enabled;
     if (typeof prefs.objectColors === 'boolean') app.objectColorsEnabled = prefs.objectColors;
+    if (prefs.objectDisplayMode === 'transparent-sphere' || prefs.objectDisplayMode === 'diffuse-sphere') {
+      app.objectDisplayMode = prefs.objectDisplayMode;
+    } else {
+      app.objectDisplayMode = 'circle';
+    }
+    if (typeof prefs.objectSphereSize === 'number') {
+      app.objectSphereSize = Math.max(0.03, Math.min(0.2, prefs.objectSphereSize));
+    }
+    if (typeof prefs.objectLabels === 'boolean') app.objectLabelsEnabled = prefs.objectLabels;
+    if (typeof prefs.speakerLabels === 'boolean') app.speakerLabelsEnabled = prefs.speakerLabels;
+    if (typeof prefs.speakerSize === 'number') {
+      app.speakerSize = Math.max(0.04, Math.min(0.2, prefs.speakerSize));
+    }
   } catch (_e) { /* ignore */ }
 }
 
@@ -290,8 +305,10 @@ invoke('get_about_info')
   });
 
 // ── Animation loop ──────────────────────────────────────────────────────────
+let animationFrameId = 0;
+
 function animate() {
-  requestAnimationFrame(animate);
+  animationFrameId = requestAnimationFrame(animate);
   controls.update();
   updateRoomFaceVisibility();
   updateSelectedSpeakerFaceShadows();
@@ -316,6 +333,22 @@ function animate() {
 }
 
 animate();
+
+if (import.meta.hot) {
+  import.meta.hot.on('vite:beforeUpdate', ({ updates }) => {
+    if (updates.some((update) => update.type === 'js-update')) {
+      window.location.reload();
+    }
+  });
+
+  import.meta.hot.dispose(() => {
+    if (animationFrameId) {
+      cancelAnimationFrame(animationFrameId);
+      animationFrameId = 0;
+    }
+    teardownVisualRecovery();
+  });
+}
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;

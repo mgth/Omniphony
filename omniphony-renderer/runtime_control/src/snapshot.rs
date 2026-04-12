@@ -54,6 +54,16 @@ fn input_clock_mode_name(mode: InputClockMode) -> &'static str {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ExperimentalDistanceOptionsSnapshot {
+    pub distance_floor: f32,
+    pub min_active_speakers: usize,
+    pub max_active_speakers: usize,
+    pub position_error_floor: f32,
+    pub position_error_nearest_scale: f32,
+    pub position_error_span_scale: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RenderBackendStateSnapshot {
     pub selection: String,
     pub effective: String,
@@ -63,6 +73,7 @@ pub struct RenderBackendStateSnapshot {
     pub frozen_room_ratio: bool,
     pub frozen_speakers: bool,
     pub restore_backend_available: bool,
+    pub experimental_distance: ExperimentalDistanceOptionsSnapshot,
 }
 
 fn allowed_evaluation_modes(
@@ -102,6 +113,14 @@ pub fn build_render_backend_state_snapshot(
         frozen_speakers: backend.evaluation_mode()
             == renderer::render_backend::EffectiveEvaluationMode::FromFile,
         restore_backend_available: backend.has_backend_restore_snapshot(),
+        experimental_distance: ExperimentalDistanceOptionsSnapshot {
+            distance_floor: live.experimental_distance.distance_floor,
+            min_active_speakers: live.experimental_distance.min_active_speakers,
+            max_active_speakers: live.experimental_distance.max_active_speakers,
+            position_error_floor: live.experimental_distance.position_error_floor,
+            position_error_nearest_scale: live.experimental_distance.position_error_nearest_scale,
+            position_error_span_scale: live.experimental_distance.position_error_span_scale,
+        },
     }
 }
 

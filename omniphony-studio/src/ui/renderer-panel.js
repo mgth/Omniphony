@@ -1,8 +1,8 @@
 export function rendererPanelMarkup() {
   return `
-      <div id="rendererPanelRoot">
-      <div class="info-section" id="rendererSection">
-        <div style="display:grid;gap:0.2rem">
+      <div id="rendererPanelRoot" class="renderer-panel-root">
+      <div class="info-section renderer-panel-shell" id="rendererSection">
+        <div class="renderer-panel-header-block" style="display:grid;gap:0.2rem">
           <div class="panel-header">
             <div class="panel-header-main">
             <div class="info-title panel-title" data-i18n="section.renderer">Renderer</div>
@@ -34,11 +34,11 @@ export function rendererPanelMarkup() {
           </div>
         </div>
         <div id="rendererSectionContent" class="conditional-params">
-          <div style="margin-top:0.25rem;display:grid;gap:0.35rem">
-          <div class="info-section" id="evaluationSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+          <div class="renderer-panel-stack" style="margin-top:0.25rem;display:grid;gap:0.35rem">
+          <div class="info-section renderer-subpanel" id="evaluationSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Evaluation</div>
-              <div style="display:flex;align-items:center;gap:0.35rem">
+              <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
                 <select id="renderEvaluationModeSelect" class="delay-input" style="width:auto;min-width:13rem;text-align:left">
                   <option value="auto">Auto</option>
                   <option value="realtime">Realtime</option>
@@ -51,7 +51,7 @@ export function rendererPanelMarkup() {
               </div>
             </div>
             <div id="evaluationSectionContent" class="conditional-params open">
-            <div style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+            <div class="renderer-subpanel-body" style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
               <div id="renderEvaluationCartesianBlock">
               <div class="control-row" id="renderEvaluationCartesianRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:start">
                 <label style="font-size:12px;white-space:nowrap;color:#ffffff">Cartesian grid</label>
@@ -101,13 +101,33 @@ export function rendererPanelMarkup() {
             </div>
             </div>
           </div>
-          <div class="info-section" id="backendParametersSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-              <div style="display:flex;align-items:center;gap:0.45rem;min-width:0">
+          <div class="info-section renderer-subpanel" id="rampSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Ramp</div>
+            </div>
+            <div id="rampSectionContent" class="conditional-params open">
+              <div class="renderer-subpanel-body" style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                <div class="control-row" id="rampModeRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <div class="title-with-info" style="min-width:0;font-size:12px;font-weight:600">
+                    <label for="rampModeSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="audio.rampMode">Ramp mode</label>
+                    <button id="rampModeInfoBtn" type="button" class="info-icon-btn" data-i18n-title="rampMode.infoButton" title="Ramp mode info">i</button>
+                  </div>
+                  <select id="rampModeSelect" class="delay-input" style="min-width:9rem">
+                    <option value="off" data-i18n="audio.rampModeOff">Off</option>
+                    <option value="frame" data-i18n="audio.rampModeFrame">Per frame</option>
+                    <option value="sample" data-i18n="audio.rampModeSample">Per sample</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="info-section renderer-subpanel" id="backendParametersSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div class="renderer-subpanel-titlebar" style="display:flex;align-items:center;gap:0.45rem;min-width:0">
                 <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Backend</div>
                 <div id="vbapStatus" class="vbap-status" style="margin:0;font-size:11px;min-width:0">—</div>
               </div>
-              <div style="display:flex;align-items:center;gap:0.35rem">
+              <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
               <select id="renderBackendSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
                 <option value="vbap">VBAP</option>
                 <option value="experimental_distance">Distance</option>
@@ -118,18 +138,7 @@ export function rendererPanelMarkup() {
           </div>
             <div id="backendParametersSectionContent" class="conditional-params open">
           <div id="backendSpecificParamsSection">
-          <div class="control-row" id="rampModeRow" style="margin-top:0.3rem;grid-template-columns:1fr auto;align-items:center">
-            <div class="title-with-info" style="min-width:0;font-size:12px;font-weight:600">
-              <label for="rampModeSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="audio.rampMode">Ramp mode</label>
-              <button id="rampModeInfoBtn" type="button" class="info-icon-btn" data-i18n-title="rampMode.infoButton" title="Ramp mode info">i</button>
-            </div>
-            <select id="rampModeSelect" class="delay-input" style="min-width:9rem">
-              <option value="off" data-i18n="audio.rampModeOff">Off</option>
-              <option value="frame" data-i18n="audio.rampModeFrame">Per frame</option>
-              <option value="sample" data-i18n="audio.rampModeSample">Per sample</option>
-            </select>
-          </div>
-          <div class="control-row" id="distanceModelControlRow" style="margin-top:0.2rem;grid-template-columns:1fr auto;align-items:center">
+          <div class="control-row" id="distanceModelControlRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
             <label for="distanceModelSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="distance.model">Distance model</label>
             <select id="distanceModelSelect" class="delay-input" style="min-width:11rem">
               <option value="none" data-i18n="distance.model.none">None</option>
@@ -191,6 +200,39 @@ export function rendererPanelMarkup() {
               <div class="meter-row" style="margin-top:0.15rem">
                 <label style="font-size:12px;white-space:nowrap"><span data-i18n="spread.curve">spread curve</span> <span id="spreadDistanceCurveVal">1.00</span></label>
                 <input id="spreadDistanceCurveSlider" type="range" min="0.1" max="3.0" step="0.05" value="1.0" class="gain-slider" />
+              </div>
+            </div>
+          </div>
+          <div class="info-section" id="experimentalDistanceSection" style="margin:0;padding:0;border:none;background:none;display:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Distance backend</div>
+            </div>
+            <div id="experimentalDistanceSectionContent" class="conditional-params open">
+              <div style="margin-top:0.2rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.15rem">
+                <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <label for="experimentalDistanceFloorInput" style="font-size:12px;white-space:nowrap;color:#ffffff">Distance floor</label>
+                  <input id="experimentalDistanceFloorInput" class="delay-input" type="number" min="0" step="0.001" style="min-width:7rem" />
+                </div>
+                <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <label for="experimentalDistanceMinActiveInput" style="font-size:12px;white-space:nowrap;color:#ffffff">Min active speakers</label>
+                  <input id="experimentalDistanceMinActiveInput" class="delay-input" type="number" min="1" step="1" style="min-width:7rem" />
+                </div>
+                <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <label for="experimentalDistanceMaxActiveInput" style="font-size:12px;white-space:nowrap;color:#ffffff">Max active speakers</label>
+                  <input id="experimentalDistanceMaxActiveInput" class="delay-input" type="number" min="1" step="1" style="min-width:7rem" />
+                </div>
+                <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <label for="experimentalDistanceErrorFloorInput" style="font-size:12px;white-space:nowrap;color:#ffffff">Position error floor</label>
+                  <input id="experimentalDistanceErrorFloorInput" class="delay-input" type="number" min="0" step="0.001" style="min-width:7rem" />
+                </div>
+                <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <label for="experimentalDistanceNearestScaleInput" style="font-size:12px;white-space:nowrap;color:#ffffff">Nearest scale</label>
+                  <input id="experimentalDistanceNearestScaleInput" class="delay-input" type="number" min="0" step="0.01" style="min-width:7rem" />
+                </div>
+                <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <label for="experimentalDistanceSpanScaleInput" style="font-size:12px;white-space:nowrap;color:#ffffff">Span scale</label>
+                  <input id="experimentalDistanceSpanScaleInput" class="delay-input" type="number" min="0" step="0.01" style="min-width:7rem" />
+                </div>
               </div>
             </div>
           </div>

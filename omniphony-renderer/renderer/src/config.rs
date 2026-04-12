@@ -152,6 +152,18 @@ pub struct RenderConfig {
     pub distance_diffuse_threshold: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_diffuse_curve: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental_distance_distance_floor: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental_distance_min_active_speakers: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental_distance_max_active_speakers: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental_distance_position_error_floor: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental_distance_position_error_nearest_scale: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental_distance_position_error_span_scale: Option<f32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

@@ -253,6 +253,20 @@ fn is_from_file_frozen(ctx: &RuntimeControlContext) -> bool {
         == renderer::render_backend::EffectiveEvaluationMode::FromFile
 }
 
+fn push_render_backend_state_broadcast(
+    effects: &mut ControlEffects,
+    live: &renderer::live_params::LiveParams,
+    ctx: &RuntimeControlContext,
+) {
+    effects.broadcasts.push(BroadcastUpdate {
+        addr: "/omniphony/state/render_backend/state".to_string(),
+        value: BroadcastValue::String(build_render_backend_state_json(
+            live,
+            &ctx.renderer.active_topology(),
+        )),
+    });
+}
+
 pub fn apply_simple_osc_control(
     msg: &OscMessage,
     ctx: &RuntimeControlContext,
@@ -361,8 +375,7 @@ pub fn apply_simple_osc_control(
                 ));
             }
             Err(err) => {
-                effects.log_message =
-                    Some(format!("OSC: render_backend/restore failed: {err}"));
+                effects.log_message = Some(format!("OSC: render_backend/restore failed: {err}"));
             }
         }
         return Some(effects);
@@ -414,7 +427,12 @@ pub fn apply_simple_osc_control(
                     effects.broadcasts.push(BroadcastUpdate {
                         addr: "/omniphony/state/render_backend/effective".to_string(),
                         value: BroadcastValue::String(
-                            ctx.renderer.active_topology().backend.kind().as_str().to_string(),
+                            ctx.renderer
+                                .active_topology()
+                                .backend
+                                .kind()
+                                .as_str()
+                                .to_string(),
                         ),
                     });
                     effects.broadcasts.push(BroadcastUpdate {
@@ -1393,6 +1411,82 @@ pub fn apply_simple_osc_control(
                     value: BroadcastValue::String(model.to_string()),
                 });
             }
+        }
+        return Some(effects);
+    }
+
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/experimental_distance/") {
+        let mut live = ctx.renderer.live.write().unwrap();
+        let mut changed = false;
+        match rest {
+            "distance_floor" => {
+                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.0)) {
+                    live.experimental_distance.distance_floor = v;
+                    changed = true;
+                    effects.log_message =
+                        Some(format!("OSC: experimental_distance/distance_floor -> {v}"));
+                }
+            }
+            "min_active_speakers" => {
+                if let Some(v) = parse_positive_u32_arg(msg.args.first()) {
+                    live.experimental_distance.min_active_speakers = v as usize;
+                    if live.experimental_distance.max_active_speakers
+                        < live.experimental_distance.min_active_speakers
+                    {
+                        live.experimental_distance.max_active_speakers =
+                            live.experimental_distance.min_active_speakers;
+                    }
+                    changed = true;
+                    effects.log_message = Some(format!(
+                        "OSC: experimental_distance/min_active_speakers -> {v}"
+                    ));
+                }
+            }
+            "max_active_speakers" => {
+                if let Some(v) = parse_positive_u32_arg(msg.args.first()) {
+                    live.experimental_distance.max_active_speakers =
+                        (v as usize).max(live.experimental_distance.min_active_speakers);
+                    changed = true;
+                    effects.log_message = Some(format!(
+                        "OSC: experimental_distance/max_active_speakers -> {}",
+                        live.experimental_distance.max_active_speakers
+                    ));
+                }
+            }
+            "position_error_floor" => {
+                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.0)) {
+                    live.experimental_distance.position_error_floor = v;
+                    changed = true;
+                    effects.log_message = Some(format!(
+                        "OSC: experimental_distance/position_error_floor -> {v}"
+                    ));
+                }
+            }
+            "position_error_nearest_scale" => {
+                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.0)) {
+                    live.experimental_distance.position_error_nearest_scale = v;
+                    changed = true;
+                    effects.log_message = Some(format!(
+                        "OSC: experimental_distance/position_error_nearest_scale -> {v}"
+                    ));
+                }
+            }
+            "position_error_span_scale" => {
+                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.0)) {
+                    live.experimental_distance.position_error_span_scale = v;
+                    changed = true;
+                    effects.log_message = Some(format!(
+                        "OSC: experimental_distance/position_error_span_scale -> {v}"
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        if changed {
+            effects.mark_dirty = true;
+            effects.trigger_layout_recompute = true;
+            push_render_backend_state_broadcast(&mut effects, &live, ctx);
         }
         return Some(effects);
     }

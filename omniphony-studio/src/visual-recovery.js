@@ -1,6 +1,6 @@
 import { app, sourceLabels, speakerLabels } from './state.js';
 import { pushLog } from './log.js';
-import { camera, renderer, scene, rebuildRendererOnFreshCanvas } from './scene/setup.js';
+import { camera, renderer, scene, rebuildRendererOnFreshCanvas, teardownRenderer } from './scene/setup.js';
 import { rebuildLabelSpriteTexture } from './scene/labels.js';
 import { rebuildAllTrailRenderables } from './trails.js';
 import { rebuildRoomDimensionGuideResources, updateRoomDimensionGuides } from './controls/room-geometry.js';
@@ -146,4 +146,13 @@ export function rebuildRenderer() {
   }
   rebuildVisualResources('renderer-rebuild');
   pushLog('warn', 'WebGL renderer rebuilt.');
+}
+
+export function teardownVisualRecovery() {
+  if (recoveryCanvas) {
+    recoveryCanvas.removeEventListener('webglcontextlost', onContextLost);
+    recoveryCanvas.removeEventListener('webglcontextrestored', onContextRestored);
+    recoveryCanvas = null;
+  }
+  teardownRenderer(true);
 }

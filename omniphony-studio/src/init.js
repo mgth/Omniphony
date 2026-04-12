@@ -152,6 +152,21 @@ export function applyInitState(payload) {
     app.renderBackendState.frozenRoomRatio = payload.renderBackendState.frozenRoomRatio === true;
     app.renderBackendState.frozenSpeakers = payload.renderBackendState.frozenSpeakers === true;
     app.renderBackendState.restoreBackendAvailable = payload.renderBackendState.restoreBackendAvailable === true;
+    const experimentalDistance = payload.renderBackendState.experimentalDistance;
+    if (experimentalDistance && typeof experimentalDistance === 'object') {
+      app.renderBackendState.experimentalDistance.distanceFloor =
+        typeof experimentalDistance.distanceFloor === 'number' ? experimentalDistance.distanceFloor : null;
+      app.renderBackendState.experimentalDistance.minActiveSpeakers =
+        typeof experimentalDistance.minActiveSpeakers === 'number' ? experimentalDistance.minActiveSpeakers : null;
+      app.renderBackendState.experimentalDistance.maxActiveSpeakers =
+        typeof experimentalDistance.maxActiveSpeakers === 'number' ? experimentalDistance.maxActiveSpeakers : null;
+      app.renderBackendState.experimentalDistance.positionErrorFloor =
+        typeof experimentalDistance.positionErrorFloor === 'number' ? experimentalDistance.positionErrorFloor : null;
+      app.renderBackendState.experimentalDistance.positionErrorNearestScale =
+        typeof experimentalDistance.positionErrorNearestScale === 'number' ? experimentalDistance.positionErrorNearestScale : null;
+      app.renderBackendState.experimentalDistance.positionErrorSpanScale =
+        typeof experimentalDistance.positionErrorSpanScale === 'number' ? experimentalDistance.positionErrorSpanScale : null;
+    }
   }
   if (payload.renderEvaluationModeState && typeof payload.renderEvaluationModeState === 'object') {
     if (typeof payload.renderEvaluationModeState.selection === 'string') {

@@ -1,13 +1,24 @@
 import * as THREE from 'three';
 
-export const sourceMaterial = new THREE.MeshStandardMaterial({
+export const SOURCE_BASE_RADIUS = 0.07;
+export const SPEAKER_BASE_SIZE = 0.08;
+
+export const sourceMaterial = new THREE.MeshPhysicalMaterial({
   color: 0xff7c4d,
   emissive: 0x64210c,
   transparent: true,
-  opacity: 0.7
+  opacity: 0.7,
+  roughness: 0.08,
+  metalness: 0.04,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.03,
+  sheen: 0.75,
+  sheenRoughness: 0.18,
+  specularIntensity: 1.6,
+  reflectivity: 0.8
 });
-export const sourceGeometry = new THREE.SphereGeometry(0.07, 24, 24);
-export const speakerGeometry = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+export const sourceGeometry = new THREE.SphereGeometry(SOURCE_BASE_RADIUS, 24, 24);
+export const speakerGeometry = new THREE.BoxGeometry(SPEAKER_BASE_SIZE, SPEAKER_BASE_SIZE, SPEAKER_BASE_SIZE);
 export const speakerMaterial = new THREE.MeshStandardMaterial({
   color: 0x8ec8ff,
   emissive: 0x10253a,

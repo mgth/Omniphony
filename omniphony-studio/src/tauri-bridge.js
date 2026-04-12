@@ -433,6 +433,23 @@ export function setupTauriBridge() {
     app.renderBackendState.frozenRoomRatio = payload?.frozenRoomRatio === true;
     app.renderBackendState.frozenSpeakers = payload?.frozenSpeakers === true;
     app.renderBackendState.restoreBackendAvailable = payload?.restoreBackendAvailable === true;
+    app.renderBackendState.experimentalDistance = payload?.experimentalDistance && typeof payload.experimentalDistance === 'object'
+      ? {
+        distanceFloor: typeof payload.experimentalDistance.distanceFloor === 'number' ? payload.experimentalDistance.distanceFloor : null,
+        minActiveSpeakers: typeof payload.experimentalDistance.minActiveSpeakers === 'number' ? payload.experimentalDistance.minActiveSpeakers : null,
+        maxActiveSpeakers: typeof payload.experimentalDistance.maxActiveSpeakers === 'number' ? payload.experimentalDistance.maxActiveSpeakers : null,
+        positionErrorFloor: typeof payload.experimentalDistance.positionErrorFloor === 'number' ? payload.experimentalDistance.positionErrorFloor : null,
+        positionErrorNearestScale: typeof payload.experimentalDistance.positionErrorNearestScale === 'number' ? payload.experimentalDistance.positionErrorNearestScale : null,
+        positionErrorSpanScale: typeof payload.experimentalDistance.positionErrorSpanScale === 'number' ? payload.experimentalDistance.positionErrorSpanScale : null
+      }
+      : {
+        distanceFloor: null,
+        minActiveSpeakers: null,
+        maxActiveSpeakers: null,
+        positionErrorFloor: null,
+        positionErrorNearestScale: null,
+        positionErrorSpanScale: null
+      };
     if (
       app.evaluationModeState.selection !== 'from_file'
       && !app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')

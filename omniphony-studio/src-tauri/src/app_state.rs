@@ -151,6 +151,25 @@ pub struct BackendCapabilitiesState {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ExperimentalDistanceState {
+    #[serde(rename = "distanceFloor", alias = "distance_floor")]
+    pub distance_floor: Option<f64>,
+    #[serde(rename = "minActiveSpeakers", alias = "min_active_speakers")]
+    pub min_active_speakers: Option<u32>,
+    #[serde(rename = "maxActiveSpeakers", alias = "max_active_speakers")]
+    pub max_active_speakers: Option<u32>,
+    #[serde(rename = "positionErrorFloor", alias = "position_error_floor")]
+    pub position_error_floor: Option<f64>,
+    #[serde(
+        rename = "positionErrorNearestScale",
+        alias = "position_error_nearest_scale"
+    )]
+    pub position_error_nearest_scale: Option<f64>,
+    #[serde(rename = "positionErrorSpanScale", alias = "position_error_span_scale")]
+    pub position_error_span_scale: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RenderBackendState {
     pub selection: Option<String>,
     pub effective: Option<String>,
@@ -168,6 +187,8 @@ pub struct RenderBackendState {
         alias = "restore_backend_available"
     )]
     pub restore_backend_available: bool,
+    #[serde(rename = "experimentalDistance", alias = "experimental_distance")]
+    pub experimental_distance: ExperimentalDistanceState,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
