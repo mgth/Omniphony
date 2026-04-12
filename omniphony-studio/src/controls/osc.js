@@ -153,6 +153,7 @@ export function loadOscConfigIntoPanel() {
     if (oscHostInputEl) oscHostInputEl.value = cfg.host;
     if (oscRxPortInputEl) oscRxPortInputEl.value = String(cfg.osc_rx_port);
     if (oscListenPortInputEl) oscListenPortInputEl.value = String(cfg.osc_port);
+    if (oscBridgePathInputEl) oscBridgePathInputEl.value = String(cfg.bridge_path || '').trim();
     if (oscMeteringToggleEl) oscMeteringToggleEl.checked = Boolean(cfg.osc_metering_enabled);
     app.oscConfigBaselineKey = oscConfigStateKey();
     dirty.audioFormat = true;
@@ -167,7 +168,8 @@ export function readOscConfigForm() {
     host: oscHostInputEl?.value.trim() || '127.0.0.1',
     osc_rx_port: Math.max(1, Math.min(65535, parseInt(oscRxPortInputEl?.value || '9000', 10))),
     osc_port: Math.max(0, Math.min(65535, parseInt(oscListenPortInputEl?.value || '0', 10))),
-    osc_metering_enabled: Boolean(oscMeteringToggleEl?.checked)
+    osc_metering_enabled: Boolean(oscMeteringToggleEl?.checked),
+    bridge_path: (oscBridgePathInputEl?.value || '').trim() || null
   };
 }
 

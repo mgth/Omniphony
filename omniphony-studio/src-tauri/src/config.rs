@@ -8,6 +8,8 @@ pub struct OscConfig {
     pub osc_rx_port: u16,
     #[serde(default)]
     pub osc_metering_enabled: bool,
+    #[serde(default)]
+    pub bridge_path: Option<String>,
 }
 
 impl Default for OscConfig {
@@ -17,6 +19,7 @@ impl Default for OscConfig {
             osc_port: 0,
             osc_rx_port: 9000,
             osc_metering_enabled: false,
+            bridge_path: None,
         }
     }
 }

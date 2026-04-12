@@ -1618,6 +1618,7 @@ fn resolve_orender_launch_spec(
             osc_rx_port,
             osc_port,
             osc_metering_enabled,
+            bridge_path: Some(bridge_path.display().to_string()),
         },
     );
 

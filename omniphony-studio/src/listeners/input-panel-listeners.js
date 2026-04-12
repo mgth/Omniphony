@@ -48,6 +48,7 @@ export function setupInputPanelListeners() {
           const trimmed = String(selectedPath || '').trim();
           if (trimmed && oscBridgePathInputEl) {
             oscBridgePathInputEl.value = trimmed;
+            oscBridgePathInputEl.dispatchEvent(new Event('input', { bubbles: true }));
           }
         })
         .catch((e) => {
