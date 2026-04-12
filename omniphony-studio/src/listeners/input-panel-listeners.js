@@ -7,6 +7,8 @@ import { updateInputControlUI, persistInputPipeNow } from '../controls/input.js'
 export function setupInputPanelListeners() {
   const inputModeSelectEl = document.getElementById('inputModeSelect');
   const inputPipeInputEl = document.getElementById('pipeStatus');
+  const oscBridgePathInputEl = document.getElementById('oscBridgePathInput');
+  const oscBridgeBrowseBtnEl = document.getElementById('oscBridgeBrowseBtn');
   const inputBackendSelectEl = document.getElementById('inputBackendSelect');
   const inputNodeInputEl = document.getElementById('inputNodeInput');
   const inputDescriptionInputEl = document.getElementById('inputDescriptionInput');
@@ -36,6 +38,21 @@ export function setupInputPanelListeners() {
       persistInputPipeNow().finally(() => {
         updateInputControlUI();
       });
+    });
+  }
+
+  if (oscBridgeBrowseBtnEl) {
+    oscBridgeBrowseBtnEl.addEventListener('click', () => {
+      invoke('pick_bridge_path')
+        .then((selectedPath) => {
+          const trimmed = String(selectedPath || '').trim();
+          if (trimmed && oscBridgePathInputEl) {
+            oscBridgePathInputEl.value = trimmed;
+          }
+        })
+        .catch((e) => {
+          pushLog('error', `Failed to select bridge: ${normalizeLogError(e)}`);
+        });
     });
   }
 

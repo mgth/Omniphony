@@ -17,7 +17,7 @@ import { pushLog, normalizeLogError, normalizeLogLevel, logState } from '../log.
 import { invoke } from '@tauri-apps/api/core';
 import { syncRuntimeConnectionLock } from '../runtime-connection.js';
 import { collapseRuntimeSections } from '../modals.js';
-import { inObjectsPanel, inOscPanel } from '../ui/panel-roots.js';
+import { inInputPanel, inObjectsPanel, inOscPanel } from '../ui/panel-roots.js';
 
 // DOM refs
 const statusEl = inOscPanel('status');
@@ -28,8 +28,7 @@ const oscConfigFormEl = inOscPanel('oscConfigForm');
 const oscHostInputEl = inOscPanel('oscHostInput');
 const oscRxPortInputEl = inOscPanel('oscRxPortInput');
 const oscListenPortInputEl = inOscPanel('oscListenPortInput');
-const oscBridgePathInputEl = inOscPanel('oscBridgePathInput');
-const oscBridgeBrowseBtnEl = inOscPanel('oscBridgeBrowseBtn');
+const oscBridgePathInputEl = inInputPanel('oscBridgePathInput');
 const oscMeteringToggleEl = inObjectsPanel('oscMeteringToggle');
 const oscConfigApplyBtnEl = inOscPanel('oscConfigApplyBtn');
 const oscServiceBtnEl = inOscPanel('oscServiceBtn');
@@ -449,21 +448,6 @@ if (oscRestartPipewireBtnEl) {
     restartPipewireFromPanel().catch((e) => {
       pushLog('error', `Failed to restart PipeWire: ${normalizeLogError(e)}`);
     });
-  });
-}
-
-if (oscBridgeBrowseBtnEl) {
-  oscBridgeBrowseBtnEl.addEventListener('click', () => {
-    invoke('pick_bridge_path')
-      .then((selectedPath) => {
-        const trimmed = String(selectedPath || '').trim();
-        if (trimmed && oscBridgePathInputEl) {
-          oscBridgePathInputEl.value = trimmed;
-        }
-      })
-      .catch((e) => {
-        pushLog('error', `Failed to select bridge: ${normalizeLogError(e)}`);
-      });
   });
 }
 
