@@ -224,7 +224,7 @@ export function rebuildTrailGeometry(id) {
   const fallbackColor = mesh?.userData?.objectTrailColor?.isColor
     ? mesh.userData.objectTrailColor.clone()
     : (mesh ? mesh.material.color.clone() : new THREE.Color(0xcc6640));
-  const sourceScale = Math.max(0.0, Number(mesh?.scale.x) || 0.0);
+  const sourceScale = Math.max(0.0, Number(mesh?.userData?.levelScale) || 0.0);
   if (trailRenderMode === 'line') {
     const mappedPositions = trail.positions.map((raw) => mapTrailRawToScene(raw));
     const pointColors = trail.positions.map((raw) => trailPointColorFromRaw(raw, fallbackColor));

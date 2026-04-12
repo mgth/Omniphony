@@ -49,6 +49,8 @@ import { scene } from './scene/setup.js';
 import {
   sourceMaterial,
   sourceGeometry,
+  SOURCE_BASE_RADIUS,
+  SPEAKER_BASE_SIZE,
   speakerBaseColor,
   speakerHotColor,
   speakerSelectedColor,
@@ -167,6 +169,20 @@ export function getObjectTrailColor(id) {
   return getObjectBaseColor(id).offsetHSL(0, 0.04, 0.08);
 }
 
+function getObjectDisplayMode() {
+  return app.objectDisplayMode === 'transparent-sphere' || app.objectDisplayMode === 'diffuse-sphere'
+    ? app.objectDisplayMode
+    : 'circle';
+}
+
+function getObjectSphereSizeScale() {
+  return Math.max(0.03, Math.min(0.2, Number(app.objectSphereSize) || SOURCE_BASE_RADIUS)) / SOURCE_BASE_RADIUS;
+}
+
+function getSpeakerSizeScale() {
+  return Math.max(0.04, Math.min(0.2, Number(app.speakerSize) || SPEAKER_BASE_SIZE)) / SPEAKER_BASE_SIZE;
+}
+
 export function isSourceMetadataSilent(id) {
   const raw = sourcePositionsRaw.get(String(id));
   const metadataGainDb = Number(raw?.metadataGainDb);
@@ -244,6 +260,50 @@ export function createEffectiveRenderLine() {
   const line = new THREE.Line(geometry, material);
   line.renderOrder = 11;
   return line;
+}
+
+let sourceDiffuseHaloTexture = null;
+
+function getSourceDiffuseHaloTexture() {
+  if (sourceDiffuseHaloTexture) {
+    return sourceDiffuseHaloTexture;
+  }
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const gradient = ctx.createRadialGradient(size * 0.5, size * 0.5, 0, size * 0.5, size * 0.5, size * 0.5);
+  gradient.addColorStop(0.0, 'rgba(255,255,255,1.0)');
+  gradient.addColorStop(0.12, 'rgba(255,255,255,0.96)');
+  gradient.addColorStop(0.34, 'rgba(255,255,255,0.54)');
+  gradient.addColorStop(0.64, 'rgba(255,255,255,0.14)');
+  gradient.addColorStop(0.86, 'rgba(255,255,255,0.03)');
+  gradient.addColorStop(1.0, 'rgba(255,255,255,0.0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  sourceDiffuseHaloTexture = new THREE.CanvasTexture(canvas);
+  sourceDiffuseHaloTexture.colorSpace = THREE.SRGBColorSpace;
+  sourceDiffuseHaloTexture.needsUpdate = true;
+  return sourceDiffuseHaloTexture;
+}
+
+export function createSourceDiffuseHalo() {
+  const material = new THREE.SpriteMaterial({
+    map: getSourceDiffuseHaloTexture(),
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.0,
+    depthTest: false,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false
+  });
+  const halo = new THREE.Sprite(material);
+  halo.renderOrder = 14;
+  halo.visible = false;
+  halo.scale.set(0.24, 0.24, 1);
+  return halo;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,21 +406,31 @@ export function updateSourceDecorations(id) {
   }
 
   const metadataSilent = isSourceMetadataSilent(id);
+  const objectDisplayMode = getObjectDisplayMode();
+  const halo = mesh.userData.diffuseHalo;
 
   if (label) {
-    label.visible = !metadataSilent;
+    label.visible = app.objectLabelsEnabled && !metadataSilent;
     label.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
   }
 
   if (outline) {
-    const radius = 0.07 * mesh.scale.x * 1.08;
-    outline.visible = !metadataSilent;
+    const levelScale = Math.max(0.5, Number(mesh.userData.levelScale) || 1);
+    const radius = SOURCE_BASE_RADIUS * levelScale * getObjectSphereSizeScale() * 1.08;
+    outline.visible = !metadataSilent && objectDisplayMode === 'circle';
     outline.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
     outline.scale.setScalar(radius);
   }
 
   if (trail?.line) {
     trail.line.visible = app.trailsEnabled && !metadataSilent;
+  }
+
+  if (halo) {
+    halo.visible = !metadataSilent && objectDisplayMode === 'diffuse-sphere';
+    halo.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
+    const haloScale = 0.26 * mesh.scale.x * 2.15;
+    halo.scale.set(haloScale, haloScale, 1);
   }
 
   updateEffectiveRenderDecoration(id);
@@ -384,14 +454,14 @@ export function applySourceLevel(id, mesh, meter) {
   const scale = dbfsToScale(meter?.rmsDbfs, 0.5, 2.4);
   mesh.userData.levelScale = scale;
   if (app.selectedSpeakerIndex === null) {
-    mesh.scale.setScalar(scale);
+    mesh.scale.setScalar(scale * getObjectSphereSizeScale());
   }
   updateSourceDecorations(id);
 }
 
 export function applySpeakerLevel(mesh, meter) {
   const scale = dbfsToScale(meter?.rmsDbfs, 0.65, 2.2);
-  mesh.scale.setScalar(scale);
+  mesh.scale.setScalar(scale * getSpeakerSizeScale());
 }
 
 export function getSelectedSourceGains() {
@@ -528,6 +598,10 @@ export function updateSourceColorsFromSelection() {
     const metadataSilent = isSourceMetadataSilent(id);
     const baseOpacity = Number(mesh.userData.baseOpacity ?? 0.7);
     const baseScale = Math.max(0.5, Number(mesh.userData.levelScale) || 1);
+    const objectDisplayMode = getObjectDisplayMode();
+    const sphereSizeScale = getObjectSphereSizeScale();
+    const sphereVisible = objectDisplayMode !== 'circle';
+    const halo = mesh.userData.diffuseHalo;
     const gains = app.selectedSpeakerIndex !== null ? (sourceGains.get(id) || null) : null;
     const mix = gainToMix(gains?.[app.selectedSpeakerIndex]);
     const hasContribution = mix > 1e-6;
@@ -540,27 +614,58 @@ export function updateSourceColorsFromSelection() {
       if (hasContribution) {
         mesh.material.color.lerp(contributionColor, Math.min(0.68, 0.22 + (0.42 * mix)));
       }
-      mesh.material.opacity = hasContribution
-        ? Math.max(baseOpacity * (0.35 + (0.55 * mix)), 0.24)
-        : 0.0;
-      mesh.scale.setScalar(baseScale);
+      if (sphereVisible) {
+        const passiveOpacity = objectDisplayMode === 'transparent-sphere' ? 0.58 : 0.24;
+        const activeFloor = objectDisplayMode === 'transparent-sphere' ? 0.68 : 0.3;
+        const activeScale = objectDisplayMode === 'transparent-sphere' ? 0.82 : 0.5;
+        mesh.material.opacity = hasContribution
+          ? Math.max(baseOpacity * (activeScale + (0.36 * mix)), activeFloor)
+          : passiveOpacity;
+        if (objectDisplayMode === 'diffuse-sphere') {
+          mesh.material.opacity = hasContribution ? Math.max(0.07 + (0.08 * mix), 0.07) : 0.05;
+        }
+      } else {
+        mesh.material.opacity = hasContribution
+          ? Math.max(baseOpacity * (0.35 + (0.55 * mix)), 0.24)
+          : 0.0;
+      }
+      mesh.scale.setScalar(baseScale * sphereSizeScale);
     } else {
       mesh.material.color.copy(objectColor);
-      mesh.material.opacity = 0.0;
-      mesh.scale.setScalar(baseScale);
+      mesh.material.opacity = sphereVisible
+        ? (objectDisplayMode === 'transparent-sphere' ? Math.max(baseOpacity * 0.82, 0.58) : Math.max(baseOpacity * 0.38, 0.22))
+        : 0.0;
+      if (objectDisplayMode === 'diffuse-sphere') {
+        mesh.material.opacity = 0.06;
+      }
+      mesh.scale.setScalar(baseScale * sphereSizeScale);
+    }
+
+    if (halo) {
+      halo.material.color.copy(objectColor);
+      if (app.selectedSpeakerIndex !== null && hasContribution) {
+        halo.material.color.lerp(contributionColor, Math.min(0.55, 0.2 + (0.4 * mix)));
+      }
+      halo.material.opacity = objectDisplayMode === 'diffuse-sphere'
+        ? (app.selectedSpeakerIndex !== null
+          ? (hasContribution ? 0.34 + (0.34 * mix) : 0.2)
+          : 0.4)
+        : 0.0;
     }
 
     const outline = sourceOutlines.get(id);
     if (outline) {
-      outline.visible = !metadataSilent;
-      outline.material.opacity = app.selectedSpeakerIndex !== null
-        ? (mix <= 1e-6 ? 0.15 : 0.25 + (0.73 * mix))
-        : 0.98;
-      if (app.selectedSpeakerIndex !== null) {
-        outline.material.color.copy(app.objectColorsEnabled ? objectColor : sourceOutlineColor)
-          .lerp(contributionColor, hasContribution ? mix * 0.65 : 0);
-      } else {
-        outline.material.color.copy(app.objectColorsEnabled ? objectColor : sourceOutlineColor);
+      outline.visible = !metadataSilent && !sphereVisible;
+      if (!sphereVisible) {
+        outline.material.opacity = app.selectedSpeakerIndex !== null
+          ? (mix <= 1e-6 ? 0.15 : 0.25 + (0.73 * mix))
+          : 0.98;
+        if (app.selectedSpeakerIndex !== null) {
+          outline.material.color.copy(app.objectColorsEnabled ? objectColor : sourceOutlineColor)
+            .lerp(contributionColor, hasContribution ? mix * 0.65 : 0);
+        } else {
+          outline.material.color.copy(app.objectColorsEnabled ? objectColor : sourceOutlineColor);
+        }
       }
     }
   });
@@ -572,6 +677,8 @@ export function updateSourceSelectionStyles() {
   sourceMeshes.forEach((mesh, id) => {
     const metadataSilent = isSourceMetadataSilent(id);
     const isSelected = id === app.selectedSourceId;
+    const objectDisplayMode = getObjectDisplayMode();
+    const diffuseSphere = objectDisplayMode === 'diffuse-sphere';
     const gains = app.selectedSpeakerIndex !== null ? (sourceGains.get(id) || null) : null;
     const mix = gainToMix(gains?.[app.selectedSpeakerIndex]);
     const hasContribution = mix > 1e-6;
@@ -581,6 +688,23 @@ export function updateSourceSelectionStyles() {
       mesh.material.emissive.copy(hasContribution ? sourceContributionEmissive : sourceNeutralEmissive);
     } else {
       mesh.material.emissive.copy(sourceDefaultEmissive);
+    }
+    if (objectDisplayMode === 'transparent-sphere') {
+      mesh.material.emissive.copy(mesh.material.color).multiplyScalar(isSelected ? 0.72 : 0.42);
+      mesh.material.emissiveIntensity = isSelected ? 1.45 : 1.0;
+    } else if (diffuseSphere) {
+      mesh.material.emissive.copy(mesh.material.color).multiplyScalar(isSelected ? 0.46 : 0.26);
+      mesh.material.emissiveIntensity = isSelected ? 1.0 : 0.65;
+    } else {
+      mesh.material.emissiveIntensity = 1.0;
+    }
+
+    const halo = mesh.userData.diffuseHalo;
+    if (halo) {
+      halo.visible = !metadataSilent && diffuseSphere;
+      if (diffuseSphere && isSelected) {
+        halo.material.opacity = Math.max(halo.material.opacity, 0.7);
+      }
     }
 
     const outline = sourceOutlines.get(id);
@@ -595,7 +719,7 @@ export function updateSourceSelectionStyles() {
       if (isSelected) {
         outline.material.opacity = 1;
       }
-      outline.visible = !metadataSilent;
+      outline.visible = !metadataSilent && objectDisplayMode === 'circle';
     }
 
     updateEffectiveRenderDecoration(id);
@@ -674,13 +798,16 @@ export function getSourceMesh(id) {
     mesh.userData.objectTrailColor = trailColor.clone();
 
     const outline = createSourceOutline();
+    const diffuseHalo = createSourceDiffuseHalo();
     const trailLine = createTrailRenderable();
     const effectiveMarker = createEffectiveRenderMarker();
     const effectiveLine = createEffectiveRenderLine();
     trailLine.visible = app.trailsEnabled;
     effectiveMarker.visible = false;
     effectiveLine.visible = false;
+    mesh.userData.diffuseHalo = diffuseHalo;
     scene.add(mesh);
+    scene.add(diffuseHalo);
     scene.add(outline);
     scene.add(trailLine);
     scene.add(effectiveLine);
@@ -688,6 +815,7 @@ export function getSourceMesh(id) {
 
     const label = createLabelSprite(formatObjectLabel(id));
     label.userData.sourceId = id;
+    label.visible = app.objectLabelsEnabled;
     scene.add(label);
 
     sourceMeshes.set(id, mesh);
@@ -869,6 +997,12 @@ export function removeSource(id) {
     scene.remove(outline);
     outline.geometry.dispose();
     outline.material.dispose();
+  }
+  const diffuseHalo = mesh.userData.diffuseHalo;
+  if (diffuseHalo) {
+    scene.remove(diffuseHalo);
+    diffuseHalo.material.dispose();
+    mesh.userData.diffuseHalo = null;
   }
   const trail = sourceTrails.get(id);
   if (trail) {

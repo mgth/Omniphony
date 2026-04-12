@@ -63,6 +63,7 @@ export const dirty = {
   masterMeter: false,
   roomRatio: false,
   spread: false,
+  experimentalDistance: false,
   vbapMode: false,
   renderBackend: false,
   vbapCartesian: false,
@@ -111,7 +112,15 @@ export const app = {
     allowedEvaluationModes: [],
     frozenRoomRatio: false,
     frozenSpeakers: false,
-    restoreBackendAvailable: false
+    restoreBackendAvailable: false,
+    experimentalDistance: {
+      distanceFloor: null,
+      minActiveSpeakers: null,
+      maxActiveSpeakers: null,
+      positionErrorFloor: null,
+      positionErrorNearestScale: null,
+      positionErrorSpanScale: null
+    }
   },
   vbapPositionInterpolation: null,
   vbapAllowNegativeZ: null,
@@ -271,8 +280,13 @@ export const app = {
   speakerHeatmapVolumeEnabled: false,
   speakerHeatmapSampleCount: 3072,
   speakerHeatmapMaxSphereSize: 0.062,
+  speakerSize: 0.08,
   effectiveRenderEnabled: false,
   objectColorsEnabled: false,
+  objectLabelsEnabled: true,
+  speakerLabelsEnabled: true,
+  objectDisplayMode: 'circle',
+  objectSphereSize: 0.07,
   lastTrailDecayAt: 0,
 
   // Layout

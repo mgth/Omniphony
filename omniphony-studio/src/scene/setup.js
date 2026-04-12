@@ -20,11 +20,51 @@ camera.lookAt(0, 0.25, 0);
 
 function configureRenderer(nextRenderer) {
   nextRenderer.setSize(window.innerWidth, window.innerHeight);
+  nextRenderer.domElement.dataset.omniphonyRenderer = 'true';
+  attachRendererCanvas(nextRenderer.domElement);
   return nextRenderer;
 }
 
+const RENDERER_MOUNT_ID = 'omniphony-renderer-mount';
+
+function getRendererMount() {
+  let mount = document.getElementById(RENDERER_MOUNT_ID);
+  if (mount) {
+    return mount;
+  }
+  document.querySelectorAll('body > canvas[data-omniphony-renderer="true"]').forEach((canvas) => {
+    canvas.remove();
+  });
+  mount = document.createElement('div');
+  mount.id = RENDERER_MOUNT_ID;
+  mount.style.position = 'fixed';
+  mount.style.inset = '0';
+  mount.style.zIndex = '0';
+  mount.style.pointerEvents = 'auto';
+  mount.style.overflow = 'hidden';
+  document.body.prepend(mount);
+  return mount;
+}
+
+function attachRendererCanvas(canvas) {
+  const mount = getRendererMount();
+  const staleChildren = Array.from(mount.children).filter((child) => child !== canvas);
+  staleChildren.forEach((child) => child.remove());
+  if (canvas.parentNode !== mount) {
+    mount.replaceChildren(canvas);
+  }
+}
+
+function disposeRendererInstance(currentRenderer) {
+  try {
+    currentRenderer.forceContextLoss?.();
+  } catch (_error) {
+    // Ignore explicit context-loss failures during teardown.
+  }
+  currentRenderer.dispose();
+}
+
 export let renderer = configureRenderer(new THREE.WebGLRenderer({ antialias: true }));
-document.body.appendChild(renderer.domElement);
 
 function createControls(domElement) {
   const nextControls = new OrbitControls(camera, domElement);
@@ -39,7 +79,7 @@ export let controls = createControls(renderer.domElement);
 
 export function rebuildRendererOnExistingCanvas() {
   const canvas = renderer.domElement;
-  renderer.dispose();
+  disposeRendererInstance(renderer);
   renderer = configureRenderer(new THREE.WebGLRenderer({
     antialias: true,
     canvas
@@ -48,34 +88,39 @@ export function rebuildRendererOnExistingCanvas() {
 }
 
 export function rebuildRendererOnFreshCanvas() {
-  const previousCanvas = renderer.domElement;
-  const parent = previousCanvas.parentNode;
+  const previousRenderer = renderer;
   const nextRenderer = configureRenderer(new THREE.WebGLRenderer({ antialias: true }));
-  if (parent) {
-    parent.replaceChild(nextRenderer.domElement, previousCanvas);
-  } else {
-    document.body.appendChild(nextRenderer.domElement);
-    previousCanvas.remove();
-  }
-  renderer.dispose();
   controls.dispose();
+  disposeRendererInstance(previousRenderer);
   renderer = nextRenderer;
   controls = createControls(renderer.domElement);
   return renderer;
+}
+
+export function teardownRenderer(removeCanvas = false) {
+  controls.dispose();
+  disposeRendererInstance(renderer);
+  if (removeCanvas) {
+    renderer.domElement.remove();
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Lights
 // ---------------------------------------------------------------------------
 
-const ambient = new THREE.AmbientLight(0xffffff, 0.78);
+const ambient = new THREE.AmbientLight(0xffffff, 0.24);
 scene.add(ambient);
 
-const directional = new THREE.DirectionalLight(0xffffff, 1.15);
-directional.position.set(3, 4, 2);
+const directional = new THREE.DirectionalLight(0xfff7ea, 2.35);
+directional.position.set(3.6, 4.8, 1.4);
 scene.add(directional);
 
-const hemisphere = new THREE.HemisphereLight(0xeaf6ff, 0x1a1d24, 0.55);
+const rimDirectional = new THREE.DirectionalLight(0xb8d4ff, 1.05);
+rimDirectional.position.set(-2.8, 1.1, -3.8);
+scene.add(rimDirectional);
+
+const hemisphere = new THREE.HemisphereLight(0xdcecff, 0x0d0f14, 0.12);
 scene.add(hemisphere);
 
 // ---------------------------------------------------------------------------

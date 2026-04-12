@@ -650,6 +650,7 @@ export function updateSpeakerVisualsFromState(index) {
 
   const label = speakerLabels[index];
   if (label) {
+    label.visible = app.speakerLabelsEnabled;
     label.position.set(scenePosition.x, scenePosition.y + 0.12, scenePosition.z);
     setLabelSpriteText(label, String(speaker.id ?? index));
   }
@@ -1649,6 +1650,7 @@ export function renderLayout(key) {
 
     const label = createLabelSprite(String(speaker.id || index));
     label.userData.speakerIndex = index;
+    label.visible = app.speakerLabelsEnabled;
     label.position.set(scenePosition.x, scenePosition.y + 0.12, scenePosition.z);
     scene.add(label);
     speakerLabels.push(label);

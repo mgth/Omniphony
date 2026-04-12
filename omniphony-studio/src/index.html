@@ -195,25 +195,72 @@
               </div>
               <input id="effectiveRenderToggle" type="checkbox" />
             </div>
-            <div class="inline-toggle" style="margin-top:0">
-              <div data-i18n="display.objectColors">Object colors</div>
-              <input id="objectColorsToggle" type="checkbox" />
+            <div id="objectAppearanceSection" style="display:grid;gap:0.3rem">
+              <div class="inline-toggle" style="margin-top:0">
+                <div data-i18n="display.objectAppearance">Object appearance</div>
+              </div>
+              <div id="objectAppearanceSectionContent" class="conditional-params open">
+                <div style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                  <div class="inline-toggle" style="margin-top:0">
+                    <div data-i18n="display.objectColors">Object colors</div>
+                    <input id="objectColorsToggle" type="checkbox" />
+                  </div>
+                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label for="objectDisplayModeSelect" style="font-size:12px;white-space:nowrap" data-i18n="display.objectDisplayMode">Object appearance</label>
+                    <select id="objectDisplayModeSelect" style="flex:1;min-width:0">
+                      <option value="circle" data-i18n="display.objectDisplayMode.circle">Circle</option>
+                      <option value="transparent-sphere" data-i18n="display.objectDisplayMode.transparentSphere">Transparent sphere</option>
+                      <option value="diffuse-sphere" data-i18n="display.objectDisplayMode.diffuseSphere">Diffuse sphere</option>
+                    </select>
+                  </div>
+                  <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label for="objectSphereSizeSlider" style="font-size:12px;white-space:nowrap"><span data-i18n="display.objectSphereSize">Object sphere size</span> <span id="objectSphereSizeVal">0.070</span></label>
+                    <input id="objectSphereSizeSlider" type="range" min="0.03" max="0.2" step="0.002" value="0.07" class="gain-slider" />
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="inline-toggle" style="margin-top:0">
-              <div>Heatmap slices</div>
-              <input id="speakerHeatmapSlicesToggle" type="checkbox" />
+            <div id="speakersDisplaySection" style="display:grid;gap:0.3rem">
+              <div class="inline-toggle" style="margin-top:0">
+                <div data-i18n="display.speakers">Speakers</div>
+              </div>
+              <div id="speakersDisplaySectionContent" class="conditional-params open">
+                <div style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                  <div class="inline-toggle" style="margin-top:0">
+                    <div data-i18n="display.speakerLabels">Speaker labels</div>
+                    <input id="speakerLabelsToggle" type="checkbox" />
+                  </div>
+                  <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label for="speakerSizeSlider" style="font-size:12px;white-space:nowrap"><span data-i18n="display.speakerSize">Speaker size</span> <span id="speakerSizeVal">0.080</span></label>
+                    <input id="speakerSizeSlider" type="range" min="0.04" max="0.2" step="0.002" value="0.08" class="gain-slider" />
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="inline-toggle" style="margin-top:0">
-              <div>Heatmap volume</div>
-              <input id="speakerHeatmapVolumeToggle" type="checkbox" />
-            </div>
-            <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
-              <label for="speakerHeatmapSampleCountInput" style="font-size:12px;white-space:nowrap">Heatmap values</label>
-              <input id="speakerHeatmapSampleCountInput" type="number" min="128" max="20000" step="128" value="3072" style="flex:1;min-width:0" />
-            </div>
-            <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
-              <label for="speakerHeatmapMaxSphereSizeSlider" style="font-size:12px;white-space:nowrap">Max sphere size <span id="speakerHeatmapMaxSphereSizeVal">0.062</span></label>
-              <input id="speakerHeatmapMaxSphereSizeSlider" type="range" min="0.01" max="0.2" step="0.002" value="0.062" class="gain-slider" />
+            <div id="heatmapsSection" style="display:grid;gap:0.3rem">
+              <div class="inline-toggle" style="margin-top:0">
+                <div data-i18n="display.heatmaps">Heatmaps</div>
+              </div>
+              <div id="heatmapsSectionContent" class="conditional-params open">
+                <div style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                  <div class="inline-toggle" style="margin-top:0">
+                    <div>Heatmap slices</div>
+                    <input id="speakerHeatmapSlicesToggle" type="checkbox" />
+                  </div>
+                  <div class="inline-toggle" style="margin-top:0">
+                    <div>Heatmap volume</div>
+                    <input id="speakerHeatmapVolumeToggle" type="checkbox" />
+                  </div>
+                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label for="speakerHeatmapSampleCountInput" style="font-size:12px;white-space:nowrap">Heatmap values</label>
+                    <input id="speakerHeatmapSampleCountInput" type="number" min="128" max="20000" step="128" value="3072" style="flex:1;min-width:0" />
+                  </div>
+                  <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label for="speakerHeatmapMaxSphereSizeSlider" style="font-size:12px;white-space:nowrap">Max sphere size <span id="speakerHeatmapMaxSphereSizeVal">0.062</span></label>
+                    <input id="speakerHeatmapMaxSphereSizeSlider" type="range" min="0.01" max="0.2" step="0.002" value="0.062" class="gain-slider" />
+                  </div>
+                </div>
+              </div>
             </div>
             <div id="trailSection" style="display:grid;gap:0.3rem">
               <div class="inline-toggle" style="margin-top:0">
@@ -253,6 +300,10 @@
         <div class="inline-toggle" style="margin-bottom:0.35rem">
           <div data-i18n="osc.metering">Metering</div>
           <input id="oscMeteringToggle" type="checkbox" />
+        </div>
+        <div class="inline-toggle" style="margin-bottom:0.35rem">
+          <div data-i18n="display.objectLabels">Object labels</div>
+          <input id="objectLabelsToggle" type="checkbox" />
         </div>
         <div id="objectsList" class="info-list">No objects.</div>
       </div>

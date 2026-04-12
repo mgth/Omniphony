@@ -56,6 +56,13 @@ const trailTtlSliderEl = inDisplayPanel('trailTtlSlider');
 const trailTtlValEl = inDisplayPanel('trailTtlVal');
 const effectiveRenderToggleEl = inDisplayPanel('effectiveRenderToggle');
 const objectColorsToggleEl = inDisplayPanel('objectColorsToggle');
+const objectDisplayModeSelectEl = inDisplayPanel('objectDisplayModeSelect');
+const objectSphereSizeSliderEl = inDisplayPanel('objectSphereSizeSlider');
+const objectSphereSizeValEl = inDisplayPanel('objectSphereSizeVal');
+const objectLabelsToggleEl = inDisplayPanel('objectLabelsToggle');
+const speakerLabelsToggleEl = inDisplayPanel('speakerLabelsToggle');
+const speakerSizeSliderEl = inDisplayPanel('speakerSizeSlider');
+const speakerSizeValEl = inDisplayPanel('speakerSizeVal');
 const speakerHeatmapSlicesToggleEl = inDisplayPanel('speakerHeatmapSlicesToggle');
 const speakerHeatmapVolumeToggleEl = inDisplayPanel('speakerHeatmapVolumeToggle');
 const speakerHeatmapSampleCountInputEl = inDisplayPanel('speakerHeatmapSampleCountInput');
@@ -124,6 +131,11 @@ export function persistEffectiveRenderPrefs() {
     localStorage.setItem(EFFECTIVE_RENDER_PREFS_STORAGE_KEY, JSON.stringify({
       enabled: app.effectiveRenderEnabled,
       objectColors: app.objectColorsEnabled,
+      objectDisplayMode: app.objectDisplayMode,
+      objectSphereSize: app.objectSphereSize,
+      objectLabels: app.objectLabelsEnabled,
+      speakerLabels: app.speakerLabelsEnabled,
+      speakerSize: app.speakerSize,
       speakerHeatmapSlicesEnabled: app.speakerHeatmapSlicesEnabled,
       speakerHeatmapVolumeEnabled: app.speakerHeatmapVolumeEnabled,
       speakerHeatmapSampleCount: app.speakerHeatmapSampleCount,
@@ -155,6 +167,27 @@ export function applyEffectiveRenderPrefsToUi() {
   }
   if (objectColorsToggleEl) {
     objectColorsToggleEl.checked = app.objectColorsEnabled;
+  }
+  if (objectDisplayModeSelectEl) {
+    objectDisplayModeSelectEl.value = app.objectDisplayMode;
+  }
+  if (objectSphereSizeSliderEl) {
+    objectSphereSizeSliderEl.value = String(app.objectSphereSize);
+  }
+  if (objectSphereSizeValEl) {
+    objectSphereSizeValEl.textContent = app.objectSphereSize.toFixed(3);
+  }
+  if (objectLabelsToggleEl) {
+    objectLabelsToggleEl.checked = app.objectLabelsEnabled;
+  }
+  if (speakerLabelsToggleEl) {
+    speakerLabelsToggleEl.checked = app.speakerLabelsEnabled;
+  }
+  if (speakerSizeSliderEl) {
+    speakerSizeSliderEl.value = String(app.speakerSize);
+  }
+  if (speakerSizeValEl) {
+    speakerSizeValEl.textContent = app.speakerSize.toFixed(3);
   }
   if (speakerHeatmapSlicesToggleEl) {
     speakerHeatmapSlicesToggleEl.checked = app.speakerHeatmapSlicesEnabled;
@@ -200,6 +233,25 @@ export function loadEffectiveRenderPrefs() {
       const parsed = JSON.parse(raw);
       app.effectiveRenderEnabled = Boolean(parsed?.enabled);
       app.objectColorsEnabled = Boolean(parsed?.objectColors);
+      if (parsed?.objectDisplayMode === 'transparent-sphere' || parsed?.objectDisplayMode === 'diffuse-sphere') {
+        app.objectDisplayMode = parsed.objectDisplayMode;
+      } else {
+        app.objectDisplayMode = 'circle';
+      }
+      const objectSphereSize = Number(parsed?.objectSphereSize);
+      if (Number.isFinite(objectSphereSize)) {
+        app.objectSphereSize = Math.max(0.03, Math.min(0.2, objectSphereSize));
+      }
+      if (typeof parsed?.objectLabels === 'boolean') {
+        app.objectLabelsEnabled = parsed.objectLabels;
+      }
+      if (typeof parsed?.speakerLabels === 'boolean') {
+        app.speakerLabelsEnabled = parsed.speakerLabels;
+      }
+      const speakerSize = Number(parsed?.speakerSize);
+      if (Number.isFinite(speakerSize)) {
+        app.speakerSize = Math.max(0.04, Math.min(0.2, speakerSize));
+      }
       if (typeof parsed?.speakerHeatmapSlicesEnabled === 'boolean') {
         app.speakerHeatmapSlicesEnabled = parsed.speakerHeatmapSlicesEnabled;
       }
