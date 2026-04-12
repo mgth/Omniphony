@@ -195,10 +195,10 @@ export function rebuildDiffuseTrailGeometry(trail, mappedPositions, pointColors,
     positions[i * 3 + 1] = point.position.y;
     positions[i * 3 + 2] = point.position.z;
     const t = point.t;
-    const glow = 0.22 + (0.78 * t);
-    colors[i * 3] = (color.r * 0.35 + 0.18) * glow;
-    colors[i * 3 + 1] = (color.g * 0.65 + 0.45) * glow;
-    colors[i * 3 + 2] = (color.b * 0.85 + 0.95) * glow;
+    const glow = 0.18 + (0.82 * t);
+    colors[i * 3] = color.r * glow;
+    colors[i * 3 + 1] = color.g * glow;
+    colors[i * 3 + 2] = color.b * glow;
     sizes[i] = (6 + (20 * t)) * loudnessFactor;
     alphas[i] = 0.05 + (0.2 * t * t);
   }
