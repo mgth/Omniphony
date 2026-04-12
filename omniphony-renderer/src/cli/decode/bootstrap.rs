@@ -519,6 +519,35 @@ fn init_spatial_renderer(
     let configured_evaluation = render_cfg
         .and_then(|cfg| cfg.render_evaluation_mode.as_deref())
         .and_then(LiveEvaluationMode::from_str);
+    let experimental_distance_cfg = render_cfg.map(|cfg| {
+        let defaults = renderer::live_params::ExperimentalDistanceLiveParams::default();
+        renderer::live_params::ExperimentalDistanceLiveParams {
+            distance_floor: cfg
+                .experimental_distance_distance_floor
+                .unwrap_or(defaults.distance_floor)
+                .max(0.0),
+            min_active_speakers: cfg
+                .experimental_distance_min_active_speakers
+                .unwrap_or(defaults.min_active_speakers)
+                .max(1),
+            max_active_speakers: cfg
+                .experimental_distance_max_active_speakers
+                .unwrap_or(defaults.max_active_speakers)
+                .max(1),
+            position_error_floor: cfg
+                .experimental_distance_position_error_floor
+                .unwrap_or(defaults.position_error_floor)
+                .max(0.0),
+            position_error_nearest_scale: cfg
+                .experimental_distance_position_error_nearest_scale
+                .unwrap_or(defaults.position_error_nearest_scale)
+                .max(0.0),
+            position_error_span_scale: cfg
+                .experimental_distance_position_error_span_scale
+                .unwrap_or(defaults.position_error_span_scale)
+                .max(0.0),
+        }
+    });
     if configured_backend.is_some() || configured_evaluation.is_some() {
         let control = renderer.renderer_control();
         let mut requires_rebuild = false;
@@ -536,6 +565,29 @@ fn init_spatial_renderer(
                     requires_rebuild = true;
                 }
             }
+            if let Some(mut experimental_distance) = experimental_distance_cfg {
+                if experimental_distance.max_active_speakers
+                    < experimental_distance.min_active_speakers
+                {
+                    experimental_distance.max_active_speakers =
+                        experimental_distance.min_active_speakers;
+                }
+                if live.experimental_distance.distance_floor != experimental_distance.distance_floor
+                    || live.experimental_distance.min_active_speakers
+                        != experimental_distance.min_active_speakers
+                    || live.experimental_distance.max_active_speakers
+                        != experimental_distance.max_active_speakers
+                    || live.experimental_distance.position_error_floor
+                        != experimental_distance.position_error_floor
+                    || live.experimental_distance.position_error_nearest_scale
+                        != experimental_distance.position_error_nearest_scale
+                    || live.experimental_distance.position_error_span_scale
+                        != experimental_distance.position_error_span_scale
+                {
+                    live.experimental_distance = experimental_distance;
+                    requires_rebuild = true;
+                }
+            }
         }
         if requires_rebuild {
             if let Some(plan) = control.prepare_topology_rebuild() {
@@ -543,6 +595,16 @@ fn init_spatial_renderer(
                 control.publish_topology(topology);
             }
         }
+    } else if let Some(mut experimental_distance) = experimental_distance_cfg {
+        if experimental_distance.max_active_speakers < experimental_distance.min_active_speakers {
+            experimental_distance.max_active_speakers = experimental_distance.min_active_speakers;
+        }
+        renderer
+            .renderer_control()
+            .live
+            .write()
+            .unwrap()
+            .experimental_distance = experimental_distance;
     }
     handler.spatial_renderer = Some(renderer);
     Ok(())

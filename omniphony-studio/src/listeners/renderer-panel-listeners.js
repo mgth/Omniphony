@@ -1,7 +1,15 @@
 import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
 import { formatNumber } from '../coordinates.js';
-import { renderVbapStatus, updateEvaluationMode, updateRenderBackend, updateVbapCartesian, updateVbapPolar, updateVbapPositionInterpolation } from '../controls/vbap.js';
+import {
+  renderVbapStatus,
+  updateEvaluationMode,
+  updateExperimentalDistanceOptions,
+  updateRenderBackend,
+  updateVbapCartesian,
+  updateVbapPolar,
+  updateVbapPositionInterpolation
+} from '../controls/vbap.js';
 import { updateSpreadDisplay } from '../controls/spread.js';
 import { updateDistanceModelUI } from '../controls/master.js';
 import { updateDistanceDiffuseUI } from '../controls/distance-diffuse.js';
@@ -33,6 +41,12 @@ export function setupRendererPanelListeners() {
   const distanceDiffuseThresholdValEl = document.getElementById('distanceDiffuseThresholdVal');
   const distanceDiffuseCurveSliderEl = document.getElementById('distanceDiffuseCurveSlider');
   const distanceDiffuseCurveValEl = document.getElementById('distanceDiffuseCurveVal');
+  const experimentalDistanceFloorInputEl = document.getElementById('experimentalDistanceFloorInput');
+  const experimentalDistanceMinActiveInputEl = document.getElementById('experimentalDistanceMinActiveInput');
+  const experimentalDistanceMaxActiveInputEl = document.getElementById('experimentalDistanceMaxActiveInput');
+  const experimentalDistanceErrorFloorInputEl = document.getElementById('experimentalDistanceErrorFloorInput');
+  const experimentalDistanceNearestScaleInputEl = document.getElementById('experimentalDistanceNearestScaleInput');
+  const experimentalDistanceSpanScaleInputEl = document.getElementById('experimentalDistanceSpanScaleInput');
 
   if (spreadMinSliderEl) {
     spreadMinSliderEl.addEventListener('input', () => {
@@ -108,6 +122,77 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       invoke('control_distance_model', { value });
+    });
+  }
+
+  if (experimentalDistanceFloorInputEl) {
+    experimentalDistanceFloorInputEl.addEventListener('change', () => {
+      const value = Math.max(0, Number(experimentalDistanceFloorInputEl.value) || 0);
+      app.renderBackendState.experimentalDistance.distanceFloor = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateExperimentalDistanceOptions();
+      invoke('control_experimental_distance_distance_floor', { value });
+    });
+  }
+
+  if (experimentalDistanceMinActiveInputEl) {
+    experimentalDistanceMinActiveInputEl.addEventListener('change', () => {
+      const value = Math.max(1, Math.round(Number(experimentalDistanceMinActiveInputEl.value) || 1));
+      const currentMax = Number(app.renderBackendState.experimentalDistance.maxActiveSpeakers) || value;
+      app.renderBackendState.experimentalDistance.minActiveSpeakers = value;
+      if (currentMax < value) {
+        app.renderBackendState.experimentalDistance.maxActiveSpeakers = value;
+      }
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateExperimentalDistanceOptions();
+      invoke('control_experimental_distance_min_active_speakers', { value });
+    });
+  }
+
+  if (experimentalDistanceMaxActiveInputEl) {
+    experimentalDistanceMaxActiveInputEl.addEventListener('change', () => {
+      const minValue = Number(app.renderBackendState.experimentalDistance.minActiveSpeakers) || 1;
+      const value = Math.max(minValue, Math.round(Number(experimentalDistanceMaxActiveInputEl.value) || minValue));
+      app.renderBackendState.experimentalDistance.maxActiveSpeakers = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateExperimentalDistanceOptions();
+      invoke('control_experimental_distance_max_active_speakers', { value });
+    });
+  }
+
+  if (experimentalDistanceErrorFloorInputEl) {
+    experimentalDistanceErrorFloorInputEl.addEventListener('change', () => {
+      const value = Math.max(0, Number(experimentalDistanceErrorFloorInputEl.value) || 0);
+      app.renderBackendState.experimentalDistance.positionErrorFloor = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateExperimentalDistanceOptions();
+      invoke('control_experimental_distance_position_error_floor', { value });
+    });
+  }
+
+  if (experimentalDistanceNearestScaleInputEl) {
+    experimentalDistanceNearestScaleInputEl.addEventListener('change', () => {
+      const value = Math.max(0, Number(experimentalDistanceNearestScaleInputEl.value) || 0);
+      app.renderBackendState.experimentalDistance.positionErrorNearestScale = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateExperimentalDistanceOptions();
+      invoke('control_experimental_distance_position_error_nearest_scale', { value });
+    });
+  }
+
+  if (experimentalDistanceSpanScaleInputEl) {
+    experimentalDistanceSpanScaleInputEl.addEventListener('change', () => {
+      const value = Math.max(0, Number(experimentalDistanceSpanScaleInputEl.value) || 0);
+      app.renderBackendState.experimentalDistance.positionErrorSpanScale = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateExperimentalDistanceOptions();
+      invoke('control_experimental_distance_position_error_span_scale', { value });
     });
   }
 

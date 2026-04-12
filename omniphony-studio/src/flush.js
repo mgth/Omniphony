@@ -35,6 +35,7 @@ export const flushCallbacks = {
   renderSpreadDisplay: null,
   renderEvaluationMode: null,
   renderRenderBackend: null,
+  renderExperimentalDistanceOptions: null,
   renderVbapCartesian: null,
   renderVbapPolar: null,
   renderLoudnessDisplay: null,
@@ -136,6 +137,11 @@ export function flushUI() {
   if (dirty.renderBackend) {
     flushCallbacks.renderRenderBackend?.();
     dirty.renderBackend = false;
+  }
+
+  if (dirty.experimentalDistance) {
+    flushCallbacks.renderExperimentalDistanceOptions?.();
+    dirty.experimentalDistance = false;
   }
 
   if (dirty.vbapCartesian) {

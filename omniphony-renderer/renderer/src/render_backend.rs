@@ -194,6 +194,12 @@ pub struct RenderRequest {
     pub distance_diffuse_threshold: f32,
     pub distance_diffuse_curve: f32,
     pub distance_model: DistanceModel,
+    pub experimental_distance_distance_floor: f32,
+    pub experimental_distance_min_active_speakers: usize,
+    pub experimental_distance_max_active_speakers: usize,
+    pub experimental_distance_position_error_floor: f32,
+    pub experimental_distance_position_error_nearest_scale: f32,
+    pub experimental_distance_position_error_span_scale: f32,
 }
 
 pub struct RenderResponse {

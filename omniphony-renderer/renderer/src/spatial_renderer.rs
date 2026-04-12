@@ -246,6 +246,7 @@ struct LiveSnapshot<'a> {
     use_distance_diffuse: bool,
     distance_diffuse_threshold: f32,
     distance_diffuse_curve: f32,
+    experimental_distance: crate::live_params::ExperimentalDistanceLiveParams,
 }
 
 /// Spatial audio renderer using VBAP
@@ -437,6 +438,24 @@ impl SpatialRenderer {
                         distance_diffuse_threshold,
                         distance_diffuse_curve,
                         distance_model,
+                        experimental_distance_distance_floor:
+                            crate::live_params::ExperimentalDistanceLiveParams::default()
+                                .distance_floor,
+                        experimental_distance_min_active_speakers:
+                            crate::live_params::ExperimentalDistanceLiveParams::default()
+                                .min_active_speakers,
+                        experimental_distance_max_active_speakers:
+                            crate::live_params::ExperimentalDistanceLiveParams::default()
+                                .max_active_speakers,
+                        experimental_distance_position_error_floor:
+                            crate::live_params::ExperimentalDistanceLiveParams::default()
+                                .position_error_floor,
+                        experimental_distance_position_error_nearest_scale:
+                            crate::live_params::ExperimentalDistanceLiveParams::default()
+                                .position_error_nearest_scale,
+                        experimental_distance_position_error_span_scale:
+                            crate::live_params::ExperimentalDistanceLiveParams::default()
+                                .position_error_span_scale,
                     },
                     vbap_position_interpolation,
                     table_mode,
@@ -947,6 +966,7 @@ impl SpatialRenderer {
             use_distance_diffuse: distance_diffuse,
             distance_diffuse_threshold,
             distance_diffuse_curve,
+            experimental_distance: crate::live_params::ExperimentalDistanceLiveParams::default(),
         }
     }
 
@@ -1084,6 +1104,22 @@ impl SpatialRenderer {
                 distance_diffuse_threshold: live.distance_diffuse_threshold,
                 distance_diffuse_curve: live.distance_diffuse_curve,
                 distance_model: self.distance_model,
+                experimental_distance_distance_floor: live.experimental_distance.distance_floor,
+                experimental_distance_min_active_speakers: live
+                    .experimental_distance
+                    .min_active_speakers,
+                experimental_distance_max_active_speakers: live
+                    .experimental_distance
+                    .max_active_speakers,
+                experimental_distance_position_error_floor: live
+                    .experimental_distance
+                    .position_error_floor,
+                experimental_distance_position_error_nearest_scale: live
+                    .experimental_distance
+                    .position_error_nearest_scale,
+                experimental_distance_position_error_span_scale: live
+                    .experimental_distance
+                    .position_error_span_scale,
             },
         )
     }
@@ -1288,6 +1324,7 @@ impl SpatialRenderer {
                 use_distance_diffuse: g.use_distance_diffuse,
                 distance_diffuse_threshold: g.distance_diffuse_threshold,
                 distance_diffuse_curve: g.distance_diffuse_curve,
+                experimental_distance: g.experimental_distance,
             }
         };
 

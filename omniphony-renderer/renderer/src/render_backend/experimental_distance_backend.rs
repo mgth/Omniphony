@@ -15,13 +15,6 @@ struct ExperimentalSpeakerCandidate {
     distance: f32,
 }
 
-const EXPERIMENTAL_DISTANCE_FLOOR: f32 = 0.05;
-const EXPERIMENTAL_MIN_ACTIVE_SPEAKERS: usize = 2;
-const EXPERIMENTAL_MAX_ACTIVE_SPEAKERS: usize = 8;
-const EXPERIMENTAL_POSITION_ERROR_FLOOR: f32 = 0.08;
-const EXPERIMENTAL_POSITION_ERROR_NEAREST_SCALE: f32 = 0.75;
-const EXPERIMENTAL_POSITION_ERROR_SPAN_SCALE: f32 = 0.3;
-
 impl ExperimentalDistanceBackend {
     pub fn new(speaker_positions: Vec<[f32; 3]>) -> Self {
         Self { speaker_positions }
@@ -73,8 +66,8 @@ impl ExperimentalDistanceBackend {
         }
 
         candidates.sort_unstable_by(|a, b| a.distance.total_cmp(&b.distance));
-        let active_count = select_experimental_active_count(target, &candidates);
-        let energy = write_experimental_subset_gains(&mut gains, &candidates[..active_count]);
+        let active_count = select_experimental_active_count(target, &candidates, req);
+        let energy = write_experimental_subset_gains(&mut gains, &candidates[..active_count], req);
         if energy > 1e-12 {
             let norm = energy.sqrt();
             for gain in gains.iter_mut() {
@@ -171,17 +164,22 @@ fn euclidean_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 #[inline]
 fn experimental_distance_weight(distance: f32) -> f32 {
-    let clamped = distance.max(EXPERIMENTAL_DISTANCE_FLOOR);
+    let clamped = distance.max(0.000_001);
     1.0 / (clamped * clamped.sqrt())
 }
 
 fn write_experimental_subset_gains(
     gains: &mut Gains,
     candidates: &[ExperimentalSpeakerCandidate],
+    req: &RenderRequest,
 ) -> f32 {
     let mut energy = 0.0f32;
     for candidate in candidates {
-        let weight = experimental_distance_weight(candidate.distance);
+        let weight = experimental_distance_weight(
+            candidate
+                .distance
+                .max(req.experimental_distance_distance_floor.max(0.0)),
+        );
         gains.set(candidate.index, weight);
         energy += weight * weight;
     }
@@ -191,6 +189,7 @@ fn write_experimental_subset_gains(
 fn select_experimental_active_count(
     target: [f32; 3],
     candidates: &[ExperimentalSpeakerCandidate],
+    req: &RenderRequest,
 ) -> usize {
     if candidates.is_empty() {
         return 0;
@@ -198,10 +197,10 @@ fn select_experimental_active_count(
 
     let min_active = candidates
         .len()
-        .min(EXPERIMENTAL_MIN_ACTIVE_SPEAKERS.max(1));
+        .min(req.experimental_distance_min_active_speakers.max(1));
     let max_active = candidates
         .len()
-        .min(EXPERIMENTAL_MAX_ACTIVE_SPEAKERS.max(1));
+        .min(req.experimental_distance_max_active_speakers.max(1));
     let nearest_distance = candidates[0].distance;
     let mut best_count = 1usize;
     let mut best_error = f32::MAX;
@@ -217,9 +216,15 @@ fn select_experimental_active_count(
 
         if count >= min_active {
             let span = candidate_subset_span(subset);
-            let threshold = EXPERIMENTAL_POSITION_ERROR_FLOOR
-                .max(nearest_distance * EXPERIMENTAL_POSITION_ERROR_NEAREST_SCALE)
-                .max(span * EXPERIMENTAL_POSITION_ERROR_SPAN_SCALE);
+            let threshold = req
+                .experimental_distance_position_error_floor
+                .max(
+                    nearest_distance
+                        * req
+                            .experimental_distance_position_error_nearest_scale
+                            .max(0.0),
+                )
+                .max(span * req.experimental_distance_position_error_span_scale.max(0.0));
             if error <= threshold {
                 return count;
             }
@@ -233,7 +238,7 @@ fn reconstruct_experimental_position(candidates: &[ExperimentalSpeakerCandidate]
     let mut weighted = [0.0f32; 3];
     let mut energy = 0.0f32;
     for candidate in candidates {
-        let weight = experimental_distance_weight(candidate.distance);
+        let weight = experimental_distance_weight(candidate.distance.max(0.000_001));
         let contribution = weight * weight;
         weighted[0] += candidate.transformed_position[0] * contribution;
         weighted[1] += candidate.transformed_position[1] * contribution;

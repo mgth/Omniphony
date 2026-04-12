@@ -480,6 +480,12 @@ pub(super) fn effective_to_config(
         } else {
             None
         },
+        experimental_distance_distance_floor: None,
+        experimental_distance_min_active_speakers: None,
+        experimental_distance_max_active_speakers: None,
+        experimental_distance_position_error_floor: None,
+        experimental_distance_position_error_nearest_scale: None,
+        experimental_distance_position_error_span_scale: None,
     };
 
     let global_opt =

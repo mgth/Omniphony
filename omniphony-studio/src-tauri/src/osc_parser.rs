@@ -527,11 +527,7 @@ fn parse_omniphony_object_position(
         .map(|v| v as i64)
         .filter(|&v| v >= 0)
         .map(|v| v as u32);
-    let gain_db = args
-        .get(4)
-        .copied()
-        .and_then(to_number)
-        .map(|v| v as i32);
+    let gain_db = args.get(4).copied().and_then(to_number).map(|v| v as i32);
 
     let generation = match raw_args.get(8) {
         Some(OscType::Long(v)) if *v >= 0 => Some(*v as u64),

@@ -22,6 +22,12 @@ pub struct RampRenderParams {
     pub distance_diffuse_threshold: f32,
     pub distance_diffuse_curve: f32,
     pub distance_model: DistanceModel,
+    pub experimental_distance_distance_floor: f32,
+    pub experimental_distance_min_active_speakers: usize,
+    pub experimental_distance_max_active_speakers: usize,
+    pub experimental_distance_position_error_floor: f32,
+    pub experimental_distance_position_error_nearest_scale: f32,
+    pub experimental_distance_position_error_span_scale: f32,
 }
 
 impl RampRenderParams {
@@ -42,6 +48,17 @@ impl RampRenderParams {
             distance_diffuse_threshold: self.distance_diffuse_threshold,
             distance_diffuse_curve: self.distance_diffuse_curve,
             distance_model: self.distance_model,
+            experimental_distance_distance_floor: self.experimental_distance_distance_floor,
+            experimental_distance_min_active_speakers: self
+                .experimental_distance_min_active_speakers,
+            experimental_distance_max_active_speakers: self
+                .experimental_distance_max_active_speakers,
+            experimental_distance_position_error_floor: self
+                .experimental_distance_position_error_floor,
+            experimental_distance_position_error_nearest_scale: self
+                .experimental_distance_position_error_nearest_scale,
+            experimental_distance_position_error_span_scale: self
+                .experimental_distance_position_error_span_scale,
         }
     }
 }

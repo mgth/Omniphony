@@ -170,6 +170,61 @@ pub fn save_live_config(
     } else {
         None
     };
+    let experimental_defaults = renderer::live_params::ExperimentalDistanceLiveParams::default();
+    render.experimental_distance_distance_floor =
+        if (live.experimental_distance.distance_floor - experimental_defaults.distance_floor).abs()
+            > 1e-4
+        {
+            Some(live.experimental_distance.distance_floor)
+        } else {
+            None
+        };
+    render.experimental_distance_min_active_speakers =
+        if live.experimental_distance.min_active_speakers
+            != experimental_defaults.min_active_speakers
+        {
+            Some(live.experimental_distance.min_active_speakers)
+        } else {
+            None
+        };
+    render.experimental_distance_max_active_speakers =
+        if live.experimental_distance.max_active_speakers
+            != experimental_defaults.max_active_speakers
+        {
+            Some(live.experimental_distance.max_active_speakers)
+        } else {
+            None
+        };
+    render.experimental_distance_position_error_floor =
+        if (live.experimental_distance.position_error_floor
+            - experimental_defaults.position_error_floor)
+            .abs()
+            > 1e-4
+        {
+            Some(live.experimental_distance.position_error_floor)
+        } else {
+            None
+        };
+    render.experimental_distance_position_error_nearest_scale =
+        if (live.experimental_distance.position_error_nearest_scale
+            - experimental_defaults.position_error_nearest_scale)
+            .abs()
+            > 1e-4
+        {
+            Some(live.experimental_distance.position_error_nearest_scale)
+        } else {
+            None
+        };
+    render.experimental_distance_position_error_span_scale =
+        if (live.experimental_distance.position_error_span_scale
+            - experimental_defaults.position_error_span_scale)
+            .abs()
+            > 1e-4
+        {
+            Some(live.experimental_distance.position_error_span_scale)
+        } else {
+            None
+        };
     render.ramp_mode = match control.requested_ramp_mode() {
         RampMode::Sample => None,
         mode => Some(mode.as_str().to_string()),
