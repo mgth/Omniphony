@@ -685,7 +685,10 @@ fn control_render_evaluation_cartesian_z_neg_size(state: State<SharedState>, val
 #[tauri::command]
 fn control_render_backend(state: State<SharedState>, value: String) {
     let normalized = value.trim().to_ascii_lowercase();
-    if !matches!(normalized.as_str(), "vbap" | "experimental_distance") {
+    if !matches!(
+        normalized.as_str(),
+        "vbap" | "barycenter" | "experimental_distance"
+    ) {
         return;
     }
     send_control(
@@ -693,6 +696,17 @@ fn control_render_backend(state: State<SharedState>, value: String) {
         OscControlMsg::SendString {
             address: "/omniphony/control/render_backend".to_string(),
             value: normalized,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_barycenter_localize(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/barycenter/localize".to_string(),
+            value: value.max(0.0),
         },
     );
 }
@@ -2223,6 +2237,7 @@ fn main() {
             control_render_evaluation_cartesian_z_size,
             control_render_evaluation_cartesian_z_neg_size,
             control_render_backend,
+            control_barycenter_localize,
             control_restore_render_backend,
             control_render_evaluation_mode,
             control_render_evaluation_polar_azimuth_resolution,

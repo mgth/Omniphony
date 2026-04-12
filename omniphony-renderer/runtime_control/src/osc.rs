@@ -1491,6 +1491,34 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/barycenter/") {
+        let mut live = ctx.renderer.live.write().unwrap();
+        let mut changed = false;
+        match rest {
+            "localize" => {
+                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.0)) {
+                    live.barycenter.localize = v;
+                    changed = true;
+                    effects.log_message = Some(format!("OSC: barycenter/localize -> {v}"));
+                }
+            }
+            _ => {}
+        }
+
+        if changed {
+            effects.mark_dirty = true;
+            effects.trigger_layout_recompute = true;
+            effects.broadcasts.push(BroadcastUpdate {
+                addr: "/omniphony/state/render_backend/state".to_string(),
+                value: BroadcastValue::String(build_render_backend_state_json(
+                    &live,
+                    &ctx.renderer.active_topology(),
+                )),
+            });
+        }
+        return Some(effects);
+    }
+
     if addr == "/omniphony/control/room_ratio" {
         if is_from_file_frozen(ctx) {
             effects.log_message =

@@ -26,6 +26,7 @@ const distanceModelControlRowEl = inRendererPanel('distanceModelControlRow');
 const spreadSectionEl = inRendererPanel('spreadSection');
 const distanceDiffuseSectionEl = inRendererPanel('distanceDiffuseSection');
 const spreadFromDistanceSectionEl = inRendererPanel('spreadFromDistanceSection');
+const barycenterSectionEl = inRendererPanel('barycenterSection');
 const experimentalDistanceSectionEl = inRendererPanel('experimentalDistanceSection');
 const vbapCartXSizeInputEl = inRendererPanel('vbapCartXSizeInput');
 const vbapCartYSizeInputEl = inRendererPanel('vbapCartYSizeInput');
@@ -45,6 +46,8 @@ const vbapPolarAzStepInfoEl = inRendererPanel('vbapPolarAzStepInfo');
 const vbapPolarElStepInfoEl = inRendererPanel('vbapPolarElStepInfo');
 const vbapPolarDistStepInfoEl = inRendererPanel('vbapPolarDistStepInfo');
 const vbapPositionInterpolationToggleEl = inRendererPanel('vbapPositionInterpolationToggleEl');
+const barycenterLocalizeInputEl = inRendererPanel('barycenterLocalizeInput');
+const barycenterLocalizeValEl = inRendererPanel('barycenterLocalizeVal');
 const experimentalDistanceFloorInputEl = inRendererPanel('experimentalDistanceFloorInput');
 const experimentalDistanceMinActiveInputEl = inRendererPanel('experimentalDistanceMinActiveInput');
 const experimentalDistanceMaxActiveInputEl = inRendererPanel('experimentalDistanceMaxActiveInput');
@@ -83,6 +86,7 @@ function backendLabel(backend) {
     return app.renderBackendState.effectiveLabel || backend || '—';
   }
   if (backend === 'vbap') return 'VBAP';
+  if (backend === 'barycenter') return 'Barycenter';
   if (backend === 'experimental_distance') return 'Distance';
   if (backend === 'from_file') return 'From File';
   return backend || '—';
@@ -93,6 +97,7 @@ function applyRendererBackendVisibility(backend) {
   const supportsDistanceModel = capabilities?.supportsDistanceModel === true;
   const supportsSpread = capabilities?.supportsSpread === true;
   const supportsDistanceDiffuse = capabilities?.supportsDistanceDiffuse === true;
+  const showsBarycenter = backend === 'barycenter';
   const showsExperimentalDistance = backend === 'experimental_distance';
   if (backendParametersSectionEl) {
     backendParametersSectionEl.style.display = '';
@@ -102,7 +107,7 @@ function applyRendererBackendVisibility(backend) {
   }
   if (backendSpecificParamsSectionEl) {
     backendSpecificParamsSectionEl.style.display =
-      supportsDistanceModel || supportsSpread || supportsDistanceDiffuse || showsExperimentalDistance
+      supportsDistanceModel || supportsSpread || supportsDistanceDiffuse || showsBarycenter || showsExperimentalDistance
         ? ''
         : 'none';
   }
@@ -121,6 +126,9 @@ function applyRendererBackendVisibility(backend) {
   }
   if (experimentalDistanceSectionEl) {
     experimentalDistanceSectionEl.style.display = showsExperimentalDistance ? '' : 'none';
+  }
+  if (barycenterSectionEl) {
+    barycenterSectionEl.style.display = showsBarycenter ? '' : 'none';
   }
 }
 
@@ -267,14 +275,32 @@ export function renderRenderBackend() {
   if (importLayoutBtnEl) importLayoutBtnEl.disabled = layoutFrozen;
   if (exportLayoutBtnEl) exportLayoutBtnEl.disabled = layoutFrozen;
   applyRendererBackendVisibility(visibleBackend);
+  renderBarycenterOptions();
   renderExperimentalDistanceOptions();
   renderEvaluationMode();
 }
 
 export function updateRenderBackend() {
   dirty.renderBackend = true;
+  dirty.barycenter = true;
   dirty.experimentalDistance = true;
   dirty.vbapMode = true;
+  scheduleUIFlush();
+}
+
+export function renderBarycenterOptions() {
+  const state = app.renderBackendState.barycenter || {};
+  const value = typeof state.localize === 'number' ? state.localize : 0;
+  if (barycenterLocalizeInputEl) {
+    barycenterLocalizeInputEl.value = String(value);
+  }
+  if (barycenterLocalizeValEl) {
+    barycenterLocalizeValEl.textContent = formatNumber(value, 2);
+  }
+}
+
+export function updateBarycenterOptions() {
+  dirty.barycenter = true;
   scheduleUIFlush();
 }
 

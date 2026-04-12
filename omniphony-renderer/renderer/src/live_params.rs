@@ -192,6 +192,17 @@ impl Default for ExperimentalDistanceLiveParams {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct BarycenterLiveParams {
+    pub localize: f32,
+}
+
+impl Default for BarycenterLiveParams {
+    fn default() -> Self {
+        Self { localize: 0.0 }
+    }
+}
+
 /// Live-tunable rendering parameters.
 ///
 /// Written (exclusively) by the OSC listener thread, read via snapshot by the
@@ -278,6 +289,9 @@ pub struct LiveParams {
 
     /// Runtime tuning parameters for the experimental distance backend.
     pub experimental_distance: ExperimentalDistanceLiveParams,
+
+    /// Runtime tuning parameters for the barycenter backend.
+    pub barycenter: BarycenterLiveParams,
 }
 
 impl LiveParams {
@@ -376,6 +390,7 @@ fn evaluation_build_config_from_live(
             distance_diffuse_threshold: live.distance_diffuse_threshold,
             distance_diffuse_curve: live.distance_diffuse_curve,
             distance_model: live.distance_model,
+            barycenter_localize: live.barycenter.localize,
             experimental_distance_distance_floor: live.experimental_distance.distance_floor,
             experimental_distance_min_active_speakers: live
                 .experimental_distance
@@ -849,6 +864,7 @@ fn backend_rebuild_params_from_restore_snapshot(
             allow_negative_z: snapshot.allow_negative_z,
         }),
         RenderBackendKind::ExperimentalDistance => None,
+        RenderBackendKind::Barycenter => None,
         RenderBackendKind::FromFile => {
             anyhow::bail!("cannot restore backend to from_file")
         }

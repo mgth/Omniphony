@@ -62,6 +62,7 @@ import { setupVisualRecovery, teardownVisualRecovery } from './visual-recovery.j
 // ── Flush callback wiring ──────────────────────────────────────────────────
 import { renderSpreadDisplay } from './controls/spread.js';
 import {
+  renderBarycenterOptions,
   renderVbapStatus,
   renderEvaluationMode,
   renderExperimentalDistanceOptions,
@@ -96,6 +97,7 @@ flushCallbacks.renderRoomRatioDisplay = renderRoomRatioDisplay;
 flushCallbacks.renderSpreadDisplay = renderSpreadDisplay;
 flushCallbacks.renderEvaluationMode = renderEvaluationMode;
 flushCallbacks.renderRenderBackend = renderRenderBackend;
+flushCallbacks.renderBarycenterOptions = renderBarycenterOptions;
 flushCallbacks.renderExperimentalDistanceOptions = renderExperimentalDistanceOptions;
 flushCallbacks.renderVbapCartesian = renderVbapCartesian;
 flushCallbacks.renderVbapPolar = renderVbapPolar;

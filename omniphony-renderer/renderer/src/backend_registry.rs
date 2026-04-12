@@ -15,11 +15,17 @@ use crate::speaker_layout::SpeakerLayout;
 #[derive(Clone)]
 pub enum BackendBuildPlan {
     Vbap(VbapTopologyBuildPlan),
+    Barycenter(BarycenterBuildPlan),
     ExperimentalDistance(ExperimentalDistanceBuildPlan),
 }
 
 #[derive(Clone)]
 pub struct ExperimentalDistanceBuildPlan {
+    pub speaker_positions: Vec<[f32; 3]>,
+}
+
+#[derive(Clone)]
+pub struct BarycenterBuildPlan {
     pub speaker_positions: Vec<[f32; 3]>,
 }
 
@@ -86,6 +92,14 @@ impl ExperimentalDistanceBuildPlan {
     }
 }
 
+impl BarycenterBuildPlan {
+    pub fn build_gain_model(&self) -> Result<Box<dyn GainModel>> {
+        Ok(Box::new(crate::render_backend::BarycenterBackend::new(
+            self.speaker_positions.clone(),
+        )))
+    }
+}
+
 #[derive(Clone)]
 pub struct TopologyBuildPlan {
     pub layout: SpeakerLayout,
@@ -99,6 +113,7 @@ impl TopologyBuildPlan {
     pub fn build_topology(&self) -> Result<RenderTopology> {
         let model = match &self.backend_build {
             BackendBuildPlan::Vbap(plan) => plan.build_gain_model(self.evaluation_mode)?,
+            BackendBuildPlan::Barycenter(plan) => plan.build_gain_model()?,
             BackendBuildPlan::ExperimentalDistance(plan) => plan.build_gain_model()?,
         };
         let effective_mode = match self.evaluation_mode {
@@ -160,6 +175,11 @@ impl TopologyBuildPlan {
                 self.evaluation_mode().as_str(),
                 plan.speaker_positions.len()
             ),
+            BackendBuildPlan::Barycenter(plan) => format!(
+                "gain_model=barycenter evaluation_mode={} speakers={}",
+                self.evaluation_mode().as_str(),
+                plan.speaker_positions.len()
+            ),
         }
     }
 }
@@ -186,6 +206,26 @@ pub fn prepare_topology_build_plan(
     evaluation_build_config: crate::render_backend::EvaluationBuildConfig,
 ) -> Option<TopologyBuildPlan> {
     match live.backend_id() {
+        "barycenter" => {
+            let speaker_positions = layout
+                .speakers
+                .iter()
+                .filter(|speaker| speaker.spatialize)
+                .map(|speaker| [speaker.x, speaker.y, speaker.z])
+                .collect();
+            let preferred = backend_rebuild_params
+                .map(|params| params.preferred_evaluation_mode())
+                .unwrap_or(PreferredEvaluationMode::PrecomputedCartesian);
+            Some(TopologyBuildPlan {
+                layout,
+                backend_id: live.backend_id().to_string(),
+                backend_build: BackendBuildPlan::Barycenter(BarycenterBuildPlan {
+                    speaker_positions,
+                }),
+                evaluation_mode: effective_live_evaluation_mode(live.evaluation.mode, preferred),
+                evaluation_build_config,
+            })
+        }
         "experimental_distance" => {
             let speaker_positions = layout
                 .speakers

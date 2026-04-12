@@ -1,4 +1,5 @@
 mod evaluation_artifact;
+mod barycenter_backend;
 mod experimental_distance_backend;
 mod file_loaded_evaluator;
 mod vbap_backend;
@@ -12,6 +13,7 @@ pub use evaluation_artifact::{
     BackendRestoreSnapshot, LoadedEvaluationArtifact, SerializedEvaluationMode,
     build_backend_restore_snapshot, build_from_artifact_render_engine,
 };
+pub use barycenter_backend::BarycenterBackend;
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
 pub use file_loaded_evaluator::{LoadedVbapFile, build_from_file_render_engine};
 pub use vbap_backend::VbapBackend;
@@ -42,6 +44,7 @@ pub struct BackendDescriptor {
 #[serde(rename_all = "snake_case")]
 pub enum GainModelKind {
     Vbap,
+    Barycenter,
     ExperimentalDistance,
     FromFile,
 }
@@ -58,6 +61,7 @@ impl GainModelKind {
         }
         match normalized.as_str() {
             "from_file" => Some(Self::FromFile),
+            "barycentre" | "barycenter" => Some(Self::Barycenter),
             "distance" | "distance_based" => Some(Self::ExperimentalDistance),
             _ => None,
         }
@@ -68,6 +72,7 @@ impl GainModelKind {
 #[serde(rename_all = "snake_case")]
 pub enum RenderBackendKind {
     Vbap,
+    Barycenter,
     ExperimentalDistance,
     FromFile,
 }
@@ -84,6 +89,7 @@ impl RenderBackendKind {
         }
         match normalized.as_str() {
             "from_file" => Some(Self::FromFile),
+            "barycentre" | "barycenter" => Some(Self::Barycenter),
             "distance" | "distance_based" => Some(Self::ExperimentalDistance),
             _ => None,
         }
@@ -102,6 +108,7 @@ impl From<GainModelKind> for RenderBackendKind {
     fn from(value: GainModelKind) -> Self {
         match value {
             GainModelKind::Vbap => Self::Vbap,
+            GainModelKind::Barycenter => Self::Barycenter,
             GainModelKind::ExperimentalDistance => Self::ExperimentalDistance,
             GainModelKind::FromFile => Self::FromFile,
         }
@@ -114,12 +121,18 @@ impl From<RenderBackendKind> for GainModelKind {
     }
 }
 
-const BACKEND_DESCRIPTORS: [BackendDescriptor; 3] = [
+const BACKEND_DESCRIPTORS: [BackendDescriptor; 4] = [
     BackendDescriptor {
         kind: RenderBackendKind::Vbap,
         gain_model_kind: GainModelKind::Vbap,
         id: "vbap",
         label: "VBAP",
+    },
+    BackendDescriptor {
+        kind: RenderBackendKind::Barycenter,
+        gain_model_kind: GainModelKind::Barycenter,
+        id: "barycenter",
+        label: "Barycenter",
     },
     BackendDescriptor {
         kind: RenderBackendKind::ExperimentalDistance,
@@ -194,6 +207,7 @@ pub struct RenderRequest {
     pub distance_diffuse_threshold: f32,
     pub distance_diffuse_curve: f32,
     pub distance_model: DistanceModel,
+    pub barycenter_localize: f32,
     pub experimental_distance_distance_floor: f32,
     pub experimental_distance_min_active_speakers: usize,
     pub experimental_distance_max_active_speakers: usize,

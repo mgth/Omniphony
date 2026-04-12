@@ -128,10 +128,11 @@ export function rendererPanelMarkup() {
                 <div id="vbapStatus" class="vbap-status" style="margin:0;font-size:11px;min-width:0">—</div>
               </div>
               <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
-              <select id="renderBackendSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
-                <option value="vbap">VBAP</option>
-                <option value="experimental_distance">Distance</option>
-              </select>
+	              <select id="renderBackendSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
+	                <option value="vbap">VBAP</option>
+	                <option value="barycenter">Barycenter</option>
+	                <option value="experimental_distance">Distance</option>
+	              </select>
               <button id="restoreBackendBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Restore backend</button>
               <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
             </div>
@@ -200,6 +201,19 @@ export function rendererPanelMarkup() {
               <div class="meter-row" style="margin-top:0.15rem">
                 <label style="font-size:12px;white-space:nowrap"><span data-i18n="spread.curve">spread curve</span> <span id="spreadDistanceCurveVal">1.00</span></label>
                 <input id="spreadDistanceCurveSlider" type="range" min="0.1" max="3.0" step="0.05" value="1.0" class="gain-slider" />
+              </div>
+            </div>
+          </div>
+          <div class="info-section" id="barycenterSection" style="margin:0;padding:0;border:none;background:none;display:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff">Barycenter backend</div>
+            </div>
+            <div id="barycenterSectionContent" class="conditional-params open">
+              <div style="margin-top:0.2rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.15rem">
+                <div class="control-row" style="margin-top:0">
+                  <label style="font-size:12px;white-space:nowrap"><span>Localize</span> <span id="barycenterLocalizeVal">0.00</span></label>
+                  <input id="barycenterLocalizeInput" type="range" min="0" max="4" step="0.05" value="0" class="gain-slider" />
+                </div>
               </div>
             </div>
           </div>

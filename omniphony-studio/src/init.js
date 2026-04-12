@@ -128,13 +128,23 @@ export function applyInitState(payload) {
   if (payload.renderBackendState && typeof payload.renderBackendState === 'object') {
     if (typeof payload.renderBackendState.selection === 'string') {
       const selection = payload.renderBackendState.selection.trim().toLowerCase();
-      if (selection === 'vbap' || selection === 'experimental_distance' || selection === 'from_file') {
+      if (
+        selection === 'vbap'
+        || selection === 'barycenter'
+        || selection === 'experimental_distance'
+        || selection === 'from_file'
+      ) {
         app.renderBackendState.selection = selection;
       }
     }
     if (typeof payload.renderBackendState.effective === 'string') {
       const effective = payload.renderBackendState.effective.trim().toLowerCase();
-      if (effective === 'vbap' || effective === 'experimental_distance' || effective === 'from_file') {
+      if (
+        effective === 'vbap'
+        || effective === 'barycenter'
+        || effective === 'experimental_distance'
+        || effective === 'from_file'
+      ) {
         app.renderBackendState.effective = effective;
       }
     }
@@ -152,6 +162,11 @@ export function applyInitState(payload) {
     app.renderBackendState.frozenRoomRatio = payload.renderBackendState.frozenRoomRatio === true;
     app.renderBackendState.frozenSpeakers = payload.renderBackendState.frozenSpeakers === true;
     app.renderBackendState.restoreBackendAvailable = payload.renderBackendState.restoreBackendAvailable === true;
+    const barycenter = payload.renderBackendState.barycenter;
+    if (barycenter && typeof barycenter === 'object') {
+      app.renderBackendState.barycenter.localize =
+        typeof barycenter.localize === 'number' ? barycenter.localize : null;
+    }
     const experimentalDistance = payload.renderBackendState.experimentalDistance;
     if (experimentalDistance && typeof experimentalDistance === 'object') {
       app.renderBackendState.experimentalDistance.distanceFloor =

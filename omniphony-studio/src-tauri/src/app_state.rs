@@ -170,6 +170,11 @@ pub struct ExperimentalDistanceState {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct BarycenterState {
+    pub localize: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RenderBackendState {
     pub selection: Option<String>,
     pub effective: Option<String>,
@@ -187,6 +192,7 @@ pub struct RenderBackendState {
         alias = "restore_backend_available"
     )]
     pub restore_backend_available: bool,
+    pub barycenter: BarycenterState,
     #[serde(rename = "experimentalDistance", alias = "experimental_distance")]
     pub experimental_distance: ExperimentalDistanceState,
 }

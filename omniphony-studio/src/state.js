@@ -63,6 +63,7 @@ export const dirty = {
   masterMeter: false,
   roomRatio: false,
   spread: false,
+  barycenter: false,
   experimentalDistance: false,
   vbapMode: false,
   renderBackend: false,
@@ -113,6 +114,9 @@ export const app = {
     frozenRoomRatio: false,
     frozenSpeakers: false,
     restoreBackendAvailable: false,
+    barycenter: {
+      localize: null
+    },
     experimentalDistance: {
       distanceFloor: null,
       minActiveSpeakers: null,

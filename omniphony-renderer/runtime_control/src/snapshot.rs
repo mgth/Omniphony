@@ -64,6 +64,11 @@ pub struct ExperimentalDistanceOptionsSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct BarycenterOptionsSnapshot {
+    pub localize: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RenderBackendStateSnapshot {
     pub selection: String,
     pub effective: String,
@@ -73,6 +78,7 @@ pub struct RenderBackendStateSnapshot {
     pub frozen_room_ratio: bool,
     pub frozen_speakers: bool,
     pub restore_backend_available: bool,
+    pub barycenter: BarycenterOptionsSnapshot,
     pub experimental_distance: ExperimentalDistanceOptionsSnapshot,
 }
 
@@ -113,6 +119,9 @@ pub fn build_render_backend_state_snapshot(
         frozen_speakers: backend.evaluation_mode()
             == renderer::render_backend::EffectiveEvaluationMode::FromFile,
         restore_backend_available: backend.has_backend_restore_snapshot(),
+        barycenter: BarycenterOptionsSnapshot {
+            localize: live.barycenter.localize,
+        },
         experimental_distance: ExperimentalDistanceOptionsSnapshot {
             distance_floor: live.experimental_distance.distance_floor,
             min_active_speakers: live.experimental_distance.min_active_speakers,

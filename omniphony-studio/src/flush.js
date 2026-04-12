@@ -35,6 +35,7 @@ export const flushCallbacks = {
   renderSpreadDisplay: null,
   renderEvaluationMode: null,
   renderRenderBackend: null,
+  renderBarycenterOptions: null,
   renderExperimentalDistanceOptions: null,
   renderVbapCartesian: null,
   renderVbapPolar: null,
@@ -137,6 +138,11 @@ export function flushUI() {
   if (dirty.renderBackend) {
     flushCallbacks.renderRenderBackend?.();
     dirty.renderBackend = false;
+  }
+
+  if (dirty.barycenter) {
+    flushCallbacks.renderBarycenterOptions?.();
+    dirty.barycenter = false;
   }
 
   if (dirty.experimentalDistance) {

@@ -246,6 +246,7 @@ struct LiveSnapshot<'a> {
     use_distance_diffuse: bool,
     distance_diffuse_threshold: f32,
     distance_diffuse_curve: f32,
+    barycenter: crate::live_params::BarycenterLiveParams,
     experimental_distance: crate::live_params::ExperimentalDistanceLiveParams,
 }
 
@@ -438,6 +439,7 @@ impl SpatialRenderer {
                         distance_diffuse_threshold,
                         distance_diffuse_curve,
                         distance_model,
+                        barycenter_localize: 0.0,
                         experimental_distance_distance_floor:
                             crate::live_params::ExperimentalDistanceLiveParams::default()
                                 .distance_floor,
@@ -967,6 +969,7 @@ impl SpatialRenderer {
             distance_diffuse_threshold,
             distance_diffuse_curve,
             experimental_distance: crate::live_params::ExperimentalDistanceLiveParams::default(),
+            barycenter: crate::live_params::BarycenterLiveParams::default(),
         }
     }
 
@@ -1104,6 +1107,7 @@ impl SpatialRenderer {
                 distance_diffuse_threshold: live.distance_diffuse_threshold,
                 distance_diffuse_curve: live.distance_diffuse_curve,
                 distance_model: self.distance_model,
+                barycenter_localize: live.barycenter.localize,
                 experimental_distance_distance_floor: live.experimental_distance.distance_floor,
                 experimental_distance_min_active_speakers: live
                     .experimental_distance
@@ -1324,6 +1328,7 @@ impl SpatialRenderer {
                 use_distance_diffuse: g.use_distance_diffuse,
                 distance_diffuse_threshold: g.distance_diffuse_threshold,
                 distance_diffuse_curve: g.distance_diffuse_curve,
+                barycenter: g.barycenter,
                 experimental_distance: g.experimental_distance,
             }
         };

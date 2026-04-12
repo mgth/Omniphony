@@ -497,7 +497,7 @@ pub fn build_backend_restore_snapshot(
     config: &EvaluationBuildConfig,
 ) -> Option<BackendRestoreSnapshot> {
     match source_backend_id {
-        "vbap" | "experimental_distance" => Some(BackendRestoreSnapshot {
+        "vbap" | "barycenter" | "experimental_distance" => Some(BackendRestoreSnapshot {
             backend_id: source_backend_id.to_string(),
             backend_label: source_backend_label.to_string(),
             evaluation_mode: mode,

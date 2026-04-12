@@ -3,6 +3,7 @@ import { app } from '../state.js';
 import { formatNumber } from '../coordinates.js';
 import {
   renderVbapStatus,
+  updateBarycenterOptions,
   updateEvaluationMode,
   updateExperimentalDistanceOptions,
   updateRenderBackend,
@@ -41,6 +42,7 @@ export function setupRendererPanelListeners() {
   const distanceDiffuseThresholdValEl = document.getElementById('distanceDiffuseThresholdVal');
   const distanceDiffuseCurveSliderEl = document.getElementById('distanceDiffuseCurveSlider');
   const distanceDiffuseCurveValEl = document.getElementById('distanceDiffuseCurveVal');
+  const barycenterLocalizeInputEl = document.getElementById('barycenterLocalizeInput');
   const experimentalDistanceFloorInputEl = document.getElementById('experimentalDistanceFloorInput');
   const experimentalDistanceMinActiveInputEl = document.getElementById('experimentalDistanceMinActiveInput');
   const experimentalDistanceMaxActiveInputEl = document.getElementById('experimentalDistanceMaxActiveInput');
@@ -122,6 +124,17 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       invoke('control_distance_model', { value });
+    });
+  }
+
+  if (barycenterLocalizeInputEl) {
+    barycenterLocalizeInputEl.addEventListener('input', () => {
+      const value = Math.max(0, Number(barycenterLocalizeInputEl.value) || 0);
+      app.renderBackendState.barycenter.localize = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateBarycenterOptions();
+      invoke('control_barycenter_localize', { value });
     });
   }
 
