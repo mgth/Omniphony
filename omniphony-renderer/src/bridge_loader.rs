@@ -34,7 +34,7 @@ impl LoadedBridge {
 ///
 /// Search order:
 /// 1. `--bridge-path` / config-provided explicit file path
-/// 2. Any file matching `lib*_bridge.so` / `.dll` / `.dylib` next to the executable
+/// 2. Any file matching `*_bridge.so` / `.dll` / `.dylib` next to the executable
 pub fn resolve_bridge_path(explicit: Option<&Path>) -> Result<PathBuf> {
     // 1. Explicit path from CLI/config
     if let Some(path) = explicit {
@@ -59,7 +59,7 @@ pub fn resolve_bridge_path(explicit: Option<&Path>) -> Result<PathBuf> {
     bail!(
         "No bridge plugin found.\n\
          Searched in: {}\n\
-         Expected one file matching: lib*_bridge.so / lib*_bridge.dll / lib*_bridge.dylib\n\
+         Expected one file matching: *_bridge.so / *_bridge.dll / *_bridge.dylib\n\
          Provide --bridge-path <FILE> or set render.bridge_path in config.",
         dir.display(),
     )
@@ -86,8 +86,7 @@ fn find_bridge_candidates(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn is_bridge_filename(name: &str) -> bool {
-    name.starts_with("lib")
-        && (name.ends_with("_bridge.so")
-            || name.ends_with("_bridge.dll")
-            || name.ends_with("_bridge.dylib"))
+    name.ends_with("_bridge.so")
+        || name.ends_with("_bridge.dll")
+        || name.ends_with("_bridge.dylib")
 }

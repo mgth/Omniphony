@@ -536,6 +536,8 @@ pub struct RendererControl {
 
     /// Actual renderer input path used for this process.
     pub input_path: Mutex<Option<String>>,
+    /// Requested format bridge path to be persisted into render.bridge_path.
+    pub bridge_path: Mutex<Option<PathBuf>>,
     /// Requested ramp mode from OSC control.
     pub requested_ramp_mode: Mutex<RampMode>,
 }
@@ -564,6 +566,7 @@ impl RendererControl {
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             config_path: Mutex::new(None),
             input_path: Mutex::new(None),
+            bridge_path: Mutex::new(None),
             requested_ramp_mode: Mutex::new(RampMode::Sample),
         })
     }
@@ -790,6 +793,14 @@ impl RendererControl {
 
     pub fn input_path(&self) -> Option<String> {
         self.input_path.lock().unwrap().clone()
+    }
+
+    pub fn set_bridge_path(&self, bridge_path: Option<PathBuf>) {
+        *self.bridge_path.lock().unwrap() = bridge_path;
+    }
+
+    pub fn bridge_path(&self) -> Option<PathBuf> {
+        self.bridge_path.lock().unwrap().clone()
     }
 
     pub fn set_requested_ramp_mode(&self, mode: RampMode) {

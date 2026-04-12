@@ -61,6 +61,40 @@ pub(crate) fn handle_control_message(
         return;
     }
 
+    if addr == "/omniphony/control/render/bridge_path" {
+        let value = match msg.args.first() {
+            Some(OscType::String(s)) => s.trim(),
+            _ => return,
+        };
+        let next = if value.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(value))
+        };
+        if control.bridge_path() != next {
+            control.set_bridge_path(next.clone());
+            control.mark_dirty();
+            broadcast_int(socket, clients, "/omniphony/state/config/saved", 0);
+            let state_value = next
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            broadcast_string(
+                socket,
+                clients,
+                "/omniphony/state/render/bridge_path",
+                &state_value,
+            );
+            log::info!(
+                "OSC: render.bridge_path → {}",
+                next.as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<auto>".to_string())
+            );
+        }
+        return;
+    }
+
     if let Some(command) = parse_process_command(msg) {
         match command {
             RuntimeCommand::SaveConfig => {

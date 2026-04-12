@@ -325,6 +325,15 @@ pub fn build_live_state_bundle(
             addr: "/omniphony/state/input_pipe".to_string(),
             args: vec![OscType::String(control.input_path().unwrap_or_default())],
         }),
+        OscPacket::Message(OscMessage {
+            addr: "/omniphony/state/render/bridge_path".to_string(),
+            args: vec![OscType::String(
+                control
+                    .bridge_path()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default(),
+            )],
+        }),
     ];
 
     if let Some(audio_control) = audio_control {

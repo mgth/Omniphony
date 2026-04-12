@@ -29,6 +29,10 @@ pub(crate) fn save_live_config(
             broadcast_int(socket, clients, "/omniphony/state/config/saved", 1);
             send_raw(socket, clients, &result.state_bundle);
             log::info!("OSC: config saved to {}", result.path.display());
+            if result.restart_required {
+                log::info!("OSC: render.bridge_path changed, requesting reload_config");
+                sys::shutdown::request_restart_from_config();
+            }
         }
         Err(e) => {
             log::error!("OSC: failed to save config: {}", e);

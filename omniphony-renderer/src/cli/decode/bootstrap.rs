@@ -649,6 +649,7 @@ fn init_osc_runtime(
     if let Some(renderer) = &handler.spatial_renderer {
         let ctrl = renderer.renderer_control();
         ctrl.set_input_path(Some(input_path.display().to_string()));
+        ctrl.set_bridge_path(args.bridge_path.clone());
         ctrl.set_requested_ramp_mode(args.ramp_mode.into());
         ctrl.live.write().unwrap().ramp_mode = args.ramp_mode.into();
 
