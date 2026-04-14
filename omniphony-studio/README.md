@@ -108,6 +108,11 @@ Ce script applique `NO_STRIP=true` et permet de générer les trois formats, y c
   - ne colorer que les contributeurs
   - soit mettre les non-contributeurs dans un état vraiment neutre ou quasi invisible
   - mais éviter de compter sur la seule baisse d’opacité du matériau source
+- Overlay Studio / isolation de la vue 3D :
+  les modules de contrôle ne doivent jamais conserver de refs DOM de panneau en variable globale de module. Pas de `const el = inRendererPanel(...)` ou équivalent au chargement.
+  Toute résolution de nœud overlay doit se faire à l’usage via `panel-roots.js`, ou via des listeners délégués attachés au root du panneau.
+  Raison : l’overlay peut remonter, remplacer ou réinitialiser des sous-arbres. Une ref capturée hors timing casse facilement la synchro UI et empêche d’isoler proprement le viewport 3D du reste du DOM.
+  En review, considérer comme odeur d’architecture tout accès DOM persistant à un panneau monté dynamiquement.
 
 ## Messages envoyés par le studio vers le renderer
 
