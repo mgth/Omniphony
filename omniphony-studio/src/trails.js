@@ -9,6 +9,9 @@ const SOURCE_FALLBACK_COLOR = new THREE.Color(0xcc6640);
 const SOURCE_MATERIAL_COLOR = new THREE.Color(0xff7c4d);
 const TRAIL_SILENT_RMS_DBFS = -100;
 const TRAIL_SILENT_GAIN_DB = -128;
+const TRAIL_MIN_POINT_INTERVAL_MS = 70;
+const TRAIL_MIN_REBUILD_INTERVAL_MS = 70;
+const TRAIL_MAX_POINTS_PER_OBJECT = 240;
 
 // ── Renderable constructors ───────────────────────────────────────────
 
@@ -209,6 +212,7 @@ export function rebuildDiffuseTrailGeometry(trail, mappedPositions, pointColors,
 export function rebuildTrailGeometry(id) {
   const trail = sourceTrails.get(id);
   if (!trail) return;
+  trail.lastRebuildAt = performance.now();
   const count = trail.positions.length;
   if (count < 2) {
     trail.line.geometry.dispose();
@@ -295,4 +299,37 @@ export function getTrailPointTtlMs() {
 
 export function setTrailPointTtlMs(ms) {
   app.trailPointTtlMs = Math.max(500, Number(ms) || 0);
+}
+
+export function shouldAppendTrailPoint(trail, nowMs) {
+  if (!trail) {
+    return false;
+  }
+  const lastPointAt = Number(trail.lastPointAt);
+  if (!Number.isFinite(lastPointAt)) {
+    return true;
+  }
+  return (nowMs - lastPointAt) >= TRAIL_MIN_POINT_INTERVAL_MS;
+}
+
+export function recordTrailPoint(trail, nowMs) {
+  if (!trail) {
+    return;
+  }
+  trail.lastPointAt = nowMs;
+  const overflow = trail.positions.length - TRAIL_MAX_POINTS_PER_OBJECT;
+  if (overflow > 0) {
+    trail.positions.splice(0, overflow);
+  }
+}
+
+export function shouldRebuildTrailGeometry(trail, nowMs) {
+  if (!trail) {
+    return false;
+  }
+  const lastRebuildAt = Number(trail.lastRebuildAt);
+  if (!Number.isFinite(lastRebuildAt)) {
+    return true;
+  }
+  return (nowMs - lastRebuildAt) >= TRAIL_MIN_REBUILD_INTERVAL_MS;
 }

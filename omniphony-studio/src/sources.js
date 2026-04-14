@@ -25,6 +25,7 @@ import {
   sourceEffectiveMarkers,
   sourceEffectiveLines,
   sourceNames,
+  sourceTags,
   sourcePositionsRaw,
   sourceDirectSpeakerIndices,
   speakerMeshes,
@@ -69,6 +70,7 @@ import {
   updateSpeakerLabelsFromSelection
 } from './scene/labels.js';
 import { createTrailRenderable } from './trails.js';
+import { shouldAppendTrailPoint, recordTrailPoint, shouldRebuildTrailGeometry } from './trails.js';
 import {
   linearToDb,
   meterToPercent,
@@ -142,6 +144,17 @@ const OBJECT_COLOR_PALETTE = [
   '#f1948a'
 ];
 
+function inferSourceTagFromId(id) {
+  const text = String(id || '').trim();
+  if (/^a[_:]/i.test(text)) {
+    return 'A';
+  }
+  if (/^b[_:]/i.test(text)) {
+    return 'B';
+  }
+  return '';
+}
+
 function hashObjectId(id) {
   let hash = 2166136261;
   const text = String(id);
@@ -153,6 +166,13 @@ function hashObjectId(id) {
 }
 
 export function getObjectBaseColor(id) {
+  const sourceTag = String(sourceTags.get(String(id)) || inferSourceTagFromId(id) || '').toUpperCase();
+  if (sourceTag === 'A') {
+    return new THREE.Color('#ff8b6b');
+  }
+  if (sourceTag === 'B') {
+    return new THREE.Color('#62d7c7');
+  }
   const key = String(id);
   let color = sourceBaseColors.get(key);
   if (!color) {
@@ -822,7 +842,12 @@ export function getSourceMesh(id) {
     sourceMeshes.set(id, mesh);
     sourceLabels.set(id, label);
     sourceOutlines.set(id, outline);
-    sourceTrails.set(id, { positions: [], line: trailLine });
+    sourceTrails.set(id, {
+      positions: [],
+      line: trailLine,
+      lastPointAt: Number.NEGATIVE_INFINITY,
+      lastRebuildAt: Number.NEGATIVE_INFINITY
+    });
     sourceEffectiveMarkers.set(id, effectiveMarker);
     sourceEffectiveLines.set(id, effectiveLine);
     applySourceLevel(id, mesh, sourceLevels.get(id));
@@ -832,6 +857,14 @@ export function getSourceMesh(id) {
 }
 
 export function updateSource(id, position) {
+  if (position && typeof position.sourceTag === 'string' && position.sourceTag.trim()) {
+    sourceTags.set(String(id), position.sourceTag.trim().toUpperCase());
+  } else {
+    const inferredSourceTag = inferSourceTagFromId(id);
+    if (inferredSourceTag) {
+      sourceTags.set(String(id), inferredSourceTag);
+    }
+  }
   const mesh = getSourceMesh(id);
   const skipTrail = Boolean(position && position._noTrail);
   const now = performance.now();
@@ -869,12 +902,15 @@ export function updateSource(id, position) {
 
   const trail = sourceTrails.get(id);
   if (trail && !skipTrail) {
-    trail.positions.push({
-      ...raw,
-      trailRmsDbfs: Number.isFinite(Number(currentMeter?.rmsDbfs)) ? Number(currentMeter.rmsDbfs) : undefined,
-      trailColor: sourceCallbacks.captureTrailPointColor?.(mesh)
-    });
-    if (app.trailsEnabled) {
+    if (shouldAppendTrailPoint(trail, now)) {
+      trail.positions.push({
+        ...raw,
+        trailRmsDbfs: Number.isFinite(Number(currentMeter?.rmsDbfs)) ? Number(currentMeter.rmsDbfs) : undefined,
+        trailColor: sourceCallbacks.captureTrailPointColor?.(mesh)
+      });
+      recordTrailPoint(trail, now);
+    }
+    if (app.trailsEnabled && shouldRebuildTrailGeometry(trail, now)) {
       sourceCallbacks.rebuildTrailGeometry?.(id);
     }
   }
@@ -900,6 +936,27 @@ export function updateSource(id, position) {
     entry.root.classList.toggle('has-active-trail', sourceCallbacks.objectHasActiveTrail?.(key) ?? false);
     applyObjectItemColor(entry, key);
   }
+}
+
+export function updateSourceTag(id, sourceTag) {
+  const key = String(id);
+  if (typeof sourceTag === 'string' && sourceTag.trim()) {
+    sourceTags.set(key, sourceTag.trim().toUpperCase());
+  } else {
+    const inferredSourceTag = inferSourceTagFromId(id);
+    if (inferredSourceTag) {
+      sourceTags.set(key, inferredSourceTag);
+    } else {
+      sourceTags.delete(key);
+    }
+  }
+  if (sourceMeshes.has(key)) {
+    const mesh = sourceMeshes.get(key);
+    const objectColor = getObjectBaseColor(key);
+    mesh.userData.objectBaseColor = objectColor.clone();
+    mesh.userData.objectTrailColor = getObjectTrailColor(key).clone();
+  }
+  updateSourceSelectionStyles();
 }
 
 export function decayTrails(nowMs) {
@@ -1035,6 +1092,7 @@ export function removeSource(id) {
   sourceOutlines.delete(id);
   sourceBaseColors.delete(String(id));
   sourceNames.delete(String(id));
+  sourceTags.delete(String(id));
   sourcePositionsRaw.delete(String(id));
   sourceDirectSpeakerIndices.delete(String(id));
   dirtyObjectMeters.delete(String(id));

@@ -101,6 +101,8 @@ pub struct Position {
     pub generation: Option<u64>,
     #[serde(rename = "directSpeakerIndex", skip_serializing_if = "Option::is_none")]
     pub direct_speaker_index: Option<u32>,
+    #[serde(rename = "sourceTag", skip_serializing_if = "Option::is_none")]
+    pub source_tag: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -201,6 +203,8 @@ pub enum OscEvent {
     StateSpeakerDelay { id: String, delay_ms: f64 },
     #[serde(rename = "state:object:mute")]
     StateObjectMute { id: String, muted: bool },
+    #[serde(rename = "state:object:source_tag")]
+    StateObjectSourceTag { id: String, source_tag: String },
     #[serde(rename = "state:speaker:mute")]
     StateSpeakerMute { id: String, muted: bool },
     #[serde(rename = "state:speaker:spatialize")]
@@ -602,6 +606,7 @@ fn parse_omniphony_object_position(
             gain_db,
             generation,
             direct_speaker_index,
+            source_tag: None,
         },
         name,
     })
@@ -1008,7 +1013,11 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         }),
         (5, kind) if kind == "object" || kind == "speaker" => match parts[4] {
             "gain" => {
-                let id = parts[3].parse::<u32>().ok()?.to_string();
+                let id = if kind == "speaker" {
+                    parts[3].parse::<u32>().ok()?.to_string()
+                } else {
+                    parts[3].to_string()
+                };
                 let gain = clamp(to_number(args[0])?, 0.0, 2.0);
                 if kind == "speaker" {
                     Some(OscEvent::StateSpeakerGain { id, gain })
@@ -1022,7 +1031,11 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 Some(OscEvent::StateSpeakerDelay { id, delay_ms })
             }
             "mute" => {
-                let id = parts[3].parse::<u32>().ok()?.to_string();
+                let id = if kind == "speaker" {
+                    parts[3].parse::<u32>().ok()?.to_string()
+                } else {
+                    parts[3].to_string()
+                };
                 let muted = to_number(args[0])? != 0.0;
                 if kind == "speaker" {
                     Some(OscEvent::StateSpeakerMute { id, muted })
@@ -1030,6 +1043,10 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                     Some(OscEvent::StateObjectMute { id, muted })
                 }
             }
+            "source_tag" if kind == "object" => Some(OscEvent::StateObjectSourceTag {
+                id: parts[3].to_string(),
+                source_tag: raw_args.first().and_then(unwrap_string)?,
+            }),
             "spatialize" if kind == "speaker" => {
                 let id = parts[3].parse::<u32>().ok()?.to_string();
                 let spatialize = to_number(args[0])? != 0.0;
@@ -1208,6 +1225,7 @@ pub fn parse_osc_message(
             gain_db: None,
             generation: None,
             direct_speaker_index: None,
+            source_tag: None,
         },
         name: None,
     })

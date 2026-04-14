@@ -668,6 +668,9 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 entry.gain_db = position.gain_db;
                 entry.generation = position.generation.or(current_generation);
                 entry.direct_speaker_index = position.direct_speaker_index;
+                if let Some(source_tag) = position.source_tag {
+                    entry.source_tag = Some(source_tag);
+                }
                 if let Some(n) = name {
                     entry.name = Some(n);
                 }
@@ -684,6 +687,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                             "gainDb": entry.gain_db,
                             "generation": entry.generation,
                             "directSpeakerIndex": entry.direct_speaker_index,
+                            "sourceTag": entry.source_tag,
                             "name": entry.name
                         }
                 });
@@ -808,6 +812,18 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     Some((
                         "object:mute",
                         serde_json::json!({ "id": id, "muted": muted as u8 }),
+                    )),
+                    removed_ids,
+                )
+            }
+
+            OscEvent::StateObjectSourceTag { id, source_tag } => {
+                let entry = s.sources.entry(id.clone()).or_default();
+                entry.source_tag = Some(source_tag.clone());
+                (
+                    Some((
+                        "object:source_tag",
+                        serde_json::json!({ "id": id, "sourceTag": source_tag }),
                     )),
                     removed_ids,
                 )

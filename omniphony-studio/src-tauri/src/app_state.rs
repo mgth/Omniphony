@@ -24,6 +24,8 @@ pub struct SourcePosition {
     pub direct_speaker_index: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(rename = "sourceTag", skip_serializing_if = "Option::is_none")]
+    pub source_tag: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

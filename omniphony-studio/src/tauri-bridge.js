@@ -22,7 +22,7 @@ import {
   layoutsByKey
 } from './state.js';
 
-import { updateSource, updateSourceLevel, updateSourceGains, removeSource } from './sources.js';
+import { updateSource, updateSourceLevel, updateSourceGains, updateSourceTag, removeSource } from './sources.js';
 import {
   updateSpeakerLevel,
   renderLayout,
@@ -237,6 +237,10 @@ export function setupTauriBridge() {
       objectManualMuted.delete(key);
     }
     updateObjectControlsUI();
+  });
+
+  listen('object:source_tag', ({ payload }) => {
+    updateSourceTag(payload.id, payload.sourceTag);
   });
 
   // -----------------------------------------------------------------------

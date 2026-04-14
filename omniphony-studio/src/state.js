@@ -32,6 +32,7 @@ export const objectItems = new Map();
 export const speakerManualMuted = new Set();
 export const objectManualMuted = new Set();
 export const sourceNames = new Map();
+export const sourceTags = new Map();
 export const sourcePositionsRaw = new Map();
 export const sourceDirectSpeakerIndices = new Map();
 export const sourceTrails = new Map();
