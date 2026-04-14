@@ -20,26 +20,33 @@ import { collapseRuntimeSections } from '../modals.js';
 import { inObjectsPanel, inOscPanel } from '../ui/panel-roots.js';
 
 // DOM refs
-const statusEl = inOscPanel('status');
-const pipeStatusEl = inOscPanel('pipeStatus');
-const oscStatusDotEl = inOscPanel('oscStatusDot');
-const oscConfigToggleBtnEl = inOscPanel('oscConfigToggleBtn');
-const oscConfigFormEl = inOscPanel('oscConfigForm');
-const oscHostInputEl = inOscPanel('oscHostInput');
-const oscRxPortInputEl = inOscPanel('oscRxPortInput');
-const oscListenPortInputEl = inOscPanel('oscListenPortInput');
-const oscMeteringToggleEl = inObjectsPanel('oscMeteringToggle');
-const oscConfigApplyBtnEl = inOscPanel('oscConfigApplyBtn');
-const oscServiceBtnEl = inOscPanel('oscServiceBtn');
-const oscRestartServiceBtnEl = inOscPanel('oscRestartServiceBtn');
-const oscRestartPipewireBtnEl = inOscPanel('oscRestartPipewireBtn');
-const oscLaunchRendererBtnEl = inOscPanel('oscLaunchRendererBtn');
+function getStatusEl() { return inOscPanel('status'); }
+function getPipeStatusEl() { return inOscPanel('pipeStatus'); }
+function getOscStatusDotEl() { return inOscPanel('oscStatusDot'); }
+function getOscConfigToggleBtnEl() { return inOscPanel('oscConfigToggleBtn'); }
+function getOscConfigFormEl() { return inOscPanel('oscConfigForm'); }
+function getOscHostInputEl() { return inOscPanel('oscHostInput'); }
+function getOscRxPortInputEl() { return inOscPanel('oscRxPortInput'); }
+function getOscListenPortInputEl() { return inOscPanel('oscListenPortInput'); }
+function getOscMeteringToggleEl() { return inObjectsPanel('oscMeteringToggle'); }
+function getOscConfigApplyBtnEl() { return inOscPanel('oscConfigApplyBtn'); }
+function getOscServiceBtnEl() { return inOscPanel('oscServiceBtn'); }
+function getOscRestartServiceBtnEl() { return inOscPanel('oscRestartServiceBtn'); }
+function getOscRestartPipewireBtnEl() { return inOscPanel('oscRestartPipewireBtn'); }
+function getOscLaunchRendererBtnEl() { return inOscPanel('oscLaunchRendererBtn'); }
 
 // ---------------------------------------------------------------------------
 // OSC status rendering
 // ---------------------------------------------------------------------------
 
 export function renderOscStatus() {
+  const statusEl = getStatusEl();
+  const pipeStatusEl = getPipeStatusEl();
+  const oscStatusDotEl = getOscStatusDotEl();
+  const oscServiceBtnEl = getOscServiceBtnEl();
+  const oscRestartServiceBtnEl = getOscRestartServiceBtnEl();
+  const oscRestartPipewireBtnEl = getOscRestartPipewireBtnEl();
+  const oscLaunchRendererBtnEl = getOscLaunchRendererBtnEl();
   syncRuntimeConnectionLock();
   if (statusEl) statusEl.textContent = t(`status.${app.oscStatusState}`);
   if (pipeStatusEl && document.activeElement !== pipeStatusEl) {
@@ -119,12 +126,16 @@ export function refreshOrenderServiceStatus() {
 }
 
 export function openOscConfigPanel() {
+  const oscConfigFormEl = getOscConfigFormEl();
+  const oscConfigToggleBtnEl = getOscConfigToggleBtnEl();
   if (!oscConfigFormEl) return;
   oscConfigFormEl.classList.add('open');
   if (oscConfigToggleBtnEl) oscConfigToggleBtnEl.textContent = '\u2715';
 }
 
 export function closeOscConfigPanel() {
+  const oscConfigFormEl = getOscConfigFormEl();
+  const oscConfigToggleBtnEl = getOscConfigToggleBtnEl();
   if (!oscConfigFormEl) return;
   oscConfigFormEl.classList.remove('open');
   if (oscConfigToggleBtnEl) oscConfigToggleBtnEl.textContent = '\u2699';
@@ -149,6 +160,10 @@ export function scheduleOscConfigAutoOpen() {
 
 export function loadOscConfigIntoPanel() {
   return invoke('get_osc_config').then((cfg) => {
+    const oscHostInputEl = getOscHostInputEl();
+    const oscRxPortInputEl = getOscRxPortInputEl();
+    const oscListenPortInputEl = getOscListenPortInputEl();
+    const oscMeteringToggleEl = getOscMeteringToggleEl();
     if (oscHostInputEl) oscHostInputEl.value = cfg.host;
     if (oscRxPortInputEl) oscRxPortInputEl.value = String(cfg.osc_rx_port);
     if (oscListenPortInputEl) oscListenPortInputEl.value = String(cfg.osc_port);
@@ -162,6 +177,10 @@ export function loadOscConfigIntoPanel() {
 }
 
 export function readOscConfigForm() {
+  const oscHostInputEl = getOscHostInputEl();
+  const oscRxPortInputEl = getOscRxPortInputEl();
+  const oscListenPortInputEl = getOscListenPortInputEl();
+  const oscMeteringToggleEl = getOscMeteringToggleEl();
   return {
     host: oscHostInputEl?.value.trim() || '127.0.0.1',
     osc_rx_port: Math.max(1, Math.min(65535, parseInt(oscRxPortInputEl?.value || '9000', 10))),
@@ -175,6 +194,7 @@ export function oscConfigStateKey() {
 }
 
 export function renderOscConfigApplyButton() {
+  const oscConfigApplyBtnEl = getOscConfigApplyBtnEl();
   if (!oscConfigApplyBtnEl) return;
   const isDirty = oscConfigStateKey() !== app.oscConfigBaselineKey;
   const enabled = isDirty && !app.oscLaunchPending && !app.orenderServicePending;
@@ -331,8 +351,13 @@ export function restartPipewireFromPanel() {
 // Event listener wiring (runs at module load time)
 // ---------------------------------------------------------------------------
 
-if (oscConfigToggleBtnEl && oscConfigFormEl) {
-  oscConfigToggleBtnEl.addEventListener('click', () => {
+const initialOscConfigToggleBtnEl = getOscConfigToggleBtnEl();
+const initialOscConfigFormEl = getOscConfigFormEl();
+if (initialOscConfigToggleBtnEl && initialOscConfigFormEl) {
+  initialOscConfigToggleBtnEl.addEventListener('click', () => {
+    const oscConfigFormEl = getOscConfigFormEl();
+    const oscConfigToggleBtnEl = getOscConfigToggleBtnEl();
+    if (!oscConfigFormEl || !oscConfigToggleBtnEl) return;
     const isOpen = oscConfigFormEl.classList.toggle('open');
     oscConfigToggleBtnEl.textContent = isOpen ? '\u2715' : '\u2699';
     if (isOpen) {
@@ -341,8 +366,10 @@ if (oscConfigToggleBtnEl && oscConfigFormEl) {
   });
 }
 
-if (oscConfigApplyBtnEl) {
-  oscConfigApplyBtnEl.addEventListener('click', () => {
+const initialOscConfigApplyBtnEl = getOscConfigApplyBtnEl();
+if (initialOscConfigApplyBtnEl) {
+  initialOscConfigApplyBtnEl.addEventListener('click', () => {
+    const oscConfigApplyBtnEl = getOscConfigApplyBtnEl();
     if (oscConfigApplyBtnEl.disabled) return;
     const config = readOscConfigForm();
     invoke('save_osc_config', { config })
@@ -361,16 +388,17 @@ if (oscConfigApplyBtnEl) {
   });
 }
 
-[oscHostInputEl, oscRxPortInputEl, oscListenPortInputEl, oscMeteringToggleEl]
+[getOscHostInputEl(), getOscRxPortInputEl(), getOscListenPortInputEl(), getOscMeteringToggleEl()]
   .filter(Boolean)
   .forEach((el) => {
-    el.addEventListener(el === oscMeteringToggleEl ? 'change' : 'input', () => {
+    el.addEventListener(el === getOscMeteringToggleEl() ? 'change' : 'input', () => {
       renderOscConfigApplyButton();
     });
   });
 
-if (oscLaunchRendererBtnEl) {
-  oscLaunchRendererBtnEl.addEventListener('click', () => {
+const initialOscLaunchRendererBtnEl = getOscLaunchRendererBtnEl();
+if (initialOscLaunchRendererBtnEl) {
+  initialOscLaunchRendererBtnEl.addEventListener('click', () => {
     if (app.oscLaunchPending || app.orenderServicePending) {
       return;
     }
@@ -411,8 +439,9 @@ if (oscLaunchRendererBtnEl) {
   });
 }
 
-if (oscServiceBtnEl) {
-  oscServiceBtnEl.addEventListener('click', () => {
+const initialOscServiceBtnEl = getOscServiceBtnEl();
+if (initialOscServiceBtnEl) {
+  initialOscServiceBtnEl.addEventListener('click', () => {
     if (app.oscLaunchPending || app.orenderServicePending) {
       return;
     }
@@ -426,8 +455,9 @@ if (oscServiceBtnEl) {
   });
 }
 
-if (oscRestartServiceBtnEl) {
-  oscRestartServiceBtnEl.addEventListener('click', () => {
+const initialOscRestartServiceBtnEl = getOscRestartServiceBtnEl();
+if (initialOscRestartServiceBtnEl) {
+  initialOscRestartServiceBtnEl.addEventListener('click', () => {
     if (app.oscLaunchPending || app.orenderServicePending || !app.orenderServiceInstalled) {
       return;
     }
@@ -437,8 +467,9 @@ if (oscRestartServiceBtnEl) {
   });
 }
 
-if (oscRestartPipewireBtnEl) {
-  oscRestartPipewireBtnEl.addEventListener('click', () => {
+const initialOscRestartPipewireBtnEl = getOscRestartPipewireBtnEl();
+if (initialOscRestartPipewireBtnEl) {
+  initialOscRestartPipewireBtnEl.addEventListener('click', () => {
     if (!isLinux || app.oscLaunchPending || app.orenderServicePending) {
       return;
     }
@@ -448,8 +479,11 @@ if (oscRestartPipewireBtnEl) {
   });
 }
 
-if (oscMeteringToggleEl) {
-  oscMeteringToggleEl.addEventListener('change', () => {
+const initialOscMeteringToggleEl = getOscMeteringToggleEl();
+if (initialOscMeteringToggleEl) {
+  initialOscMeteringToggleEl.addEventListener('change', () => {
+    const oscMeteringToggleEl = getOscMeteringToggleEl();
+    if (!oscMeteringToggleEl) return;
     const enabled = Boolean(oscMeteringToggleEl.checked);
     app.oscMeteringEnabled = enabled;
     pushLog('info', t(enabled ? 'log.oscMeteringEnabled' : 'log.oscMeteringDisabled'));
