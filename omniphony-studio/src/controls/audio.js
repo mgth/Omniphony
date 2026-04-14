@@ -10,15 +10,19 @@ import { t, tf } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inAudioPanel } from '../ui/panel-roots.js';
 
-// DOM refs
-const audioFormatInfoEl = inAudioPanel('audioFormatInfo');
-const audioOutputDeviceSelectEl = inAudioPanel('audioOutputDeviceSelect');
-const rampModeSelectEl = inAudioPanel('rampModeSelect');
-const audioSampleRateInputEl = inAudioPanel('audioSampleRateInput');
-const audioSampleRateMenuEl = inAudioPanel('audioSampleRateMenu');
-const audioOutputSummaryEl = inAudioPanel('audioOutputSummary');
+function getAudioFormatInfoEl() { return inAudioPanel('audioFormatInfo'); }
+function getAudioOutputDeviceSelectEl() { return inAudioPanel('audioOutputDeviceSelect'); }
+function getRampModeSelectEl() { return inAudioPanel('rampModeSelect'); }
+function getAudioSampleRateInputEl() { return inAudioPanel('audioSampleRateInput'); }
+function getAudioSampleRateMenuEl() { return inAudioPanel('audioSampleRateMenu'); }
+function getAudioOutputSummaryEl() { return inAudioPanel('audioOutputSummary'); }
 
 export function renderAudioFormatDisplay() {
+  const audioFormatInfoEl = getAudioFormatInfoEl();
+  const audioOutputDeviceSelectEl = getAudioOutputDeviceSelectEl();
+  const rampModeSelectEl = getRampModeSelectEl();
+  const audioSampleRateInputEl = getAudioSampleRateInputEl();
+  const audioOutputSummaryEl = getAudioOutputSummaryEl();
   if (audioFormatInfoEl) {
     const rateText = app.audioSampleRate ? `${app.audioSampleRate} Hz` : '—';
     const fmtText = app.audioSampleFormat || '—';
@@ -70,11 +74,14 @@ export function renderAudioFormatDisplay() {
 }
 
 export function closeAudioSampleRateMenu() {
+  const audioSampleRateMenuEl = getAudioSampleRateMenuEl();
   if (!audioSampleRateMenuEl) return;
   audioSampleRateMenuEl.style.display = 'none';
 }
 
 export function openAudioSampleRateMenu() {
+  const audioSampleRateMenuEl = getAudioSampleRateMenuEl();
+  const audioSampleRateInputEl = getAudioSampleRateInputEl();
   if (!audioSampleRateMenuEl) return;
   app.audioSampleRateEditing = true;
   audioSampleRateMenuEl.innerHTML = '';
@@ -107,6 +114,7 @@ export function updateAudioFormatDisplay() {
 }
 
 export function applyAudioSampleRateNow() {
+  const audioSampleRateInputEl = getAudioSampleRateInputEl();
   const requested = Math.max(0, Math.round(Number(audioSampleRateInputEl?.value) || 0));
   app.audioSampleRate = requested > 0 ? requested : null;
   updateAudioFormatDisplay();
@@ -116,6 +124,7 @@ export function applyAudioSampleRateNow() {
 }
 
 export function applyAudioOutputDeviceNow() {
+  const audioOutputDeviceSelectEl = getAudioOutputDeviceSelectEl();
   const requested = String(audioOutputDeviceSelectEl?.value || '').trim();
   app.audioOutputDevice = requested || null;
   updateAudioFormatDisplay();
@@ -124,6 +133,7 @@ export function applyAudioOutputDeviceNow() {
 }
 
 export function applyRampModeNow() {
+  const rampModeSelectEl = getRampModeSelectEl();
   const requested = String(rampModeSelectEl?.value || 'sample').trim().toLowerCase();
   if (!['off', 'frame', 'sample'].includes(requested)) {
     return;

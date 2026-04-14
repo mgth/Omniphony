@@ -10,50 +10,49 @@ import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inRendererPanel } from '../ui/panel-roots.js';
 
-// DOM refs
-const vbapStatusEl = inRendererPanel('vbapStatus');
-const renderBackendSelectEl = inRendererPanel('renderBackendSelect');
-const restoreBackendBtnEl = inRendererPanel('restoreBackendBtn');
-const exportEvaluationArtifactBtnEl = inRendererPanel('exportEvaluationArtifactBtn');
-const renderBackendEffectiveEl = inRendererPanel('renderBackendEffective');
-const renderEvaluationModeSelectEl = inRendererPanel('renderEvaluationModeSelect');
-const renderEvaluationModeEffectiveEl = inRendererPanel('renderEvaluationModeEffective');
-const rendererSummaryEl = inRendererPanel('rendererSummary');
-const backendParametersSectionEl = inRendererPanel('backendParametersSection');
-const backendSpecificParamsSectionEl = inRendererPanel('backendSpecificParamsSection');
-const evaluationSectionEl = inRendererPanel('evaluationSection');
-const distanceModelControlRowEl = inRendererPanel('distanceModelControlRow');
-const spreadSectionEl = inRendererPanel('spreadSection');
-const distanceDiffuseSectionEl = inRendererPanel('distanceDiffuseSection');
-const spreadFromDistanceSectionEl = inRendererPanel('spreadFromDistanceSection');
-const barycenterSectionEl = inRendererPanel('barycenterSection');
-const experimentalDistanceSectionEl = inRendererPanel('experimentalDistanceSection');
-const vbapCartXSizeInputEl = inRendererPanel('vbapCartXSizeInput');
-const vbapCartYSizeInputEl = inRendererPanel('vbapCartYSizeInput');
-const vbapCartZSizeInputEl = inRendererPanel('vbapCartZSizeInput');
-const vbapCartZNegSizeInputEl = inRendererPanel('vbapCartZNegSizeInput');
-const vbapCartXStepInfoEl = inRendererPanel('vbapCartXStepInfo');
-const vbapCartYStepInfoEl = inRendererPanel('vbapCartYStepInfo');
-const vbapCartZStepInfoEl = inRendererPanel('vbapCartZStepInfo');
-const vbapCartZNegStepInfoEl = inRendererPanel('vbapCartZNegStepInfo');
-const vbapPolarAzimuthResolutionInputEl = inRendererPanel('vbapPolarAzimuthResolutionInput');
-const vbapPolarElevationResolutionInputEl = inRendererPanel('vbapPolarElevationResolutionInput');
-const vbapPolarDistanceResInputEl = inRendererPanel('vbapPolarDistanceResInput');
-const vbapPolarDistanceMaxInputEl = inRendererPanel('vbapPolarDistanceMaxInput');
-const vbapElevationRangeInfoEl = inRendererPanel('vbapElevationRangeInfo');
-const vbapAzimuthRangeInfoEl = inRendererPanel('vbapAzimuthRangeInfo');
-const vbapPolarAzStepInfoEl = inRendererPanel('vbapPolarAzStepInfo');
-const vbapPolarElStepInfoEl = inRendererPanel('vbapPolarElStepInfo');
-const vbapPolarDistStepInfoEl = inRendererPanel('vbapPolarDistStepInfo');
-const vbapPositionInterpolationToggleEl = inRendererPanel('vbapPositionInterpolationToggleEl');
-const barycenterLocalizeInputEl = inRendererPanel('barycenterLocalizeInput');
-const barycenterLocalizeValEl = inRendererPanel('barycenterLocalizeVal');
-const experimentalDistanceFloorInputEl = inRendererPanel('experimentalDistanceFloorInput');
-const experimentalDistanceMinActiveInputEl = inRendererPanel('experimentalDistanceMinActiveInput');
-const experimentalDistanceMaxActiveInputEl = inRendererPanel('experimentalDistanceMaxActiveInput');
-const experimentalDistanceErrorFloorInputEl = inRendererPanel('experimentalDistanceErrorFloorInput');
-const experimentalDistanceNearestScaleInputEl = inRendererPanel('experimentalDistanceNearestScaleInput');
-const experimentalDistanceSpanScaleInputEl = inRendererPanel('experimentalDistanceSpanScaleInput');
+function getVbapStatusEl() { return inRendererPanel('vbapStatus'); }
+function getRenderBackendSelectEl() { return inRendererPanel('renderBackendSelect'); }
+function getRestoreBackendBtnEl() { return inRendererPanel('restoreBackendBtn'); }
+function getExportEvaluationArtifactBtnEl() { return inRendererPanel('exportEvaluationArtifactBtn'); }
+function getRenderBackendEffectiveEl() { return inRendererPanel('renderBackendEffective'); }
+function getRenderEvaluationModeSelectEl() { return inRendererPanel('renderEvaluationModeSelect'); }
+function getRenderEvaluationModeEffectiveEl() { return inRendererPanel('renderEvaluationModeEffective'); }
+function getRendererSummaryEl() { return inRendererPanel('rendererSummary'); }
+function getBackendParametersSectionEl() { return inRendererPanel('backendParametersSection'); }
+function getBackendSpecificParamsSectionEl() { return inRendererPanel('backendSpecificParamsSection'); }
+function getEvaluationSectionEl() { return inRendererPanel('evaluationSection'); }
+function getDistanceModelControlRowEl() { return inRendererPanel('distanceModelControlRow'); }
+function getSpreadSectionEl() { return inRendererPanel('spreadSection'); }
+function getDistanceDiffuseSectionEl() { return inRendererPanel('distanceDiffuseSection'); }
+function getSpreadFromDistanceSectionEl() { return inRendererPanel('spreadFromDistanceSection'); }
+function getBarycenterSectionEl() { return inRendererPanel('barycenterSection'); }
+function getExperimentalDistanceSectionEl() { return inRendererPanel('experimentalDistanceSection'); }
+function getVbapCartXSizeInputEl() { return inRendererPanel('vbapCartXSizeInput'); }
+function getVbapCartYSizeInputEl() { return inRendererPanel('vbapCartYSizeInput'); }
+function getVbapCartZSizeInputEl() { return inRendererPanel('vbapCartZSizeInput'); }
+function getVbapCartZNegSizeInputEl() { return inRendererPanel('vbapCartZNegSizeInput'); }
+function getVbapCartXStepInfoEl() { return inRendererPanel('vbapCartXStepInfo'); }
+function getVbapCartYStepInfoEl() { return inRendererPanel('vbapCartYStepInfo'); }
+function getVbapCartZStepInfoEl() { return inRendererPanel('vbapCartZStepInfo'); }
+function getVbapCartZNegStepInfoEl() { return inRendererPanel('vbapCartZNegStepInfo'); }
+function getVbapPolarAzimuthResolutionInputEl() { return inRendererPanel('vbapPolarAzimuthResolutionInput'); }
+function getVbapPolarElevationResolutionInputEl() { return inRendererPanel('vbapPolarElevationResolutionInput'); }
+function getVbapPolarDistanceResInputEl() { return inRendererPanel('vbapPolarDistanceResInput'); }
+function getVbapPolarDistanceMaxInputEl() { return inRendererPanel('vbapPolarDistanceMaxInput'); }
+function getVbapElevationRangeInfoEl() { return inRendererPanel('vbapElevationRangeInfo'); }
+function getVbapAzimuthRangeInfoEl() { return inRendererPanel('vbapAzimuthRangeInfo'); }
+function getVbapPolarAzStepInfoEl() { return inRendererPanel('vbapPolarAzStepInfo'); }
+function getVbapPolarElStepInfoEl() { return inRendererPanel('vbapPolarElStepInfo'); }
+function getVbapPolarDistStepInfoEl() { return inRendererPanel('vbapPolarDistStepInfo'); }
+function getVbapPositionInterpolationToggleEl() { return inRendererPanel('vbapPositionInterpolationToggleEl'); }
+function getBarycenterLocalizeInputEl() { return inRendererPanel('barycenterLocalizeInput'); }
+function getBarycenterLocalizeValEl() { return inRendererPanel('barycenterLocalizeVal'); }
+function getExperimentalDistanceFloorInputEl() { return inRendererPanel('experimentalDistanceFloorInput'); }
+function getExperimentalDistanceMinActiveInputEl() { return inRendererPanel('experimentalDistanceMinActiveInput'); }
+function getExperimentalDistanceMaxActiveInputEl() { return inRendererPanel('experimentalDistanceMaxActiveInput'); }
+function getExperimentalDistanceErrorFloorInputEl() { return inRendererPanel('experimentalDistanceErrorFloorInput'); }
+function getExperimentalDistanceNearestScaleInputEl() { return inRendererPanel('experimentalDistanceNearestScaleInput'); }
+function getExperimentalDistanceSpanScaleInputEl() { return inRendererPanel('experimentalDistanceSpanScaleInput'); }
 
 // These are called from renderVbapCartesian but defined elsewhere in app.js.
 // They must be provided via the callback registry or imported separately.
@@ -93,6 +92,15 @@ function backendLabel(backend) {
 }
 
 function applyRendererBackendVisibility(backend) {
+  const backendParametersSectionEl = getBackendParametersSectionEl();
+  const evaluationSectionEl = getEvaluationSectionEl();
+  const backendSpecificParamsSectionEl = getBackendSpecificParamsSectionEl();
+  const distanceModelControlRowEl = getDistanceModelControlRowEl();
+  const spreadSectionEl = getSpreadSectionEl();
+  const distanceDiffuseSectionEl = getDistanceDiffuseSectionEl();
+  const spreadFromDistanceSectionEl = getSpreadFromDistanceSectionEl();
+  const experimentalDistanceSectionEl = getExperimentalDistanceSectionEl();
+  const barycenterSectionEl = getBarycenterSectionEl();
   const capabilities = backendCapabilities();
   const supportsDistanceModel = capabilities?.supportsDistanceModel === true;
   const supportsSpread = capabilities?.supportsSpread === true;
@@ -168,6 +176,7 @@ function formatEvaluationModeLabel(mode) {
 }
 
 export function renderVbapStatus() {
+  const vbapStatusEl = getVbapStatusEl();
   if (!vbapStatusEl) return;
   vbapStatusEl.classList.remove('computing', 'ready');
   if (app.vbapRecomputing === true) {
@@ -182,6 +191,10 @@ export function renderVbapStatus() {
 }
 
 export function renderEvaluationMode() {
+  const renderEvaluationModeSelectEl = getRenderEvaluationModeSelectEl();
+  const exportEvaluationArtifactBtnEl = getExportEvaluationArtifactBtnEl();
+  const renderEvaluationModeEffectiveEl = getRenderEvaluationModeEffectiveEl();
+  const rendererSummaryEl = getRendererSummaryEl();
   const backend = app.renderBackendState.effective || app.renderBackendState.selection || 'vbap';
   const allowedModes = Array.isArray(app.renderBackendState.allowedEvaluationModes)
     && app.renderBackendState.allowedEvaluationModes.length > 0
@@ -246,6 +259,9 @@ export function updateEvaluationMode() {
 }
 
 export function renderRenderBackend() {
+  const renderBackendSelectEl = getRenderBackendSelectEl();
+  const restoreBackendBtnEl = getRestoreBackendBtnEl();
+  const renderBackendEffectiveEl = getRenderBackendEffectiveEl();
   const selection = typeof app.renderBackendState.selection === 'string' ? app.renderBackendState.selection : 'vbap';
   const effective = typeof app.renderBackendState.effective === 'string' ? app.renderBackendState.effective : null;
   const visibleBackend = effective || selection;
@@ -289,6 +305,8 @@ export function updateRenderBackend() {
 }
 
 export function renderBarycenterOptions() {
+  const barycenterLocalizeInputEl = getBarycenterLocalizeInputEl();
+  const barycenterLocalizeValEl = getBarycenterLocalizeValEl();
   const state = app.renderBackendState.barycenter || {};
   const value = typeof state.localize === 'number' ? state.localize : 0;
   if (barycenterLocalizeInputEl) {
@@ -305,6 +323,12 @@ export function updateBarycenterOptions() {
 }
 
 export function renderExperimentalDistanceOptions() {
+  const experimentalDistanceFloorInputEl = getExperimentalDistanceFloorInputEl();
+  const experimentalDistanceMinActiveInputEl = getExperimentalDistanceMinActiveInputEl();
+  const experimentalDistanceMaxActiveInputEl = getExperimentalDistanceMaxActiveInputEl();
+  const experimentalDistanceErrorFloorInputEl = getExperimentalDistanceErrorFloorInputEl();
+  const experimentalDistanceNearestScaleInputEl = getExperimentalDistanceNearestScaleInputEl();
+  const experimentalDistanceSpanScaleInputEl = getExperimentalDistanceSpanScaleInputEl();
   const state = app.renderBackendState.experimentalDistance || {};
   if (experimentalDistanceFloorInputEl) {
     experimentalDistanceFloorInputEl.value =
@@ -338,6 +362,14 @@ export function updateExperimentalDistanceOptions() {
 }
 
 export function renderVbapCartesian() {
+  const vbapCartXSizeInputEl = getVbapCartXSizeInputEl();
+  const vbapCartYSizeInputEl = getVbapCartYSizeInputEl();
+  const vbapCartZSizeInputEl = getVbapCartZSizeInputEl();
+  const vbapCartZNegSizeInputEl = getVbapCartZNegSizeInputEl();
+  const vbapCartXStepInfoEl = getVbapCartXStepInfoEl();
+  const vbapCartYStepInfoEl = getVbapCartYStepInfoEl();
+  const vbapCartZStepInfoEl = getVbapCartZStepInfoEl();
+  const vbapCartZNegStepInfoEl = getVbapCartZNegStepInfoEl();
   if (vbapCartXSizeInputEl) {
     vbapCartXSizeInputEl.value = app.vbapCartesianState.xSize === null ? '' : String(app.vbapCartesianState.xSize);
   }
@@ -383,6 +415,15 @@ export function updateVbapCartesian() {
 }
 
 export function renderVbapPolar() {
+  const vbapPolarAzimuthResolutionInputEl = getVbapPolarAzimuthResolutionInputEl();
+  const vbapPolarElevationResolutionInputEl = getVbapPolarElevationResolutionInputEl();
+  const vbapPolarDistanceResInputEl = getVbapPolarDistanceResInputEl();
+  const vbapPolarDistanceMaxInputEl = getVbapPolarDistanceMaxInputEl();
+  const vbapElevationRangeInfoEl = getVbapElevationRangeInfoEl();
+  const vbapAzimuthRangeInfoEl = getVbapAzimuthRangeInfoEl();
+  const vbapPolarAzStepInfoEl = getVbapPolarAzStepInfoEl();
+  const vbapPolarElStepInfoEl = getVbapPolarElStepInfoEl();
+  const vbapPolarDistStepInfoEl = getVbapPolarDistStepInfoEl();
   if (vbapPolarAzimuthResolutionInputEl) {
     vbapPolarAzimuthResolutionInputEl.value =
       app.vbapPolarState.azimuthResolution === null ? '' : String(app.vbapPolarState.azimuthResolution);
@@ -431,6 +472,7 @@ export function updateVbapPolar() {
 }
 
 export function renderVbapPositionInterpolation() {
+  const vbapPositionInterpolationToggleEl = getVbapPositionInterpolationToggleEl();
   if (!vbapPositionInterpolationToggleEl) return;
   vbapPositionInterpolationToggleEl.checked = app.vbapPositionInterpolation !== false;
 }

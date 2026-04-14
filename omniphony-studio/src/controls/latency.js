@@ -17,43 +17,42 @@ import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inAudioPanel, inRendererPanel } from '../ui/panel-roots.js';
 
-// DOM refs
-const latencyInfoEl = inAudioPanel('latencyInfo');
-const latencyRawInfoEl = inAudioPanel('latencyRawInfo');
-const latencyCtrlInfoEl = inAudioPanel('latencyCtrlInfo');
-const latencyTargetInputEl = inAudioPanel('latencyTargetInput');
-const latencyTargetApplyBtnEl = inAudioPanel('latencyTargetApplyBtn');
-const resampleRatioInfoEl = inAudioPanel('resampleRatioInfo');
-const resampleMeterLabelEl = inAudioPanel('resampleMeterLabel');
-const resampleMeterBodyEl = inAudioPanel('resampleMeterBody');
-const resampleNegMeterFillEl = inAudioPanel('resampleNegMeterFill');
-const resamplePosMeterFillEl = inAudioPanel('resamplePosMeterFill');
-const resampleNegFarMarkerEl = inAudioPanel('resampleNegFarMarker');
-const resamplePosFarMarkerEl = inAudioPanel('resamplePosFarMarker');
-const resampleNegNearMarkerEl = inAudioPanel('resampleNegNearMarker');
-const resamplePosNearMarkerEl = inAudioPanel('resamplePosNearMarker');
-const latencyMeterFillEl = inAudioPanel('latencyMeterFill');
-const latencyRawMinMaskEl = inAudioPanel('latencyRawMinMask');
-const latencyRawMaxMaskEl = inAudioPanel('latencyRawMaxMask');
-const latencyRawMinMarkerEl = inAudioPanel('latencyRawMinMarker');
-const latencyCtrlMarkerEl = inAudioPanel('latencyCtrlMarker');
-const latencyRawMaxMarkerEl = inAudioPanel('latencyRawMaxMarker');
-const latencyTargetMarkerEl = inAudioPanel('latencyTargetMarker');
-const latencyNearLowMarkerEl = inAudioPanel('latencyNearLowMarker');
-const latencyNearHighMarkerEl = inAudioPanel('latencyNearHighMarker');
-const latencyRawMinValueEl = inAudioPanel('latencyRawMinValue');
-const latencyRawMaxValueEl = inAudioPanel('latencyRawMaxValue');
-const rendererPerfWrapEl = inRendererPanel('rendererPerfWrap');
-const rendererPerfDecodeFillEl = inRendererPanel('rendererPerfDecodeFill');
-const rendererPerfRenderFillEl = inRendererPanel('rendererPerfRenderFill');
-const rendererPerfWriteFillEl = inRendererPanel('rendererPerfWriteFill');
-const rendererPerfDecodeMaxMarkerEl = inRendererPanel('rendererPerfDecodeMaxMarker');
-const rendererPerfRenderMaxMarkerEl = inRendererPanel('rendererPerfRenderMaxMarker');
-const rendererPerfWriteMaxMarkerEl = inRendererPanel('rendererPerfWriteMaxMarker');
-const rendererPerfDecodeValueEl = inRendererPanel('rendererPerfDecodeValue');
-const rendererPerfRenderValueEl = inRendererPanel('rendererPerfRenderValue');
-const rendererPerfWriteValueEl = inRendererPanel('rendererPerfWriteValue');
-const rendererPerfFrameValueEl = inRendererPanel('rendererPerfFrameValue');
+function getLatencyInfoEl() { return inAudioPanel('latencyInfo'); }
+function getLatencyRawInfoEl() { return inAudioPanel('latencyRawInfo'); }
+function getLatencyCtrlInfoEl() { return inAudioPanel('latencyCtrlInfo'); }
+function getLatencyTargetInputEl() { return inAudioPanel('latencyTargetInput'); }
+function getLatencyTargetApplyBtnEl() { return inAudioPanel('latencyTargetApplyBtn'); }
+function getResampleRatioInfoEl() { return inAudioPanel('resampleRatioInfo'); }
+function getResampleMeterLabelEl() { return inAudioPanel('resampleMeterLabel'); }
+function getResampleMeterBodyEl() { return inAudioPanel('resampleMeterBody'); }
+function getResampleNegMeterFillEl() { return inAudioPanel('resampleNegMeterFill'); }
+function getResamplePosMeterFillEl() { return inAudioPanel('resamplePosMeterFill'); }
+function getResampleNegFarMarkerEl() { return inAudioPanel('resampleNegFarMarker'); }
+function getResamplePosFarMarkerEl() { return inAudioPanel('resamplePosFarMarker'); }
+function getResampleNegNearMarkerEl() { return inAudioPanel('resampleNegNearMarker'); }
+function getResamplePosNearMarkerEl() { return inAudioPanel('resamplePosNearMarker'); }
+function getLatencyMeterFillEl() { return inAudioPanel('latencyMeterFill'); }
+function getLatencyRawMinMaskEl() { return inAudioPanel('latencyRawMinMask'); }
+function getLatencyRawMaxMaskEl() { return inAudioPanel('latencyRawMaxMask'); }
+function getLatencyRawMinMarkerEl() { return inAudioPanel('latencyRawMinMarker'); }
+function getLatencyCtrlMarkerEl() { return inAudioPanel('latencyCtrlMarker'); }
+function getLatencyRawMaxMarkerEl() { return inAudioPanel('latencyRawMaxMarker'); }
+function getLatencyTargetMarkerEl() { return inAudioPanel('latencyTargetMarker'); }
+function getLatencyNearLowMarkerEl() { return inAudioPanel('latencyNearLowMarker'); }
+function getLatencyNearHighMarkerEl() { return inAudioPanel('latencyNearHighMarker'); }
+function getLatencyRawMinValueEl() { return inAudioPanel('latencyRawMinValue'); }
+function getLatencyRawMaxValueEl() { return inAudioPanel('latencyRawMaxValue'); }
+function getRendererPerfWrapEl() { return inRendererPanel('rendererPerfWrap'); }
+function getRendererPerfDecodeFillEl() { return inRendererPanel('rendererPerfDecodeFill'); }
+function getRendererPerfRenderFillEl() { return inRendererPanel('rendererPerfRenderFill'); }
+function getRendererPerfWriteFillEl() { return inRendererPanel('rendererPerfWriteFill'); }
+function getRendererPerfDecodeMaxMarkerEl() { return inRendererPanel('rendererPerfDecodeMaxMarker'); }
+function getRendererPerfRenderMaxMarkerEl() { return inRendererPanel('rendererPerfRenderMaxMarker'); }
+function getRendererPerfWriteMaxMarkerEl() { return inRendererPanel('rendererPerfWriteMaxMarker'); }
+function getRendererPerfDecodeValueEl() { return inRendererPanel('rendererPerfDecodeValue'); }
+function getRendererPerfRenderValueEl() { return inRendererPanel('rendererPerfRenderValue'); }
+function getRendererPerfWriteValueEl() { return inRendererPanel('rendererPerfWriteValue'); }
+function getRendererPerfFrameValueEl() { return inRendererPanel('rendererPerfFrameValue'); }
 
 // ── Latency / timing setters ──────────────────────────────────────────────
 
@@ -124,6 +123,11 @@ export function setFrameDurationMs(value) {
 // ── Latency display ───────────────────────────────────────────────────────
 
 export function renderLatencyDisplay() {
+  const latencyInfoEl = getLatencyInfoEl();
+  const latencyRawInfoEl = getLatencyRawInfoEl();
+  const latencyCtrlInfoEl = getLatencyCtrlInfoEl();
+  const latencyTargetInputEl = getLatencyTargetInputEl();
+  const latencyTargetApplyBtnEl = getLatencyTargetApplyBtnEl();
   if (!latencyRawInfoEl && !latencyCtrlInfoEl && !latencyInfoEl) return;
   const instantText = app.latencyInstantMs === null ? '—' : `${formatNumber(app.latencyInstantMs, 0)} ms`;
   const controlText = app.latencyControlMs === null ? '—' : `${formatNumber(app.latencyControlMs, 0)} ms`;
@@ -156,6 +160,15 @@ export function updateLatencyDisplay() {
 // ── Resample ratio display ────────────────────────────────────────────────
 
 export function renderResampleRatioDisplay() {
+  const resampleRatioInfoEl = getResampleRatioInfoEl();
+  const resampleMeterLabelEl = getResampleMeterLabelEl();
+  const resampleMeterBodyEl = getResampleMeterBodyEl();
+  const resampleNegMeterFillEl = getResampleNegMeterFillEl();
+  const resamplePosMeterFillEl = getResamplePosMeterFillEl();
+  const resampleNegFarMarkerEl = getResampleNegFarMarkerEl();
+  const resamplePosFarMarkerEl = getResamplePosFarMarkerEl();
+  const resampleNegNearMarkerEl = getResampleNegNearMarkerEl();
+  const resamplePosNearMarkerEl = getResamplePosNearMarkerEl();
   if (!resampleRatioInfoEl) return;
   if (app.adaptiveResamplingEnabled !== true) {
     resampleRatioInfoEl.style.display = 'none';
@@ -230,6 +243,17 @@ export function updateResampleRatioDisplay() {
 // ── Latency meter UI ──────────────────────────────────────────────────────
 
 export function renderLatencyMeterUI() {
+  const latencyMeterFillEl = getLatencyMeterFillEl();
+  const latencyRawMinMaskEl = getLatencyRawMinMaskEl();
+  const latencyRawMaxMaskEl = getLatencyRawMaxMaskEl();
+  const latencyRawMinMarkerEl = getLatencyRawMinMarkerEl();
+  const latencyCtrlMarkerEl = getLatencyCtrlMarkerEl();
+  const latencyRawMaxMarkerEl = getLatencyRawMaxMarkerEl();
+  const latencyTargetMarkerEl = getLatencyTargetMarkerEl();
+  const latencyNearLowMarkerEl = getLatencyNearLowMarkerEl();
+  const latencyNearHighMarkerEl = getLatencyNearHighMarkerEl();
+  const latencyRawMinValueEl = getLatencyRawMinValueEl();
+  const latencyRawMaxValueEl = getLatencyRawMaxValueEl();
   const targetForScale = app.latencyRequestedMs ?? app.latencyTargetMs ?? app.latencyMs;
   const maxMs = targetForScale === null
     ? 2000
@@ -349,6 +373,17 @@ export function updateLatencyMeterUI() {
 // ── Render-time UI ────────────────────────────────────────────────────────
 
 export function renderRenderTimeUI() {
+  const rendererPerfWrapEl = getRendererPerfWrapEl();
+  const rendererPerfDecodeFillEl = getRendererPerfDecodeFillEl();
+  const rendererPerfRenderFillEl = getRendererPerfRenderFillEl();
+  const rendererPerfWriteFillEl = getRendererPerfWriteFillEl();
+  const rendererPerfDecodeMaxMarkerEl = getRendererPerfDecodeMaxMarkerEl();
+  const rendererPerfRenderMaxMarkerEl = getRendererPerfRenderMaxMarkerEl();
+  const rendererPerfWriteMaxMarkerEl = getRendererPerfWriteMaxMarkerEl();
+  const rendererPerfDecodeValueEl = getRendererPerfDecodeValueEl();
+  const rendererPerfRenderValueEl = getRendererPerfRenderValueEl();
+  const rendererPerfWriteValueEl = getRendererPerfWriteValueEl();
+  const rendererPerfFrameValueEl = getRendererPerfFrameValueEl();
   const visible = app.oscMeteringEnabled === true;
   if (rendererPerfWrapEl) {
     rendererPerfWrapEl.style.display = visible ? 'block' : 'none';
@@ -419,6 +454,7 @@ export function updateRenderTimeUI() {
 }
 
 export function applyLatencyTargetNow() {
+  const latencyTargetInputEl = getLatencyTargetInputEl();
   const requested = Math.max(1, Math.round(Number(latencyTargetInputEl?.value) || 0));
   app.latencyRequestedMs = requested;
   app.latencyTargetMs = requested;

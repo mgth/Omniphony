@@ -2,37 +2,26 @@ import { app } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { inInputPanel } from '../ui/panel-roots.js';
 
-const inputModeSelectEl = inInputPanel('inputModeSelect');
-const inputPipeInputEl = inInputPanel('pipeStatus');
-const oscBridgePathInputEl = inInputPanel('oscBridgePathInput');
-const oscBridgePathStatusEl = inInputPanel('oscBridgePathStatus');
-const inputBackendSelectEl = inInputPanel('inputBackendSelect');
-const inputNodeInputEl = inInputPanel('inputNodeInput');
-const inputDescriptionInputEl = inInputPanel('inputDescriptionInput');
-const inputClockModeSelectEl = inInputPanel('inputClockModeSelect');
-const inputLayoutInputEl = inInputPanel('inputLayoutInput');
-const inputLayoutBrowseBtnEl = inInputPanel('inputLayoutBrowseBtn');
-const inputChannelsInputEl = inInputPanel('inputChannelsInput');
-const inputSampleRateInputEl = inInputPanel('inputSampleRateInput');
-const inputFormatSelectEl = inInputPanel('inputFormatSelect');
-const inputMapSelectEl = inInputPanel('inputMapSelect');
-const inputLfeModeSelectEl = inInputPanel('inputLfeModeSelect');
-const inputStatusInfoEl = inInputPanel('inputStatusInfo');
-const inputSummaryEl = inInputPanel('inputSummary');
-const inputApplyBtnEl = inInputPanel('inputApplyBtn');
-const inputBridgeFieldsEl = inInputPanel('inputBridgeFields');
-const inputLiveFieldsEl = inInputPanel('inputLiveFields');
-const inputBackendRowEl = inputBackendSelectEl?.closest('.input-panel-row') || null;
-const inputPipeRowEl = inputPipeInputEl?.closest('.input-panel-row') || null;
-const inputNodeRowEl = inputNodeInputEl?.closest('.input-panel-row') || null;
-const inputDescriptionRowEl = inputDescriptionInputEl?.closest('.input-panel-row') || null;
-const inputClockModeRowEl = inputClockModeSelectEl?.closest('.input-panel-row') || null;
-const inputLayoutRowEl = inputLayoutInputEl?.closest('.input-panel-row') || null;
-const inputChannelsRowEl = inputChannelsInputEl?.closest('.input-panel-field') || null;
-const inputSampleRateRowEl = inputSampleRateInputEl?.closest('.input-panel-field') || null;
-const inputFormatRowEl = inputFormatSelectEl?.closest('.input-panel-field') || null;
-const inputMapRowEl = inputMapSelectEl?.closest('.input-panel-field') || null;
-const inputLfeModeRowEl = inputLfeModeSelectEl?.closest('.input-panel-field') || null;
+function getInputModeSelectEl() { return inInputPanel('inputModeSelect'); }
+function getInputPipeInputEl() { return inInputPanel('pipeStatus'); }
+function getOscBridgePathInputEl() { return inInputPanel('oscBridgePathInput'); }
+function getOscBridgePathStatusEl() { return inInputPanel('oscBridgePathStatus'); }
+function getInputBackendSelectEl() { return inInputPanel('inputBackendSelect'); }
+function getInputNodeInputEl() { return inInputPanel('inputNodeInput'); }
+function getInputDescriptionInputEl() { return inInputPanel('inputDescriptionInput'); }
+function getInputClockModeSelectEl() { return inInputPanel('inputClockModeSelect'); }
+function getInputLayoutInputEl() { return inInputPanel('inputLayoutInput'); }
+function getInputLayoutBrowseBtnEl() { return inInputPanel('inputLayoutBrowseBtn'); }
+function getInputChannelsInputEl() { return inInputPanel('inputChannelsInput'); }
+function getInputSampleRateInputEl() { return inInputPanel('inputSampleRateInput'); }
+function getInputFormatSelectEl() { return inInputPanel('inputFormatSelect'); }
+function getInputMapSelectEl() { return inInputPanel('inputMapSelect'); }
+function getInputLfeModeSelectEl() { return inInputPanel('inputLfeModeSelect'); }
+function getInputStatusInfoEl() { return inInputPanel('inputStatusInfo'); }
+function getInputSummaryEl() { return inInputPanel('inputSummary'); }
+function getInputApplyBtnEl() { return inInputPanel('inputApplyBtn'); }
+function getInputBridgeFieldsEl() { return inInputPanel('inputBridgeFields'); }
+function getInputLiveFieldsEl() { return inInputPanel('inputLiveFields'); }
 
 function stringOrEmpty(value) {
   return typeof value === 'string' ? value : '';
@@ -91,6 +80,37 @@ function bridgePathMissingMessage(requestedMode) {
 }
 
 export function updateInputControlUI() {
+  const inputModeSelectEl = getInputModeSelectEl();
+  const inputPipeInputEl = getInputPipeInputEl();
+  const oscBridgePathInputEl = getOscBridgePathInputEl();
+  const oscBridgePathStatusEl = getOscBridgePathStatusEl();
+  const inputBackendSelectEl = getInputBackendSelectEl();
+  const inputNodeInputEl = getInputNodeInputEl();
+  const inputDescriptionInputEl = getInputDescriptionInputEl();
+  const inputClockModeSelectEl = getInputClockModeSelectEl();
+  const inputLayoutInputEl = getInputLayoutInputEl();
+  const inputLayoutBrowseBtnEl = getInputLayoutBrowseBtnEl();
+  const inputChannelsInputEl = getInputChannelsInputEl();
+  const inputSampleRateInputEl = getInputSampleRateInputEl();
+  const inputFormatSelectEl = getInputFormatSelectEl();
+  const inputMapSelectEl = getInputMapSelectEl();
+  const inputLfeModeSelectEl = getInputLfeModeSelectEl();
+  const inputStatusInfoEl = getInputStatusInfoEl();
+  const inputSummaryEl = getInputSummaryEl();
+  const inputApplyBtnEl = getInputApplyBtnEl();
+  const inputBridgeFieldsEl = getInputBridgeFieldsEl();
+  const inputLiveFieldsEl = getInputLiveFieldsEl();
+  const inputBackendRowEl = inputBackendSelectEl?.closest('.input-panel-row') || null;
+  const inputPipeRowEl = inputPipeInputEl?.closest('.input-panel-row') || null;
+  const inputNodeRowEl = inputNodeInputEl?.closest('.input-panel-row') || null;
+  const inputDescriptionRowEl = inputDescriptionInputEl?.closest('.input-panel-row') || null;
+  const inputClockModeRowEl = inputClockModeSelectEl?.closest('.input-panel-row') || null;
+  const inputLayoutRowEl = inputLayoutInputEl?.closest('.input-panel-row') || null;
+  const inputChannelsRowEl = inputChannelsInputEl?.closest('.input-panel-field') || null;
+  const inputSampleRateRowEl = inputSampleRateInputEl?.closest('.input-panel-field') || null;
+  const inputFormatRowEl = inputFormatSelectEl?.closest('.input-panel-field') || null;
+  const inputMapRowEl = inputMapSelectEl?.closest('.input-panel-field') || null;
+  const inputLfeModeRowEl = inputLfeModeSelectEl?.closest('.input-panel-field') || null;
   const requestedMode = app.inputMode || 'pipe_bridge';
   if (inputModeSelectEl) {
     inputModeSelectEl.value = ['pipewire', 'pipewire_bridge', 'pipe_bridge'].includes(app.inputMode)
