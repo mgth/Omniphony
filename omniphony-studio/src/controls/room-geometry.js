@@ -21,53 +21,52 @@ const ROOM_GEOM_PREFS_STORAGE_KEY = 'spatialviz.room_geometry_prefs';
 const TRAIL_PREFS_STORAGE_KEY = 'spatialviz.trail_prefs';
 const EFFECTIVE_RENDER_PREFS_STORAGE_KEY = 'spatialviz.effective_render_prefs';
 
-// DOM refs
-const roomGeometrySummaryEl = inRoomGeometryPanel('roomGeometrySummary');
-const roomGeometrySummaryScaleEl = inRoomGeometryPanel('roomGeometrySummaryScale');
-const roomGeometrySummarySizeEl = inRoomGeometryPanel('roomGeometrySummarySize');
-const roomGeometrySummaryRatioEl = inRoomGeometryPanel('roomGeometrySummaryRatio');
-const roomDimWidthInputEl = inRoomGeometryPanel('roomDimWidthInput');
-const roomDimLengthInputEl = inRoomGeometryPanel('roomDimLengthInput');
-const roomDimHeightInputEl = inRoomGeometryPanel('roomDimHeightInput');
-const roomDimRearInputEl = inRoomGeometryPanel('roomDimRearInput');
-const roomDimLowerInputEl = inRoomGeometryPanel('roomDimLowerInput');
-const roomRatioWidthInputEl = inRoomGeometryPanel('roomRatioWidthInput');
-const roomRatioLengthInputEl = inRoomGeometryPanel('roomRatioLengthInput');
-const roomRatioHeightInputEl = inRoomGeometryPanel('roomRatioHeightInput');
-const roomRatioRearInputEl = inRoomGeometryPanel('roomRatioRearInput');
-const roomRatioLowerInputEl = inRoomGeometryPanel('roomRatioLowerInput');
-const roomRatioCenterBlendSliderEl = inRoomGeometryPanel('roomRatioCenterBlendSlider');
-const roomRatioCenterBlendValueEl = inRoomGeometryPanel('roomRatioCenterBlendValue');
-const roomMasterAxisInputs = roomGeometryPanelQueryAll('input[name="roomMasterAxis"]');
-const roomDriverWidthEl = inRoomGeometryPanel('roomDriverWidth');
-const roomDriverLengthEl = inRoomGeometryPanel('roomDriverLength');
-const roomDriverHeightEl = inRoomGeometryPanel('roomDriverHeight');
-const roomDriverRearEl = inRoomGeometryPanel('roomDriverRear');
-const roomDriverLowerEl = inRoomGeometryPanel('roomDriverLower');
-const roomMasterMpuWidthEl = inRoomGeometryPanel('roomMasterMpuWidth');
-const roomMasterMpuLengthEl = inRoomGeometryPanel('roomMasterMpuLength');
-const roomMasterMpuRearEl = inRoomGeometryPanel('roomMasterMpuRear');
-const roomMasterMpuHeightEl = inRoomGeometryPanel('roomMasterMpuHeight');
-const roomMasterMpuLowerEl = inRoomGeometryPanel('roomMasterMpuLower');
-const roomGeometryCancelBtnEl = inRoomGeometryPanel('roomGeometryCancelBtn');
-const trailToggleEl = inDisplayPanel('trailToggle');
-const trailModeSelectEl = inDisplayPanel('trailModeSelect');
-const trailTtlSliderEl = inDisplayPanel('trailTtlSlider');
-const trailTtlValEl = inDisplayPanel('trailTtlVal');
-const effectiveRenderToggleEl = inDisplayPanel('effectiveRenderToggle');
-const objectColorsToggleEl = inDisplayPanel('objectColorsToggle');
-const objectDisplayModeSelectEl = inDisplayPanel('objectDisplayModeSelect');
-const objectSphereSizeSliderEl = inDisplayPanel('objectSphereSizeSlider');
-const objectSphereSizeValEl = inDisplayPanel('objectSphereSizeVal');
-const objectLabelsToggleEl = inDisplayPanel('objectLabelsToggle');
-const speakerLabelsToggleEl = inDisplayPanel('speakerLabelsToggle');
-const speakerSizeSliderEl = inDisplayPanel('speakerSizeSlider');
-const speakerSizeValEl = inDisplayPanel('speakerSizeVal');
-const speakerHeatmapSlicesToggleEl = inDisplayPanel('speakerHeatmapSlicesToggle');
-const speakerHeatmapVolumeToggleEl = inDisplayPanel('speakerHeatmapVolumeToggle');
-const speakerHeatmapSampleCountInputEl = inDisplayPanel('speakerHeatmapSampleCountInput');
-const speakerHeatmapMaxSphereSizeSliderEl = inDisplayPanel('speakerHeatmapMaxSphereSizeSlider');
-const speakerHeatmapMaxSphereSizeValEl = inDisplayPanel('speakerHeatmapMaxSphereSizeVal');
+function getRoomGeometrySummaryEl() { return inRoomGeometryPanel('roomGeometrySummary'); }
+function getRoomGeometrySummaryScaleEl() { return inRoomGeometryPanel('roomGeometrySummaryScale'); }
+function getRoomGeometrySummarySizeEl() { return inRoomGeometryPanel('roomGeometrySummarySize'); }
+function getRoomGeometrySummaryRatioEl() { return inRoomGeometryPanel('roomGeometrySummaryRatio'); }
+function getRoomDimWidthInputEl() { return inRoomGeometryPanel('roomDimWidthInput'); }
+function getRoomDimLengthInputEl() { return inRoomGeometryPanel('roomDimLengthInput'); }
+function getRoomDimHeightInputEl() { return inRoomGeometryPanel('roomDimHeightInput'); }
+function getRoomDimRearInputEl() { return inRoomGeometryPanel('roomDimRearInput'); }
+function getRoomDimLowerInputEl() { return inRoomGeometryPanel('roomDimLowerInput'); }
+function getRoomRatioWidthInputEl() { return inRoomGeometryPanel('roomRatioWidthInput'); }
+function getRoomRatioLengthInputEl() { return inRoomGeometryPanel('roomRatioLengthInput'); }
+function getRoomRatioHeightInputEl() { return inRoomGeometryPanel('roomRatioHeightInput'); }
+function getRoomRatioRearInputEl() { return inRoomGeometryPanel('roomRatioRearInput'); }
+function getRoomRatioLowerInputEl() { return inRoomGeometryPanel('roomRatioLowerInput'); }
+function getRoomRatioCenterBlendSliderEl() { return inRoomGeometryPanel('roomRatioCenterBlendSlider'); }
+function getRoomRatioCenterBlendValueEl() { return inRoomGeometryPanel('roomRatioCenterBlendValue'); }
+function getRoomMasterAxisInputs() { return roomGeometryPanelQueryAll('input[name="roomMasterAxis"]'); }
+function getRoomDriverWidthEl() { return inRoomGeometryPanel('roomDriverWidth'); }
+function getRoomDriverLengthEl() { return inRoomGeometryPanel('roomDriverLength'); }
+function getRoomDriverHeightEl() { return inRoomGeometryPanel('roomDriverHeight'); }
+function getRoomDriverRearEl() { return inRoomGeometryPanel('roomDriverRear'); }
+function getRoomDriverLowerEl() { return inRoomGeometryPanel('roomDriverLower'); }
+function getRoomMasterMpuWidthEl() { return inRoomGeometryPanel('roomMasterMpuWidth'); }
+function getRoomMasterMpuLengthEl() { return inRoomGeometryPanel('roomMasterMpuLength'); }
+function getRoomMasterMpuRearEl() { return inRoomGeometryPanel('roomMasterMpuRear'); }
+function getRoomMasterMpuHeightEl() { return inRoomGeometryPanel('roomMasterMpuHeight'); }
+function getRoomMasterMpuLowerEl() { return inRoomGeometryPanel('roomMasterMpuLower'); }
+function getRoomGeometryCancelBtnEl() { return inRoomGeometryPanel('roomGeometryCancelBtn'); }
+function getTrailToggleEl() { return inDisplayPanel('trailToggle'); }
+function getTrailModeSelectEl() { return inDisplayPanel('trailModeSelect'); }
+function getTrailTtlSliderEl() { return inDisplayPanel('trailTtlSlider'); }
+function getTrailTtlValEl() { return inDisplayPanel('trailTtlVal'); }
+function getEffectiveRenderToggleEl() { return inDisplayPanel('effectiveRenderToggle'); }
+function getObjectColorsToggleEl() { return inDisplayPanel('objectColorsToggle'); }
+function getObjectDisplayModeSelectEl() { return inDisplayPanel('objectDisplayModeSelect'); }
+function getObjectSphereSizeSliderEl() { return inDisplayPanel('objectSphereSizeSlider'); }
+function getObjectSphereSizeValEl() { return inDisplayPanel('objectSphereSizeVal'); }
+function getObjectLabelsToggleEl() { return inDisplayPanel('objectLabelsToggle'); }
+function getSpeakerLabelsToggleEl() { return inDisplayPanel('speakerLabelsToggle'); }
+function getSpeakerSizeSliderEl() { return inDisplayPanel('speakerSizeSlider'); }
+function getSpeakerSizeValEl() { return inDisplayPanel('speakerSizeVal'); }
+function getSpeakerHeatmapSlicesToggleEl() { return inDisplayPanel('speakerHeatmapSlicesToggle'); }
+function getSpeakerHeatmapVolumeToggleEl() { return inDisplayPanel('speakerHeatmapVolumeToggle'); }
+function getSpeakerHeatmapSampleCountInputEl() { return inDisplayPanel('speakerHeatmapSampleCountInput'); }
+function getSpeakerHeatmapMaxSphereSizeSliderEl() { return inDisplayPanel('speakerHeatmapMaxSphereSizeSlider'); }
+function getSpeakerHeatmapMaxSphereSizeValEl() { return inDisplayPanel('speakerHeatmapMaxSphereSizeVal'); }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -147,6 +146,10 @@ export function persistEffectiveRenderPrefs() {
 }
 
 export function applyTrailPrefsToUi() {
+  const trailToggleEl = getTrailToggleEl();
+  const trailModeSelectEl = getTrailModeSelectEl();
+  const trailTtlSliderEl = getTrailTtlSliderEl();
+  const trailTtlValEl = getTrailTtlValEl();
   if (trailToggleEl) {
     trailToggleEl.checked = app.trailsEnabled;
   }
@@ -162,6 +165,20 @@ export function applyTrailPrefsToUi() {
 }
 
 export function applyEffectiveRenderPrefsToUi() {
+  const effectiveRenderToggleEl = getEffectiveRenderToggleEl();
+  const objectColorsToggleEl = getObjectColorsToggleEl();
+  const objectDisplayModeSelectEl = getObjectDisplayModeSelectEl();
+  const objectSphereSizeSliderEl = getObjectSphereSizeSliderEl();
+  const objectSphereSizeValEl = getObjectSphereSizeValEl();
+  const objectLabelsToggleEl = getObjectLabelsToggleEl();
+  const speakerLabelsToggleEl = getSpeakerLabelsToggleEl();
+  const speakerSizeSliderEl = getSpeakerSizeSliderEl();
+  const speakerSizeValEl = getSpeakerSizeValEl();
+  const speakerHeatmapSlicesToggleEl = getSpeakerHeatmapSlicesToggleEl();
+  const speakerHeatmapVolumeToggleEl = getSpeakerHeatmapVolumeToggleEl();
+  const speakerHeatmapSampleCountInputEl = getSpeakerHeatmapSampleCountInputEl();
+  const speakerHeatmapMaxSphereSizeSliderEl = getSpeakerHeatmapMaxSphereSizeSliderEl();
+  const speakerHeatmapMaxSphereSizeValEl = getSpeakerHeatmapMaxSphereSizeValEl();
   if (effectiveRenderToggleEl) {
     effectiveRenderToggleEl.checked = app.effectiveRenderEnabled;
   }
@@ -280,11 +297,11 @@ export function refreshEffectiveRenderVisibility() {
 }
 
 function getRoomDriverEl(axis) {
-  if (axis === 'width') return roomDriverWidthEl;
-  if (axis === 'length') return roomDriverLengthEl;
-  if (axis === 'height') return roomDriverHeightEl;
-  if (axis === 'rear') return roomDriverRearEl;
-  if (axis === 'lower') return roomDriverLowerEl;
+  if (axis === 'width') return getRoomDriverWidthEl();
+  if (axis === 'length') return getRoomDriverLengthEl();
+  if (axis === 'height') return getRoomDriverHeightEl();
+  if (axis === 'rear') return getRoomDriverRearEl();
+  if (axis === 'lower') return getRoomDriverLowerEl();
   return null;
 }
 
@@ -300,20 +317,20 @@ function setRoomDriverValue(axis, value) {
 }
 
 export function getRoomSizeInputEl(axis) {
-  if (axis === 'width') return roomDimWidthInputEl;
-  if (axis === 'length') return roomDimLengthInputEl;
-  if (axis === 'height') return roomDimHeightInputEl;
-  if (axis === 'rear') return roomDimRearInputEl;
-  if (axis === 'lower') return roomDimLowerInputEl;
+  if (axis === 'width') return getRoomDimWidthInputEl();
+  if (axis === 'length') return getRoomDimLengthInputEl();
+  if (axis === 'height') return getRoomDimHeightInputEl();
+  if (axis === 'rear') return getRoomDimRearInputEl();
+  if (axis === 'lower') return getRoomDimLowerInputEl();
   return null;
 }
 
 export function getRoomRatioInputEl(axis) {
-  if (axis === 'width') return roomRatioWidthInputEl;
-  if (axis === 'length') return roomRatioLengthInputEl;
-  if (axis === 'height') return roomRatioHeightInputEl;
-  if (axis === 'rear') return roomRatioRearInputEl;
-  if (axis === 'lower') return roomRatioLowerInputEl;
+  if (axis === 'width') return getRoomRatioWidthInputEl();
+  if (axis === 'length') return getRoomRatioLengthInputEl();
+  if (axis === 'height') return getRoomRatioHeightInputEl();
+  if (axis === 'rear') return getRoomRatioRearInputEl();
+  if (axis === 'lower') return getRoomRatioLowerInputEl();
   return null;
 }
 
@@ -324,6 +341,7 @@ function roundRoomGeom(value) {
 }
 
 export function getRoomCenterBlendFromInput(fallback = app.roomRatio.centerBlend) {
+  const roomRatioCenterBlendSliderEl = getRoomRatioCenterBlendSliderEl();
   const n = Number(roomRatioCenterBlendSliderEl?.value);
   const fallbackNum = Number(fallback);
   if (!Number.isFinite(n)) return Number.isFinite(fallbackNum) ? fallbackNum : 0.5;
@@ -331,6 +349,8 @@ export function getRoomCenterBlendFromInput(fallback = app.roomRatio.centerBlend
 }
 
 export function renderRoomCenterBlendControl(value = app.roomRatio.centerBlend) {
+  const roomRatioCenterBlendSliderEl = getRoomRatioCenterBlendSliderEl();
+  const roomRatioCenterBlendValueEl = getRoomRatioCenterBlendValueEl();
   const parsed = Number(value);
   const blend = Math.max(0, Math.min(1, Number.isFinite(parsed) ? parsed : 0.5));
   if (roomRatioCenterBlendSliderEl) {
@@ -362,16 +382,16 @@ export function roomGeometryStateFromInputs() {
 
 export function normalizeRoomGeometryInputDisplays() {
   [
-    roomDimWidthInputEl,
-    roomDimLengthInputEl,
-    roomDimHeightInputEl,
-    roomDimRearInputEl,
-    roomDimLowerInputEl,
-    roomRatioWidthInputEl,
-    roomRatioLengthInputEl,
-    roomRatioHeightInputEl,
-    roomRatioRearInputEl,
-    roomRatioLowerInputEl
+    getRoomDimWidthInputEl(),
+    getRoomDimLengthInputEl(),
+    getRoomDimHeightInputEl(),
+    getRoomDimRearInputEl(),
+    getRoomDimLowerInputEl(),
+    getRoomRatioWidthInputEl(),
+    getRoomRatioLengthInputEl(),
+    getRoomRatioHeightInputEl(),
+    getRoomRatioRearInputEl(),
+    getRoomRatioLowerInputEl()
   ].forEach((el) => {
     if (!el) return;
     const n = Number(el.value);
@@ -393,6 +413,7 @@ export function roomGeometryStateKey(state) {
 }
 
 export function updateRoomGeometryButtonsState() {
+  const roomGeometryCancelBtnEl = getRoomGeometryCancelBtnEl();
   if (isRoomRatioFrozen()) {
     if (roomGeometryCancelBtnEl) {
       roomGeometryCancelBtnEl.disabled = true;
@@ -457,6 +478,10 @@ export function setRoomGeometryBaselineFromInputs() {
 }
 
 export function renderRoomGeometrySummary(preview = null) {
+  const roomGeometrySummaryEl = getRoomGeometrySummaryEl();
+  const roomGeometrySummaryScaleEl = getRoomGeometrySummaryScaleEl();
+  const roomGeometrySummarySizeEl = getRoomGeometrySummarySizeEl();
+  const roomGeometrySummaryRatioEl = getRoomGeometrySummaryRatioEl();
   if (!roomGeometrySummaryEl) return;
   const metersPerUnit = app.metersPerUnit ?? 1;
   const ratioWidth = Number(preview?.ratio?.width ?? app.roomRatio.width) || 1;
@@ -588,6 +613,11 @@ export function updateRoomGeometryLivePreview() {
 }
 
 export function renderRoomGeometryMasterMpu(preview = null) {
+  const roomMasterMpuWidthEl = getRoomMasterMpuWidthEl();
+  const roomMasterMpuLengthEl = getRoomMasterMpuLengthEl();
+  const roomMasterMpuRearEl = getRoomMasterMpuRearEl();
+  const roomMasterMpuHeightEl = getRoomMasterMpuHeightEl();
+  const roomMasterMpuLowerEl = getRoomMasterMpuLowerEl();
   const metersPerUnit = app.metersPerUnit ?? 1;
   const mpuValue = Number(preview?.mpu ?? metersPerUnit) || 1;
   const text = `m/u ${formatNumber(mpuValue, 2)}`;
@@ -618,12 +648,16 @@ function setRoomFieldEditable(inputEl, editable) {
 }
 
 function syncRoomMasterAxisUI() {
+  const roomMasterAxisInputs = getRoomMasterAxisInputs();
   roomMasterAxisInputs.forEach((input) => {
     input.checked = input.value === app.roomMasterAxis;
   });
 }
 
 export function refreshRoomGeometryInputState() {
+  const roomMasterAxisInputs = getRoomMasterAxisInputs();
+  const roomRatioCenterBlendSliderEl = getRoomRatioCenterBlendSliderEl();
+  const roomGeometryCancelBtnEl = getRoomGeometryCancelBtnEl();
   const axes = ['width', 'length', 'height', 'rear', 'lower'];
   syncRoomMasterAxisUI();
   const frozen = isRoomRatioFrozen();
@@ -658,6 +692,16 @@ export function refreshRoomGeometryInputState() {
 }
 
 export function renderRoomRatioDisplay() {
+  const roomDimWidthInputEl = getRoomDimWidthInputEl();
+  const roomDimLengthInputEl = getRoomDimLengthInputEl();
+  const roomDimHeightInputEl = getRoomDimHeightInputEl();
+  const roomDimRearInputEl = getRoomDimRearInputEl();
+  const roomDimLowerInputEl = getRoomDimLowerInputEl();
+  const roomRatioWidthInputEl = getRoomRatioWidthInputEl();
+  const roomRatioLengthInputEl = getRoomRatioLengthInputEl();
+  const roomRatioHeightInputEl = getRoomRatioHeightInputEl();
+  const roomRatioRearInputEl = getRoomRatioRearInputEl();
+  const roomRatioLowerInputEl = getRoomRatioLowerInputEl();
   const metersPerUnit = app.metersPerUnit ?? 1;
   const dimW = app.roomRatio.width * metersPerUnit * 2;
   const dimL = app.roomRatio.length * metersPerUnit;
