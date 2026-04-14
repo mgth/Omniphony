@@ -120,11 +120,62 @@ export function buildLabelSvgMarkup(text, color, width, height, isLarge) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><g fill="${escapeSvgText(color || '#ffffff')}" font-family="sans-serif">${textMarkup}</g></svg>`;
 }
 
+function createLabelCanvas(width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+}
+
+function createLabelCanvasTexture(canvas) {
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function drawLabelTextToCanvas(sprite, text) {
+  const canvas = sprite?.userData?.labelCanvas;
+  const ctx = sprite?.userData?.labelCtx;
+  if (!canvas || !ctx) {
+    return;
+  }
+
+  const lines = String(text ?? '').split('\n');
+  const isLargeCanvas = canvas.width >= 200;
+  const fontSize = isLargeCanvas ? 36 : 28;
+  const baseFontSize = isLargeCanvas ? 24 : 18;
+  const lineHeight = isLargeCanvas ? 24 : 18;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = sprite.userData.labelColor || '#ffffff';
+
+  if (lines.length <= 1) {
+    ctx.font = `700 ${fontSize}px sans-serif`;
+    ctx.fillText(lines[0] || '', canvas.width / 2, canvas.height / 2);
+    return;
+  }
+
+  const totalHeight = lineHeight * (lines.length - 1);
+  const startY = (canvas.height / 2) - (totalHeight / 2);
+  lines.forEach((line, index) => {
+    const weight = index === 0 ? 700 : 600;
+    const y = startY + (index * lineHeight);
+    ctx.font = `${weight} ${baseFontSize}px sans-serif`;
+    ctx.fillText(line, canvas.width / 2, y);
+  });
+}
+
 export function createLabelSpriteBase(width, height, scaleX, scaleY, color, text) {
-  const texture = createLabelTexture();
+  const canvas = createLabelCanvas(width, height);
+  const texture = createLabelCanvasTexture(canvas);
   const material = new THREE.SpriteMaterial({
     map: texture,
-    transparent: false,
+    transparent: true,
     alphaTest: 0.25,
     depthTest: false,
     depthWrite: false,
@@ -135,14 +186,13 @@ export function createLabelSpriteBase(width, height, scaleX, scaleY, color, text
   sprite.frustumCulled = false;
   sprite.renderOrder = 40;
   sprite.userData.labelDebugId = nextLabelDebugId++;
+  sprite.userData.labelCanvas = canvas;
+  sprite.userData.labelCtx = canvas.getContext('2d');
   sprite.userData.labelTexture = texture;
-  sprite.userData.labelImage = texture.image;
-  sprite.userData.labelImageAsset = texture.image;
   sprite.userData.labelText = '';
   sprite.userData.labelColor = color;
   sprite.userData.labelWidth = width;
   sprite.userData.labelHeight = height;
-  sprite.userData.labelRequestId = 0;
   sprite.userData.labelDisposed = false;
   labelDebugStats.created += 1;
   pushLabelDebugEvent('create', sprite, { width, height });
@@ -159,17 +209,15 @@ export function createSmallLabelSprite(text, color = '#d9ecff') {
 }
 
 export function createLabelTexture() {
-  return createLabelTextureFromImageSource(null);
+  const canvas = createLabelCanvas(128, 64);
+  return createLabelCanvasTexture(canvas);
 }
 
 export function createLabelTextureFromImageSource(imageSource) {
-  const image = imageSource ?? new Image();
-  const texture = new THREE.Texture(image);
-  texture.minFilter = THREE.LinearFilter;
-  texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = false;
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
+  if (imageSource instanceof HTMLCanvasElement) {
+    return createLabelCanvasTexture(imageSource);
+  }
+  return createLabelCanvasTexture(createLabelCanvas(128, 64));
 }
 
 export function rebuildLabelSpriteTexture(sprite) {
@@ -178,17 +226,33 @@ export function rebuildLabelSpriteTexture(sprite) {
   }
   labelDebugStats.textureRebuilds += 1;
   pushLabelDebugEvent('rebuild-texture', sprite);
-  sprite.userData.labelRequestId = (Number(sprite.userData.labelRequestId) || 0) + 1;
   disposeLabelTextureResources(sprite);
-  const nextText = String(sprite.userData?.labelText ?? '');
-  sprite.userData.labelText = '';
-  setLabelSpriteText(sprite, nextText);
+  const canvas = sprite.userData.labelCanvas
+    ?? createLabelCanvas(
+      Number(sprite.userData.labelWidth) || 128,
+      Number(sprite.userData.labelHeight) || 64
+    );
+  const ctx = sprite.userData.labelCtx ?? canvas.getContext('2d');
+  sprite.userData.labelCanvas = canvas;
+  sprite.userData.labelCtx = ctx;
+  const texture = createLabelCanvasTexture(canvas);
+  sprite.userData.labelTexture = texture;
+  sprite.material.map = texture;
+  sprite.material.needsUpdate = true;
+  drawLabelTextToCanvas(sprite, sprite.userData.labelText ?? '');
+  texture.needsUpdate = true;
 }
 
-function disposeLabelImageAsset(asset) {
-  if (asset && typeof asset.close === 'function') {
-    asset.close();
+function disposeLabelImageAsset(_asset) {
+  // Labels now render directly to canvas; there is no external image asset.
+}
+
+function disposeLabelCanvasResources(sprite) {
+  if (!sprite?.userData) {
+    return;
   }
+  sprite.userData.labelCtx = null;
+  sprite.userData.labelCanvas = null;
 }
 
 function disposeLabelTextureResources(sprite) {
@@ -196,10 +260,7 @@ function disposeLabelTextureResources(sprite) {
     return;
   }
   const oldTexture = sprite.userData.labelTexture;
-  const oldAsset = sprite.userData.labelImageAsset;
   sprite.userData.labelTexture = null;
-  sprite.userData.labelImage = null;
-  sprite.userData.labelImageAsset = null;
   if (sprite.material?.map === oldTexture) {
     sprite.material.map = null;
     sprite.material.needsUpdate = true;
@@ -207,23 +268,18 @@ function disposeLabelTextureResources(sprite) {
   if (oldTexture) {
     oldTexture.dispose();
   }
-  disposeLabelImageAsset(oldAsset);
+  disposeLabelImageAsset(null);
 }
 
 function adoptLabelTexture(sprite, texture, asset) {
   const previousTexture = sprite.userData.labelTexture;
-  const previousAsset = sprite.userData.labelImageAsset;
   sprite.userData.labelTexture = texture;
-  sprite.userData.labelImage = texture.image;
-  sprite.userData.labelImageAsset = asset;
   sprite.material.map = texture;
   sprite.material.needsUpdate = true;
   if (previousTexture && previousTexture !== texture) {
     previousTexture.dispose();
   }
-  if (previousAsset && previousAsset !== asset) {
-    disposeLabelImageAsset(previousAsset);
-  }
+  disposeLabelImageAsset(asset);
 }
 
 export function disposeLabelSprite(sprite) {
@@ -231,8 +287,8 @@ export function disposeLabelSprite(sprite) {
     return;
   }
   sprite.userData.labelDisposed = true;
-  sprite.userData.labelRequestId = (Number(sprite.userData.labelRequestId) || 0) + 1;
   disposeLabelTextureResources(sprite);
+  disposeLabelCanvasResources(sprite);
   sprite.material.dispose();
 }
 
@@ -247,43 +303,13 @@ export function setLabelSpriteText(sprite, text) {
   }
   labelDebugStats.textUpdates += 1;
   pushLabelDebugEvent('set-text', sprite, { nextText });
-  const width = Number(sprite.userData.labelWidth) || 128;
-  const height = Number(sprite.userData.labelHeight) || 64;
-  const isLargeCanvas = width >= 200;
-  const requestId = (Number(sprite.userData.labelRequestId) || 0) + 1;
-  const nextTexture = createLabelTexture();
-  const image = nextTexture.image;
-  sprite.userData.labelRequestId = requestId;
   sprite.userData.labelText = nextText;
-  image.onload = () => {
-    const currentRequestId = Number(sprite.userData?.labelRequestId) || 0;
-    if (sprite.userData?.labelDisposed || currentRequestId !== requestId) {
-      nextTexture.dispose();
-      disposeLabelImageAsset(image);
-      return;
-    }
+  drawLabelTextToCanvas(sprite, nextText);
+  if (sprite.userData.labelTexture) {
     labelDebugStats.imageLoads += 1;
     pushLabelDebugEvent('image-load', sprite);
-    nextTexture.needsUpdate = true;
-    adoptLabelTexture(sprite, nextTexture, image);
-  };
-  image.onerror = () => {
-    const currentRequestId = Number(sprite.userData?.labelRequestId) || 0;
-    if (sprite.userData?.labelDisposed || currentRequestId !== requestId) {
-      nextTexture.dispose();
-      disposeLabelImageAsset(image);
-      return;
-    }
-    nextTexture.dispose();
-    pushLabelDebugEvent('image-load-error', sprite, { message: 'label image load failed' });
-  };
-  image.src = buildLabelSvgDataUrl(
-    nextText,
-    sprite.userData.labelColor || '#ffffff',
-    width,
-    height,
-    isLargeCanvas
-  );
+    sprite.userData.labelTexture.needsUpdate = true;
+  }
 }
 
 export function updateSpeakerLabelsFromSelection() {

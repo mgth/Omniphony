@@ -143,35 +143,35 @@ import {
 // DOM references
 // ---------------------------------------------------------------------------
 
-const speakersListEl = document.getElementById('speakersList');
-const objectsListEl = document.getElementById('objectsList');
-const speakersSectionEl = document.getElementById('speakersSection');
-const speakerEditSectionEl = document.getElementById('speakerEditSection');
-const speakerEditBodyEl = document.getElementById('speakerEditBody');
-const speakerEditTitleEl = document.getElementById('speakerEditTitle');
-const speakerEditNameInputEl = document.getElementById('speakerEditNameInput');
-const speakerEditXInputEl = document.getElementById('speakerEditXInput');
-const speakerEditYInputEl = document.getElementById('speakerEditYInput');
-const speakerEditZInputEl = document.getElementById('speakerEditZInput');
-const speakerEditCartesianModeEl = document.getElementById('speakerEditCartesianMode');
-const speakerEditAzInputEl = document.getElementById('speakerEditAzInput');
-const speakerEditElInputEl = document.getElementById('speakerEditElInput');
-const speakerEditRInputEl = document.getElementById('speakerEditRInput');
-const speakerEditPolarModeEl = document.getElementById('speakerEditPolarMode');
-const speakerEditCartesianGizmoBtnEl = document.getElementById('speakerEditCartesianGizmoBtn');
-const speakerEditPolarGizmoBtnEl = document.getElementById('speakerEditPolarGizmoBtn');
-const speakerEditGainSliderEl = document.getElementById('speakerEditGainSlider');
-const speakerEditGainBoxEl = document.getElementById('speakerEditGainBox');
-const speakerEditDelayMsInputEl = document.getElementById('speakerEditDelayMsInput');
-const speakerEditDelaySamplesInputEl = document.getElementById('speakerEditDelaySamplesInput');
-const speakerEditAutoDelayBtnEl = document.getElementById('speakerEditAutoDelayBtn');
-const speakerEditDelayToDistanceBtnEl = document.getElementById('speakerEditDelayToDistanceBtn');
-const speakerEditSpatializeToggleEl = document.getElementById('speakerEditSpatializeToggle');
-const speakerAddBtnEl = document.getElementById('speakerAddBtn');
-const speakerMoveUpBtnEl = document.getElementById('speakerMoveUpBtn');
-const speakerMoveDownBtnEl = document.getElementById('speakerMoveDownBtn');
-const speakerRemoveBtnEl = document.getElementById('speakerRemoveBtn');
-const objectsSectionEl = document.getElementById('objectsSection');
+function getSpeakersListEl() { return document.getElementById('speakersList'); }
+function getObjectsListEl() { return document.getElementById('objectsList'); }
+function getSpeakersSectionEl() { return document.getElementById('speakersSection'); }
+function getSpeakerEditSectionEl() { return document.getElementById('speakerEditSection'); }
+function getSpeakerEditBodyEl() { return document.getElementById('speakerEditBody'); }
+function getSpeakerEditTitleEl() { return document.getElementById('speakerEditTitle'); }
+function getSpeakerEditNameInputEl() { return document.getElementById('speakerEditNameInput'); }
+function getSpeakerEditXInputEl() { return document.getElementById('speakerEditXInput'); }
+function getSpeakerEditYInputEl() { return document.getElementById('speakerEditYInput'); }
+function getSpeakerEditZInputEl() { return document.getElementById('speakerEditZInput'); }
+function getSpeakerEditCartesianModeEl() { return document.getElementById('speakerEditCartesianMode'); }
+function getSpeakerEditAzInputEl() { return document.getElementById('speakerEditAzInput'); }
+function getSpeakerEditElInputEl() { return document.getElementById('speakerEditElInput'); }
+function getSpeakerEditRInputEl() { return document.getElementById('speakerEditRInput'); }
+function getSpeakerEditPolarModeEl() { return document.getElementById('speakerEditPolarMode'); }
+function getSpeakerEditCartesianGizmoBtnEl() { return document.getElementById('speakerEditCartesianGizmoBtn'); }
+function getSpeakerEditPolarGizmoBtnEl() { return document.getElementById('speakerEditPolarGizmoBtn'); }
+function getSpeakerEditGainSliderEl() { return document.getElementById('speakerEditGainSlider'); }
+function getSpeakerEditGainBoxEl() { return document.getElementById('speakerEditGainBox'); }
+function getSpeakerEditDelayMsInputEl() { return document.getElementById('speakerEditDelayMsInput'); }
+function getSpeakerEditDelaySamplesInputEl() { return document.getElementById('speakerEditDelaySamplesInput'); }
+function getSpeakerEditAutoDelayBtnEl() { return document.getElementById('speakerEditAutoDelayBtn'); }
+function getSpeakerEditDelayToDistanceBtnEl() { return document.getElementById('speakerEditDelayToDistanceBtn'); }
+function getSpeakerEditSpatializeToggleEl() { return document.getElementById('speakerEditSpatializeToggle'); }
+function getSpeakerAddBtnEl() { return document.getElementById('speakerAddBtn'); }
+function getSpeakerMoveUpBtnEl() { return document.getElementById('speakerMoveUpBtn'); }
+function getSpeakerMoveDownBtnEl() { return document.getElementById('speakerMoveDownBtn'); }
+function getSpeakerRemoveBtnEl() { return document.getElementById('speakerRemoveBtn'); }
+function getObjectsSectionEl() { return document.getElementById('objectsSection'); }
 
 // ---------------------------------------------------------------------------
 // Local aliases for app state
@@ -454,6 +454,7 @@ export function createSpeakerItem(id, speaker) {
     setSelectedSpeaker(Number(id));
   });
   root.addEventListener('dragover', (event) => {
+    const speakersListEl = getSpeakersListEl();
     if (app.draggedSpeakerIndex === null || !app.draggedSpeakerRoot || !speakersListEl) return;
     event.preventDefault();
     if (event.dataTransfer) {
@@ -722,6 +723,31 @@ export function applySpeakerPolarEdit(index, az, el, r, sendOsc = true) {
 // ---------------------------------------------------------------------------
 
 export function renderSpeakerEditor() {
+  const speakerEditSectionEl = getSpeakerEditSectionEl();
+  const speakerEditBodyEl = getSpeakerEditBodyEl();
+  const speakerAddBtnEl = getSpeakerAddBtnEl();
+  const speakerMoveUpBtnEl = getSpeakerMoveUpBtnEl();
+  const speakerMoveDownBtnEl = getSpeakerMoveDownBtnEl();
+  const speakerRemoveBtnEl = getSpeakerRemoveBtnEl();
+  const speakerEditTitleEl = getSpeakerEditTitleEl();
+  const speakerEditNameInputEl = getSpeakerEditNameInputEl();
+  const speakerEditXInputEl = getSpeakerEditXInputEl();
+  const speakerEditYInputEl = getSpeakerEditYInputEl();
+  const speakerEditZInputEl = getSpeakerEditZInputEl();
+  const speakerEditCartesianModeEl = getSpeakerEditCartesianModeEl();
+  const speakerEditPolarModeEl = getSpeakerEditPolarModeEl();
+  const speakerEditAzInputEl = getSpeakerEditAzInputEl();
+  const speakerEditElInputEl = getSpeakerEditElInputEl();
+  const speakerEditRInputEl = getSpeakerEditRInputEl();
+  const speakerEditGainSliderEl = getSpeakerEditGainSliderEl();
+  const speakerEditGainBoxEl = getSpeakerEditGainBoxEl();
+  const speakerEditDelayMsInputEl = getSpeakerEditDelayMsInputEl();
+  const speakerEditDelaySamplesInputEl = getSpeakerEditDelaySamplesInputEl();
+  const speakerEditSpatializeToggleEl = getSpeakerEditSpatializeToggleEl();
+  const speakerEditAutoDelayBtnEl = getSpeakerEditAutoDelayBtnEl();
+  const speakerEditDelayToDistanceBtnEl = getSpeakerEditDelayToDistanceBtnEl();
+  const speakerEditCartesianGizmoBtnEl = getSpeakerEditCartesianGizmoBtnEl();
+  const speakerEditPolarGizmoBtnEl = getSpeakerEditPolarGizmoBtnEl();
   if (!speakerEditSectionEl || !speakerEditBodyEl) {
     return;
   }
@@ -945,6 +971,7 @@ export function updateObjectItem(entry, id, position, name) {
 // ---------------------------------------------------------------------------
 
 export function renderSpeakersList() {
+  const speakersListEl = getSpeakersListEl();
   if (!speakersListEl) return;
 
   const currentLayoutSpeakers = get_currentLayoutSpeakers();
@@ -979,6 +1006,7 @@ export function renderSpeakersList() {
 }
 
 export function renderObjectsList() {
+  const objectsListEl = getObjectsListEl();
   if (!objectsListEl) return;
 
   const ids = [...sourceMeshes.keys()].sort((a, b) => {
@@ -1326,6 +1354,8 @@ export function updateSelectedObjectFaceShadows() {
 }
 
 export function updateSectionProportions() {
+  const speakersSectionEl = getSpeakersSectionEl();
+  const objectsSectionEl = getObjectsSectionEl();
   if (speakersSectionEl) {
     speakersSectionEl.style.flex = '1 1 0%';
   }
@@ -1406,6 +1436,7 @@ export function markDraggedSpeakerItem() {
 }
 
 export function animateSpeakerListReorder(mutate) {
+  const speakersListEl = getSpeakersListEl();
   if (!speakersListEl) {
     mutate();
     return;
@@ -1484,8 +1515,9 @@ export function requestMoveSpeakerTo(from, to, sendOsc = true) {
 // Speakers list drag-and-drop event listeners
 // ---------------------------------------------------------------------------
 
-if (speakersListEl) {
-  speakersListEl.addEventListener('dragenter', (event) => {
+const initialSpeakersListEl = getSpeakersListEl();
+if (initialSpeakersListEl) {
+  initialSpeakersListEl.addEventListener('dragenter', (event) => {
     if (app.draggedSpeakerRoot === null) return;
     event.preventDefault();
     if (event.dataTransfer) {
@@ -1493,7 +1525,9 @@ if (speakersListEl) {
     }
   });
 
-  speakersListEl.addEventListener('dragover', (event) => {
+  initialSpeakersListEl.addEventListener('dragover', (event) => {
+    const speakersListEl = getSpeakersListEl();
+    if (!speakersListEl) return;
     if (app.draggedSpeakerIndex === null || !app.draggedSpeakerRoot) return;
     event.preventDefault();
     if (event.dataTransfer) {
@@ -1519,7 +1553,7 @@ if (speakersListEl) {
     markDraggedSpeakerItem();
   });
 
-  speakersListEl.addEventListener('drop', (event) => {
+  initialSpeakersListEl.addEventListener('drop', (event) => {
     if (app.draggedSpeakerIndex === null) return;
     event.preventDefault();
     app.draggedSpeakerDidDrop = true;
@@ -1528,6 +1562,7 @@ if (speakersListEl) {
 
 // Ensure the browser keeps "drop allowed" cursor over any child node inside the speakers list.
 document.addEventListener('dragover', (event) => {
+  const speakersListEl = getSpeakersListEl();
   if (!app.draggedSpeakerRoot || !speakersListEl) return;
   const target = event.target;
   if (!(target instanceof Node) || !speakersListEl.contains(target)) return;
