@@ -186,6 +186,11 @@ export function getObjectBaseColor(id) {
   return color.clone();
 }
 
+function objectHasSemanticColor(id) {
+  const sourceTag = String(sourceTags.get(String(id)) || inferSourceTagFromId(id) || '').toUpperCase();
+  return sourceTag === 'A' || sourceTag === 'B';
+}
+
 export function getObjectTrailColor(id) {
   return getObjectBaseColor(id).offsetHSL(0, 0.04, 0.08);
 }
@@ -219,7 +224,7 @@ export function applyObjectItemColor(entry, id) {
   if (!entry?.root || !entry.idStrip) {
     return;
   }
-  if (!app.objectColorsEnabled) {
+  if (!app.objectColorsEnabled && !objectHasSemanticColor(id)) {
     entry.root.classList.remove('object-colorized');
     entry.root.style.removeProperty('--object-accent');
     entry.idStrip.style.removeProperty('color');
@@ -627,7 +632,8 @@ export function updateSourceColorsFromSelection() {
     const mix = gainToMix(gains?.[app.selectedSpeakerIndex]);
     const hasContribution = mix > 1e-6;
     const contributionColor = speakerSelectedColor;
-    const objectColor = app.objectColorsEnabled ? getObjectBaseColor(id) : sourceMaterial.color.clone();
+    const useObjectColor = app.objectColorsEnabled || objectHasSemanticColor(id);
+    const objectColor = useObjectColor ? getObjectBaseColor(id) : sourceMaterial.color.clone();
 
     mesh.visible = !metadataSilent;
     if (app.selectedSpeakerIndex !== null) {
@@ -682,10 +688,10 @@ export function updateSourceColorsFromSelection() {
           ? (mix <= 1e-6 ? 0.15 : 0.25 + (0.73 * mix))
           : 0.98;
         if (app.selectedSpeakerIndex !== null) {
-          outline.material.color.copy(app.objectColorsEnabled ? objectColor : sourceOutlineColor)
+          outline.material.color.copy(useObjectColor ? objectColor : sourceOutlineColor)
             .lerp(contributionColor, hasContribution ? mix * 0.65 : 0);
         } else {
-          outline.material.color.copy(app.objectColorsEnabled ? objectColor : sourceOutlineColor);
+          outline.material.color.copy(useObjectColor ? objectColor : sourceOutlineColor);
         }
       }
     }
@@ -730,7 +736,7 @@ export function updateSourceSelectionStyles() {
 
     const outline = sourceOutlines.get(id);
     if (outline) {
-      outline.material.color.copy(app.objectColorsEnabled ? getObjectBaseColor(id) : sourceOutlineColor);
+      outline.material.color.copy((app.objectColorsEnabled || objectHasSemanticColor(id)) ? getObjectBaseColor(id) : sourceOutlineColor);
       const selectedColor = app.selectedSpeakerIndex !== null
         ? sourceHotColor.clone().lerp(sourceOutlineSelectedColor, 0.55)
         : sourceOutlineSelectedColor;
