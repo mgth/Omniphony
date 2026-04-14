@@ -706,6 +706,11 @@ export function setRoomGeometryExpanded(expanded) {
     roomGeometryToggleBtnEl.textContent = app.roomGeometryExpanded ? '\u25be' : '\u25b8';
   }
   roomDimensionGroup.visible = false;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('omniphony:overlay-layout-changed', {
+      detail: { reason: 'room-geometry-toggle' }
+    }));
+  }
 }
 
 // ---------------------------------------------------------------------------

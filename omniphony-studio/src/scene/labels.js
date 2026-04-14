@@ -95,6 +95,10 @@ export function escapeSvgText(value) {
 }
 
 export function buildLabelSvgDataUrl(text, color, width, height, isLarge) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(buildLabelSvgMarkup(text, color, width, height, isLarge))}`;
+}
+
+export function buildLabelSvgMarkup(text, color, width, height, isLarge) {
   const lines = String(text ?? '').split('\n');
   const fontSize = isLarge ? 36 : 28;
   const baseFontSize = isLarge ? 24 : 18;
@@ -113,8 +117,7 @@ export function buildLabelSvgDataUrl(text, color, width, height, isLarge) {
     }).join('');
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><g fill="${escapeSvgText(color || '#ffffff')}" font-family="sans-serif">${textMarkup}</g></svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><g fill="${escapeSvgText(color || '#ffffff')}" font-family="sans-serif">${textMarkup}</g></svg>`;
 }
 
 export function createLabelSpriteBase(width, height, scaleX, scaleY, color, text) {
@@ -132,12 +135,15 @@ export function createLabelSpriteBase(width, height, scaleX, scaleY, color, text
   sprite.frustumCulled = false;
   sprite.renderOrder = 40;
   sprite.userData.labelDebugId = nextLabelDebugId++;
-  sprite.userData.labelImage = texture.image;
   sprite.userData.labelTexture = texture;
+  sprite.userData.labelImage = texture.image;
+  sprite.userData.labelImageAsset = texture.image;
   sprite.userData.labelText = '';
   sprite.userData.labelColor = color;
   sprite.userData.labelWidth = width;
   sprite.userData.labelHeight = height;
+  sprite.userData.labelRequestId = 0;
+  sprite.userData.labelDisposed = false;
   labelDebugStats.created += 1;
   pushLabelDebugEvent('create', sprite, { width, height });
   setLabelSpriteText(sprite, text);
@@ -153,7 +159,11 @@ export function createSmallLabelSprite(text, color = '#d9ecff') {
 }
 
 export function createLabelTexture() {
-  const image = new Image();
+  return createLabelTextureFromImageSource(null);
+}
+
+export function createLabelTextureFromImageSource(imageSource) {
+  const image = imageSource ?? new Image();
   const texture = new THREE.Texture(image);
   texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
@@ -163,27 +173,71 @@ export function createLabelTexture() {
 }
 
 export function rebuildLabelSpriteTexture(sprite) {
-  if (!sprite?.material) {
+  if (!sprite?.material || sprite.userData?.labelDisposed) {
     return;
   }
   labelDebugStats.textureRebuilds += 1;
   pushLabelDebugEvent('rebuild-texture', sprite);
-  const oldTexture = sprite.userData?.labelTexture;
-  const nextTexture = createLabelTexture();
-  sprite.userData.labelImage = nextTexture.image;
-  sprite.userData.labelTexture = nextTexture;
-  sprite.material.map = nextTexture;
-  sprite.material.needsUpdate = true;
-  if (oldTexture && oldTexture !== nextTexture) {
-    oldTexture.dispose();
-  }
+  sprite.userData.labelRequestId = (Number(sprite.userData.labelRequestId) || 0) + 1;
+  disposeLabelTextureResources(sprite);
   const nextText = String(sprite.userData?.labelText ?? '');
   sprite.userData.labelText = '';
   setLabelSpriteText(sprite, nextText);
 }
 
+function disposeLabelImageAsset(asset) {
+  if (asset && typeof asset.close === 'function') {
+    asset.close();
+  }
+}
+
+function disposeLabelTextureResources(sprite) {
+  if (!sprite?.userData) {
+    return;
+  }
+  const oldTexture = sprite.userData.labelTexture;
+  const oldAsset = sprite.userData.labelImageAsset;
+  sprite.userData.labelTexture = null;
+  sprite.userData.labelImage = null;
+  sprite.userData.labelImageAsset = null;
+  if (sprite.material?.map === oldTexture) {
+    sprite.material.map = null;
+    sprite.material.needsUpdate = true;
+  }
+  if (oldTexture) {
+    oldTexture.dispose();
+  }
+  disposeLabelImageAsset(oldAsset);
+}
+
+function adoptLabelTexture(sprite, texture, asset) {
+  const previousTexture = sprite.userData.labelTexture;
+  const previousAsset = sprite.userData.labelImageAsset;
+  sprite.userData.labelTexture = texture;
+  sprite.userData.labelImage = texture.image;
+  sprite.userData.labelImageAsset = asset;
+  sprite.material.map = texture;
+  sprite.material.needsUpdate = true;
+  if (previousTexture && previousTexture !== texture) {
+    previousTexture.dispose();
+  }
+  if (previousAsset && previousAsset !== asset) {
+    disposeLabelImageAsset(previousAsset);
+  }
+}
+
+export function disposeLabelSprite(sprite) {
+  if (!sprite?.material || !sprite.userData) {
+    return;
+  }
+  sprite.userData.labelDisposed = true;
+  sprite.userData.labelRequestId = (Number(sprite.userData.labelRequestId) || 0) + 1;
+  disposeLabelTextureResources(sprite);
+  sprite.material.dispose();
+}
+
 export function setLabelSpriteText(sprite, text) {
-  if (!sprite?.userData?.labelTexture || !sprite.userData.labelImage) {
+  if (!sprite?.material || !sprite.userData || sprite.userData.labelDisposed) {
     return;
   }
   const nextText = String(text ?? '');
@@ -196,13 +250,32 @@ export function setLabelSpriteText(sprite, text) {
   const width = Number(sprite.userData.labelWidth) || 128;
   const height = Number(sprite.userData.labelHeight) || 64;
   const isLargeCanvas = width >= 200;
-  const image = sprite.userData.labelImage;
+  const requestId = (Number(sprite.userData.labelRequestId) || 0) + 1;
+  const nextTexture = createLabelTexture();
+  const image = nextTexture.image;
+  sprite.userData.labelRequestId = requestId;
+  sprite.userData.labelText = nextText;
   image.onload = () => {
-    if (sprite.userData.labelImage === image && sprite.userData.labelTexture) {
-      labelDebugStats.imageLoads += 1;
-      pushLabelDebugEvent('image-load', sprite);
-      sprite.userData.labelTexture.needsUpdate = true;
+    const currentRequestId = Number(sprite.userData?.labelRequestId) || 0;
+    if (sprite.userData?.labelDisposed || currentRequestId !== requestId) {
+      nextTexture.dispose();
+      disposeLabelImageAsset(image);
+      return;
     }
+    labelDebugStats.imageLoads += 1;
+    pushLabelDebugEvent('image-load', sprite);
+    nextTexture.needsUpdate = true;
+    adoptLabelTexture(sprite, nextTexture, image);
+  };
+  image.onerror = () => {
+    const currentRequestId = Number(sprite.userData?.labelRequestId) || 0;
+    if (sprite.userData?.labelDisposed || currentRequestId !== requestId) {
+      nextTexture.dispose();
+      disposeLabelImageAsset(image);
+      return;
+    }
+    nextTexture.dispose();
+    pushLabelDebugEvent('image-load-error', sprite, { message: 'label image load failed' });
   };
   image.src = buildLabelSvgDataUrl(
     nextText,
@@ -211,7 +284,6 @@ export function setLabelSpriteText(sprite, text) {
     height,
     isLargeCanvas
   );
-  sprite.userData.labelText = nextText;
 }
 
 export function updateSpeakerLabelsFromSelection() {

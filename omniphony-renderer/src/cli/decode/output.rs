@@ -304,19 +304,19 @@ impl AudioWriter {
     }
 
     /// Set the capture sample rate for the Bresenham trigger ratio (direct trigger mode).
-    pub fn set_input_trigger_rate_hz(&self, rate_hz: u32) {
+    pub fn set_input_trigger_rate_hz(&self, _rate_hz: u32) {
         match self {
             #[cfg(target_os = "linux")]
-            AudioWriter::Pipewire(pw) => pw.set_input_trigger_rate_hz(rate_hz),
+            AudioWriter::Pipewire(pw) => pw.set_input_trigger_rate_hz(_rate_hz),
             _ => {}
         }
     }
 
     /// Set the observed capture quantum in transport frames for direct-trigger mode.
-    pub fn set_input_trigger_quantum_frames(&self, quantum_frames: u32) {
+    pub fn set_input_trigger_quantum_frames(&self, _quantum_frames: u32) {
         match self {
             #[cfg(target_os = "linux")]
-            AudioWriter::Pipewire(pw) => pw.set_input_trigger_quantum_frames(quantum_frames),
+            AudioWriter::Pipewire(pw) => pw.set_input_trigger_quantum_frames(_quantum_frames),
             _ => {}
         }
     }

@@ -4,6 +4,15 @@
 
 import { app } from './state.js';
 
+function notifyOverlayLayoutChanged(reason) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent('omniphony:overlay-layout-changed', {
+    detail: { reason }
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // DOM refs (queried once at module load)
 // ---------------------------------------------------------------------------
@@ -104,6 +113,7 @@ export function setTelemetryGaugesOpen(open) {
   if (telemetryGaugesToggleBtnEl) {
     telemetryGaugesToggleBtnEl.textContent = app.telemetryGaugesOpen ? '▾' : '▸';
   }
+  notifyOverlayLayoutChanged('telemetry-gauges-toggle');
 }
 
 export function setDisplaySectionOpen(open) {
@@ -114,6 +124,7 @@ export function setDisplaySectionOpen(open) {
   if (displaySectionToggleBtnEl) {
     displaySectionToggleBtnEl.textContent = app.displaySectionOpen ? '▾' : '▸';
   }
+  notifyOverlayLayoutChanged('display-section-toggle');
 }
 
 export function setAudioOutputSectionOpen(open) {
@@ -127,6 +138,7 @@ export function setAudioOutputSectionOpen(open) {
   if (audioOutputSectionToggleBtnEl) {
     audioOutputSectionToggleBtnEl.textContent = app.audioOutputSectionOpen ? '▾' : '▸';
   }
+  notifyOverlayLayoutChanged('audio-output-section-toggle');
 }
 
 export function setInputSectionOpen(open) {
@@ -140,6 +152,7 @@ export function setInputSectionOpen(open) {
   if (inputSectionToggleBtnEl) {
     inputSectionToggleBtnEl.textContent = app.inputSectionOpen ? '▾' : '▸';
   }
+  notifyOverlayLayoutChanged('input-section-toggle');
 }
 
 export function setRendererSectionOpen(open) {
@@ -153,6 +166,7 @@ export function setRendererSectionOpen(open) {
   if (rendererSectionToggleBtnEl) {
     rendererSectionToggleBtnEl.textContent = app.rendererSectionOpen ? '▾' : '▸';
   }
+  notifyOverlayLayoutChanged('renderer-section-toggle');
 }
 
 export function collapseRuntimeSections() {

@@ -15,11 +15,11 @@ use std::time::Duration;
 use crate::{
     AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO, adaptive_band_name,
     adaptive_runtime::{
-        AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, MAX_INTEGRAL_TERM,
-        adaptive_runtime_state_name, compute_hard_recover_high_plan, far_mode_band_from_latency,
-        note_refill_or_underrun, output_to_input_domain_samples, paused_rate_adjust,
-        postprocess_interleaved_output, reset_adaptive_runtime, run_adaptive_servo,
-        should_run_adaptive_servo, update_far_mode_state, update_latency_metrics, zero_pad_tail,
+        AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, adaptive_runtime_state_name,
+        compute_hard_recover_high_plan, far_mode_band_from_latency, note_refill_or_underrun,
+        output_to_input_domain_samples, paused_rate_adjust, postprocess_interleaved_output,
+        reset_adaptive_runtime, run_adaptive_servo, should_run_adaptive_servo,
+        update_far_mode_state, update_latency_metrics, zero_pad_tail,
     },
     adaptive_runtime_state_code, adaptive_runtime_state_name_from_code,
     clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,

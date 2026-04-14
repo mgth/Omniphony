@@ -7,6 +7,7 @@ import { rebuildRoomDimensionGuideResources, updateRoomDimensionGuides } from '.
 import { rebindPointerListeners } from './picking.js';
 
 let recoveryCanvas = null;
+let scheduledRecoveryTimer = null;
 const visualRecoveryStats = {
   rebuilds: 0,
   reasons: {},
@@ -35,9 +36,9 @@ function onContextLost(event) {
 }
 
 function onContextRestored() {
-  pushLog('warn', 'WebGL context restored. Rebuilding visual resources.');
+  pushLog('warn', 'WebGL context restored. Rebuilding WebGL renderer and visual resources.');
   requestAnimationFrame(() => {
-    rebuildVisualResources('webglcontextrestored');
+    rebuildRenderer('webglcontextrestored');
   });
 }
 
@@ -89,6 +90,23 @@ function flagObjectResources(object) {
   flagMaterial(object.material);
 }
 
+function onOverlayLayoutChanged(event) {
+  const reason = typeof event?.detail?.reason === 'string' && event.detail.reason
+    ? event.detail.reason
+    : 'overlay-layout-change';
+  scheduleVisualRecovery(reason);
+}
+
+export function scheduleVisualRecovery(reason = 'manual') {
+  if (scheduledRecoveryTimer !== null) {
+    window.clearTimeout(scheduledRecoveryTimer);
+  }
+  scheduledRecoveryTimer = window.setTimeout(() => {
+    scheduledRecoveryTimer = null;
+    rebuildVisualResources(reason);
+  }, 120);
+}
+
 export function rebuildVisualResources(reason = 'manual') {
   visualRecoveryStats.rebuilds += 1;
   visualRecoveryStats.reasons[reason] = (visualRecoveryStats.reasons[reason] || 0) + 1;
@@ -124,18 +142,22 @@ export function rebuildVisualResources(reason = 'manual') {
 export function setupVisualRecovery() {
   bindRecoveryListeners();
   if (typeof window !== 'undefined') {
+    window.addEventListener('omniphony:overlay-layout-changed', onOverlayLayoutChanged);
+  }
+  if (typeof window !== 'undefined') {
     const existing = window.omniphonyDebug && typeof window.omniphonyDebug === 'object'
       ? window.omniphonyDebug
       : {};
     window.omniphonyDebug = {
       ...existing,
       rebuildVisualResources,
-      rebuildRenderer
+      rebuildRenderer,
+      scheduleVisualRecovery
     };
   }
 }
 
-export function rebuildRenderer() {
+export function rebuildRenderer(reason = 'renderer-rebuild') {
   try {
     rebuildRendererOnFreshCanvas();
     rebindPointerListeners();
@@ -144,11 +166,18 @@ export function rebuildRenderer() {
     pushLog('error', `Renderer rebuild failed: ${error instanceof Error ? error.message : String(error)}`);
     return;
   }
-  rebuildVisualResources('renderer-rebuild');
+  rebuildVisualResources(reason);
   pushLog('warn', 'WebGL renderer rebuilt.');
 }
 
 export function teardownVisualRecovery() {
+  if (scheduledRecoveryTimer !== null) {
+    window.clearTimeout(scheduledRecoveryTimer);
+    scheduledRecoveryTimer = null;
+  }
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('omniphony:overlay-layout-changed', onOverlayLayoutChanged);
+  }
   if (recoveryCanvas) {
     recoveryCanvas.removeEventListener('webglcontextlost', onContextLost);
     recoveryCanvas.removeEventListener('webglcontextrestored', onContextRestored);

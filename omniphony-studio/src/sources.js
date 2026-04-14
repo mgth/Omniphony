@@ -64,6 +64,7 @@ import {
 } from './scene/materials.js';
 import {
   createLabelSprite,
+  disposeLabelSprite,
   setLabelSpriteText,
   updateSpeakerLabelsFromSelection
 } from './scene/labels.js';
@@ -989,8 +990,7 @@ export function removeSource(id) {
   scene.remove(mesh);
   if (label) {
     scene.remove(label);
-    label.material.map.dispose();
-    label.material.dispose();
+    disposeLabelSprite(label);
   }
   const outline = sourceOutlines.get(id);
   if (outline) {
@@ -1064,8 +1064,7 @@ export function clearSpeakers() {
   });
   speakerLabels.forEach((label) => {
     scene.remove(label);
-    label.material.map.dispose();
-    label.material.dispose();
+    disposeLabelSprite(label);
   });
   speakerMeshes.length = 0;
   speakerLabels.length = 0;
