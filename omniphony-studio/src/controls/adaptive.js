@@ -10,36 +10,62 @@ import { scheduleUIFlush } from '../flush.js';
 import { t } from '../i18n.js';
 import { inAudioPanel } from '../ui/panel-roots.js';
 
-// DOM refs
-const adaptiveResamplingToggleEl = inAudioPanel('adaptiveResamplingToggle');
-const adaptiveFarHardRecoverHighToggleEl = inAudioPanel('adaptiveFarHardRecoverHighToggle');
-const adaptiveFarHardRecoverLowToggleEl = inAudioPanel('adaptiveFarHardRecoverLowToggle');
-const adaptiveFarSilenceToggleEl = inAudioPanel('adaptiveFarSilenceToggle');
-const adaptiveFarSilenceRowEl = inAudioPanel('adaptiveFarSilenceRow');
-const adaptiveFarFadeRowEl = inAudioPanel('adaptiveFarFadeRow');
-const adaptiveFarFadeInMsInputEl = inAudioPanel('adaptiveFarFadeInMsInput');
-const adaptiveUpdateIntervalRowEl = inAudioPanel('adaptiveUpdateIntervalRow');
-const adaptiveKpNearInputEl = inAudioPanel('adaptiveKpNearInput');
-const adaptiveKpNearRowEl = inAudioPanel('adaptiveKpNearRow');
-const adaptiveKiInputEl = inAudioPanel('adaptiveKiInput');
-const adaptiveKiRowEl = inAudioPanel('adaptiveKiRow');
-const adaptiveIntegralDischargeRatioInputEl = inAudioPanel('adaptiveIntegralDischargeRatioInput');
-const adaptiveIntegralDischargeRowEl = inAudioPanel('adaptiveIntegralDischargeRow');
-const adaptiveMaxAdjustInputEl = inAudioPanel('adaptiveMaxAdjustInput');
-const adaptiveMaxAdjustRowEl = inAudioPanel('adaptiveMaxAdjustRow');
-const adaptiveNearFarThresholdRowEl = inAudioPanel('adaptiveNearFarThresholdRow');
-const adaptiveNearFarThresholdSymbolEl = inAudioPanel('adaptiveNearFarThresholdSymbol');
-const adaptiveNearFarThresholdInputEl = inAudioPanel('adaptiveNearFarThresholdInput');
-const adaptiveUpdateIntervalCallbacksInputEl = inAudioPanel('adaptiveUpdateIntervalCallbacksInput');
-const adaptiveResamplingAdvancedApplyBtnEl = inAudioPanel('adaptiveResamplingAdvancedApplyBtn');
-const adaptiveResamplingAdvancedCancelBtnEl = inAudioPanel('adaptiveResamplingAdvancedCancelBtn');
-const adaptiveBandDotEl = inAudioPanel('adaptiveBandDot');
-const adaptiveBandTextEl = inAudioPanel('adaptiveBandText');
-const adaptiveRuntimeStateTextEl = inAudioPanel('adaptiveRuntimeStateText');
-const adaptivePauseBtnEl = inAudioPanel('adaptivePauseBtn');
-const adaptiveRatioResetBtnEl = inAudioPanel('adaptiveRatioResetBtn');
+function getAdaptiveResamplingToggleEl() { return inAudioPanel('adaptiveResamplingToggle'); }
+function getAdaptiveFarHardRecoverHighToggleEl() { return inAudioPanel('adaptiveFarHardRecoverHighToggle'); }
+function getAdaptiveFarHardRecoverLowToggleEl() { return inAudioPanel('adaptiveFarHardRecoverLowToggle'); }
+function getAdaptiveFarSilenceToggleEl() { return inAudioPanel('adaptiveFarSilenceToggle'); }
+function getAdaptiveFarSilenceRowEl() { return inAudioPanel('adaptiveFarSilenceRow'); }
+function getAdaptiveFarFadeRowEl() { return inAudioPanel('adaptiveFarFadeRow'); }
+function getAdaptiveFarFadeInMsInputEl() { return inAudioPanel('adaptiveFarFadeInMsInput'); }
+function getAdaptiveUpdateIntervalRowEl() { return inAudioPanel('adaptiveUpdateIntervalRow'); }
+function getAdaptiveKpNearInputEl() { return inAudioPanel('adaptiveKpNearInput'); }
+function getAdaptiveKpNearRowEl() { return inAudioPanel('adaptiveKpNearRow'); }
+function getAdaptiveKiInputEl() { return inAudioPanel('adaptiveKiInput'); }
+function getAdaptiveKiRowEl() { return inAudioPanel('adaptiveKiRow'); }
+function getAdaptiveIntegralDischargeRatioInputEl() { return inAudioPanel('adaptiveIntegralDischargeRatioInput'); }
+function getAdaptiveIntegralDischargeRowEl() { return inAudioPanel('adaptiveIntegralDischargeRow'); }
+function getAdaptiveMaxAdjustInputEl() { return inAudioPanel('adaptiveMaxAdjustInput'); }
+function getAdaptiveMaxAdjustRowEl() { return inAudioPanel('adaptiveMaxAdjustRow'); }
+function getAdaptiveNearFarThresholdRowEl() { return inAudioPanel('adaptiveNearFarThresholdRow'); }
+function getAdaptiveNearFarThresholdSymbolEl() { return inAudioPanel('adaptiveNearFarThresholdSymbol'); }
+function getAdaptiveNearFarThresholdInputEl() { return inAudioPanel('adaptiveNearFarThresholdInput'); }
+function getAdaptiveUpdateIntervalCallbacksInputEl() { return inAudioPanel('adaptiveUpdateIntervalCallbacksInput'); }
+function getAdaptiveResamplingAdvancedApplyBtnEl() { return inAudioPanel('adaptiveResamplingAdvancedApplyBtn'); }
+function getAdaptiveResamplingAdvancedCancelBtnEl() { return inAudioPanel('adaptiveResamplingAdvancedCancelBtn'); }
+function getAdaptiveBandDotEl() { return inAudioPanel('adaptiveBandDot'); }
+function getAdaptiveBandTextEl() { return inAudioPanel('adaptiveBandText'); }
+function getAdaptiveRuntimeStateTextEl() { return inAudioPanel('adaptiveRuntimeStateText'); }
+function getAdaptivePauseBtnEl() { return inAudioPanel('adaptivePauseBtn'); }
+function getAdaptiveRatioResetBtnEl() { return inAudioPanel('adaptiveRatioResetBtn'); }
 
 export function renderAdaptiveResamplingUI() {
+  const adaptiveResamplingToggleEl = getAdaptiveResamplingToggleEl();
+  const adaptiveFarHardRecoverHighToggleEl = getAdaptiveFarHardRecoverHighToggleEl();
+  const adaptiveFarHardRecoverLowToggleEl = getAdaptiveFarHardRecoverLowToggleEl();
+  const adaptiveFarSilenceToggleEl = getAdaptiveFarSilenceToggleEl();
+  const adaptiveFarSilenceRowEl = getAdaptiveFarSilenceRowEl();
+  const adaptiveFarFadeRowEl = getAdaptiveFarFadeRowEl();
+  const adaptiveFarFadeInMsInputEl = getAdaptiveFarFadeInMsInputEl();
+  const adaptiveUpdateIntervalRowEl = getAdaptiveUpdateIntervalRowEl();
+  const adaptiveKpNearInputEl = getAdaptiveKpNearInputEl();
+  const adaptiveKpNearRowEl = getAdaptiveKpNearRowEl();
+  const adaptiveKiInputEl = getAdaptiveKiInputEl();
+  const adaptiveKiRowEl = getAdaptiveKiRowEl();
+  const adaptiveIntegralDischargeRatioInputEl = getAdaptiveIntegralDischargeRatioInputEl();
+  const adaptiveIntegralDischargeRowEl = getAdaptiveIntegralDischargeRowEl();
+  const adaptiveMaxAdjustInputEl = getAdaptiveMaxAdjustInputEl();
+  const adaptiveMaxAdjustRowEl = getAdaptiveMaxAdjustRowEl();
+  const adaptiveNearFarThresholdRowEl = getAdaptiveNearFarThresholdRowEl();
+  const adaptiveNearFarThresholdSymbolEl = getAdaptiveNearFarThresholdSymbolEl();
+  const adaptiveNearFarThresholdInputEl = getAdaptiveNearFarThresholdInputEl();
+  const adaptiveUpdateIntervalCallbacksInputEl = getAdaptiveUpdateIntervalCallbacksInputEl();
+  const adaptiveResamplingAdvancedApplyBtnEl = getAdaptiveResamplingAdvancedApplyBtnEl();
+  const adaptiveResamplingAdvancedCancelBtnEl = getAdaptiveResamplingAdvancedCancelBtnEl();
+  const adaptiveBandDotEl = getAdaptiveBandDotEl();
+  const adaptiveBandTextEl = getAdaptiveBandTextEl();
+  const adaptiveRuntimeStateTextEl = getAdaptiveRuntimeStateTextEl();
+  const adaptivePauseBtnEl = getAdaptivePauseBtnEl();
+  const adaptiveRatioResetBtnEl = getAdaptiveRatioResetBtnEl();
   if (!adaptiveResamplingToggleEl) return;
   const farModeEnabled =
     app.adaptiveResamplingHardRecoverHighInFarMode === true

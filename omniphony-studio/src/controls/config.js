@@ -6,10 +6,12 @@ import { app, dirty } from '../state.js';
 import { scheduleUIFlush, flushCallbacks } from '../flush.js';
 import { inAudioPanel, inSaveFooter } from '../ui/panel-roots.js';
 
-const configSavedIndicatorEl = inAudioPanel('configSavedIndicator');
-const saveConfigBtnEl = inSaveFooter('saveConfigBtn');
+function getConfigSavedIndicatorEl() { return inAudioPanel('configSavedIndicator'); }
+function getSaveConfigBtnEl() { return inSaveFooter('saveConfigBtn'); }
 
 export function renderConfigSavedUI() {
+  const configSavedIndicatorEl = getConfigSavedIndicatorEl();
+  const saveConfigBtnEl = getSaveConfigBtnEl();
   if (!configSavedIndicatorEl) return;
   configSavedIndicatorEl.textContent = '';
   if (saveConfigBtnEl) {

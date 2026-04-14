@@ -9,17 +9,22 @@ import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inRendererInfoModals, inRendererPanel } from '../ui/panel-roots.js';
 
-// DOM refs
-const distanceDiffuseToggleEl = inRendererPanel('distanceDiffuseToggle');
-const distanceDiffuseParamsEl = inRendererPanel('distanceDiffuseParams');
-const distanceDiffuseThresholdSliderEl = inRendererPanel('distanceDiffuseThresholdSlider');
-const distanceDiffuseThresholdValEl = inRendererPanel('distanceDiffuseThresholdVal');
-const distanceDiffuseCurveSliderEl = inRendererPanel('distanceDiffuseCurveSlider');
-const distanceDiffuseCurveValEl = inRendererPanel('distanceDiffuseCurveVal');
-const distanceDiffuseInfoModalEl = inRendererInfoModals('distanceDiffuseInfoModal');
-const spreadFromDistanceInfoModalEl = inRendererInfoModals('spreadFromDistanceInfoModal');
+function getDistanceDiffuseToggleEl() { return inRendererPanel('distanceDiffuseToggle'); }
+function getDistanceDiffuseParamsEl() { return inRendererPanel('distanceDiffuseParams'); }
+function getDistanceDiffuseThresholdSliderEl() { return inRendererPanel('distanceDiffuseThresholdSlider'); }
+function getDistanceDiffuseThresholdValEl() { return inRendererPanel('distanceDiffuseThresholdVal'); }
+function getDistanceDiffuseCurveSliderEl() { return inRendererPanel('distanceDiffuseCurveSlider'); }
+function getDistanceDiffuseCurveValEl() { return inRendererPanel('distanceDiffuseCurveVal'); }
+function getDistanceDiffuseInfoModalEl() { return inRendererInfoModals('distanceDiffuseInfoModal'); }
+function getSpreadFromDistanceInfoModalEl() { return inRendererInfoModals('spreadFromDistanceInfoModal'); }
 
 export function renderDistanceDiffuseUI() {
+  const distanceDiffuseToggleEl = getDistanceDiffuseToggleEl();
+  const distanceDiffuseParamsEl = getDistanceDiffuseParamsEl();
+  const distanceDiffuseThresholdSliderEl = getDistanceDiffuseThresholdSliderEl();
+  const distanceDiffuseThresholdValEl = getDistanceDiffuseThresholdValEl();
+  const distanceDiffuseCurveSliderEl = getDistanceDiffuseCurveSliderEl();
+  const distanceDiffuseCurveValEl = getDistanceDiffuseCurveValEl();
   if (distanceDiffuseToggleEl) {
     distanceDiffuseToggleEl.checked = app.distanceDiffuseState.enabled === true;
   }
@@ -48,11 +53,13 @@ export function updateDistanceDiffuseUI() {
 }
 
 export function setDistanceDiffuseInfoModalOpen(open) {
+  const distanceDiffuseInfoModalEl = getDistanceDiffuseInfoModalEl();
   if (!distanceDiffuseInfoModalEl) return;
   distanceDiffuseInfoModalEl.classList.toggle('open', Boolean(open));
 }
 
 export function setSpreadFromDistanceInfoModalOpen(open) {
+  const spreadFromDistanceInfoModalEl = getSpreadFromDistanceInfoModalEl();
   if (!spreadFromDistanceInfoModalEl) return;
   spreadFromDistanceInfoModalEl.classList.toggle('open', Boolean(open));
 }

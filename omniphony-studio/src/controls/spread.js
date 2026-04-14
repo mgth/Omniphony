@@ -10,20 +10,30 @@ import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inRendererPanel } from '../ui/panel-roots.js';
 
-// DOM refs
-const spreadInfoEl = inRendererPanel('spreadInfo');
-const spreadMinSliderEl = inRendererPanel('spreadMinSlider');
-const spreadMaxSliderEl = inRendererPanel('spreadMaxSlider');
-const spreadMinValEl = inRendererPanel('spreadMinVal');
-const spreadMaxValEl = inRendererPanel('spreadMaxVal');
-const spreadFromDistanceToggleEl = inRendererPanel('spreadFromDistanceToggle');
-const spreadFromDistanceParamsEl = inRendererPanel('spreadFromDistanceParams');
-const spreadDistanceRangeSliderEl = inRendererPanel('spreadDistanceRangeSlider');
-const spreadDistanceRangeValEl = inRendererPanel('spreadDistanceRangeVal');
-const spreadDistanceCurveSliderEl = inRendererPanel('spreadDistanceCurveSlider');
-const spreadDistanceCurveValEl = inRendererPanel('spreadDistanceCurveVal');
+function getSpreadInfoEl() { return inRendererPanel('spreadInfo'); }
+function getSpreadMinSliderEl() { return inRendererPanel('spreadMinSlider'); }
+function getSpreadMaxSliderEl() { return inRendererPanel('spreadMaxSlider'); }
+function getSpreadMinValEl() { return inRendererPanel('spreadMinVal'); }
+function getSpreadMaxValEl() { return inRendererPanel('spreadMaxVal'); }
+function getSpreadFromDistanceToggleEl() { return inRendererPanel('spreadFromDistanceToggle'); }
+function getSpreadFromDistanceParamsEl() { return inRendererPanel('spreadFromDistanceParams'); }
+function getSpreadDistanceRangeSliderEl() { return inRendererPanel('spreadDistanceRangeSlider'); }
+function getSpreadDistanceRangeValEl() { return inRendererPanel('spreadDistanceRangeVal'); }
+function getSpreadDistanceCurveSliderEl() { return inRendererPanel('spreadDistanceCurveSlider'); }
+function getSpreadDistanceCurveValEl() { return inRendererPanel('spreadDistanceCurveVal'); }
 
 export function renderSpreadDisplay() {
+  const spreadInfoEl = getSpreadInfoEl();
+  const spreadMinSliderEl = getSpreadMinSliderEl();
+  const spreadMaxSliderEl = getSpreadMaxSliderEl();
+  const spreadMinValEl = getSpreadMinValEl();
+  const spreadMaxValEl = getSpreadMaxValEl();
+  const spreadFromDistanceToggleEl = getSpreadFromDistanceToggleEl();
+  const spreadFromDistanceParamsEl = getSpreadFromDistanceParamsEl();
+  const spreadDistanceRangeSliderEl = getSpreadDistanceRangeSliderEl();
+  const spreadDistanceRangeValEl = getSpreadDistanceRangeValEl();
+  const spreadDistanceCurveSliderEl = getSpreadDistanceCurveSliderEl();
+  const spreadDistanceCurveValEl = getSpreadDistanceCurveValEl();
   if (!spreadInfoEl) return;
   const minDeg = app.spreadState.min === null ? null : app.spreadState.min * 180.0;
   const maxDeg = app.spreadState.max === null ? null : app.spreadState.max * 180.0;

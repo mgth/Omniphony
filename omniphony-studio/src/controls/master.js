@@ -11,16 +11,17 @@ import { linearToDb, dbToLinear } from '../mute-solo.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inAudioPanel, inRendererPanel } from '../ui/panel-roots.js';
 
-// DOM refs
-const masterGainSliderEl = inAudioPanel('masterGainSlider');
-const masterGainBoxEl = inAudioPanel('masterGainBox');
-const masterMeterTextEl = inAudioPanel('masterMeterText');
-const masterMeterFillEl = inAudioPanel('masterMeterFill');
-const loudnessInfoEl = inAudioPanel('loudnessInfo');
-const loudnessToggleEl = inAudioPanel('loudnessToggle');
-const distanceModelSelectEl = inRendererPanel('distanceModelSelect');
+function getMasterGainSliderEl() { return inAudioPanel('masterGainSlider'); }
+function getMasterGainBoxEl() { return inAudioPanel('masterGainBox'); }
+function getMasterMeterTextEl() { return inAudioPanel('masterMeterText'); }
+function getMasterMeterFillEl() { return inAudioPanel('masterMeterFill'); }
+function getLoudnessInfoEl() { return inAudioPanel('loudnessInfo'); }
+function getLoudnessToggleEl() { return inAudioPanel('loudnessToggle'); }
+function getDistanceModelSelectEl() { return inRendererPanel('distanceModelSelect'); }
 
 export function renderMasterGainUI() {
+  const masterGainSliderEl = getMasterGainSliderEl();
+  const masterGainBoxEl = getMasterGainBoxEl();
   if (masterGainSliderEl) {
     const hasValue = Number.isFinite(app.masterGain) && app.masterGain > 0;
     masterGainSliderEl.disabled = !app.oscSnapshotReady || !hasValue;
@@ -52,6 +53,8 @@ export function getAverageSpeakerRmsDb() {
 }
 
 export function updateMasterMeterUI() {
+  const masterMeterTextEl = getMasterMeterTextEl();
+  const masterMeterFillEl = getMasterMeterFillEl();
   if (!masterMeterTextEl || !masterMeterFillEl) return;
   const avgDb = getAverageSpeakerRmsDb();
   if (avgDb === null) {
@@ -69,6 +72,8 @@ export function updateMasterMeterUI() {
 // ---------------------------------------------------------------------------
 
 export function renderLoudnessDisplay() {
+  const loudnessInfoEl = getLoudnessInfoEl();
+  const loudnessToggleEl = getLoudnessToggleEl();
   if (!loudnessInfoEl) return;
   const enabledText = app.loudnessEnabled === null ? '—' : app.loudnessEnabled ? t('loudness.on') : t('loudness.off');
   const sourceText = app.loudnessSource === null ? '—' : `${formatNumber(app.loudnessSource, 0)} dBFS`;
@@ -106,6 +111,7 @@ export function updateLoudnessDisplay() {
 // ---------------------------------------------------------------------------
 
 export function renderDistanceModelUI() {
+  const distanceModelSelectEl = getDistanceModelSelectEl();
   if (!distanceModelSelectEl) return;
   distanceModelSelectEl.value = ['none', 'linear', 'quadratic', 'inverse-square'].includes(app.distanceModel)
     ? app.distanceModel
