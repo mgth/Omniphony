@@ -496,6 +496,7 @@ fn pipewire_bridge_node_command_name(command: *const spa::sys::spa_command) -> &
         x if x == spa::sys::SPA_NODE_COMMAND_ParamBegin => "ParamBegin",
         x if x == spa::sys::SPA_NODE_COMMAND_ParamEnd => "ParamEnd",
         x if x == spa::sys::SPA_NODE_COMMAND_RequestProcess => "RequestProcess",
+        #[cfg(not(pipewire_1_0))]
         x if x == spa::sys::SPA_NODE_COMMAND_User => "User",
         _ => "Unknown",
     }

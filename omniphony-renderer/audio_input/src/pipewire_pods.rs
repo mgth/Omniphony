@@ -99,6 +99,8 @@ pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> 
     let port_bytes_per_frame = (channels as usize) * std::mem::size_of::<u16>();
     let nominal_frames = sample_rate_hz.div_ceil(100);
     let nominal_size = (port_bytes_per_frame * nominal_frames as usize).max(1024);
+    // SPA_PARAM_BUFFERS_metaType was removed in PipeWire 1.0.
+    #[cfg(not(pipewire_1_0))]
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamBuffers,
         spa::param::ParamType::Buffers,
@@ -114,6 +116,20 @@ pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> 
         property!(
             RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_metaType),
             pw::spa::pod::Value::Int(1i32 << (spa::sys::SPA_META_Header as i32))
+        ),
+    };
+    #[cfg(pipewire_1_0)]
+    let obj = object! {
+        spa::utils::SpaTypes::ObjectParamBuffers,
+        spa::param::ParamType::Buffers,
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_buffers), Int, 8i32),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_blocks), Int, 1i32),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_size), Int, nominal_size as i32),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), Int, port_bytes_per_frame as i32),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_align), Int, 16i32),
+        property!(
+            RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_dataType),
+            pw::spa::pod::Value::Int(spa::sys::SPA_DATA_MemPtr as i32)
         ),
     };
     let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(

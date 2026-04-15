@@ -299,11 +299,16 @@ where
         node_name: RefCell::new(None),
     });
     let adapter_state_ptr: *mut PipewireBridgeAdapterState = &mut *adapter_state;
+    // PW_TYPE_INTERFACE_Node was removed in PipeWire 1.0; use the raw string literal instead.
+    #[cfg(not(pipewire_1_0))]
+    let node_type_str: *const std::ffi::c_char = pw::sys::PW_TYPE_INTERFACE_Node.as_ptr().cast();
+    #[cfg(pipewire_1_0)]
+    let node_type_str: *const std::ffi::c_char = b"PipeWire:Interface:Node\0".as_ptr().cast();
     let adapter_proxy = unsafe {
         let object = pw_core_create_object_raw(
             core.as_raw_ptr(),
             factory_name.as_ptr(),
-            pw::sys::PW_TYPE_INTERFACE_Node.as_ptr().cast(),
+            node_type_str,
             pw::sys::PW_VERSION_NODE,
             &(*adapter_props_raw).dict,
             0,
