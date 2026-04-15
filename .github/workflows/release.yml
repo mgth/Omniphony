@@ -1,0 +1,97 @@
+name: Release
+
+# Triggered by a version tag (v*) or manually.
+# Creates a draft GitHub release with Linux (.deb, .AppImage) and Windows (.msi, .exe) bundles.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-studio:
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+          - platform: windows-latest
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Toolchains ────────────────────────────────────────────────────────
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            omniphony-renderer/target
+            omniphony-studio/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock', 'omniphony-studio/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ── Platform dependencies ─────────────────────────────────────────────
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libpipewire-0.3-dev \
+            pkg-config
+
+      # The ASIO SDK (Steinberg) is required to compile cpal with ASIO support on Windows.
+      # Store the SDK zip as a private URL in the ASIO_SDK_URL repository secret.
+      # After extraction the folder should match CPAL_ASIO_DIR below (e.g. ASIOSDK2.3.3).
+      # Download it from: https://www.steinberg.net/asiosdk
+      - name: Setup ASIO SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          ASIO_SDK_URL: ${{ secrets.ASIO_SDK_URL }}
+        run: |
+          curl -L "$ASIO_SDK_URL" -o "$RUNNER_TEMP/asio_sdk.zip"
+          7z x "$RUNNER_TEMP/asio_sdk.zip" -o"$RUNNER_TEMP/asio_sdk"
+          # Adjust the subfolder name to match what is inside your SDK zip.
+          echo "CPAL_ASIO_DIR=$RUNNER_TEMP/asio_sdk/ASIOSDK2.3.3" >> "$GITHUB_ENV"
+
+      # ── Build ─────────────────────────────────────────────────────────────
+
+      - name: Install npm dependencies
+        working-directory: omniphony-studio
+        run: npm install
+
+      # tauri-action runs tauri.conf.json's beforeBuildCommand automatically:
+      #   "npm run build && npm run prepare-sidecar"
+      # prepare-sidecar compiles orender (cargo build --release) and copies
+      # the binary into src-tauri/binaries/ before Tauri packages the app.
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: omniphony-studio
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Omniphony ${{ github.ref_name }}'
+          releaseDraft: true
+          prerelease: false
