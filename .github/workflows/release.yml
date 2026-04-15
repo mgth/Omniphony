@@ -72,11 +72,11 @@ jobs:
           ASIO_SDK_URL: ${{ secrets.ASIO_SDK_URL }}
           ASIO_SDK_TOKEN: ${{ secrets.ASIO_SDK_TOKEN }}
         run: |
-          AUTH_HEADER=""
           if [ -n "$ASIO_SDK_TOKEN" ]; then
-            AUTH_HEADER="-H \"Authorization: Bearer $ASIO_SDK_TOKEN\""
+            curl -fL -H "Authorization: Bearer $ASIO_SDK_TOKEN" "$ASIO_SDK_URL" -o "$RUNNER_TEMP/asio_sdk.zip"
+          else
+            curl -fL "$ASIO_SDK_URL" -o "$RUNNER_TEMP/asio_sdk.zip"
           fi
-          curl -fL $AUTH_HEADER "$ASIO_SDK_URL" -o "$RUNNER_TEMP/asio_sdk.zip"
           7z x "$RUNNER_TEMP/asio_sdk.zip" -o"$RUNNER_TEMP/asio_sdk"
           # List extracted contents to identify the correct subfolder name.
           ls "$RUNNER_TEMP/asio_sdk/"
