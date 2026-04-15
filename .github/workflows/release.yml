@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: ubuntu-24.04
+          - platform: ubuntu-22.04
           - platform: windows-latest
 
     runs-on: ${{ matrix.platform }}
@@ -50,6 +50,10 @@ jobs:
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
+          # PPA required: ubuntu-22.04 ships PipeWire 0.3.48 but pipewire-rs 0.9.x
+          # needs >= 0.3.65. PipeWire 1.0.x (ubuntu-24.04) removed some constants
+          # the crate relies on. This PPA provides a compatible 0.3.85+ build.
+          sudo add-apt-repository ppa:pipewire-debian/pipewire-upstream -y
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
