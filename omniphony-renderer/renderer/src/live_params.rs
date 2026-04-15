@@ -563,7 +563,7 @@ impl RendererControl {
             config_path: Mutex::new(None),
             input_path: Mutex::new(None),
             bridge_path: Mutex::new(None),
-            requested_ramp_mode: Mutex::new(RampMode::Sample),
+            requested_ramp_mode: Mutex::new(RampMode::Frame),
         })
     }
 

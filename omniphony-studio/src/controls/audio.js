@@ -8,11 +8,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { app, dirty, AUDIO_SAMPLE_RATE_PRESETS } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
-import { inAudioPanel } from '../ui/panel-roots.js';
+import { inAudioPanel, inRendererPanel } from '../ui/panel-roots.js';
 
 function getAudioFormatInfoEl() { return inAudioPanel('audioFormatInfo'); }
 function getAudioOutputDeviceSelectEl() { return inAudioPanel('audioOutputDeviceSelect'); }
-function getRampModeSelectEl() { return inAudioPanel('rampModeSelect'); }
+function getRampModeSelectEl() { return inRendererPanel('rampModeSelect'); }
 function getAudioSampleRateInputEl() { return inAudioPanel('audioSampleRateInput'); }
 function getAudioSampleRateMenuEl() { return inAudioPanel('audioSampleRateMenu'); }
 function getAudioOutputSummaryEl() { return inAudioPanel('audioOutputSummary'); }
@@ -50,7 +50,7 @@ export function renderAudioFormatDisplay() {
       : '';
   }
   if (rampModeSelectEl) {
-    rampModeSelectEl.value = ['off', 'frame', 'sample'].includes(app.rampMode) ? app.rampMode : 'sample';
+    rampModeSelectEl.value = ['off', 'frame', 'sample'].includes(app.rampMode) ? app.rampMode : 'frame';
   }
   if (audioSampleRateInputEl && !app.audioSampleRateEditing) {
     audioSampleRateInputEl.value = String(app.audioSampleRate || 0);
@@ -134,7 +134,7 @@ export function applyAudioOutputDeviceNow() {
 
 export function applyRampModeNow() {
   const rampModeSelectEl = getRampModeSelectEl();
-  const requested = String(rampModeSelectEl?.value || 'sample').trim().toLowerCase();
+  const requested = String(rampModeSelectEl?.value || 'frame').trim().toLowerCase();
   if (!['off', 'frame', 'sample'].includes(requested)) {
     return;
   }

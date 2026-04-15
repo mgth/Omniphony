@@ -415,10 +415,9 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(layouts: Vec<Layout>) -> Self {
-        let selected_layout_key = layouts.first().map(|l| l.key.clone());
         Self {
             layouts,
-            selected_layout_key,
+            selected_layout_key: None,
             room_ratio: RoomRatio {
                 width: 1.0,
                 length: 2.0,

@@ -114,7 +114,7 @@ export function rendererPanelMarkup() {
                   </div>
                   <select id="rampModeSelect" class="delay-input" style="min-width:9rem">
                     <option value="off" data-i18n="audio.rampModeOff">Off</option>
-                    <option value="frame" data-i18n="audio.rampModeFrame">Per frame</option>
+                    <option value="frame" data-i18n="audio.rampModeFrame" selected>Per frame</option>
                     <option value="sample" data-i18n="audio.rampModeSample">Per sample</option>
                   </select>
                 </div>

@@ -229,7 +229,7 @@ pub fn save_live_config(
             None
         };
     render.ramp_mode = match control.requested_ramp_mode() {
-        RampMode::Sample => None,
+        RampMode::Frame => None,
         mode => Some(mode.as_str().to_string()),
     };
 

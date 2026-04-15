@@ -418,7 +418,7 @@ pub struct RenderArgs {
     /// - `sample`: smooth on every rendered sample (current behaviour)
     /// - `frame`: update once per decoded audio frame
     /// - `off`: jump immediately to the new value
-    #[arg(long, value_enum, default_value_t = RampModeArg::Sample)]
+    #[arg(long, value_enum, default_value_t = RampModeArg::Frame)]
     pub ramp_mode: RampModeArg,
 
     /// Disable automatic draining of buffered data from named pipes at startup
