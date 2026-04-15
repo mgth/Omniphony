@@ -3,7 +3,6 @@
 use anyhow::Result;
 use cli::command::{Commands, LogFormat, LogLevel, ParsedCli};
 use cli::decode::cmd_render;
-#[cfg(feature = "saf_vbap")]
 use cli::generate_vbap::cmd_generate_vbap;
 #[cfg(target_os = "windows")]
 use cli::list_asio_devices::cmd_list_asio_devices;
@@ -29,7 +28,6 @@ where
     let known_subcommands = [
         OsString::from("render"),
         OsString::from("input-live"),
-        #[cfg(feature = "saf_vbap")]
         OsString::from("generate-vbap"),
         #[cfg(target_os = "windows")]
         OsString::from("list-asio-devices"),
@@ -173,7 +171,6 @@ fn main() -> Result<()> {
         Commands::InputLive(_) => {
             anyhow::bail!("The 'input-live' command is defined but not implemented yet.")
         }
-        #[cfg(feature = "saf_vbap")]
         Commands::GenerateVbap(ref args) => cmd_generate_vbap(args),
         #[cfg(target_os = "windows")]
         Commands::ListAsioDevices => cmd_list_asio_devices(),

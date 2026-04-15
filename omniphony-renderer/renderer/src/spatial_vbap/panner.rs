@@ -239,13 +239,17 @@ pub struct VbapPanner {
     allow_negative_z: bool,
     position_interpolation: bool,
     cartesian_cache: Option<CartesianCache>,
-    #[cfg(feature = "saf_vbap")]
+    /// Stored speaker directions — present when the panner was created from
+    /// speaker directions (both `saf_vbap` and native paths).  `None` when
+    /// the panner was loaded from a pre-computed `.vbap` file.
     speaker_dirs_deg: Option<Vec<[f32; 2]>>,
 }
 
 pub(crate) mod gain_source;
 #[cfg(feature = "saf_vbap")]
 pub(crate) mod saf_backend;
+#[cfg(not(feature = "saf_vbap"))]
+pub(crate) mod native_backend;
 
 mod io;
 mod runtime;
