@@ -65,26 +65,25 @@ jobs:
             pkg-config
 
       # The ASIO SDK (Steinberg) is required to compile cpal with ASIO support on Windows.
-      # Store the SDK zip URL in ASIO_SDK_URL (repository secret).
-      # If the zip is hosted on a private GitHub repo, also set ASIO_SDK_TOKEN to a PAT
-      # with read access to that repo — otherwise leave ASIO_SDK_TOKEN empty.
-      # After extraction the folder must match CPAL_ASIO_DIR below.
+      # Store in repository secrets:
+      #   ASIO_SDK_URL   — full GitHub release download URL:
+      #                    https://github.com/<owner>/<repo>/releases/download/<tag>/<file>.zip
+      #   ASIO_SDK_TOKEN — PAT with Contents:Read on the repo hosting the SDK
       - name: Setup ASIO SDK (Windows)
         if: runner.os == 'Windows'
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.ASIO_SDK_TOKEN }}
           ASIO_SDK_URL: ${{ secrets.ASIO_SDK_URL }}
-          ASIO_SDK_TOKEN: ${{ secrets.ASIO_SDK_TOKEN }}
         run: |
-          if [ -n "$ASIO_SDK_TOKEN" ]; then
-            curl -fL -H "Authorization: Bearer $ASIO_SDK_TOKEN" "$ASIO_SDK_URL" -o "$RUNNER_TEMP/asio_sdk.zip"
-          else
-            curl -fL "$ASIO_SDK_URL" -o "$RUNNER_TEMP/asio_sdk.zip"
-          fi
-          7z x "$RUNNER_TEMP/asio_sdk.zip" -o"$RUNNER_TEMP/asio_sdk"
-          # List extracted contents to identify the correct subfolder name.
+          # Parse repo (owner/name), tag, and filename from the release URL.
+          REPO=$(echo "$ASIO_SDK_URL" | sed 's|https://github.com/\([^/]*/[^/]*\)/.*|\1|')
+          TAG=$(echo "$ASIO_SDK_URL" | sed 's|.*/releases/download/\([^/]*\)/.*|\1|')
+          FILENAME=$(basename "$ASIO_SDK_URL")
+          echo "Downloading $FILENAME from $REPO @ $TAG"
+          gh release download "$TAG" --repo "$REPO" --pattern "$FILENAME" --dir "$RUNNER_TEMP"
+          7z x "$RUNNER_TEMP/$FILENAME" -o"$RUNNER_TEMP/asio_sdk"
           ls "$RUNNER_TEMP/asio_sdk/"
-          # Set CPAL_ASIO_DIR to the extracted SDK root (adjust if needed).
           SDK_DIR=$(ls -d "$RUNNER_TEMP/asio_sdk/"*/ | head -1)
           echo "CPAL_ASIO_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
