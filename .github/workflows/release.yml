@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: ubuntu-22.04
+          - platform: ubuntu-24.04
           - platform: windows-latest
 
     runs-on: ${{ matrix.platform }}
@@ -61,19 +61,28 @@ jobs:
             pkg-config
 
       # The ASIO SDK (Steinberg) is required to compile cpal with ASIO support on Windows.
-      # Store the SDK zip as a private URL in the ASIO_SDK_URL repository secret.
-      # After extraction the folder should match CPAL_ASIO_DIR below (e.g. ASIOSDK2.3.3).
-      # Download it from: https://www.steinberg.net/asiosdk
+      # Store the SDK zip URL in ASIO_SDK_URL (repository secret).
+      # If the zip is hosted on a private GitHub repo, also set ASIO_SDK_TOKEN to a PAT
+      # with read access to that repo — otherwise leave ASIO_SDK_TOKEN empty.
+      # After extraction the folder must match CPAL_ASIO_DIR below.
       - name: Setup ASIO SDK (Windows)
         if: runner.os == 'Windows'
         shell: bash
         env:
           ASIO_SDK_URL: ${{ secrets.ASIO_SDK_URL }}
+          ASIO_SDK_TOKEN: ${{ secrets.ASIO_SDK_TOKEN }}
         run: |
-          curl -L "$ASIO_SDK_URL" -o "$RUNNER_TEMP/asio_sdk.zip"
+          AUTH_HEADER=""
+          if [ -n "$ASIO_SDK_TOKEN" ]; then
+            AUTH_HEADER="-H \"Authorization: Bearer $ASIO_SDK_TOKEN\""
+          fi
+          curl -fL $AUTH_HEADER "$ASIO_SDK_URL" -o "$RUNNER_TEMP/asio_sdk.zip"
           7z x "$RUNNER_TEMP/asio_sdk.zip" -o"$RUNNER_TEMP/asio_sdk"
-          # Adjust the subfolder name to match what is inside your SDK zip.
-          echo "CPAL_ASIO_DIR=$RUNNER_TEMP/asio_sdk/ASIOSDK" >> "$GITHUB_ENV"
+          # List extracted contents to identify the correct subfolder name.
+          ls "$RUNNER_TEMP/asio_sdk/"
+          # Set CPAL_ASIO_DIR to the extracted SDK root (adjust if needed).
+          SDK_DIR=$(ls -d "$RUNNER_TEMP/asio_sdk/"*/ | head -1)
+          echo "CPAL_ASIO_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
       # ── Build ─────────────────────────────────────────────────────────────
 
