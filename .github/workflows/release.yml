@@ -73,7 +73,7 @@ jobs:
           curl -L "$ASIO_SDK_URL" -o "$RUNNER_TEMP/asio_sdk.zip"
           7z x "$RUNNER_TEMP/asio_sdk.zip" -o"$RUNNER_TEMP/asio_sdk"
           # Adjust the subfolder name to match what is inside your SDK zip.
-          echo "CPAL_ASIO_DIR=$RUNNER_TEMP/asio_sdk/ASIOSDK2.3.3" >> "$GITHUB_ENV"
+          echo "CPAL_ASIO_DIR=$RUNNER_TEMP/asio_sdk/ASIOSDK" >> "$GITHUB_ENV"
 
       # ── Build ─────────────────────────────────────────────────────────────
 
