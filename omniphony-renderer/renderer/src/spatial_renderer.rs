@@ -72,28 +72,21 @@ use crate::ramp_strategy::{
     ChannelRampState, GainTableRampStrategy, PositionRampStrategy, RampContext, RampProgress,
     RampRenderParams, RampStatus, RampStrategy, RampTarget,
 };
-#[cfg(feature = "saf_vbap")]
+use crate::live_params::PreferredEvaluationMode;
 use crate::render_backend::RenderRequest;
 use crate::render_backend::{
-    LoadedEvaluationArtifact, LoadedVbapFile, RenderBackendKind, SerializedEvaluationMode,
-    build_from_artifact_render_engine, build_from_file_render_engine,
+    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
+    LoadedEvaluationArtifact, LoadedVbapFile, PolarEvaluationConfig, RenderBackendKind,
+    SerializedEvaluationMode, VbapBackend, build_from_artifact_render_engine,
+    build_from_file_render_engine, build_prepared_render_engine,
 };
+use crate::spatial_vbap::VbapPanner;
 use crate::spatial_vbap::VbapTableMode;
 use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use std::str::FromStr;
 use std::sync::Arc;
-
-#[cfg(feature = "saf_vbap")]
-use crate::live_params::PreferredEvaluationMode;
-#[cfg(feature = "saf_vbap")]
-use crate::render_backend::{
-    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
-    PolarEvaluationConfig, VbapBackend, build_prepared_render_engine,
-};
-#[cfg(feature = "saf_vbap")]
-use crate::spatial_vbap::VbapPanner;
 
 /// Output of a single rendered frame.
 pub struct RenderedFrame {
@@ -105,7 +98,6 @@ pub struct RenderedFrame {
     pub object_gains: Vec<(usize, Gains)>,
 }
 
-#[cfg(feature = "saf_vbap")]
 fn evaluation_build_config(
     request_template: RenderRequest,
     position_interpolation: bool,
@@ -352,7 +344,6 @@ impl SpatialRenderer {
     ///
     /// **Note:** This method requires the `saf_vbap` feature to generate VBAP tables.
     /// Without saf_vbap, use `from_vbap_file()` to load pre-generated tables.
-    #[cfg(feature = "saf_vbap")]
     pub fn new(
         speaker_layout: SpeakerLayout,
         sample_rate: u32,
@@ -1893,10 +1884,8 @@ impl SpatialRenderer {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "saf_vbap")]
     use super::*;
 
-    #[cfg(feature = "saf_vbap")]
     #[test]
     fn test_renderer_creation() {
         let layout = SpeakerLayout::preset("7.1.4").unwrap();

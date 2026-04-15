@@ -11,17 +11,7 @@ pub(crate) fn trigger_layout_recompute(
     socket: &Arc<std::net::UdpSocket>,
     clients: &Arc<OscClientRegistry>,
 ) {
-    #[cfg(not(feature = "saf_vbap"))]
-    {
-        let _ = control;
-        log::warn!("OSC apply: VBAP recompute requires a build with the 'saf_vbap' feature");
-        broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 0);
-        return;
-    }
-
-    #[cfg(feature = "saf_vbap")]
-    {
-        if control.prepare_topology_rebuild().is_none() {
+    if control.prepare_topology_rebuild().is_none() {
             log::warn!(
                 "OSC apply: speaker positions cannot be updated — requested backend rebuild could not be prepared"
             );
@@ -151,5 +141,4 @@ pub(crate) fn trigger_layout_recompute(
                 }
             })
             .expect("failed to spawn vbap-recompute thread");
-    }
 }

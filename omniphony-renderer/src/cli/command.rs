@@ -107,8 +107,6 @@ pub enum Commands {
     InputLive(InputLiveArgs),
 
     /// Generate VBAP gain table from speaker layout configuration
-    /// (Requires "saf_vbap" feature)
-    #[cfg(feature = "saf_vbap")]
     GenerateVbap(GenerateVbapArgs),
 
     /// List available ASIO output devices (Windows only)
@@ -554,7 +552,6 @@ pub struct InputLiveArgs {
     pub osc_rx_port: u16,
 }
 
-#[cfg(feature = "saf_vbap")]
 #[derive(Debug, Clone, Args)]
 pub struct GenerateVbapArgs {
     /// Speaker layout configuration file (YAML)

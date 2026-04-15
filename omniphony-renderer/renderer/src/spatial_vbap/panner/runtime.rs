@@ -21,7 +21,16 @@ impl VbapPanner {
         }
         #[cfg(not(feature = "saf_vbap"))]
         {
-            Ok(Box::new(gain_source::TableGainSource::new(self)))
+            // If speaker directions are available, use the native VBAP backend
+            // for direct gain computation (needed when gtable is empty).
+            // Otherwise, fall back to table interpolation.
+            if let Some(dirs) = self.speaker_dirs_deg.as_deref() {
+                Ok(Box::new(
+                    native_backend::NativeVbapLayout::from_speaker_dirs(dirs)?,
+                ))
+            } else {
+                Ok(Box::new(gain_source::TableGainSource::new(self)))
+            }
         }
     }
 
@@ -133,12 +142,67 @@ impl VbapPanner {
             allow_negative_z: true,
             position_interpolation: true,
             cartesian_cache: None,
-            #[cfg(feature = "saf_vbap")]
             speaker_dirs_deg: Some(speaker_dirs_deg.to_vec()),
         })
     }
 
     #[cfg(feature = "saf_vbap")]
+    pub fn new_with_mode(
+        speaker_dirs_deg: &[[f32; 2]],
+        az_res_deg: i32,
+        el_res_deg: i32,
+        spread: f32,
+        table_mode: VbapTableMode,
+    ) -> Result<Self, String> {
+        let p = Self::new(speaker_dirs_deg, az_res_deg, el_res_deg, spread)?;
+        p.with_table_mode(table_mode)
+    }
+
+    /// Create a new VBAP panner using the pure-Rust native backend.
+    ///
+    /// Used when the `saf_vbap` feature is disabled.
+    #[cfg(not(feature = "saf_vbap"))]
+    pub fn new(
+        speaker_dirs_deg: &[[f32; 2]],
+        az_res_deg: i32,
+        el_res_deg: i32,
+        spread: f32,
+    ) -> Result<Self, String> {
+        let n_speakers = speaker_dirs_deg.len();
+
+        if n_speakers < 3 {
+            return Err("VBAP requires at least 3 speakers".to_string());
+        }
+        if az_res_deg < 1 || az_res_deg > 360 {
+            return Err("Azimuth resolution must be between 1 and 360 degrees".to_string());
+        }
+        if el_res_deg < 1 || el_res_deg > 180 {
+            return Err("Elevation resolution must be between 1 and 180 degrees".to_string());
+        }
+
+        let layout = native_backend::NativeVbapLayout::from_speaker_dirs(speaker_dirs_deg)?;
+        let n_az = ((360.0 / az_res_deg as f32) + 1.5) as usize;
+        let n_el = ((180.0 / el_res_deg as f32) + 1.5) as usize;
+
+        Ok(VbapPanner {
+            spread_tables: vec![SpreadTable { spread, gtable: Vec::new() }],
+            spread_resolution: 0.0,
+            n_gtable: n_az * n_el,
+            n_triangles: layout.n_faces,
+            n_speakers,
+            az_res_deg,
+            el_res_deg,
+            n_az,
+            n_el,
+            table_mode: VbapTableMode::Polar,
+            allow_negative_z: true,
+            position_interpolation: true,
+            cartesian_cache: None,
+            speaker_dirs_deg: Some(speaker_dirs_deg.to_vec()),
+        })
+    }
+
+    #[cfg(not(feature = "saf_vbap"))]
     pub fn new_with_mode(
         speaker_dirs_deg: &[[f32; 2]],
         az_res_deg: i32,
@@ -291,20 +355,29 @@ impl VbapPanner {
         elevation_deg: f32,
         spread: f32,
     ) -> Gains {
-        #[cfg(feature = "saf_vbap")]
-        // Direct vbap3D is only used as a last-resort path while spread tables are absent.
+        // Direct gain computation path — used when the spread table hasn't been
+        // pre-computed yet (gtable is empty). Falls back to the appropriate backend.
         if self
             .spread_tables
             .first()
             .map(|t| t.gtable.is_empty())
             .unwrap_or(false)
         {
+            #[cfg(feature = "saf_vbap")]
             if let Some(dirs) = self.speaker_dirs_deg.as_deref() {
                 let layout = saf_backend::SpartaVbapLayout::from_speaker_dirs(dirs)
                     .expect("failed to initialize direct VBAP layout");
                 return layout
                     .vbap_gains(azimuth_deg, elevation_deg, spread)
                     .expect("vbap3D failed while computing gains");
+            }
+            #[cfg(not(feature = "saf_vbap"))]
+            if let Some(dirs) = self.speaker_dirs_deg.as_deref() {
+                let layout = native_backend::NativeVbapLayout::from_speaker_dirs(dirs)
+                    .expect("failed to initialize native VBAP layout");
+                return layout
+                    .vbap_gains(azimuth_deg, elevation_deg, spread)
+                    .expect("native vbap3d failed while computing gains");
             }
         }
 
@@ -561,7 +634,8 @@ impl VbapPanner {
 
     /// Get VBAP gains for a sound source at the specified direction (no spread).
     pub fn get_gains(&self, azimuth_deg: f32, elevation_deg: f32) -> Gains {
-        #[cfg(feature = "saf_vbap")]
+        // When the spread table hasn't been pre-computed (gtable is empty),
+        // delegate to `get_gains_with_spread` which handles both SAF and native paths.
         if self
             .spread_tables
             .first()

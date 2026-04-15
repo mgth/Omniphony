@@ -20,15 +20,13 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-#[cfg(feature = "saf_vbap")]
 use crate::backend_registry::{TopologyBuildPlan, prepare_topology_build_plan};
 use crate::render_backend::backend_descriptor_by_id;
 use crate::render_backend::{
-    BackendRestoreSnapshot, GainModelKind, LoadedEvaluationArtifact, PreparedRenderEngine,
-    RenderBackendKind, SerializedEvaluationMode, build_from_artifact_render_engine,
+    BackendRestoreSnapshot, EvaluationBuildConfig, GainModelKind, LoadedEvaluationArtifact,
+    PreparedRenderEngine, RenderBackendKind, RenderRequest, SerializedEvaluationMode,
+    build_from_artifact_render_engine,
 };
-#[cfg(feature = "saf_vbap")]
-use crate::render_backend::{EvaluationBuildConfig, RenderRequest};
 use crate::spatial_vbap::VbapTableMode;
 use crate::speaker_layout::SpeakerLayout;
 
@@ -364,12 +362,10 @@ impl BackendRebuildParams {
     }
 }
 
-#[cfg(feature = "saf_vbap")]
 fn rebuild_params_allow_negative_z(params: Option<BackendRebuildParams>) -> bool {
     params.map(|value| value.allow_negative_z).unwrap_or(false)
 }
 
-#[cfg(feature = "saf_vbap")]
 fn evaluation_build_config_from_live(
     live: &LiveParams,
     allow_negative_z: bool,
@@ -615,7 +611,6 @@ impl RendererControl {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg(feature = "saf_vbap")]
     pub fn prepare_topology_rebuild(&self) -> Option<TopologyBuildPlan> {
         let layout = self.editable_layout();
         let live = self.live.read().unwrap();

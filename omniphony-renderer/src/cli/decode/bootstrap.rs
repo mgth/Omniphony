@@ -238,7 +238,6 @@ fn resolve_layout(
     }
 }
 
-#[cfg(feature = "saf_vbap")]
 fn resolve_evaluation_table_mode(
     args: &RenderArgs,
     vbap_cartesian_defaults: bridge_api::RVbapCartesianDefaults,
@@ -293,13 +292,6 @@ fn init_spatial_renderer(
     preferred_evaluation_mode: bridge_api::RVbapTableMode,
     evaluation_mode_explicit: bool,
 ) -> Result<()> {
-    #[cfg(not(feature = "saf_vbap"))]
-    let _ = (
-        preferred_evaluation_mode,
-        evaluation_mode_explicit,
-        vbap_cartesian_defaults,
-    );
-
     if !args.enable_vbap {
         return Ok(());
     }
@@ -314,17 +306,8 @@ fn init_spatial_renderer(
     let (room_ratio, room_ratio_rear, room_ratio_lower, room_ratio_center_blend) =
         parse_room_ratio(args)?;
 
-    #[cfg(feature = "saf_vbap")]
     let (vbap_table_mode, vbap_allow_negative_z) =
         resolve_evaluation_table_mode(args, vbap_cartesian_defaults)?;
-    #[cfg(not(feature = "saf_vbap"))]
-    let vbap_allow_negative_z = if args.vbap_allow_negative_z {
-        true
-    } else if args.no_vbap_allow_negative_z {
-        false
-    } else {
-        false
-    };
 
     log::info!("VBAP allow_negative_z: {}", vbap_allow_negative_z);
 
@@ -421,95 +404,83 @@ fn init_spatial_renderer(
             }
         }
     } else {
-        #[cfg(feature = "saf_vbap")]
-        {
-            let layout = resolve_layout(args, current_layout_from_config)?;
-            log::info!(
-                "Speaker layout: {} speakers ({})",
-                layout.num_speakers(),
-                layout.speaker_names().join(", ")
-            );
-            log::info!("Generating VBAP table at runtime (this may take a few seconds)...");
-            let start_time = std::time::Instant::now();
-            let azimuth_cells = args.evaluation_polar_azimuth_resolution.max(1);
-            let elevation_cells = args.evaluation_polar_elevation_resolution.max(1);
-            let distance_cells = args.evaluation_polar_distance_res.max(1);
-            let azimuth_step_deg = (360.0f32 / (azimuth_cells as f32)).max(1.0).round() as i32;
-            let elevation_step_deg = (((if vbap_allow_negative_z { 180.0 } else { 90.0 })
-                / (elevation_cells as f32))
-                .max(1.0)
-                .round()) as i32;
-            let distance_step =
-                args.evaluation_polar_distance_max.max(0.01) / (distance_cells as f32);
+        let layout = resolve_layout(args, current_layout_from_config)?;
+        log::info!(
+            "Speaker layout: {} speakers ({})",
+            layout.num_speakers(),
+            layout.speaker_names().join(", ")
+        );
+        log::info!("Generating VBAP table at runtime (this may take a few seconds)...");
+        let start_time = std::time::Instant::now();
+        let azimuth_cells = args.evaluation_polar_azimuth_resolution.max(1);
+        let elevation_cells = args.evaluation_polar_elevation_resolution.max(1);
+        let distance_cells = args.evaluation_polar_distance_res.max(1);
+        let azimuth_step_deg = (360.0f32 / (azimuth_cells as f32)).max(1.0).round() as i32;
+        let elevation_step_deg = (((if vbap_allow_negative_z { 180.0 } else { 90.0 })
+            / (elevation_cells as f32))
+            .max(1.0)
+            .round()) as i32;
+        let distance_step =
+            args.evaluation_polar_distance_max.max(0.01) / (distance_cells as f32);
 
-            let renderer = SpatialRenderer::new(
-                layout,
-                48000,
-                azimuth_step_deg,
-                elevation_step_deg,
-                distance_step,
-                args.evaluation_polar_distance_max,
-                vbap_table_mode,
-                vbap_allow_negative_z,
-                args.render_evaluation_position_interpolation,
-                distance_model,
-                args.spread_from_distance,
-                args.spread_distance_range,
-                args.spread_distance_curve,
-                args.vbap_spread_min,
-                args.vbap_spread_max,
-                args.log_object_positions,
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-                args.master_gain,
-                args.auto_gain,
-                args.use_loudness,
-                args.distance_diffuse,
-                args.distance_diffuse_threshold,
-                args.distance_diffuse_curve,
-                match preferred_evaluation_mode {
-                    bridge_api::RVbapTableMode::Polar => {
-                        renderer::live_params::PreferredEvaluationMode::PrecomputedPolar
+        let renderer = SpatialRenderer::new(
+            layout,
+            48000,
+            azimuth_step_deg,
+            elevation_step_deg,
+            distance_step,
+            args.evaluation_polar_distance_max,
+            vbap_table_mode,
+            vbap_allow_negative_z,
+            args.render_evaluation_position_interpolation,
+            distance_model,
+            args.spread_from_distance,
+            args.spread_distance_range,
+            args.spread_distance_curve,
+            args.vbap_spread_min,
+            args.vbap_spread_max,
+            args.log_object_positions,
+            room_ratio,
+            room_ratio_rear,
+            room_ratio_lower,
+            room_ratio_center_blend,
+            args.master_gain,
+            args.auto_gain,
+            args.use_loudness,
+            args.distance_diffuse,
+            args.distance_diffuse_threshold,
+            args.distance_diffuse_curve,
+            match preferred_evaluation_mode {
+                bridge_api::RVbapTableMode::Polar => {
+                    renderer::live_params::PreferredEvaluationMode::PrecomputedPolar
+                }
+                bridge_api::RVbapTableMode::Cartesian => {
+                    renderer::live_params::PreferredEvaluationMode::PrecomputedCartesian
+                }
+            },
+            if evaluation_mode_explicit {
+                match args.render_evaluation_mode {
+                    EvaluationModeArg::Polar => {
+                        renderer::live_params::LiveEvaluationMode::PrecomputedPolar
                     }
-                    bridge_api::RVbapTableMode::Cartesian => {
-                        renderer::live_params::PreferredEvaluationMode::PrecomputedCartesian
+                    EvaluationModeArg::Cartesian => {
+                        renderer::live_params::LiveEvaluationMode::PrecomputedCartesian
                     }
-                },
-                if evaluation_mode_explicit {
-                    match args.render_evaluation_mode {
-                        EvaluationModeArg::Polar => {
-                            renderer::live_params::LiveEvaluationMode::PrecomputedPolar
-                        }
-                        EvaluationModeArg::Cartesian => {
-                            renderer::live_params::LiveEvaluationMode::PrecomputedCartesian
-                        }
-                    }
-                } else {
-                    renderer::live_params::LiveEvaluationMode::Auto
-                },
-                args.evaluation_cartesian_x_size
-                    .unwrap_or(vbap_cartesian_defaults.x_size as usize),
-                args.evaluation_cartesian_y_size
-                    .unwrap_or(vbap_cartesian_defaults.y_size as usize),
-                args.evaluation_cartesian_z_size
-                    .unwrap_or(vbap_cartesian_defaults.z_size as usize),
-                args.evaluation_cartesian_z_neg_size.unwrap_or(0),
-            )?;
-            let elapsed = start_time.elapsed();
-            log::info!("VBAP table generated in {:.2}s", elapsed.as_secs_f64());
-            renderer
-        }
-        #[cfg(not(feature = "saf_vbap"))]
-        {
-            anyhow::bail!(
-                "VBAP table generation not available (built without 'saf_vbap' feature).\n\
-                 Please provide a pre-generated VBAP table using --vbap-table <file>.\n\
-                 Generate tables on a system with SAF VBAP support using:\n  \
-                 orender generate-vbap --speaker-layout <layout.yaml> --output <table.vbap>"
-            );
-        }
+                }
+            } else {
+                renderer::live_params::LiveEvaluationMode::Auto
+            },
+            args.evaluation_cartesian_x_size
+                .unwrap_or(vbap_cartesian_defaults.x_size as usize),
+            args.evaluation_cartesian_y_size
+                .unwrap_or(vbap_cartesian_defaults.y_size as usize),
+            args.evaluation_cartesian_z_size
+                .unwrap_or(vbap_cartesian_defaults.z_size as usize),
+            args.evaluation_cartesian_z_neg_size.unwrap_or(0),
+        )?;
+        let elapsed = start_time.elapsed();
+        log::info!("VBAP table generated in {:.2}s", elapsed.as_secs_f64());
+        renderer
     };
 
     log::info!("VBAP spatial rendering enabled");
@@ -741,9 +712,6 @@ pub fn init_render_handler(
     preferred_evaluation_mode: bridge_api::RVbapTableMode,
     evaluation_mode_explicit: bool,
 ) -> Result<()> {
-    #[cfg(not(feature = "saf_vbap"))]
-    let _ = (preferred_evaluation_mode, evaluation_mode_explicit);
-
     let render_cfg = render_config_from_path(config_path);
 
     #[cfg(target_os = "linux")]
