@@ -188,6 +188,9 @@ pub enum OscEvent {
     #[serde(rename = "meter:object:gains")]
     MeterObjectGains { id: String, gains: Vec<f64> },
 
+    #[serde(rename = "meter:object:band_gains")]
+    MeterObjectBandGains { id: String, band: usize, gains: Vec<f64> },
+
     #[serde(rename = "meter:speaker")]
     MeterSpeaker {
         id: String,
@@ -1081,6 +1084,14 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
 fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
     let meter_idx = parts.iter().position(|&p| p == "meter")?;
     let after = &parts[meter_idx..];
+
+    // band gains: meter / object / {id} / band / {b} / gains
+    if after.len() >= 6 && after[1] == "object" && after[3] == "band" && after[5] == "gains" {
+        let id = after[2].to_string();
+        let band: usize = after[4].parse().ok()?;
+        let gains: Vec<f64> = args.iter().map(|&v| clamp(v, 0.0, 1.0)).collect();
+        return Some(OscEvent::MeterObjectBandGains { id, band, gains });
+    }
 
     // gains sub-message: meter / object / {id} / gains
     if after.len() >= 4 && after[1] == "object" && after[3] == "gains" {

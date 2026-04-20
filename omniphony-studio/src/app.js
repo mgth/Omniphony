@@ -88,7 +88,7 @@ import { updateVbapCartesianFaceGrid, renderVbapCartesianGridToggle } from './sc
 import { updateObjectMeterUI, updateObjectPositionUI, updateObjectLabelUI } from './flush.js';
 import {
   renderObjectsList, updateSpeakerControlsUI, updateObjectControlsUI, updateObjectDominantSpeakerUI,
-  objectHasActiveTrail, getObjectIds, updateSectionProportions
+  objectHasActiveTrail, getObjectIds, updateSectionProportions, updateAllSpeakerBandBars
 } from './speakers.js';
 import { rebuildTrailGeometry, captureTrailPointColor } from './trails.js';
 import { muteSoloCallbacks } from './mute-solo.js';
@@ -136,6 +136,7 @@ sourceCallbacks.rebuildTrailGeometry = rebuildTrailGeometry;
 sourceCallbacks.captureTrailPointColor = captureTrailPointColor;
 sourceCallbacks.objectHasActiveTrail = objectHasActiveTrail;
 sourceCallbacks.getObjectIds = getObjectIds;
+sourceCallbacks.updateAllSpeakerBandBars = updateAllSpeakerBandBars;
 
 // ── Mute/solo callbacks wiring ──────────────────────────────────────────────
 muteSoloCallbacks.updateSpeakerControlsUI = updateSpeakerControlsUI;

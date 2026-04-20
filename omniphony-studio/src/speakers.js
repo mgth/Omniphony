@@ -136,7 +136,8 @@ import {
   getObjectDisplayName,
   applyObjectItemColor,
   dbfsToScale,
-  gainToMix
+  gainToMix,
+  getSelectedSourceBandContributions
 } from './sources.js';
 
 // ---------------------------------------------------------------------------
@@ -547,6 +548,11 @@ export function createSpeakerItem(id, speaker) {
   level.appendChild(meterBar);
   content.appendChild(level);
 
+  const bandBarsContainer = document.createElement('div');
+  bandBarsContainer.className = 'band-contrib-bars';
+  bandBarsContainer.style.display = 'none';
+  content.appendChild(bandBarsContainer);
+
   const contributionSlider = document.createElement('input');
   contributionSlider.type = 'range';
   contributionSlider.min = '0';
@@ -596,6 +602,7 @@ export function createSpeakerItem(id, speaker) {
     levelText,
     meterFill,
     contributionFill,
+    bandBarsContainer,
     contributionSlider,
     contributionValue,
     muteBtn,
@@ -614,6 +621,33 @@ export function updateSpeakerItem(entry, id, speaker) {
   entry.root.classList.toggle('is-selected', selectedSpeakerIndex !== null && Number(id) === selectedSpeakerIndex);
   updateMeterUI(entry, speakerLevels.get(id));
   updateSpeakerContributionUI_src(entry, id);
+  updateSpeakerBandBars(entry, Number(id));
+}
+
+export function updateSpeakerBandBars(entry, speakerIndex) {
+  if (!entry?.bandBarsContainer) return;
+  const contributions = getSelectedSourceBandContributions(speakerIndex);
+  if (!contributions || contributions.length <= 1) {
+    entry.bandBarsContainer.style.display = 'none';
+    return;
+  }
+  entry.bandBarsContainer.style.display = '';
+  while (entry.bandBarsContainer.children.length < contributions.length) {
+    const bar = document.createElement('div');
+    bar.className = 'band-bar';
+    bar.dataset.band = String(entry.bandBarsContainer.children.length);
+    entry.bandBarsContainer.appendChild(bar);
+  }
+  contributions.forEach((gain, b) => {
+    const bar = entry.bandBarsContainer.children[b];
+    if (bar) bar.style.setProperty('--level', `${Math.min(100, gain * 100).toFixed(1)}%`);
+  });
+}
+
+export function updateAllSpeakerBandBars() {
+  speakerItems.forEach((entry, speakerId) => {
+    updateSpeakerBandBars(entry, Number(speakerId));
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -97,6 +97,11 @@ pub struct RenderedFrame {
     /// `(channel_idx, gains)` — `gains[speaker_idx]` is the gain applied to that speaker.
     /// Ordered by `channel_idx`. Empty if no objects were spatialized this frame.
     pub object_gains: Vec<(usize, Gains)>,
+    /// Per-band VBAP gains for crossover objects.
+    /// `(channel_idx, [band0_gains, band1_gains, ...])` — each `Gains` is full-size
+    /// (`num_speakers`), indexed by global speaker index.
+    /// Empty for non-crossover objects or when no crossover is active.
+    pub object_band_gains: Vec<(usize, Vec<Gains>)>,
 }
 
 fn evaluation_build_config(
@@ -1502,6 +1507,7 @@ impl SpatialRenderer {
 
         // Collect VBAP gains at the final sample for each object channel (for monitoring).
         let mut object_gains_out: Vec<(usize, Gains)> = Vec::with_capacity(input_channel_count);
+        let mut object_band_gains_out: Vec<(usize, Vec<Gains>)> = Vec::new();
 
         // Beds always come FIRST in PCM data, then objects.
         // bed_indices contains bed channel IDs (e.g., [3] for LFE), NOT PCM channel indices.
@@ -1648,6 +1654,10 @@ impl SpatialRenderer {
                     // Borrow filter bank (different field from crossover_filter_states)
                     let filter_bank = self.crossover_filter_bank.as_ref().unwrap();
 
+                    // last_band_gains captures per-band VBAP gains at the final position
+                    // for monitoring/visualization.
+                    let mut last_band_gains: Vec<Gains> = Vec::new();
+
                     match live.ramp_mode {
                         RampMode::Off => {
                             state.ramp.remaining_ramp_units = None;
@@ -1675,6 +1685,8 @@ impl SpatialRenderer {
                                     }
                                 }
                             }
+
+                            last_band_gains = band_gains;
                         }
                         RampMode::Frame => {
                             let progress =
@@ -1705,6 +1717,7 @@ impl SpatialRenderer {
 
                             state.ramp.commit_output_position();
                             state.ramp.advance_ramp(sample_length as u64);
+                            last_band_gains = band_gains;
                         }
                         RampMode::Sample => {
                             for sample_idx in 0..sample_length {
@@ -1732,13 +1745,35 @@ impl SpatialRenderer {
                                     }
                                 }
 
+                                last_band_gains = band_gains;
                                 state.ramp.commit_output_position();
                                 state.ramp.advance_ramp(1);
                             }
                         }
                     }
 
-                    object_gains_out.push((input_channel_idx, Gains::zeroed(self.num_speakers)));
+                    // Build full-size (num_speakers) gain arrays for each band, summed gains
+                    // for the existing scalar monitoring path.
+                    let full_band_gains: Vec<Gains> = last_band_gains.iter()
+                        .zip(self.crossover_bands.iter())
+                        .map(|(bg, band)| {
+                            let mut full = Gains::zeroed(self.num_speakers);
+                            for (gi, &g) in bg.iter().enumerate() {
+                                full[band.speaker_indices[gi]] = g;
+                            }
+                            full
+                        })
+                        .collect();
+
+                    let mut summed = Gains::zeroed(self.num_speakers);
+                    for (bg, band) in last_band_gains.iter().zip(self.crossover_bands.iter()) {
+                        for (gi, &g) in bg.iter().enumerate() {
+                            summed[band.speaker_indices[gi]] += g;
+                        }
+                    }
+
+                    object_band_gains_out.push((input_channel_idx, full_band_gains));
+                    object_gains_out.push((input_channel_idx, summed));
                     continue;
                 }
                 // ── End crossover path ───────────────────────────────────────────────────
@@ -2076,9 +2111,11 @@ impl SpatialRenderer {
         }
 
         object_gains_out.sort_by_key(|(idx, _)| *idx);
+        object_band_gains_out.sort_by_key(|(idx, _)| *idx);
         Ok(RenderedFrame {
             samples: output,
             object_gains: object_gains_out,
+            object_band_gains: object_band_gains_out,
         })
     }
 

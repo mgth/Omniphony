@@ -743,6 +743,21 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 )
             }
 
+            OscEvent::MeterObjectBandGains { id, band, gains } => {
+                let entry = s.object_band_gains.entry(id.clone()).or_default();
+                if entry.len() <= band {
+                    entry.resize(band + 1, Vec::new());
+                }
+                entry[band] = gains.clone();
+                (
+                    Some((
+                        "source:band_gains",
+                        serde_json::json!({ "id": id, "band": band, "gains": gains }),
+                    )),
+                    removed_ids,
+                )
+            }
+
             OscEvent::MeterSpeaker {
                 id,
                 peak_dbfs,

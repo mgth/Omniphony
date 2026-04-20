@@ -205,6 +205,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                         if let Err(e) = osc_sender.send_meter_bundle(
                             &snapshot,
                             &rendered.object_gains,
+                            &rendered.object_band_gains,
                             Some(decode_time_ms),
                             Some(render_time_ms),
                             None,
@@ -345,6 +346,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                         if let Err(e) = osc_sender.send_meter_bundle(
                             &snapshot,
                             &rendered.object_gains,
+                            &rendered.object_band_gains,
                             Some(decode_time_ms),
                             Some(render_time_ms),
                             None,

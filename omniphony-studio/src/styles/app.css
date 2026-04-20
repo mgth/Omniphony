@@ -1626,6 +1626,33 @@
         box-shadow: 0 0 8px rgba(138, 240, 255, 0.24);
       }
 
+      .band-contrib-bars {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        margin-top: 3px;
+      }
+
+      .band-bar {
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+        position: relative;
+      }
+
+      .band-bar::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        clip-path: inset(0 calc(100% - var(--level, 0%)) 0 0);
+      }
+
+      .band-bar[data-band="0"]::after { background: #4dd7ff; }
+      .band-bar[data-band="1"]::after { background: #7bff6a; }
+      .band-bar[data-band="2"]::after { background: #ffd13a; }
+      .band-bar[data-band="3"]::after { background: #ff5d5d; }
+
       .editor-body {
         display: grid;
         gap: 0.35rem;

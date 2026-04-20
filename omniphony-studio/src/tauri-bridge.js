@@ -22,7 +22,7 @@ import {
   layoutsByKey
 } from './state.js';
 
-import { updateSource, updateSourceLevel, updateSourceGains, updateSourceTag, removeSource } from './sources.js';
+import { updateSource, updateSourceLevel, updateSourceGains, updateSourceBandGains, updateSourceTag, removeSource } from './sources.js';
 import {
   updateSpeakerLevel,
   renderLayout,
@@ -132,6 +132,10 @@ export function setupTauriBridge() {
 
   listen('source:gains', ({ payload }) => {
     updateSourceGains(payload.id, payload.gains);
+  });
+
+  listen('source:band_gains', ({ payload }) => {
+    updateSourceBandGains(payload.id, payload.band, payload.gains);
   });
 
   listen('spatial:frame', ({ payload }) => {

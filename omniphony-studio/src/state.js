@@ -20,6 +20,7 @@ export const speakerLevels = new Map();
 export const sourceLevelLastSeen = new Map();
 export const speakerLevelLastSeen = new Map();
 export const sourceGains = new Map();
+export const sourceBandGains = new Map();
 export const speakerGainCache = new Map();
 export const objectGainCache = new Map();
 export const speakerBaseGains = new Map();

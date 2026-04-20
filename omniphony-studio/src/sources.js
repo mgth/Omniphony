@@ -21,6 +21,7 @@ import {
   sourceLevels,
   sourceLevelLastSeen,
   sourceGains,
+  sourceBandGains,
   sourceTrails,
   sourceEffectiveMarkers,
   sourceEffectiveLines,
@@ -97,7 +98,8 @@ export const sourceCallbacks = {
   rebuildTrailGeometry: null,
   captureTrailPointColor: null,
   objectHasActiveTrail: null,
-  getObjectIds: null
+  getObjectIds: null,
+  updateAllSpeakerBandBars: null
 };
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1046,23 @@ export function updateSourceGains(id, gainsPayload) {
   if (app.selectedSpeakerIndex !== null) {
     updateSourceSelectionStyles();
   }
+}
+
+export function updateSourceBandGains(id, band, gains) {
+  const existing = sourceBandGains.get(id) || [];
+  if (existing.length <= band) existing.length = band + 1;
+  existing[band] = gains;
+  sourceBandGains.set(id, existing);
+  if (app.selectedSourceId === String(id)) {
+    sourceCallbacks.updateAllSpeakerBandBars?.();
+  }
+}
+
+export function getSelectedSourceBandContributions(speakerIndex) {
+  if (!app.selectedSourceId) return null;
+  const bands = sourceBandGains.get(app.selectedSourceId);
+  if (!bands || bands.length <= 1) return null;
+  return bands.map(bandGains => Number(bandGains?.[speakerIndex] ?? 0));
 }
 
 export function removeSource(id) {

@@ -405,6 +405,8 @@ pub struct AppState {
     pub live_speaker_count: Option<u32>,
     #[serde(skip)]
     pub live_speakers: BTreeMap<u32, LiveSpeakerConfig>,
+    #[serde(skip)]
+    pub object_band_gains: HashMap<String, Vec<Vec<f64>>>,
     #[serde(rename = "currentCoordinateFormat")]
     pub current_coordinate_format: u8,
     pub layouts: Vec<Layout>,
@@ -573,6 +575,7 @@ impl Default for AppState {
             current_content_generation: None,
             live_speaker_count: None,
             live_speakers: BTreeMap::new(),
+            object_band_gains: HashMap::new(),
             current_coordinate_format: 0,
             layouts: Vec::new(),
             selected_layout_key: None,

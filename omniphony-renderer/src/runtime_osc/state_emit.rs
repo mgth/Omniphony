@@ -54,6 +54,7 @@ impl OscSender {
         &self,
         snapshot: &renderer::metering::MeterSnapshot,
         object_gains: &[(usize, renderer::spatial_vbap::Gains)],
+        object_band_gains: &[(usize, Vec<renderer::spatial_vbap::Gains>)],
         decode_time_ms: Option<f32>,
         render_time_ms: Option<f32>,
         write_time_ms: Option<f32>,
@@ -71,6 +72,15 @@ impl OscSender {
         for (idx, g) in object_gains {
             if *idx < gains_by_id.len() {
                 gains_by_id[*idx] = Some(g);
+            }
+        }
+
+        let max_band_id = object_band_gains.iter().map(|(idx, _)| *idx).max().unwrap_or(0);
+        let mut band_gains_by_id: Vec<Option<&Vec<renderer::spatial_vbap::Gains>>> =
+            vec![None; max_band_id.saturating_add(1)];
+        for (idx, bg) in object_band_gains {
+            if *idx < band_gains_by_id.len() {
+                band_gains_by_id[*idx] = Some(bg);
             }
         }
 
@@ -217,6 +227,14 @@ impl OscSender {
                     addr: format!("/omniphony/meter/object/{}/gains", id),
                     args: gains.iter().map(|&g| OscType::Float(g)).collect(),
                 }));
+            }
+            if let Some(bands) = band_gains_by_id.get(id as usize).and_then(|entry| *entry) {
+                for (b, bg) in bands.iter().enumerate() {
+                    messages.push(OscPacket::Message(OscMessage {
+                        addr: format!("/omniphony/meter/object/{}/band/{}/gains", id, b),
+                        args: bg.iter().map(|&g| OscType::Float(g)).collect(),
+                    }));
+                }
             }
         }
         for (idx, &(peak, rms)) in snapshot.speaker_levels.iter().enumerate() {
