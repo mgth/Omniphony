@@ -624,6 +624,30 @@ export function updateSpeakerItem(entry, id, speaker) {
   updateSpeakerBandBars(entry, Number(id));
 }
 
+function getCrossoverBandLabels() {
+  const speakers = app.currentLayoutSpeakers;
+  if (!speakers || speakers.length === 0) return null;
+  const cutoffs = [...new Set(
+    speakers
+      .filter(s => s.spatialize !== 0 && s.freqLow != null && s.freqLow > 0)
+      .map(s => s.freqLow)
+  )].sort((a, b) => a - b);
+  if (cutoffs.length === 0) return null;
+  const edges = [0, ...cutoffs, Infinity];
+  return edges.slice(0, -1).map((lo, i) => {
+    const hi = edges[i + 1];
+    const fmtHz = v => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : `${v}`;
+    if (lo === 0) return `< ${fmtHz(hi)} Hz`;
+    if (hi === Infinity) return `\u2265 ${fmtHz(lo)} Hz`;
+    return `${fmtHz(lo)}\u2013${fmtHz(hi)} Hz`;
+  });
+}
+
+function gainToDb(gain) {
+  if (gain <= 0) return '-\u221E';
+  return (20 * Math.log10(gain)).toFixed(1);
+}
+
 export function updateSpeakerBandBars(entry, speakerIndex) {
   if (!entry?.bandBarsContainer) return;
   const contributions = getSelectedSourceBandContributions(speakerIndex);
@@ -632,15 +656,38 @@ export function updateSpeakerBandBars(entry, speakerIndex) {
     return;
   }
   entry.bandBarsContainer.style.display = '';
+  const labels = getCrossoverBandLabels();
+
   while (entry.bandBarsContainer.children.length < contributions.length) {
+    const b = entry.bandBarsContainer.children.length;
+    const row = document.createElement('div');
+    row.className = 'band-row';
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'band-label';
+    row.appendChild(labelEl);
+
     const bar = document.createElement('div');
     bar.className = 'band-bar';
-    bar.dataset.band = String(entry.bandBarsContainer.children.length);
-    entry.bandBarsContainer.appendChild(bar);
+    bar.dataset.band = String(b);
+    row.appendChild(bar);
+
+    const dbEl = document.createElement('span');
+    dbEl.className = 'band-db';
+    row.appendChild(dbEl);
+
+    entry.bandBarsContainer.appendChild(row);
   }
+
   contributions.forEach((gain, b) => {
-    const bar = entry.bandBarsContainer.children[b];
+    const row = entry.bandBarsContainer.children[b];
+    if (!row) return;
+    const labelEl = row.querySelector('.band-label');
+    const bar = row.querySelector('.band-bar');
+    const dbEl = row.querySelector('.band-db');
+    if (labelEl) labelEl.textContent = labels?.[b] ?? `Band ${b}`;
     if (bar) bar.style.setProperty('--level', `${Math.min(100, gain * 100).toFixed(1)}%`);
+    if (dbEl) dbEl.textContent = `${gainToDb(gain)} dB`;
   });
 }
 

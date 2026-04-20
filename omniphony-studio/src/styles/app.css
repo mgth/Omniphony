@@ -1629,16 +1629,32 @@
       .band-contrib-bars {
         display: flex;
         flex-direction: column;
-        gap: 2px;
-        margin-top: 3px;
+        gap: 3px;
+        margin-top: 4px;
+      }
+
+      .band-row {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+
+      .band-label {
+        font-size: 9px;
+        color: #8a9ab0;
+        white-space: nowrap;
+        min-width: 52px;
+        font-variant-numeric: tabular-nums;
       }
 
       .band-bar {
-        height: 4px;
-        border-radius: 2px;
+        flex: 1;
+        height: 6px;
+        border-radius: 3px;
         background: rgba(255, 255, 255, 0.08);
         overflow: hidden;
         position: relative;
+        min-width: 0;
       }
 
       .band-bar::after {
@@ -1652,6 +1668,15 @@
       .band-bar[data-band="1"]::after { background: #7bff6a; }
       .band-bar[data-band="2"]::after { background: #ffd13a; }
       .band-bar[data-band="3"]::after { background: #ff5d5d; }
+
+      .band-db {
+        font-size: 9px;
+        color: #8a9ab0;
+        white-space: nowrap;
+        min-width: 40px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
 
       .editor-body {
         display: grid;
