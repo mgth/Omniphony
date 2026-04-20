@@ -21,6 +21,8 @@ pub struct Speaker {
     pub spatialize: u8,
     #[serde(default)]
     pub delay_ms: f64,
+    #[serde(rename = "freqLow", default, skip_serializing_if = "Option::is_none")]
+    pub freq_low: Option<f32>,
 }
 
 fn default_radius_m() -> f64 {
@@ -181,6 +183,10 @@ struct RawSpeaker {
     delay: Option<f64>,
     #[serde(default)]
     spatialize: Option<serde_json::Value>,
+    #[serde(default, rename = "freqLow")]
+    freq_low: Option<f64>,
+    #[serde(default)]
+    freq_low_snake: Option<f64>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -246,6 +252,8 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
         _ => 1,
     };
 
+    let freq_low = raw.freq_low.or(raw.freq_low_snake).map(|v| v.max(0.0) as f32).filter(|&v| v > 0.0);
+
     if let (Some(x), Some(y), Some(z)) = (raw.x, raw.y, raw.z) {
         let x = clamp(x, -1.0, 1.0);
         let y = clamp(y, -1.0, 1.0);
@@ -262,6 +270,7 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
             coord_mode,
             spatialize,
             delay_ms,
+            freq_low,
         };
     }
 
@@ -281,6 +290,7 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
         coord_mode,
         spatialize,
         delay_ms,
+        freq_low,
     }
 }
 
@@ -612,6 +622,7 @@ pub fn build_live_layout_from_cache(
                 },
                 spatialize: speaker.spatialize,
                 delay_ms: speaker.delay_ms,
+                freq_low: speaker.freq_low,
             })
         })
         .collect::<Vec<_>>();

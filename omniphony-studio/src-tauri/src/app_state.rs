@@ -265,6 +265,7 @@ pub struct LiveSpeakerConfig {
     pub name: String,
     pub delay_ms: f64,
     pub spatialize: u8,
+    pub freq_low: Option<f32>,
     pub coord_mode: String,
     pub x: f64,
     pub y: f64,

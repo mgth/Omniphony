@@ -555,6 +555,7 @@ fn apply_speaker_config(events: Vec<OscEvent>, app: &AppHandle, state: &Arc<Mute
                     distance_m,
                     delay_ms,
                     spatialize,
+                    freq_low,
                     position: _,
                     ..
                 } => {
@@ -564,6 +565,7 @@ fn apply_speaker_config(events: Vec<OscEvent>, app: &AppHandle, state: &Arc<Mute
                             name,
                             delay_ms,
                             spatialize,
+                            freq_low,
                             coord_mode,
                             x,
                             y,
@@ -885,6 +887,25 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     Some((
                         "speaker:name",
                         serde_json::json!({ "id": id, "name": name }),
+                    )),
+                    removed_ids,
+                )
+            }
+
+            OscEvent::StateSpeakerFreqLow { id, freq_low } => {
+                if let Ok(index) = id.parse::<usize>() {
+                    if let Some(layout_key) = s.selected_layout_key.clone() {
+                        if let Some(layout) = s.layouts.iter_mut().find(|l| l.key == layout_key) {
+                            if let Some(spk) = layout.speakers.get_mut(index) {
+                                spk.freq_low = freq_low;
+                            }
+                        }
+                    }
+                }
+                (
+                    Some((
+                        "speaker:freq_low",
+                        serde_json::json!({ "id": id, "freq_low": freq_low }),
                     )),
                     removed_ids,
                 )

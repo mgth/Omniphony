@@ -31,6 +31,7 @@ export function setupSpeakerEditorListeners() {
   const speakerEditElInputEl = document.getElementById('speakerEditElInput');
   const speakerEditRInputEl = document.getElementById('speakerEditRInput');
   const speakerEditSpatializeToggleEl = document.getElementById('speakerEditSpatializeToggle');
+  const speakerEditFreqLowInputEl = document.getElementById('speakerEditFreqLowInput');
   const speakerEditCartesianModeEl = document.getElementById('speakerEditCartesianMode');
   const speakerEditPolarModeEl = document.getElementById('speakerEditPolarMode');
 
@@ -237,6 +238,21 @@ export function setupSpeakerEditorListeners() {
       const nextSpatialize = speakerEditSpatializeToggleEl.checked ? 1 : 0;
       setSpeakerSpatializeLocal(index, nextSpatialize);
       invoke('control_speaker_spatialize', { id: index, spatialize: nextSpatialize });
+      invoke('control_speakers_apply');
+      renderSpeakerEditor();
+    });
+  }
+
+  if (speakerEditFreqLowInputEl) {
+    speakerEditFreqLowInputEl.addEventListener('change', () => {
+      if (isSpeakerLayoutFrozen()) return;
+      if (app.selectedSpeakerIndex === null) return;
+      const index = app.selectedSpeakerIndex;
+      const raw = speakerEditFreqLowInputEl.value.trim();
+      const freqLow = raw === '' ? 0 : Math.max(0, Number(raw));
+      const speaker = app.currentLayoutSpeakers[index];
+      if (speaker) speaker.freqLow = freqLow > 0 ? freqLow : null;
+      invoke('control_speaker_freq_low', { id: index, freqLow });
       invoke('control_speakers_apply');
       renderSpeakerEditor();
     });

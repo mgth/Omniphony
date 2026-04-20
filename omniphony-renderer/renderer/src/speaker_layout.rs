@@ -96,6 +96,11 @@ pub struct Speaker {
 
     /// Per-speaker output delay in milliseconds (default: 0.0).
     pub delay_ms: f32,
+
+    /// Lowest frequency this speaker can reproduce, in Hz (default: None = full-range).
+    /// Used to derive crossover bands: a speaker is included in band [lo, hi) only if
+    /// `freq_low.unwrap_or(0.0) <= lo`.
+    pub freq_low: Option<f32>,
 }
 
 fn default_coord_mode() -> String {
@@ -161,6 +166,8 @@ struct RawSpeaker {
     spatialize: bool,
     #[serde(default = "default_delay_ms")]
     delay_ms: f32,
+    #[serde(default)]
+    freq_low: Option<f32>,
 }
 
 impl<'de> Deserialize<'de> for Speaker {
@@ -206,6 +213,7 @@ impl<'de> Deserialize<'de> for Speaker {
             z,
             spatialize: raw.spatialize,
             delay_ms: raw.delay_ms,
+            freq_low: raw.freq_low,
         })
     }
 }
@@ -231,6 +239,9 @@ impl Serialize for Speaker {
         }
         state.serialize_field("spatialize", &self.spatialize)?;
         state.serialize_field("delay_ms", &self.delay_ms)?;
+        if self.freq_low.is_some() {
+            state.serialize_field("freq_low", &self.freq_low)?;
+        }
         state.end()
     }
 }
@@ -257,7 +268,13 @@ impl Speaker {
             z,
             spatialize,
             delay_ms: delay_ms.max(0.0),
+            freq_low: None,
         }
+    }
+
+    pub fn with_freq_low(mut self, freq_low: f32) -> Self {
+        self.freq_low = Some(freq_low.max(0.0));
+        self
     }
 
     /// Create a new speaker (spatialize defaults to true)

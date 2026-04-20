@@ -1042,6 +1042,17 @@ fn control_speaker_name(state: State<SharedState>, id: i32, name: String) {
 }
 
 #[tauri::command]
+fn control_speaker_freq_low(state: State<SharedState>, id: i32, freq_low: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: format!("/omniphony/control/speaker/{id}/freq_low"),
+            value: freq_low.max(0.0),
+        },
+    );
+}
+
+#[tauri::command]
 fn control_speakers_apply(state: State<SharedState>) {
     send_control(
         &state.osc_tx,
@@ -2249,6 +2260,7 @@ fn main() {
             control_speaker_delay,
             control_speaker_spatialize,
             control_speaker_name,
+            control_speaker_freq_low,
             control_speakers_apply,
             control_speakers_add,
             control_speakers_remove,

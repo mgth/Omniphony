@@ -171,6 +171,8 @@ pub enum OscEvent {
         #[serde(rename = "delayMs")]
         delay_ms: f64,
         spatialize: u8,
+        #[serde(rename = "freqLow")]
+        freq_low: Option<f32>,
         position: SpeakerPosition,
     },
 
@@ -211,6 +213,8 @@ pub enum OscEvent {
     StateSpeakerSpatialize { id: String, spatialize: bool },
     #[serde(rename = "state:speaker:name")]
     StateSpeakerName { id: String, name: String },
+    #[serde(rename = "state:speaker:freq_low")]
+    StateSpeakerFreqLow { id: String, freq_low: Option<f32> },
 
     #[serde(rename = "state:room_ratio")]
     StateRoomRatio {
@@ -432,7 +436,7 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
 
     if parts.len() == 4 && parts[2] == "speaker" {
         let index = parts[3].parse::<u32>().ok()?;
-        // raw_args: name, az, el, dist, spatialize
+        // raw_args: name, az, el, dist, spatialize, delay, coord_mode, x, y, z, freq_low
         let name = raw_args
             .first()
             .and_then(unwrap_string)
@@ -482,6 +486,11 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
             .and_then(to_number)
             .unwrap_or(pz)
             .clamp(-1.0, 1.0);
+        let freq_low = args
+            .get(10)
+            .copied()
+            .and_then(to_number)
+            .and_then(|value| if value > 0.0 { Some(value as f32) } else { None });
 
         return Some(OscEvent::ConfigSpeaker {
             index,
@@ -495,6 +504,7 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
             z,
             delay_ms,
             spatialize,
+            freq_low,
             position: SpeakerPosition {
                 x: px,
                 y: py,
@@ -1056,6 +1066,11 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 let id = parts[3].parse::<u32>().ok()?.to_string();
                 let name = raw_args.first().and_then(unwrap_string)?;
                 Some(OscEvent::StateSpeakerName { id, name })
+            }
+            "freq_low" if kind == "speaker" => {
+                let id = parts[3].parse::<u32>().ok()?.to_string();
+                let freq_low = to_number(args[0]).and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
+                Some(OscEvent::StateSpeakerFreqLow { id, freq_low })
             }
             _ => None,
         },

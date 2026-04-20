@@ -167,6 +167,7 @@ function getSpeakerEditDelaySamplesInputEl() { return document.getElementById('s
 function getSpeakerEditAutoDelayBtnEl() { return document.getElementById('speakerEditAutoDelayBtn'); }
 function getSpeakerEditDelayToDistanceBtnEl() { return document.getElementById('speakerEditDelayToDistanceBtn'); }
 function getSpeakerEditSpatializeToggleEl() { return document.getElementById('speakerEditSpatializeToggle'); }
+function getSpeakerEditFreqLowInputEl() { return document.getElementById('speakerEditFreqLowInput'); }
 function getSpeakerAddBtnEl() { return document.getElementById('speakerAddBtn'); }
 function getSpeakerMoveUpBtnEl() { return document.getElementById('speakerMoveUpBtn'); }
 function getSpeakerMoveDownBtnEl() { return document.getElementById('speakerMoveDownBtn'); }
@@ -798,6 +799,10 @@ export function renderSpeakerEditor() {
   if (speakerEditDelayMsInputEl) speakerEditDelayMsInputEl.value = String(Math.max(0, delayMs));
   if (speakerEditDelaySamplesInputEl) speakerEditDelaySamplesInputEl.value = String(delayMsToSamples(delayMs));
   if (speakerEditSpatializeToggleEl) speakerEditSpatializeToggleEl.checked = getSpeakerSpatializeValue(speaker) !== 0;
+  const speakerEditFreqLowInputEl = getSpeakerEditFreqLowInputEl();
+  if (speakerEditFreqLowInputEl) {
+    speakerEditFreqLowInputEl.value = speaker.freqLow != null && speaker.freqLow > 0 ? String(speaker.freqLow) : '';
+  }
   [
     speakerEditNameInputEl,
     speakerEditXInputEl,
@@ -812,6 +817,7 @@ export function renderSpeakerEditor() {
     speakerEditAutoDelayBtnEl,
     speakerEditDelayToDistanceBtnEl,
     speakerEditSpatializeToggleEl,
+    speakerEditFreqLowInputEl,
     speakerEditCartesianModeEl,
     speakerEditPolarModeEl,
     speakerEditCartesianGizmoBtnEl,

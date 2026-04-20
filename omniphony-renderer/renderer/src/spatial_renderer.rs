@@ -64,6 +64,7 @@
 //! )?;
 //! ```
 
+use crate::crossover::{BiquadState, FreqBand, LR4CrossoverBank, compute_bands};
 use crate::live_params::{
     CartesianEvaluationParams, EvaluationLiveParams, LiveEvaluationMode, LiveParams,
     PolarEvaluationParams, RampMode, RenderTopology, RendererControl,
@@ -187,6 +188,63 @@ impl Default for ChannelState {
         Self {
             gain_db: -128, // -inf dB (muted)
             ramp: ChannelRampState::default(),
+        }
+    }
+}
+
+/// VBAP engine for one crossover frequency band.
+struct CrossoverBandEngine {
+    /// Indices into the full speaker layout for the speakers in this band.
+    speaker_indices: Vec<usize>,
+    /// VBAP backend restricted to this band's speakers.
+    /// `None` when the band has fewer than 3 speakers (uses uniform gain instead).
+    vbap: Option<VbapBackend>,
+}
+
+impl CrossoverBandEngine {
+    fn from_band(
+        band: &FreqBand,
+        layout: &crate::speaker_layout::SpeakerLayout,
+        az_res_deg: i32,
+        el_res_deg: i32,
+    ) -> Self {
+        let speaker_indices = band.speaker_indices.clone();
+        let positions: Vec<[f32; 2]> = speaker_indices
+            .iter()
+            .map(|&i| layout.speakers[i].position())
+            .collect();
+
+        let vbap = if positions.len() >= 3 {
+            VbapPanner::new(&positions, az_res_deg, el_res_deg, 0.0)
+                .ok()
+                .map(|p| VbapBackend::new(p))
+        } else {
+            None
+        };
+
+        Self { speaker_indices, vbap }
+    }
+
+    /// Compute gains for this band at `position` using the given render params.
+    fn compute_gains(
+        &self,
+        render_params: crate::ramp_strategy::RampRenderParams,
+        position: [f64; 3],
+    ) -> crate::spatial_vbap::Gains {
+        let req = render_params.render_request(position);
+        match &self.vbap {
+            Some(backend) => backend.compute_gains(&req).gains,
+            None => {
+                let n = self.speaker_indices.len();
+                let mut gains = crate::spatial_vbap::Gains::zeroed(n);
+                if n > 0 {
+                    let g = 1.0 / (n as f32).sqrt();
+                    for i in 0..n {
+                        gains.set(i, g);
+                    }
+                }
+                gains
+            }
         }
     }
 }
@@ -315,6 +373,17 @@ pub struct SpatialRenderer {
 
     /// Optional contributor-provided ramp strategy override.
     ramp_strategy_override: Option<Arc<dyn RampStrategy>>,
+
+    /// Per-band VBAP engines, derived from speaker `freq_low` values at construction.
+    /// Empty when no speaker defines `freq_low` (standard single-band rendering).
+    crossover_bands: Vec<CrossoverBandEngine>,
+
+    /// Crossover filter bank for splitting objects into frequency bands.
+    /// `None` when `crossover_bands` has ≤ 1 entry.
+    crossover_filter_bank: Option<LR4CrossoverBank>,
+
+    /// Per-object filter states for the crossover bank, keyed by channel index.
+    crossover_filter_states: std::collections::HashMap<usize, Vec<BiquadState>>,
 }
 
 impl SpatialRenderer {
@@ -513,6 +582,8 @@ impl SpatialRenderer {
             &topology.bed_to_speaker_mapping,
         );
         let editable_layout = topology.speaker_layout.clone();
+        let (crossover_bands, crossover_filter_bank) =
+            Self::build_crossover(&editable_layout, az_res_deg, el_res_deg, sample_rate);
         let control = RendererControl::new(
             live_params,
             topology,
@@ -545,6 +616,8 @@ impl SpatialRenderer {
             log_object_positions,
             auto_gain,
             control,
+            crossover_bands,
+            crossover_filter_bank,
         ))
     }
 
@@ -692,14 +765,20 @@ impl SpatialRenderer {
         let editable_layout = topology.speaker_layout.clone();
         let control = RendererControl::new(live_params, topology, editable_layout, None);
 
+        let layout = control.active_topology().speaker_layout.clone();
+        let (crossover_bands, crossover_filter_bank) =
+            Self::build_crossover(&layout, az_res_deg, el_res_deg, sample_rate);
+
         Ok(Self::finish_construction(
-            control.active_topology().speaker_layout.num_speakers(),
+            layout.num_speakers(),
             spread_resolution,
             sample_rate,
             distance_model,
             log_object_positions,
             auto_gain,
             control,
+            crossover_bands,
+            crossover_filter_bank,
         ))
     }
 
@@ -816,6 +895,14 @@ impl SpatialRenderer {
         let editable_layout = topology.speaker_layout.clone();
         let control = RendererControl::new(live_params, topology, editable_layout, None);
 
+        let layout = control.active_topology().speaker_layout.clone();
+        let (crossover_bands, crossover_filter_bank) = Self::build_crossover(
+            &layout,
+            vbap_azimuth_resolution,
+            vbap_elevation_resolution,
+            sample_rate,
+        );
+
         Ok(Self::finish_construction(
             num_speakers,
             spread_resolution,
@@ -824,6 +911,8 @@ impl SpatialRenderer {
             log_object_positions,
             auto_gain,
             control,
+            crossover_bands,
+            crossover_filter_bank,
         ))
     }
 
@@ -964,6 +1053,47 @@ impl SpatialRenderer {
         }
     }
 
+    /// Build crossover band engines from a speaker layout.
+    ///
+    /// Returns `(bands, Some(filter_bank))` when the layout defines `freq_low` on
+    /// at least one speaker (producing ≥ 2 bands), or `(single_band, None)` when
+    /// no crossover is needed.
+    fn build_crossover(
+        layout: &crate::speaker_layout::SpeakerLayout,
+        az_res_deg: i32,
+        el_res_deg: i32,
+        sample_rate: u32,
+    ) -> (Vec<CrossoverBandEngine>, Option<LR4CrossoverBank>) {
+        let bands = compute_bands(layout);
+        if bands.len() <= 1 {
+            let engines = bands
+                .iter()
+                .map(|b| CrossoverBandEngine::from_band(b, layout, az_res_deg, el_res_deg))
+                .collect();
+            return (engines, None);
+        }
+
+        let cutoffs: Vec<f32> = bands
+            .windows(2)
+            .map(|w| w[0].high_hz)
+            .filter(|f| f.is_finite())
+            .collect();
+
+        let filter_bank = LR4CrossoverBank::new(&cutoffs, sample_rate);
+        let engines = bands
+            .iter()
+            .map(|b| CrossoverBandEngine::from_band(b, layout, az_res_deg, el_res_deg))
+            .collect();
+
+        log::info!(
+            "Crossover enabled: {} bands, cutoffs = {:?} Hz",
+            bands.len(),
+            cutoffs
+        );
+
+        (engines, Some(filter_bank))
+    }
+
     /// Assemble the `SpatialRenderer` struct from fully resolved components.
     ///
     /// Called by both `new` and `from_vbap` after each constructor has built its
@@ -977,6 +1107,8 @@ impl SpatialRenderer {
         log_object_positions: bool,
         auto_gain: bool,
         control: Arc<RendererControl>,
+        crossover_bands: Vec<CrossoverBandEngine>,
+        crossover_filter_bank: Option<LR4CrossoverBank>,
     ) -> Self {
         Self {
             num_speakers,
@@ -1008,6 +1140,9 @@ impl SpatialRenderer {
                     .collect()
             },
             ramp_strategy_override: None,
+            crossover_bands,
+            crossover_filter_bank,
+            crossover_filter_states: std::collections::HashMap::new(),
         }
     }
 
@@ -1498,6 +1633,116 @@ impl SpatialRenderer {
                     .ramp
                     .ensure_speaker_count(ramp_context.speaker_count());
 
+                // ── Crossover path ──────────────────────────────────────────────────────
+                // When freq_low is defined on speakers, split each object into frequency
+                // bands and pan each band through its own VBAP topology.
+                if self.crossover_filter_bank.is_some() {
+                    let render_params = ramp_context.render_params();
+
+                    // Ensure per-object filter state is allocated
+                    let state_count = self.crossover_filter_bank.as_ref().unwrap().state_count();
+                    let obj_filter_states = self.crossover_filter_states
+                        .entry(input_channel_idx)
+                        .or_insert_with(|| vec![BiquadState::default(); state_count]);
+
+                    // Borrow filter bank (different field from crossover_filter_states)
+                    let filter_bank = self.crossover_filter_bank.as_ref().unwrap();
+
+                    match live.ramp_mode {
+                        RampMode::Off => {
+                            state.ramp.remaining_ramp_units = None;
+                            state.ramp.start_position = state.ramp.target_position;
+                            state.ramp.current_position = state.ramp.target_position;
+                            state.ramp.current_spread = state.ramp.target_spread;
+                            state.ramp.output_position = state.ramp.target_position;
+
+                            let position = state.ramp.output_position;
+                            let band_gains: Vec<Gains> = self.crossover_bands.iter()
+                                .map(|b| b.compute_gains(render_params, position))
+                                .collect();
+
+                            for sample_idx in 0..sample_length {
+                                let raw = input_pcm
+                                    [sample_idx * input_channel_count + input_channel_idx]
+                                    * gain_linear
+                                    * obj_gain;
+                                let bands = filter_bank.process_sample(raw, obj_filter_states);
+                                let out_base = sample_idx * self.num_speakers;
+                                for (b, band) in self.crossover_bands.iter().enumerate() {
+                                    for (gi, &g) in band_gains[b].iter().enumerate() {
+                                        output[out_base + band.speaker_indices[gi]] +=
+                                            bands.get(b) * g;
+                                    }
+                                }
+                            }
+                        }
+                        RampMode::Frame => {
+                            let progress =
+                                state.ramp.current_progress().unwrap_or(RampProgress {
+                                    completed_units: 0,
+                                    total_units: 0,
+                                });
+                            ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
+                            let position = state.ramp.output_position;
+                            let band_gains: Vec<Gains> = self.crossover_bands.iter()
+                                .map(|b| b.compute_gains(render_params, position))
+                                .collect();
+
+                            for sample_idx in 0..sample_length {
+                                let raw = input_pcm
+                                    [sample_idx * input_channel_count + input_channel_idx]
+                                    * gain_linear
+                                    * obj_gain;
+                                let bands = filter_bank.process_sample(raw, obj_filter_states);
+                                let out_base = sample_idx * self.num_speakers;
+                                for (b, band) in self.crossover_bands.iter().enumerate() {
+                                    for (gi, &g) in band_gains[b].iter().enumerate() {
+                                        output[out_base + band.speaker_indices[gi]] +=
+                                            bands.get(b) * g;
+                                    }
+                                }
+                            }
+
+                            state.ramp.commit_output_position();
+                            state.ramp.advance_ramp(sample_length as u64);
+                        }
+                        RampMode::Sample => {
+                            for sample_idx in 0..sample_length {
+                                let progress =
+                                    state.ramp.current_progress().unwrap_or(RampProgress {
+                                        completed_units: 0,
+                                        total_units: 0,
+                                    });
+                                ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
+                                let position = state.ramp.output_position;
+                                let band_gains: Vec<Gains> = self.crossover_bands.iter()
+                                    .map(|b| b.compute_gains(render_params, position))
+                                    .collect();
+
+                                let raw = input_pcm
+                                    [sample_idx * input_channel_count + input_channel_idx]
+                                    * gain_linear
+                                    * obj_gain;
+                                let bands = filter_bank.process_sample(raw, obj_filter_states);
+                                let out_base = sample_idx * self.num_speakers;
+                                for (b, band) in self.crossover_bands.iter().enumerate() {
+                                    for (gi, &g) in band_gains[b].iter().enumerate() {
+                                        output[out_base + band.speaker_indices[gi]] +=
+                                            bands.get(b) * g;
+                                    }
+                                }
+
+                                state.ramp.commit_output_position();
+                                state.ramp.advance_ramp(1);
+                            }
+                        }
+                    }
+
+                    object_gains_out.push((input_channel_idx, Gains::zeroed(self.num_speakers)));
+                    continue;
+                }
+                // ── End crossover path ───────────────────────────────────────────────────
+
                 let log_object_snapshot = |rendering_position: [f64; 3], final_gains: &Gains| {
                     if !self.log_object_positions {
                         return;
@@ -1898,6 +2143,7 @@ mod tests {
             2.0,
             VbapTableMode::Polar,
             false,
+            false,
             DistanceModel::Linear,
             false,
             1.0,
@@ -1909,6 +2155,7 @@ mod tests {
             2.0,
             0.5,
             0.0,
+            0.0,
             false,
             false,
             false,
@@ -1918,6 +2165,7 @@ mod tests {
             LiveEvaluationMode::PrecomputedPolar,
             31,
             31,
+            15,
             15,
         );
 
