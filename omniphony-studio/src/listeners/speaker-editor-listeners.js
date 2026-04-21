@@ -8,7 +8,7 @@ import {
   computeAndApplySpeakerDelays, adjustSpeakerDistancesFromDelays,
   samplesToDelayMs
 } from '../speakers.js';
-import { applyGroupGains } from '../mute-solo.js';
+import { applySpeakerGroupGains } from '../mute-solo.js';
 
 export function setupSpeakerEditorListeners() {
   const editModeSelectEl = document.getElementById('editModeSelect');
@@ -110,7 +110,7 @@ export function setupSpeakerEditorListeners() {
       const value = Number(speakerEditGainSliderEl.value);
       if (!Number.isFinite(value)) return;
       speakerBaseGains.set(id, value);
-      applyGroupGains('speaker');
+      applySpeakerGroupGains();
       renderSpeakerEditor();
     });
     speakerEditGainSliderEl.addEventListener('dblclick', () => {
@@ -119,7 +119,7 @@ export function setupSpeakerEditorListeners() {
       speakerEditGainSliderEl.value = '1';
       const id = String(app.selectedSpeakerIndex);
       speakerBaseGains.set(id, 1);
-      applyGroupGains('speaker');
+      applySpeakerGroupGains();
       renderSpeakerEditor();
     });
   }

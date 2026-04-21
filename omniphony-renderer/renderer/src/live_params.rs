@@ -101,18 +101,13 @@ impl RampMode {
 /// Live-tunable parameters for a single input object (bed or audio object).
 #[derive(Clone)]
 pub struct ObjectLiveParams {
-    /// Linear gain override (default 1.0 = unity).
-    pub gain: f32,
-    /// Mute flag — independent of `gain`; unmuting restores the stored value.
+    /// Mute flag; when true the object is silenced.
     pub muted: bool,
 }
 
 impl Default for ObjectLiveParams {
     fn default() -> Self {
-        Self {
-            gain: 1.0,
-            muted: false,
-        }
+        Self { muted: false }
     }
 }
 
@@ -203,8 +198,8 @@ pub struct LiveParams {
     /// Master output gain, linear scale (1.0 = unity, 0.5 ≈ −6 dB).
     pub master_gain: f32,
 
-    /// Per-object live parameters: gain and mute.
-    /// Absent entries use `ObjectLiveParams::default()` (gain=1.0, muted=false).
+    /// Per-object live parameters (mute).
+    /// Absent entries use `ObjectLiveParams::default()` (muted=false).
     pub objects: HashMap<usize, ObjectLiveParams>,
 
     /// Minimum spread applied when the object spread value is 0.0.

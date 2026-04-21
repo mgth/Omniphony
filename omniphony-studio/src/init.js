@@ -11,7 +11,6 @@ import {
   objectMuted,
   speakerManualMuted,
   objectManualMuted,
-  objectGainCache,
   speakerGainCache
 } from './state.js';
 
@@ -67,9 +66,6 @@ export function applyInitState(payload) {
   });
   Object.entries(payload.objectSpeakerGains || {}).forEach(([id, gains]) => {
     updateSourceGains(id, gains);
-  });
-  Object.entries(payload.objectGains || {}).forEach(([id, gain]) => {
-    objectGainCache.set(String(id), Number(gain));
   });
   Object.entries(payload.speakerGains || {}).forEach(([id, gain]) => {
     speakerGainCache.set(String(id), Number(gain));

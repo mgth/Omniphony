@@ -284,8 +284,6 @@ pub struct AppState {
     pub speaker_levels: HashMap<String, Meter>,
     #[serde(rename = "objectSpeakerGains")]
     pub object_speaker_gains: HashMap<String, Vec<f64>>,
-    #[serde(rename = "objectGains")]
-    pub object_gains: HashMap<String, f64>,
     #[serde(rename = "speakerGains")]
     pub speaker_gains: HashMap<String, f64>,
     #[serde(rename = "objectMutes")]
@@ -513,7 +511,6 @@ impl Default for AppState {
             source_levels: HashMap::new(),
             speaker_levels: HashMap::new(),
             object_speaker_gains: HashMap::new(),
-            object_gains: HashMap::new(),
             speaker_gains: HashMap::new(),
             object_mutes: HashMap::new(),
             speaker_mutes: HashMap::new(),

@@ -24,9 +24,7 @@ import {
   sourcePositionsRaw,
   sourceTrails,
   speakerGainCache,
-  objectGainCache,
   speakerBaseGains,
-  objectBaseGains,
   speakerDelays,
   speakerMuted,
   objectMuted,
@@ -116,8 +114,7 @@ import {
   toggleSolo,
   sendObjectMute,
   sendSpeakerMute,
-  updateMeterUI,
-  applyGroupGains
+  updateMeterUI
 } from './mute-solo.js';
 
 import {
@@ -381,7 +378,6 @@ export function updateObjectControlsUI() {
   const selectedSourceId = get_selectedSourceId();
   const soloTarget = getSoloTarget('object');
   objectItems.forEach((entry, id) => {
-    const gainValue = getBaseGain(objectBaseGains, objectGainCache, id);
     const metadataSilent = objectHasSilentMetadataGain(id);
     entry.muteBtn.classList.toggle('active', objectMuted.has(id));
     entry.soloBtn.classList.toggle('active', soloTarget === id);
@@ -950,34 +946,8 @@ export function createObjectItem(id) {
   contributionFill.className = 'meter-fill contribution';
   meterBar.appendChild(meterFill);
   meterBar.appendChild(contributionFill);
-  level.appendChild(meterBar);
-  content.appendChild(level);
-
-  const controlsRow = document.createElement('div');
-  controlsRow.className = 'control-row';
-
-  const gainSlider = document.createElement('input');
-  gainSlider.type = 'range';
-  gainSlider.min = '0';
-  gainSlider.max = '2';
-  gainSlider.step = '0.01';
-  gainSlider.className = 'gain-slider';
-  gainSlider.addEventListener('input', () => {
-    objectBaseGains.set(id, Number(gainSlider.value));
-    applyGroupGains('object');
-  });
-  gainSlider.addEventListener('dblclick', () => {
-    gainSlider.value = '1';
-    objectBaseGains.set(id, 1);
-    applyGroupGains('object');
-    updateObjectControlsUI();
-  });
-  controlsRow.appendChild(gainSlider);
-
-  const gainBox = document.createElement('div');
-  gainBox.className = 'gain-box';
-  gainBox.textContent = '0.0 dB';
-  controlsRow.appendChild(gainBox);
+  const actionsRow = document.createElement('div');
+  actionsRow.className = 'object-meter-actions';
 
   const muteBtn = document.createElement('button');
   muteBtn.type = 'button';
@@ -987,7 +957,7 @@ export function createObjectItem(id) {
     event.preventDefault();
     toggleMute('object', id);
   });
-  controlsRow.appendChild(muteBtn);
+  actionsRow.appendChild(muteBtn);
 
   const soloBtn = document.createElement('button');
   soloBtn.type = 'button';
@@ -997,9 +967,22 @@ export function createObjectItem(id) {
     event.preventDefault();
     toggleSolo('object', id);
   });
-  controlsRow.appendChild(soloBtn);
+  actionsRow.appendChild(soloBtn);
 
-  content.appendChild(controlsRow);
+  level.appendChild(meterBar);
+  level.appendChild(actionsRow);
+  content.appendChild(level);
+
+  const contributionRow = document.createElement('div');
+  contributionRow.className = 'object-contrib-row';
+
+  const bandBarsContainer = document.createElement('div');
+  bandBarsContainer.className = 'band-contrib-bars';
+  bandBarsContainer.style.display = 'none';
+  contributionRow.style.display = 'none';
+  contributionRow.appendChild(bandBarsContainer);
+
+  content.appendChild(contributionRow);
   root.appendChild(content);
 
   return {
@@ -1011,8 +994,8 @@ export function createObjectItem(id) {
     levelText,
     meterFill,
     contributionFill,
-    gainSlider,
-    gainBox,
+    contributionRow,
+    bandBarsContainer,
     muteBtn,
     soloBtn
   };
@@ -1029,9 +1012,6 @@ export function updateObjectItem(entry, id, position, name) {
   entry.position.textContent = formatPosition(position);
   entry.topRight.textContent = getObjectDominantSpeakerText(id);
   entry.root.classList.toggle('has-active-trail', objectHasActiveTrail(id));
-  const gainValue = getBaseGain(objectBaseGains, objectGainCache, id);
-  entry.gainSlider.value = String(gainValue);
-  entry.gainBox.textContent = linearToDb(gainValue);
   entry.muteBtn.classList.toggle('active', objectMuted.has(id));
   entry.soloBtn.classList.toggle('active', soloTarget === id);
   updateItemClasses(entry, objectMuted.has(id), Boolean((soloTarget && soloTarget !== id) || metadataSilent));

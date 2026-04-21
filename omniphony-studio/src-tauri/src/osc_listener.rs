@@ -638,7 +638,6 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     s.sources.remove(id);
                     s.source_levels.remove(id);
                     s.object_speaker_gains.remove(id);
-                    s.object_gains.remove(id);
                     s.object_mutes.remove(id);
                 }
                 removed_ids.extend(stale_ids);
@@ -700,7 +699,6 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 s.sources.remove(&id);
                 s.source_levels.remove(&id);
                 s.object_speaker_gains.remove(&id);
-                s.object_gains.remove(&id);
                 s.object_mutes.remove(&id);
                 (
                     Some(("source:remove", serde_json::json!({ "id": id }))),
@@ -778,14 +776,6 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                             "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
                         }),
                     )),
-                    removed_ids,
-                )
-            }
-
-            OscEvent::StateObjectGain { id, gain } => {
-                s.object_gains.insert(id.clone(), gain);
-                (
-                    Some(("object:gain", serde_json::json!({ "id": id, "gain": gain }))),
                     removed_ids,
                 )
             }

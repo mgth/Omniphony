@@ -16,7 +16,6 @@ import {
   objectMuted,
   speakerManualMuted,
   objectManualMuted,
-  objectGainCache,
   speakerGainCache,
   speakerDelays,
   layoutsByKey
@@ -237,11 +236,6 @@ export function setupTauriBridge() {
   // -----------------------------------------------------------------------
   // Objects
   // -----------------------------------------------------------------------
-
-  listen('object:gain', ({ payload }) => {
-    objectGainCache.set(String(payload.id), Number(payload.gain));
-    updateObjectControlsUI();
-  });
 
   listen('object:mute', ({ payload }) => {
     const key = String(payload.id);

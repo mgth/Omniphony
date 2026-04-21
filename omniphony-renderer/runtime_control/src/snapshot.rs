@@ -595,12 +595,6 @@ pub fn build_live_state_bundle(
     let mut all_messages = messages;
 
     for (&idx, obj) in &live.objects {
-        if obj.gain != 1.0 {
-            all_messages.push(OscPacket::Message(OscMessage {
-                addr: format!("/omniphony/state/object/{}/gain", idx),
-                args: vec![OscType::Float(obj.gain)],
-            }));
-        }
         if obj.muted {
             all_messages.push(OscPacket::Message(OscMessage {
                 addr: format!("/omniphony/state/object/{}/mute", idx),

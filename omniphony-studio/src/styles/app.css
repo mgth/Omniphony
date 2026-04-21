@@ -1229,8 +1229,19 @@
         padding-right: 0.35rem;
       }
 
+      .object-item .meter-row {
+        grid-template-columns: auto 1fr auto;
+      }
+
+      .object-meter-actions {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 0.25rem;
+      }
+
       .object-item .control-row {
-        grid-template-columns: minmax(0, 1fr) auto auto auto;
+        grid-template-columns: minmax(0, 1fr) auto;
         padding-right: 0.35rem;
       }
 
@@ -1619,6 +1630,13 @@
       }
 
       .speaker-contrib-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.4rem;
+        margin-top: 4px;
+      }
+
+      .object-contrib-row {
         display: flex;
         align-items: flex-start;
         gap: 0.4rem;

@@ -158,7 +158,6 @@ Common addresses include:
 - `/omniphony/state/input/live/format`
 - `/omniphony/state/input/live/map`
 - `/omniphony/state/input/live/lfe_mode`
-- `/omniphony/state/object/{idx}/gain`
 - `/omniphony/state/object/{idx}/mute`
 - `/omniphony/state/speaker/{idx}/gain`
 - `/omniphony/state/speaker/{idx}/mute`
@@ -208,7 +207,6 @@ Common control addresses include:
 - `/omniphony/control/input/apply`
 - `/omniphony/control/audio/output_devices/refresh`
 - `/omniphony/control/gain`
-- `/omniphony/control/object/{idx}/gain`
 - `/omniphony/control/object/{idx}/mute`
 - `/omniphony/control/speaker/{idx}/gain`
 - `/omniphony/control/speaker/{idx}/mute`

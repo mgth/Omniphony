@@ -36,8 +36,6 @@ import {
   sourceBaseColors,
   objectMuted,
   objectManualMuted,
-  objectBaseGains,
-  objectGainCache,
   dirtyObjectMeters,
   dirtyObjectPositions,
   dirtyObjectLabels,
@@ -75,10 +73,8 @@ import { shouldAppendTrailPoint, recordTrailPoint, shouldRebuildTrailGeometry } 
 import {
   linearToDb,
   meterToPercent,
-  getBaseGain,
   getSoloTarget,
-  sendObjectMute,
-  applyGroupGains
+  sendObjectMute
 } from './mute-solo.js';
 import { formatNumber } from './coordinates.js';
 
@@ -585,30 +581,100 @@ export function getSelectedSpeakerContributionForObject(id) {
   };
 }
 
+function getCrossoverBandLabels() {
+  const speakers = app.currentLayoutSpeakers;
+  if (!speakers || speakers.length === 0) return null;
+  const cutoffs = [...new Set(
+    speakers
+      .filter((s) => s.spatialize !== 0 && s.freqLow != null && s.freqLow > 0)
+      .map((s) => s.freqLow)
+  )].sort((a, b) => a - b);
+  if (cutoffs.length === 0) return null;
+  const edges = [0, ...cutoffs, Infinity];
+  return edges.slice(0, -1).map((lo, i) => {
+    const hi = edges[i + 1];
+    const fmtHz = (v) => (v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : `${v}`);
+    if (lo === 0) return `< ${fmtHz(hi)} Hz`;
+    if (hi === Infinity) return `>= ${fmtHz(lo)} Hz`;
+    return `${fmtHz(lo)}-${fmtHz(hi)} Hz`;
+  });
+}
+
+function getSelectedSpeakerBandContributionsForObject(id) {
+  if (app.selectedSpeakerIndex === null) return null;
+  const bands = sourceBandGains.get(String(id));
+  if (!bands || bands.length === 0) return null;
+  return bands.map((bandGains) => Number(bandGains?.[app.selectedSpeakerIndex] ?? 0));
+}
+
+function updateObjectBandBars(entry, id) {
+  if (!entry?.bandBarsContainer || !entry?.contributionRow) return;
+  const contributions = getSelectedSpeakerBandContributionsForObject(id);
+  if (app.selectedSpeakerIndex === null || !contributions || contributions.length === 0) {
+    entry.bandBarsContainer.style.display = 'none';
+    entry.contributionRow.style.display = 'none';
+    return;
+  }
+
+  entry.contributionRow.style.display = '';
+  entry.bandBarsContainer.style.display = '';
+  const labels = getCrossoverBandLabels();
+
+  while (entry.bandBarsContainer.children.length < contributions.length) {
+    const b = entry.bandBarsContainer.children.length;
+    const row = document.createElement('div');
+    row.className = 'band-row';
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'band-label';
+    row.appendChild(labelEl);
+
+    const bar = document.createElement('div');
+    bar.className = 'band-bar';
+    bar.dataset.band = String(b);
+    row.appendChild(bar);
+
+    const dbEl = document.createElement('span');
+    dbEl.className = 'band-db';
+    row.appendChild(dbEl);
+
+    entry.bandBarsContainer.appendChild(row);
+  }
+
+  contributions.forEach((gain, b) => {
+    const row = entry.bandBarsContainer.children[b];
+    if (!row) return;
+    const labelEl = row.querySelector('.band-label');
+    const bar = row.querySelector('.band-bar');
+    const dbEl = row.querySelector('.band-db');
+    if (labelEl) {
+      labelEl.textContent = labels?.[b] ?? (contributions.length === 1 ? 'Full band' : `Band ${b}`);
+    }
+    if (bar) bar.style.setProperty('--level', `${Math.min(100, gain * 100).toFixed(1)}%`);
+    if (dbEl) dbEl.textContent = linearToDb(gain);
+  });
+
+  for (let b = 0; b < entry.bandBarsContainer.children.length; b += 1) {
+    const row = entry.bandBarsContainer.children[b];
+    if (row) row.style.display = b < contributions.length ? '' : 'none';
+  }
+}
+
 export function updateObjectContributionUI(entry, id) {
-  if (!entry?.contributionFill || !entry?.gainSlider || !entry?.gainBox) {
+  if (!entry?.contributionFill) {
     return;
   }
   const contribution = getSelectedSpeakerContributionForObject(id);
   if (app.selectedSpeakerIndex === null || !contribution) {
     entry.contributionFill.style.setProperty('--level', '0%');
     entry.meterFill.style.opacity = '1';
-    entry.gainSlider.disabled = false;
-    entry.gainSlider.style.visibility = 'visible';
-    entry.gainBox.style.visibility = 'visible';
-    const gainValue = getBaseGain(objectBaseGains, objectGainCache, id);
-    entry.gainSlider.value = String(gainValue);
-    entry.gainBox.textContent = linearToDb(gainValue);
+    if (entry.contributionRow) entry.contributionRow.style.display = 'none';
     return;
   }
 
   entry.meterFill.style.opacity = '0.38';
   entry.contributionFill.style.setProperty('--level', `${contribution.percent.toFixed(1)}%`);
-  entry.gainSlider.disabled = true;
-  entry.gainSlider.style.visibility = 'visible';
-  entry.gainBox.style.visibility = 'visible';
-  entry.gainSlider.value = String(Math.max(0, Math.min(1, contribution.gain)));
-  entry.gainBox.textContent = `${contribution.gainDb} | ${contribution.resultText}`;
+  updateObjectBandBars(entry, id);
 }
 
 // ---------------------------------------------------------------------------
@@ -794,7 +860,6 @@ export function setSelectedSource(id) {
       }
       sendObjectMute(objId, shouldMute);
     });
-    applyGroupGains('object');
   }
   app.selectedSourceId = nextId;
   updateSourceSelectionStyles();
@@ -1050,6 +1115,12 @@ export function updateSourceBandGains(id, band, gains) {
   if (app.selectedSourceId === String(id)) {
     sourceCallbacks.updateAllSpeakerBandBars?.();
   }
+  if (app.selectedSpeakerIndex !== null) {
+    const entry = objectItems.get(String(id));
+    if (entry) {
+      updateObjectContributionUI(entry, String(id));
+    }
+  }
 }
 
 export function getSelectedSourceBandContributions(speakerIndex) {
@@ -1123,7 +1194,6 @@ export function removeSource(id) {
   }
   objectMuted.delete(String(id));
   objectManualMuted.delete(String(id));
-  objectBaseGains.delete(String(id));
   const entry = objectItems.get(String(id));
   if (entry) {
     entry.root.remove();

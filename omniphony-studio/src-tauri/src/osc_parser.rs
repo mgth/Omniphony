@@ -200,8 +200,6 @@ pub enum OscEvent {
         rms_dbfs: f64,
     },
 
-    #[serde(rename = "state:object:gain")]
-    StateObjectGain { id: String, gain: f64 },
     #[serde(rename = "state:speaker:gain")]
     StateSpeakerGain { id: String, gain: f64 },
     #[serde(rename = "state:speaker:delay")]
@@ -1030,18 +1028,10 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             enabled: to_number(args[0])? != 0.0,
         }),
         (5, kind) if kind == "object" || kind == "speaker" => match parts[4] {
-            "gain" => {
-                let id = if kind == "speaker" {
-                    parts[3].parse::<u32>().ok()?.to_string()
-                } else {
-                    parts[3].to_string()
-                };
+            "gain" if kind == "speaker" => {
+                let id = parts[3].parse::<u32>().ok()?.to_string();
                 let gain = clamp(to_number(args[0])?, 0.0, 2.0);
-                if kind == "speaker" {
-                    Some(OscEvent::StateSpeakerGain { id, gain })
-                } else {
-                    Some(OscEvent::StateObjectGain { id, gain })
-                }
+                Some(OscEvent::StateSpeakerGain { id, gain })
             }
             "delay" if kind == "speaker" => {
                 let id = parts[3].parse::<u32>().ok()?.to_string();

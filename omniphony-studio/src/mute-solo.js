@@ -14,9 +14,7 @@ import {
   speakerManualMuted,
   objectManualMuted,
   speakerGainCache,
-  objectGainCache,
   speakerBaseGains,
-  objectBaseGains,
   speakerItems,
   objectItems,
   sourceMeshes,
@@ -91,10 +89,6 @@ export function getBaseGain(map, cache, id) {
   return 1;
 }
 
-export function sendObjectGain(id, gain) {
-  invoke('control_object_gain', { id: Number(id), gain: Number(gain) });
-}
-
 export function sendSpeakerGain(id, gain) {
   invoke('control_speaker_gain', { id: Number(id), gain: Number(gain) });
 }
@@ -154,19 +148,10 @@ export function sendSpeakerMute(id, muted) {
 // Apply group gains
 // ---------------------------------------------------------------------------
 
-export function applyGroupGains(group) {
-  const isSpeaker = group === 'speaker';
-  const ids = isSpeaker ? getSpeakerIds() : getObjectIds();
-  const baseMap = isSpeaker ? speakerBaseGains : objectBaseGains;
-  const cache = isSpeaker ? speakerGainCache : objectGainCache;
-
-  ids.forEach((id) => {
-    const baseGain = getBaseGain(baseMap, cache, id);
-    if (isSpeaker) {
-      sendSpeakerGain(id, baseGain);
-    } else {
-      sendObjectGain(id, baseGain);
-    }
+export function applySpeakerGroupGains() {
+  getSpeakerIds().forEach((id) => {
+    const baseGain = getBaseGain(speakerBaseGains, speakerGainCache, id);
+    sendSpeakerGain(id, baseGain);
   });
 }
 

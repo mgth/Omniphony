@@ -1508,27 +1508,6 @@ pub fn apply_simple_osc_control(
     }
 
     if let Some(rest) = addr.strip_prefix("/omniphony/control/object/") {
-        if let Some(idx_str) = rest.strip_suffix("/gain") {
-            if let Ok(idx) = idx_str.parse::<usize>() {
-                if let Some(gain) = parse_f32_arg(msg.args.first()) {
-                    ctx.renderer
-                        .live
-                        .write()
-                        .unwrap()
-                        .objects
-                        .entry(idx)
-                        .or_default()
-                        .gain = gain;
-                    ctx.renderer.mark_object_params_dirty();
-                    effects.mark_dirty = true;
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: format!("/omniphony/state/object/{}/gain", idx),
-                        value: BroadcastValue::Float(gain),
-                    });
-                }
-            }
-            return Some(effects);
-        }
         if let Some(idx_str) = rest.strip_suffix("/mute") {
             if let Ok(idx) = idx_str.parse::<usize>() {
                 if let Some(muted) = parse_bool_arg(msg.args.first()) {

@@ -248,18 +248,6 @@ fn export_layout_to_path(path: String, layout: Layout) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn control_object_gain(state: State<SharedState>, id: i32, gain: f32) {
-    let clamped = gain.max(0.0).min(2.0);
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendFloat {
-            address: format!("/omniphony/control/object/{id}/gain"),
-            value: clamped,
-        },
-    );
-}
-
-#[tauri::command]
 fn control_speaker_gain(state: State<SharedState>, id: i32, gain: f32) {
     let clamped = gain.max(0.0).min(2.0);
     send_control(
@@ -2165,7 +2153,6 @@ fn main() {
             pick_bridge_path,
             pick_orender_path,
             export_layout_to_path,
-            control_object_gain,
             control_speaker_gain,
             control_object_mute,
             control_speaker_mute,

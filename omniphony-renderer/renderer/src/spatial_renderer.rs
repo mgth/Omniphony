@@ -1307,13 +1307,10 @@ impl SpatialRenderer {
 
         // Process each channel
         for input_channel_idx in 0..input_channel_count {
-            // Per-channel live gain + mute (applies to beds and objects).
-            // Mute is independent of gain: unmuting restores the stored gain.
-            let obj_params = live.object_params.get(input_channel_idx);
-            let obj_gain = match obj_params {
+            // Per-channel mute (applies to beds and objects).
+            let obj_gain = match live.object_params.get(input_channel_idx) {
                 Some(o) if o.muted => 0.0,
-                Some(o) => o.gain,
-                None => 1.0,
+                _ => 1.0,
             };
 
             // Get gain from cached metadata (common for ALL channels - beds and objects)
