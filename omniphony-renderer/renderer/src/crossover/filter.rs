@@ -132,6 +132,11 @@ impl SmallBands {
         Self { data: [0.0; 8], len }
     }
 
+    /// Passthrough: wraps a single sample as a 1-band `SmallBands` (no filtering).
+    pub fn single(v: f32) -> Self {
+        Self { data: [v, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], len: 1 }
+    }
+
     fn set(&mut self, i: usize, v: f32) {
         self.data[i] = v;
     }
