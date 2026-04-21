@@ -10,13 +10,21 @@ use super::gain_source::VbapGainSource;
 use super::saf_ffi;
 use std::ffi::c_int;
 
+/// Elevation threshold for dummy speaker injection — mirrors the native backend.
+/// If all speakers are above/below this limit, virtual speakers are added at ±90°
+/// so that SAF's `findLsTriplets` succeeds for near-horizontal layouts.
+const ADD_DUMMY_LIMIT: f32 = 60.0;
+
 /// Safe wrapper around SAF's speaker triangulation and VBAP gain matrices.
 ///
 /// Owns the C-allocated `ls_groups` and `layout_inv_mtx` pointers and frees
 /// them on drop.
 pub(crate) struct SpartaVbapLayout {
+    /// Number of *real* (non-dummy) speakers — size of the returned `Gains`.
     pub(crate) n_speakers: usize,
     pub(crate) n_faces: c_int,
+    /// Total speaker count used for triangulation (real + dummy virtual speakers).
+    n_eff: usize,
     ls_groups: *mut c_int,
     layout_inv_mtx: *mut f32,
 }
@@ -33,12 +41,28 @@ impl SpartaVbapLayout {
 
     /// Build a layout from speaker directions (azimuth, elevation in degrees).
     ///
-    /// Internally calls `findLsTriplets` → `invertLsMtx3D` to prepare the
-    /// matrices needed by `vbap3D`.
+    /// When all speakers lie within ±ADD_DUMMY_LIMIT degrees of the equator,
+    /// virtual speakers at ±90° are injected before calling SAF's
+    /// `findLsTriplets`, mirroring what `generateVBAPgainTable3D(enableDummies=1)`
+    /// does internally. Dummy gains are stripped before returning.
     pub fn from_speaker_dirs(speaker_dirs_deg: &[[f32; 2]]) -> Result<Self, String> {
-        let n_speakers = speaker_dirs_deg.len();
-        let mut ls_dirs = Vec::with_capacity(n_speakers * 2);
-        for &[az, el] in speaker_dirs_deg {
+        let n_real = speaker_dirs_deg.len();
+
+        let need_dummy_neg = speaker_dirs_deg.iter().all(|d| d[1] > -ADD_DUMMY_LIMIT);
+        let need_dummy_pos = speaker_dirs_deg.iter().all(|d| d[1] < ADD_DUMMY_LIMIT);
+
+        let effective: Vec<[f32; 2]> = if need_dummy_neg || need_dummy_pos {
+            let mut dirs = speaker_dirs_deg.to_vec();
+            if need_dummy_neg { dirs.push([0.0, -90.0]); }
+            if need_dummy_pos { dirs.push([0.0,  90.0]); }
+            dirs
+        } else {
+            speaker_dirs_deg.to_vec()
+        };
+
+        let n_eff = effective.len();
+        let mut ls_dirs: Vec<f32> = Vec::with_capacity(n_eff * 2);
+        for &[az, el] in &effective {
             ls_dirs.push(az);
             ls_dirs.push(el);
         }
@@ -51,7 +75,7 @@ impl SpartaVbapLayout {
         unsafe {
             saf_ffi::findLsTriplets(
                 ls_dirs.as_mut_ptr(),
-                n_speakers as c_int,
+                n_eff as c_int,
                 1,
                 &mut u_spkr,
                 &mut num_vert,
@@ -82,14 +106,16 @@ impl SpartaVbapLayout {
         }
 
         Ok(Self {
-            n_speakers,
+            n_speakers: n_real,
             n_faces,
+            n_eff,
             ls_groups,
             layout_inv_mtx,
         })
     }
 
     /// Compute VBAP gains for a single source direction and spread.
+    /// Returns gains for real speakers only (dummy columns are stripped).
     pub fn vbap_gains(
         &self,
         azimuth_deg: f32,
@@ -103,7 +129,7 @@ impl SpartaVbapLayout {
             saf_ffi::vbap3D(
                 src_dirs.as_mut_ptr(),
                 1,
-                self.n_speakers as c_int,
+                self.n_eff as c_int,
                 self.ls_groups,
                 self.n_faces,
                 spread_deg,
@@ -116,8 +142,9 @@ impl SpartaVbapLayout {
             return Err("vbap3D failed".to_string());
         }
 
-        let gains = unsafe { std::slice::from_raw_parts(gain_mtx, self.n_speakers) };
-        let out = Gains::from_slice(gains);
+        // SAF returns n_eff gains — keep only the first n_speakers (real speakers).
+        let all_gains = unsafe { std::slice::from_raw_parts(gain_mtx, self.n_eff) };
+        let out = Gains::from_slice(&all_gains[..self.n_speakers]);
         unsafe { libc::free(gain_mtx as *mut libc::c_void) };
         Ok(out)
     }
