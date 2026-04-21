@@ -116,6 +116,31 @@ impl LR4CrossoverBank {
         bands.set(self.splitters.len(), signal);
         bands
     }
+
+    /// Split a whole mono block into reusable per-band scratch buffers.
+    ///
+    /// The first `num_bands` entries of `bands_out` are resized to `input_len` and
+    /// overwritten in place.
+    pub fn process_block<F>(
+        &self,
+        input_len: usize,
+        states: &mut [BiquadState],
+        bands_out: &mut [Vec<f32>],
+        mut sample_at: F,
+    ) where
+        F: FnMut(usize) -> f32,
+    {
+        debug_assert!(bands_out.len() >= self.num_bands);
+        for band in bands_out.iter_mut().take(self.num_bands) {
+            band.resize(input_len, 0.0);
+        }
+        for sample_idx in 0..input_len {
+            let split = self.process_sample(sample_at(sample_idx), states);
+            for band_idx in 0..self.num_bands {
+                bands_out[band_idx][sample_idx] = split.get(band_idx);
+            }
+        }
+    }
 }
 
 /// Stack-backed fixed-capacity array for band samples (avoids heap allocation in hot path).

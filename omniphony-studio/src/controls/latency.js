@@ -453,14 +453,16 @@ export function renderRenderTimeUI() {
     return;
   }
   const dec = Math.max(0, Number(app.decodeTimeMs) || 0);
-  const rnd = Math.max(0, Number(app.renderTimeMs) || 0);
-  const cro = Math.min(rnd, Math.max(0, Number(app.crossoverTimeMs) || 0));
+  const rndTotal = Math.max(0, Number(app.renderTimeMs) || 0);
+  const cro = Math.min(rndTotal, Math.max(0, Number(app.crossoverTimeMs) || 0));
+  const rnd = Math.max(0, rndTotal - cro);
   const wri = Math.max(0, Number(app.writeTimeMs) || 0);
   const decMax = app.decodeTimeWindow.length > 0 ? Math.max(...app.decodeTimeWindow.map((entry) => entry.v)) : null;
-  const rndMax = app.renderTimeWindow.length > 0 ? Math.max(...app.renderTimeWindow.map((entry) => entry.v)) : null;
+  const rndTotalMax = app.renderTimeWindow.length > 0 ? Math.max(...app.renderTimeWindow.map((entry) => entry.v)) : null;
   const croMax = app.crossoverTimeWindow.length > 0
-    ? Math.min(rndMax ?? Number.POSITIVE_INFINITY, Math.max(...app.crossoverTimeWindow.map((entry) => entry.v)))
+    ? Math.min(rndTotalMax ?? Number.POSITIVE_INFINITY, Math.max(...app.crossoverTimeWindow.map((entry) => entry.v)))
     : null;
+  const rndMax = rndTotalMax === null ? null : Math.max(0, rndTotalMax - (croMax ?? 0));
   const wriMax = app.writeTimeWindow.length > 0 ? Math.max(...app.writeTimeWindow.map((entry) => entry.v)) : null;
   const frameBudgetMs = Number(app.frameDurationMs);
   const scaleMs = Number.isFinite(frameBudgetMs) && frameBudgetMs > 0
@@ -468,12 +470,13 @@ export function renderRenderTimeUI() {
     : Math.max(0.01, dec + rnd + wri, (decMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0));
   const now = performance.now();
   const decAvg = averageRecent(app.decodeTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
-  const rndAvg = averageRecent(app.renderTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
+  const rndTotalAvg = averageRecent(app.renderTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
   const croAvgRaw = averageRecent(app.crossoverTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
   const wriAvg = averageRecent(app.writeTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
   const croAvg = croAvgRaw === null
     ? null
-    : Math.min(rndAvg ?? Number.POSITIVE_INFINITY, croAvgRaw);
+    : Math.min(rndTotalAvg ?? Number.POSITIVE_INFINITY, croAvgRaw);
+  const rndAvg = rndTotalAvg === null ? null : Math.max(0, rndTotalAvg - (croAvg ?? 0));
   const decShown = getStableRenderPerfValue('decode', decAvg, now);
   const rndShown = getStableRenderPerfValue('render', rndAvg, now);
   const croShown = getStableRenderPerfValue('crossover', croAvg, now);
@@ -497,13 +500,13 @@ export function renderRenderTimeUI() {
 
   setSegment(rendererPerfDecodeFillEl, 0, dec);
   setSegment(rendererPerfRenderFillEl, dec, dec + rnd);
-  setSegment(rendererPerfCrossoverFillEl, dec, dec + cro);
-  setSegment(rendererPerfWriteFillEl, dec + rnd, dec + rnd + wri);
+  setSegment(rendererPerfCrossoverFillEl, dec + rnd, dec + rnd + cro);
+  setSegment(rendererPerfWriteFillEl, dec + rnd + cro, dec + rnd + cro + wri);
 
   setMarker(rendererPerfDecodeMaxMarkerEl, decMax);
   setMarker(rendererPerfRenderMaxMarkerEl, decMax === null && rndMax === null ? null : (decMax ?? 0) + (rndMax ?? 0));
-  setMarker(rendererPerfCrossoverMaxMarkerEl, decMax === null && croMax === null ? null : (decMax ?? 0) + (croMax ?? 0));
-  setMarker(rendererPerfWriteMaxMarkerEl, decMax === null && rndMax === null && wriMax === null ? null : (decMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0));
+  setMarker(rendererPerfCrossoverMaxMarkerEl, decMax === null && rndMax === null && croMax === null ? null : (decMax ?? 0) + (rndMax ?? 0) + (croMax ?? 0));
+  setMarker(rendererPerfWriteMaxMarkerEl, decMax === null && rndMax === null && croMax === null && wriMax === null ? null : (decMax ?? 0) + (rndMax ?? 0) + (croMax ?? 0) + (wriMax ?? 0));
 
   if (rendererPerfDecodeValueEl) {
     rendererPerfDecodeValueEl.textContent = tf('renderer.perf.decode', {
