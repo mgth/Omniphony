@@ -133,7 +133,6 @@ export function applyInitState(payload) {
         selection === 'vbap'
         || selection === 'barycenter'
         || selection === 'experimental_distance'
-        || selection === 'from_file'
       ) {
         app.renderBackendState.selection = selection;
       }
@@ -144,7 +143,6 @@ export function applyInitState(payload) {
         effective === 'vbap'
         || effective === 'barycenter'
         || effective === 'experimental_distance'
-        || effective === 'from_file'
       ) {
         app.renderBackendState.effective = effective;
       }
@@ -187,13 +185,13 @@ export function applyInitState(payload) {
   if (payload.renderEvaluationModeState && typeof payload.renderEvaluationModeState === 'object') {
     if (typeof payload.renderEvaluationModeState.selection === 'string') {
       const selection = payload.renderEvaluationModeState.selection.trim().toLowerCase();
-      if (['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(selection)) {
+      if (['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(selection)) {
         app.evaluationModeState.selection = selection;
       }
     }
     if (typeof payload.renderEvaluationModeState.effective === 'string') {
       const effective = payload.renderEvaluationModeState.effective.trim().toLowerCase();
-      if (['realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(effective)) {
+      if (['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(effective)) {
         app.evaluationModeState.effective = effective;
       }
     }

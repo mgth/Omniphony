@@ -252,11 +252,6 @@ fn apply_pending_speakers(
     layout
 }
 
-fn is_from_file_frozen(ctx: &RuntimeControlContext) -> bool {
-    ctx.renderer.active_topology().backend.evaluation_mode()
-        == renderer::render_backend::EffectiveEvaluationMode::FromFile
-}
-
 fn push_render_backend_state_broadcast(
     effects: &mut ControlEffects,
     live: &renderer::live_params::LiveParams,
@@ -319,11 +314,6 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/render_backend" {
-        if is_from_file_frozen(ctx) {
-            effects.log_message =
-                Some("OSC: ignored render_backend while from_file evaluator is active".to_string());
-            return Some(effects);
-        }
         let requested = parse_string_arg(msg.args.first())
             .and_then(|value| RenderBackendKind::from_str(&value));
         if let Some(requested) = requested {
@@ -351,37 +341,10 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/render_backend/restore" {
-        match ctx.renderer.restore_backend_from_active_artifact() {
-            Ok(()) => {
-                let live = ctx.renderer.live.read().unwrap();
-                effects.mark_dirty = true;
-                effects.trigger_layout_recompute = true;
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: "/omniphony/state/render_backend".to_string(),
-                    value: BroadcastValue::String(live.backend_id().to_string()),
-                });
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: "/omniphony/state/render_evaluation_mode".to_string(),
-                    value: BroadcastValue::String(
-                        live.requested_evaluation_mode().as_str().to_string(),
-                    ),
-                });
-                effects.broadcasts.push(BroadcastUpdate {
-                    addr: "/omniphony/state/render_backend/state".to_string(),
-                    value: BroadcastValue::String(build_render_backend_state_json(
-                        &live,
-                        &ctx.renderer.active_topology(),
-                    )),
-                });
-                effects.log_message = Some(format!(
-                    "OSC: render_backend/restore -> {}",
-                    live.backend_id()
-                ));
-            }
-            Err(err) => {
-                effects.log_message = Some(format!("OSC: render_backend/restore failed: {err}"));
-            }
-        }
+        effects.log_message = Some(
+            "OSC: render_backend/restore is no longer supported after removing from_file"
+                .to_string(),
+        );
         return Some(effects);
     }
 
@@ -415,89 +378,9 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/render_evaluation_mode/from_file" {
-        if let Some(path) = parse_string_arg(msg.args.first()) {
-            match ctx
-                .renderer
-                .load_evaluation_artifact_from_file(std::path::Path::new(&path))
-            {
-                Ok(layout) => {
-                    let live = ctx.renderer.live.read().unwrap();
-                    effects.mark_dirty = true;
-                    effects.speaker_layout_broadcast = Some(layout);
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/render_backend".to_string(),
-                        value: BroadcastValue::String(live.backend_id().to_string()),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/render_backend/effective".to_string(),
-                        value: BroadcastValue::String(
-                            ctx.renderer
-                                .active_topology()
-                                .backend
-                                .kind()
-                                .as_str()
-                                .to_string(),
-                        ),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/render_backend/state".to_string(),
-                        value: BroadcastValue::String(build_render_backend_state_json(
-                            &live,
-                            &ctx.renderer.active_topology(),
-                        )),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/render_evaluation_mode".to_string(),
-                        value: BroadcastValue::String(
-                            live.requested_evaluation_mode().as_str().to_string(),
-                        ),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/render_evaluation_mode/effective".to_string(),
-                        value: BroadcastValue::String(
-                            ctx.renderer
-                                .active_topology()
-                                .backend
-                                .evaluation_mode()
-                                .as_str()
-                                .to_string(),
-                        ),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/room_ratio".to_string(),
-                        value: BroadcastValue::Fff(
-                            live.room_ratio[0],
-                            live.room_ratio[1],
-                            live.room_ratio[2],
-                        ),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/room_ratio_rear".to_string(),
-                        value: BroadcastValue::Float(live.room_ratio_rear),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/room_ratio_lower".to_string(),
-                        value: BroadcastValue::Float(live.room_ratio_lower),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/room_ratio_center_blend".to_string(),
-                        value: BroadcastValue::Float(live.room_ratio_center_blend),
-                    });
-                    effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/distance_model".to_string(),
-                        value: BroadcastValue::String(live.distance_model.to_string()),
-                    });
-                    effects.log_message =
-                        Some(format!("OSC: render_evaluation_mode/from_file -> {}", path));
-                }
-                Err(err) => {
-                    effects.log_message = Some(format!(
-                        "OSC: render_evaluation_mode/from_file failed: {}",
-                        err
-                    ));
-                }
-            }
-        }
+        effects.log_message = Some(
+            "OSC: render_evaluation_mode/from_file is no longer supported".to_string(),
+        );
         return Some(effects);
     }
 
@@ -1130,12 +1013,6 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/layout/radius_m" {
-        if is_from_file_frozen(ctx) {
-            effects.log_message = Some(
-                "OSC: ignored layout/radius_m while from_file evaluator is active".to_string(),
-            );
-            return Some(effects);
-        }
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
             ctx.renderer
                 .with_editable_layout(|layout| layout.radius_m = v);
@@ -1524,11 +1401,6 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/room_ratio" {
-        if is_from_file_frozen(ctx) {
-            effects.log_message =
-                Some("OSC: ignored room_ratio while from_file evaluator is active".to_string());
-            return Some(effects);
-        }
         if msg.args.len() >= 3 {
             let w = parse_f32_arg(msg.args.first());
             let l = parse_f32_arg(msg.args.get(1));
@@ -1548,12 +1420,6 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/room_ratio_rear" {
-        if is_from_file_frozen(ctx) {
-            effects.log_message = Some(
-                "OSC: ignored room_ratio_rear while from_file evaluator is active".to_string(),
-            );
-            return Some(effects);
-        }
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
             ctx.renderer.live.write().unwrap().room_ratio_rear = v;
             effects.mark_dirty = true;
@@ -1568,12 +1434,6 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/room_ratio_lower" {
-        if is_from_file_frozen(ctx) {
-            effects.log_message = Some(
-                "OSC: ignored room_ratio_lower while from_file evaluator is active".to_string(),
-            );
-            return Some(effects);
-        }
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
             ctx.renderer.live.write().unwrap().room_ratio_lower = v;
             effects.mark_dirty = true;
@@ -1588,13 +1448,6 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/room_ratio_center_blend" {
-        if is_from_file_frozen(ctx) {
-            effects.log_message = Some(
-                "OSC: ignored room_ratio_center_blend while from_file evaluator is active"
-                    .to_string(),
-            );
-            return Some(effects);
-        }
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.clamp(0.0, 1.0)) {
             ctx.renderer.live.write().unwrap().room_ratio_center_blend = v;
             effects.mark_dirty = true;
@@ -1712,11 +1565,6 @@ pub fn apply_speaker_osc_control(
     let mut effects = ControlEffects::default();
 
     if addr == "/omniphony/control/speakers/add" {
-        if is_from_file_frozen(ctx) {
-            effects.log_message =
-                Some("OSC: ignored speakers/add while from_file evaluator is active".to_string());
-            return Some(effects);
-        }
         pending_speakers.clear();
         let idx = ctx.renderer.editable_layout().speakers.len();
         let default_name = format!("spk-{}", idx);
@@ -1760,12 +1608,6 @@ pub fn apply_speaker_osc_control(
     }
 
     if addr == "/omniphony/control/speakers/remove" {
-        if is_from_file_frozen(ctx) {
-            effects.log_message = Some(
-                "OSC: ignored speakers/remove while from_file evaluator is active".to_string(),
-            );
-            return Some(effects);
-        }
         pending_speakers.clear();
         let remove_idx = match msg.args.first() {
             Some(OscType::Int(v)) if *v >= 0 => *v as usize,
@@ -1793,11 +1635,6 @@ pub fn apply_speaker_osc_control(
     }
 
     if addr == "/omniphony/control/speakers/move" {
-        if is_from_file_frozen(ctx) {
-            effects.log_message =
-                Some("OSC: ignored speakers/move while from_file evaluator is active".to_string());
-            return Some(effects);
-        }
         pending_speakers.clear();
         let from_idx = match msg.args.first() {
             Some(OscType::Int(v)) if *v >= 0 => *v as usize,
@@ -1861,13 +1698,6 @@ pub fn apply_speaker_osc_control(
             return Some(effects);
         }
         if field == "spatialize" {
-            if is_from_file_frozen(ctx) {
-                effects.log_message = Some(
-                    "OSC: ignored speaker/spatialize while from_file evaluator is active"
-                        .to_string(),
-                );
-                return Some(effects);
-            }
             if let Some(spatialize) = parse_bool_arg(msg.args.first()) {
                 let patch = pending_speakers.entry(idx).or_default();
                 patch.spatialize = Some(spatialize);
@@ -1875,12 +1705,6 @@ pub fn apply_speaker_osc_control(
             return Some(effects);
         }
         if field == "name" {
-            if is_from_file_frozen(ctx) {
-                effects.log_message = Some(
-                    "OSC: ignored speaker/name while from_file evaluator is active".to_string(),
-                );
-                return Some(effects);
-            }
             if let Some(OscType::String(name)) = msg.args.first() {
                 let trimmed = name.trim();
                 if !trimmed.is_empty() {
@@ -1891,25 +1715,11 @@ pub fn apply_speaker_osc_control(
             return Some(effects);
         }
         if field == "freq_low" {
-            if is_from_file_frozen(ctx) {
-                effects.log_message = Some(
-                    "OSC: ignored speaker/freq_low while from_file evaluator is active"
-                        .to_string(),
-                );
-                return Some(effects);
-            }
             let patch = pending_speakers.entry(idx).or_default();
             patch.freq_low = Some(parse_f32_arg(msg.args.first()).filter(|v| *v > 0.0));
             return Some(effects);
         }
         if field == "coord_mode" {
-            if is_from_file_frozen(ctx) {
-                effects.log_message = Some(
-                    "OSC: ignored speaker/coord_mode while from_file evaluator is active"
-                        .to_string(),
-                );
-                return Some(effects);
-            }
             if let Some(OscType::String(mode)) = msg.args.first() {
                 let normalized = if mode.eq_ignore_ascii_case("cartesian") {
                     "cartesian"
@@ -1947,13 +1757,6 @@ pub fn apply_speaker_osc_control(
                     });
                 }
                 "delay" => {
-                    if is_from_file_frozen(ctx) {
-                        effects.log_message = Some(
-                            "OSC: ignored speaker/delay while from_file evaluator is active"
-                                .to_string(),
-                        );
-                        return Some(effects);
-                    }
                     let delay_ms = f.max(0.0);
                     ctx.renderer
                         .live
@@ -1979,26 +1782,11 @@ pub fn apply_speaker_osc_control(
                 }
                 _ => {}
             }
-            if is_from_file_frozen(ctx)
-                && matches!(field, "az" | "el" | "distance" | "x" | "y" | "z")
-            {
-                effects.log_message = Some(format!(
-                    "OSC: ignored speaker/{} while from_file evaluator is active",
-                    field
-                ));
-                pending_speakers.remove(&idx);
-            }
         }
         return Some(effects);
     }
 
     if addr == "/omniphony/control/speakers/apply" {
-        if is_from_file_frozen(ctx) {
-            pending_speakers.clear();
-            effects.log_message =
-                Some("OSC: ignored speakers/apply while from_file evaluator is active".to_string());
-            return Some(effects);
-        }
         let layout = apply_pending_speakers(pending_speakers, ctx);
         effects.mark_dirty = true;
         effects.trigger_layout_recompute = true;

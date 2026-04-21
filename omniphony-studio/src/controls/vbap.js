@@ -13,7 +13,6 @@ import { inRendererPanel } from '../ui/panel-roots.js';
 function getVbapStatusEl() { return inRendererPanel('vbapStatus'); }
 function getRenderBackendSelectEl() { return inRendererPanel('renderBackendSelect'); }
 function getRestoreBackendBtnEl() { return inRendererPanel('restoreBackendBtn'); }
-function getExportEvaluationArtifactBtnEl() { return inRendererPanel('exportEvaluationArtifactBtn'); }
 function getRenderBackendEffectiveEl() { return inRendererPanel('renderBackendEffective'); }
 function getRenderEvaluationModeSelectEl() { return inRendererPanel('renderEvaluationModeSelect'); }
 function getRenderEvaluationModeEffectiveEl() { return inRendererPanel('renderEvaluationModeEffective'); }
@@ -75,10 +74,6 @@ function backendCapabilities() {
   return app.renderBackendState.capabilities || null;
 }
 
-function fromFileActive() {
-  return app.evaluationModeState.effective === 'from_file'
-    || app.renderBackendState.effective === 'from_file';
-}
 
 function backendLabel(backend) {
   if (backend === (app.renderBackendState.effective || '')) {
@@ -87,7 +82,6 @@ function backendLabel(backend) {
   if (backend === 'vbap') return 'VBAP';
   if (backend === 'barycenter') return 'Barycenter';
   if (backend === 'experimental_distance') return 'Distance';
-  if (backend === 'from_file') return 'From File';
   return backend || '—';
 }
 
@@ -170,7 +164,6 @@ function formatEvaluationModeLabel(mode) {
     case 'realtime': return 'Realtime';
     case 'precomputed_polar': return 'Polar';
     case 'precomputed_cartesian': return 'Cartesian';
-    case 'from_file': return 'From File';
     default: return '—';
   }
 }
@@ -192,7 +185,6 @@ export function renderVbapStatus() {
 
 export function renderEvaluationMode() {
   const renderEvaluationModeSelectEl = getRenderEvaluationModeSelectEl();
-  const exportEvaluationArtifactBtnEl = getExportEvaluationArtifactBtnEl();
   const renderEvaluationModeEffectiveEl = getRenderEvaluationModeEffectiveEl();
   const rendererSummaryEl = getRendererSummaryEl();
   const backend = app.renderBackendState.effective || app.renderBackendState.selection || 'vbap';
@@ -200,12 +192,9 @@ export function renderEvaluationMode() {
     && app.renderBackendState.allowedEvaluationModes.length > 0
     ? app.renderBackendState.allowedEvaluationModes
     : ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'];
-  const selectionModes = allowedModes.includes('from_file')
-    ? allowedModes
-    : [...allowedModes, 'from_file'];
   const selection = typeof app.evaluationModeState.selection === 'string' ? app.evaluationModeState.selection : null;
   const effectiveMode = typeof app.evaluationModeState.effective === 'string' ? app.evaluationModeState.effective : null;
-  const visibleModes = [...selectionModes];
+  const visibleModes = [...allowedModes];
   if (selection && !visibleModes.includes(selection)) {
     visibleModes.push(selection);
   }
@@ -228,15 +217,7 @@ export function renderEvaluationMode() {
       });
     }
     renderEvaluationModeSelectEl.value = nextValue;
-    renderEvaluationModeSelectEl.disabled = allowedModes.length <= 1 && allowedModes[0] === 'from_file';
-  }
-  if (exportEvaluationArtifactBtnEl) {
-    const exportable =
-      effectiveMode === 'precomputed_polar'
-      || effectiveMode === 'precomputed_cartesian'
-      || effectiveMode === 'from_file';
-    exportEvaluationArtifactBtnEl.style.display = exportable ? '' : 'none';
-    exportEvaluationArtifactBtnEl.disabled = !exportable || app.vbapRecomputing === true;
+    renderEvaluationModeSelectEl.disabled = allowedModes.length === 0;
   }
   if (renderEvaluationModeEffectiveEl) {
     renderEvaluationModeEffectiveEl.textContent = formatEvaluationModeLabel(effectiveMode);
@@ -265,18 +246,14 @@ export function renderRenderBackend() {
   const selection = typeof app.renderBackendState.selection === 'string' ? app.renderBackendState.selection : 'vbap';
   const effective = typeof app.renderBackendState.effective === 'string' ? app.renderBackendState.effective : null;
   const visibleBackend = effective || selection;
-  const frozen = fromFileActive() || app.renderBackendState.frozenSpeakers === true;
+  const frozen = app.renderBackendState.frozenSpeakers === true;
   if (renderBackendSelectEl) {
     renderBackendSelectEl.value = selection;
     renderBackendSelectEl.disabled = frozen;
   }
   if (restoreBackendBtnEl) {
-    const visible = fromFileActive();
-    restoreBackendBtnEl.style.display = visible ? '' : 'none';
-    restoreBackendBtnEl.disabled =
-      !visible
-      || app.renderBackendState.restoreBackendAvailable !== true
-      || app.vbapRecomputing === true;
+    restoreBackendBtnEl.style.display = 'none';
+    restoreBackendBtnEl.disabled = true;
   }
   if (renderBackendEffectiveEl) {
     renderBackendEffectiveEl.textContent = backendLabel(effective);

@@ -1,7 +1,6 @@
 mod evaluation_artifact;
 mod barycenter_backend;
 mod experimental_distance_backend;
-mod file_loaded_evaluator;
 mod vbap_backend;
 
 use crate::spatial_vbap::{DistanceModel, Gains, adm_to_spherical, spherical_to_adm};
@@ -10,12 +9,10 @@ use anyhow::Result;
 use serde::Serialize;
 
 pub use evaluation_artifact::{
-    BackendRestoreSnapshot, LoadedEvaluationArtifact, SerializedEvaluationMode,
-    build_backend_restore_snapshot, build_from_artifact_render_engine,
+    BackendRestoreSnapshot, SerializedEvaluationMode, build_backend_restore_snapshot,
 };
 pub use barycenter_backend::BarycenterBackend;
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
-pub use file_loaded_evaluator::{LoadedVbapFile, build_from_file_render_engine};
 pub use vbap_backend::VbapBackend;
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -46,7 +43,6 @@ pub enum GainModelKind {
     Vbap,
     Barycenter,
     ExperimentalDistance,
-    FromFile,
 }
 
 impl GainModelKind {
@@ -60,7 +56,6 @@ impl GainModelKind {
             return Some(descriptor.gain_model_kind);
         }
         match normalized.as_str() {
-            "from_file" => Some(Self::FromFile),
             "barycentre" | "barycenter" => Some(Self::Barycenter),
             "distance" | "distance_based" => Some(Self::ExperimentalDistance),
             _ => None,
@@ -74,7 +69,6 @@ pub enum RenderBackendKind {
     Vbap,
     Barycenter,
     ExperimentalDistance,
-    FromFile,
 }
 
 impl RenderBackendKind {
@@ -88,7 +82,6 @@ impl RenderBackendKind {
             return Some(descriptor.kind);
         }
         match normalized.as_str() {
-            "from_file" => Some(Self::FromFile),
             "barycentre" | "barycenter" => Some(Self::Barycenter),
             "distance" | "distance_based" => Some(Self::ExperimentalDistance),
             _ => None,
@@ -110,7 +103,6 @@ impl From<GainModelKind> for RenderBackendKind {
             GainModelKind::Vbap => Self::Vbap,
             GainModelKind::Barycenter => Self::Barycenter,
             GainModelKind::ExperimentalDistance => Self::ExperimentalDistance,
-            GainModelKind::FromFile => Self::FromFile,
         }
     }
 }
@@ -121,7 +113,7 @@ impl From<RenderBackendKind> for GainModelKind {
     }
 }
 
-const BACKEND_DESCRIPTORS: [BackendDescriptor; 4] = [
+const BACKEND_DESCRIPTORS: [BackendDescriptor; 3] = [
     BackendDescriptor {
         kind: RenderBackendKind::Vbap,
         gain_model_kind: GainModelKind::Vbap,
@@ -139,12 +131,6 @@ const BACKEND_DESCRIPTORS: [BackendDescriptor; 4] = [
         gain_model_kind: GainModelKind::ExperimentalDistance,
         id: "experimental_distance",
         label: "Distance",
-    },
-    BackendDescriptor {
-        kind: RenderBackendKind::FromFile,
-        gain_model_kind: GainModelKind::FromFile,
-        id: "from_file",
-        label: "From File",
     },
 ];
 
@@ -177,7 +163,6 @@ pub enum EffectiveEvaluationMode {
     Realtime,
     PrecomputedPolar,
     PrecomputedCartesian,
-    FromFile,
 }
 
 impl EffectiveEvaluationMode {
@@ -186,7 +171,6 @@ impl EffectiveEvaluationMode {
             Self::Realtime => "realtime",
             Self::PrecomputedPolar => "precomputed_polar",
             Self::PrecomputedCartesian => "precomputed_cartesian",
-            Self::FromFile => "from_file",
         }
     }
 }
@@ -823,9 +807,6 @@ pub fn build_prepared_render_engine(
         }
         EffectiveEvaluationMode::PrecomputedPolar => {
             PrecomputedPolarStrategy.prepare(model, config)?
-        }
-        EffectiveEvaluationMode::FromFile => {
-            unreachable!("from_file evaluator is built without a gain model")
         }
     };
     Ok(PreparedRenderEngine::new(

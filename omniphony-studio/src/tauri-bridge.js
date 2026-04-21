@@ -488,13 +488,10 @@ export function setupTauriBridge() {
         positionErrorNearestScale: null,
         positionErrorSpanScale: null
       };
-    if (
-      app.evaluationModeState.selection !== 'from_file'
-      && !app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')
-    ) {
+    if (!app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')) {
       app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
     }
-    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(app.evaluationModeState.effective)) {
+    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
       app.evaluationModeState.effective = null;
     }
     updateRenderBackend();
@@ -509,7 +506,6 @@ export function setupTauriBridge() {
     app.renderBackendState.selection = value || null;
     if (
       app.renderBackendState.allowedEvaluationModes.length > 0
-      && app.evaluationModeState.selection !== 'from_file'
       && !app.renderBackendState.allowedEvaluationModes.includes(app.evaluationModeState.selection || '')
     ) {
       app.evaluationModeState.selection = app.renderBackendState.allowedEvaluationModes[0] || 'auto';
@@ -522,7 +518,7 @@ export function setupTauriBridge() {
   listen('render_backend:effective', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.renderBackendState.effective = value || null;
-    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(app.evaluationModeState.effective)) {
+    if (!['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(app.evaluationModeState.effective)) {
       app.evaluationModeState.effective = null;
     }
     app.vbapRecomputing = false;
@@ -536,14 +532,14 @@ export function setupTauriBridge() {
   listen('render_evaluation_mode', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.evaluationModeState.selection =
-      ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(value) ? value : null;
+      ['auto', 'realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
     updateEvaluationMode();
   });
 
   listen('render_evaluation_mode:effective', ({ payload }) => {
     const value = String(payload?.value ?? '').trim().toLowerCase();
     app.evaluationModeState.effective =
-      ['realtime', 'precomputed_polar', 'precomputed_cartesian', 'from_file'].includes(value) ? value : null;
+      ['realtime', 'precomputed_polar', 'precomputed_cartesian'].includes(value) ? value : null;
     app.vbapRecomputing = false;
     renderVbapStatus();
     updateEvaluationMode();

@@ -76,17 +76,13 @@ use crate::ramp_strategy::{
 use crate::live_params::PreferredEvaluationMode;
 use crate::render_backend::RenderRequest;
 use crate::render_backend::{
-    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
-    LoadedEvaluationArtifact, LoadedVbapFile, PolarEvaluationConfig, RenderBackendKind,
-    SerializedEvaluationMode, VbapBackend, build_from_artifact_render_engine,
-    build_from_file_render_engine, build_prepared_render_engine,
+    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig, PreparedRenderEngine,
+    PolarEvaluationConfig, RenderBackendKind, VbapBackend, build_prepared_render_engine,
 };
-use crate::spatial_vbap::VbapPanner;
-use crate::spatial_vbap::VbapTableMode;
+use crate::spatial_vbap::{VbapPanner, VbapTableMode};
 use crate::spatial_vbap::{DistanceModel, Gains};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
-use std::str::FromStr;
 use std::sync::Arc;
 
 /// Output of a single rendered frame.
@@ -212,9 +208,10 @@ struct BandRenderer {
     speaker_indices: Vec<usize>,
     /// Full speaker count — size of the returned `Gains`.
     num_speakers: usize,
-    /// VBAP backend for this band's speakers.
+    /// Prepared engine built with the same backend and evaluation mode as the
+    /// active renderer topology, but restricted to this band's speaker subset.
     /// `None` when the band has fewer than 3 speakers (uniform fallback).
-    vbap: Option<VbapBackend>,
+    engine: Option<Arc<PreparedRenderEngine>>,
 }
 
 impl BandRenderer {
@@ -222,37 +219,31 @@ impl BandRenderer {
         band: &FreqBand,
         layout: &crate::speaker_layout::SpeakerLayout,
         num_speakers: usize,
-        az_res_deg: i32,
-        el_res_deg: i32,
-        table_mode: VbapTableMode,
-        allow_negative_z: bool,
-        position_interpolation: bool,
-    ) -> Self {
+        control: &Arc<RendererControl>,
+    ) -> Result<Self> {
         let speaker_indices = band.speaker_indices.clone();
-        let positions: Vec<[f32; 2]> = speaker_indices
-            .iter()
-            .map(|&i| layout.speakers[i].position())
-            .collect();
-
-        let vbap = if positions.len() >= 3 {
-            VbapPanner::new_with_mode(&positions, az_res_deg, el_res_deg, 0.0, table_mode)
-                .ok()
-                .and_then(|p| {
-                    let mut p = p
-                        .with_negative_z(allow_negative_z)
-                        .with_position_interpolation(position_interpolation);
-                    // Pre-populate the polar table once so the hot path uses
-                    // bilinear interpolation instead of re-triangulating every call.
-                    if matches!(p.table_mode(), VbapTableMode::Polar) {
-                        let _ = p.populate_polar_table();
-                    }
-                    Some(VbapBackend::new(p))
-                })
+        let engine = if speaker_indices.len() >= 3 {
+            let band_layout = crate::speaker_layout::SpeakerLayout {
+                radius_m: layout.radius_m,
+                speakers: speaker_indices
+                    .iter()
+                    .map(|&idx| layout.speakers[idx].clone())
+                    .collect(),
+            };
+            let topology = control
+                .prepare_topology_rebuild_for_layout(band_layout)
+                .ok_or_else(|| anyhow::anyhow!("failed to prepare band topology rebuild"))?
+                .build_topology()?;
+            Some(Arc::clone(&topology.backend))
         } else {
             None
         };
 
-        Self { speaker_indices, num_speakers, vbap }
+        Ok(Self {
+            speaker_indices,
+            num_speakers,
+            engine,
+        })
     }
 
     /// Compute VBAP gains for this band at `position`.
@@ -266,8 +257,8 @@ impl BandRenderer {
     ) -> crate::spatial_vbap::Gains {
         let req = render_params.render_request(position);
         let n = self.speaker_indices.len();
-        let band_gains = match &self.vbap {
-            Some(backend) => backend.compute_gains(&req).gains,
+        let band_gains = match &self.engine {
+            Some(engine) => engine.compute_gains(&req).gains,
             None => {
                 let mut g = crate::spatial_vbap::Gains::zeroed(n);
                 if n > 0 {
@@ -407,6 +398,8 @@ pub struct SpatialRenderer {
     /// Per-band VBAP engines.  Always has at least one entry (the "all speakers" band when
     /// no crossover is configured).  Each engine returns full-size `Gains` (`num_speakers`).
     render_bands: Vec<BandRenderer>,
+    /// Topology identity used to build the current crossover band engines.
+    render_bands_topology_identity: usize,
 
     /// Crossover filter bank for splitting objects into frequency bands.
     /// `None` when `render_bands` has exactly 1 entry (no crossover active).
@@ -615,11 +608,6 @@ impl SpatialRenderer {
             &topology.bed_to_speaker_mapping,
         );
         let editable_layout = topology.speaker_layout.clone();
-        let (render_bands, crossover_filter_bank) = Self::build_crossover(
-            &editable_layout, num_speakers,
-            az_res_deg, el_res_deg, sample_rate,
-            table_mode, allow_negative_z, vbap_position_interpolation,
-        );
         let control = RendererControl::new(
             live_params,
             topology,
@@ -652,9 +640,7 @@ impl SpatialRenderer {
             log_object_positions,
             auto_gain,
             control,
-            render_bands,
-            crossover_filter_bank,
-        ))
+        )?)
     }
 
     /// Create a new spatial renderer from a pre-loaded VBAP evaluation file
@@ -668,307 +654,6 @@ impl SpatialRenderer {
     /// * `loaded_file` - Pre-loaded VBAP evaluation file
     /// * `speaker_layout` - Speaker configuration (must match the VBAP table)
     /// * `sample_rate` - Sample rate in Hz (for ramp timing)
-    /// * `distance_model` - Distance attenuation model
-    /// * `spread_from_distance` - Calculate spread from distance instead of object spread metadata
-    /// * `spread_distance_range` - Distance at which spread reaches 0.0
-    /// * `spread_distance_curve` - Curve exponent for distance-based spread
-    /// * `spread_min` - Minimum effective spread
-    /// * `spread_max` - Maximum effective spread
-    /// * `log_object_positions` - Enable detailed logging
-    /// * `room_ratio` - Room proportions [width, length, height]
-    /// * `room_ratio_lower` - Lower height ratio used for negative Z coordinates
-    /// * `master_gain_db` - Master gain in dB
-    /// * `auto_gain` - Enable automatic gain reduction to prevent clipping
-    /// * `use_loudness` - Apply loudness metadata correction gain from stream metadata
-    /// * `distance_diffuse` - Enable distance-based antipodal diffuse blending
-    /// * `distance_diffuse_threshold` - ADM distance at which blend reaches 100% direct
-    /// * `distance_diffuse_curve` - Curve exponent for the blend weight
-    pub fn from_evaluation_artifact(
-        artifact: LoadedEvaluationArtifact,
-        sample_rate: u32,
-        log_object_positions: bool,
-        master_gain_db: f32,
-        auto_gain: bool,
-        use_loudness: bool,
-    ) -> Result<Self> {
-        let speaker_layout = artifact.speaker_layout().clone();
-        let frozen = artifact.frozen_request().clone();
-        let distance_model = DistanceModel::from_str(&frozen.distance_model)
-            .map_err(|e| anyhow::anyhow!("Invalid frozen distance model in artifact: {}", e))?;
-        let initial_evaluation_mode = match artifact.mode() {
-            SerializedEvaluationMode::PrecomputedCartesian => {
-                LiveEvaluationMode::PrecomputedCartesian
-            }
-            SerializedEvaluationMode::PrecomputedPolar => LiveEvaluationMode::PrecomputedPolar,
-        };
-        let (
-            az_res_deg,
-            el_res_deg,
-            distance_res,
-            distance_max,
-            allow_negative_z,
-            cartesian_x,
-            cartesian_y,
-            cartesian_z,
-            cartesian_z_neg,
-        ) = match artifact.mode() {
-            SerializedEvaluationMode::PrecomputedCartesian => {
-                let (x_count, y_count, z_count) =
-                    artifact.cartesian_dimensions().unwrap_or((2, 2, 2));
-                (
-                    1,
-                    1,
-                    0.25,
-                    2.0,
-                    true,
-                    x_count.max(1),
-                    y_count.max(1),
-                    z_count.max(1),
-                    0,
-                )
-            }
-            SerializedEvaluationMode::PrecomputedPolar => {
-                let (az_count, el_count, distance_count) =
-                    artifact.polar_dimensions().unwrap_or((2, 2, 2));
-                let allow_negative_z = el_count > 2;
-                let az_res_deg = (360.0 / az_count.max(1) as f32).round().max(1.0) as i32;
-                let elevation_span = if allow_negative_z { 180.0 } else { 90.0 };
-                let el_res_deg = (elevation_span / el_count.max(1) as f32).round().max(1.0) as i32;
-                let distance_max = 2.0;
-                let distance_res = distance_max / distance_count.max(1) as f32;
-                (
-                    az_res_deg,
-                    el_res_deg,
-                    distance_res,
-                    distance_max,
-                    allow_negative_z,
-                    1,
-                    1,
-                    1,
-                    0,
-                )
-            }
-        };
-        let spread_resolution = 0.0;
-        let topology = RenderTopology::new(
-            Arc::new(build_from_artifact_render_engine(artifact)),
-            speaker_layout,
-        )?;
-        let excluded: Vec<&str> = topology
-            .speaker_layout
-            .speakers
-            .iter()
-            .filter(|s| !s.spatialize)
-            .map(|s| s.name.as_str())
-            .collect();
-        let mut live_params = Self::build_live_params_and_log(
-            &topology.speaker_layout,
-            initial_evaluation_mode,
-            az_res_deg,
-            el_res_deg,
-            distance_res,
-            distance_max,
-            allow_negative_z,
-            topology
-                .backend
-                .capabilities()
-                .supports_position_interpolation,
-            cartesian_x,
-            cartesian_y,
-            cartesian_z,
-            cartesian_z_neg,
-            master_gain_db,
-            frozen.spread_min,
-            frozen.spread_max,
-            frozen.spread_from_distance,
-            frozen.spread_distance_range,
-            frozen.spread_distance_curve,
-            RampMode::Sample,
-            use_loudness,
-            distance_model,
-            frozen.room_ratio,
-            frozen.room_ratio_rear,
-            frozen.room_ratio_lower,
-            frozen.room_ratio_center_blend,
-            frozen.use_distance_diffuse,
-            frozen.distance_diffuse_threshold,
-            frozen.distance_diffuse_curve,
-            auto_gain,
-            &excluded,
-            &topology.bed_to_speaker_mapping,
-        );
-        live_params.backend_id = RenderBackendKind::FromFile.as_str().to_string();
-        let editable_layout = topology.speaker_layout.clone();
-        let control = RendererControl::new(live_params, topology, editable_layout, None);
-
-        let layout = control.active_topology().speaker_layout.clone();
-        let num_speakers = layout.num_speakers();
-        let band_table_mode = match initial_evaluation_mode {
-            LiveEvaluationMode::PrecomputedCartesian => VbapTableMode::Cartesian {
-                x_size: cartesian_x + 1,
-                y_size: cartesian_y + 1,
-                z_size: cartesian_z + 1,
-                z_neg_size: cartesian_z_neg,
-            },
-            _ => VbapTableMode::Polar,
-        };
-        let band_position_interpolation = control
-            .active_topology()
-            .backend
-            .capabilities()
-            .supports_position_interpolation;
-        let (render_bands, crossover_filter_bank) = Self::build_crossover(
-            &layout, num_speakers,
-            az_res_deg, el_res_deg, sample_rate,
-            band_table_mode, allow_negative_z, band_position_interpolation,
-        );
-
-        Ok(Self::finish_construction(
-            num_speakers,
-            spread_resolution,
-            sample_rate,
-            distance_model,
-            log_object_positions,
-            auto_gain,
-            control,
-            render_bands,
-            crossover_filter_bank,
-        ))
-    }
-
-    pub fn from_vbap_file(
-        loaded_file: LoadedVbapFile,
-        speaker_layout: SpeakerLayout,
-        sample_rate: u32,
-        allow_negative_z: bool,
-        vbap_position_interpolation: bool,
-        distance_model: DistanceModel,
-        distance_max: f32,
-        spread_from_distance: bool,
-        spread_distance_range: f32,
-        spread_distance_curve: f32,
-        spread_min: f32,
-        spread_max: f32,
-        log_object_positions: bool,
-        room_ratio: [f32; 3],
-        room_ratio_rear: f32,
-        room_ratio_lower: f32,
-        room_ratio_center_blend: f32,
-        master_gain_db: f32,
-        auto_gain: bool,
-        use_loudness: bool,
-        distance_diffuse: bool,
-        distance_diffuse_threshold: f32,
-        distance_diffuse_curve: f32,
-    ) -> Result<Self> {
-        let num_speakers = speaker_layout.num_speakers();
-        let spread_resolution = loaded_file.spread_resolution();
-        let distance_step = if spread_resolution > 0.0 {
-            spread_resolution
-        } else {
-            0.25
-        };
-        let vbap_num_speakers = loaded_file.num_speakers();
-        let vbap_num_triangles = loaded_file.num_triangles();
-        let vbap_table_mode = VbapTableMode::Polar;
-        let vbap_azimuth_resolution = loaded_file.azimuth_resolution();
-        let vbap_elevation_resolution = loaded_file.elevation_resolution();
-
-        log::info!(
-            "Created spatial renderer from pre-loaded VBAP table: {} total speakers, {} in VBAP table, {} triangles, spread_res={}, distance_model={}",
-            num_speakers,
-            vbap_num_speakers,
-            vbap_num_triangles,
-            spread_resolution,
-            distance_model
-        );
-        let topology = RenderTopology::new(
-            Arc::new(build_from_file_render_engine(
-                loaded_file,
-                allow_negative_z,
-                vbap_position_interpolation,
-            )),
-            speaker_layout,
-        )?;
-
-        let excluded: Vec<&str> = topology
-            .speaker_layout
-            .speakers
-            .iter()
-            .filter(|s| !s.spatialize)
-            .map(|s| s.name.as_str())
-            .collect();
-        let live_params = Self::build_live_params_and_log(
-            &topology.speaker_layout,
-            match vbap_table_mode {
-                VbapTableMode::Polar => LiveEvaluationMode::PrecomputedPolar,
-                VbapTableMode::Cartesian { .. } => LiveEvaluationMode::PrecomputedCartesian,
-            },
-            vbap_azimuth_resolution,
-            vbap_elevation_resolution,
-            distance_step,
-            distance_max,
-            allow_negative_z,
-            vbap_position_interpolation,
-            match vbap_table_mode {
-                VbapTableMode::Cartesian { x_size, .. } => x_size.saturating_sub(1),
-                VbapTableMode::Polar => 1,
-            },
-            match vbap_table_mode {
-                VbapTableMode::Cartesian { y_size, .. } => y_size.saturating_sub(1),
-                VbapTableMode::Polar => 1,
-            },
-            match vbap_table_mode {
-                VbapTableMode::Cartesian { z_size, .. } => z_size.saturating_sub(1),
-                VbapTableMode::Polar => 1,
-            },
-            match vbap_table_mode {
-                VbapTableMode::Cartesian { z_neg_size, .. } => z_neg_size,
-                VbapTableMode::Polar => 0,
-            },
-            master_gain_db,
-            spread_min,
-            spread_max,
-            spread_from_distance,
-            spread_distance_range,
-            spread_distance_curve,
-            RampMode::Sample,
-            use_loudness,
-            distance_model,
-            room_ratio,
-            room_ratio_rear,
-            room_ratio_lower,
-            room_ratio_center_blend,
-            distance_diffuse,
-            distance_diffuse_threshold,
-            distance_diffuse_curve,
-            auto_gain,
-            &excluded,
-            &topology.bed_to_speaker_mapping,
-        );
-        let editable_layout = topology.speaker_layout.clone();
-        let control = RendererControl::new(live_params, topology, editable_layout, None);
-
-        let layout = control.active_topology().speaker_layout.clone();
-        let (render_bands, crossover_filter_bank) = Self::build_crossover(
-            &layout, num_speakers,
-            vbap_azimuth_resolution, vbap_elevation_resolution, sample_rate,
-            vbap_table_mode, allow_negative_z, vbap_position_interpolation,
-        );
-
-        Ok(Self::finish_construction(
-            num_speakers,
-            spread_resolution,
-            sample_rate,
-            distance_model,
-            log_object_positions,
-            auto_gain,
-            control,
-            render_bands,
-            crossover_filter_bank,
-        ))
-    }
-
     /// Build `LiveParams` from common constructor arguments and emit the shared log lines.
     ///
     /// Called by both `new` and `from_vbap` after each constructor has logged its own
@@ -1113,24 +798,21 @@ impl SpatialRenderer {
     /// no crossover is needed.  `render_bands` always has at least one entry.
     #[allow(clippy::too_many_arguments)]
     fn build_crossover(
+        control: &Arc<RendererControl>,
         layout: &crate::speaker_layout::SpeakerLayout,
         num_speakers: usize,
-        az_res_deg: i32,
-        el_res_deg: i32,
         sample_rate: u32,
-        table_mode: VbapTableMode,
-        allow_negative_z: bool,
-        position_interpolation: bool,
-    ) -> (Vec<BandRenderer>, Option<LR4CrossoverBank>) {
-        let make_renderer = |b: &FreqBand| BandRenderer::from_band(
-            b, layout, num_speakers,
-            az_res_deg, el_res_deg,
-            table_mode, allow_negative_z, position_interpolation,
-        );
+    ) -> Result<(Vec<BandRenderer>, Option<LR4CrossoverBank>)> {
+        let make_renderer =
+            |b: &FreqBand| BandRenderer::from_band(b, layout, num_speakers, control);
 
         let bands = compute_bands(layout);
         if bands.len() <= 1 {
-            return (bands.iter().map(make_renderer).collect(), None);
+            let render_bands = bands
+                .iter()
+                .map(make_renderer)
+                .collect::<Result<Vec<_>>>()?;
+            return Ok((render_bands, None));
         }
 
         let cutoffs: Vec<f32> = bands
@@ -1140,7 +822,10 @@ impl SpatialRenderer {
             .collect();
 
         let filter_bank = LR4CrossoverBank::new(&cutoffs, sample_rate);
-        let render_bands = bands.iter().map(make_renderer).collect();
+        let render_bands = bands
+            .iter()
+            .map(make_renderer)
+            .collect::<Result<Vec<_>>>()?;
 
         log::info!(
             "Crossover enabled: {} bands, cutoffs = {:?} Hz",
@@ -1148,7 +833,7 @@ impl SpatialRenderer {
             cutoffs
         );
 
-        (render_bands, Some(filter_bank))
+        Ok((render_bands, Some(filter_bank)))
     }
 
     /// Assemble the `SpatialRenderer` struct from fully resolved components.
@@ -1164,10 +849,17 @@ impl SpatialRenderer {
         log_object_positions: bool,
         auto_gain: bool,
         control: Arc<RendererControl>,
-        render_bands: Vec<BandRenderer>,
-        crossover_filter_bank: Option<LR4CrossoverBank>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        let active_topology = control.active_topology();
+        let topology_identity = std::sync::Arc::as_ptr(&active_topology) as usize;
+        let (render_bands, crossover_filter_bank) = Self::build_crossover(
+            &control,
+            &active_topology.speaker_layout,
+            num_speakers,
+            sample_rate,
+        )?;
+
+        Ok(Self {
             num_speakers,
             spread_resolution,
             bed_indices: arc_swap::ArcSwap::new(std::sync::Arc::new(Vec::new())),
@@ -1198,10 +890,30 @@ impl SpatialRenderer {
             },
             ramp_strategy_override: None,
             render_bands,
+            render_bands_topology_identity: topology_identity,
             crossover_filter_bank,
             crossover_filter_states: Vec::new(),
             crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
+        })
+    }
+
+    fn refresh_crossover_for_topology(
+        &mut self,
+        topology_identity: usize,
+        active_layout: &crate::speaker_layout::SpeakerLayout,
+    ) -> Result<()> {
+        if self.render_bands_topology_identity == topology_identity {
+            return Ok(());
         }
+
+        let (render_bands, crossover_filter_bank) =
+            Self::build_crossover(&self.control, active_layout, self.num_speakers, self.sample_rate)?;
+        self.render_bands = render_bands;
+        self.crossover_filter_bank = crossover_filter_bank;
+        self.crossover_filter_states.clear();
+        self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
+        self.render_bands_topology_identity = topology_identity;
+        Ok(())
     }
 
     /// Get the current auto-gain attenuation in dB.
@@ -1440,6 +1152,12 @@ impl SpatialRenderer {
         samples_buf: Vec<f32>,
         measure_breakdown: bool,
     ) -> Result<RenderedFrame> {
+        // ── 1. Load the current immutable render topology and keep band engines in sync ──
+        let topology_guard = self.control.active_topology();
+        let topology = &*topology_guard;
+        let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
+        self.refresh_crossover_for_topology(topology_identity, &topology.speaker_layout)?;
+
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
         let live = {
             let g = self.control.live.read().unwrap();
@@ -1517,11 +1235,6 @@ impl SpatialRenderer {
                 experimental_distance: g.experimental_distance,
             }
         };
-
-        // ── 2. Load the current immutable render topology (lock-free ArcSwap snapshot) ──
-        let topology_guard = self.control.active_topology();
-        let topology = &*topology_guard;
-        let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
         let ramp_context = self.ramp_context(topology_identity, topology, &live);
         let ramp_strategy_override = self.ramp_strategy_override.clone();
         static POSITION_STRATEGY: PositionRampStrategy = PositionRampStrategy;
@@ -2052,23 +1765,6 @@ impl SpatialRenderer {
         self.spread_resolution
     }
 
-    /// Save VBAP gain table to binary file (includes speaker layout)
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Output file path
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// renderer.save_vbap_table("vbap_7.1.4.bin")?;
-    /// ```
-    pub fn save_vbap_table(&self, path: &std::path::Path) -> Result<()> {
-        let topology = self.control.active_topology();
-        topology
-            .backend
-            .save_to_file(path, &topology.speaker_layout)
-    }
 }
 
 #[cfg(test)]

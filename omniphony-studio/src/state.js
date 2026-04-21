@@ -312,15 +312,11 @@ export const app = {
 };
 
 export function isRoomRatioFrozen() {
-  return app.renderBackendState.frozenRoomRatio === true
-    || app.evaluationModeState.effective === 'from_file'
-    || app.renderBackendState.effective === 'from_file';
+  return app.renderBackendState.frozenRoomRatio === true;
 }
 
 export function isSpeakerLayoutFrozen() {
-  return app.renderBackendState.frozenSpeakers === true
-    || app.evaluationModeState.effective === 'from_file'
-    || app.renderBackendState.effective === 'from_file';
+  return app.renderBackendState.frozenSpeakers === true;
 }
 
 // ---------------------------------------------------------------------------

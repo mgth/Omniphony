@@ -86,9 +86,7 @@ fn allowed_evaluation_modes(
     backend: &renderer::render_backend::PreparedRenderEngine,
     capabilities: renderer::render_backend::BackendCapabilities,
 ) -> Vec<String> {
-    if backend.evaluation_mode() == renderer::render_backend::EffectiveEvaluationMode::FromFile {
-        return vec!["from_file".to_string()];
-    }
+    let _ = backend;
     let mut modes = vec!["auto".to_string()];
     if capabilities.supports_realtime {
         modes.push("realtime".to_string());
@@ -114,11 +112,9 @@ pub fn build_render_backend_state_snapshot(
         effective_label: backend.backend_label().to_string(),
         capabilities,
         allowed_evaluation_modes: allowed_evaluation_modes(backend, capabilities),
-        frozen_room_ratio: backend.evaluation_mode()
-            == renderer::render_backend::EffectiveEvaluationMode::FromFile,
-        frozen_speakers: backend.evaluation_mode()
-            == renderer::render_backend::EffectiveEvaluationMode::FromFile,
-        restore_backend_available: backend.has_backend_restore_snapshot(),
+        frozen_room_ratio: false,
+        frozen_speakers: false,
+        restore_backend_available: false,
         barycenter: BarycenterOptionsSnapshot {
             localize: live.barycenter.localize,
         },

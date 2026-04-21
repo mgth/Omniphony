@@ -1183,36 +1183,6 @@ fn control_export_layout(state: State<SharedState>, name: Option<String>) {
 }
 
 #[tauri::command]
-fn control_import_evaluation_artifact(state: State<SharedState>, path: String) {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: "/omniphony/control/render_evaluation_mode/from_file".to_string(),
-            value: trimmed.to_string(),
-        },
-    );
-}
-
-#[tauri::command]
-fn control_export_evaluation_artifact(state: State<SharedState>, path: String) {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: "/omniphony/control/render_evaluation/export".to_string(),
-            value: trimmed.to_string(),
-        },
-    );
-}
-
-#[tauri::command]
 fn control_audio_sample_rate(state: State<SharedState>, sample_rate: i32) {
     send_control(
         &state.osc_tx,
@@ -2287,8 +2257,6 @@ fn main() {
             control_render_bridge_path,
             control_input_refresh,
             control_export_layout,
-            control_import_evaluation_artifact,
-            control_export_evaluation_artifact,
             control_audio_sample_rate,
         ])
         .run(tauri::generate_context!())

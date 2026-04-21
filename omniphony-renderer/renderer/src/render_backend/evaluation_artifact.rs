@@ -7,8 +7,8 @@ use std::io::{Cursor, Read, Write};
 
 use super::{
     BackendCapabilities, CartesianSpeakerHeatmapSlices, CartesianSpeakerHeatmapVolume,
-    EffectiveEvaluationMode, EvaluationBuildConfig, PreparedEvaluator, RenderRequest,
-    RenderResponse, sample_cartesian_table, sample_polar_table,
+    EvaluationBuildConfig, PreparedEvaluator, RenderRequest, RenderResponse,
+    sample_cartesian_table, sample_polar_table,
 };
 use crate::speaker_layout::SpeakerLayout;
 
@@ -473,21 +473,6 @@ impl PreparedEvaluator for EvaluationArtifactEvaluator {
     ) -> Option<CartesianSpeakerHeatmapVolume> {
         None
     }
-}
-
-pub fn build_from_artifact_render_engine(
-    artifact: LoadedEvaluationArtifact,
-) -> super::PreparedRenderEngine {
-    let backend_restore_snapshot = artifact.backend_restore_snapshot();
-    super::PreparedRenderEngine::new(
-        super::GainModelKind::FromFile,
-        "from_file",
-        "From File",
-        artifact.capabilities(),
-        EffectiveEvaluationMode::FromFile,
-        backend_restore_snapshot,
-        Box::new(EvaluationArtifactEvaluator::new(artifact)),
-    )
 }
 
 pub fn build_backend_restore_snapshot(

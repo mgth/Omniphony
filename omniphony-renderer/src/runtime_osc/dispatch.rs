@@ -15,8 +15,7 @@ use runtime_control::osc::{
 
 use super::client_registry::OscClientRegistry;
 use super::export::{
-    build_live_state_bundle, export_current_evaluation_artifact, export_current_layout,
-    save_live_config,
+    build_live_state_bundle, export_current_layout, save_live_config,
 };
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
@@ -144,14 +143,6 @@ pub(crate) fn handle_control_message(
         return;
     }
 
-    if addr == "/omniphony/control/render_evaluation/export" {
-        let requested_path = match msg.args.first() {
-            Some(OscType::String(s)) if !s.trim().is_empty() => s.trim(),
-            _ => return,
-        };
-        export_current_evaluation_artifact(control, requested_path);
-        return;
-    }
 }
 
 fn set_dirty(control: &Arc<RendererControl>, socket: &UdpSocket, clients: &OscClientRegistry) {
