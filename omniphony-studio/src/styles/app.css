@@ -1609,28 +1609,35 @@
         gap: 0.2rem;
       }
 
-      .speaker-contribution-slider {
-        width: 100%;
-        opacity: 0.9;
-      }
-
-      .speaker-contribution-value {
-        font-size: 11px;
-        color: #b9c7d8;
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-      }
-
       .meter-fill.contribution {
         background: linear-gradient(90deg, rgba(138, 240, 255, 0.92) 0%, rgba(255, 226, 122, 0.92) 100%);
         box-shadow: 0 0 8px rgba(138, 240, 255, 0.24);
+      }
+
+      .speaker-meter-row {
+        grid-template-columns: auto 1fr auto;
+      }
+
+      .speaker-contrib-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.4rem;
+        margin-top: 4px;
+      }
+
+      .speaker-meter-actions {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 0.25rem;
       }
 
       .band-contrib-bars {
         display: flex;
         flex-direction: column;
         gap: 3px;
-        margin-top: 4px;
+        flex: 1 1 auto;
+        min-width: 0;
       }
 
       .band-row {

@@ -395,6 +395,7 @@ export function updateObjectControlsUI() {
   });
   speakerItems.forEach((entry, id) => {
     updateSpeakerContributionUI_src(entry, id);
+    updateSpeakerBandBars(entry, Number(id));
   });
 }
 
@@ -528,11 +529,9 @@ export function createSpeakerItem(id, speaker) {
   const content = document.createElement('div');
   content.className = 'speaker-content';
 
-  const position = document.createElement('div');
-  content.appendChild(position);
-
   const level = document.createElement('div');
   level.className = 'meter-row';
+  level.classList.add('speaker-meter-row');
 
   const levelText = document.createElement('div');
   level.appendChild(levelText);
@@ -545,31 +544,8 @@ export function createSpeakerItem(id, speaker) {
   contributionFill.className = 'meter-fill contribution';
   meterBar.appendChild(meterFill);
   meterBar.appendChild(contributionFill);
-  level.appendChild(meterBar);
-  content.appendChild(level);
-
-  const bandBarsContainer = document.createElement('div');
-  bandBarsContainer.className = 'band-contrib-bars';
-  bandBarsContainer.style.display = 'none';
-  content.appendChild(bandBarsContainer);
-
-  const contributionSlider = document.createElement('input');
-  contributionSlider.type = 'range';
-  contributionSlider.min = '0';
-  contributionSlider.max = '1';
-  contributionSlider.step = '0.001';
-  contributionSlider.value = '0';
-  contributionSlider.disabled = true;
-  contributionSlider.className = 'gain-slider speaker-contribution-slider';
-
-  const contributionValue = document.createElement('div');
-  contributionValue.className = 'gain-box speaker-contribution-value';
-  contributionValue.textContent = '-\u221E dB | \u2014 dBFS';
-
   const controlsRow = document.createElement('div');
-  controlsRow.className = 'control-row';
-  controlsRow.appendChild(contributionSlider);
-  controlsRow.appendChild(contributionValue);
+  controlsRow.className = 'speaker-meter-actions';
 
   const muteBtn = document.createElement('button');
   muteBtn.type = 'button';
@@ -591,20 +567,30 @@ export function createSpeakerItem(id, speaker) {
   });
   controlsRow.appendChild(soloBtn);
 
-  content.appendChild(controlsRow);
+  level.appendChild(meterBar);
+  level.appendChild(controlsRow);
+  content.appendChild(level);
+
+  const contributionRow = document.createElement('div');
+  contributionRow.className = 'speaker-contrib-row';
+
+  const bandBarsContainer = document.createElement('div');
+  bandBarsContainer.className = 'band-contrib-bars';
+  bandBarsContainer.style.display = 'none';
+  contributionRow.appendChild(bandBarsContainer);
+
+  content.appendChild(contributionRow);
   root.appendChild(idStrip);
   root.appendChild(content);
 
   return {
     root,
     label: idText,
-    position,
     levelText,
     meterFill,
     contributionFill,
+    contributionRow,
     bandBarsContainer,
-    contributionSlider,
-    contributionValue,
     muteBtn,
     soloBtn
   };
@@ -614,7 +600,6 @@ export function updateSpeakerItem(entry, id, speaker) {
   const selectedSpeakerIndex = get_selectedSpeakerIndex();
   const soloTarget = getSoloTarget('speaker');
   entry.label.textContent = String(speaker.id ?? id);
-  entry.position.textContent = formatPosition(speaker);
   entry.muteBtn.classList.toggle('active', speakerMuted.has(id));
   entry.soloBtn.classList.toggle('active', soloTarget === id);
   updateItemClasses(entry, speakerMuted.has(id), soloTarget && soloTarget !== id);
@@ -643,18 +628,15 @@ function getCrossoverBandLabels() {
   });
 }
 
-function gainToDb(gain) {
-  if (gain <= 0) return '-\u221E';
-  return (20 * Math.log10(gain)).toFixed(1);
-}
-
 export function updateSpeakerBandBars(entry, speakerIndex) {
-  if (!entry?.bandBarsContainer) return;
+  if (!entry?.bandBarsContainer || !entry?.contributionRow) return;
   const contributions = getSelectedSourceBandContributions(speakerIndex);
-  if (!contributions || contributions.length <= 1) {
+  if (!app.selectedSourceId || !contributions || contributions.length === 0) {
+    entry.contributionRow.style.display = 'none';
     entry.bandBarsContainer.style.display = 'none';
     return;
   }
+  entry.contributionRow.style.display = '';
   entry.bandBarsContainer.style.display = '';
   const labels = getCrossoverBandLabels();
 
@@ -685,10 +667,17 @@ export function updateSpeakerBandBars(entry, speakerIndex) {
     const labelEl = row.querySelector('.band-label');
     const bar = row.querySelector('.band-bar');
     const dbEl = row.querySelector('.band-db');
-    if (labelEl) labelEl.textContent = labels?.[b] ?? `Band ${b}`;
+    if (labelEl) {
+      labelEl.textContent = labels?.[b] ?? (contributions.length === 1 ? 'Full band' : `Band ${b}`);
+    }
     if (bar) bar.style.setProperty('--level', `${Math.min(100, gain * 100).toFixed(1)}%`);
-    if (dbEl) dbEl.textContent = `${gainToDb(gain)} dB`;
+    if (dbEl) dbEl.textContent = linearToDb(gain);
   });
+
+  for (let b = 0; b < entry.bandBarsContainer.children.length; b += 1) {
+    const row = entry.bandBarsContainer.children[b];
+    if (row) row.style.display = b < contributions.length ? '' : 'none';
+  }
 }
 
 export function updateAllSpeakerBandBars() {
@@ -741,7 +730,6 @@ export function updateSpeakerVisualsFromState(index) {
   const entry = speakerItems.get(String(index));
   if (entry) {
     entry.label.textContent = String(speaker.id ?? index);
-    entry.position.textContent = formatPosition(speaker);
   }
 
   if (selectedSpeakerIndex === index) {

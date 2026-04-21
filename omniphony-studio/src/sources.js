@@ -539,24 +539,18 @@ export function getSelectedSourceContribution(index) {
 }
 
 export function updateSpeakerContributionUI(entry, id) {
-  if (!entry?.contributionFill || !entry?.contributionSlider || !entry?.contributionValue) {
+  if (!entry?.contributionFill) {
     return;
   }
   const contribution = getSelectedSourceContribution(Number(id));
   if (!app.selectedSourceId || !contribution) {
     entry.contributionFill.style.setProperty('--level', '0%');
     entry.meterFill.style.opacity = '1';
-    entry.contributionSlider.style.visibility = 'hidden';
-    entry.contributionValue.style.visibility = 'hidden';
     return;
   }
 
   entry.meterFill.style.opacity = '0.38';
-  entry.contributionSlider.style.visibility = 'visible';
-  entry.contributionValue.style.visibility = 'visible';
   entry.contributionFill.style.setProperty('--level', `${contribution.percent.toFixed(1)}%`);
-  entry.contributionSlider.value = String(Math.max(0, Math.min(1, contribution.gain)));
-  entry.contributionValue.textContent = `${contribution.gainDb} | ${contribution.resultText}`;
 }
 
 export function getSelectedSpeakerContributionForObject(id) {
@@ -1061,7 +1055,7 @@ export function updateSourceBandGains(id, band, gains) {
 export function getSelectedSourceBandContributions(speakerIndex) {
   if (!app.selectedSourceId) return null;
   const bands = sourceBandGains.get(app.selectedSourceId);
-  if (!bands || bands.length <= 1) return null;
+  if (!bands || bands.length === 0) return null;
   return bands.map(bandGains => Number(bandGains?.[speakerIndex] ?? 0));
 }
 
