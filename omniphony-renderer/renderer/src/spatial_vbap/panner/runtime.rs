@@ -669,6 +669,36 @@ impl VbapPanner {
         Gains::from_slice(&self.spread_tables[0].gtable[offset..offset + self.n_speakers])
     }
 
+    /// Pre-populate the polar gain table so hot-path lookups use bilinear
+    /// interpolation rather than re-running triangulation on every call.
+    ///
+    /// Must be called after all builder methods (`with_negative_z`, etc.) have
+    /// been applied.  Returns `Err` if the backing gain source cannot be built
+    /// (e.g. degenerate speaker layout); the panner remains usable via the lazy
+    /// per-call fallback in that case.
+    pub fn populate_polar_table(&mut self) -> Result<(), String> {
+        // Build the table inside a block so `gain_source` (which borrows `self`
+        // immutably) is dropped before the mutable write to `spread_tables`.
+        let gtable = {
+            let gain_source = self.make_gain_source()?;
+            let spread = self.spread_tables[0].spread;
+            let (n_az, n_el, n_speakers, az_res_deg) =
+                (self.n_az, self.n_el, self.n_speakers, self.az_res_deg);
+            let mut table = Vec::with_capacity(n_az * n_el * n_speakers);
+            for el_i in 0..n_el {
+                let el = self.elevation_from_index(el_i);
+                for az_i in 0..n_az {
+                    let az = -180.0 + az_i as f32 * az_res_deg as f32;
+                    let gains = gain_source.compute_gains(az, el, spread)?;
+                    table.extend_from_slice(&gains[..]);
+                }
+            }
+            table
+        };
+        self.spread_tables[0].gtable = gtable;
+        Ok(())
+    }
+
     pub fn num_speakers(&self) -> usize {
         self.n_speakers
     }

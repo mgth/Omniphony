@@ -237,10 +237,17 @@ impl BandRenderer {
         let vbap = if positions.len() >= 3 {
             VbapPanner::new_with_mode(&positions, az_res_deg, el_res_deg, 0.0, table_mode)
                 .ok()
-                .map(|p| VbapBackend::new(
-                    p.with_negative_z(allow_negative_z)
-                     .with_position_interpolation(position_interpolation),
-                ))
+                .and_then(|p| {
+                    let mut p = p
+                        .with_negative_z(allow_negative_z)
+                        .with_position_interpolation(position_interpolation);
+                    // Pre-populate the polar table once so the hot path uses
+                    // bilinear interpolation instead of re-triangulating every call.
+                    if matches!(p.table_mode(), VbapTableMode::Polar) {
+                        let _ = p.populate_polar_table();
+                    }
+                    Some(VbapBackend::new(p))
+                })
         } else {
             None
         };
@@ -406,7 +413,7 @@ pub struct SpatialRenderer {
     crossover_filter_bank: Option<LR4CrossoverBank>,
 
     /// Per-object filter states for the crossover bank, keyed by channel index.
-    crossover_filter_states: std::collections::HashMap<usize, Vec<BiquadState>>,
+    crossover_filter_states: Vec<Option<Vec<BiquadState>>>,
 
     /// Reusable per-band scratch used only when collecting crossover timing.
     crossover_band_scratch: [Vec<f32>; 8],
@@ -1192,7 +1199,7 @@ impl SpatialRenderer {
             ramp_strategy_override: None,
             render_bands,
             crossover_filter_bank,
-            crossover_filter_states: std::collections::HashMap::new(),
+            crossover_filter_states: Vec::new(),
             crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
         }
     }
@@ -1689,11 +1696,15 @@ impl SpatialRenderer {
                 let obj_filter_states: Option<&mut Vec<BiquadState>> =
                     if let Some(fb) = self.crossover_filter_bank.as_ref() {
                         let state_count = fb.state_count();
-                        Some(
+                        if self.crossover_filter_states.len() <= input_channel_idx {
                             self.crossover_filter_states
-                                .entry(input_channel_idx)
-                                .or_insert_with(|| vec![BiquadState::default(); state_count]),
-                        )
+                                .resize_with(input_channel_idx + 1, || None);
+                        }
+                        let slot = &mut self.crossover_filter_states[input_channel_idx];
+                        if slot.is_none() {
+                            *slot = Some(vec![BiquadState::default(); state_count]);
+                        }
+                        slot.as_mut()
                     } else {
                         None
                     };
