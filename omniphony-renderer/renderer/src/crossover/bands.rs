@@ -13,8 +13,9 @@ pub struct FreqBand {
 
 /// Derive crossover bands from the `freq_low` fields of spatializable speakers.
 ///
-/// A speaker is included in band `[lo, hi)` when `freq_low.unwrap_or(0.0) <= lo`
-/// (i.e. it can reproduce down to `lo` Hz).
+/// Each speaker is assigned **exclusively** to the band whose lower edge equals its
+/// `freq_low` (or 0.0 for speakers without `freq_low`).  A speaker with `freq_low = 80`
+/// only appears in the `[80, hi)` band; it does NOT appear in higher bands.
 ///
 /// Returns a single all-inclusive band when no speaker defines `freq_low`, which
 /// preserves the existing single-backend rendering behaviour.
@@ -54,11 +55,15 @@ pub fn compute_bands(layout: &SpeakerLayout) -> Vec<FreqBand> {
         .map(|w| {
             let lo = w[0];
             let hi = w[1];
+            // Exclusive assignment: a speaker belongs to the band whose lower edge
+            // matches its freq_low (tolerance 0.1 Hz to avoid f32 rounding issues).
             let speaker_indices = layout
                 .speakers
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| s.spatialize && s.freq_low.unwrap_or(0.0) <= lo)
+                .filter(|(_, s)| {
+                    s.spatialize && (s.freq_low.unwrap_or(0.0) - lo).abs() < 0.1
+                })
                 .map(|(i, _)| i)
                 .collect();
             FreqBand {

@@ -68,12 +68,16 @@ Une enceinte est incluse dans la bande `[lo, hi)` si `freq_low.unwrap_or(0.0) <=
 ```
 Exemple : freq_low = {80, 200}
   Arêtes    : [0, 80, 200, ∞]
-  Bande 0   : [0–80 Hz]    → subwoofers (freq_low ≤ 0, i.e. freq_low = None)
-  Bande 1   : [80–200 Hz]  → enceintes capables ≤ 80 Hz (full-range + subs)
-  Bande 2   : [200–∞ Hz]   → toutes les enceintes spatialisables
+  Bande 0   : [0–80 Hz]    → enceintes avec freq_low = None (→ 0 Hz)
+  Bande 1   : [80–200 Hz]  → enceintes avec freq_low = 80 Hz
+  Bande 2   : [200–∞ Hz]   → enceintes avec freq_low = 200 Hz
 ```
 
+Affectation **exclusive** : chaque enceinte n'appartient qu'à la bande dont l'arête basse correspond à son `freq_low` (tolérance 0.1 Hz). Une enceinte avec `freq_low = 80` n'apparaît que dans la bande [80–200 Hz], pas dans la bande supérieure.
+
 Si aucun `freq_low` n'est défini, une seule bande `[0, ∞)` est retournée et le chemin crossover n'est pas activé.
+
+> **Note** : l'affectation est exclusive. Une enceinte avec `freq_low = 80` reproduit physiquement les fréquences ≥ 80 Hz, mais elle n'est routée que vers la bande [80, hi) — pas vers les bandes supérieures. Les bandes sont donc des groupes de routage, pas des capacités cumulatives.
 
 ---
 
