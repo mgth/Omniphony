@@ -467,7 +467,11 @@ export function renderRenderTimeUI() {
   const frameBudgetMs = Number(app.frameDurationMs);
   const scaleMs = Number.isFinite(frameBudgetMs) && frameBudgetMs > 0
     ? frameBudgetMs
-    : Math.max(0.01, dec + rnd + wri, (decMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0));
+    : Math.max(
+      0.01,
+      dec + cro + rnd + wri,
+      (decMax ?? 0) + (croMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0)
+    );
   const now = performance.now();
   const decAvg = averageRecent(app.decodeTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
   const rndTotalAvg = averageRecent(app.renderTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
@@ -499,14 +503,27 @@ export function renderRenderTimeUI() {
   };
 
   setSegment(rendererPerfDecodeFillEl, 0, dec);
-  setSegment(rendererPerfRenderFillEl, dec, dec + rnd);
-  setSegment(rendererPerfCrossoverFillEl, dec + rnd, dec + rnd + cro);
-  setSegment(rendererPerfWriteFillEl, dec + rnd + cro, dec + rnd + cro + wri);
+  setSegment(rendererPerfCrossoverFillEl, dec, dec + cro);
+  setSegment(rendererPerfRenderFillEl, dec + cro, dec + cro + rnd);
+  setSegment(rendererPerfWriteFillEl, dec + cro + rnd, dec + cro + rnd + wri);
 
   setMarker(rendererPerfDecodeMaxMarkerEl, decMax);
-  setMarker(rendererPerfRenderMaxMarkerEl, decMax === null && rndMax === null ? null : (decMax ?? 0) + (rndMax ?? 0));
-  setMarker(rendererPerfCrossoverMaxMarkerEl, decMax === null && rndMax === null && croMax === null ? null : (decMax ?? 0) + (rndMax ?? 0) + (croMax ?? 0));
-  setMarker(rendererPerfWriteMaxMarkerEl, decMax === null && rndMax === null && croMax === null && wriMax === null ? null : (decMax ?? 0) + (rndMax ?? 0) + (croMax ?? 0) + (wriMax ?? 0));
+  setMarker(
+    rendererPerfCrossoverMaxMarkerEl,
+    decMax === null && croMax === null ? null : (decMax ?? 0) + (croMax ?? 0)
+  );
+  setMarker(
+    rendererPerfRenderMaxMarkerEl,
+    decMax === null && croMax === null && rndMax === null
+      ? null
+      : (decMax ?? 0) + (croMax ?? 0) + (rndMax ?? 0)
+  );
+  setMarker(
+    rendererPerfWriteMaxMarkerEl,
+    decMax === null && croMax === null && rndMax === null && wriMax === null
+      ? null
+      : (decMax ?? 0) + (croMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0)
+  );
 
   if (rendererPerfDecodeValueEl) {
     rendererPerfDecodeValueEl.textContent = tf('renderer.perf.decode', {
