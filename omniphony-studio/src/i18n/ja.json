@@ -217,6 +217,7 @@
   "renderer.perf.decode": "decode {value}",
   "renderer.perf.render": "render {value}",
   "renderer.perf.crossover": "cross {value}",
+  "renderer.perf.max": "max {value}",
   "renderer.perf.write": "write {value}",
   "adaptive.title": "適応リサンプリング",
   "adaptive.hardRecoverHigh": "far モードで高レイテンシを強制回復",

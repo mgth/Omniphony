@@ -17,6 +17,16 @@ import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inAudioPanel, inRendererPanel } from '../ui/panel-roots.js';
 
+const RENDER_TIME_AVERAGE_WINDOW_MS = 1000;
+const RENDER_TIME_DISPLAY_HOLD_MS = 350;
+
+const rendererPerfDisplayState = {
+  decode: { value: null, updatedAt: 0 },
+  render: { value: null, updatedAt: 0 },
+  crossover: { value: null, updatedAt: 0 },
+  write: { value: null, updatedAt: 0 },
+};
+
 function getLatencyInfoEl() { return inAudioPanel('latencyInfo'); }
 function getLatencyRawInfoEl() { return inAudioPanel('latencyRawInfo'); }
 function getLatencyCtrlInfoEl() { return inAudioPanel('latencyCtrlInfo'); }
@@ -55,6 +65,10 @@ function getRendererPerfDecodeValueEl() { return inRendererPanel('rendererPerfDe
 function getRendererPerfRenderValueEl() { return inRendererPanel('rendererPerfRenderValue'); }
 function getRendererPerfCrossoverValueEl() { return inRendererPanel('rendererPerfCrossoverValue'); }
 function getRendererPerfWriteValueEl() { return inRendererPanel('rendererPerfWriteValue'); }
+function getRendererPerfDecodeMaxValueEl() { return inRendererPanel('rendererPerfDecodeMaxValue'); }
+function getRendererPerfRenderMaxValueEl() { return inRendererPanel('rendererPerfRenderMaxValue'); }
+function getRendererPerfCrossoverMaxValueEl() { return inRendererPanel('rendererPerfCrossoverMaxValue'); }
+function getRendererPerfWriteMaxValueEl() { return inRendererPanel('rendererPerfWriteMaxValue'); }
 function getRendererPerfFrameValueEl() { return inRendererPanel('rendererPerfFrameValue'); }
 
 // ── Latency / timing setters ──────────────────────────────────────────────
@@ -135,6 +149,29 @@ export function setFrameDurationMs(value) {
     return;
   }
   app.frameDurationMs = next;
+}
+
+function averageRecent(window, now, spanMs) {
+  const entries = window.filter((entry) => now - entry.t <= spanMs);
+  if (entries.length === 0) {
+    return null;
+  }
+  const sum = entries.reduce((acc, entry) => acc + entry.v, 0);
+  return sum / entries.length;
+}
+
+function getStableRenderPerfValue(key, nextValue, now) {
+  const state = rendererPerfDisplayState[key];
+  if (!Number.isFinite(nextValue)) {
+    state.value = null;
+    state.updatedAt = now;
+    return null;
+  }
+  if (state.value === null || now - state.updatedAt >= RENDER_TIME_DISPLAY_HOLD_MS) {
+    state.value = nextValue;
+    state.updatedAt = now;
+  }
+  return state.value;
 }
 
 // ── Latency display ───────────────────────────────────────────────────────
@@ -403,6 +440,10 @@ export function renderRenderTimeUI() {
   const rendererPerfRenderValueEl = getRendererPerfRenderValueEl();
   const rendererPerfCrossoverValueEl = getRendererPerfCrossoverValueEl();
   const rendererPerfWriteValueEl = getRendererPerfWriteValueEl();
+  const rendererPerfDecodeMaxValueEl = getRendererPerfDecodeMaxValueEl();
+  const rendererPerfRenderMaxValueEl = getRendererPerfRenderMaxValueEl();
+  const rendererPerfCrossoverMaxValueEl = getRendererPerfCrossoverMaxValueEl();
+  const rendererPerfWriteMaxValueEl = getRendererPerfWriteMaxValueEl();
   const rendererPerfFrameValueEl = getRendererPerfFrameValueEl();
   const visible = app.oscMeteringEnabled === true;
   if (rendererPerfWrapEl) {
@@ -425,6 +466,18 @@ export function renderRenderTimeUI() {
   const scaleMs = Number.isFinite(frameBudgetMs) && frameBudgetMs > 0
     ? frameBudgetMs
     : Math.max(0.01, dec + rnd + wri, (decMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0));
+  const now = performance.now();
+  const decAvg = averageRecent(app.decodeTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
+  const rndAvg = averageRecent(app.renderTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
+  const croAvgRaw = averageRecent(app.crossoverTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
+  const wriAvg = averageRecent(app.writeTimeWindow, now, RENDER_TIME_AVERAGE_WINDOW_MS);
+  const croAvg = croAvgRaw === null
+    ? null
+    : Math.min(rndAvg ?? Number.POSITIVE_INFINITY, croAvgRaw);
+  const decShown = getStableRenderPerfValue('decode', decAvg, now);
+  const rndShown = getStableRenderPerfValue('render', rndAvg, now);
+  const croShown = getStableRenderPerfValue('crossover', croAvg, now);
+  const wriShown = getStableRenderPerfValue('write', wriAvg, now);
   const setSegment = (el, startMs, endMs) => {
     if (!el) return;
     const left = Math.min(100, Math.max(0, (startMs / scaleMs) * 100));
@@ -454,22 +507,42 @@ export function renderRenderTimeUI() {
 
   if (rendererPerfDecodeValueEl) {
     rendererPerfDecodeValueEl.textContent = tf('renderer.perf.decode', {
-      value: app.decodeTimeMs === null ? '—' : `${formatNumber(dec, 3)} ms`
+      value: decShown === null ? '—' : `${formatNumber(decShown, 3)} ms`
     });
   }
   if (rendererPerfRenderValueEl) {
     rendererPerfRenderValueEl.textContent = tf('renderer.perf.render', {
-      value: app.renderTimeMs === null ? '—' : `${formatNumber(rnd, 3)} ms`
+      value: rndShown === null ? '—' : `${formatNumber(rndShown, 3)} ms`
     });
   }
   if (rendererPerfCrossoverValueEl) {
     rendererPerfCrossoverValueEl.textContent = tf('renderer.perf.crossover', {
-      value: app.crossoverTimeMs === null ? '—' : `${formatNumber(cro, 3)} ms`
+      value: croShown === null ? '—' : `${formatNumber(croShown, 3)} ms`
     });
   }
   if (rendererPerfWriteValueEl) {
     rendererPerfWriteValueEl.textContent = tf('renderer.perf.write', {
-      value: app.writeTimeMs === null ? '—' : `${formatNumber(wri, 3)} ms`
+      value: wriShown === null ? '—' : `${formatNumber(wriShown, 3)} ms`
+    });
+  }
+  if (rendererPerfDecodeMaxValueEl) {
+    rendererPerfDecodeMaxValueEl.textContent = tf('renderer.perf.max', {
+      value: decMax === null ? '—' : `${formatNumber(decMax, 3)} ms`
+    });
+  }
+  if (rendererPerfRenderMaxValueEl) {
+    rendererPerfRenderMaxValueEl.textContent = tf('renderer.perf.max', {
+      value: rndMax === null ? '—' : `${formatNumber(rndMax, 3)} ms`
+    });
+  }
+  if (rendererPerfCrossoverMaxValueEl) {
+    rendererPerfCrossoverMaxValueEl.textContent = tf('renderer.perf.max', {
+      value: croMax === null ? '—' : `${formatNumber(croMax, 3)} ms`
+    });
+  }
+  if (rendererPerfWriteMaxValueEl) {
+    rendererPerfWriteMaxValueEl.textContent = tf('renderer.perf.max', {
+      value: wriMax === null ? '—' : `${formatNumber(wriMax, 3)} ms`
     });
   }
   if (rendererPerfFrameValueEl) {

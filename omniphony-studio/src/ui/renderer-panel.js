@@ -27,6 +27,12 @@ export function rendererPanelMarkup() {
                   <span id="rendererPerfCrossoverValue" style="display:inline-block;min-width:5.4rem;text-align:right">cross —</span>
                   <span id="rendererPerfWriteValue" style="display:inline-block;min-width:5.4rem;text-align:right">write —</span>
                 </div>
+                <div style="display:grid;grid-template-columns:repeat(4, max-content);align-items:center;gap:0.28rem;font-size:10px;color:#92a9bc;white-space:nowrap;font-variant-numeric:tabular-nums">
+                  <span id="rendererPerfDecodeMaxValue" style="display:inline-block;min-width:5.4rem;text-align:right">max —</span>
+                  <span id="rendererPerfRenderMaxValue" style="display:inline-block;min-width:5.4rem;text-align:right">max —</span>
+                  <span id="rendererPerfCrossoverMaxValue" style="display:inline-block;min-width:5.4rem;text-align:right">max —</span>
+                  <span id="rendererPerfWriteMaxValue" style="display:inline-block;min-width:5.4rem;text-align:right">max —</span>
+                </div>
               </div>
             </div>
             </div>

@@ -217,6 +217,7 @@
   "renderer.perf.decode": "decode {value}",
   "renderer.perf.render": "render {value}",
   "renderer.perf.crossover": "cross {value}",
+  "renderer.perf.max": "max {value}",
   "renderer.perf.write": "write {value}",
   "adaptive.title": "Adaptive Resampling",
   "adaptive.hardRecoverHigh": "Hard recover high in far mode",
