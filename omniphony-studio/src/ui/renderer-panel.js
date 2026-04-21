@@ -12,16 +12,19 @@ export function rendererPanelMarkup() {
                   <div class="meter-bar" style="width:180px;min-width:180px;overflow:visible">
                     <div id="rendererPerfDecodeFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(140,214,255,0.95), rgba(104,170,255,0.95));clip-path:inset(0 100% 0 0)"></div>
                     <div id="rendererPerfRenderFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(112,170,255,0.92), rgba(88,132,255,0.92));clip-path:inset(0 100% 0 0)"></div>
+                    <div id="rendererPerfCrossoverFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(255,214,120,0.96), rgba(255,166,94,0.96));clip-path:inset(0 100% 0 0)"></div>
                     <div id="rendererPerfWriteFill" class="meter-fill" style="background:linear-gradient(90deg, rgba(180,255,184,0.95), rgba(80,218,120,0.95));clip-path:inset(0 100% 0 0)"></div>
                     <div id="rendererPerfDecodeMaxMarker" class="meter-marker min" style="background:#ffd54a"></div>
                     <div id="rendererPerfRenderMaxMarker" class="meter-marker min" style="background:#ffb84a"></div>
+                    <div id="rendererPerfCrossoverMaxMarker" class="meter-marker min" style="background:#ffeb8a"></div>
                     <div id="rendererPerfWriteMaxMarker" class="meter-marker min" style="background:#ff8b4a"></div>
                   </div>
                   <span id="rendererPerfFrameValue" style="display:inline-block;min-width:5.4rem;text-align:right;font-size:10px;white-space:nowrap;font-variant-numeric:tabular-nums;color:#9eb4c8">frame —</span>
                 </div>
-                <div style="display:grid;grid-template-columns:repeat(3, max-content);align-items:center;gap:0.28rem;font-size:10px;color:#d9ecff;white-space:nowrap;font-variant-numeric:tabular-nums">
+                <div style="display:grid;grid-template-columns:repeat(4, max-content);align-items:center;gap:0.28rem;font-size:10px;color:#d9ecff;white-space:nowrap;font-variant-numeric:tabular-nums">
                   <span id="rendererPerfDecodeValue" style="display:inline-block;min-width:5.4rem;text-align:right">decode —</span>
                   <span id="rendererPerfRenderValue" style="display:inline-block;min-width:5.4rem;text-align:right">render —</span>
+                  <span id="rendererPerfCrossoverValue" style="display:inline-block;min-width:5.4rem;text-align:right">cross —</span>
                   <span id="rendererPerfWriteValue" style="display:inline-block;min-width:5.4rem;text-align:right">write —</span>
                 </div>
               </div>

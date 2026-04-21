@@ -1270,6 +1270,13 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateCrossoverTimeMs { value } => {
+                s.crossover_time_ms = Some(value);
+                (
+                    Some(("crossover:time_ms", serde_json::json!({ "value": value }))),
+                    removed_ids,
+                )
+            }
             OscEvent::StateWriteTimeMs { value } => {
                 s.write_time_ms = Some(value);
                 (

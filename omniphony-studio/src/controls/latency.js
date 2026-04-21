@@ -45,12 +45,15 @@ function getLatencyRawMaxValueEl() { return inAudioPanel('latencyRawMaxValue'); 
 function getRendererPerfWrapEl() { return inRendererPanel('rendererPerfWrap'); }
 function getRendererPerfDecodeFillEl() { return inRendererPanel('rendererPerfDecodeFill'); }
 function getRendererPerfRenderFillEl() { return inRendererPanel('rendererPerfRenderFill'); }
+function getRendererPerfCrossoverFillEl() { return inRendererPanel('rendererPerfCrossoverFill'); }
 function getRendererPerfWriteFillEl() { return inRendererPanel('rendererPerfWriteFill'); }
 function getRendererPerfDecodeMaxMarkerEl() { return inRendererPanel('rendererPerfDecodeMaxMarker'); }
 function getRendererPerfRenderMaxMarkerEl() { return inRendererPanel('rendererPerfRenderMaxMarker'); }
+function getRendererPerfCrossoverMaxMarkerEl() { return inRendererPanel('rendererPerfCrossoverMaxMarker'); }
 function getRendererPerfWriteMaxMarkerEl() { return inRendererPanel('rendererPerfWriteMaxMarker'); }
 function getRendererPerfDecodeValueEl() { return inRendererPanel('rendererPerfDecodeValue'); }
 function getRendererPerfRenderValueEl() { return inRendererPanel('rendererPerfRenderValue'); }
+function getRendererPerfCrossoverValueEl() { return inRendererPanel('rendererPerfCrossoverValue'); }
 function getRendererPerfWriteValueEl() { return inRendererPanel('rendererPerfWriteValue'); }
 function getRendererPerfFrameValueEl() { return inRendererPanel('rendererPerfFrameValue'); }
 
@@ -109,6 +112,20 @@ export function setWriteTimeMs(value) {
   const cutoff = now - RENDER_TIME_WINDOW_MS;
   while (app.writeTimeWindow.length > 0 && app.writeTimeWindow[0].t < cutoff) {
     app.writeTimeWindow.shift();
+  }
+}
+
+export function setCrossoverTimeMs(value) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) {
+    return;
+  }
+  app.crossoverTimeMs = next;
+  const now = performance.now();
+  app.crossoverTimeWindow.push({ t: now, v: next });
+  const cutoff = now - RENDER_TIME_WINDOW_MS;
+  while (app.crossoverTimeWindow.length > 0 && app.crossoverTimeWindow[0].t < cutoff) {
+    app.crossoverTimeWindow.shift();
   }
 }
 
@@ -376,12 +393,15 @@ export function renderRenderTimeUI() {
   const rendererPerfWrapEl = getRendererPerfWrapEl();
   const rendererPerfDecodeFillEl = getRendererPerfDecodeFillEl();
   const rendererPerfRenderFillEl = getRendererPerfRenderFillEl();
+  const rendererPerfCrossoverFillEl = getRendererPerfCrossoverFillEl();
   const rendererPerfWriteFillEl = getRendererPerfWriteFillEl();
   const rendererPerfDecodeMaxMarkerEl = getRendererPerfDecodeMaxMarkerEl();
   const rendererPerfRenderMaxMarkerEl = getRendererPerfRenderMaxMarkerEl();
+  const rendererPerfCrossoverMaxMarkerEl = getRendererPerfCrossoverMaxMarkerEl();
   const rendererPerfWriteMaxMarkerEl = getRendererPerfWriteMaxMarkerEl();
   const rendererPerfDecodeValueEl = getRendererPerfDecodeValueEl();
   const rendererPerfRenderValueEl = getRendererPerfRenderValueEl();
+  const rendererPerfCrossoverValueEl = getRendererPerfCrossoverValueEl();
   const rendererPerfWriteValueEl = getRendererPerfWriteValueEl();
   const rendererPerfFrameValueEl = getRendererPerfFrameValueEl();
   const visible = app.oscMeteringEnabled === true;
@@ -393,9 +413,13 @@ export function renderRenderTimeUI() {
   }
   const dec = Math.max(0, Number(app.decodeTimeMs) || 0);
   const rnd = Math.max(0, Number(app.renderTimeMs) || 0);
+  const cro = Math.min(rnd, Math.max(0, Number(app.crossoverTimeMs) || 0));
   const wri = Math.max(0, Number(app.writeTimeMs) || 0);
   const decMax = app.decodeTimeWindow.length > 0 ? Math.max(...app.decodeTimeWindow.map((entry) => entry.v)) : null;
   const rndMax = app.renderTimeWindow.length > 0 ? Math.max(...app.renderTimeWindow.map((entry) => entry.v)) : null;
+  const croMax = app.crossoverTimeWindow.length > 0
+    ? Math.min(rndMax ?? Number.POSITIVE_INFINITY, Math.max(...app.crossoverTimeWindow.map((entry) => entry.v)))
+    : null;
   const wriMax = app.writeTimeWindow.length > 0 ? Math.max(...app.writeTimeWindow.map((entry) => entry.v)) : null;
   const frameBudgetMs = Number(app.frameDurationMs);
   const scaleMs = Number.isFinite(frameBudgetMs) && frameBudgetMs > 0
@@ -420,10 +444,12 @@ export function renderRenderTimeUI() {
 
   setSegment(rendererPerfDecodeFillEl, 0, dec);
   setSegment(rendererPerfRenderFillEl, dec, dec + rnd);
+  setSegment(rendererPerfCrossoverFillEl, dec, dec + cro);
   setSegment(rendererPerfWriteFillEl, dec + rnd, dec + rnd + wri);
 
   setMarker(rendererPerfDecodeMaxMarkerEl, decMax);
   setMarker(rendererPerfRenderMaxMarkerEl, decMax === null && rndMax === null ? null : (decMax ?? 0) + (rndMax ?? 0));
+  setMarker(rendererPerfCrossoverMaxMarkerEl, decMax === null && croMax === null ? null : (decMax ?? 0) + (croMax ?? 0));
   setMarker(rendererPerfWriteMaxMarkerEl, decMax === null && rndMax === null && wriMax === null ? null : (decMax ?? 0) + (rndMax ?? 0) + (wriMax ?? 0));
 
   if (rendererPerfDecodeValueEl) {
@@ -434,6 +460,11 @@ export function renderRenderTimeUI() {
   if (rendererPerfRenderValueEl) {
     rendererPerfRenderValueEl.textContent = tf('renderer.perf.render', {
       value: app.renderTimeMs === null ? '—' : `${formatNumber(rnd, 3)} ms`
+    });
+  }
+  if (rendererPerfCrossoverValueEl) {
+    rendererPerfCrossoverValueEl.textContent = tf('renderer.perf.crossover', {
+      value: app.crossoverTimeMs === null ? '—' : `${formatNumber(cro, 3)} ms`
     });
   }
   if (rendererPerfWriteValueEl) {

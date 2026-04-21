@@ -159,12 +159,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                     fill_pcm_f32_reuse(&mut pcm_f32_scratch, &frame.pcm);
                     let pcm_data_f32 = &pcm_f32_scratch;
 
-                    if self
+                    let has_metering_clients = self
                         .telemetry
                         .osc_sender
                         .as_ref()
-                        .is_some_and(|sender| sender.has_metering_clients())
-                    {
+                        .is_some_and(|sender| sender.has_metering_clients());
+                    if has_metering_clients {
                         if let Some(ref mut meter) = self.telemetry.audio_meter {
                             meter.update_channel_count(channel_count);
                             for chunk in pcm_data_f32.chunks_exact(channel_count) {
@@ -181,17 +181,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                         channel_count,
                         &pending_events,
                         donated_buf,
+                        has_metering_clients,
                     )?;
-                    let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
 
                     let num_speakers = renderer.num_speakers();
 
-                    let meter_snapshot = if self
-                        .telemetry
-                        .osc_sender
-                        .as_ref()
-                        .is_some_and(|sender| sender.has_metering_clients())
-                    {
+                    let meter_snapshot = if has_metering_clients {
                         self.telemetry.audio_meter.as_mut().and_then(|m| {
                             m.process_speakers(&rendered.samples, num_speakers);
                             m.poll()
@@ -199,6 +194,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                     } else {
                         None
                     };
+                    let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
                     let sent_meter_bundle = if let (Some(snapshot), Some(osc_sender)) =
                         (meter_snapshot, &self.telemetry.osc_sender)
                     {
@@ -207,6 +203,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             &rendered.object_gains,
                             &rendered.object_band_gains,
                             Some(decode_time_ms),
+                            Some(rendered.crossover_time_ms),
                             Some(render_time_ms),
                             None,
                             Some(frame_duration_ms),
@@ -302,12 +299,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                     fill_pcm_f32_reuse(&mut pcm_f32_scratch, &frame.pcm);
                     let pcm_data_f32 = &pcm_f32_scratch;
 
-                    if self
+                    let has_metering_clients = self
                         .telemetry
                         .osc_sender
                         .as_ref()
-                        .is_some_and(|sender| sender.has_metering_clients())
-                    {
+                        .is_some_and(|sender| sender.has_metering_clients());
+                    if has_metering_clients {
                         if let Some(ref mut meter) = self.telemetry.audio_meter {
                             meter.update_channel_count(channel_count);
                             for chunk in pcm_data_f32.chunks_exact(channel_count) {
@@ -323,16 +320,11 @@ impl<'a> SampleWriteCoordinator<'a> {
                         channel_count,
                         &virtual_events,
                         donated_buf,
+                        has_metering_clients,
                     )?;
-                    let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
                     let num_speakers = renderer.num_speakers();
 
-                    let meter_snapshot = if self
-                        .telemetry
-                        .osc_sender
-                        .as_ref()
-                        .is_some_and(|sender| sender.has_metering_clients())
-                    {
+                    let meter_snapshot = if has_metering_clients {
                         self.telemetry.audio_meter.as_mut().and_then(|m| {
                             m.process_speakers(&rendered.samples, num_speakers);
                             m.poll()
@@ -340,6 +332,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                     } else {
                         None
                     };
+                    let render_time_ms = render_started_at.elapsed().as_secs_f32() * 1000.0;
                     let sent_meter_bundle = if let (Some(snapshot), Some(osc_sender)) =
                         (meter_snapshot, &self.telemetry.osc_sender)
                     {
@@ -348,6 +341,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             &rendered.object_gains,
                             &rendered.object_band_gains,
                             Some(decode_time_ms),
+                            Some(rendered.crossover_time_ms),
                             Some(render_time_ms),
                             None,
                             Some(frame_duration_ms),

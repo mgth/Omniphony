@@ -216,6 +216,7 @@
   "renderer.perf.frame": "Frame {value}",
   "renderer.perf.decode": "Decode {value}",
   "renderer.perf.render": "Render {value}",
+  "renderer.perf.crossover": "Cross {value}",
   "renderer.perf.write": "Write {value}",
   "adaptive.title": "adaptives Resampling",
   "adaptive.hardRecoverHigh": "Harte Hoch-Erholung im Fernmodus",

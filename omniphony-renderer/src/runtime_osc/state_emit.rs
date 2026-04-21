@@ -56,6 +56,7 @@ impl OscSender {
         object_gains: &[(usize, renderer::spatial_vbap::Gains)],
         object_band_gains: &[(usize, Vec<renderer::spatial_vbap::Gains>)],
         decode_time_ms: Option<f32>,
+        crossover_time_ms: Option<f32>,
         render_time_ms: Option<f32>,
         write_time_ms: Option<f32>,
         frame_duration_ms: Option<f32>,
@@ -108,6 +109,12 @@ impl OscSender {
         if let Some(ms) = render_time_ms {
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/render_time_ms".to_string(),
+                args: vec![OscType::Float(ms.max(0.0))],
+            }));
+        }
+        if let Some(ms) = crossover_time_ms {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/crossover_time_ms".to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }

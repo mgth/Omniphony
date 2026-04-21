@@ -357,6 +357,8 @@ pub struct AppState {
     pub decode_time_ms: Option<f64>,
     #[serde(rename = "renderTimeMs")]
     pub render_time_ms: Option<f64>,
+    #[serde(rename = "crossoverTimeMs")]
+    pub crossover_time_ms: Option<f64>,
     #[serde(rename = "writeTimeMs")]
     pub write_time_ms: Option<f64>,
     #[serde(rename = "frameDurationMs")]
@@ -548,6 +550,7 @@ impl Default for AppState {
             latency: RuntimeLatencyState::default(),
             decode_time_ms: None,
             render_time_ms: None,
+            crossover_time_ms: None,
             write_time_ms: None,
             frame_duration_ms: None,
             resample_ratio: None,

@@ -102,6 +102,10 @@ pub struct RenderedFrame {
     /// (`num_speakers`), indexed by global speaker index.
     /// Empty for non-crossover objects or when no crossover is active.
     pub object_band_gains: Vec<(usize, Vec<Gains>)>,
+    /// Time spent in per-sample crossover filtering during `render_frame`.
+    ///
+    /// This is a subset of the total render time.
+    pub crossover_time_ms: f32,
 }
 
 fn evaluation_build_config(
@@ -288,6 +292,24 @@ fn split_bands(
     match (filter_bank.as_ref(), states) {
         (Some(fb), Some(s)) => fb.process_sample(raw, s),
         _ => crate::crossover::SmallBands::single(raw),
+    }
+}
+
+#[inline]
+fn split_bands_profiled(
+    raw: f32,
+    filter_bank: &Option<LR4CrossoverBank>,
+    states: Option<&mut [BiquadState]>,
+    profile: bool,
+    elapsed: &mut std::time::Duration,
+) -> crate::crossover::SmallBands {
+    if profile {
+        let started_at = std::time::Instant::now();
+        let bands = split_bands(raw, filter_bank, states);
+        *elapsed += started_at.elapsed();
+        bands
+    } else {
+        split_bands(raw, filter_bank, states)
     }
 }
 
@@ -1423,6 +1445,7 @@ impl SpatialRenderer {
         input_channel_count: usize,
         pending_events: &[SpatialChannelEvent],
         samples_buf: Vec<f32>,
+        measure_breakdown: bool,
     ) -> Result<RenderedFrame> {
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
         let live = {
@@ -1544,6 +1567,8 @@ impl SpatialRenderer {
         // Collect VBAP gains at the final sample for each object channel (for monitoring).
         let mut object_gains_out: Vec<(usize, Gains)> = Vec::with_capacity(input_channel_count);
         let mut object_band_gains_out: Vec<(usize, Vec<Gains>)> = Vec::new();
+        let mut crossover_elapsed = std::time::Duration::ZERO;
+        let profile_crossover = measure_breakdown && self.crossover_filter_bank.is_some();
 
         // Beds always come FIRST in PCM data, then objects.
         // bed_indices contains bed channel IDs (e.g., [3] for LFE), NOT PCM channel indices.
@@ -1709,7 +1734,13 @@ impl SpatialRenderer {
                                 [sample_idx * input_channel_count + input_channel_idx]
                                 * gain_linear
                                 * obj_gain;
-                            let split = split_bands(raw, &self.crossover_filter_bank, fst.as_mut().map(|v| v.as_mut_slice()));
+                            let split = split_bands_profiled(
+                                raw,
+                                &self.crossover_filter_bank,
+                                fst.as_mut().map(|v| v.as_mut_slice()),
+                                profile_crossover,
+                                &mut crossover_elapsed,
+                            );
                             let out_base = sample_idx * self.num_speakers;
                             for (b, gains) in band_gains.iter().enumerate() {
                                 let s = split.get(b);
@@ -1738,7 +1769,13 @@ impl SpatialRenderer {
                                 [sample_idx * input_channel_count + input_channel_idx]
                                 * gain_linear
                                 * obj_gain;
-                            let split = split_bands(raw, &self.crossover_filter_bank, fst.as_mut().map(|v| v.as_mut_slice()));
+                            let split = split_bands_profiled(
+                                raw,
+                                &self.crossover_filter_bank,
+                                fst.as_mut().map(|v| v.as_mut_slice()),
+                                profile_crossover,
+                                &mut crossover_elapsed,
+                            );
                             let out_base = sample_idx * self.num_speakers;
                             for (b, gains) in band_gains.iter().enumerate() {
                                 let s = split.get(b);
@@ -1769,7 +1806,13 @@ impl SpatialRenderer {
                                 [sample_idx * input_channel_count + input_channel_idx]
                                 * gain_linear
                                 * obj_gain;
-                            let split = split_bands(raw, &self.crossover_filter_bank, fst.as_mut().map(|v| v.as_mut_slice()));
+                            let split = split_bands_profiled(
+                                raw,
+                                &self.crossover_filter_bank,
+                                fst.as_mut().map(|v| v.as_mut_slice()),
+                                profile_crossover,
+                                &mut crossover_elapsed,
+                            );
                             let out_base = sample_idx * self.num_speakers;
                             for (b, gains) in band_gains.iter().enumerate() {
                                 let s = split.get(b);
@@ -1896,6 +1939,7 @@ impl SpatialRenderer {
             samples: output,
             object_gains: object_gains_out,
             object_band_gains: object_band_gains_out,
+            crossover_time_ms: crossover_elapsed.as_secs_f32() * 1000.0,
         })
     }
 

@@ -178,6 +178,8 @@ export const app = {
   decodeTimeWindow: [],
   renderTimeMs: null,
   renderTimeWindow: [],
+  crossoverTimeMs: null,
+  crossoverTimeWindow: [],
   writeTimeMs: null,
   writeTimeWindow: [],
   frameDurationMs: null,

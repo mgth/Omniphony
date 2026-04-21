@@ -291,6 +291,8 @@ pub enum OscEvent {
     StateDecodeTimeMs { value: f64 },
     #[serde(rename = "state:render_time_ms")]
     StateRenderTimeMs { value: f64 },
+    #[serde(rename = "state:crossover_time_ms")]
+    StateCrossoverTimeMs { value: f64 },
     #[serde(rename = "state:write_time_ms")]
     StateWriteTimeMs { value: f64 },
     #[serde(rename = "state:frame_duration_ms")]
@@ -701,6 +703,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             value: to_number(args[0])?,
         }),
         (3, "render_time_ms") => Some(OscEvent::StateRenderTimeMs {
+            value: to_number(args[0])?,
+        }),
+        (3, "crossover_time_ms") => Some(OscEvent::StateCrossoverTimeMs {
             value: to_number(args[0])?,
         }),
         (3, "write_time_ms") => Some(OscEvent::StateWriteTimeMs {

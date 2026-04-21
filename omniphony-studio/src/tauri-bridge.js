@@ -41,6 +41,7 @@ import {
   updateRenderTimeUI,
   setRenderTimeMs,
   setDecodeTimeMs,
+  setCrossoverTimeMs,
   setWriteTimeMs,
   setFrameDurationMs,
   updateResampleRatioDisplay
@@ -662,6 +663,17 @@ export function setupTauriBridge() {
     } else {
       app.renderTimeMs = null;
       app.renderTimeWindow = [];
+    }
+    updateRenderTimeUI();
+  });
+
+  listen('crossover:time_ms', ({ payload }) => {
+    const value = Number(payload?.value);
+    if (Number.isFinite(value)) {
+      setCrossoverTimeMs(value);
+    } else {
+      app.crossoverTimeMs = null;
+      app.crossoverTimeWindow = [];
     }
     updateRenderTimeUI();
   });
