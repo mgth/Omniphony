@@ -21,6 +21,7 @@ pub struct SpeakerPatch {
     pub z: Option<f32>,
     pub coord_mode: Option<String>,
     pub spatialize: Option<bool>,
+    pub freq_low: Option<Option<f32>>,
     pub name: Option<String>,
 }
 
@@ -236,6 +237,9 @@ fn apply_pending_speakers(
                 }
                 if let Some(spatialize) = patch.spatialize {
                     speaker.spatialize = spatialize;
+                }
+                if let Some(freq_low) = patch.freq_low {
+                    speaker.freq_low = freq_low.map(|value| value.max(0.0));
                 }
                 if let Some(name) = &patch.name {
                     speaker.name = name.clone();
@@ -1884,6 +1888,18 @@ pub fn apply_speaker_osc_control(
                     patch.name = Some(trimmed.to_string());
                 }
             }
+            return Some(effects);
+        }
+        if field == "freq_low" {
+            if is_from_file_frozen(ctx) {
+                effects.log_message = Some(
+                    "OSC: ignored speaker/freq_low while from_file evaluator is active"
+                        .to_string(),
+                );
+                return Some(effects);
+            }
+            let patch = pending_speakers.entry(idx).or_default();
+            patch.freq_low = Some(parse_f32_arg(msg.args.first()).filter(|v| *v > 0.0));
             return Some(effects);
         }
         if field == "coord_mode" {

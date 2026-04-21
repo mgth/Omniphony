@@ -5,6 +5,7 @@ use pw::spa::pod::{object, property};
 
 const TRUEHD_ONLY_IEC958_CODECS_PROP: &str = "[ \"TRUEHD\" ]";
 const IEC958_AUDIO_POSITION_PROP: &str = "[ FL FR C LFE SL SR RL RR ]";
+const SPA_PARAM_BUFFERS_META_TYPE_RAW: u32 = 7;
 
 #[derive(Copy, Clone)]
 struct RawSpaPodKey(u32);
@@ -99,8 +100,6 @@ pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> 
     let port_bytes_per_frame = (channels as usize) * std::mem::size_of::<u16>();
     let nominal_frames = sample_rate_hz.div_ceil(100);
     let nominal_size = (port_bytes_per_frame * nominal_frames as usize).max(1024);
-    // SPA_PARAM_BUFFERS_metaType was removed in PipeWire 1.0.
-    #[cfg(not(pipewire_1_0))]
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamBuffers,
         spa::param::ParamType::Buffers,
@@ -114,22 +113,11 @@ pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> 
             pw::spa::pod::Value::Int(spa::sys::SPA_DATA_MemPtr as i32)
         ),
         property!(
-            RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_metaType),
+            // The Rust bindings compiled against 0.3 headers no longer expose this constant when
+            // building on PipeWire 1.x, but the SPA protocol still supports the field and the
+            // bridge relies on SPA_META_Header negotiation to receive usable IEC61937 buffers.
+            RawSpaPodKey(SPA_PARAM_BUFFERS_META_TYPE_RAW),
             pw::spa::pod::Value::Int(1i32 << (spa::sys::SPA_META_Header as i32))
-        ),
-    };
-    #[cfg(pipewire_1_0)]
-    let obj = object! {
-        spa::utils::SpaTypes::ObjectParamBuffers,
-        spa::param::ParamType::Buffers,
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_buffers), Int, 8i32),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_blocks), Int, 1i32),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_size), Int, nominal_size as i32),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_stride), Int, port_bytes_per_frame as i32),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_align), Int, 16i32),
-        property!(
-            RawSpaPodKey(spa::sys::SPA_PARAM_BUFFERS_dataType),
-            pw::spa::pod::Value::Int(spa::sys::SPA_DATA_MemPtr as i32)
         ),
     };
     let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(

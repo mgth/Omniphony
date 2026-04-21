@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(pipewire_1_0)");
     // Detect the installed PipeWire version and emit a cfg flag when it is >= 1.0.
     // PipeWire 1.0 removed several SPA/PW constants that the 0.3.x bindings expose,
     // so call sites that use those constants must be conditionally compiled out.
