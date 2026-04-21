@@ -102,7 +102,7 @@ pub struct RenderedFrame {
     /// (`num_speakers`), indexed by global speaker index.
     /// Empty for non-crossover objects or when no crossover is active.
     pub object_band_gains: Vec<(usize, Vec<Gains>)>,
-    /// Time spent in per-sample crossover filtering during `render_frame`.
+    /// Time spent in the crossover filter-bank stage during `render_frame`.
     ///
     /// This is a subset of the total render time.
     pub crossover_time_ms: f32,
@@ -295,24 +295,6 @@ fn split_bands(
     }
 }
 
-#[inline]
-fn split_bands_profiled(
-    raw: f32,
-    filter_bank: &Option<LR4CrossoverBank>,
-    states: Option<&mut [BiquadState]>,
-    profile: bool,
-    elapsed: &mut std::time::Duration,
-) -> crate::crossover::SmallBands {
-    if profile {
-        let started_at = std::time::Instant::now();
-        let bands = split_bands(raw, filter_bank, states);
-        *elapsed += started_at.elapsed();
-        bands
-    } else {
-        split_bands(raw, filter_bank, states)
-    }
-}
-
 /// Snapshot of `LiveParams` taken at the start of each render frame.
 ///
 /// Holding this snapshot (rather than keeping the `RwLock` locked) allows the
@@ -425,6 +407,9 @@ pub struct SpatialRenderer {
 
     /// Per-object filter states for the crossover bank, keyed by channel index.
     crossover_filter_states: std::collections::HashMap<usize, Vec<BiquadState>>,
+
+    /// Reusable per-band scratch used only when collecting crossover timing.
+    crossover_band_scratch: [Vec<f32>; 8],
 }
 
 impl SpatialRenderer {
@@ -1208,6 +1193,7 @@ impl SpatialRenderer {
             render_bands,
             crossover_filter_bank,
             crossover_filter_states: std::collections::HashMap::new(),
+            crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
         }
     }
 
@@ -1713,9 +1699,8 @@ impl SpatialRenderer {
                     };
 
                 let render_params = ramp_context.render_params();
-                let mut last_band_gains: Vec<Gains> = Vec::new();
 
-                match live.ramp_mode {
+                let last_band_gains: Vec<Gains> = match live.ramp_mode {
                     RampMode::Off => {
                         state.ramp.remaining_ramp_units = None;
                         state.ramp.start_position = state.ramp.target_position;
@@ -1729,27 +1714,51 @@ impl SpatialRenderer {
                             .collect();
 
                         let mut fst = obj_filter_states;
-                        for sample_idx in 0..sample_length {
-                            let raw = input_pcm
-                                [sample_idx * input_channel_count + input_channel_idx]
-                                * gain_linear
-                                * obj_gain;
-                            let split = split_bands_profiled(
-                                raw,
-                                &self.crossover_filter_bank,
-                                fst.as_mut().map(|v| v.as_mut_slice()),
-                                profile_crossover,
-                                &mut crossover_elapsed,
+                        if profile_crossover {
+                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
+                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
+                            let started_at = std::time::Instant::now();
+                            fb.process_block(
+                                sample_length,
+                                fst_slice,
+                                &mut self.crossover_band_scratch,
+                                |sample_idx| {
+                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
+                                        * gain_linear
+                                        * obj_gain
+                                },
                             );
-                            let out_base = sample_idx * self.num_speakers;
-                            for (b, gains) in band_gains.iter().enumerate() {
-                                let s = split.get(b);
-                                for (spk, &g) in gains.iter().enumerate() {
-                                    output[out_base + spk] += s * g;
+                            crossover_elapsed += started_at.elapsed();
+                            for sample_idx in 0..sample_length {
+                                let out_base = sample_idx * self.num_speakers;
+                                for (b, gains) in band_gains.iter().enumerate() {
+                                    let s = self.crossover_band_scratch[b][sample_idx];
+                                    for (spk, &g) in gains.iter().enumerate() {
+                                        output[out_base + spk] += s * g;
+                                    }
+                                }
+                            }
+                        } else {
+                            for sample_idx in 0..sample_length {
+                                let raw = input_pcm
+                                    [sample_idx * input_channel_count + input_channel_idx]
+                                    * gain_linear
+                                    * obj_gain;
+                                let split = split_bands(
+                                    raw,
+                                    &self.crossover_filter_bank,
+                                    fst.as_mut().map(|v| v.as_mut_slice()),
+                                );
+                                let out_base = sample_idx * self.num_speakers;
+                                for (b, gains) in band_gains.iter().enumerate() {
+                                    let s = split.get(b);
+                                    for (spk, &g) in gains.iter().enumerate() {
+                                        output[out_base + spk] += s * g;
+                                    }
                                 }
                             }
                         }
-                        last_band_gains = band_gains;
+                        band_gains
                     }
                     RampMode::Frame => {
                         let progress =
@@ -1764,68 +1773,131 @@ impl SpatialRenderer {
                             .collect();
 
                         let mut fst = obj_filter_states;
-                        for sample_idx in 0..sample_length {
-                            let raw = input_pcm
-                                [sample_idx * input_channel_count + input_channel_idx]
-                                * gain_linear
-                                * obj_gain;
-                            let split = split_bands_profiled(
-                                raw,
-                                &self.crossover_filter_bank,
-                                fst.as_mut().map(|v| v.as_mut_slice()),
-                                profile_crossover,
-                                &mut crossover_elapsed,
+                        if profile_crossover {
+                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
+                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
+                            let started_at = std::time::Instant::now();
+                            fb.process_block(
+                                sample_length,
+                                fst_slice,
+                                &mut self.crossover_band_scratch,
+                                |sample_idx| {
+                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
+                                        * gain_linear
+                                        * obj_gain
+                                },
                             );
-                            let out_base = sample_idx * self.num_speakers;
-                            for (b, gains) in band_gains.iter().enumerate() {
-                                let s = split.get(b);
-                                for (spk, &g) in gains.iter().enumerate() {
-                                    output[out_base + spk] += s * g;
+                            crossover_elapsed += started_at.elapsed();
+                            for sample_idx in 0..sample_length {
+                                let out_base = sample_idx * self.num_speakers;
+                                for (b, gains) in band_gains.iter().enumerate() {
+                                    let s = self.crossover_band_scratch[b][sample_idx];
+                                    for (spk, &g) in gains.iter().enumerate() {
+                                        output[out_base + spk] += s * g;
+                                    }
+                                }
+                            }
+                        } else {
+                            for sample_idx in 0..sample_length {
+                                let raw = input_pcm
+                                    [sample_idx * input_channel_count + input_channel_idx]
+                                    * gain_linear
+                                    * obj_gain;
+                                let split = split_bands(
+                                    raw,
+                                    &self.crossover_filter_bank,
+                                    fst.as_mut().map(|v| v.as_mut_slice()),
+                                );
+                                let out_base = sample_idx * self.num_speakers;
+                                for (b, gains) in band_gains.iter().enumerate() {
+                                    let s = split.get(b);
+                                    for (spk, &g) in gains.iter().enumerate() {
+                                        output[out_base + spk] += s * g;
+                                    }
                                 }
                             }
                         }
                         state.ramp.commit_output_position();
                         state.ramp.advance_ramp(sample_length as u64);
-                        last_band_gains = band_gains;
+                        band_gains
                     }
                     RampMode::Sample => {
                         let mut fst = obj_filter_states;
-                        for sample_idx in 0..sample_length {
-                            let progress =
-                                state.ramp.current_progress().unwrap_or(RampProgress {
-                                    completed_units: 0,
-                                    total_units: 0,
-                                });
-                            ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
-                            let position = state.ramp.output_position;
-                            let band_gains: Vec<Gains> = self.render_bands.iter()
-                                .map(|b| b.compute_gains(render_params, position))
-                                .collect();
-
-                            let raw = input_pcm
-                                [sample_idx * input_channel_count + input_channel_idx]
-                                * gain_linear
-                                * obj_gain;
-                            let split = split_bands_profiled(
-                                raw,
-                                &self.crossover_filter_bank,
-                                fst.as_mut().map(|v| v.as_mut_slice()),
-                                profile_crossover,
-                                &mut crossover_elapsed,
+                        // Pre-allocate once — reused each sample to avoid per-sample Vec alloc.
+                        let mut band_gains_buf: Vec<Gains> = self.render_bands.iter()
+                            .map(|_| Gains::zeroed(self.num_speakers))
+                            .collect();
+                        if profile_crossover {
+                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
+                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
+                            let started_at = std::time::Instant::now();
+                            fb.process_block(
+                                sample_length,
+                                fst_slice,
+                                &mut self.crossover_band_scratch,
+                                |sample_idx| {
+                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
+                                        * gain_linear
+                                        * obj_gain
+                                },
                             );
-                            let out_base = sample_idx * self.num_speakers;
-                            for (b, gains) in band_gains.iter().enumerate() {
-                                let s = split.get(b);
-                                for (spk, &g) in gains.iter().enumerate() {
-                                    output[out_base + spk] += s * g;
+                            crossover_elapsed += started_at.elapsed();
+                            for sample_idx in 0..sample_length {
+                                let progress =
+                                    state.ramp.current_progress().unwrap_or(RampProgress {
+                                        completed_units: 0,
+                                        total_units: 0,
+                                    });
+                                ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
+                                let position = state.ramp.output_position;
+                                for (slot, band) in band_gains_buf.iter_mut().zip(self.render_bands.iter()) {
+                                    *slot = band.compute_gains(render_params, position);
                                 }
+                                let out_base = sample_idx * self.num_speakers;
+                                for (b, gains) in band_gains_buf.iter().enumerate() {
+                                    let s = self.crossover_band_scratch[b][sample_idx];
+                                    for (spk, &g) in gains.iter().enumerate() {
+                                        output[out_base + spk] += s * g;
+                                    }
+                                }
+                                state.ramp.commit_output_position();
+                                state.ramp.advance_ramp(1);
                             }
-                            last_band_gains = band_gains;
-                            state.ramp.commit_output_position();
-                            state.ramp.advance_ramp(1);
+                        } else {
+                            for sample_idx in 0..sample_length {
+                                let progress =
+                                    state.ramp.current_progress().unwrap_or(RampProgress {
+                                        completed_units: 0,
+                                        total_units: 0,
+                                    });
+                                ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
+                                let position = state.ramp.output_position;
+                                for (slot, band) in band_gains_buf.iter_mut().zip(self.render_bands.iter()) {
+                                    *slot = band.compute_gains(render_params, position);
+                                }
+                                let raw = input_pcm
+                                    [sample_idx * input_channel_count + input_channel_idx]
+                                    * gain_linear
+                                    * obj_gain;
+                                let split = split_bands(
+                                    raw,
+                                    &self.crossover_filter_bank,
+                                    fst.as_mut().map(|v| v.as_mut_slice()),
+                                );
+                                let out_base = sample_idx * self.num_speakers;
+                                for (b, gains) in band_gains_buf.iter().enumerate() {
+                                    let s = split.get(b);
+                                    for (spk, &g) in gains.iter().enumerate() {
+                                        output[out_base + spk] += s * g;
+                                    }
+                                }
+                                state.ramp.commit_output_position();
+                                state.ramp.advance_ramp(1);
+                            }
                         }
+                        band_gains_buf
                     }
-                }
+                };
 
                 // Monitoring: band_gains are already full-size — just sum them.
                 let mut summed = Gains::zeroed(self.num_speakers);
