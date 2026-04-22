@@ -22,7 +22,7 @@ renderer = { version = "0.2.0", path = "renderer" }
 audio_output = { version = "0.2.0", path = "audio_output" }
 audio_input = { version = "0.2.0", path = "audio_input" }
 sys = { version = "0.2.0", path = "sys" }
-bridge_api = { version = "0.2.0", path = "bridge_api" }
+bridge_api = { version = "0.1.0", path = "bridge_api" }
 spdif = { version = "0.2.0", path = "spdif" }
 runtime_control = { version = "0.2.0", path = "runtime_control" }
 abi_stable = "0.11"
