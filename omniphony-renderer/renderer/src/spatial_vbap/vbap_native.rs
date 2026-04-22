@@ -41,7 +41,11 @@ fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
 #[inline]
 fn normalise3(v: [f32; 3]) -> [f32; 3] {
     let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if n < 1e-30 { v } else { [v[0] / n, v[1] / n, v[2] / n] }
+    if n < 1e-30 {
+        v
+    } else {
+        [v[0] / n, v[1] / n, v[2] / n]
+    }
 }
 
 // ── Analytical 3×3 matrix inverse ───────────────────────────────────────────
@@ -68,9 +72,15 @@ fn inv3x3(m: &[f32; 9]) -> Option<[f32; 9]> {
 
     // Transpose of cofactor matrix (adjugate) divided by det
     Some([
-        c00 * inv_det, c10 * inv_det, c20 * inv_det,
-        c01 * inv_det, c11 * inv_det, c21 * inv_det,
-        c02 * inv_det, c12 * inv_det, c22 * inv_det,
+        c00 * inv_det,
+        c10 * inv_det,
+        c20 * inv_det,
+        c01 * inv_det,
+        c11 * inv_det,
+        c21 * inv_det,
+        c02 * inv_det,
+        c12 * inv_det,
+        c22 * inv_det,
     ])
 }
 
@@ -117,8 +127,8 @@ pub fn find_ls_triplets(
             let v1 = u_spkr[i1];
             let v2 = u_spkr[i2];
 
-            let a = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
-            let b = [v2[0]-v1[0], v2[1]-v1[1], v2[2]-v1[2]];
+            let a = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+            let b = [v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]];
             let cvec = cross3(a, b);
 
             let centroid = [
@@ -168,10 +178,7 @@ pub fn find_ls_triplets(
 /// Returns one row-major 3×3 inverse matrix per triangle, flattened to `[f32; 9]`.
 /// Triangles whose matrix is degenerate are returned as all-zero (never matched
 /// in VBAP since min_val check will fail).
-pub fn invert_ls_mtx_3d(
-    u_spkr: &[[f32; 3]],
-    ls_groups: &[[usize; 3]],
-) -> Vec<[f32; 9]> {
+pub fn invert_ls_mtx_3d(u_spkr: &[[f32; 3]], ls_groups: &[[usize; 3]]) -> Vec<[f32; 9]> {
     ls_groups
         .iter()
         .map(|&[i0, i1, i2]| {
@@ -182,9 +189,7 @@ pub fn invert_ls_mtx_3d(
             // Build transposed group matrix (column vectors of speaker directions)
             // tempGroup[j*3+i] = U_spkr[ls_groups[n*3+i]*3 + j]
             let m: [f32; 9] = [
-                s0[0], s1[0], s2[0],
-                s0[1], s1[1], s2[1],
-                s0[2], s1[2], s2[2],
+                s0[0], s1[0], s2[0], s0[1], s1[1], s2[1], s0[2], s1[2], s2[2],
             ];
 
             inv3x3(&m).unwrap_or([0.0; 9])
@@ -214,23 +219,18 @@ pub fn get_spread_src_dirs_3d(
 
     // u⊗u (outer product)
     let uxu = [
-        [u[0]*u[0], u[0]*u[1], u[0]*u[2]],
-        [u[0]*u[1], u[1]*u[1], u[1]*u[2]],
-        [u[0]*u[2], u[1]*u[2], u[2]*u[2]],
+        [u[0] * u[0], u[0] * u[1], u[0] * u[2]],
+        [u[0] * u[1], u[1] * u[1], u[1] * u[2]],
+        [u[0] * u[2], u[1] * u[2], u[2] * u[2]],
     ];
     // [u]× (cross-product matrix)
-    let ux = [
-        [ 0.0, -u[2],  u[1]],
-        [ u[2],  0.0, -u[0]],
-        [-u[1],  u[0],  0.0],
-    ];
+    let ux = [[0.0, -u[2], u[1]], [u[2], 0.0, -u[0]], [-u[1], u[0], 0.0]];
     // R_θ[i][j] = sin_t * ux[i][j] + (1 - cos_t) * uxu[i][j] + cos_t * δ_ij
     let mut r = [[0.0f32; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
-            r[i][j] = sin_t * ux[i][j]
-                + (1.0 - cos_t) * uxu[i][j]
-                + if i == j { cos_t } else { 0.0 };
+            r[i][j] =
+                sin_t * ux[i][j] + (1.0 - cos_t) * uxu[i][j] + if i == j { cos_t } else { 0.0 };
         }
     }
 
@@ -250,9 +250,9 @@ pub fn get_spread_src_dirs_3d(
     for ns in 1..num_src {
         let prev = spreadbase[ns - 1];
         spreadbase[ns] = [
-            r[0][0]*prev[0] + r[0][1]*prev[1] + r[0][2]*prev[2],
-            r[1][0]*prev[0] + r[1][1]*prev[1] + r[1][2]*prev[2],
-            r[2][0]*prev[0] + r[2][1]*prev[1] + r[2][2]*prev[2],
+            r[0][0] * prev[0] + r[0][1] * prev[1] + r[0][2] * prev[2],
+            r[1][0] * prev[0] + r[1][1] * prev[1] + r[1][2] * prev[2],
+            r[2][0] * prev[0] + r[2][1] * prev[1] + r[2][2] * prev[2],
         ];
     }
 
@@ -270,7 +270,7 @@ pub fn get_spread_src_dirs_3d(
         u[1] + spreadbase[0][1] * tan_r,
         u[2] + spreadbase[0][2] * tan_r,
     ];
-    let norm0 = (raw0[0]*raw0[0] + raw0[1]*raw0[1] + raw0[2]*raw0[2]).sqrt();
+    let norm0 = (raw0[0] * raw0[0] + raw0[1] * raw0[1] + raw0[2] * raw0[2]).sqrt();
     let norm0 = if norm0 < 1e-30 { 1.0 } else { norm0 };
 
     for nr in 0..num_rings {
@@ -322,7 +322,8 @@ pub fn vbap3d(
             let az_rad = az_deg * std::f32::consts::PI / 180.0;
             let el_rad = el_deg * std::f32::consts::PI / 180.0;
 
-            let u_spread = get_spread_src_dirs_3d(az_rad, el_rad, spread_deg, N_SPREAD_SRCS, N_RINGS);
+            let u_spread =
+                get_spread_src_dirs_3d(az_rad, el_rad, spread_deg, N_SPREAD_SRCS, N_RINGS);
 
             let mut gains = vec![0.0f32; n_speakers];
 
@@ -333,13 +334,13 @@ pub fn vbap3d(
                 for (fi, face) in ls_groups.iter().enumerate() {
                     let inv = &layout_inv_mtx[fi];
 
-                    let g0 = inv[0]*u[0] + inv[1]*u[1] + inv[2]*u[2];
-                    let g1 = inv[3]*u[0] + inv[4]*u[1] + inv[5]*u[2];
-                    let g2 = inv[6]*u[0] + inv[7]*u[1] + inv[8]*u[2];
+                    let g0 = inv[0] * u[0] + inv[1] * u[1] + inv[2] * u[2];
+                    let g1 = inv[3] * u[0] + inv[4] * u[1] + inv[5] * u[2];
+                    let g2 = inv[6] * u[0] + inv[7] * u[1] + inv[8] * u[2];
 
                     let min_val = g0.min(g1).min(g2);
                     if min_val > -0.001 {
-                        let rms = (g0*g0 + g1*g1 + g2*g2).sqrt();
+                        let rms = (g0 * g0 + g1 * g1 + g2 * g2).sqrt();
                         if rms > 1e-30 {
                             gains[face[0]] += g0 / rms;
                             gains[face[1]] += g1 / rms;
@@ -370,13 +371,13 @@ pub fn vbap3d(
             'faces: for (fi, face) in ls_groups.iter().enumerate() {
                 let inv = &layout_inv_mtx[fi];
 
-                let g0 = inv[0]*u[0] + inv[1]*u[1] + inv[2]*u[2];
-                let g1 = inv[3]*u[0] + inv[4]*u[1] + inv[5]*u[2];
-                let g2 = inv[6]*u[0] + inv[7]*u[1] + inv[8]*u[2];
+                let g0 = inv[0] * u[0] + inv[1] * u[1] + inv[2] * u[2];
+                let g1 = inv[3] * u[0] + inv[4] * u[1] + inv[5] * u[2];
+                let g2 = inv[6] * u[0] + inv[7] * u[1] + inv[8] * u[2];
 
                 let min_val = g0.min(g1).min(g2);
                 if min_val > -0.001 {
-                    let rms = (g0*g0 + g1*g1 + g2*g2).sqrt();
+                    let rms = (g0 * g0 + g1 * g1 + g2 * g2).sqrt();
                     if rms > 1e-30 {
                         gains[face[0]] = g0 / rms;
                         gains[face[1]] = g1 / rms;
@@ -445,8 +446,12 @@ pub fn generate_vbap_gain_table_3d(
 
         if need_dummy_neg || need_dummy_pos {
             let mut dirs = ls_dirs_deg.to_vec();
-            if need_dummy_neg { dirs.push([0.0, -90.0]); }
-            if need_dummy_pos { dirs.push([0.0,  90.0]); }
+            if need_dummy_neg {
+                dirs.push([0.0, -90.0]);
+            }
+            if need_dummy_pos {
+                dirs.push([0.0, 90.0]);
+            }
             effective_dirs = dirs;
         } else {
             effective_dirs = ls_dirs_deg.to_vec();

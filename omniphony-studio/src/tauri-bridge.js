@@ -233,6 +233,16 @@ export function setupTauriBridge() {
     if (app.selectedSpeakerIndex === index) renderSpeakerEditor();
   });
 
+  listen('speaker:freq_high', ({ payload }) => {
+    const index = Number(payload.id);
+    if (!Number.isInteger(index) || index < 0) return;
+    const speaker = app.currentLayoutSpeakers[index];
+    if (!speaker) return;
+    const fh = payload.freq_high;
+    speaker.freqHigh = fh != null && fh > 0 ? fh : null;
+    if (app.selectedSpeakerIndex === index) renderSpeakerEditor();
+  });
+
   // -----------------------------------------------------------------------
   // Objects
   // -----------------------------------------------------------------------

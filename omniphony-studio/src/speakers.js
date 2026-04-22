@@ -20,6 +20,7 @@ import {
   sourceLevelLastSeen,
   sourceMeshes,
   sourceGains,
+  sourceBandGains,
   sourceNames,
   sourcePositionsRaw,
   sourceTrails,
@@ -103,6 +104,7 @@ import { t, tf } from './i18n.js';
 import { pushLog } from './log.js';
 import { scheduleUIFlush } from './flush.js';
 import { updateItemClasses, updateSpeakerMeterUI, updateObjectMeterUI } from './flush.js';
+import { computeCrossoverBandLabels } from './crossover-bands.js';
 
 import {
   linearToDb,
@@ -166,6 +168,7 @@ function getSpeakerEditAutoDelayBtnEl() { return document.getElementById('speake
 function getSpeakerEditDelayToDistanceBtnEl() { return document.getElementById('speakerEditDelayToDistanceBtn'); }
 function getSpeakerEditSpatializeToggleEl() { return document.getElementById('speakerEditSpatializeToggle'); }
 function getSpeakerEditFreqLowInputEl() { return document.getElementById('speakerEditFreqLowInput'); }
+function getSpeakerEditFreqHighInputEl() { return document.getElementById('speakerEditFreqHighInput'); }
 function getSpeakerAddBtnEl() { return document.getElementById('speakerAddBtn'); }
 function getSpeakerMoveUpBtnEl() { return document.getElementById('speakerMoveUpBtn'); }
 function getSpeakerMoveDownBtnEl() { return document.getElementById('speakerMoveDownBtn'); }
@@ -183,6 +186,14 @@ function get_currentLayoutKey() { return app.currentLayoutKey; }
 function set_currentLayoutKey(v) { app.currentLayoutKey = v; }
 function get_currentLayoutSpeakers() { return app.currentLayoutSpeakers; }
 function set_currentLayoutSpeakers(v) { app.currentLayoutSpeakers = v; }
+
+function syncInputValueUnlessEditing(inputEl, nextValue) {
+  if (!inputEl) return;
+  if (document.activeElement === inputEl) return;
+  if (inputEl.value !== nextValue) {
+    inputEl.value = nextValue;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Speaker serialization / export
@@ -232,7 +243,9 @@ export function serializeSpeakerForExport(speaker, index) {
     distanceM: Math.max(0.01, Number(speaker?.distanceM) || 1),
     coordMode: getSpeakerCoordMode(speaker),
     spatialize: getSpeakerSpatializeValue(speaker),
-    delay_ms: Math.max(0, Number(speaker?.delay_ms) || 0)
+    delay_ms: Math.max(0, Number(speaker?.delay_ms) || 0),
+    freqLow: Number.isFinite(Number(speaker?.freqLow)) && Number(speaker.freqLow) > 0 ? Number(speaker.freqLow) : null,
+    freqHigh: Number.isFinite(Number(speaker?.freqHigh)) && Number(speaker.freqHigh) > 0 ? Number(speaker.freqHigh) : null
   };
 }
 
@@ -408,7 +421,12 @@ export function updateObjectDominantSpeakerUI(id) {
 
 export function getObjectDominantSpeakerText(id) {
   const currentLayoutSpeakers = get_currentLayoutSpeakers();
-  const gains = sourceGains.get(String(id));
+  const key = String(id);
+  const selectedBandIndex = Math.max(0, Math.round(Number(app.speakerHeatmapBandIndex) || 0));
+  const bandGains = sourceBandGains.get(key);
+  const gains = Array.isArray(bandGains?.[selectedBandIndex]) && bandGains[selectedBandIndex].length > 0
+    ? bandGains[selectedBandIndex]
+    : sourceGains.get(key);
   if (!Array.isArray(gains) || gains.length === 0) {
     return '\u2014';
   }
@@ -606,21 +624,9 @@ export function updateSpeakerItem(entry, id, speaker) {
 }
 
 function getCrossoverBandLabels() {
-  const speakers = app.currentLayoutSpeakers;
-  if (!speakers || speakers.length === 0) return null;
-  const cutoffs = [...new Set(
-    speakers
-      .filter(s => s.spatialize !== 0 && s.freqLow != null && s.freqLow > 0)
-      .map(s => s.freqLow)
-  )].sort((a, b) => a - b);
-  if (cutoffs.length === 0) return null;
-  const edges = [0, ...cutoffs, Infinity];
-  return edges.slice(0, -1).map((lo, i) => {
-    const hi = edges[i + 1];
-    const fmtHz = v => v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : `${v}`;
-    if (lo === 0) return `< ${fmtHz(hi)} Hz`;
-    if (hi === Infinity) return `\u2265 ${fmtHz(lo)} Hz`;
-    return `${fmtHz(lo)}\u2013${fmtHz(hi)} Hz`;
+  return computeCrossoverBandLabels(app.currentLayoutSpeakers, {
+    useUnicodeGte: true,
+    useUnicodeDash: true,
   });
 }
 
@@ -810,6 +816,7 @@ export function renderSpeakerEditor() {
   const speakerEditDelayMsInputEl = getSpeakerEditDelayMsInputEl();
   const speakerEditDelaySamplesInputEl = getSpeakerEditDelaySamplesInputEl();
   const speakerEditSpatializeToggleEl = getSpeakerEditSpatializeToggleEl();
+  const speakerEditFreqHighInputEl = getSpeakerEditFreqHighInputEl();
   const speakerEditAutoDelayBtnEl = getSpeakerEditAutoDelayBtnEl();
   const speakerEditDelayToDistanceBtnEl = getSpeakerEditDelayToDistanceBtnEl();
   const speakerEditCartesianGizmoBtnEl = getSpeakerEditCartesianGizmoBtnEl();
@@ -866,7 +873,16 @@ export function renderSpeakerEditor() {
   if (speakerEditSpatializeToggleEl) speakerEditSpatializeToggleEl.checked = getSpeakerSpatializeValue(speaker) !== 0;
   const speakerEditFreqLowInputEl = getSpeakerEditFreqLowInputEl();
   if (speakerEditFreqLowInputEl) {
-    speakerEditFreqLowInputEl.value = speaker.freqLow != null && speaker.freqLow > 0 ? String(speaker.freqLow) : '';
+    syncInputValueUnlessEditing(
+      speakerEditFreqLowInputEl,
+      speaker.freqLow != null && speaker.freqLow > 0 ? String(speaker.freqLow) : ''
+    );
+  }
+  if (speakerEditFreqHighInputEl) {
+    syncInputValueUnlessEditing(
+      speakerEditFreqHighInputEl,
+      speaker.freqHigh != null && speaker.freqHigh > 0 ? String(speaker.freqHigh) : ''
+    );
   }
   [
     speakerEditNameInputEl,
@@ -883,6 +899,7 @@ export function renderSpeakerEditor() {
     speakerEditDelayToDistanceBtnEl,
     speakerEditSpatializeToggleEl,
     speakerEditFreqLowInputEl,
+    speakerEditFreqHighInputEl,
     speakerEditCartesianModeEl,
     speakerEditPolarModeEl,
     speakerEditCartesianGizmoBtnEl,

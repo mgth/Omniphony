@@ -53,8 +53,12 @@ impl SpartaVbapLayout {
 
         let effective: Vec<[f32; 2]> = if need_dummy_neg || need_dummy_pos {
             let mut dirs = speaker_dirs_deg.to_vec();
-            if need_dummy_neg { dirs.push([0.0, -90.0]); }
-            if need_dummy_pos { dirs.push([0.0,  90.0]); }
+            if need_dummy_neg {
+                dirs.push([0.0, -90.0]);
+            }
+            if need_dummy_pos {
+                dirs.push([0.0, 90.0]);
+            }
             dirs
         } else {
             speaker_dirs_deg.to_vec()

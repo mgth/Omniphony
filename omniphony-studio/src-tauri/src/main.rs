@@ -788,15 +788,17 @@ fn request_speaker_heatmap(
     state: State<SharedState>,
     speaker_index: i32,
     request_id: i32,
+    band_index: i32,
     mode: String,
     max_samples: Option<i32>,
 ) {
-    if speaker_index < 0 || request_id < 0 {
+    if speaker_index < 0 || request_id < 0 || band_index < 0 {
         return;
     }
     let value = serde_json::json!({
         "speaker_index": speaker_index,
         "request_id": request_id,
+        "band_index": band_index,
         "mode": mode,
         "max_samples": max_samples,
     })
@@ -1036,6 +1038,17 @@ fn control_speaker_freq_low(state: State<SharedState>, id: i32, freq_low: f32) {
         OscControlMsg::SendFloat {
             address: format!("/omniphony/control/speaker/{id}/freq_low"),
             value: freq_low.max(0.0),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_speaker_freq_high(state: State<SharedState>, id: i32, freq_high: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: format!("/omniphony/control/speaker/{id}/freq_high"),
+            value: freq_high.max(0.0),
         },
     );
 }
@@ -2218,6 +2231,7 @@ fn main() {
             control_speaker_spatialize,
             control_speaker_name,
             control_speaker_freq_low,
+            control_speaker_freq_high,
             control_speakers_apply,
             control_speakers_add,
             control_speakers_remove,

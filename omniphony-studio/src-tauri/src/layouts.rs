@@ -23,6 +23,8 @@ pub struct Speaker {
     pub delay_ms: f64,
     #[serde(rename = "freqLow", default, skip_serializing_if = "Option::is_none")]
     pub freq_low: Option<f32>,
+    #[serde(rename = "freqHigh", default, skip_serializing_if = "Option::is_none")]
+    pub freq_high: Option<f32>,
 }
 
 fn default_radius_m() -> f64 {
@@ -70,6 +72,10 @@ struct ExportSpeaker<'a> {
     distance: Option<f64>,
     spatialize: bool,
     delay_ms: f64,
+    #[serde(rename = "freqLow", skip_serializing_if = "Option::is_none")]
+    freq_low: Option<f32>,
+    #[serde(rename = "freqHigh", skip_serializing_if = "Option::is_none")]
+    freq_high: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -114,6 +120,12 @@ fn format_layout_as_yaml(layout: &ExportLayout<'_>) -> String {
             if speaker.spatialize { "true" } else { "false" }
         ));
         text.push_str(&format!("    delay_ms: {}\n", speaker.delay_ms));
+        if let Some(freq_low) = speaker.freq_low {
+            text.push_str(&format!("    freq_low: {}\n", freq_low));
+        }
+        if let Some(freq_high) = speaker.freq_high {
+            text.push_str(&format!("    freq_high: {}\n", freq_high));
+        }
     }
     text
 }
@@ -185,8 +197,12 @@ struct RawSpeaker {
     spatialize: Option<serde_json::Value>,
     #[serde(default, rename = "freqLow")]
     freq_low: Option<f64>,
-    #[serde(default)]
+    #[serde(default, rename = "freq_low")]
     freq_low_snake: Option<f64>,
+    #[serde(default, rename = "freqHigh")]
+    freq_high: Option<f64>,
+    #[serde(default, rename = "freq_high")]
+    freq_high_snake: Option<f64>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -252,7 +268,16 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
         _ => 1,
     };
 
-    let freq_low = raw.freq_low.or(raw.freq_low_snake).map(|v| v.max(0.0) as f32).filter(|&v| v > 0.0);
+    let freq_low = raw
+        .freq_low
+        .or(raw.freq_low_snake)
+        .map(|v| v.max(0.0) as f32)
+        .filter(|&v| v > 0.0);
+    let freq_high = raw
+        .freq_high
+        .or(raw.freq_high_snake)
+        .map(|v| v.max(0.0) as f32)
+        .filter(|&v| v > 0.0);
 
     if let (Some(x), Some(y), Some(z)) = (raw.x, raw.y, raw.z) {
         let x = clamp(x, -1.0, 1.0);
@@ -271,6 +296,7 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
             spatialize,
             delay_ms,
             freq_low,
+            freq_high,
         };
     }
 
@@ -291,6 +317,7 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
         spatialize,
         delay_ms,
         freq_low,
+        freq_high,
     }
 }
 
@@ -566,6 +593,8 @@ pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
                     },
                     spatialize: speaker.spatialize != 0,
                     delay_ms: speaker.delay_ms.max(0.0),
+                    freq_low: speaker.freq_low,
+                    freq_high: speaker.freq_high,
                 }
             })
             .collect(),
@@ -623,6 +652,7 @@ pub fn build_live_layout_from_cache(
                 spatialize: speaker.spatialize,
                 delay_ms: speaker.delay_ms,
                 freq_low: speaker.freq_low,
+                freq_high: speaker.freq_high,
             })
         })
         .collect::<Vec<_>>();
@@ -637,4 +667,54 @@ pub fn build_live_layout_from_cache(
         speakers: spk_list,
         radius_m: 1.0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_speaker, parse_yaml_layout, RawSpeaker};
+
+    #[test]
+    fn normalizes_freq_fields_from_json_variants() {
+        let speaker = normalize_speaker(RawSpeaker {
+            name: Some(serde_json::json!("L")),
+            freq_low: Some(80.0),
+            freq_high_snake: Some(18000.0),
+            ..RawSpeaker::default()
+        });
+        assert_eq!(speaker.freq_low, Some(80.0));
+        assert_eq!(speaker.freq_high, Some(18000.0));
+    }
+
+    #[test]
+    fn normalizes_non_positive_freq_fields_to_none() {
+        let speaker = normalize_speaker(RawSpeaker {
+            name: Some(serde_json::json!("L")),
+            freq_low: Some(0.0),
+            freq_high: Some(-10.0),
+            ..RawSpeaker::default()
+        });
+        assert_eq!(speaker.freq_low, None);
+        assert_eq!(speaker.freq_high, None);
+    }
+
+    #[test]
+    fn parses_yaml_freq_fields() {
+        let raw = parse_yaml_layout(
+            r#"
+name: "test"
+speakers:
+  - name: "L"
+    azimuth: 30
+    elevation: 0
+    distance: 1
+    spatialize: true
+    delay_ms: 0
+    freq_low: 80
+    freq_high: 12000
+"#,
+        );
+        let speaker = normalize_speaker(raw.speakers.into_iter().next().unwrap());
+        assert_eq!(speaker.freq_low, Some(80.0));
+        assert_eq!(speaker.freq_high, Some(12000.0));
+    }
 }

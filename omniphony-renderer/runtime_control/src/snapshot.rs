@@ -631,6 +631,14 @@ pub fn build_live_state_bundle(
                 addr: format!("/omniphony/state/speaker/{}/name", idx),
                 args: vec![OscType::String(speaker.name.clone())],
             }));
+            all_messages.push(OscPacket::Message(OscMessage {
+                addr: format!("/omniphony/state/speaker/{}/freq_low", idx),
+                args: vec![OscType::Float(speaker.freq_low.unwrap_or(0.0))],
+            }));
+            all_messages.push(OscPacket::Message(OscMessage {
+                addr: format!("/omniphony/state/speaker/{}/freq_high", idx),
+                args: vec![OscType::Float(speaker.freq_high.unwrap_or(0.0))],
+            }));
         }
     }
 

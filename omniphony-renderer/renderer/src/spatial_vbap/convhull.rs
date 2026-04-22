@@ -37,18 +37,28 @@ impl Xorshift32 {
 /// 4×4 determinant (explicit expansion). Input is a row-major flat array of 16 doubles.
 #[inline]
 fn det_4x4(m: &[f64; 16]) -> f64 {
-    m[3]  * m[6]  * m[9]  * m[12] - m[2]  * m[7]  * m[9]  * m[12]
-  - m[3]  * m[5]  * m[10] * m[12] + m[1]  * m[7]  * m[10] * m[12]
-  + m[2]  * m[5]  * m[11] * m[12] - m[1]  * m[6]  * m[11] * m[12]
-  - m[3]  * m[6]  * m[8]  * m[13] + m[2]  * m[7]  * m[8]  * m[13]
-  + m[3]  * m[4]  * m[10] * m[13] - m[0]  * m[7]  * m[10] * m[13]
-  - m[2]  * m[4]  * m[11] * m[13] + m[0]  * m[6]  * m[11] * m[13]
-  + m[3]  * m[5]  * m[8]  * m[14] - m[1]  * m[7]  * m[8]  * m[14]
-  - m[3]  * m[4]  * m[9]  * m[14] + m[0]  * m[7]  * m[9]  * m[14]
-  + m[1]  * m[4]  * m[11] * m[14] - m[0]  * m[5]  * m[11] * m[14]
-  - m[2]  * m[5]  * m[8]  * m[15] + m[1]  * m[6]  * m[8]  * m[15]
-  + m[2]  * m[4]  * m[9]  * m[15] - m[0]  * m[6]  * m[9]  * m[15]
-  - m[1]  * m[4]  * m[10] * m[15] + m[0]  * m[5]  * m[10] * m[15]
+    m[3] * m[6] * m[9] * m[12] - m[2] * m[7] * m[9] * m[12] - m[3] * m[5] * m[10] * m[12]
+        + m[1] * m[7] * m[10] * m[12]
+        + m[2] * m[5] * m[11] * m[12]
+        - m[1] * m[6] * m[11] * m[12]
+        - m[3] * m[6] * m[8] * m[13]
+        + m[2] * m[7] * m[8] * m[13]
+        + m[3] * m[4] * m[10] * m[13]
+        - m[0] * m[7] * m[10] * m[13]
+        - m[2] * m[4] * m[11] * m[13]
+        + m[0] * m[6] * m[11] * m[13]
+        + m[3] * m[5] * m[8] * m[14]
+        - m[1] * m[7] * m[8] * m[14]
+        - m[3] * m[4] * m[9] * m[14]
+        + m[0] * m[7] * m[9] * m[14]
+        + m[1] * m[4] * m[11] * m[14]
+        - m[0] * m[5] * m[11] * m[14]
+        - m[2] * m[5] * m[8] * m[15]
+        + m[1] * m[6] * m[8] * m[15]
+        + m[2] * m[4] * m[9] * m[15]
+        - m[0] * m[6] * m[9] * m[15]
+        - m[1] * m[4] * m[10] * m[15]
+        + m[0] * m[5] * m[10] * m[15]
 }
 
 /// Compute the plane coefficients (normal `c`, offset `d`) for a triangle
@@ -72,8 +82,7 @@ fn plane_3d(p: &[f64; 9]) -> ([f64; 3], f64) {
             1 => [0, 2],
             _ => [0, 1],
         };
-        let det = pdiff[0][cols[0]] * pdiff[1][cols[1]]
-                - pdiff[1][cols[0]] * pdiff[0][cols[1]];
+        let det = pdiff[0][cols[0]] * pdiff[1][cols[1]] - pdiff[1][cols[0]] * pdiff[0][cols[1]];
         c[i] = sign * det;
         sign = -sign;
     }
@@ -119,11 +128,17 @@ pub fn convhull_3d_build(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
         let mut min_p = f64::INFINITY;
         for i in 0..n_vert {
             let v = points[i * S + j];
-            if v > max_p { max_p = v; }
-            if v < min_p { min_p = v; }
+            if v > max_p {
+                max_p = v;
+            }
+            if v < min_p {
+                min_p = v;
+            }
         }
         span[j] = max_p - min_p;
-        if span[j] <= 1e-7 { return None; }
+        if span[j] <= 1e-7 {
+            return None;
+        }
     }
 
     // ── Initial simplex: D+1 = 4 faces using vertices 0..4 ───────────────────
@@ -142,8 +157,8 @@ pub fn convhull_3d_build(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
 
     // ── Plane coefficients for initial faces ──────────────────────────────────
     let mut cf = vec![0.0f64; n_faces * D]; // normal components (row-major per face)
-    let mut df = vec![0.0f64; n_faces];     // plane offsets
-    let mut p_s = [0.0f64; 9];             // 3×3 workspace
+    let mut df = vec![0.0f64; n_faces]; // plane offsets
+    let mut p_s = [0.0f64; 9]; // 3×3 workspace
 
     for i in 0..n_faces {
         for j in 0..D {
@@ -170,7 +185,9 @@ pub fn convhull_3d_build(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
         }
         if det_4x4(&a_mat) < 0.0 {
             faces.swap(k * D + 1, k * D + 2);
-            for j in 0..D { cf[k * D + j] = -cf[k * D + j]; }
+            for j in 0..D {
+                cf[k * D + j] = -cf[k * D + j];
+            }
             df[k] = -df[k];
         }
     }
@@ -184,21 +201,26 @@ pub fn convhull_3d_build(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
     // ── Sort remaining points by squared relative distance (descending) ───────
     let mut mean_p = [0.0f64; D];
     for i in (D + 1)..n_vert {
-        for j in 0..D { mean_p[j] += points[i * S + j]; }
+        for j in 0..D {
+            mean_p[j] += points[i * S + j];
+        }
     }
-    for j in 0..D { mean_p[j] /= remaining as f64; }
+    for j in 0..D {
+        mean_p[j] /= remaining as f64;
+    }
 
     let mut order: Vec<(f64, usize)> = ((D + 1)..n_vert)
         .map(|i| {
             let dist: f64 = (0..D)
-                .map(|j| { let v = (points[i * S + j] - mean_p[j]) / span[j]; v * v })
+                .map(|j| {
+                    let v = (points[i * S + j] - mean_p[j]) / span[j];
+                    v * v
+                })
                 .sum();
             (dist, i)
         })
         .collect();
-    order.sort_unstable_by(|a, b| {
-        b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-    });
+    order.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut pleft: Vec<usize> = order.into_iter().map(|(_, i)| i).collect();
 
     // ── Main incremental hull loop ────────────────────────────────────────────
@@ -213,9 +235,7 @@ pub fn convhull_3d_build(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
 
         // Which faces are visible from pt?
         let visible_ind: Vec<bool> = (0..n_faces)
-            .map(|fi| {
-                px * cf[fi * D] + py * cf[fi * D + 1] + pz * cf[fi * D + 2] + df[fi] > 0.0
-            })
+            .map(|fi| px * cf[fi * D] + py * cf[fi * D + 1] + pz * cf[fi * D + 2] + df[fi] > 0.0)
             .collect();
 
         let num_visible = visible_ind.iter().filter(|&&v| v).count();
@@ -255,7 +275,10 @@ pub fn convhull_3d_build(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
                     let mut edge = [0usize; 2];
                     let mut h = 0;
                     for l in 0..D {
-                        if f0[l] { edge[h] = nf[l]; h += 1; }
+                        if f0[l] {
+                            edge[h] = nf[l];
+                            h += 1;
+                        }
                     }
                     horizon.push(edge);
                 }
@@ -266,8 +289,8 @@ pub fn convhull_3d_build(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
         // ── Delete visible faces ───────────────────────────────────────────────
         let new_n = num_nonvisible;
         let mut new_faces = vec![0usize; new_n * D];
-        let mut new_cf    = vec![0.0f64;  new_n * D];
-        let mut new_df    = vec![0.0f64;  new_n];
+        let mut new_cf = vec![0.0f64; new_n * D];
+        let mut new_df = vec![0.0f64; new_n];
         let mut j = 0;
         for i in 0..n_faces {
             if !visible_ind[i] {
@@ -278,8 +301,8 @@ pub fn convhull_3d_build(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
             }
         }
         faces = new_faces;
-        cf    = new_cf;
-        df    = new_df;
+        cf = new_cf;
+        df = new_df;
         n_faces = new_n;
 
         // Safety: prevent unbounded growth
@@ -336,13 +359,17 @@ pub fn convhull_3d_build(in_vertices: &[[f64; 3]]) -> Option<Vec<[usize; 3]>> {
 
             if det_a < 0.0 {
                 faces.swap(k * D + 1, k * D + 2);
-                for j in 0..D { cf[k * D + j] = -cf[k * D + j]; }
+                for j in 0..D {
+                    cf[k * D + j] = -cf[k * D + j];
+                }
                 df[k] = -df[k];
             }
         }
     }
 
-    if fucked { return None; }
+    if fucked {
+        return None;
+    }
 
     Some(to_face_array(&faces, n_faces))
 }

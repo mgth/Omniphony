@@ -77,6 +77,7 @@ import {
   sendObjectMute
 } from './mute-solo.js';
 import { formatNumber } from './coordinates.js';
+import { computeCrossoverBandLabels } from './crossover-bands.js';
 
 // ---------------------------------------------------------------------------
 // Callbacks that other modules populate to avoid circular imports.
@@ -335,7 +336,12 @@ export function createSourceDiffuseHalo() {
 // ---------------------------------------------------------------------------
 
 export function computeEffectiveRenderPosition(id) {
-  const gains = sourceGains.get(String(id));
+  const key = String(id);
+  const selectedBandIndex = Math.max(0, Math.round(Number(app.speakerHeatmapBandIndex) || 0));
+  const bandGains = sourceBandGains.get(key);
+  const gains = Array.isArray(bandGains?.[selectedBandIndex]) && bandGains[selectedBandIndex].length > 0
+    ? bandGains[selectedBandIndex]
+    : sourceGains.get(key);
   if (!Array.isArray(gains) || gains.length === 0) {
     return null;
   }
@@ -582,22 +588,7 @@ export function getSelectedSpeakerContributionForObject(id) {
 }
 
 function getCrossoverBandLabels() {
-  const speakers = app.currentLayoutSpeakers;
-  if (!speakers || speakers.length === 0) return null;
-  const cutoffs = [...new Set(
-    speakers
-      .filter((s) => s.spatialize !== 0 && s.freqLow != null && s.freqLow > 0)
-      .map((s) => s.freqLow)
-  )].sort((a, b) => a - b);
-  if (cutoffs.length === 0) return null;
-  const edges = [0, ...cutoffs, Infinity];
-  return edges.slice(0, -1).map((lo, i) => {
-    const hi = edges[i + 1];
-    const fmtHz = (v) => (v >= 1000 ? `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k` : `${v}`);
-    if (lo === 0) return `< ${fmtHz(hi)} Hz`;
-    if (hi === Infinity) return `>= ${fmtHz(lo)} Hz`;
-    return `${fmtHz(lo)}-${fmtHz(hi)} Hz`;
-  });
+  return computeCrossoverBandLabels(app.currentLayoutSpeakers);
 }
 
 function getSelectedSpeakerBandContributionsForObject(id) {
@@ -1121,6 +1112,7 @@ export function updateSourceBandGains(id, band, gains) {
       updateObjectContributionUI(entry, String(id));
     }
   }
+  updateEffectiveRenderDecoration(String(id));
 }
 
 export function getSelectedSourceBandContributions(speakerIndex) {

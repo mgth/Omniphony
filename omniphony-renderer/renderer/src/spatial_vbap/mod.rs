@@ -5,10 +5,10 @@
 //! - `coords`: ADM cartesian <-> spherical conversion helpers
 //! - `distance`: distance model + attenuation helpers
 
+pub(crate) mod convhull;
 mod coords;
 mod distance;
 mod panner;
-pub(crate) mod convhull;
 pub(crate) mod vbap_native;
 
 pub use coords::{adm_to_spherical, spherical_to_adm};

@@ -10,18 +10,23 @@ Le cas d'usage principal est un système avec des subwoofers (enceintes basse fr
 
 ## Activation
 
-Le crossover s'active automatiquement dès qu'au moins une enceinte `spatializable` du layout courant possède un champ `freq_low` non nul.
+Le crossover s'active automatiquement dès qu'au moins une enceinte `spatializable` du layout courant possède un champ `freq_low` ou `freq_high` non nul.
 
 ```json
 {
   "id": "Sub_L",
   "az": -30, "el": 0, "r": 3.0,
   "spatialize": true,
-  "freqLow": 80
+  "freqLow": 20,
+  "freqHigh": 80
 }
 ```
 
-`freq_low` (ou `freqLow` en JSON) définit la fréquence minimale reproductible par l'enceinte. Une enceinte sans `freq_low` est large-bande (reçoit toutes les bandes).
+`freq_low` / `freqLow` définit la fréquence minimale reproductible par l'enceinte.
+`freq_high` / `freqHigh` définit sa fréquence maximale.
+
+Une enceinte sans `freq_low` est considérée comme valide à partir de 0 Hz.
+Une enceinte sans `freq_high` est considérée comme valide jusqu'à l'infini.
 
 ---
 
@@ -56,28 +61,35 @@ Pour N bandes, N−1 splitters LR4 sont chaînés. La somme de toutes les bandes
 
 ## Calcul des Bandes — `crossover/bands.rs`
 
-`compute_bands(layout)` dérive les bandes fréquentielles depuis les `freq_low` des enceintes :
+`compute_bands(layout)` dérive les bandes fréquentielles depuis l'ensemble des `freq_low` et `freq_high` des enceintes spatialisables :
 
-1. Collecter toutes les valeurs `freq_low` distinctes des enceintes spatialisables.
+1. Collecter toutes les valeurs finies `freq_low` et `freq_high` distinctes des enceintes spatialisables.
 2. Trier et dédupliquer (tolérance 0.1 Hz).
 3. Construire les arêtes : `[0, f1, f2, …, ∞]`
 4. Produire un `FreqBand` par intervalle `[lo, hi)`.
 
-Une enceinte est incluse dans la bande `[lo, hi)` si `freq_low.unwrap_or(0.0) <= lo` (elle peut reproduire jusqu'à `lo` Hz).
+Une enceinte est incluse dans la bande `[lo, hi)` si sa plage utile chevauche la bande :
 
-```
-Exemple : freq_low = {80, 200}
-  Arêtes    : [0, 80, 200, ∞]
-  Bande 0   : [0–80 Hz]    → enceintes avec freq_low = None (→ 0 Hz)
-  Bande 1   : [80–200 Hz]  → enceintes avec freq_low = 80 Hz
-  Bande 2   : [200–∞ Hz]   → enceintes avec freq_low = 200 Hz
+```rust
+freq_low.unwrap_or(0.0) < hi
+    && freq_high.unwrap_or(f32::INFINITY) >= lo
 ```
 
-Affectation **exclusive** : chaque enceinte n'appartient qu'à la bande dont l'arête basse correspond à son `freq_low` (tolérance 0.1 Hz). Une enceinte avec `freq_low = 80` n'apparaît que dans la bande [80–200 Hz], pas dans la bande supérieure.
+```
+Exemple : freq_low = {120, 250}, freq_high = {80, 200}
+  Arêtes    : [0, 80, 120, 200, 250, ∞]
+  Bande 0   : [0–80 Hz]    → enceintes dont la plage couvre 0–80
+  Bande 1   : [80–120 Hz]  → enceintes dont la plage couvre 80–120
+  Bande 2   : [120–200 Hz] → enceintes dont la plage couvre 120–200
+  Bande 3   : [200–250 Hz] → enceintes dont la plage couvre 200–250
+  Bande 4   : [250–∞ Hz]   → enceintes dont la plage couvre 250–∞
+```
 
-Si aucun `freq_low` n'est défini, une seule bande `[0, ∞)` est retournée et le chemin crossover n'est pas activé.
+L'affectation n'est **pas exclusive** : une enceinte peut apparaître dans plusieurs bandes si sa plage fréquentielle en chevauche plusieurs.
 
-> **Note** : l'affectation est exclusive. Une enceinte avec `freq_low = 80` reproduit physiquement les fréquences ≥ 80 Hz, mais elle n'est routée que vers la bande [80, hi) — pas vers les bandes supérieures. Les bandes sont donc des groupes de routage, pas des capacités cumulatives.
+Les bandes vides éventuelles sont conservées pour garder une topologie fidèle aux coupures configurées.
+
+Si aucun `freq_low` ni `freq_high` n'est défini, une seule bande `[0, ∞)` est retournée et le chemin crossover n'est pas activé.
 
 ---
 
@@ -124,7 +136,7 @@ Les états sont persistants entre frames (filtre à mémoire) — ils sont stock
 
 ### Construction
 
-Au moment de `SpatialRenderer::new()`, si le layout contient des `freq_low` :
+Au moment de `SpatialRenderer::new()`, si le layout contient des coupures finies (`freq_low` et/ou `freq_high`) :
 
 1. `compute_bands(layout)` → `Vec<FreqBand>` stocké dans `self.crossover_bands`
 2. Extraction des fréquences de coupure depuis les bandes
@@ -220,7 +232,7 @@ Quand un objet est sélectionné et que le crossover est actif, chaque enceinte 
 ≥ 80 Hz   ██████████  -0.5 dB
 ```
 
-- La plage fréquentielle est calculée côté frontend depuis `app.currentLayoutSpeakers[].freqLow` (même algorithme que `compute_bands`).
+- La plage fréquentielle est calculée côté frontend depuis `app.currentLayoutSpeakers[].freqLow` et `freqHigh` (même algorithme que `compute_bands`).
 - Le gain est affiché en dB (`20 × log₁₀(gain_linéaire)`).
 - Les barres disparaissent si ≤ 1 bande (pas de crossover actif).
 - Couleurs : cyan (bande 0), vert (1), jaune (2), rouge (3).
@@ -234,22 +246,22 @@ Quand un objet est sélectionné et que le crossover est actif, chaque enceinte 
 | `renderer/src/crossover/bands.rs` | Nouveau — calcul des bandes depuis le layout |
 | `renderer/src/crossover/filter.rs` | Nouveau — LR4 bank + SmallBands |
 | `renderer/src/crossover/mod.rs` | Nouveau — module crossover |
-| `renderer/src/speaker_layout.rs` | Ajout `freq_low: Option<f32>` + builder `with_freq_low()` |
+| `renderer/src/speaker_layout.rs` | Ajout `freq_low` / `freq_high` + builders associés |
 | `renderer/src/spatial_renderer.rs` | Chemin crossover dans `render_frame()`, `RenderedFrame::object_band_gains` |
 | `src/runtime_osc/state_emit.rs` | Émission `/band/{b}/gains` dans `send_meter_bundle()` |
 | `src/cli/decode/sample_write.rs` | Passage de `object_band_gains` aux 2 call sites |
 | `src-tauri/src/osc_parser.rs` | `MeterObjectBandGains` + parsing |
-| `src-tauri/src/app_state.rs` | `object_band_gains` + `freq_low` dans `LiveSpeakerConfig` |
+| `src-tauri/src/app_state.rs` | `object_band_gains` + `freq_low` / `freq_high` dans `LiveSpeakerConfig` |
 | `src-tauri/src/osc_listener.rs` | Handler + émission `source:band_gains` |
-| `src-tauri/src/main.rs` | Commande `control_speaker_freq_low` |
-| `src-tauri/src/layouts.rs` | `freq_low` dans `Speaker` et `RawSpeaker` |
+| `src-tauri/src/main.rs` | Commandes `control_speaker_freq_low` et `control_speaker_freq_high` |
+| `src-tauri/src/layouts.rs` | `freq_low` / `freq_high` dans `Speaker` et `RawSpeaker` |
 | `src/state.js` | `sourceBandGains` Map |
 | `src/tauri-bridge.js` | Listener `source:band_gains` |
 | `src/sources.js` | `updateSourceBandGains()`, `getSelectedSourceBandContributions()` |
 | `src/speakers.js` | `updateSpeakerBandBars()`, `updateAllSpeakerBandBars()`, DOM |
 | `src/styles/app.css` | `.band-row`, `.band-bar`, `.band-label`, `.band-db` |
-| `src/index.html` | Champ `freqLow` dans l'éditeur d'enceinte |
-| `src/listeners/speaker-editor-listeners.js` | Listener sur `speakerEditFreqLowInput` |
+| `src/index.html` | Champs `freqLow` et `freqHigh` dans l'éditeur d'enceinte |
+| `src/listeners/speaker-editor-listeners.js` | Listeners sur `speakerEditFreqLowInput` et `speakerEditFreqHighInput` |
 
 ---
 
@@ -257,6 +269,6 @@ Quand un objet est sélectionné et que le crossover est actif, chaque enceinte 
 
 - **Maximum 8 bandes** : `SmallBands` est backed par un tableau de taille fixe `[f32; 8]`, soit 7 fréquences de coupure au maximum.
 - **Reconstruction parfaite** : garantie par construction (`HP = signal − LP`). Vérifiée par les tests unitaires dans `filter.rs` (erreur < 1e-5 après état stable).
-- **Pas de crossover = pas d'overhead** : si aucun `freq_low` n'est défini, `crossover_filter_bank` reste `None` et le chemin standard est emprunté.
+- **Pas de crossover = pas d'overhead** : si aucun `freq_low` ni `freq_high` n'est défini, `crossover_filter_bank` reste `None` et le chemin standard est emprunté.
 - **États de filtre par objet** : alloués lazily et jamais libérés (HashMap). Si un objet disparaît et réapparaît, ses états sont remis à zéro par la réallocation.
 - **Monitoring de gain** : le champ `object_gains` (slider de contribution) contient la *somme* des gains de toutes les bandes, ce qui n'est pas un gain VBAP au sens strict pour les enceintes présentes dans plusieurs bandes. Il reste utile comme indicateur d'activité global.

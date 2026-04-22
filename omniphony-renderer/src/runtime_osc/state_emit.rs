@@ -76,7 +76,11 @@ impl OscSender {
             }
         }
 
-        let max_band_id = object_band_gains.iter().map(|(idx, _)| *idx).max().unwrap_or(0);
+        let max_band_id = object_band_gains
+            .iter()
+            .map(|(idx, _)| *idx)
+            .max()
+            .unwrap_or(0);
         let mut band_gains_by_id: Vec<Option<&Vec<renderer::spatial_vbap::Gains>>> =
             vec![None; max_band_id.saturating_add(1)];
         for (idx, bg) in object_band_gains {

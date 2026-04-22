@@ -6,8 +6,10 @@ use crate::context::RuntimeControlContext;
 use audio_input::{
     InputBackend, InputClockMode, InputLfeMode, InputMapMode, InputMode, InputSampleFormat,
 };
+use renderer::crossover::compute_bands;
 use renderer::live_params::LiveEvaluationMode;
 use renderer::render_backend::RenderBackendKind;
+use renderer::render_backend::{CartesianSpeakerHeatmapSlices, CartesianSpeakerHeatmapVolume};
 
 use crate::snapshot::build_render_backend_state_json;
 
@@ -22,6 +24,7 @@ pub struct SpeakerPatch {
     pub coord_mode: Option<String>,
     pub spatialize: Option<bool>,
     pub freq_low: Option<Option<f32>>,
+    pub freq_high: Option<Option<f32>>,
     pub name: Option<String>,
 }
 
@@ -52,6 +55,8 @@ pub struct ControlEffects {
 struct SpeakerHeatmapRequest {
     request_id: u64,
     speaker_index: usize,
+    #[serde(default)]
+    band_index: usize,
     mode: String,
     max_samples: Option<usize>,
 }
@@ -60,6 +65,7 @@ struct SpeakerHeatmapRequest {
 struct SpeakerHeatmapMetaPayload {
     request_id: u64,
     speaker_index: usize,
+    band_index: usize,
     speaker_position: [f32; 3],
 }
 
@@ -67,6 +73,7 @@ struct SpeakerHeatmapMetaPayload {
 struct SpeakerHeatmapSlicePayload {
     request_id: u64,
     speaker_index: usize,
+    band_index: usize,
     fixed_axis_value: f32,
     axis_a: Vec<f32>,
     axis_b: Vec<f32>,
@@ -77,6 +84,7 @@ struct SpeakerHeatmapSlicePayload {
 struct SpeakerHeatmapUnavailablePayload {
     request_id: u64,
     speaker_index: usize,
+    band_index: usize,
     reason: &'static str,
 }
 
@@ -84,9 +92,71 @@ struct SpeakerHeatmapUnavailablePayload {
 struct SpeakerHeatmapVolumeChunkPayload {
     request_id: u64,
     speaker_index: usize,
+    band_index: usize,
     chunk_index: usize,
     chunk_count: usize,
     samples: Vec<f32>,
+}
+
+fn build_constant_slices_from_reference(
+    reference: CartesianSpeakerHeatmapSlices,
+    value: f32,
+) -> CartesianSpeakerHeatmapSlices {
+    let xy_len = reference.x_positions.len() * reference.y_positions.len();
+    let xz_len = reference.x_positions.len() * reference.z_positions.len();
+    let yz_len = reference.y_positions.len() * reference.z_positions.len();
+    CartesianSpeakerHeatmapSlices {
+        speaker_index: reference.speaker_index,
+        speaker_position: reference.speaker_position,
+        x_positions: reference.x_positions,
+        y_positions: reference.y_positions,
+        z_positions: reference.z_positions,
+        xy_values: vec![value; xy_len],
+        xz_values: vec![value; xz_len],
+        yz_values: vec![value; yz_len],
+    }
+}
+
+fn build_constant_volume_samples(
+    reference: &CartesianSpeakerHeatmapSlices,
+    value: f32,
+    max_samples: usize,
+) -> Vec<f32> {
+    if value <= 0.0 {
+        return Vec::new();
+    }
+    let total =
+        reference.x_positions.len() * reference.y_positions.len() * reference.z_positions.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let sample_count = if max_samples > 0 {
+        total.min(max_samples)
+    } else {
+        total
+    };
+    let mut samples = Vec::with_capacity(sample_count * 4);
+    for sample_index in 0..sample_count {
+        let flat_index = if sample_count == total {
+            sample_index
+        } else {
+            ((sample_index as f64 * total as f64) / sample_count as f64).floor() as usize
+        };
+        let x_len = reference.x_positions.len();
+        let y_len = reference.y_positions.len();
+        let xy_len = x_len * y_len;
+        let z_index = flat_index / xy_len;
+        let rem = flat_index % xy_len;
+        let y_index = rem / x_len;
+        let x_index = rem % x_len;
+        samples.extend_from_slice(&[
+            reference.x_positions[x_index],
+            reference.y_positions[y_index],
+            reference.z_positions[z_index],
+            value,
+        ]);
+    }
+    samples
 }
 
 fn parse_bool_arg(arg: Option<&OscType>) -> Option<bool> {
@@ -241,6 +311,9 @@ fn apply_pending_speakers(
                 if let Some(freq_low) = patch.freq_low {
                     speaker.freq_low = freq_low.map(|value| value.max(0.0));
                 }
+                if let Some(freq_high) = patch.freq_high {
+                    speaker.freq_high = freq_high.map(|value| value.max(0.0));
+                }
                 if let Some(name) = &patch.name {
                     speaker.name = name.clone();
                 }
@@ -378,9 +451,8 @@ pub fn apply_simple_osc_control(
     }
 
     if addr == "/omniphony/control/render_evaluation_mode/from_file" {
-        effects.log_message = Some(
-            "OSC: render_evaluation_mode/from_file is no longer supported".to_string(),
-        );
+        effects.log_message =
+            Some("OSC: render_evaluation_mode/from_file is no longer supported".to_string());
         return Some(effects);
     }
 
@@ -391,11 +463,8 @@ pub fn apply_simple_osc_control(
             let mode = request.mode.trim().to_ascii_lowercase();
             let max_samples = request.max_samples.unwrap_or(3072).clamp(128, 20000);
             let topology = ctx.renderer.active_topology();
-            let unavailable_reason = match topology
-                .speaker_layout
-                .speakers
-                .get(request.speaker_index)
-            {
+            let speaker = topology.speaker_layout.speakers.get(request.speaker_index);
+            let unavailable_reason = match speaker {
                 None => Some("speaker_not_found"),
                 Some(_)
                     if topology.backend.evaluation_mode()
@@ -418,6 +487,7 @@ pub fn apply_simple_osc_control(
                 let json = serde_json::to_string(&SpeakerHeatmapUnavailablePayload {
                     request_id: request.request_id,
                     speaker_index: request.speaker_index,
+                    band_index: request.band_index,
                     reason,
                 })
                 .unwrap_or_else(|_| "{}".to_string());
@@ -428,14 +498,82 @@ pub fn apply_simple_osc_control(
                 return Some(effects);
             }
 
-            if let Some(speaker) = topology.speaker_layout.speakers.get(request.speaker_index) {
+            if let Some(speaker) = speaker {
                 if let Some(backend_speaker_index) =
                     topology.backend_speaker_index_for_layout_speaker(request.speaker_index)
                 {
+                    let bands = compute_bands(&topology.speaker_layout);
+                    let selected_band = bands.get(request.band_index);
+                    if selected_band.is_none() {
+                        let json = serde_json::to_string(&SpeakerHeatmapUnavailablePayload {
+                            request_id: request.request_id,
+                            speaker_index: request.speaker_index,
+                            band_index: request.band_index,
+                            reason: "band_not_found",
+                        })
+                        .unwrap_or_else(|_| "{}".to_string());
+                        effects.broadcasts.push(BroadcastUpdate {
+                            addr: "/omniphony/state/debug/speaker_heatmap/unavailable".to_string(),
+                            value: BroadcastValue::String(json),
+                        });
+                        return Some(effects);
+                    }
+                    let selected_band = selected_band.unwrap();
+                    let speaker_position = [speaker.x, speaker.y, speaker.z];
+                    let band_layout_index = selected_band
+                        .speaker_indices
+                        .iter()
+                        .position(|&index| index == request.speaker_index);
+
+                    let reference_slices = topology
+                        .backend
+                        .cartesian_slices_for_speaker(backend_speaker_index, speaker_position);
+                    let band_slices = if selected_band.speaker_indices.len() >= 3 {
+                        if let Some(layout_index) = band_layout_index {
+                            let band_layout = renderer::speaker_layout::SpeakerLayout {
+                                radius_m: topology.speaker_layout.radius_m,
+                                speakers: selected_band
+                                    .speaker_indices
+                                    .iter()
+                                    .map(|&index| topology.speaker_layout.speakers[index].clone())
+                                    .collect(),
+                            };
+                            ctx.renderer
+                                .prepare_topology_rebuild_for_layout(band_layout)
+                                .and_then(|plan| plan.build_topology().ok())
+                                .and_then(|band_topology| {
+                                    band_topology
+                                        .backend_speaker_index_for_layout_speaker(layout_index)
+                                        .and_then(|band_backend_index| {
+                                            band_topology.backend.cartesian_slices_for_speaker(
+                                                band_backend_index,
+                                                speaker_position,
+                                            )
+                                        })
+                                })
+                        } else {
+                            reference_slices.clone().map(|reference| {
+                                build_constant_slices_from_reference(reference, 0.0)
+                            })
+                        }
+                    } else {
+                        let fallback_value = if band_layout_index.is_some()
+                            && !selected_band.speaker_indices.is_empty()
+                        {
+                            1.0 / (selected_band.speaker_indices.len() as f32).sqrt()
+                        } else {
+                            0.0
+                        };
+                        reference_slices.clone().map(|reference| {
+                            build_constant_slices_from_reference(reference, fallback_value)
+                        })
+                    };
+
                     let meta = serde_json::to_string(&SpeakerHeatmapMetaPayload {
                         request_id: request.request_id,
                         speaker_index: request.speaker_index,
-                        speaker_position: [speaker.x, speaker.y, speaker.z],
+                        band_index: request.band_index,
+                        speaker_position,
                     })
                     .unwrap_or_else(|_| "{}".to_string());
                     effects.broadcasts.push(BroadcastUpdate {
@@ -444,11 +582,59 @@ pub fn apply_simple_osc_control(
                     });
 
                     if mode == "volume" {
-                        if let Some(volume) = topology.backend.cartesian_volume_for_speaker(
-                            backend_speaker_index,
-                            0.0,
-                            max_samples,
-                        ) {
+                        let volume = if selected_band.speaker_indices.len() >= 3 {
+                            if let Some(layout_index) = band_layout_index {
+                                let band_layout = renderer::speaker_layout::SpeakerLayout {
+                                    radius_m: topology.speaker_layout.radius_m,
+                                    speakers: selected_band
+                                        .speaker_indices
+                                        .iter()
+                                        .map(|&index| {
+                                            topology.speaker_layout.speakers[index].clone()
+                                        })
+                                        .collect(),
+                                };
+                                ctx.renderer
+                                    .prepare_topology_rebuild_for_layout(band_layout)
+                                    .and_then(|plan| plan.build_topology().ok())
+                                    .and_then(|band_topology| {
+                                        band_topology
+                                            .backend_speaker_index_for_layout_speaker(layout_index)
+                                            .and_then(|band_backend_index| {
+                                                band_topology.backend.cartesian_volume_for_speaker(
+                                                    band_backend_index,
+                                                    0.0,
+                                                    max_samples,
+                                                )
+                                            })
+                                    })
+                            } else {
+                                Some(CartesianSpeakerHeatmapVolume {
+                                    speaker_index: request.speaker_index,
+                                    samples: Vec::new(),
+                                })
+                            }
+                        } else {
+                            let fallback_value = if band_layout_index.is_some()
+                                && !selected_band.speaker_indices.is_empty()
+                            {
+                                1.0 / (selected_band.speaker_indices.len() as f32).sqrt()
+                            } else {
+                                0.0
+                            };
+                            band_slices
+                                .as_ref()
+                                .map(|slices| CartesianSpeakerHeatmapVolume {
+                                    speaker_index: request.speaker_index,
+                                    samples: build_constant_volume_samples(
+                                        slices,
+                                        fallback_value,
+                                        max_samples,
+                                    ),
+                                })
+                        };
+
+                        if let Some(volume) = volume {
                             // Keep OSC/UDP packets comfortably below MTU once the JSON payload
                             // wraps the float array. Large chunks were getting fragmented and
                             // dropped, which left Studio waiting forever for the missing chunk.
@@ -459,6 +645,7 @@ pub fn apply_simple_osc_control(
                                     serde_json::to_string(&SpeakerHeatmapVolumeChunkPayload {
                                         request_id: request.request_id,
                                         speaker_index: request.speaker_index,
+                                        band_index: request.band_index,
                                         chunk_index: 0,
                                         chunk_count: 1,
                                         samples: Vec::new(),
@@ -477,6 +664,7 @@ pub fn apply_simple_osc_control(
                                         serde_json::to_string(&SpeakerHeatmapVolumeChunkPayload {
                                             request_id: request.request_id,
                                             speaker_index: request.speaker_index,
+                                            band_index: request.band_index,
                                             chunk_index,
                                             chunk_count,
                                             samples: chunk.to_vec(),
@@ -489,11 +677,21 @@ pub fn apply_simple_osc_control(
                                     });
                                 }
                             }
+                        } else {
+                            let json = serde_json::to_string(&SpeakerHeatmapUnavailablePayload {
+                                request_id: request.request_id,
+                                speaker_index: request.speaker_index,
+                                band_index: request.band_index,
+                                reason: "band_heatmap_unavailable",
+                            })
+                            .unwrap_or_else(|_| "{}".to_string());
+                            effects.broadcasts.push(BroadcastUpdate {
+                                addr: "/omniphony/state/debug/speaker_heatmap/unavailable"
+                                    .to_string(),
+                                value: BroadcastValue::String(json),
+                            });
                         }
-                    } else if let Some(slices) = topology.backend.cartesian_slices_for_speaker(
-                        backend_speaker_index,
-                        [speaker.x, speaker.y, speaker.z],
-                    ) {
+                    } else if let Some(slices) = band_slices {
                         for (addr_suffix, fixed_axis_value, axis_a, axis_b, values) in [
                             (
                                 "slice_xy",
@@ -520,6 +718,7 @@ pub fn apply_simple_osc_control(
                             let json = serde_json::to_string(&SpeakerHeatmapSlicePayload {
                                 request_id: request.request_id,
                                 speaker_index: request.speaker_index,
+                                band_index: request.band_index,
                                 fixed_axis_value,
                                 axis_a,
                                 axis_b,
@@ -533,10 +732,22 @@ pub fn apply_simple_osc_control(
                                 value: BroadcastValue::String(json),
                             });
                         }
+                    } else {
+                        let json = serde_json::to_string(&SpeakerHeatmapUnavailablePayload {
+                            request_id: request.request_id,
+                            speaker_index: request.speaker_index,
+                            band_index: request.band_index,
+                            reason: "band_heatmap_unavailable",
+                        })
+                        .unwrap_or_else(|_| "{}".to_string());
+                        effects.broadcasts.push(BroadcastUpdate {
+                            addr: "/omniphony/state/debug/speaker_heatmap/unavailable".to_string(),
+                            value: BroadcastValue::String(json),
+                        });
                     }
                     effects.log_message = Some(format!(
-                        "OSC: speaker heatmap requested -> speaker={} mode={} request_id={}",
-                        request.speaker_index, mode, request.request_id
+                        "OSC: speaker heatmap requested -> speaker={} band={} mode={} request_id={}",
+                        request.speaker_index, request.band_index, mode, request.request_id
                     ));
                 }
             }
@@ -1696,6 +1907,11 @@ pub fn apply_speaker_osc_control(
         if field == "freq_low" {
             let patch = pending_speakers.entry(idx).or_default();
             patch.freq_low = Some(parse_f32_arg(msg.args.first()).filter(|v| *v > 0.0));
+            return Some(effects);
+        }
+        if field == "freq_high" {
+            let patch = pending_speakers.entry(idx).or_default();
+            patch.freq_high = Some(parse_f32_arg(msg.args.first()).filter(|v| *v > 0.0));
             return Some(effects);
         }
         if field == "coord_mode" {

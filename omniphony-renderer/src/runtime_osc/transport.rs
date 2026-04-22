@@ -28,6 +28,7 @@ pub(crate) fn build_speaker_config_bundle(
                 OscType::Float(speaker.y),
                 OscType::Float(speaker.z),
                 OscType::Float(speaker.freq_low.unwrap_or(0.0)),
+                OscType::Float(speaker.freq_high.unwrap_or(0.0)),
             ],
         }));
     }

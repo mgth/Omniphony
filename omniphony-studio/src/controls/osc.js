@@ -16,7 +16,6 @@ import { scheduleUIFlush } from '../flush.js';
 import { pushLog, normalizeLogError, normalizeLogLevel, logState } from '../log.js';
 import { invoke } from '@tauri-apps/api/core';
 import { syncRuntimeConnectionLock } from '../runtime-connection.js';
-import { collapseRuntimeSections } from '../modals.js';
 import { inObjectsPanel, inOscPanel } from '../ui/panel-roots.js';
 
 // DOM refs
@@ -209,7 +208,6 @@ export function setOscStatus(next) {
   app.oscStatusState = next;
   if (next !== 'connected') {
     app.oscSnapshotReady = false;
-    collapseRuntimeSections();
   }
   renderOscStatus();
   if (next === 'connected') {

@@ -86,7 +86,5 @@ fn find_bridge_candidates(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn is_bridge_filename(name: &str) -> bool {
-    name.ends_with("_bridge.so")
-        || name.ends_with("_bridge.dll")
-        || name.ends_with("_bridge.dylib")
+    name.ends_with("_bridge.so") || name.ends_with("_bridge.dll") || name.ends_with("_bridge.dylib")
 }

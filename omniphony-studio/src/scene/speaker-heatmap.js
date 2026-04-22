@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
 import { normalizedOmniphonyToScenePosition } from '../coordinates.js';
 import { scene } from './setup.js';
+import { computeCrossoverBandLabels } from '../crossover-bands.js';
 
 const SLICE_PLANE_KEYS = ['xy', 'xz', 'yz'];
 const VOLUME_BASE_SCALE = 0.012;
@@ -39,6 +40,45 @@ const heatmapState = {
     data: null,
   },
 };
+
+function getSpeakerHeatmapBandSelectEl() {
+  return document.getElementById('speakerHeatmapBandSelect');
+}
+
+export function syncSpeakerHeatmapBandSelect() {
+  const selectEl = getSpeakerHeatmapBandSelectEl();
+  const labels = computeCrossoverBandLabels(app.currentLayoutSpeakers, {
+    includeSingleBand: true,
+    singleBandLabel: 'Full band',
+  }) || ['Full band'];
+  const hasLayoutSpeakers = Array.isArray(app.currentLayoutSpeakers) && app.currentLayoutSpeakers.length > 0;
+  const desiredIndex = Math.max(0, Math.round(Number(app.speakerHeatmapBandIndex) || 0));
+  const maxIndex = Math.max(0, labels.length - 1);
+  if (hasLayoutSpeakers) {
+    app.speakerHeatmapBandIndex = Math.max(0, Math.min(maxIndex, desiredIndex));
+  }
+  if (!selectEl) {
+    return labels;
+  }
+  const visibleIndex = hasLayoutSpeakers
+    ? app.speakerHeatmapBandIndex
+    : Math.max(0, Math.min(maxIndex, desiredIndex));
+  const previousValue = String(visibleIndex);
+  const existing = Array.from(selectEl.options).map((option) => option.textContent);
+  const needsRebuild = existing.length !== labels.length
+    || existing.some((label, index) => label !== labels[index]);
+  if (needsRebuild) {
+    selectEl.replaceChildren();
+    labels.forEach((label, index) => {
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = label;
+      selectEl.appendChild(option);
+    });
+  }
+  selectEl.value = previousValue;
+  return labels;
+}
 
 function createSliceMaterial() {
   return new THREE.MeshBasicMaterial({
@@ -340,12 +380,13 @@ export function refreshSpeakerHeatmapScene() {
 }
 
 export function requestSpeakerHeatmapIfNeeded() {
+  syncSpeakerHeatmapBandSelect();
   if (!canShowHeatmap()) {
     clearSpeakerHeatmap();
     return;
   }
   const speakerIndex = app.selectedSpeakerIndex;
-  hideAllHeatmap();
+  const bandIndex = Math.max(0, Math.round(Number(app.speakerHeatmapBandIndex) || 0));
   if (app.speakerHeatmapSlicesEnabled) {
     heatmapState.currentRequestId += 1;
     const requestId = heatmapState.currentRequestId;
@@ -353,6 +394,7 @@ export function requestSpeakerHeatmapIfNeeded() {
     invoke('request_speaker_heatmap', {
       speakerIndex,
       requestId,
+      bandIndex,
       mode: 'slices',
       maxSamples: app.speakerHeatmapSampleCount,
     }).catch(() => {
@@ -371,6 +413,7 @@ export function requestSpeakerHeatmapIfNeeded() {
     invoke('request_speaker_heatmap', {
       speakerIndex,
       requestId,
+      bandIndex,
       mode: 'volume',
       maxSamples: app.speakerHeatmapSampleCount,
     }).catch(() => {

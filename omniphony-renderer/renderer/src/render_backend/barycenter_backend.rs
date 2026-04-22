@@ -384,11 +384,8 @@ mod tests {
 
     #[test]
     fn barycenter_backend_hits_exact_speaker() {
-        let backend = BarycenterBackend::new(vec![
-            [-1.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ]);
+        let backend =
+            BarycenterBackend::new(vec![[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
 
         let gains = backend.compute_gains(&request([1.0, 0.0, 0.0])).gains;
         assert!(gains[1] > 0.999);
@@ -410,7 +407,13 @@ mod tests {
         localized_req.barycenter_localize = 2.0;
         let localized = backend.compute_gains(&localized_req).gains;
 
-        assert!(localized[1] > base[1], "expected right speaker gain to increase");
-        assert!(localized[0] < base[0], "expected left speaker gain to decrease");
+        assert!(
+            localized[1] > base[1],
+            "expected right speaker gain to increase"
+        );
+        assert!(
+            localized[0] < base[0],
+            "expected left speaker gain to decrease"
+        );
     }
 }

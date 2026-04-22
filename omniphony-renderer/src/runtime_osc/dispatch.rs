@@ -14,9 +14,7 @@ use runtime_control::osc::{
 };
 
 use super::client_registry::OscClientRegistry;
-use super::export::{
-    build_live_state_bundle, export_current_layout, save_live_config,
-};
+use super::export::{build_live_state_bundle, export_current_layout, save_live_config};
 use super::recompute::trigger_layout_recompute;
 use super::transport::{
     broadcast_fff, broadcast_float, broadcast_int, broadcast_speaker_config, broadcast_string,
@@ -142,7 +140,6 @@ pub(crate) fn handle_control_message(
         export_current_layout(control, requested_name);
         return;
     }
-
 }
 
 fn set_dirty(control: &Arc<RendererControl>, socket: &UdpSocket, clients: &OscClientRegistry) {

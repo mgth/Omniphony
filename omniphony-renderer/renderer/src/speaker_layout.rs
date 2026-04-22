@@ -97,10 +97,11 @@ pub struct Speaker {
     /// Per-speaker output delay in milliseconds (default: 0.0).
     pub delay_ms: f32,
 
-    /// Lowest frequency this speaker can reproduce, in Hz (default: None = full-range).
-    /// Used to derive crossover bands: a speaker is included in band [lo, hi) only if
-    /// `freq_low.unwrap_or(0.0) <= lo`.
+    /// Lowest frequency this speaker can reproduce, in Hz (default: None = 0 Hz).
     pub freq_low: Option<f32>,
+
+    /// Highest frequency this speaker can reproduce, in Hz (default: None = +∞ Hz).
+    pub freq_high: Option<f32>,
 }
 
 fn default_coord_mode() -> String {
@@ -168,6 +169,8 @@ struct RawSpeaker {
     delay_ms: f32,
     #[serde(default)]
     freq_low: Option<f32>,
+    #[serde(default)]
+    freq_high: Option<f32>,
 }
 
 impl<'de> Deserialize<'de> for Speaker {
@@ -213,7 +216,8 @@ impl<'de> Deserialize<'de> for Speaker {
             z,
             spatialize: raw.spatialize,
             delay_ms: raw.delay_ms,
-            freq_low: raw.freq_low,
+            freq_low: raw.freq_low.filter(|value| *value > 0.0),
+            freq_high: raw.freq_high.filter(|value| *value > 0.0),
         })
     }
 }
@@ -224,7 +228,7 @@ impl Serialize for Speaker {
         S: Serializer,
     {
         let cartesian = self.coord_mode.eq_ignore_ascii_case("cartesian");
-        let field_count = if cartesian { 7 } else { 7 };
+        let field_count = 9;
         let mut state = serializer.serialize_struct("Speaker", field_count)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("coord_mode", if cartesian { "cartesian" } else { "polar" })?;
@@ -241,6 +245,9 @@ impl Serialize for Speaker {
         state.serialize_field("delay_ms", &self.delay_ms)?;
         if self.freq_low.is_some() {
             state.serialize_field("freq_low", &self.freq_low)?;
+        }
+        if self.freq_high.is_some() {
+            state.serialize_field("freq_high", &self.freq_high)?;
         }
         state.end()
     }
@@ -269,11 +276,17 @@ impl Speaker {
             spatialize,
             delay_ms: delay_ms.max(0.0),
             freq_low: None,
+            freq_high: None,
         }
     }
 
     pub fn with_freq_low(mut self, freq_low: f32) -> Self {
         self.freq_low = Some(freq_low.max(0.0));
+        self
+    }
+
+    pub fn with_freq_high(mut self, freq_high: f32) -> Self {
+        self.freq_high = Some(freq_high.max(0.0));
         self
     }
 

@@ -52,8 +52,12 @@ impl NativeVbapLayout {
         let effective_dirs: Vec<[f32; 2]>;
         if need_dummy_neg || need_dummy_pos {
             let mut dirs = speaker_dirs_deg.to_vec();
-            if need_dummy_neg { dirs.push([0.0, -90.0]); }
-            if need_dummy_pos { dirs.push([0.0,  90.0]); }
+            if need_dummy_neg {
+                dirs.push([0.0, -90.0]);
+            }
+            if need_dummy_pos {
+                dirs.push([0.0, 90.0]);
+            }
             effective_dirs = dirs;
         } else {
             effective_dirs = speaker_dirs_deg.to_vec();
@@ -125,12 +129,12 @@ mod tests {
         // 4 speakers all at el=0 — previously would fail triangulation.
         let dirs = [
             [-90.0_f32, 0.0], // Left
-            [90.0, 0.0],       // Right
-            [0.0, 0.0],        // Front
-            [180.0, 0.0],      // Rear
+            [90.0, 0.0],      // Right
+            [0.0, 0.0],       // Front
+            [180.0, 0.0],     // Rear
         ];
-        let layout = NativeVbapLayout::from_speaker_dirs(&dirs)
-            .expect("should succeed with dummy speakers");
+        let layout =
+            NativeVbapLayout::from_speaker_dirs(&dirs).expect("should succeed with dummy speakers");
 
         assert_eq!(layout.n_speakers, 4);
 

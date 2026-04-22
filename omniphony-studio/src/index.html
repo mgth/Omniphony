@@ -188,13 +188,6 @@
                 <option value="zh-CN">简体中文</option>
               </select>
             </div>
-            <div class="inline-toggle" id="effectiveRenderSection" style="margin-top:0">
-              <div class="title-with-info" style="min-width:0">
-                <span data-i18n="effectiveRender.title">Effective render</span>
-                <button id="effectiveRenderInfoBtn" type="button" class="info-icon-btn" data-i18n-title="effectiveRender.infoButton" title="Effective render info">i</button>
-              </div>
-              <input id="effectiveRenderToggle" type="checkbox" />
-            </div>
             <div id="objectAppearanceSection" style="display:grid;gap:0.3rem">
               <div class="inline-toggle" style="margin-top:0">
                 <div data-i18n="display.objectAppearance">Object appearance</div>
@@ -247,6 +240,13 @@
               </div>
               <div id="heatmapsSectionContent" class="conditional-params open">
                 <div style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                  <div class="inline-toggle" id="effectiveRenderSection" style="margin-top:0">
+                    <div class="title-with-info" style="min-width:0">
+                      <span data-i18n="effectiveRender.title">Effective render</span>
+                      <button id="effectiveRenderInfoBtn" type="button" class="info-icon-btn" data-i18n-title="effectiveRender.infoButton" title="Effective render info">i</button>
+                    </div>
+                    <input id="effectiveRenderToggle" type="checkbox" />
+                  </div>
                   <div class="inline-toggle" style="margin-top:0">
                     <div>Heatmap slices</div>
                     <input id="speakerHeatmapSlicesToggle" type="checkbox" />
@@ -254,6 +254,10 @@
                   <div class="inline-toggle" style="margin-top:0">
                     <div>Heatmap volume</div>
                     <input id="speakerHeatmapVolumeToggle" type="checkbox" />
+                  </div>
+                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label for="speakerHeatmapBandSelect" style="font-size:12px;white-space:nowrap">Heatmap band</label>
+                    <select id="speakerHeatmapBandSelect" style="flex:1;min-width:0"></select>
                   </div>
                   <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
                     <label for="speakerHeatmapSampleCountInput" style="font-size:12px;white-space:nowrap">Heatmap values</label>
@@ -394,6 +398,10 @@
           <div class="editor-row">
             <label for="speakerEditFreqLowInput" data-i18n="speaker.freqLow">Freq. min (Hz)</label>
             <input id="speakerEditFreqLowInput" class="delay-input" type="number" min="0" step="10" placeholder="full range" />
+          </div>
+          <div class="editor-row">
+            <label for="speakerEditFreqHighInput">Freq. max (Hz)</label>
+            <input id="speakerEditFreqHighInput" class="delay-input" type="number" min="0" step="10" placeholder="full range" />
           </div>
         </div>
       </div>

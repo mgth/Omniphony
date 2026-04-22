@@ -185,7 +185,10 @@ impl VbapPanner {
         let n_el = ((180.0 / el_res_deg as f32) + 1.5) as usize;
 
         Ok(VbapPanner {
-            spread_tables: vec![SpreadTable { spread, gtable: Vec::new() }],
+            spread_tables: vec![SpreadTable {
+                spread,
+                gtable: Vec::new(),
+            }],
             spread_resolution: 0.0,
             n_gtable: n_az * n_el,
             n_triangles: layout.n_faces,

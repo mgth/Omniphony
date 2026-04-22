@@ -173,6 +173,8 @@ pub enum OscEvent {
         spatialize: u8,
         #[serde(rename = "freqLow")]
         freq_low: Option<f32>,
+        #[serde(rename = "freqHigh")]
+        freq_high: Option<f32>,
         position: SpeakerPosition,
     },
 
@@ -189,7 +191,11 @@ pub enum OscEvent {
     MeterObjectGains { id: String, gains: Vec<f64> },
 
     #[serde(rename = "meter:object:band_gains")]
-    MeterObjectBandGains { id: String, band: usize, gains: Vec<f64> },
+    MeterObjectBandGains {
+        id: String,
+        band: usize,
+        gains: Vec<f64>,
+    },
 
     #[serde(rename = "meter:speaker")]
     MeterSpeaker {
@@ -216,6 +222,8 @@ pub enum OscEvent {
     StateSpeakerName { id: String, name: String },
     #[serde(rename = "state:speaker:freq_low")]
     StateSpeakerFreqLow { id: String, freq_low: Option<f32> },
+    #[serde(rename = "state:speaker:freq_high")]
+    StateSpeakerFreqHigh { id: String, freq_high: Option<f32> },
 
     #[serde(rename = "state:room_ratio")]
     StateRoomRatio {
@@ -439,7 +447,7 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
 
     if parts.len() == 4 && parts[2] == "speaker" {
         let index = parts[3].parse::<u32>().ok()?;
-        // raw_args: name, az, el, dist, spatialize, delay, coord_mode, x, y, z, freq_low
+        // raw_args: name, az, el, dist, spatialize, delay, coord_mode, x, y, z, freq_low, freq_high
         let name = raw_args
             .first()
             .and_then(unwrap_string)
@@ -489,11 +497,20 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
             .and_then(to_number)
             .unwrap_or(pz)
             .clamp(-1.0, 1.0);
-        let freq_low = args
-            .get(10)
-            .copied()
-            .and_then(to_number)
-            .and_then(|value| if value > 0.0 { Some(value as f32) } else { None });
+        let freq_low = args.get(10).copied().and_then(to_number).and_then(|value| {
+            if value > 0.0 {
+                Some(value as f32)
+            } else {
+                None
+            }
+        });
+        let freq_high = args.get(11).copied().and_then(to_number).and_then(|value| {
+            if value > 0.0 {
+                Some(value as f32)
+            } else {
+                None
+            }
+        });
 
         return Some(OscEvent::ConfigSpeaker {
             index,
@@ -508,6 +525,7 @@ fn parse_omniphony_config(parts: &[&str], args: &[f64], raw_args: &[OscType]) ->
             delay_ms,
             spatialize,
             freq_low,
+            freq_high,
             position: SpeakerPosition {
                 x: px,
                 y: py,
@@ -1067,8 +1085,15 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             }
             "freq_low" if kind == "speaker" => {
                 let id = parts[3].parse::<u32>().ok()?.to_string();
-                let freq_low = to_number(args[0]).and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
+                let freq_low =
+                    to_number(args[0]).and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
                 Some(OscEvent::StateSpeakerFreqLow { id, freq_low })
+            }
+            "freq_high" if kind == "speaker" => {
+                let id = parts[3].parse::<u32>().ok()?.to_string();
+                let freq_high =
+                    to_number(args[0]).and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
+                Some(OscEvent::StateSpeakerFreqHigh { id, freq_high })
             }
             _ => None,
         },
@@ -1120,6 +1145,63 @@ fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_osc_message, CoordinateFormat, OscEvent};
+    use rosc::OscType;
+
+    #[test]
+    fn parses_config_speaker_freq_range() {
+        let parsed = parse_osc_message(
+            "/omniphony/config/speaker/2",
+            &[
+                OscType::String("L".to_string()),
+                OscType::Float(30.0),
+                OscType::Float(10.0),
+                OscType::Float(1.5),
+                OscType::Int(1),
+                OscType::Float(0.0),
+                OscType::String("polar".to_string()),
+                OscType::Float(0.0),
+                OscType::Float(0.0),
+                OscType::Float(1.0),
+                OscType::Float(80.0),
+                OscType::Float(16000.0),
+            ],
+            CoordinateFormat::Cartesian,
+        );
+        match parsed {
+            Some(OscEvent::ConfigSpeaker {
+                index,
+                freq_low,
+                freq_high,
+                ..
+            }) => {
+                assert_eq!(index, 2);
+                assert_eq!(freq_low, Some(80.0));
+                assert_eq!(freq_high, Some(16000.0));
+            }
+            other => panic!("unexpected parse result: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_state_speaker_freq_high() {
+        let parsed = parse_osc_message(
+            "/omniphony/state/speaker/3/freq_high",
+            &[OscType::Float(12000.0)],
+            CoordinateFormat::Cartesian,
+        );
+        assert!(matches!(
+            parsed,
+            Some(OscEvent::StateSpeakerFreqHigh {
+                id,
+                freq_high: Some(value)
+            }) if id == "3" && (value - 12000.0).abs() < f32::EPSILON
+        ));
+    }
 }
 
 // ── public entry point ───────────────────────────────────────────────────────

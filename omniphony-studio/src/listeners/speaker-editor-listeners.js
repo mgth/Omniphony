@@ -32,6 +32,7 @@ export function setupSpeakerEditorListeners() {
   const speakerEditRInputEl = document.getElementById('speakerEditRInput');
   const speakerEditSpatializeToggleEl = document.getElementById('speakerEditSpatializeToggle');
   const speakerEditFreqLowInputEl = document.getElementById('speakerEditFreqLowInput');
+  const speakerEditFreqHighInputEl = document.getElementById('speakerEditFreqHighInput');
   const speakerEditCartesianModeEl = document.getElementById('speakerEditCartesianMode');
   const speakerEditPolarModeEl = document.getElementById('speakerEditPolarMode');
 
@@ -243,20 +244,43 @@ export function setupSpeakerEditorListeners() {
     });
   }
 
-  if (speakerEditFreqLowInputEl) {
-    speakerEditFreqLowInputEl.addEventListener('change', () => {
+  function bindSpeakerFrequencyInput(inputEl, field, command) {
+    if (!inputEl) return;
+    let skipNextChange = false;
+
+    const applyFrequency = () => {
       if (isSpeakerLayoutFrozen()) return;
       if (app.selectedSpeakerIndex === null) return;
       const index = app.selectedSpeakerIndex;
-      const raw = speakerEditFreqLowInputEl.value.trim();
-      const freqLow = raw === '' ? 0 : Math.max(0, Number(raw));
+      const raw = inputEl.value.trim();
+      const freq = raw === '' ? 0 : Math.max(0, Number(raw));
       const speaker = app.currentLayoutSpeakers[index];
-      if (speaker) speaker.freqLow = freqLow > 0 ? freqLow : null;
-      invoke('control_speaker_freq_low', { id: index, freqLow });
+      if (speaker) {
+        speaker[field] = Number.isFinite(freq) && freq > 0 ? freq : null;
+      }
+      invoke(command, { id: index, [field === 'freqLow' ? 'freqLow' : 'freqHigh']: Number.isFinite(freq) ? freq : 0 });
       invoke('control_speakers_apply');
       renderSpeakerEditor();
+    };
+
+    inputEl.addEventListener('change', () => {
+      if (skipNextChange) {
+        skipNextChange = false;
+        return;
+      }
+      applyFrequency();
+    });
+    inputEl.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      applyFrequency();
+      skipNextChange = true;
+      inputEl.blur();
     });
   }
+
+  bindSpeakerFrequencyInput(speakerEditFreqLowInputEl, 'freqLow', 'control_speaker_freq_low');
+  bindSpeakerFrequencyInput(speakerEditFreqHighInputEl, 'freqHigh', 'control_speaker_freq_high');
 
   if (speakerEditCartesianModeEl) {
     speakerEditCartesianModeEl.addEventListener('change', () => {

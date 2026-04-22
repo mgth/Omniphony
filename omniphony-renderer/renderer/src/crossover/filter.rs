@@ -85,7 +85,10 @@ impl LR4CrossoverBank {
             })
             .collect::<Vec<_>>();
         let num_bands = splitters.len() + 1;
-        Self { splitters, num_bands }
+        Self {
+            splitters,
+            num_bands,
+        }
     }
 
     /// Number of `BiquadState` entries required per object.
@@ -154,12 +157,18 @@ pub struct SmallBands {
 impl SmallBands {
     fn new(len: usize) -> Self {
         debug_assert!(len <= 8, "SmallBands supports at most 8 bands");
-        Self { data: [0.0; 8], len }
+        Self {
+            data: [0.0; 8],
+            len,
+        }
     }
 
     /// Passthrough: wraps a single sample as a 1-band `SmallBands` (no filtering).
     pub fn single(v: f32) -> Self {
-        Self { data: [v, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], len: 1 }
+        Self {
+            data: [v, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            len: 1,
+        }
     }
 
     fn set(&mut self, i: usize, v: f32) {

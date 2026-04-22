@@ -260,7 +260,8 @@ fn run_idle_runtime(
 
     let _shutdown = shutdown;
     sys::notify_ready();
-    while !sys::ShutdownHandle::is_requested() && !sys::ShutdownHandle::is_restart_from_config_requested()
+    while !sys::ShutdownHandle::is_requested()
+        && !sys::ShutdownHandle::is_restart_from_config_requested()
     {
         handler.poll_runtime_state()?;
         std::thread::sleep(Duration::from_millis(50));

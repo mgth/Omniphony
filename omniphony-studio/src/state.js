@@ -287,6 +287,7 @@ export const app = {
   trailPointTtlMs: 7000,
   speakerHeatmapSlicesEnabled: true,
   speakerHeatmapVolumeEnabled: false,
+  speakerHeatmapBandIndex: 0,
   speakerHeatmapSampleCount: 3072,
   speakerHeatmapMaxSphereSize: 0.062,
   speakerSize: 0.08,

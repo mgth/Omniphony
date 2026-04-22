@@ -89,11 +89,7 @@ pub fn save_live_config(
     } else {
         None
     };
-    render.render_evaluation_position_interpolation = if live.evaluation.position_interpolation {
-        Some(true)
-    } else {
-        None
-    };
+    render.render_evaluation_position_interpolation = Some(live.evaluation.position_interpolation);
     render.render_backend = match live.backend_id() {
         "vbap" => None,
         other => Some(other.to_string()),

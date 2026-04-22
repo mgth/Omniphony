@@ -334,8 +334,7 @@ fn init_spatial_renderer(
             / (elevation_cells as f32))
             .max(1.0)
             .round()) as i32;
-        let distance_step =
-            args.evaluation_polar_distance_max.max(0.01) / (distance_cells as f32);
+        let distance_step = args.evaluation_polar_distance_max.max(0.01) / (distance_cells as f32);
 
         let renderer = SpatialRenderer::new(
             layout,

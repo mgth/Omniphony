@@ -16,6 +16,7 @@ import { updateSourceDecorations } from '../sources.js';
 import { rebuildTrailGeometry } from '../trails.js';
 import { renderSpeakerEditor } from '../speakers.js';
 import { inDisplayPanel, inRoomGeometryPanel, roomGeometryPanelQueryAll } from '../ui/panel-roots.js';
+import { syncSpeakerHeatmapBandSelect } from '../scene/speaker-heatmap.js';
 
 const ROOM_GEOM_PREFS_STORAGE_KEY = 'spatialviz.room_geometry_prefs';
 const TRAIL_PREFS_STORAGE_KEY = 'spatialviz.trail_prefs';
@@ -64,6 +65,7 @@ function getSpeakerSizeSliderEl() { return inDisplayPanel('speakerSizeSlider'); 
 function getSpeakerSizeValEl() { return inDisplayPanel('speakerSizeVal'); }
 function getSpeakerHeatmapSlicesToggleEl() { return inDisplayPanel('speakerHeatmapSlicesToggle'); }
 function getSpeakerHeatmapVolumeToggleEl() { return inDisplayPanel('speakerHeatmapVolumeToggle'); }
+function getSpeakerHeatmapBandSelectEl() { return inDisplayPanel('speakerHeatmapBandSelect'); }
 function getSpeakerHeatmapSampleCountInputEl() { return inDisplayPanel('speakerHeatmapSampleCountInput'); }
 function getSpeakerHeatmapMaxSphereSizeSliderEl() { return inDisplayPanel('speakerHeatmapMaxSphereSizeSlider'); }
 function getSpeakerHeatmapMaxSphereSizeValEl() { return inDisplayPanel('speakerHeatmapMaxSphereSizeVal'); }
@@ -137,6 +139,7 @@ export function persistEffectiveRenderPrefs() {
       speakerSize: app.speakerSize,
       speakerHeatmapSlicesEnabled: app.speakerHeatmapSlicesEnabled,
       speakerHeatmapVolumeEnabled: app.speakerHeatmapVolumeEnabled,
+      speakerHeatmapBandIndex: app.speakerHeatmapBandIndex,
       speakerHeatmapSampleCount: app.speakerHeatmapSampleCount,
       speakerHeatmapMaxSphereSize: app.speakerHeatmapMaxSphereSize
     }));
@@ -176,6 +179,7 @@ export function applyEffectiveRenderPrefsToUi() {
   const speakerSizeValEl = getSpeakerSizeValEl();
   const speakerHeatmapSlicesToggleEl = getSpeakerHeatmapSlicesToggleEl();
   const speakerHeatmapVolumeToggleEl = getSpeakerHeatmapVolumeToggleEl();
+  const speakerHeatmapBandSelectEl = getSpeakerHeatmapBandSelectEl();
   const speakerHeatmapSampleCountInputEl = getSpeakerHeatmapSampleCountInputEl();
   const speakerHeatmapMaxSphereSizeSliderEl = getSpeakerHeatmapMaxSphereSizeSliderEl();
   const speakerHeatmapMaxSphereSizeValEl = getSpeakerHeatmapMaxSphereSizeValEl();
@@ -211,6 +215,10 @@ export function applyEffectiveRenderPrefsToUi() {
   }
   if (speakerHeatmapVolumeToggleEl) {
     speakerHeatmapVolumeToggleEl.checked = app.speakerHeatmapVolumeEnabled;
+  }
+  syncSpeakerHeatmapBandSelect();
+  if (speakerHeatmapBandSelectEl) {
+    speakerHeatmapBandSelectEl.value = String(app.speakerHeatmapBandIndex);
   }
   if (speakerHeatmapSampleCountInputEl) {
     speakerHeatmapSampleCountInputEl.value = String(app.speakerHeatmapSampleCount);
@@ -274,6 +282,10 @@ export function loadEffectiveRenderPrefs() {
       }
       if (typeof parsed?.speakerHeatmapVolumeEnabled === 'boolean') {
         app.speakerHeatmapVolumeEnabled = parsed.speakerHeatmapVolumeEnabled;
+      }
+      const bandIndex = Number(parsed?.speakerHeatmapBandIndex);
+      if (Number.isFinite(bandIndex)) {
+        app.speakerHeatmapBandIndex = Math.max(0, Math.round(bandIndex));
       }
       const sampleCount = Number(parsed?.speakerHeatmapSampleCount);
       if (Number.isFinite(sampleCount)) {

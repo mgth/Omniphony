@@ -5,7 +5,7 @@ import { rebuildTrailGeometry, createTrailRenderable } from '../trails.js';
 import { scene } from '../scene/setup.js';
 import { applySpeakerLevel, updateSourceDecorations, updateSourceSelectionStyles } from '../sources.js';
 import { refreshOverlayLists, updateSpeakerVisualsFromState } from '../speakers.js';
-import { requestSpeakerHeatmapIfNeeded } from '../scene/speaker-heatmap.js';
+import { requestSpeakerHeatmapIfNeeded, syncSpeakerHeatmapBandSelect } from '../scene/speaker-heatmap.js';
 
 export function setupTrailsAndDisplayListeners() {
   const trailToggleEl = document.getElementById('trailToggle');
@@ -24,6 +24,7 @@ export function setupTrailsAndDisplayListeners() {
   const localeSelectEl = document.getElementById('localeSelect');
   const speakerHeatmapSlicesToggleEl = document.getElementById('speakerHeatmapSlicesToggle');
   const speakerHeatmapVolumeToggleEl = document.getElementById('speakerHeatmapVolumeToggle');
+  const speakerHeatmapBandSelectEl = document.getElementById('speakerHeatmapBandSelect');
   const speakerHeatmapSampleCountInputEl = document.getElementById('speakerHeatmapSampleCountInput');
   const speakerHeatmapMaxSphereSizeSliderEl = document.getElementById('speakerHeatmapMaxSphereSizeSlider');
   const speakerHeatmapMaxSphereSizeValEl = document.getElementById('speakerHeatmapMaxSphereSizeVal');
@@ -184,6 +185,19 @@ export function setupTrailsAndDisplayListeners() {
     speakerHeatmapVolumeToggleEl.checked = app.speakerHeatmapVolumeEnabled;
     speakerHeatmapVolumeToggleEl.addEventListener('change', () => {
       app.speakerHeatmapVolumeEnabled = speakerHeatmapVolumeToggleEl.checked;
+      requestSpeakerHeatmapIfNeeded();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  if (speakerHeatmapBandSelectEl) {
+    syncSpeakerHeatmapBandSelect();
+    speakerHeatmapBandSelectEl.addEventListener('change', () => {
+      const nextBandIndex = Number(speakerHeatmapBandSelectEl.value);
+      app.speakerHeatmapBandIndex = Math.max(0, Math.round(Number.isFinite(nextBandIndex) ? nextBandIndex : 0));
+      syncSpeakerHeatmapBandSelect();
+      refreshOverlayLists();
+      refreshEffectiveRenderVisibility();
       requestSpeakerHeatmapIfNeeded();
       persistEffectiveRenderPrefs();
     });

@@ -1,5 +1,5 @@
-mod evaluation_artifact;
 mod barycenter_backend;
+mod evaluation_artifact;
 mod experimental_distance_backend;
 mod vbap_backend;
 
@@ -8,10 +8,10 @@ use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use serde::Serialize;
 
+pub use barycenter_backend::BarycenterBackend;
 pub use evaluation_artifact::{
     BackendRestoreSnapshot, SerializedEvaluationMode, build_backend_restore_snapshot,
 };
-pub use barycenter_backend::BarycenterBackend;
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
 pub use vbap_backend::VbapBackend;
 

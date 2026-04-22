@@ -246,10 +246,10 @@ pub struct VbapPanner {
 }
 
 pub(crate) mod gain_source;
-#[cfg(feature = "saf_vbap")]
-pub(crate) mod saf_backend;
 #[cfg(not(feature = "saf_vbap"))]
 pub(crate) mod native_backend;
+#[cfg(feature = "saf_vbap")]
+pub(crate) mod saf_backend;
 
 mod io;
 mod runtime;

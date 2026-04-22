@@ -65,6 +65,7 @@
 //! ```
 
 use crate::crossover::{BiquadState, FreqBand, LR4CrossoverBank, compute_bands};
+use crate::live_params::PreferredEvaluationMode;
 use crate::live_params::{
     CartesianEvaluationParams, EvaluationLiveParams, LiveEvaluationMode, LiveParams,
     PolarEvaluationParams, RampMode, RenderTopology, RendererControl,
@@ -73,14 +74,14 @@ use crate::ramp_strategy::{
     ChannelRampState, GainTableRampStrategy, PositionRampStrategy, RampContext, RampProgress,
     RampRenderParams, RampStrategy, RampTarget,
 };
-use crate::live_params::PreferredEvaluationMode;
 use crate::render_backend::RenderRequest;
 use crate::render_backend::{
-    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig, PreparedRenderEngine,
-    PolarEvaluationConfig, RenderBackendKind, VbapBackend, build_prepared_render_engine,
+    CartesianEvaluationConfig, EffectiveEvaluationMode, EvaluationBuildConfig,
+    PolarEvaluationConfig, PreparedRenderEngine, RenderBackendKind, VbapBackend,
+    build_prepared_render_engine,
 };
-use crate::spatial_vbap::{VbapPanner, VbapTableMode};
 use crate::spatial_vbap::{DistanceModel, Gains};
+use crate::spatial_vbap::{VbapPanner, VbapTableMode};
 use crate::speaker_layout::SpeakerLayout;
 use anyhow::Result;
 use std::sync::Arc;
@@ -263,7 +264,9 @@ impl BandRenderer {
                 let mut g = crate::spatial_vbap::Gains::zeroed(n);
                 if n > 0 {
                     let v = 1.0 / (n as f32).sqrt();
-                    for i in 0..n { g.set(i, v); }
+                    for i in 0..n {
+                        g.set(i, v);
+                    }
                 }
                 g
             }
@@ -793,9 +796,9 @@ impl SpatialRenderer {
 
     /// Build crossover band engines from a speaker layout.
     ///
-    /// Returns `(render_bands, Some(filter_bank))` when the layout defines `freq_low` on
-    /// at least one speaker (producing ≥ 2 bands), or `(single_band, None)` when
-    /// no crossover is needed.  `render_bands` always has at least one entry.
+    /// Returns `(render_bands, Some(filter_bank))` when the layout defines finite crossover
+    /// edges on at least one speaker (producing ≥ 2 bands), or `(single_band, None)` when
+    /// no crossover is needed. `render_bands` always has at least one entry.
     #[allow(clippy::too_many_arguments)]
     fn build_crossover(
         control: &Arc<RendererControl>,
@@ -906,8 +909,12 @@ impl SpatialRenderer {
             return Ok(());
         }
 
-        let (render_bands, crossover_filter_bank) =
-            Self::build_crossover(&self.control, active_layout, self.num_speakers, self.sample_rate)?;
+        let (render_bands, crossover_filter_bank) = Self::build_crossover(
+            &self.control,
+            active_layout,
+            self.num_speakers,
+            self.sample_rate,
+        )?;
         self.render_bands = render_bands;
         self.crossover_filter_bank = crossover_filter_bank;
         self.crossover_filter_states.clear();
@@ -1430,7 +1437,9 @@ impl SpatialRenderer {
                         state.ramp.output_position = state.ramp.target_position;
 
                         let position = state.ramp.output_position;
-                        let band_gains: Vec<Gains> = self.render_bands.iter()
+                        let band_gains: Vec<Gains> = self
+                            .render_bands
+                            .iter()
                             .map(|b| b.compute_gains(render_params, position))
                             .collect();
 
@@ -1482,14 +1491,15 @@ impl SpatialRenderer {
                         band_gains
                     }
                     RampMode::Frame => {
-                        let progress =
-                            state.ramp.current_progress().unwrap_or(RampProgress {
-                                completed_units: 0,
-                                total_units: 0,
-                            });
+                        let progress = state.ramp.current_progress().unwrap_or(RampProgress {
+                            completed_units: 0,
+                            total_units: 0,
+                        });
                         ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
                         let position = state.ramp.output_position;
-                        let band_gains: Vec<Gains> = self.render_bands.iter()
+                        let band_gains: Vec<Gains> = self
+                            .render_bands
+                            .iter()
                             .map(|b| b.compute_gains(render_params, position))
                             .collect();
 
@@ -1545,7 +1555,9 @@ impl SpatialRenderer {
                     RampMode::Sample => {
                         let mut fst = obj_filter_states;
                         // Pre-allocate once — reused each sample to avoid per-sample Vec alloc.
-                        let mut band_gains_buf: Vec<Gains> = self.render_bands.iter()
+                        let mut band_gains_buf: Vec<Gains> = self
+                            .render_bands
+                            .iter()
                             .map(|_| Gains::zeroed(self.num_speakers))
                             .collect();
                         if profile_crossover {
@@ -1571,7 +1583,9 @@ impl SpatialRenderer {
                                     });
                                 ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
                                 let position = state.ramp.output_position;
-                                for (slot, band) in band_gains_buf.iter_mut().zip(self.render_bands.iter()) {
+                                for (slot, band) in
+                                    band_gains_buf.iter_mut().zip(self.render_bands.iter())
+                                {
                                     *slot = band.compute_gains(render_params, position);
                                 }
                                 let out_base = sample_idx * self.num_speakers;
@@ -1593,7 +1607,9 @@ impl SpatialRenderer {
                                     });
                                 ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
                                 let position = state.ramp.output_position;
-                                for (slot, band) in band_gains_buf.iter_mut().zip(self.render_bands.iter()) {
+                                for (slot, band) in
+                                    band_gains_buf.iter_mut().zip(self.render_bands.iter())
+                                {
                                     *slot = band.compute_gains(render_params, position);
                                 }
                                 let raw = input_pcm
@@ -1761,7 +1777,6 @@ impl SpatialRenderer {
     pub fn spread_resolution(&self) -> f32 {
         self.spread_resolution
     }
-
 }
 
 #[cfg(test)]
