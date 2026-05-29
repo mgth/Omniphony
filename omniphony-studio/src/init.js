@@ -14,7 +14,8 @@ import {
   speakerGainCache,
   dirty,
   hasProducerDomain,
-  hasControlConfig
+  hasControlConfig,
+  isEmbeddedProducer
 } from './state.js';
 
 import { updateSource, updateSourceLevel, updateSourceGains } from './sources.js';
@@ -71,6 +72,10 @@ export function applyProducerCapabilityVisibility() {
   const known = !!app.producerCapabilities;
   document.body.classList.toggle('cap-no-audio', known && !hasProducerDomain('audio'));
   document.body.classList.toggle('cap-no-resampler', known && !hasControlConfig('adaptive_resampling'));
+  // Embedded (mpv) host: Studio doesn't manage the orender process or audio
+  // input, so the connect/service/launch buttons and the audio-input controls
+  // are hidden; only the decoder bridge path stays accessible.
+  document.body.classList.toggle('cap-embedded', known && isEmbeddedProducer());
 }
 
 export function applyInitState(payload) {

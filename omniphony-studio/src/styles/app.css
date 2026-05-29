@@ -2160,3 +2160,10 @@ body.cap-no-audio #audioOutputSection {
 body.cap-no-resampler #latencySection {
   display: none !important;
 }
+
+/* Embedded (mpv) host: Studio neither launches orender nor owns audio input.
+ * Hide the connect/service/launch action buttons; keep the OSC host/port fields
+ * (Studio still needs to reach the renderer). */
+body.cap-embedded .osc-config-actions {
+  display: none !important;
+}

@@ -77,6 +77,16 @@ pub(crate) fn handle_control_message(
         crate::overlay::set_enabled(enabled);
         return;
     }
+    if addr == "/omniphony/control/overlay/labels" {
+        let enabled = match msg.args.first() {
+            Some(OscType::Int(i)) => *i != 0,
+            Some(OscType::Float(f)) => *f != 0.0,
+            Some(OscType::Bool(b)) => *b,
+            _ => return,
+        };
+        crate::overlay::set_labels_enabled(enabled);
+        return;
+    }
     if addr == "/omniphony/control/overlay/trails" {
         // Args mirror Studio's former wire fields: enabled, ttl_ms, mode, teleport.
         let enabled = match msg.args.first() {

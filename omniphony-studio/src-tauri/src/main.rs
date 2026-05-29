@@ -4,7 +4,6 @@
 mod app_state;
 mod config;
 mod layouts;
-mod mpv_overlay;
 mod osc_listener;
 mod osc_parser;
 
@@ -16,7 +15,6 @@ use std::{fs, fs::File, process::Command as ProcessCommand, process::Stdio};
 use app_state::AppState;
 use config::{load_config, save_config, OscConfig};
 use layouts::Layout;
-use mpv_overlay::{MpvOverlayState, OverlayPrefs, SharedOverlay, TrailPrefs};
 use osc_listener::{spawn_osc_task, OscControlMsg};
 use rfd::FileDialog;
 use tauri::{Manager, State};
@@ -31,7 +29,6 @@ struct SharedState {
     listen_port: Arc<Mutex<u16>>,
     realtime_seq: AtomicI32,
     auto_tune_snapshot: Arc<Mutex<Option<serde_json::Value>>>,
-    mpv_overlay: SharedOverlay,
 }
 
 // ── helper ────────────────────────────────────────────────────────────────
@@ -2325,51 +2322,15 @@ fn stop_orender(state: State<SharedState>) {
 // ── mpv overlay IPC ──────────────────────────────────────────────────────
 
 #[tauri::command]
-fn mpv_overlay_connect(state: State<SharedState>, path: String) -> Result<(), String> {
-    state.mpv_overlay.connect(&path)
-}
-
-#[tauri::command]
-fn mpv_overlay_disconnect(state: State<SharedState>) {
-    state.mpv_overlay.disconnect();
-}
-
-#[tauri::command]
-fn mpv_overlay_send(state: State<SharedState>, line: String) -> Result<(), String> {
-    state.mpv_overlay.send_line(line)
-}
-
-#[tauri::command]
-fn mpv_overlay_is_connected(state: State<SharedState>) -> bool {
-    state.mpv_overlay.is_connected()
-}
-
-#[tauri::command]
-fn mpv_overlay_load_prefs(state: State<SharedState>) -> OverlayPrefs {
-    mpv_overlay::load_prefs(&state.config_dir)
-}
-
-#[tauri::command]
-fn mpv_overlay_save_prefs(
-    state: State<SharedState>,
-    prefs: OverlayPrefs,
-) -> Result<(), String> {
-    mpv_overlay::save_prefs(&state.config_dir, &prefs)
-}
-
-#[tauri::command]
 fn mpv_overlay_set_trail_prefs(
     state: State<SharedState>,
     enabled: bool,
     ttl_ms: u32,
     mode: String,
     teleport_threshold: f32,
-) -> Result<(), String> {
-    // The mpv overlay is now generated in-process by orender (liborender.so),
-    // not pushed over the JSON IPC socket, so trail config travels as OSC
-    // control to the renderer. The legacy socket push below is harmless (the
-    // current overlay Lua ignores the `trail-config` property) and is kept so
-    // older mpv overlay scripts keep working.
+) {
+    // The mpv overlay is generated in-process by orender and owns its own
+    // (persisted) display prefs, so trail config travels purely as OSC control.
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
@@ -2377,17 +2338,11 @@ fn mpv_overlay_set_trail_prefs(
             args: vec![
                 rosc::OscType::Int(if enabled { 1 } else { 0 }),
                 rosc::OscType::Int(ttl_ms as i32),
-                rosc::OscType::String(mode.clone()),
+                rosc::OscType::String(mode),
                 rosc::OscType::Float(teleport_threshold),
             ],
         },
     );
-    state.mpv_overlay.set_trail_prefs(TrailPrefs {
-        enabled,
-        ttl_ms,
-        mode,
-        teleport_threshold,
-    })
 }
 
 /// Show/hide the whole mpv overlay. The overlay is now drawn in-process by
@@ -2399,6 +2354,19 @@ fn mpv_overlay_set_active(state: State<SharedState>, enabled: bool) {
         &state.osc_tx,
         OscControlMsg::SendInt {
             address: "/omniphony/control/overlay/enabled".to_string(),
+            value: if enabled { 1 } else { 0 },
+        },
+    );
+}
+
+/// Show/hide object labels in the mpv overlay (mirrors the 3D view's label
+/// toggle). Travels as OSC control to the renderer.
+#[tauri::command]
+fn mpv_overlay_set_labels(state: State<SharedState>, enabled: bool) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/overlay/labels".to_string(),
             value: if enabled { 1 } else { 0 },
         },
     );
@@ -2445,7 +2413,6 @@ fn main() {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<OscControlMsg>();
             *osc_tx.lock().unwrap() = Some(tx);
 
-            let mpv_overlay = Arc::new(MpvOverlayState::new());
             let shared = SharedState {
                 inner: app_state.clone(),
                 osc_tx: osc_tx.clone(),
@@ -2453,7 +2420,6 @@ fn main() {
                 listen_port: listen_port.clone(),
                 realtime_seq: AtomicI32::new(0),
                 auto_tune_snapshot: Arc::new(Mutex::new(None)),
-                mpv_overlay: mpv_overlay.clone(),
             };
             app.manage(shared);
 
@@ -2465,7 +2431,6 @@ fn main() {
                 osc_cfg.osc_rx_port,
                 rx,
                 listen_port.clone(),
-                mpv_overlay,
             );
 
             Ok(())
@@ -2606,14 +2571,9 @@ fn main() {
             auto_tune_snapshot_save,
             auto_tune_snapshot_take,
             auto_tune_snapshot_peek,
-            mpv_overlay_connect,
-            mpv_overlay_disconnect,
-            mpv_overlay_send,
-            mpv_overlay_is_connected,
-            mpv_overlay_load_prefs,
-            mpv_overlay_save_prefs,
             mpv_overlay_set_trail_prefs,
             mpv_overlay_set_active,
+            mpv_overlay_set_labels,
         ])
         .run(tauri::generate_context!())
         .expect("error running Tauri application");

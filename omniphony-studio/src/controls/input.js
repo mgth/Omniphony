@@ -1,4 +1,4 @@
-import { app, hasProducerDomain } from '../state.js';
+import { app, hasProducerDomain, isEmbeddedProducer } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { inInputPanel } from '../ui/panel-roots.js';
 import { invoke } from '@tauri-apps/api/core';
@@ -149,6 +149,9 @@ export function updateInputControlUI() {
   const inputLfeModeRowEl = inputLfeModeSelectEl?.closest('.input-panel-field') || null;
   const requestedMode = app.inputMode || 'pipe_bridge';
   const hasInputDomain = hasProducerDomain('input');
+  // Embedded (mpv) host: mpv owns the input stage, so the only relevant field
+  // is the decoder bridge path. Show just that and hide the rest of the panel.
+  const embedded = isEmbeddedProducer();
   if (inputModeSelectEl) {
     inputModeSelectEl.value = ['pipewire', 'pipewire_bridge', 'pipe_bridge'].includes(app.inputMode)
       ? app.inputMode
@@ -205,7 +208,32 @@ export function updateInputControlUI() {
   const endpointRequested = liveRequested || pipewireBridgeRequested;
 
   if (inputBridgeFieldsEl) {
-    inputBridgeFieldsEl.style.display = hasInputDomain && bridgeRequested ? '' : 'none';
+    inputBridgeFieldsEl.style.display =
+      embedded || (hasInputDomain && bridgeRequested) ? '' : 'none';
+  }
+  // In embedded mode the panel becomes the "Decoder bridge" section: relabel
+  // the header and keep only the bridge path — hide the mode selector, the
+  // status line, the redundant "Bridge Input" subtitle and the Apply action
+  // (live fields are already hidden with no input domain, and the Pipe row is
+  // hidden by `inputPipeRowEl` below).
+  const titleEl = document.querySelector('#audioInputSection .panel-title');
+  if (titleEl) {
+    const key = embedded ? 'section.decoderBridge' : 'section.audioInput';
+    titleEl.setAttribute('data-i18n', key);
+    titleEl.textContent = t(key);
+  }
+  if (embedded) {
+    const modeGroupEl =
+      inputModeSelectEl?.closest('.input-panel-grid') ||
+      inputModeSelectEl?.closest('.input-panel-row') ||
+      null;
+    if (modeGroupEl) modeGroupEl.style.display = 'none';
+    const statusWrapEl = inputStatusInfoEl?.parentElement || null;
+    if (statusWrapEl) statusWrapEl.style.display = 'none';
+    const applyActionsEl = inputApplyBtnEl?.closest('.input-panel-actions') || null;
+    if (applyActionsEl) applyActionsEl.style.display = 'none';
+    const bridgeSubtitleEl = inputBridgeFieldsEl?.querySelector('.input-panel-subtitle') || null;
+    if (bridgeSubtitleEl) bridgeSubtitleEl.style.display = 'none';
   }
   if (oscBridgePathStatusEl) {
     oscBridgePathStatusEl.textContent = bridgePathMissing;
@@ -299,7 +327,12 @@ export function updateInputControlUI() {
     const activeMode = app.inputActiveMode || 'pipe_bridge';
     const requestedModeLabel = formatInputModeLabel(requestedMode);
     const activeModeLabel = formatInputModeLabel(activeMode);
-    if (liveRequested) {
+    if (embedded) {
+      // In mpv mode the panel is just the decoder bridge path; the requested/
+      // active mode summary is meaningless. Show the bridge path instead.
+      const bridgePath = String(app.renderBridgePath || '').trim();
+      inputSummaryEl.textContent = bridgePath || t('input.autoDetect');
+    } else if (liveRequested) {
       const backend = formatInputBackendLabel(app.liveInput.backend || 'pipewire');
       const layoutSuffix = app.liveInput.layout ? t('input.summary.liveLayout') : '';
       inputSummaryEl.textContent = tf('input.summary.live', {

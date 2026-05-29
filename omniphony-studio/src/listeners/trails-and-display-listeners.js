@@ -9,9 +9,9 @@ import { subscribeSpeakerHeatmap, syncSpeakerHeatmapBandSelect } from '../scene/
 import {
   getMpvOverlayStatus,
   setMpvOverlayEnabled,
-  setMpvOverlaySocketPath,
   pushMpvOverlayTrailPrefs
 } from '../mpvOverlay.js';
+import { invoke } from '@tauri-apps/api/core';
 
 export function setupTrailsAndDisplayListeners() {
   const trailToggleEl = document.getElementById('trailToggle');
@@ -39,65 +39,11 @@ export function setupTrailsAndDisplayListeners() {
   const speakerHeatmapMaxSphereSizeSliderEl = document.getElementById('speakerHeatmapMaxSphereSizeSlider');
   const speakerHeatmapMaxSphereSizeValEl = document.getElementById('speakerHeatmapMaxSphereSizeVal');
   const mpvOverlayToggleEl = document.getElementById('mpvOverlayToggle');
-  const mpvOverlaySocketInputEl = document.getElementById('mpvOverlaySocketInput');
-  const mpvOverlayStatusEl = document.getElementById('mpvOverlayStatus');
-
-  if (mpvOverlaySocketInputEl) {
-    // Placeholder shows the OS-native default mpv writes when launched
-    // with `--input-ipc-server=…`. Same convention as the audio input
-    // pipe: the user types the literal mpv was given, no normalisation.
-    const isWindows = /windows/i.test(navigator.userAgent || '');
-    mpvOverlaySocketInputEl.placeholder = isWindows
-      ? String.raw`\\.\pipe\omniphony-mpv`
-      : '/tmp/omniphony-mpv.sock';
-  }
-
-  function refreshMpvOverlayUI() {
-    const s = getMpvOverlayStatus();
-    // Keep the input / toggle in sync with backend state. Prefs load
-    // asynchronously after this listener registers, so on first ticks the
-    // controls would otherwise be stuck on their empty initial values.
-    if (mpvOverlayToggleEl && mpvOverlayToggleEl.checked !== s.enabled) {
-      mpvOverlayToggleEl.checked = s.enabled;
-    }
-    if (
-      mpvOverlaySocketInputEl
-      && document.activeElement !== mpvOverlaySocketInputEl
-      && mpvOverlaySocketInputEl.value !== s.socketPath
-    ) {
-      mpvOverlaySocketInputEl.value = s.socketPath;
-    }
-    if (!mpvOverlayStatusEl) return;
-    if (!s.enabled) {
-      mpvOverlayStatusEl.textContent = 'disabled';
-    } else if (s.connected) {
-      mpvOverlayStatusEl.textContent = `connected → ${s.socketPath}`;
-    } else if (s.lastError) {
-      mpvOverlayStatusEl.textContent = `error: ${s.lastError}`;
-    } else {
-      mpvOverlayStatusEl.textContent = 'connecting…';
-    }
-  }
-
-  refreshMpvOverlayUI();
-  setInterval(refreshMpvOverlayUI, 500);
 
   if (mpvOverlayToggleEl) {
+    mpvOverlayToggleEl.checked = getMpvOverlayStatus().enabled;
     mpvOverlayToggleEl.addEventListener('change', async () => {
-      // <input> only fires "change" on blur, so if the user typed a path then
-      // clicked the toggle the path is still pending — flush it first.
-      if (mpvOverlaySocketInputEl) {
-        await setMpvOverlaySocketPath(mpvOverlaySocketInputEl.value);
-      }
       await setMpvOverlayEnabled(mpvOverlayToggleEl.checked);
-      refreshMpvOverlayUI();
-    });
-  }
-
-  if (mpvOverlaySocketInputEl) {
-    mpvOverlaySocketInputEl.addEventListener('change', async () => {
-      await setMpvOverlaySocketPath(mpvOverlaySocketInputEl.value);
-      refreshMpvOverlayUI();
     });
   }
 
@@ -190,6 +136,8 @@ export function setupTrailsAndDisplayListeners() {
       sourceMeshes.forEach((_mesh, id) => {
         updateSourceDecorations(id);
       });
+      // Mirror the toggle to the in-process mpv overlay (OSC control).
+      invoke('mpv_overlay_set_labels', { enabled: app.objectLabelsEnabled }).catch(() => {});
       persistEffectiveRenderPrefs();
     });
   }
@@ -364,11 +312,8 @@ export function setupTrailsAndDisplayListeners() {
     });
   }
 
-  // Seed Rust with the current trail prefs so they're already stashed for
-  // the first mpv overlay (re)connect — even if the user never touches the
-  // trail UI this session.
-  pushMpvOverlayTrailPrefs(
-    app.trailsEnabled, app.trailPointTtlMs,
-    app.trailRenderMode, app.trailTeleportThreshold
-  );
+  // No startup seed: the mpv overlay display prefs (enable / labels / trails)
+  // are owned and persisted by orender now and loaded at its startup. Studio
+  // only drives them live via the on-change handlers above; seeding here would
+  // override orender's persisted state at connect.
 }

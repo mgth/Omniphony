@@ -244,6 +244,46 @@
                 </div>
               </div>
             </div>
+            <div id="mpvOverlaySection" style="display:grid;gap:0.3rem">
+              <div class="inline-toggle" style="margin-top:0">
+                <div class="title-with-info" style="min-width:0">
+                  <span data-i18n="mpvOverlay.title">mpv overlay</span>
+                </div>
+                <input id="mpvOverlayToggle" type="checkbox" />
+              </div>
+            </div>
+            <div id="trailSection" style="display:grid;gap:0.3rem">
+              <div class="inline-toggle" style="margin-top:0">
+                <div class="title-with-info" style="min-width:0">
+                  <span data-i18n="trail.title">Trails</span>
+                  <button id="trailInfoBtn" type="button" class="info-icon-btn" data-i18n-title="trail.infoButton" title="Trails info">i</button>
+                </div>
+                <input id="trailToggle" type="checkbox" checked />
+              </div>
+              <div id="trailSectionContent" class="conditional-params open">
+                <div style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label style="font-size:12px;white-space:nowrap"><span data-i18n="trail.mode">Mode</span></label>
+                    <select id="trailModeSelect" style="flex:1;min-width:0">
+                      <option value="diffuse" data-i18n="trail.mode.diffuse">Diffuse</option>
+                      <option value="line" data-i18n="trail.mode.line">Line</option>
+                    </select>
+                  </div>
+                  <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label style="font-size:12px;white-space:nowrap"><span data-i18n="trail.duration">Duration</span> <span id="trailTtlVal">7.0s</span></label>
+                    <input id="trailTtlSlider" type="range" min="1.0" max="20.0" step="0.5" value="7.0" class="gain-slider" />
+                  </div>
+                  <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label style="font-size:12px;white-space:nowrap"><span data-i18n="trail.teleport">Teleport threshold</span> <span id="trailTeleportVal">0.50</span></label>
+                    <input id="trailTeleportSlider" type="range" min="0.05" max="2.0" step="0.05" value="0.5" class="gain-slider" />
+                  </div>
+                </div>
+                <div class="inline-toggle" style="margin-top:0.2rem">
+                  <div data-i18n="display.grid">Grid</div>
+                  <input id="vbapCartesianGridToggleBtn" type="checkbox" />
+                </div>
+              </div>
+            </div>
             <div id="heatmapsSection" style="display:grid;gap:0.3rem">
               <div class="inline-toggle" style="margin-top:0">
                 <div class="title-with-info" style="min-width:0">
@@ -280,53 +320,6 @@
                     <label for="speakerHeatmapMaxSphereSizeSlider" style="font-size:12px;white-space:nowrap">Max sphere size <span id="speakerHeatmapMaxSphereSizeVal">0.062</span></label>
                     <input id="speakerHeatmapMaxSphereSizeSlider" type="range" min="0.01" max="0.2" step="0.002" value="0.062" class="gain-slider" />
                   </div>
-                </div>
-              </div>
-            </div>
-            <div id="mpvOverlaySection" style="display:grid;gap:0.3rem">
-              <div class="inline-toggle" style="margin-top:0">
-                <div class="title-with-info" style="min-width:0">
-                  <span data-i18n="mpvOverlay.title">mpv overlay</span>
-                </div>
-                <input id="mpvOverlayToggle" type="checkbox" />
-              </div>
-              <div id="mpvOverlaySectionContent" class="conditional-params open" style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
-                <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
-                  <label for="mpvOverlaySocketInput" style="font-size:12px;white-space:nowrap" data-i18n="mpvOverlay.socket">IPC endpoint</label>
-                  <input id="mpvOverlaySocketInput" type="text" style="flex:1;min-width:0" />
-                </div>
-                <div id="mpvOverlayStatus" style="font-size:10px;color:#8fa6bd;font-family:ui-monospace, monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">not connected</div>
-              </div>
-            </div>
-            <div id="trailSection" style="display:grid;gap:0.3rem">
-              <div class="inline-toggle" style="margin-top:0">
-                <div class="title-with-info" style="min-width:0">
-                  <span data-i18n="trail.title">Trails</span>
-                  <button id="trailInfoBtn" type="button" class="info-icon-btn" data-i18n-title="trail.infoButton" title="Trails info">i</button>
-                </div>
-                <input id="trailToggle" type="checkbox" checked />
-              </div>
-              <div id="trailSectionContent" class="conditional-params open">
-                <div style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
-                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
-                    <label style="font-size:12px;white-space:nowrap"><span data-i18n="trail.mode">Mode</span></label>
-                    <select id="trailModeSelect" style="flex:1;min-width:0">
-                      <option value="diffuse" data-i18n="trail.mode.diffuse">Diffuse</option>
-                      <option value="line" data-i18n="trail.mode.line">Line</option>
-                    </select>
-                  </div>
-                  <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
-                    <label style="font-size:12px;white-space:nowrap"><span data-i18n="trail.duration">Duration</span> <span id="trailTtlVal">7.0s</span></label>
-                    <input id="trailTtlSlider" type="range" min="1.0" max="20.0" step="0.5" value="7.0" class="gain-slider" />
-                  </div>
-                  <div class="control-row" style="margin-top:0.1rem;grid-template-columns:auto 1fr;gap:0.3rem">
-                    <label style="font-size:12px;white-space:nowrap"><span data-i18n="trail.teleport">Teleport threshold</span> <span id="trailTeleportVal">0.50</span></label>
-                    <input id="trailTeleportSlider" type="range" min="0.05" max="2.0" step="0.05" value="0.5" class="gain-slider" />
-                  </div>
-                </div>
-                <div class="inline-toggle" style="margin-top:0.2rem">
-                  <div data-i18n="display.grid">Grid</div>
-                  <input id="vbapCartesianGridToggleBtn" type="checkbox" />
                 </div>
               </div>
             </div>

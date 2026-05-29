@@ -242,6 +242,19 @@ impl Engine {
         if let Some(path) = config_yaml_path {
             control.set_config_path(path.to_path_buf());
         }
+
+        // Overlay display prefs (enable / labels / trails) are owned and
+        // persisted by orender now, in a small dedicated file next to the
+        // config — loaded here at startup and auto-saved on each live change.
+        // Deliberately NOT part of the savable config (no mark_dirty / save).
+        let overlay_prefs = config_yaml_path
+            .map(Path::to_path_buf)
+            .or_else(crate::default_config_path)
+            .and_then(|p| p.parent().map(|d| d.join("overlay-prefs.conf")));
+        if let Some(p) = overlay_prefs {
+            overlay::load_prefs(&p);
+        }
+
         control.set_bridge_path(Some(resolved_bridge.clone()));
         control.set_meter_rate_hz(render_cfg.as_ref().and_then(|c| c.meter_rate).unwrap_or(10.0));
         control.set_diag_rate_hz(render_cfg.as_ref().and_then(|c| c.diag_rate).unwrap_or(10.0));
@@ -666,16 +679,17 @@ impl Engine {
 /// objects carry no front-view cartesian position, so they sit at the origin —
 /// identical to the previous Studio→Lua path, which zeroed non-cartesian
 /// positions before sending them to the overlay.
-fn overlay_positions(objects: &[ObjectMeta]) -> Vec<(u32, f64, f64, f64)> {
+fn overlay_positions(objects: &[ObjectMeta]) -> Vec<(u32, f64, f64, f64, String)> {
     objects
         .iter()
         .enumerate()
         .map(|(idx, o)| {
-            if o.coord_mode.eq_ignore_ascii_case("cartesian") {
-                (idx as u32, o.x as f64, o.y as f64, o.z as f64)
+            let (x, y, z) = if o.coord_mode.eq_ignore_ascii_case("cartesian") {
+                (o.x as f64, o.y as f64, o.z as f64)
             } else {
-                (idx as u32, 0.0, 0.0, 0.0)
-            }
+                (0.0, 0.0, 0.0)
+            };
+            (idx as u32, x, y, z, o.name.clone())
         })
         .collect()
 }

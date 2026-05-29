@@ -6,7 +6,6 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::app_state::OutputDeviceOption;
-use crate::mpv_overlay::SharedOverlay;
 use crate::app_state::{
     AppState, DistanceDiffuse, Meter, RenderBackendState, RoomRatio, SpreadState,
     VbapCartesian, VbapPolar,
@@ -788,13 +787,11 @@ pub fn spawn_osc_task(
     osc_rx_port: u16,
     ctrl_rx: UnboundedReceiver<OscControlMsg>,
     listen_port_out: Arc<Mutex<u16>>,
-    mpv_overlay: SharedOverlay,
 ) {
     // The mpv overlay is now generated in-process by orender (liborender.so)
-    // and pulled over FFI by a small mpv Lua shim — Studio no longer snapshots
-    // the scene and pushes overlay frames over the JSON IPC socket. Overlay
-    // config (trails) travels as OSC control instead (see `mpv_overlay_set_trail_prefs`).
-    let _ = &mpv_overlay; // retained for the connect/trail-config Tauri commands
+    // and pulled over FFI by a small mpv Lua shim — Studio no longer talks to
+    // mpv over the JSON IPC socket at all. Overlay config (enable / labels /
+    // trails) travels as OSC control (see the `mpv_overlay_set_*` commands).
     std::thread::spawn(move || {
         osc_thread(
             app,

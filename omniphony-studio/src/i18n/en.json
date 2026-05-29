@@ -106,6 +106,7 @@
   "section.drc": "DRC",
   "section.loudness": "Loudness",
   "section.audioInput": "Audio Input",
+  "section.decoderBridge": "Decoder bridge",
   "section.audioOutput": "Audio Output",
   "section.latency": "Latency",
   "section.diagnostics": "Diagnostics",

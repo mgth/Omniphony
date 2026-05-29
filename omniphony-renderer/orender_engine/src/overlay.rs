@@ -20,6 +20,7 @@
 //! diffuse), colour palette and constants.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -28,6 +29,9 @@ use std::time::Instant;
 
 const BASE_RADIUS_RATIO: f64 = 0.015; // fraction of screen height
 const HEADER_FONT_SIZE: i32 = 14;
+// Object-name label height as a fraction of screen height (~65 px at 1080p),
+// centred on the object. Scales with resolution so it looks the same on 4K.
+const LABEL_FONT_RATIO: f64 = 0.06;
 const CINEMA_ASPECT: f64 = 2.35; // pseudo-3D depth squeezes Y=+1 into this band
 
 /// Bezier-approximated unit circle of radius 100, scaled per object via
@@ -113,7 +117,6 @@ struct Trail {
     last_t: f64,
 }
 
-#[derive(Default)]
 struct OverlayState {
     /// Latest frame's object positions `(id, x, y, z)`, in render order.
     positions: Vec<(u32, f64, f64, f64)>,
@@ -123,7 +126,25 @@ struct OverlayState {
     trails: HashMap<u32, Trail>,
     /// A/B colour override per object id (set by Studio over OSC control).
     tags: HashMap<u32, char>,
+    /// Formatted display label per object id (mirrors Studio's 3D-view labels).
+    labels: HashMap<u32, String>,
+    /// Whether object labels are drawn (mirrors Studio's `objectLabelsEnabled`).
+    labels_enabled: bool,
     cfg: TrailCfg,
+}
+
+impl Default for OverlayState {
+    fn default() -> Self {
+        Self {
+            positions: Vec::new(),
+            levels: HashMap::new(),
+            trails: HashMap::new(),
+            tags: HashMap::new(),
+            labels: HashMap::new(),
+            labels_enabled: true, // on by default, like Studio's 3D view
+            cfg: TrailCfg::default(),
+        }
+    }
 }
 
 struct Overlay {
@@ -132,6 +153,9 @@ struct Overlay {
     last_pull_ms: AtomicU64,
     start: Instant,
     state: Mutex<OverlayState>,
+    /// Path to the dedicated overlay-prefs file (owned by orender, persisted in
+    /// real time, separate from the savable config). `None` until set by the host.
+    prefs_path: Mutex<Option<PathBuf>>,
 }
 
 fn overlay() -> &'static Overlay {
@@ -141,6 +165,7 @@ fn overlay() -> &'static Overlay {
         last_pull_ms: AtomicU64::new(0),
         start: Instant::now(),
         state: Mutex::new(OverlayState::default()),
+        prefs_path: Mutex::new(None),
     })
 }
 
@@ -162,11 +187,20 @@ pub fn is_active() -> bool {
     now.saturating_sub(o.last_pull_ms.load(Ordering::Relaxed)) <= ACTIVE_TIMEOUT_MS
 }
 
-/// Replace the current object positions. Cheap (stores positions); trails are
-/// advanced at draw time, mirroring the former Lua redraw flow.
-pub fn update_positions(positions: Vec<(u32, f64, f64, f64)>) {
+/// Replace the current object positions `(id, x, y, z, name)`. Cheap (stores
+/// positions + formatted labels); trails are advanced at draw time, mirroring
+/// the former Lua redraw flow. The label is cleaned like Studio's 3D view.
+pub fn update_positions(objects: Vec<(u32, f64, f64, f64, String)>) {
     if let Ok(mut s) = overlay().state.lock() {
-        s.positions = positions;
+        s.positions.clear();
+        s.labels.clear();
+        for (id, x, y, z, name) in objects {
+            let label = format_object_label(&name);
+            if !label.is_empty() {
+                s.labels.insert(id, label);
+            }
+            s.positions.push((id, x, y, z));
+        }
     }
 }
 
@@ -185,12 +219,22 @@ pub fn clear() {
         s.positions.clear();
         s.levels.clear();
         s.trails.clear();
+        s.labels.clear();
     }
 }
 
 /// Master enable/disable (Studio toggle; also gates `is_active`).
 pub fn set_enabled(on: bool) {
     overlay().enabled.store(on, Ordering::Relaxed);
+    save_prefs();
+}
+
+/// Show/hide object labels (mirror of Studio's `objectLabelsEnabled`).
+pub fn set_labels_enabled(on: bool) {
+    if let Ok(mut s) = overlay().state.lock() {
+        s.labels_enabled = on;
+    }
+    save_prefs();
 }
 
 /// Apply trail configuration (mirror of Studio's wire fields).
@@ -210,6 +254,75 @@ pub fn set_trail_config(enabled: bool, ttl_ms: u32, diffuse: bool, teleport_thre
             s.trails.clear();
         }
     }
+    save_prefs();
+}
+
+// ── persistence (orender-owned, real-time, separate from the savable config) ─
+
+/// Point the overlay at its prefs file and load it. Called once by the host at
+/// startup. The overlay display params live here now (enable, labels, trails),
+/// auto-persisted on every change — independent of `config.yaml` / the save
+/// command. Missing or unreadable file → keep the defaults.
+pub fn load_prefs(path: &Path) {
+    let o = overlay();
+    *o.prefs_path.lock().unwrap() = Some(path.to_path_buf());
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if let Ok(mut s) = o.state.lock() {
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let (k, v) = (k.trim(), v.trim());
+            match k {
+                "enabled" => o.enabled.store(v != "0", Ordering::Relaxed),
+                "labels" => s.labels_enabled = v != "0",
+                "trails_enabled" => s.cfg.enabled = v != "0",
+                "ttl_ms" => {
+                    if let Ok(ms) = v.parse::<u32>() {
+                        s.cfg.ttl_s = ms as f64 / 1000.0;
+                    }
+                }
+                "mode" => s.cfg.mode = if v.eq_ignore_ascii_case("diffuse") {
+                    TrailMode::Diffuse
+                } else {
+                    TrailMode::Line
+                },
+                "teleport" => {
+                    if let Ok(th) = v.parse::<f64>() {
+                        if th > 0.0 {
+                            s.cfg.teleport_sq = th * th;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Write the current overlay prefs to the prefs file (best-effort, no-op until
+/// `load_prefs` set a path). Runs on the OSC control thread, never the audio path.
+fn save_prefs() {
+    let o = overlay();
+    let Some(path) = o.prefs_path.lock().unwrap().clone() else {
+        return;
+    };
+    let enabled = o.enabled.load(Ordering::Relaxed);
+    let Ok(s) = o.state.lock() else { return };
+    let mode = match s.cfg.mode {
+        TrailMode::Diffuse => "diffuse",
+        TrailMode::Line => "line",
+    };
+    let body = format!(
+        "enabled={}\nlabels={}\ntrails_enabled={}\nttl_ms={}\nmode={}\nteleport={:.3}\n",
+        enabled as u8,
+        s.labels_enabled as u8,
+        s.cfg.enabled as u8,
+        (s.cfg.ttl_s * 1000.0).round() as u32,
+        mode,
+        s.cfg.teleport_sq.sqrt(),
+    );
+    let _ = std::fs::write(&path, body);
 }
 
 /// Set or clear an A/B colour tag for an object id.
@@ -242,6 +355,45 @@ pub fn build_ass(res_x: u32, res_y: u32) -> String {
         Err(_) => return String::new(),
     };
     render(&mut s, res_x as f64, res_y as f64, now)
+}
+
+// ── labels (mirror of omniphony-studio's getObjectDisplayName/formatObjectLabel) ─
+
+/// Clean an object name into a display label, matching Studio's 3D-view rules:
+/// strip a leading `a_`/`v_`/`obj_` (or `:`/`-` separator) prefix, then keep the
+/// part after the first remaining underscore.
+fn format_object_label(name: &str) -> String {
+    let mut name = name.trim();
+    // Strip ^[av][_:-]
+    let b = name.as_bytes();
+    if b.len() >= 2 && matches!(b[0], b'a' | b'A' | b'v' | b'V') && matches!(b[1], b'_' | b':' | b'-')
+    {
+        name = &name[2..];
+    }
+    // Strip ^obj[_:-]
+    let b = name.as_bytes();
+    if b.len() >= 4 && name[..3].eq_ignore_ascii_case("obj") && matches!(b[3], b'_' | b':' | b'-') {
+        name = &name[4..];
+    }
+    // Keep the part after the first underscore, if any.
+    if let Some(idx) = name.find('_') {
+        let cleaned = &name[idx + 1..];
+        if !cleaned.is_empty() {
+            return cleaned.to_string();
+        }
+    }
+    name.to_string()
+}
+
+/// Make a string safe to drop into ASS event text: the override-block braces and
+/// the escape backslash would otherwise be interpreted by libass.
+fn ass_escape(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '{' | '}' | '\\' => ' ',
+            _ => c,
+        })
+        .collect()
 }
 
 // ── colours (ported from omniphony-studio osc_listener.rs) ─────────────────
@@ -582,6 +734,7 @@ fn render(s: &mut OverlayState, res_x: f64, res_y: f64, now: f64) -> String {
     let band_h_frac = ((res_x / res_y) / CINEMA_ASPECT).min(1.0);
     let depth_span = 1.0 - band_h_frac;
     let base_radius = (res_y * BASE_RADIUS_RATIO).max(8.0);
+    let label_fs = (res_y * LABEL_FONT_RATIO).round().max(12.0);
 
     let mut out: Vec<String> = Vec::new();
     out.push(build_wireframe(cx, cy, res_x, res_y, depth_span));
@@ -628,6 +781,20 @@ fn render(s: &mut OverlayState, res_x: f64, res_y: f64, now: f64) -> String {
             "{{\\an7\\pos({:.1},{:.1})\\bord1\\fscx{:.1}\\fscy{:.1}\\1c{}\\3c&H000000&\\1a&H30&\\3a&H80&\\p1}}{}{{\\p0}}",
             sx, sy, pct, pct, col, UNIT_CIRCLE
         ));
+
+        // Object label centred on the object (like Studio's 3D view), large,
+        // white text + black outline for readability over the video.
+        if s.labels_enabled {
+            if let Some(label) = s.labels.get(&id) {
+                out.push(format!(
+                    "{{\\an5\\pos({:.1},{:.1})\\fs{:.0}\\bord2\\1c&HFFFFFF&\\3c&H000000&}}{}",
+                    sx,
+                    sy,
+                    label_fs,
+                    ass_escape(label)
+                ));
+            }
+        }
     }
 
     // Prune trails for objects gone longer than the TTL (avoids unbounded
@@ -659,15 +826,18 @@ mod tests {
 
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         let g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Detach any persistence path so tests never touch the filesystem.
+        *overlay().prefs_path.lock().unwrap() = None;
         clear();
         set_enabled(true);
+        set_labels_enabled(true);
         g
     }
 
     #[test]
     fn empty_scene_still_draws_the_cube_and_header() {
         let _g = guard();
-        update_positions(vec![]);
+        update_positions(Vec::new());
         let ass = build_ass(1920, 1080);
         assert!(ass.contains("\\p1"), "should contain a drawing");
         assert!(ass.contains("0 objects"), "header reports object count");
@@ -690,7 +860,7 @@ mod tests {
     #[test]
     fn object_renders_a_circle_and_counts() {
         let _g = guard();
-        update_positions(vec![(0, 0.0, 1.0, 0.5)]);
+        update_positions(vec![(0, 0.0, 1.0, 0.5, "Obj_0".to_string())]);
         update_levels(&[(0, -20.0)]);
         let ass = build_ass(1920, 1080);
         assert!(ass.contains("1 objects"));
@@ -703,9 +873,30 @@ mod tests {
         let _g = guard();
         // X=0, Z=0.5 → screen centre; Y=1 (front) → no depth squeeze on a
         // display narrower than 2.35:1.
-        update_positions(vec![(0, 0.0, 1.0, 0.5)]);
+        update_positions(vec![(0, 0.0, 1.0, 0.5, "Obj_0".to_string())]);
         let ass = build_ass(1920, 1080);
         assert!(ass.contains("\\pos(960.0,540.0)"), "centre circle: {ass}");
+    }
+
+    #[test]
+    fn label_formatting_matches_studio() {
+        assert_eq!(format_object_label("a_dialog"), "dialog");
+        assert_eq!(format_object_label("obj_5"), "5");
+        assert_eq!(format_object_label("Obj_5"), "5");
+        assert_eq!(format_object_label("music_left"), "left");
+        assert_eq!(format_object_label("Ambience"), "Ambience");
+    }
+
+    #[test]
+    fn label_drawn_and_toggleable() {
+        let _g = guard();
+        update_positions(vec![(0, 0.0, 1.0, 0.5, "a_Dialogue".to_string())]);
+        let ass = build_ass(1920, 1080);
+        assert!(ass.contains("Dialogue"), "label drawn: {ass}");
+        set_labels_enabled(false);
+        let ass = build_ass(1920, 1080);
+        assert!(!ass.contains("Dialogue"), "label hidden when disabled");
+        set_labels_enabled(true);
     }
 
     #[test]
@@ -771,6 +962,30 @@ mod tests {
         // Particle count stays within the (TTL-scaled) budget ceiling.
         let cap = ((ttl * DIFFUSE_DOTS_PER_S).round() as usize).clamp(DIFFUSE_MIN_DOTS, DIFFUSE_MAX_DOTS);
         assert!(evt.matches("\\p1").count() <= cap);
+    }
+
+    #[test]
+    fn prefs_round_trip_via_file() {
+        let _g = guard();
+        let mut path = std::env::temp_dir();
+        path.push(format!("omniphony-overlay-test-{}.conf", std::process::id()));
+
+        // A live change auto-persists to the file.
+        load_prefs(&path);
+        set_labels_enabled(false);
+        set_trail_config(true, 12000, false, 0.8);
+        let written = std::fs::read_to_string(&path).expect("prefs persisted");
+        assert!(written.contains("labels=0"));
+        assert!(written.contains("ttl_ms=12000"));
+        assert!(written.contains("mode=line"));
+
+        // Loading the file applies it (labels off here → no label drawn).
+        load_prefs(&path);
+        update_positions(vec![(0, 0.0, 1.0, 0.5, "a_Dialogue".to_string())]);
+        assert!(!build_ass(1920, 1080).contains("Dialogue"));
+
+        std::fs::remove_file(&path).ok();
+        *overlay().prefs_path.lock().unwrap() = None;
     }
 
     #[test]
