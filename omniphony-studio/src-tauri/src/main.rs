@@ -2365,12 +2365,43 @@ fn mpv_overlay_set_trail_prefs(
     mode: String,
     teleport_threshold: f32,
 ) -> Result<(), String> {
+    // The mpv overlay is now generated in-process by orender (liborender.so),
+    // not pushed over the JSON IPC socket, so trail config travels as OSC
+    // control to the renderer. The legacy socket push below is harmless (the
+    // current overlay Lua ignores the `trail-config` property) and is kept so
+    // older mpv overlay scripts keep working.
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/overlay/trails".to_string(),
+            args: vec![
+                rosc::OscType::Int(if enabled { 1 } else { 0 }),
+                rosc::OscType::Int(ttl_ms as i32),
+                rosc::OscType::String(mode.clone()),
+                rosc::OscType::Float(teleport_threshold),
+            ],
+        },
+    );
     state.mpv_overlay.set_trail_prefs(TrailPrefs {
         enabled,
         ttl_ms,
         mode,
         teleport_threshold,
     })
+}
+
+/// Show/hide the whole mpv overlay. The overlay is now drawn in-process by
+/// orender, so the on/off toggle travels as OSC control to the renderer (not
+/// over the mpv IPC socket, which doesn't reach an atmos-ranker-launched mpv).
+#[tauri::command]
+fn mpv_overlay_set_active(state: State<SharedState>, enabled: bool) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/overlay/enabled".to_string(),
+            value: if enabled { 1 } else { 0 },
+        },
+    );
 }
 
 // ── main ─────────────────────────────────────────────────────────────────
@@ -2582,6 +2613,7 @@ fn main() {
             mpv_overlay_load_prefs,
             mpv_overlay_save_prefs,
             mpv_overlay_set_trail_prefs,
+            mpv_overlay_set_active,
         ])
         .run(tauri::generate_context!())
         .expect("error running Tauri application");

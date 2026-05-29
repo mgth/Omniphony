@@ -15,6 +15,7 @@ pub mod channel_layout;
 pub mod engine;
 pub mod events;
 pub mod osc;
+pub mod overlay;
 pub mod render;
 pub mod renderer_build;
 pub mod spatial;

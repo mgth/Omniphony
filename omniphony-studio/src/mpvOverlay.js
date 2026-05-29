@@ -130,6 +130,14 @@ export async function setMpvOverlayEnabled(enabled) {
   if (next === overlay.enabled) return;
   overlay.enabled = next;
   await savePrefs();
+  // The overlay is drawn in-process by orender now; show/hide travels as OSC
+  // control to the renderer (works regardless of the legacy mpv IPC socket).
+  try {
+    await invoke('mpv_overlay_set_active', { enabled: next });
+  } catch (e) {
+    pushLog('warn', `mpv overlay: set active failed: ${e}`);
+  }
+  // Legacy socket path: harmless when not connected (e.g. an atmos-ranker mpv).
   if (next) {
     await tryConnect();
   } else {

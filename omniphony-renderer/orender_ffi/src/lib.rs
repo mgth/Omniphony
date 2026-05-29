@@ -62,7 +62,8 @@ pub struct OrenderConfig {
 }
 
 const VERSION_MAJOR: u32 = 0;
-const VERSION_MINOR: u32 = 1;
+// 2: added orender_overlay_ass / orender_overlay_set_enabled (in-process overlay).
+const VERSION_MINOR: u32 = 2;
 
 unsafe fn opt_str<'a>(p: *const c_char) -> Option<&'a str> {
     if p.is_null() {
@@ -311,6 +312,52 @@ pub unsafe extern "C" fn orender_process(
         0
     }))
     .unwrap_or(-100)
+}
+
+/// Render the spatial overlay for the given OSD resolution and copy the ASS
+/// `osd-overlay` payload into `out` (UTF-8, not nul-terminated).
+///
+/// This *is* the overlay redraw: each call rebuilds the scene and advances the
+/// motion trails, so the host (the mpv Lua shim) must call it exactly once per
+/// redraw — typically on a periodic timer and on OSD resize. It also marks the
+/// overlay "active" so the engine starts feeding it (the engine does no overlay
+/// work until the first pull).
+///
+/// Returns the number of bytes the payload needs. If `out` is non-NULL and
+/// `cap >= len`, the first `len` bytes are written; otherwise nothing is written
+/// (the host should grow its buffer and skip this redraw — the next one fits).
+/// A handful of KiB is always enough; the output is bounded. Returns 0 when the
+/// overlay is disabled, the resolution is zero, or there is nothing to draw.
+///
+/// Handle-less by design: the overlay is a process-global singleton, and the Lua
+/// shim has no session handle (it `ffi.load`s this already-loaded library).
+#[no_mangle]
+pub unsafe extern "C" fn orender_overlay_ass(
+    res_x: u32,
+    res_y: u32,
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    catch_unwind(AssertUnwindSafe(|| {
+        let ass = orender_engine::overlay::build_ass(res_x, res_y);
+        let bytes = ass.as_bytes();
+        let n = bytes.len();
+        if !out.is_null() && cap >= n {
+            let dst = std::slice::from_raw_parts_mut(out, n);
+            dst.copy_from_slice(bytes);
+        }
+        n
+    }))
+    .unwrap_or(0)
+}
+
+/// Enable or disable the overlay (host keybind / script message). Disabling also
+/// makes the engine stop feeding it. `0` = off, non-zero = on.
+#[no_mangle]
+pub extern "C" fn orender_overlay_set_enabled(enabled: c_int) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        orender_engine::overlay::set_enabled(enabled != 0);
+    }));
 }
 
 /// ABI major version. A bump means a breaking change (new soname).

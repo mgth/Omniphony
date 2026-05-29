@@ -289,6 +289,10 @@ enum WriterMsg {
     /// Overlay snapshot — droppable. A new Frame *overwrites* any
     /// pending Frame already in the inbox so the writer thread always
     /// pulls the most recent state, never a backlog.
+    ///
+    /// Dead since the overlay moved in-process to orender (pulled over FFI);
+    /// retained with the rest of the socket frame path pending its removal.
+    #[allow(dead_code)]
     Frame(String),
     /// Trail prefs, reconnect re-push, etc. Must reach mpv; queued in
     /// FIFO order alongside frames.
@@ -320,6 +324,7 @@ impl Inbox {
 
     /// Replace any pending Frame with this one (latest-value),
     /// otherwise append. Returns `false` if the inbox is closed.
+    #[allow(dead_code)] // dead since the overlay moved in-process; see WriterMsg::Frame
     fn push_frame(&self, line: String) -> bool {
         let mut g = self.queue.lock().unwrap();
         let Some(q) = g.as_mut() else { return false };
@@ -376,6 +381,7 @@ impl Inbox {
 pub struct MpvOverlayState {
     inner: Mutex<Option<Arc<Inbox>>>,
     reconnect_path: Mutex<Option<String>>,
+    #[allow(dead_code)] // read only by the dormant frame-push self-heal path
     last_reconnect_at: Mutex<Option<Instant>>,
     /// Last trail prefs pushed by JS. Re-sent on every successful
     /// (re)connect so a fresh mpv picks them up without needing JS to
@@ -514,6 +520,7 @@ impl MpvOverlayState {
     /// Attempt to reconnect to the stored path. Called by the tick thread
     /// when the connection has been lost but the user hasn't disabled the
     /// overlay. Rate-limited internally to avoid hammering the socket.
+    #[allow(dead_code)] // dead since the overlay moved in-process; pending socket-path removal
     pub fn try_reconnect(&self) -> bool {
         if self.is_connected() {
             return false;
@@ -566,6 +573,7 @@ impl MpvOverlayState {
     /// pending in the inbox we overwrite it, so a temporarily slow
     /// mpv-side reader can't bury the writer under a backlog. Pacing is
     /// up to the caller (driven by the renderer's metering rate).
+    #[allow(dead_code)] // dead since the overlay moved in-process; pending socket-path removal
     pub fn try_send_throttled(&self, line: String) -> bool {
         let pushed = {
             let guard = self.inner.lock().unwrap();

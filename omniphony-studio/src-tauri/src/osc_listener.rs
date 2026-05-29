@@ -790,32 +790,11 @@ pub fn spawn_osc_task(
     listen_port_out: Arc<Mutex<u16>>,
     mpv_overlay: SharedOverlay,
 ) {
-    // Dedicated overlay-tick thread: snapshots the spatial state, builds a
-    // compact CSV, pushes it as a `user-data` property — lua picks it up
-    // and re-renders the OSD via libass. De-dup means a static scene
-    // generates no IPC traffic at all.
-    {
-        let state = state.clone();
-        let overlay = mpv_overlay.clone();
-        std::thread::spawn(move || {
-            let mut last_payload = String::new();
-            loop {
-                let period_ms = {
-                    let s = state.lock().unwrap();
-                    let hz = s.meter_rate_hz.unwrap_or(20.0);
-                    (1000.0 / hz.max(1.0)) as u64
-                };
-                std::thread::sleep(Duration::from_millis(period_ms.max(1)));
-                // Self-heal: if mpv restarted while we were connected, the
-                // writer thread has died but the user's intent is still
-                // "enabled". try_reconnect uses the stored path and is
-                // internally rate-limited.
-                overlay.try_reconnect();
-                push_mpv_overlay_frame(&state, &overlay, &mut last_payload);
-            }
-        });
-    }
-    let _ = mpv_overlay; // only used by the overlay-tick thread above
+    // The mpv overlay is now generated in-process by orender (liborender.so)
+    // and pulled over FFI by a small mpv Lua shim — Studio no longer snapshots
+    // the scene and pushes overlay frames over the JSON IPC socket. Overlay
+    // config (trails) travels as OSC control instead (see `mpv_overlay_set_trail_prefs`).
+    let _ = &mpv_overlay; // retained for the connect/trail-config Tauri commands
     std::thread::spawn(move || {
         osc_thread(
             app,
@@ -966,121 +945,11 @@ fn osc_thread(
     }
 }
 
-// ASS overlay path: Studio compacts the spatial scene into a CSV string and
-// writes it to `user-data/omniphony/overlay/frame`. The lua script observes
-// the property and re-emits an `osd-overlay` ass-events command. Lua
-// quantises position/size/colour so libass's drawing cache stays bounded.
-// (The earlier infinite freezes were not libass — they were mpv's reply
-// socket buffer filling because we never drained responses; see the reader
-// thread in mpv_overlay.rs.)
-
-// Mirror of `OBJECT_COLOR_PALETTE` in omniphony-studio/src/sources.js so the
-// overlay shows the same colour Studio's 3D view picks for the same object.
-const STUDIO_PALETTE: [&str; 16] = [
-    "FF6B6B", "4ECDC4", "FFE66D", "5DADE2",
-    "AF7AC5", "F5B041", "58D68D", "EC7063",
-    "48C9B0", "F4D03F", "5499C7", "A569BD",
-    "EB984E", "45B39D", "7FB3D5", "F1948A",
-];
-
-fn tag_color_hex(tag: &str) -> Option<&'static str> {
-    match tag {
-        "A" | "a" => Some("FF8B6B"),
-        "B" | "b" => Some("62D7C7"),
-        _ => None,
-    }
-}
-
-fn infer_tag_from_id(id: &str) -> Option<&'static str> {
-    let mut chars = id.chars();
-    let first = chars.next()?;
-    let second = chars.next()?;
-    if !(second == '_' || second == ':') {
-        return None;
-    }
-    match first {
-        'a' | 'A' => Some("A"),
-        'b' | 'B' => Some("B"),
-        _ => None,
-    }
-}
-
-fn hash_object_id(id: &str) -> u32 {
-    let mut h: u32 = 2166136261;
-    for b in id.bytes() {
-        h ^= b as u32;
-        h = h.wrapping_mul(16777619);
-    }
-    h
-}
-
-fn object_color_hex(id: &str, source_tag: Option<&str>) -> &'static str {
-    if let Some(c) = source_tag.and_then(tag_color_hex) {
-        return c;
-    }
-    if let Some(t) = infer_tag_from_id(id) {
-        if let Some(c) = tag_color_hex(t) {
-            return c;
-        }
-    }
-    let idx = if let Ok(n) = id.parse::<i64>() {
-        (n.unsigned_abs() as usize) % STUDIO_PALETTE.len()
-    } else {
-        (hash_object_id(id) as usize) % STUDIO_PALETTE.len()
-    };
-    STUDIO_PALETTE[idx]
-}
-
-fn push_mpv_overlay_frame(
-    state: &Arc<Mutex<AppState>>,
-    overlay: &SharedOverlay,
-    last_payload: &mut String,
-) {
-    if !overlay.is_connected() {
-        return;
-    }
-    use std::fmt::Write as _;
-    let payload = {
-        let s = state.lock().unwrap();
-        let mut buf = String::with_capacity(s.sources.len() * 40);
-        for (id, pos) in &s.sources {
-            if !buf.is_empty() {
-                buf.push(';');
-            }
-            // Restrict id to alnum+'_' so the resulting line is a valid
-            // JSON-safe single-token payload — no escaping dance.
-            for ch in id.chars() {
-                if ch.is_ascii_alphanumeric() || ch == '_' {
-                    buf.push(ch);
-                } else {
-                    buf.push('_');
-                }
-            }
-            let rms = s
-                .source_levels
-                .get(id)
-                .map(|m| m.rms_dbfs)
-                .unwrap_or(-100.0);
-            let color = object_color_hex(id, pos.source_tag.as_deref());
-            let _ = write!(
-                buf,
-                ",{:.3},{:.3},{:.3},{:.1},{}",
-                pos.x, pos.y, pos.z, rms, color
-            );
-        }
-        buf
-    };
-    if payload == *last_payload {
-        return;
-    }
-    last_payload.clear();
-    last_payload.push_str(&payload);
-    let line = format!(
-        r#"{{"command":["set_property","user-data/omniphony/overlay/frame","{}"]}}"#,
-        payload
-    );
-    overlay.try_send_throttled(line);
-}
+// The legacy "compact the scene into a CSV and push it to mpv over the JSON IPC
+// socket" overlay path lived here. The overlay is now generated in-process by
+// orender (see `orender_engine::overlay`) and pulled over FFI by the mpv Lua
+// shim, so Studio no longer builds frames or mirrors the colour palette — the
+// renderer owns both. Overlay config (trails) is sent as OSC control.
 
 fn handle_packet(
     packet: OscPacket,

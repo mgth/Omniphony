@@ -7,7 +7,8 @@
 
 use crate::bridge_loader::{LoadedBridge, find_bridge_next_to_exe};
 use crate::events::Configuration;
-use crate::osc::OscSender;
+use crate::osc::{ObjectMeta, OscSender};
+use crate::overlay;
 use crate::renderer_build::{SpatialRendererParams, build_spatial_renderer};
 use crate::{render, spatial, virtual_bed};
 use anyhow::{Result, anyhow, bail};
@@ -319,6 +320,8 @@ impl Engine {
         self.drc_gain = 1.0;
         self.drc_target_gain = 1.0;
         self.drc_ramp_samples_remaining = 0;
+        // Drop overlay scene + motion trails so they don't bridge the seek.
+        overlay::clear();
     }
 
     fn reset_segment_state(&mut self) {
@@ -396,6 +399,13 @@ impl Engine {
         let sample_pos_at_start = self.decoded_samples;
 
         let want_osc = self.osc.as_ref().is_some_and(|o| o.has_osc_clients());
+        // The mpv overlay is produced in-process by the `overlay` module and
+        // pulled over FFI; it needs the same object positions + meter levels as
+        // OSC, but independently of whether any OSC client is connected. It
+        // self-gates (only active once the host has pulled), so the CLI host
+        // pays nothing here.
+        let overlay_active = overlay::is_active();
+        let want_objects = want_osc || overlay_active;
 
         // Dialogue normalisation (from major-sync frames), applied once.
         if !self.loudness_applied {
@@ -430,8 +440,9 @@ impl Engine {
                 &mut self.frame_events,
             );
 
-            // Outgoing: broadcast object positions/names to OSC clients.
-            if want_osc {
+            // Outgoing: broadcast object positions/names to OSC clients and/or
+            // feed the in-process mpv overlay.
+            if want_objects {
                 for upd in meta.name_updates.iter() {
                     self.object_names.insert(upd.id, upd.name.to_string());
                 }
@@ -442,15 +453,24 @@ impl Engine {
                     Some(&layout),
                     &self.object_names,
                 );
-                let coord_fmt = match self.coordinate_format {
-                    RCoordinateFormat::Cartesian => 0,
-                    RCoordinateFormat::Polar => 1,
-                };
-                if let Some(osc) = self.osc.as_mut() {
-                    let _ =
-                        osc.send_object_frame(meta.sample_pos, meta.ramp_duration, coord_fmt, &objects);
-                    let seconds = meta.sample_pos as f64 / sample_rate as f64;
-                    let _ = osc.send_timestamp(meta.sample_pos, seconds);
+                if want_osc {
+                    let coord_fmt = match self.coordinate_format {
+                        RCoordinateFormat::Cartesian => 0,
+                        RCoordinateFormat::Polar => 1,
+                    };
+                    if let Some(osc) = self.osc.as_mut() {
+                        let _ = osc.send_object_frame(
+                            meta.sample_pos,
+                            meta.ramp_duration,
+                            coord_fmt,
+                            &objects,
+                        );
+                        let seconds = meta.sample_pos as f64 / sample_rate as f64;
+                        let _ = osc.send_timestamp(meta.sample_pos, seconds);
+                    }
+                }
+                if overlay_active {
+                    overlay::update_positions(overlay_positions(&objects));
                 }
             }
         }
@@ -498,8 +518,9 @@ impl Engine {
                 }
             }
 
-            // Outgoing: broadcast the virtual-bed channel poses as OSC objects.
-            if want_osc {
+            // Outgoing: broadcast the virtual-bed channel poses as OSC objects
+            // and/or feed the in-process mpv overlay.
+            if want_objects {
                 if let Some(objects) = virtual_bed::build_virtual_bed_objects(
                     &labels,
                     None,
@@ -508,8 +529,13 @@ impl Engine {
                     room_ratio_lower,
                     room_ratio_center_blend,
                 ) {
-                    if let Some(osc) = self.osc.as_mut() {
-                        let _ = osc.send_object_frame(sample_pos_at_start, 0, 0, &objects);
+                    if want_osc {
+                        if let Some(osc) = self.osc.as_mut() {
+                            let _ = osc.send_object_frame(sample_pos_at_start, 0, 0, &objects);
+                        }
+                    }
+                    if overlay_active {
+                        overlay::update_positions(overlay_positions(&objects));
                     }
                 }
             }
@@ -544,7 +570,18 @@ impl Engine {
         );
 
         // VU metering (outgoing): feed object PCM pre-render; speakers post-render.
-        let want_metering = self.osc.as_ref().is_some_and(|o| o.has_metering_clients());
+        // Needed for OSC metering clients and/or the in-process overlay (object
+        // circle radius tracks RMS).
+        let want_meter_osc = self.osc.as_ref().is_some_and(|o| o.has_metering_clients());
+        let want_metering = want_meter_osc || overlay_active;
+        // The overlay needs object levels even with no OSC client connected, so
+        // create the meter lazily if `enable_osc` never did (studio not running).
+        if want_metering && self.audio_meter.is_none() {
+            self.audio_meter = Some(AudioMeter::new_with_rate_atomic(
+                self.renderer.num_speakers(),
+                self.renderer.renderer_control().meter_rate_atomic(),
+            ));
+        }
         if want_metering {
             if let Some(meter) = self.audio_meter.as_mut() {
                 meter.update_channel_count(channel_count);
@@ -576,7 +613,15 @@ impl Engine {
             if let Some(meter) = self.audio_meter.as_mut() {
                 meter.process_speakers(&rendered.samples, n_channels as usize);
                 if let Some(snapshot) = meter.poll() {
-                    if let Some(osc) = self.osc.as_ref() {
+                    if overlay_active {
+                        let levels: Vec<(u32, f64)> = snapshot
+                            .object_levels
+                            .iter()
+                            .map(|&(id, _peak, rms)| (id, rms as f64))
+                            .collect();
+                        overlay::update_levels(&levels);
+                    }
+                    if let Some(osc) = self.osc.as_ref().filter(|_| want_meter_osc) {
                         // Latency/resample/adaptive args are output-stage specific
                         // and absent in the embedded host → None.
                         let _ = osc.send_meter_bundle(
@@ -613,4 +658,24 @@ impl Engine {
             sample_pos: sample_pos_at_start,
         }))
     }
+}
+
+/// Map the per-frame object metas to overlay positions `(id, x, y, z)`. The id
+/// is the object's frame index, matching the `/omniphony/object/{id}` OSC id, so
+/// the overlay keys colours and motion trails exactly as Studio did. Polar
+/// objects carry no front-view cartesian position, so they sit at the origin —
+/// identical to the previous Studio→Lua path, which zeroed non-cartesian
+/// positions before sending them to the overlay.
+fn overlay_positions(objects: &[ObjectMeta]) -> Vec<(u32, f64, f64, f64)> {
+    objects
+        .iter()
+        .enumerate()
+        .map(|(idx, o)| {
+            if o.coord_mode.eq_ignore_ascii_case("cartesian") {
+                (idx as u32, o.x as f64, o.y as f64, o.z as f64)
+            } else {
+                (idx as u32, 0.0, 0.0, 0.0)
+            }
+        })
+        .collect()
 }

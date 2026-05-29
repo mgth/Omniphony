@@ -133,6 +133,33 @@ int orender_process(struct OrenderRenderer *r,
                     int64_t *out_pts_us);
 
 /**
+ * Render the spatial overlay for the given OSD resolution and copy the ASS
+ * `osd-overlay` payload into `out` (UTF-8, not nul-terminated).
+ *
+ * This *is* the overlay redraw: each call rebuilds the scene and advances the
+ * motion trails, so the host (the mpv Lua shim) must call it exactly once per
+ * redraw — typically on a periodic timer and on OSD resize. It also marks the
+ * overlay "active" so the engine starts feeding it (the engine does no overlay
+ * work until the first pull).
+ *
+ * Returns the number of bytes the payload needs. If `out` is non-NULL and
+ * `cap >= len`, the first `len` bytes are written; otherwise nothing is written
+ * (the host should grow its buffer and skip this redraw — the next one fits).
+ * A handful of KiB is always enough; the output is bounded. Returns 0 when the
+ * overlay is disabled, the resolution is zero, or there is nothing to draw.
+ *
+ * Handle-less by design: the overlay is a process-global singleton, and the Lua
+ * shim has no session handle (it `ffi.load`s this already-loaded library).
+ */
+uintptr_t orender_overlay_ass(uint32_t res_x, uint32_t res_y, uint8_t *out, uintptr_t cap);
+
+/**
+ * Enable or disable the overlay (host keybind / script message). Disabling also
+ * makes the engine stop feeding it. `0` = off, non-zero = on.
+ */
+void orender_overlay_set_enabled(int enabled);
+
+/**
  * ABI major version. A bump means a breaking change (new soname).
  */
 uint32_t orender_version_major(void);

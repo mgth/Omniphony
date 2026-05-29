@@ -62,6 +62,63 @@ pub(crate) fn handle_control_message(
         }
         return;
     }
+
+    // mpv overlay configuration. The overlay itself is generated in-process by
+    // the `overlay` module and pulled over FFI; Studio only configures it here
+    // (it no longer transports overlay frames). These are transient view
+    // preferences — not persisted, so no `mark_dirty`.
+    if addr == "/omniphony/control/overlay/enabled" {
+        let enabled = match msg.args.first() {
+            Some(OscType::Int(i)) => *i != 0,
+            Some(OscType::Float(f)) => *f != 0.0,
+            Some(OscType::Bool(b)) => *b,
+            _ => return,
+        };
+        crate::overlay::set_enabled(enabled);
+        return;
+    }
+    if addr == "/omniphony/control/overlay/trails" {
+        // Args mirror Studio's former wire fields: enabled, ttl_ms, mode, teleport.
+        let enabled = match msg.args.first() {
+            Some(OscType::Int(i)) => *i != 0,
+            Some(OscType::Float(f)) => *f != 0.0,
+            Some(OscType::Bool(b)) => *b,
+            _ => return,
+        };
+        let ttl_ms = match msg.args.get(1) {
+            Some(OscType::Int(i)) if *i >= 0 => *i as u32,
+            Some(OscType::Float(f)) if *f >= 0.0 => *f as u32,
+            _ => 7000,
+        };
+        let diffuse = matches!(
+            msg.args.get(2),
+            Some(OscType::String(s)) if s.eq_ignore_ascii_case("diffuse")
+        );
+        let teleport = match msg.args.get(3) {
+            Some(OscType::Float(f)) => *f as f64,
+            Some(OscType::Int(i)) => *i as f64,
+            _ => 0.0,
+        };
+        crate::overlay::set_trail_config(enabled, ttl_ms, diffuse, teleport);
+        return;
+    }
+    if addr == "/omniphony/control/overlay/tag" {
+        // [id, tag]: tag "A"/"B" sets an override colour, anything else clears it.
+        let Some(id) = msg.args.first().and_then(|a| match a {
+            OscType::Int(v) if *v >= 0 => Some(*v as u32),
+            OscType::Float(v) if *v >= 0.0 => Some(*v as u32),
+            OscType::String(s) => s.parse::<u32>().ok(),
+            _ => None,
+        }) else {
+            return;
+        };
+        let tag = match msg.args.get(1) {
+            Some(OscType::String(s)) => s.chars().next().filter(|c| matches!(c, 'A' | 'a' | 'B' | 'b')),
+            _ => None,
+        };
+        crate::overlay::set_tag(id, tag);
+        return;
+    }
     let runtime_ctx = RuntimeControlContext::with_shared_state(
         Arc::clone(control),
         Arc::clone(&realtime_seq.heatmap_sub),
