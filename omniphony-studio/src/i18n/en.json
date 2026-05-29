@@ -233,7 +233,6 @@
   "display.objectSphereSize": "Object sphere size",
   "display.objectLabels": "Object labels",
   "display.showObjectDetails": "Show object details",
-  "display.speakers": "Speakers",
   "display.speakerSize": "Speaker size",
   "display.grid": "Grid",
   "vbap.title": "VBAP",
@@ -417,5 +416,11 @@
   "speaker.delayTools": "Delay tools",
   "speaker.calcDelays": "Calc delays",
   "speaker.delayToDist": "Delay → Dist",
-  "speaker.spatialize": "Spatialize"
+  "speaker.spatialize": "Spatialize",
+  "display.speakerLabels": "Speaker labels",
+  "mpvOverlay.title": "mpv overlay",
+  "speaker.freqLow": "Freq. min (Hz)",
+  "telemetry.diagPlotToggle": "Toggle diagnostic-metrics plot",
+  "log.stateLoaded": "Initial state loaded.",
+  "log.stateLoadFailed": "Failed to load initial state: {error}"
 }

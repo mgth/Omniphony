@@ -233,7 +233,6 @@
   "display.objectSphereSize": "Taille de sphère d'objet",
   "display.objectLabels": "Étiquettes d'objets",
   "display.showObjectDetails": "Détails des objets",
-  "display.speakers": "Enceintes",
   "display.speakerSize": "Taille des enceintes",
   "display.grid": "Grille",
   "vbap.title": "VBAP",
@@ -292,7 +291,7 @@
   "adaptive.resume": "Reprendre",
   "adaptive.resetRatio": "Réinitialiser le ratio",
   "adaptive.infoTitle": "Contrôles de latence",
-  "adaptive.infoBody": "Ce panneau regroupe maintenant deux familles de réglages.<br><br><strong>Actions globales du mode far</strong> : elles s’appliquent dès que la dérive de latence dépasse le <strong>Seuil far</strong>, même si le resampling adaptatif est coupé.<br><strong>Seuil far</strong> : seuil d’erreur, en millisecondes de dérive du buffer, à partir duquel les actions du mode far peuvent s’activer.<br><strong>Récupération dure haute en mode far</strong> : jette agressivement de l’audio en buffer quand la latence est trop haute pour revenir plus vite vers la cible.<br><strong>Récupération dure basse en mode far</strong> : coupe temporairement la sortie et reconstruit la latence quand elle tombe trop bas, puis stabilise avant le fade-in.<br><strong>Silence en mode far</strong> : coupe la sortie pendant la récupération en mode far.<br><strong>Fade-In au retour en near</strong> : fade appliqué quand le mute du mode far se termine et que le son redevient audible.<br><br><strong>Contrôleur de resampling local</strong> : ces réglages n’ont d’effet que lorsque <strong>Adaptive resampling</strong> est activé.<br><strong>Intervalle de mise à jour</strong> : fréquence de mise à jour du contrôleur PI, en callbacks audio.<br><strong>Max adaptatif</strong> : limite maximale appliquée au ratio de correction du resampling local.<br><strong>KP adaptatif</strong> : gain proportionnel. Des valeurs plus hautes réagissent plus vite à l’erreur instantanée du buffer.<br><strong>Ki adaptatif</strong> : gain intégral. Il corrige le biais de long terme et les écarts d’horloge.<br><strong>Décharge intégrale</strong> : fraction de l’intégrale conservée quand l’erreur change de signe. Des valeurs plus basses déchargent plus agressivement l’énergie accumulée par le contrôleur.<br><br><strong>Pause</strong> fige le contrôleur de resampling, et <strong>Réinitialiser le ratio</strong> n’est disponible qu’en pause pour ramener le ratio à sa valeur neutre.",
+  "adaptive.infoBody": "Ce panneau regroupe désormais deux familles de réglages.<br><br><strong>Actions globales du mode far</strong> s'appliquent dès que la dérive de latence dépasse la <strong>Marge d'entrée high-recover</strong>, même si le resampling adaptatif est désactivé.<br><strong>Marge d'entrée high-recover</strong> : erreur au-dessus de la cible, en millisecondes de dérive du buffer, à partir de laquelle les actions du mode far côté haut deviennent éligibles.<br><strong>Récupération dure haute en mode far</strong> : jette agressivement de l'audio en buffer pour revenir plus vite vers la cible quand la latence est trop haute (éligible au-delà de la marge d'entrée high-recover).<br><strong>Récupération dure basse en mode far</strong> : coupe temporairement la sortie et reconstruit la latence du buffer quand elle tombe sous la cible de la <strong>Marge d'entrée low-recover</strong>, puis stabilise avant le fade-in.<br><strong>Silence en mode far</strong> : coupe la sortie pendant que la récupération du mode far est active.<br><strong>Fade-In au retour en near</strong> : fade appliqué quand le mute du mode far se termine et que la lecture redevient audible.<br><br><strong>Contrôleur de resampling local</strong> ne s'applique que lorsque <strong>Resampling adaptatif</strong> est activé.<br><strong>Intervalle de mise à jour</strong> : fréquence de mise à jour du contrôleur PI, en callbacks audio.<br><strong>Max adaptatif</strong> : limite de correction maximale appliquée au ratio de resampling local.<br><strong>KP adaptatif</strong> : gain proportionnel. Des valeurs plus hautes réagissent plus vite à l'erreur instantanée du buffer.<br><strong>Ki adaptatif</strong> : gain intégral. Il corrige le biais de long terme et les écarts d'horloge.<br><strong>Décharge intégrale</strong> : fraction de l'intégrale conservée quand l'erreur change de signe. Des valeurs plus basses déchargent plus agressivement l'énergie accumulée par le contrôleur.<br><br><strong>Pause</strong> fige le contrôleur de resampling, et <strong>Réinitialiser le ratio</strong> est disponible en pause pour ramener le ratio à neutre.",
   "telemetry.infoButton": "Infos panneau de latence",
   "telemetry.toggle": "Afficher les contrôles de latence",
   "telemetry.targetMarkerTitle": "Marqueur de latence cible",
@@ -415,5 +414,13 @@
   "speaker.delayTools": "Outils de délai",
   "speaker.calcDelays": "Calculer délais",
   "speaker.delayToDist": "Délai → Dist",
-  "speaker.spatialize": "Spatialiser"
+  "speaker.spatialize": "Spatialiser",
+  "display.speakerLabels": "Étiquettes des enceintes",
+  "mpvOverlay.title": "Overlay mpv",
+  "speaker.freqLow": "Fréq. min (Hz)",
+  "telemetry.diagPlotToggle": "Afficher/masquer le graphe des métriques de diagnostic",
+  "log.stateLoaded": "État initial chargé.",
+  "log.stateLoadFailed": "Échec du chargement de l'état initial : {error}",
+  "telemetry.lowExitMarkerTitle": "Repère de sortie de récupération basse de la jauge de latence",
+  "telemetry.lowThresholdMarkerTitle": "Repère d'entrée de récupération basse de la jauge de latence"
 }
