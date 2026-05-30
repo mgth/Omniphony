@@ -69,6 +69,7 @@ import {
   renderVbapStatus,
   renderEvaluationMode,
   renderExperimentalDistanceOptions,
+  renderHybridOptions,
   renderRenderBackend,
   renderVbapCartesian,
   renderVbapPolar
@@ -103,6 +104,7 @@ flushCallbacks.renderEvaluationMode = renderEvaluationMode;
 flushCallbacks.renderRenderBackend = renderRenderBackend;
 flushCallbacks.renderBarycenterOptions = renderBarycenterOptions;
 flushCallbacks.renderExperimentalDistanceOptions = renderExperimentalDistanceOptions;
+flushCallbacks.renderHybridOptions = renderHybridOptions;
 flushCallbacks.renderVbapCartesian = renderVbapCartesian;
 flushCallbacks.renderVbapPolar = renderVbapPolar;
 flushCallbacks.renderLoudnessDisplay = renderLoudnessDisplay;

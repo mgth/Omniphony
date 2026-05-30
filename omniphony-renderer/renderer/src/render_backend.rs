@@ -1,6 +1,7 @@
 mod barycenter_backend;
 mod evaluation_artifact;
 mod experimental_distance_backend;
+mod hybrid_backend;
 pub mod size_to_spread;
 mod vbap_backend;
 
@@ -15,6 +16,7 @@ pub use evaluation_artifact::{
     BackendRestoreSnapshot, SerializedEvaluationMode, build_backend_restore_snapshot,
 };
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
+pub use hybrid_backend::{BlendCurve, HybridBackend};
 pub use size_to_spread::{SizeToSpreadMode, reduce_size_to_spread};
 pub use vbap_backend::VbapBackend;
 
@@ -49,6 +51,7 @@ pub enum GainModelKind {
     Vbap,
     Barycenter,
     ExperimentalDistance,
+    Hybrid,
 }
 
 impl GainModelKind {
@@ -64,6 +67,7 @@ impl GainModelKind {
         match normalized.as_str() {
             "barycentre" | "barycenter" => Some(Self::Barycenter),
             "distance" | "distance_based" => Some(Self::ExperimentalDistance),
+            "hybrid" => Some(Self::Hybrid),
             _ => None,
         }
     }
@@ -75,6 +79,7 @@ pub enum RenderBackendKind {
     Vbap,
     Barycenter,
     ExperimentalDistance,
+    Hybrid,
 }
 
 impl RenderBackendKind {
@@ -90,6 +95,7 @@ impl RenderBackendKind {
         match normalized.as_str() {
             "barycentre" | "barycenter" => Some(Self::Barycenter),
             "distance" | "distance_based" => Some(Self::ExperimentalDistance),
+            "hybrid" => Some(Self::Hybrid),
             _ => None,
         }
     }
@@ -109,6 +115,7 @@ impl From<GainModelKind> for RenderBackendKind {
             GainModelKind::Vbap => Self::Vbap,
             GainModelKind::Barycenter => Self::Barycenter,
             GainModelKind::ExperimentalDistance => Self::ExperimentalDistance,
+            GainModelKind::Hybrid => Self::Hybrid,
         }
     }
 }
@@ -119,7 +126,7 @@ impl From<RenderBackendKind> for GainModelKind {
     }
 }
 
-const BACKEND_DESCRIPTORS: [BackendDescriptor; 3] = [
+const BACKEND_DESCRIPTORS: [BackendDescriptor; 4] = [
     BackendDescriptor {
         kind: RenderBackendKind::Vbap,
         gain_model_kind: GainModelKind::Vbap,
@@ -137,6 +144,12 @@ const BACKEND_DESCRIPTORS: [BackendDescriptor; 3] = [
         gain_model_kind: GainModelKind::ExperimentalDistance,
         id: "experimental_distance",
         label: "Distance",
+    },
+    BackendDescriptor {
+        kind: RenderBackendKind::Hybrid,
+        gain_model_kind: GainModelKind::Hybrid,
+        id: "hybrid",
+        label: "Hybrid",
     },
 ];
 

@@ -71,6 +71,7 @@ export const dirty = {
   spread: false,
   barycenter: false,
   experimentalDistance: false,
+  hybrid: false,
   vbapMode: false,
   renderBackend: false,
   vbapCartesian: false,
@@ -134,8 +135,15 @@ export const app = {
       positionErrorFloor: null,
       positionErrorNearestScale: null,
       positionErrorSpanScale: null
+    },
+    hybrid: {
+      externalBackend: null,
+      internalBackend: null,
+      curve: null
     }
   },
+  // Which inner backend's parameter tab is shown while the hybrid backend is active.
+  hybridParamTab: null,
   vbapPositionInterpolation: null,
   vbapAllowNegativeZ: null,
   vbapRecomputing: null,

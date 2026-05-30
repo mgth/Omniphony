@@ -1656,6 +1656,64 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/hybrid/") {
+        let mut live = ctx.renderer.live.write().unwrap();
+        let mut changed = false;
+        match rest {
+            "external_backend" | "internal_backend" => {
+                if let Some(value) = parse_string_arg(msg.args.first()) {
+                    let normalized = value.trim().to_ascii_lowercase();
+                    // Only concrete backends are valid inner models (no nested hybrid).
+                    if matches!(
+                        normalized.as_str(),
+                        "vbap" | "barycenter" | "experimental_distance"
+                    ) {
+                        let slot = if rest == "external_backend" {
+                            &mut live.hybrid.external_backend_id
+                        } else {
+                            &mut live.hybrid.internal_backend_id
+                        };
+                        if *slot != normalized {
+                            *slot = normalized.clone();
+                            changed = true;
+                            effects.log_message = Some(format!("OSC: hybrid/{rest} -> {normalized}"));
+                        }
+                    }
+                }
+            }
+            "curve" => {
+                // Flat list of (x, y) pairs: x0, y0, x1, y1, …
+                let mut values: Vec<f32> = Vec::with_capacity(msg.args.len());
+                let mut valid = true;
+                for arg in &msg.args {
+                    match parse_f32_arg(Some(arg)) {
+                        Some(v) => values.push(v),
+                        None => {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+                if valid && values.len() >= 4 && values.len() % 2 == 0 {
+                    live.hybrid.curve = values
+                        .chunks_exact(2)
+                        .map(|pair| [pair[0].clamp(0.0, 1.0), pair[1].clamp(0.0, 1.0)])
+                        .collect();
+                    changed = true;
+                    effects.log_message =
+                        Some(format!("OSC: hybrid/curve -> {} points", live.hybrid.curve.len()));
+                }
+            }
+            _ => {}
+        }
+
+        if changed {
+            effects.mark_dirty = true;
+            effects.trigger_layout_recompute = true;
+        }
+        return Some(effects);
+    }
+
     if addr == "/omniphony/control/room_ratio" {
         if msg.args.len() >= 3 {
             let w = parse_f32_arg(msg.args.first());

@@ -38,6 +38,7 @@ export const flushCallbacks = {
   renderRenderBackend: null,
   renderBarycenterOptions: null,
   renderExperimentalDistanceOptions: null,
+  renderHybridOptions: null,
   renderVbapCartesian: null,
   renderVbapPolar: null,
   renderLoudnessDisplay: null,
@@ -160,6 +161,11 @@ export function flushUI() {
   if (dirty.experimentalDistance) {
     flushCallbacks.renderExperimentalDistanceOptions?.();
     dirty.experimentalDistance = false;
+  }
+
+  if (dirty.hybrid) {
+    flushCallbacks.renderHybridOptions?.();
+    dirty.hybrid = false;
   }
 
   if (dirty.vbapCartesian) {

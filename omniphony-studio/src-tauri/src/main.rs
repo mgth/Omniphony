@@ -741,6 +741,63 @@ fn control_experimental_distance_position_error_span_scale(state: State<SharedSt
 }
 
 #[tauri::command]
+fn control_hybrid_external_backend(state: State<SharedState>, value: String) {
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(
+        normalized.as_str(),
+        "vbap" | "barycenter" | "experimental_distance"
+    ) {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/hybrid/external_backend".to_string(),
+            value: normalized,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_hybrid_internal_backend(state: State<SharedState>, value: String) {
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(
+        normalized.as_str(),
+        "vbap" | "barycenter" | "experimental_distance"
+    ) {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/hybrid/internal_backend".to_string(),
+            value: normalized,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_hybrid_curve(state: State<SharedState>, points: Vec<[f32; 2]>) {
+    // Flatten (x, y) control points into a single float list, clamped to [0, 1].
+    let args = points
+        .iter()
+        .flat_map(|point| {
+            [
+                rosc::OscType::Float(point[0].clamp(0.0, 1.0)),
+                rosc::OscType::Float(point[1].clamp(0.0, 1.0)),
+            ]
+        })
+        .collect();
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/hybrid/curve".to_string(),
+            args,
+        },
+    );
+}
+
+#[tauri::command]
 fn control_render_evaluation_cartesian_x_size(state: State<SharedState>, value: i32) {
     send_control(
         &state.osc_tx,
@@ -789,7 +846,7 @@ fn control_render_backend(state: State<SharedState>, value: String) {
     let normalized = value.trim().to_ascii_lowercase();
     if !matches!(
         normalized.as_str(),
-        "vbap" | "barycenter" | "experimental_distance"
+        "vbap" | "barycenter" | "experimental_distance" | "hybrid"
     ) {
         return;
     }
@@ -2496,6 +2553,9 @@ fn main() {
             control_experimental_distance_position_error_floor,
             control_experimental_distance_position_error_nearest_scale,
             control_experimental_distance_position_error_span_scale,
+            control_hybrid_external_backend,
+            control_hybrid_internal_backend,
+            control_hybrid_curve,
             control_render_evaluation_cartesian_x_size,
             control_render_evaluation_cartesian_y_size,
             control_render_evaluation_cartesian_z_size,

@@ -799,6 +799,7 @@ impl SpatialRenderer {
             drc_weight: 1.0,
             experimental_distance: crate::live_params::ExperimentalDistanceLiveParams::default(),
             barycenter: crate::live_params::BarycenterLiveParams::default(),
+            hybrid: crate::live_params::HybridLiveParams::default(),
         }
     }
 

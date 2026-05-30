@@ -177,6 +177,15 @@ pub struct BarycenterState {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct HybridState {
+    #[serde(rename = "externalBackend", alias = "external_backend")]
+    pub external_backend: Option<String>,
+    #[serde(rename = "internalBackend", alias = "internal_backend")]
+    pub internal_backend: Option<String>,
+    pub curve: Vec<[f64; 2]>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RenderBackendState {
     pub selection: Option<String>,
     pub effective: Option<String>,
@@ -197,6 +206,7 @@ pub struct RenderBackendState {
     pub barycenter: BarycenterState,
     #[serde(rename = "experimentalDistance", alias = "experimental_distance")]
     pub experimental_distance: ExperimentalDistanceState,
+    pub hybrid: HybridState,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

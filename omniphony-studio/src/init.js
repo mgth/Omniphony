@@ -182,6 +182,7 @@ export function applyInitState(payload) {
         selection === 'vbap'
         || selection === 'barycenter'
         || selection === 'experimental_distance'
+        || selection === 'hybrid'
       ) {
         app.renderBackendState.selection = selection;
       }
@@ -192,6 +193,7 @@ export function applyInitState(payload) {
         effective === 'vbap'
         || effective === 'barycenter'
         || effective === 'experimental_distance'
+        || effective === 'hybrid'
       ) {
         app.renderBackendState.effective = effective;
       }
@@ -229,6 +231,28 @@ export function applyInitState(payload) {
         typeof experimentalDistance.positionErrorNearestScale === 'number' ? experimentalDistance.positionErrorNearestScale : null;
       app.renderBackendState.experimentalDistance.positionErrorSpanScale =
         typeof experimentalDistance.positionErrorSpanScale === 'number' ? experimentalDistance.positionErrorSpanScale : null;
+    }
+    const hybrid = payload.renderBackendState.hybrid;
+    if (hybrid && typeof hybrid === 'object') {
+      const validInner = (id) =>
+        id === 'vbap' || id === 'barycenter' || id === 'experimental_distance';
+      const external = typeof hybrid.externalBackend === 'string'
+        ? hybrid.externalBackend.trim().toLowerCase()
+        : null;
+      const internal = typeof hybrid.internalBackend === 'string'
+        ? hybrid.internalBackend.trim().toLowerCase()
+        : null;
+      app.renderBackendState.hybrid.externalBackend = validInner(external) ? external : null;
+      app.renderBackendState.hybrid.internalBackend = validInner(internal) ? internal : null;
+      app.renderBackendState.hybrid.curve = Array.isArray(hybrid.curve)
+        ? hybrid.curve
+          .filter((point) => Array.isArray(point) && point.length === 2
+            && Number.isFinite(point[0]) && Number.isFinite(point[1]))
+          .map((point) => [
+            Math.min(1, Math.max(0, point[0])),
+            Math.min(1, Math.max(0, point[1]))
+          ])
+        : null;
     }
   }
   if (payload.renderEvaluationModeState && typeof payload.renderEvaluationModeState === 'object') {

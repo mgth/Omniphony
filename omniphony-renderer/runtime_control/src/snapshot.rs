@@ -25,6 +25,13 @@ pub struct BarycenterOptionsSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct HybridOptionsSnapshot {
+    pub external_backend: String,
+    pub internal_backend: String,
+    pub curve: Vec<[f32; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RenderBackendStateSnapshot {
     pub selection: String,
     pub effective: String,
@@ -36,6 +43,7 @@ pub struct RenderBackendStateSnapshot {
     pub restore_backend_available: bool,
     pub barycenter: BarycenterOptionsSnapshot,
     pub experimental_distance: ExperimentalDistanceOptionsSnapshot,
+    pub hybrid: HybridOptionsSnapshot,
 }
 
 fn allowed_evaluation_modes(
@@ -81,6 +89,11 @@ pub fn build_render_backend_state_snapshot(
             position_error_floor: live.experimental_distance.position_error_floor,
             position_error_nearest_scale: live.experimental_distance.position_error_nearest_scale,
             position_error_span_scale: live.experimental_distance.position_error_span_scale,
+        },
+        hybrid: HybridOptionsSnapshot {
+            external_backend: live.hybrid.external_backend_id.clone(),
+            internal_backend: live.hybrid.internal_backend_id.clone(),
+            curve: live.hybrid.curve.clone(),
         },
     }
 }

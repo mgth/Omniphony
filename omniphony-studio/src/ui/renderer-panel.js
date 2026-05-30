@@ -145,13 +145,14 @@ export function rendererPanelMarkup() {
 	                <option value="vbap">VBAP</option>
 	                <option value="barycenter">Barycenter</option>
 	                <option value="experimental_distance">Distance</option>
+	                <option value="hybrid">Hybrid</option>
 	              </select>
               <button id="restoreBackendBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Restore backend</button>
               <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
             </div>
           </div>
             <div id="backendParametersSectionContent" class="conditional-params open">
-          <div id="backendSpecificParamsSection">
+          <div id="backendSpecificParamsSection" style="display:flex;flex-direction:column">
           <div class="control-row" id="distanceModelControlRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
             <div class="title-with-info" style="font-size:12px;font-weight:600;min-width:0">
               <label for="distanceModelSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="distance.model">Distance model</label>
@@ -276,6 +277,42 @@ export function rendererPanelMarkup() {
                 <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
                   <label for="experimentalDistanceSpanScaleInput" style="font-size:12px;white-space:nowrap;color:#ffffff">Span scale</label>
                   <input id="experimentalDistanceSpanScaleInput" class="delay-input" type="number" min="0" step="0.01" style="min-width:7rem" />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="info-section" id="hybridSection" style="margin:0;padding:0;border:none;background:none;display:none;order:-1">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div class="title-with-info" style="margin:0;font-size:12px;font-weight:600;color:#ffffff">
+                <span data-i18n="hybrid.title">Hybrid backend</span>
+                <button id="hybridInfoBtn" type="button" class="info-icon-btn" data-i18n-title="hybrid.infoButton" title="Hybrid backend info">i</button>
+              </div>
+            </div>
+            <div id="hybridSectionContent" class="conditional-params open">
+              <div id="hybridParamTabs" style="display:flex;gap:0.25rem;margin-top:0.25rem;flex-wrap:wrap"></div>
+              <div id="hybridConfigPanel">
+                <div style="margin-top:0.2rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.3rem">
+                  <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                    <label for="hybridExternalBackendSelect" style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="hybrid.external">External backend (ratio = 1)</label>
+                    <select id="hybridExternalBackendSelect" class="delay-input" style="min-width:9rem">
+                      <option value="vbap">VBAP</option>
+                      <option value="barycenter">Barycenter</option>
+                      <option value="experimental_distance">Distance</option>
+                    </select>
+                  </div>
+                  <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                    <label for="hybridInternalBackendSelect" style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="hybrid.internal">Internal backend (ratio = 0)</label>
+                    <select id="hybridInternalBackendSelect" class="delay-input" style="min-width:9rem">
+                      <option value="vbap">VBAP</option>
+                      <option value="barycenter">Barycenter</option>
+                      <option value="experimental_distance">Distance</option>
+                    </select>
+                  </div>
+                  <div style="font-size:11px;color:#b8b8b8;margin-top:0.1rem">
+                    <span data-i18n="hybrid.curveHint">Blend curve — X: distance (center → cube surface), Y: external ratio. Double-click to add a point, double-click a point to remove it.</span>
+                  </div>
+                  <canvas id="hybridCurveCanvas" width="320" height="180" style="width:100%;height:180px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.12);border-radius:6px;cursor:crosshair;touch-action:none"></canvas>
+                  <div id="hybridCurveReadout" style="font-size:11px;color:#9fdcff;min-height:1em">—</div>
                 </div>
               </div>
             </div>

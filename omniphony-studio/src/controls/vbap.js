@@ -9,6 +9,7 @@ import { t, tf } from '../i18n.js';
 import { formatNumber } from '../coordinates.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inRendererPanel } from '../ui/panel-roots.js';
+import { renderHybridCurve } from './hybrid-curve.js';
 
 function getVbapStatusEl() { return inRendererPanel('vbapStatus'); }
 function getRenderBackendSelectEl() { return inRendererPanel('renderBackendSelect'); }
@@ -26,6 +27,11 @@ function getDistanceDiffuseSectionEl() { return inRendererPanel('distanceDiffuse
 function getSpreadFromDistanceSectionEl() { return inRendererPanel('spreadFromDistanceSection'); }
 function getBarycenterSectionEl() { return inRendererPanel('barycenterSection'); }
 function getExperimentalDistanceSectionEl() { return inRendererPanel('experimentalDistanceSection'); }
+function getHybridSectionEl() { return inRendererPanel('hybridSection'); }
+function getHybridExternalBackendSelectEl() { return inRendererPanel('hybridExternalBackendSelect'); }
+function getHybridInternalBackendSelectEl() { return inRendererPanel('hybridInternalBackendSelect'); }
+function getHybridParamTabsEl() { return inRendererPanel('hybridParamTabs'); }
+function getHybridConfigPanelEl() { return inRendererPanel('hybridConfigPanel'); }
 function getVbapCartXSizeInputEl() { return inRendererPanel('vbapCartXSizeInput'); }
 function getVbapCartYSizeInputEl() { return inRendererPanel('vbapCartYSizeInput'); }
 function getVbapCartZSizeInputEl() { return inRendererPanel('vbapCartZSizeInput'); }
@@ -82,6 +88,7 @@ function backendLabel(backend) {
   if (backend === 'vbap') return 'VBAP';
   if (backend === 'barycenter') return 'Barycenter';
   if (backend === 'experimental_distance') return 'Distance';
+  if (backend === 'hybrid') return 'Hybrid';
   return backend || '—';
 }
 
@@ -95,12 +102,41 @@ function applyRendererBackendVisibility(backend) {
   const spreadFromDistanceSectionEl = getSpreadFromDistanceSectionEl();
   const experimentalDistanceSectionEl = getExperimentalDistanceSectionEl();
   const barycenterSectionEl = getBarycenterSectionEl();
+  const hybridSectionEl = getHybridSectionEl();
+  const hybridConfigPanelEl = getHybridConfigPanelEl();
   const capabilities = backendCapabilities();
-  const supportsDistanceModel = capabilities?.supportsDistanceModel === true;
-  const supportsSpread = capabilities?.supportsSpread === true;
-  const supportsDistanceDiffuse = capabilities?.supportsDistanceDiffuse === true;
-  const showsBarycenter = backend === 'barycenter';
-  const showsExperimentalDistance = backend === 'experimental_distance';
+  const isHybrid = backend === 'hybrid';
+
+  // The base backend whose individual parameters are currently displayed.
+  // In hybrid mode that's the active inner-backend tab; otherwise the active
+  // backend itself. VBAP-specific sections (spread, distance model, …) are
+  // gated by capabilities for the active backend, but in hybrid mode VBAP is an
+  // inner model that consumes those same shared params, so we show them when the
+  // VBAP tab is active.
+  let paramBackend = backend;
+  let hybridTab = null;
+  if (isHybrid) {
+    hybridTab = resolveHybridParamTab();
+    // The 'hybrid' tab shows the mix config (selects + curve); the other tabs
+    // each show one inner backend's parameters.
+    paramBackend = hybridTab === 'hybrid' ? null : hybridTab;
+  }
+
+  const supportsDistanceModel = isHybrid
+    ? paramBackend === 'vbap'
+    : capabilities?.supportsDistanceModel === true;
+  const supportsSpread = isHybrid
+    ? paramBackend === 'vbap'
+    : capabilities?.supportsSpread === true;
+  const supportsDistanceDiffuse = isHybrid
+    ? paramBackend === 'vbap'
+    : capabilities?.supportsDistanceDiffuse === true;
+  const supportsSpreadFromDistance = isHybrid
+    ? paramBackend === 'vbap'
+    : capabilities?.supportsSpreadFromDistance === true;
+  const showsBarycenter = paramBackend === 'barycenter';
+  const showsExperimentalDistance = paramBackend === 'experimental_distance';
+  const showsHybrid = isHybrid;
   if (backendParametersSectionEl) {
     backendParametersSectionEl.style.display = '';
   }
@@ -108,9 +144,13 @@ function applyRendererBackendVisibility(backend) {
     evaluationSectionEl.style.display = '';
   }
   if (backendSpecificParamsSectionEl) {
+    // Keep `flex` (not '') so the inline `flex-direction:column` + `order:-1` on
+    // the hybrid section stay in effect — the hybrid tab bar must render above
+    // all tab content, including the inner-backend param sections that follow it
+    // in the DOM.
     backendSpecificParamsSectionEl.style.display =
-      supportsDistanceModel || supportsSpread || supportsDistanceDiffuse || showsBarycenter || showsExperimentalDistance
-        ? ''
+      supportsDistanceModel || supportsSpread || supportsDistanceDiffuse || showsBarycenter || showsExperimentalDistance || showsHybrid
+        ? 'flex'
         : 'none';
   }
   if (distanceModelControlRowEl) {
@@ -123,8 +163,7 @@ function applyRendererBackendVisibility(backend) {
     distanceDiffuseSectionEl.style.display = supportsDistanceDiffuse ? '' : 'none';
   }
   if (spreadFromDistanceSectionEl) {
-    spreadFromDistanceSectionEl.style.display =
-      capabilities?.supportsSpreadFromDistance === true ? '' : 'none';
+    spreadFromDistanceSectionEl.style.display = supportsSpreadFromDistance ? '' : 'none';
   }
   if (experimentalDistanceSectionEl) {
     experimentalDistanceSectionEl.style.display = showsExperimentalDistance ? '' : 'none';
@@ -132,6 +171,41 @@ function applyRendererBackendVisibility(backend) {
   if (barycenterSectionEl) {
     barycenterSectionEl.style.display = showsBarycenter ? '' : 'none';
   }
+  if (hybridSectionEl) {
+    hybridSectionEl.style.display = showsHybrid ? '' : 'none';
+  }
+  if (hybridConfigPanelEl) {
+    hybridConfigPanelEl.style.display = isHybrid && hybridTab === 'hybrid' ? '' : 'none';
+  }
+}
+
+/** Distinct inner backends currently selected for the hybrid backend. */
+function hybridInnerBackends() {
+  const state = app.renderBackendState.hybrid || {};
+  const external = typeof state.externalBackend === 'string' ? state.externalBackend : 'vbap';
+  const internal = typeof state.internalBackend === 'string' ? state.internalBackend : 'barycenter';
+  return external === internal ? [external] : [external, internal];
+}
+
+/** Tab list for the hybrid backend: the mix config tab plus each inner backend. */
+function hybridTabList() {
+  return ['hybrid', ...hybridInnerBackends()];
+}
+
+/** Active hybrid tab ('hybrid' for the mix config, otherwise an inner backend). */
+function resolveHybridParamTab() {
+  const tabs = hybridTabList();
+  let active = app.hybridParamTab;
+  if (!tabs.includes(active)) {
+    active = tabs[0];
+  }
+  app.hybridParamTab = active;
+  return active;
+}
+
+export function selectHybridParamTab(backend) {
+  app.hybridParamTab = backend;
+  renderRenderBackend();
 }
 
 function applyEvaluationModeVisibility(mode) {
@@ -280,6 +354,7 @@ export function renderRenderBackend() {
   applyRendererBackendVisibility(visibleBackend);
   renderBarycenterOptions();
   renderExperimentalDistanceOptions();
+  renderHybridOptions();
   renderEvaluationMode();
 }
 
@@ -287,6 +362,7 @@ export function updateRenderBackend() {
   dirty.renderBackend = true;
   dirty.barycenter = true;
   dirty.experimentalDistance = true;
+  dirty.hybrid = true;
   dirty.vbapMode = true;
   scheduleUIFlush();
 }
@@ -345,6 +421,58 @@ export function renderExperimentalDistanceOptions() {
 
 export function updateExperimentalDistanceOptions() {
   dirty.experimentalDistance = true;
+  scheduleUIFlush();
+}
+
+export function renderHybridOptions() {
+  const hybridExternalBackendSelectEl = getHybridExternalBackendSelectEl();
+  const hybridInternalBackendSelectEl = getHybridInternalBackendSelectEl();
+  const state = app.renderBackendState.hybrid || {};
+  if (hybridExternalBackendSelectEl && typeof state.externalBackend === 'string') {
+    hybridExternalBackendSelectEl.value = state.externalBackend;
+  }
+  if (hybridInternalBackendSelectEl && typeof state.internalBackend === 'string') {
+    hybridInternalBackendSelectEl.value = state.internalBackend;
+  }
+  renderHybridParamTabs();
+  renderHybridCurve();
+}
+
+function renderHybridParamTabs() {
+  const tabsEl = getHybridParamTabsEl();
+  if (!tabsEl) return;
+  if (app.renderBackendState.selection !== 'hybrid') {
+    tabsEl.style.display = 'none';
+    tabsEl.innerHTML = '';
+    return;
+  }
+  const tabs = hybridTabList();
+  const active = resolveHybridParamTab();
+  tabsEl.style.display = '';
+  tabsEl.innerHTML = '';
+  tabs.forEach((backend) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = backend === 'hybrid' ? t('hybrid.tabMix') : backendLabel(backend);
+    const isActive = backend === active;
+    button.style.cssText = [
+      'padding:0.2rem 0.6rem',
+      'font-size:11px',
+      'border-radius:6px 6px 0 0',
+      'border:1px solid rgba(255,255,255,0.14)',
+      'border-bottom:none',
+      'cursor:pointer',
+      'color:#ffffff',
+      `background:${isActive ? 'rgba(255,255,255,0.12)' : 'transparent'}`,
+      `font-weight:${isActive ? '600' : '400'}`
+    ].join(';');
+    button.addEventListener('click', () => selectHybridParamTab(backend));
+    tabsEl.append(button);
+  });
+}
+
+export function updateHybridOptions() {
+  dirty.hybrid = true;
   scheduleUIFlush();
 }
 

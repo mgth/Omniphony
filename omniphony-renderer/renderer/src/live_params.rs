@@ -195,6 +195,29 @@ impl Default for BarycenterLiveParams {
     }
 }
 
+/// Runtime tuning parameters for the hybrid backend, which blends two concrete
+/// backends ("external"/"internal") as a function of normalised distance.
+#[derive(Debug, Clone)]
+pub struct HybridLiveParams {
+    /// Backend id mixed in at ratio = 1 (cube surface end of the curve).
+    pub external_backend_id: String,
+    /// Backend id mixed in at ratio = 0 (centre end of the curve).
+    pub internal_backend_id: String,
+    /// Editable blend curve: `(normalised_distance, ratio)` control points,
+    /// ratio = weight of the external backend.
+    pub curve: Vec<[f32; 2]>,
+}
+
+impl Default for HybridLiveParams {
+    fn default() -> Self {
+        Self {
+            external_backend_id: "vbap".to_string(),
+            internal_backend_id: "barycenter".to_string(),
+            curve: vec![[0.0, 0.0], [1.0, 1.0]],
+        }
+    }
+}
+
 /// Live-tunable rendering parameters.
 ///
 /// Written (exclusively) by the OSC listener thread, read via snapshot by the
@@ -288,6 +311,9 @@ pub struct LiveParams {
 
     /// Runtime tuning parameters for the barycenter backend.
     pub barycenter: BarycenterLiveParams,
+
+    /// Runtime tuning parameters for the hybrid backend.
+    pub hybrid: HybridLiveParams,
 
     /// Selected Dynamic Range Control mode (as string).
     pub drc_mode: String,

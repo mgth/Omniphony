@@ -245,6 +245,24 @@ pub fn save_live_config(
         } else {
             None
         };
+    let hybrid_defaults = renderer::live_params::HybridLiveParams::default();
+    render.hybrid_external_backend =
+        if live.hybrid.external_backend_id != hybrid_defaults.external_backend_id {
+            Some(live.hybrid.external_backend_id.clone())
+        } else {
+            None
+        };
+    render.hybrid_internal_backend =
+        if live.hybrid.internal_backend_id != hybrid_defaults.internal_backend_id {
+            Some(live.hybrid.internal_backend_id.clone())
+        } else {
+            None
+        };
+    render.hybrid_curve = if live.hybrid.curve != hybrid_defaults.curve {
+        Some(live.hybrid.curve.clone())
+    } else {
+        None
+    };
     render.ramp_mode = match control.requested_ramp_mode() {
         RampMode::Frame => None,
         mode => Some(mode.as_str().to_string()),

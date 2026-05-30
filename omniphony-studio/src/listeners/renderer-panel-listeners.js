@@ -11,6 +11,7 @@ import {
   updateVbapPolar,
   updateVbapPositionInterpolation
 } from '../controls/vbap.js';
+import { setupHybridCurveEditor } from '../controls/hybrid-curve.js';
 import { updateSpreadDisplay } from '../controls/spread.js';
 import { updateDistanceModelUI } from '../controls/master.js';
 import { updateDistanceDiffuseUI } from '../controls/distance-diffuse.js';
@@ -49,6 +50,8 @@ export function setupRendererPanelListeners() {
   const experimentalDistanceErrorFloorInputEl = document.getElementById('experimentalDistanceErrorFloorInput');
   const experimentalDistanceNearestScaleInputEl = document.getElementById('experimentalDistanceNearestScaleInput');
   const experimentalDistanceSpanScaleInputEl = document.getElementById('experimentalDistanceSpanScaleInput');
+  const hybridExternalBackendSelectEl = document.getElementById('hybridExternalBackendSelect');
+  const hybridInternalBackendSelectEl = document.getElementById('hybridInternalBackendSelect');
 
   if (spreadMinSliderEl) {
     spreadMinSliderEl.addEventListener('input', () => {
@@ -283,6 +286,32 @@ export function setupRendererPanelListeners() {
       invoke('control_render_backend', { value });
     });
   }
+
+  if (hybridExternalBackendSelectEl) {
+    hybridExternalBackendSelectEl.addEventListener('change', () => {
+      const value = String(hybridExternalBackendSelectEl.value || '').trim().toLowerCase();
+      if (!['vbap', 'barycenter', 'experimental_distance'].includes(value)) return;
+      app.renderBackendState.hybrid.externalBackend = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateRenderBackend();
+      invoke('control_hybrid_external_backend', { value });
+    });
+  }
+
+  if (hybridInternalBackendSelectEl) {
+    hybridInternalBackendSelectEl.addEventListener('change', () => {
+      const value = String(hybridInternalBackendSelectEl.value || '').trim().toLowerCase();
+      if (!['vbap', 'barycenter', 'experimental_distance'].includes(value)) return;
+      app.renderBackendState.hybrid.internalBackend = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateRenderBackend();
+      invoke('control_hybrid_internal_backend', { value });
+    });
+  }
+
+  setupHybridCurveEditor();
 
   if (restoreBackendBtnEl) {
     restoreBackendBtnEl.addEventListener('click', () => {

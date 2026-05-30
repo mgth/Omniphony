@@ -214,6 +214,15 @@ pub struct RenderConfig {
     pub experimental_distance_position_error_nearest_scale: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental_distance_position_error_span_scale: Option<f32>,
+    /// Hybrid backend: id of the backend mixed in at ratio = 1 (cube surface).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hybrid_external_backend: Option<String>,
+    /// Hybrid backend: id of the backend mixed in at ratio = 0 (centre).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hybrid_internal_backend: Option<String>,
+    /// Hybrid backend: editable blend curve as `(distance, ratio)` control points.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hybrid_curve: Option<Vec<[f32; 2]>>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     /// This matters most for `render.*`: any field added by a future
     /// version of the CLI / a host that we haven't migrated into this

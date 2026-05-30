@@ -374,7 +374,30 @@ pub fn build_spatial_renderer(
                 .max(0.0),
         }
     });
-    if configured_backend.is_some() || configured_evaluation.is_some() {
+    let hybrid_cfg = render_cfg.map(|cfg| {
+        let defaults = renderer::live_params::HybridLiveParams::default();
+        let valid_inner = |id: &str| {
+            matches!(id, "vbap" | "barycenter" | "experimental_distance")
+        };
+        renderer::live_params::HybridLiveParams {
+            external_backend_id: cfg
+                .hybrid_external_backend
+                .clone()
+                .filter(|id| valid_inner(id))
+                .unwrap_or(defaults.external_backend_id),
+            internal_backend_id: cfg
+                .hybrid_internal_backend
+                .clone()
+                .filter(|id| valid_inner(id))
+                .unwrap_or(defaults.internal_backend_id),
+            curve: cfg
+                .hybrid_curve
+                .clone()
+                .filter(|points| points.len() >= 2)
+                .unwrap_or(defaults.curve),
+        }
+    });
+    {
         let control = renderer.renderer_control();
         let mut requires_rebuild = false;
         {
@@ -414,6 +437,15 @@ pub fn build_spatial_renderer(
                     requires_rebuild = true;
                 }
             }
+            if let Some(hybrid) = hybrid_cfg {
+                if live.hybrid.external_backend_id != hybrid.external_backend_id
+                    || live.hybrid.internal_backend_id != hybrid.internal_backend_id
+                    || live.hybrid.curve != hybrid.curve
+                {
+                    live.hybrid = hybrid;
+                    requires_rebuild = true;
+                }
+            }
         }
         if requires_rebuild {
             if let Some(plan) = control.prepare_topology_rebuild() {
@@ -421,16 +453,6 @@ pub fn build_spatial_renderer(
                 control.publish_topology(topology);
             }
         }
-    } else if let Some(mut experimental_distance) = experimental_distance_cfg {
-        if experimental_distance.max_active_speakers < experimental_distance.min_active_speakers {
-            experimental_distance.max_active_speakers = experimental_distance.min_active_speakers;
-        }
-        renderer
-            .renderer_control()
-            .live
-            .write()
-            .unwrap()
-            .experimental_distance = experimental_distance;
     }
 
     Ok(renderer)
