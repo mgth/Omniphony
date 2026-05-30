@@ -268,6 +268,28 @@ function onDoubleClick(evt) {
   renderHybridCurve();
 }
 
+/** Remove the selected point (interior points only); used by the Delete key. */
+function removeSelectedPoint() {
+  const curve = currentCurve().map((point) => [point[0], point[1]]);
+  const last = curve.length - 1;
+  if (selectedIndex <= 0 || selectedIndex >= last) return; // none or endpoint
+  curve.splice(selectedIndex, 1);
+  selectedIndex = -1;
+  commitCurve(curve, { immediate: true });
+}
+
+function onKeyDown(evt) {
+  if (evt.key !== 'Delete' && evt.key !== 'Backspace') return;
+  if (selectedIndex < 0) return;
+  // Don't hijack the key while typing in the edit fields, and only act while the
+  // curve editor is actually on screen.
+  const tag = evt.target && evt.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (!canvas || canvas.offsetParent === null) return;
+  removeSelectedPoint();
+  evt.preventDefault();
+}
+
 /** Max real distance for the active metric (normalised X is scaled by this). */
 function maxDistance() {
   return app.renderBackendState.hybrid?.metric === 'spherical' ? Math.sqrt(3) : 1;
@@ -431,5 +453,6 @@ export function setupHybridCurveEditor() {
   canvas.addEventListener('pointerup', onPointerUp);
   canvas.addEventListener('pointercancel', onPointerUp);
   canvas.addEventListener('dblclick', onDoubleClick);
+  window.addEventListener('keydown', onKeyDown);
   renderHybridCurve();
 }
