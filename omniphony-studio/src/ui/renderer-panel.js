@@ -289,22 +289,6 @@ export function rendererPanelMarkup() {
           </div>
           </div>
           </div>
-          <div class="info-section renderer-subpanel" id="distanceModelSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
-            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-              <div class="title-with-info" style="margin:0;font-size:12px;font-weight:600;color:#ffffff">
-                <span data-i18n="distance.model">Distance model</span>
-                <button id="distanceModelInfoBtn" type="button" class="info-icon-btn" data-i18n-title="distance.modelInfoButton" title="Distance model info">i</button>
-              </div>
-              <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
-                <select id="distanceModelSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
-                  <option value="none" data-i18n="distance.model.none">None</option>
-                  <option value="linear" data-i18n="distance.model.linear">Linear</option>
-                  <option value="quadratic" data-i18n="distance.model.quadratic">Quadratic</option>
-                  <option value="inverse-square" data-i18n="distance.model.inverseSquare">Inverse-square</option>
-                </select>
-              </div>
-            </div>
-          </div>
           <div class="info-section renderer-subpanel" id="distanceDiffuseSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
             <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div class="title-with-info" style="margin:0;font-size:12px;font-weight:600;color:#ffffff">
@@ -325,6 +309,22 @@ export function rendererPanelMarkup() {
                   <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.curve">Curve</span> <span id="distanceDiffuseCurveVal">1.00</span></label>
                   <input id="distanceDiffuseCurveSlider" type="range" min="0.5" max="2.0" step="0.05" value="1.0" class="gain-slider" />
                 </div>
+              </div>
+            </div>
+          </div>
+          <div class="info-section renderer-subpanel" id="distanceModelSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div class="title-with-info" style="margin:0;font-size:12px;font-weight:600;color:#ffffff">
+                <span data-i18n="distance.model">Distance model</span>
+                <button id="distanceModelInfoBtn" type="button" class="info-icon-btn" data-i18n-title="distance.modelInfoButton" title="Distance model info">i</button>
+              </div>
+              <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
+                <select id="distanceModelSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
+                  <option value="none" data-i18n="distance.model.none">None</option>
+                  <option value="linear" data-i18n="distance.model.linear">Linear</option>
+                  <option value="quadratic" data-i18n="distance.model.quadratic">Quadratic</option>
+                  <option value="inverse-square" data-i18n="distance.model.inverseSquare">Inverse-square</option>
+                </select>
               </div>
             </div>
           </div>
