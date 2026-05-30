@@ -395,6 +395,10 @@ pub fn build_spatial_renderer(
                 .clone()
                 .filter(|points| points.len() >= 2)
                 .unwrap_or(defaults.curve),
+            curve_smoothing: cfg
+                .hybrid_curve_smoothing
+                .map(|v| v.clamp(0.0, 1.0))
+                .unwrap_or(defaults.curve_smoothing),
             metric: cfg
                 .hybrid_metric
                 .as_deref()
@@ -446,6 +450,7 @@ pub fn build_spatial_renderer(
                 if live.hybrid.external_backend_id != hybrid.external_backend_id
                     || live.hybrid.internal_backend_id != hybrid.internal_backend_id
                     || live.hybrid.curve != hybrid.curve
+                    || (live.hybrid.curve_smoothing - hybrid.curve_smoothing).abs() > 1e-6
                     || live.hybrid.metric != hybrid.metric
                 {
                     live.hybrid = hybrid;

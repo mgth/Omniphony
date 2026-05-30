@@ -369,6 +369,7 @@
   "hybrid.curveHint": "Courbe de mélange — X : distance (centre → surface du cube), Y : ratio externe. Double-clic pour ajouter un point, double-clic sur un point pour le supprimer.",
   "hybrid.innerParams": "Paramètres des backends internes",
   "hybrid.tabMix": "Mélange",
+  "hybrid.smoothing": "Lissage de la courbe",
   "barycenter.title": "Backend barycenter",
   "barycenter.infoButton": "Infos backend barycenter",
   "barycenter.infoTitle": "Backend barycenter",

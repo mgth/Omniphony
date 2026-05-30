@@ -544,6 +544,7 @@ pub(super) fn effective_to_config(
         hybrid_external_backend: None,
         hybrid_internal_backend: None,
         hybrid_curve: None,
+        hybrid_curve_smoothing: None,
         hybrid_metric: None,
         extra: Default::default(),
     };

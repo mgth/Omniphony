@@ -259,6 +259,9 @@ export function applyInitState(payload) {
           app.renderBackendState.hybrid.metric = metric;
         }
       }
+      if (Number.isFinite(hybrid.curveSmoothing)) {
+        app.renderBackendState.hybrid.curveSmoothing = Math.min(1, Math.max(0, hybrid.curveSmoothing));
+      }
     }
   }
   if (payload.renderEvaluationModeState && typeof payload.renderEvaluationModeState === 'object') {

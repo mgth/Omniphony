@@ -148,28 +148,37 @@ impl GainModel for HybridBackend {
     }
 }
 
-/// Piecewise-linear blend curve mapping a normalised distance `x ∈ [0, 1]` to a
-/// blend ratio `y ∈ [0, 1]`. Points are kept sorted by `x`; evaluation clamps to
-/// the first / last point outside the defined range.
+/// Blend curve mapping a normalised distance `x ∈ [0, 1]` to a blend ratio
+/// `y ∈ [0, 1]`. Points are kept sorted by `x` and act as anchors; `smoothing`
+/// (0 = piecewise-linear, 1 = full Catmull-Rom spline through the points) blends
+/// the linear interpolation with a cubic spline. Evaluation clamps to the first
+/// / last point outside the defined range.
 #[derive(Debug, Clone)]
 pub struct BlendCurve {
     points: Vec<[f32; 2]>,
+    smoothing: f32,
 }
 
 impl BlendCurve {
-    /// Build a curve from `(x, y)` control points. Points are sorted by `x` and
-    /// both axes are clamped to `[0, 1]`. An empty input falls back to the
-    /// default linear ramp.
-    pub fn new(mut points: Vec<[f32; 2]>) -> Self {
+    /// Build a curve from `(x, y)` control points and a `smoothing` amount in
+    /// `[0, 1]`. Points are sorted by `x` and both axes are clamped to `[0, 1]`.
+    /// An empty input falls back to the default linear ramp.
+    pub fn new(mut points: Vec<[f32; 2]>, smoothing: f32) -> Self {
         for point in &mut points {
             point[0] = point[0].clamp(0.0, 1.0);
             point[1] = point[1].clamp(0.0, 1.0);
         }
         points.sort_by(|a, b| a[0].total_cmp(&b[0]));
         if points.is_empty() {
-            return Self::default();
+            return Self {
+                smoothing: smoothing.clamp(0.0, 1.0),
+                ..Self::default()
+            };
         }
-        Self { points }
+        Self {
+            points,
+            smoothing: smoothing.clamp(0.0, 1.0),
+        }
     }
 
     /// Evaluate the curve at the given normalised distance.
@@ -186,13 +195,29 @@ impl BlendCurve {
         }
         // Linear scan: curves hold only a handful of points, so this is cheaper
         // than a binary search and branch-predicts well in the hot path.
-        for window in points.windows(2) {
-            let [x0, y0] = window[0];
-            let [x1, y1] = window[1];
+        for i in 0..last {
+            let [x0, y0] = points[i];
+            let [x1, y1] = points[i + 1];
             if x <= x1 {
                 let span = (x1 - x0).max(1e-6);
                 let t = ((x - x0) / span).clamp(0.0, 1.0);
-                return y0 + (y1 - y0) * t;
+                let linear = y0 + (y1 - y0) * t;
+                if self.smoothing <= 0.0 {
+                    return linear;
+                }
+                // Catmull-Rom on the y-values (uniform in segment parameter),
+                // using clamped neighbours at the ends.
+                let ym = if i > 0 { points[i - 1][1] } else { y0 };
+                let yp = if i + 2 <= last { points[i + 2][1] } else { y1 };
+                let m0 = 0.5 * (y1 - ym);
+                let m1 = 0.5 * (yp - y0);
+                let t2 = t * t;
+                let t3 = t2 * t;
+                let spline = (2.0 * t3 - 3.0 * t2 + 1.0) * y0
+                    + (t3 - 2.0 * t2 + t) * m0
+                    + (-2.0 * t3 + 3.0 * t2) * y1
+                    + (t3 - t2) * m1;
+                return (linear + (spline - linear) * self.smoothing).clamp(0.0, 1.0);
             }
         }
         points[last][1]
@@ -207,6 +232,7 @@ impl Default for BlendCurve {
     fn default() -> Self {
         Self {
             points: vec![[0.0, 0.0], [1.0, 1.0]],
+            smoothing: 0.0,
         }
     }
 }
@@ -264,7 +290,7 @@ mod tests {
 
     #[test]
     fn curve_eval_clamps_and_interpolates() {
-        let curve = BlendCurve::new(vec![[0.0, 0.2], [0.5, 0.8], [1.0, 0.4]]);
+        let curve = BlendCurve::new(vec![[0.0, 0.2], [0.5, 0.8], [1.0, 0.4]], 0.0);
         assert!((curve.eval(-1.0) - 0.2).abs() < 1e-6);
         assert!((curve.eval(0.0) - 0.2).abs() < 1e-6);
         assert!((curve.eval(0.25) - 0.5).abs() < 1e-6);
@@ -273,9 +299,27 @@ mod tests {
     }
 
     #[test]
+    fn curve_smoothing_diverges_from_linear_but_keeps_anchors() {
+        let points = vec![[0.0, 0.2], [0.5, 0.8], [1.0, 0.4]];
+        let linear = BlendCurve::new(points.clone(), 0.0);
+        let smooth = BlendCurve::new(points, 1.0);
+        // Anchor points are preserved regardless of smoothing.
+        assert!((smooth.eval(0.0) - 0.2).abs() < 1e-6);
+        assert!((smooth.eval(0.5) - 0.8).abs() < 1e-6);
+        assert!((smooth.eval(1.0) - 0.4).abs() < 1e-6);
+        // Between anchors the smoothed curve differs from the linear one.
+        assert!((smooth.eval(0.25) - linear.eval(0.25)).abs() > 1e-3);
+        // Output stays clamped to [0, 1] even when the spline overshoots.
+        for i in 0..=100 {
+            let y = smooth.eval(i as f32 / 100.0);
+            assert!((0.0..=1.0).contains(&y), "y={y} out of range");
+        }
+    }
+
+    #[test]
     fn constant_zero_curve_matches_internal() {
         let position = [0.3, 0.1, 0.2];
-        let blended = hybrid(BlendCurve::new(vec![[0.0, 0.0], [1.0, 0.0]]))
+        let blended = hybrid(BlendCurve::new(vec![[0.0, 0.0], [1.0, 0.0]], 0.0))
             .compute_gains(&request(position))
             .gains;
         let internal = BarycenterBackend::new(speakers())
@@ -289,7 +333,7 @@ mod tests {
     #[test]
     fn constant_one_curve_matches_external() {
         let position = [0.3, 0.1, 0.2];
-        let blended = hybrid(BlendCurve::new(vec![[0.0, 1.0], [1.0, 1.0]]))
+        let blended = hybrid(BlendCurve::new(vec![[0.0, 1.0], [1.0, 1.0]], 0.0))
             .compute_gains(&request(position))
             .gains;
         let external = ExperimentalDistanceBackend::new(speakers())
@@ -365,7 +409,7 @@ mod tests {
     #[test]
     fn blend_renormalises_energy() {
         // Halfway blend between two distinct backends still yields unit energy.
-        let blended = hybrid(BlendCurve::new(vec![[0.0, 0.5], [1.0, 0.5]]))
+        let blended = hybrid(BlendCurve::new(vec![[0.0, 0.5], [1.0, 0.5]], 0.0))
             .compute_gains(&request([0.3, 0.1, 0.2]))
             .gains;
         let energy: f32 = blended.iter().map(|gain| gain * gain).sum();

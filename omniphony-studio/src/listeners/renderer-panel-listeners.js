@@ -11,7 +11,7 @@ import {
   updateVbapPolar,
   updateVbapPositionInterpolation
 } from '../controls/vbap.js';
-import { setupHybridCurveEditor } from '../controls/hybrid-curve.js';
+import { renderHybridCurve, setupHybridCurveEditor } from '../controls/hybrid-curve.js';
 import { updateSpreadDisplay } from '../controls/spread.js';
 import { updateDistanceModelUI } from '../controls/master.js';
 import { updateDistanceDiffuseUI } from '../controls/distance-diffuse.js';
@@ -55,6 +55,8 @@ export function setupRendererPanelListeners() {
   const hybridExternalBackendSelectEl = document.getElementById('hybridExternalBackendSelect');
   const hybridInternalBackendSelectEl = document.getElementById('hybridInternalBackendSelect');
   const hybridMetricSelectEl = document.getElementById('hybridMetricSelect');
+  const hybridCurveSmoothingSliderEl = document.getElementById('hybridCurveSmoothingSlider');
+  const hybridCurveSmoothingValEl = document.getElementById('hybridCurveSmoothingVal');
 
   if (spreadMinSliderEl) {
     spreadMinSliderEl.addEventListener('input', () => {
@@ -347,6 +349,23 @@ export function setupRendererPanelListeners() {
       renderVbapStatus();
       updateRenderBackend();
       invoke('control_hybrid_metric', { value });
+    });
+  }
+
+  if (hybridCurveSmoothingSliderEl) {
+    // Live preview on input (local redraw only); push to the renderer on release.
+    hybridCurveSmoothingSliderEl.addEventListener('input', () => {
+      const value = Math.min(1, Math.max(0, Number(hybridCurveSmoothingSliderEl.value) || 0));
+      app.renderBackendState.hybrid.curveSmoothing = value;
+      if (hybridCurveSmoothingValEl) hybridCurveSmoothingValEl.textContent = formatNumber(value, 2);
+      renderHybridCurve();
+    });
+    hybridCurveSmoothingSliderEl.addEventListener('change', () => {
+      const value = Math.min(1, Math.max(0, Number(hybridCurveSmoothingSliderEl.value) || 0));
+      app.renderBackendState.hybrid.curveSmoothing = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      invoke('control_hybrid_curve_smoothing', { value });
     });
   }
 

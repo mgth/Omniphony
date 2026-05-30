@@ -371,6 +371,7 @@
   "hybrid.curveHint": "Blend curve — X: distance (center → cube surface), Y: external ratio. Double-click to add a point, double-click a point to remove it.",
   "hybrid.innerParams": "Inner backend parameters",
   "hybrid.tabMix": "Mix",
+  "hybrid.smoothing": "Curve smoothing",
   "barycenter.title": "Barycenter backend",
   "barycenter.infoButton": "Barycenter backend info",
   "barycenter.infoTitle": "Barycenter backend",

@@ -1692,6 +1692,16 @@ pub fn apply_simple_osc_control(
                     }
                 }
             }
+            "curve_smoothing" => {
+                if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.clamp(0.0, 1.0)) {
+                    if (live.hybrid.curve_smoothing - v).abs() > 1e-6 {
+                        live.hybrid.curve_smoothing = v;
+                        changed = true;
+                        effects.log_message =
+                            Some(format!("OSC: hybrid/curve_smoothing -> {v}"));
+                    }
+                }
+            }
             "metric" => {
                 if let Some(OscType::String(metric)) = msg.args.first() {
                     if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {

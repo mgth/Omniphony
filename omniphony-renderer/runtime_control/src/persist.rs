@@ -274,6 +274,12 @@ pub fn save_live_config(
     } else {
         None
     };
+    render.hybrid_curve_smoothing =
+        if (live.hybrid.curve_smoothing - hybrid_defaults.curve_smoothing).abs() > 1e-4 {
+            Some(live.hybrid.curve_smoothing)
+        } else {
+            None
+        };
     render.hybrid_metric = if live.hybrid.metric != hybrid_defaults.metric {
         Some(live.hybrid.metric.to_string())
     } else {

@@ -39,6 +39,7 @@ pub struct HybridBuildPlan {
     pub external: Box<BackendBuildPlan>,
     pub internal: Box<BackendBuildPlan>,
     pub curve: Vec<[f32; 2]>,
+    pub curve_smoothing: f32,
     pub metric: crate::spatial_vbap::DistanceMetric,
 }
 
@@ -49,7 +50,7 @@ impl HybridBuildPlan {
         Ok(Box::new(HybridBackend::new(
             external,
             internal,
-            BlendCurve::new(self.curve.clone()),
+            BlendCurve::new(self.curve.clone(), self.curve_smoothing),
             self.metric,
         )))
     }
@@ -436,6 +437,7 @@ pub fn prepare_topology_build_plan(
                     external: Box::new(external),
                     internal: Box::new(internal),
                     curve: live.hybrid.curve.clone(),
+                    curve_smoothing: live.hybrid.curve_smoothing,
                     metric: live.hybrid.metric,
                 }),
                 evaluation_mode: effective_live_evaluation_mode(live.evaluation.mode, preferred),

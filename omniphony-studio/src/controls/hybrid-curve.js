@@ -33,6 +33,40 @@ function clamp01(value) {
   return Math.min(1, Math.max(0, value));
 }
 
+/**
+ * Evaluate the blend curve at normalised x — mirror of the renderer's
+ * BlendCurve::eval so the displayed curve matches the audio. `smoothing` blends
+ * piecewise-linear (0) with a Catmull-Rom spline through the points (1).
+ */
+function evalCurve(points, smoothing, x) {
+  if (!points.length) return 0;
+  if (x <= points[0][0]) return points[0][1];
+  const last = points.length - 1;
+  if (x >= points[last][0]) return points[last][1];
+  for (let i = 0; i < last; i += 1) {
+    const [x0, y0] = points[i];
+    const [x1, y1] = points[i + 1];
+    if (x <= x1) {
+      const span = Math.max(x1 - x0, 1e-6);
+      const t = clamp01((x - x0) / span);
+      const linear = y0 + (y1 - y0) * t;
+      if (smoothing <= 0) return linear;
+      const ym = i > 0 ? points[i - 1][1] : y0;
+      const yp = i + 2 <= last ? points[i + 2][1] : y1;
+      const m0 = 0.5 * (y1 - ym);
+      const m1 = 0.5 * (yp - y0);
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const spline = (2 * t3 - 3 * t2 + 1) * y0
+        + (t3 - 2 * t2 + t) * m0
+        + (-2 * t3 + 3 * t2) * y1
+        + (t3 - t2) * m1;
+      return clamp01(linear + (spline - linear) * smoothing);
+    }
+  }
+  return points[last][1];
+}
+
 function currentCurve() {
   const curve = app.renderBackendState.hybrid.curve;
   if (Array.isArray(curve) && curve.length >= 2) {
@@ -259,19 +293,22 @@ export function renderHybridCurve() {
   }
 
   const curve = currentCurve();
+  const smoothing = Math.min(1, Math.max(0, app.renderBackendState.hybrid?.curveSmoothing || 0));
 
-  // Curve polyline.
+  // Curve (sampled so the spline smoothing is visible).
   ctx.strokeStyle = '#9fdcff';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  curve.forEach((point, index) => {
-    const pixel = toPixel(point);
-    if (index === 0) {
+  const samples = 96;
+  for (let s = 0; s <= samples; s += 1) {
+    const x = s / samples;
+    const pixel = toPixel([x, evalCurve(curve, smoothing, x)]);
+    if (s === 0) {
       ctx.moveTo(pixel.x, pixel.y);
     } else {
       ctx.lineTo(pixel.x, pixel.y);
     }
-  });
+  }
   ctx.stroke();
 
   // Control points.

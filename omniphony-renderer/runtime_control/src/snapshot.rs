@@ -29,6 +29,7 @@ pub struct HybridOptionsSnapshot {
     pub external_backend: String,
     pub internal_backend: String,
     pub curve: Vec<[f32; 2]>,
+    pub curve_smoothing: f32,
     pub metric: String,
 }
 
@@ -95,6 +96,7 @@ pub fn build_render_backend_state_snapshot(
             external_backend: live.hybrid.external_backend_id.clone(),
             internal_backend: live.hybrid.internal_backend_id.clone(),
             curve: live.hybrid.curve.clone(),
+            curve_smoothing: live.hybrid.curve_smoothing,
             metric: live.hybrid.metric.to_string(),
         },
     }

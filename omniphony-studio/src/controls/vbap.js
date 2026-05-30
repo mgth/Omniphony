@@ -424,6 +424,15 @@ export function renderHybridOptions() {
       ? state.metric
       : 'chebyshev';
   }
+  const smoothing = Math.min(1, Math.max(0, Number(state.curveSmoothing) || 0));
+  const hybridSmoothingSliderEl = inRendererPanel('hybridCurveSmoothingSlider');
+  if (hybridSmoothingSliderEl) {
+    hybridSmoothingSliderEl.value = String(smoothing);
+  }
+  const hybridSmoothingValEl = inRendererPanel('hybridCurveSmoothingVal');
+  if (hybridSmoothingValEl) {
+    hybridSmoothingValEl.textContent = formatNumber(smoothing, 2);
+  }
   renderHybridParamTabs();
   renderHybridCurve();
 }

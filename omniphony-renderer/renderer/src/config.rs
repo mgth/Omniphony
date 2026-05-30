@@ -229,6 +229,9 @@ pub struct RenderConfig {
     /// Hybrid backend: editable blend curve as `(distance, ratio)` control points.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hybrid_curve: Option<Vec<[f32; 2]>>,
+    /// Hybrid backend: blend curve smoothing in `[0, 1]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hybrid_curve_smoothing: Option<f32>,
     /// Hybrid backend: blend distance metric (spherical / chebyshev).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hybrid_metric: Option<String>,

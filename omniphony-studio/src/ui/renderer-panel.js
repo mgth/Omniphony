@@ -284,6 +284,10 @@ export function rendererPanelMarkup() {
                       <option value="spherical" data-i18n="distance.metric.spherical">Spherical</option>
                     </select>
                   </div>
+                  <div class="control-row" style="margin-top:0">
+                    <label style="font-size:12px;white-space:nowrap"><span data-i18n="hybrid.smoothing">Curve smoothing</span> <span id="hybridCurveSmoothingVal">0.00</span></label>
+                    <input id="hybridCurveSmoothingSlider" type="range" min="0" max="1" step="0.01" value="0" class="gain-slider" />
+                  </div>
                   <div style="font-size:11px;color:#b8b8b8;margin-top:0.1rem">
                     <span data-i18n="hybrid.curveHint">Blend curve — X: distance (center → cube surface), Y: external ratio. Double-click to add a point, double-click a point to remove it.</span>
                   </div>

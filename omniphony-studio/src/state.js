@@ -140,6 +140,7 @@ export const app = {
       externalBackend: null,
       internalBackend: null,
       curve: null,
+      curveSmoothing: 0,
       metric: 'chebyshev'
     }
   },
