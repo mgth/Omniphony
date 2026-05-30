@@ -12,6 +12,7 @@ import { flushCallbacks } from '../flush.js';
 import { invoke } from '@tauri-apps/api/core';
 import { roomDimensionGroup, roomBounds, roomGroup, room, roomEdges, roomFaces, fitScreenToUpperHalf } from '../scene/setup.js';
 import { updateVbapCartesianFaceGrid } from '../scene/gizmos.js';
+import { redrawHybridDistanceShape } from '../scene/hybrid-distance.js';
 import { updateSourceDecorations } from '../sources.js';
 import { rebuildTrailGeometry } from '../trails.js';
 import { renderSpeakerEditor } from '../speakers.js';
@@ -965,6 +966,7 @@ export function applyRoomRatioToScene() {
   fitScreenToUpperHalf();
   updateRoomDimensionGuides();
   updateVbapCartesianFaceGrid();
+  redrawHybridDistanceShape();
   if (typeof flushCallbacks.refreshSpeakerHeatmapScene === 'function') {
     flushCallbacks.refreshSpeakerHeatmapScene();
   }

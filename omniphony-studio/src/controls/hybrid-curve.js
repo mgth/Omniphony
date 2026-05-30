@@ -18,6 +18,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
 import { renderVbapStatus } from './vbap.js';
+import { updateHybridDistanceShape } from '../scene/hybrid-distance.js';
 
 const DEFAULT_CURVE = [[0, 0], [1, 1]];
 const PAD = { left: 26, right: 10, top: 10, bottom: 18 };
@@ -295,8 +296,30 @@ function maxDistance() {
   return app.renderBackendState.hybrid?.metric === 'spherical' ? Math.sqrt(3) : 1;
 }
 
+/**
+ * Reflect the selected point's blend distance as a translucent iso-distance
+ * shape in the 3D scene (sphere for spherical metric, cube for Chebyshev).
+ * Hidden when nothing is selected or the hybrid backend is not active.
+ */
+function syncDistanceShape() {
+  const curve = currentCurve();
+  const active = app.renderBackendState.selection === 'hybrid'
+    && selectedIndex >= 0
+    && selectedIndex < curve.length;
+  if (!active) {
+    updateHybridDistanceShape(null);
+    return;
+  }
+  const spherical = app.renderBackendState.hybrid?.metric === 'spherical';
+  updateHybridDistanceShape({
+    shape: spherical ? 'sphere' : 'cube',
+    radius: curve[selectedIndex][0] * maxDistance()
+  });
+}
+
 /** Sync the manual edit fields with the selected point (hidden when none). */
 function refreshPointFields() {
+  syncDistanceShape();
   if (!pointXInputEl || !pointYInputEl) return;
   const curve = currentCurve();
   const last = curve.length - 1;
