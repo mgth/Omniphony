@@ -182,10 +182,16 @@ impl BlendCurve {
     }
 
     /// Evaluate the curve at the given normalised distance.
+    ///
+    /// `smoothing` blends the piecewise-linear curve (passes through the control
+    /// points) with an approximating quadratic B-spline (corner cutting): the
+    /// control points become handles, the smooth curve is tangent to each
+    /// segment at its midpoint. A segment adjacent to a point therefore yields a
+    /// horizontal tangent there when that segment is horizontal.
     #[inline]
     pub fn eval(&self, x: f32) -> f32 {
         let points = &self.points;
-        // `new()` guarantees a non-empty point set.
+        // `new()` guarantees a non-empty point set; endpoints are interpolated.
         if x <= points[0][0] {
             return points[0][1];
         }
@@ -193,39 +199,93 @@ impl BlendCurve {
         if x >= points[last][0] {
             return points[last][1];
         }
-        // Linear scan: curves hold only a handful of points, so this is cheaper
-        // than a binary search and branch-predicts well in the hot path.
-        for i in 0..last {
-            let [x0, y0] = points[i];
-            let [x1, y1] = points[i + 1];
-            if x <= x1 {
-                let span = (x1 - x0).max(1e-6);
-                let t = ((x - x0) / span).clamp(0.0, 1.0);
-                let linear = y0 + (y1 - y0) * t;
-                if self.smoothing <= 0.0 {
-                    return linear;
-                }
-                // Catmull-Rom on the y-values (uniform in segment parameter),
-                // using clamped neighbours at the ends.
-                let ym = if i > 0 { points[i - 1][1] } else { y0 };
-                let yp = if i + 2 <= last { points[i + 2][1] } else { y1 };
-                let m0 = 0.5 * (y1 - ym);
-                let m1 = 0.5 * (yp - y0);
-                let t2 = t * t;
-                let t3 = t2 * t;
-                let spline = (2.0 * t3 - 3.0 * t2 + 1.0) * y0
-                    + (t3 - 2.0 * t2 + t) * m0
-                    + (-2.0 * t3 + 3.0 * t2) * y1
-                    + (t3 - t2) * m1;
-                return (linear + (spline - linear) * self.smoothing).clamp(0.0, 1.0);
-            }
+        let linear = linear_y(points, x);
+        if self.smoothing <= 0.0 {
+            return linear;
         }
-        points[last][1]
+        let spline = bspline_y(points, x);
+        (linear + (spline - linear) * self.smoothing).clamp(0.0, 1.0)
     }
 
     pub fn points(&self) -> &[[f32; 2]] {
         &self.points
     }
+}
+
+/// Piecewise-linear interpolation through the (sorted, in-range) control points.
+fn linear_y(points: &[[f32; 2]], x: f32) -> f32 {
+    let last = points.len() - 1;
+    for i in 0..last {
+        let [x0, y0] = points[i];
+        let [x1, y1] = points[i + 1];
+        if x <= x1 {
+            let span = (x1 - x0).max(1e-6);
+            let t = ((x - x0) / span).clamp(0.0, 1.0);
+            return y0 + (y1 - y0) * t;
+        }
+    }
+    points[last][1]
+}
+
+#[inline]
+fn midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]
+}
+
+/// Approximating uniform quadratic B-spline as a function `y(x)`: straight from
+/// the first point to the first segment midpoint, a quadratic Bézier around each
+/// interior point (control = the point, endpoints = the adjacent segment
+/// midpoints), then straight from the last midpoint to the last point. The curve
+/// passes through the endpoints and the segment midpoints, and is tangent to
+/// every segment at its midpoint.
+fn bspline_y(points: &[[f32; 2]], x: f32) -> f32 {
+    let last = points.len() - 1;
+    if last <= 1 {
+        // Fewer than three points: no corner to cut, so it is just the line.
+        return linear_y(points, x);
+    }
+    let m_first = midpoint(points[0], points[1]);
+    if x <= m_first[0] {
+        let span = (m_first[0] - points[0][0]).max(1e-6);
+        let t = ((x - points[0][0]) / span).clamp(0.0, 1.0);
+        return points[0][1] + (m_first[1] - points[0][1]) * t;
+    }
+    let m_last = midpoint(points[last - 1], points[last]);
+    if x >= m_last[0] {
+        let span = (points[last][0] - m_last[0]).max(1e-6);
+        let t = ((x - m_last[0]) / span).clamp(0.0, 1.0);
+        return m_last[1] + (points[last][1] - m_last[1]) * t;
+    }
+    for i in 1..last {
+        let end = midpoint(points[i], points[i + 1]);
+        if x <= end[0] {
+            let start = midpoint(points[i - 1], points[i]);
+            return quadratic_bezier_y_at_x(start, points[i], end, x);
+        }
+    }
+    points[last][1]
+}
+
+/// Evaluate the quadratic Bézier (`start`, `control`, `end`) as `y` at the given
+/// `x` by solving `Bx(u) = x` for `u ∈ [0, 1]`.
+fn quadratic_bezier_y_at_x(start: [f32; 2], control: [f32; 2], end: [f32; 2], x: f32) -> f32 {
+    let a = start[0] - 2.0 * control[0] + end[0];
+    let b = 2.0 * (control[0] - start[0]);
+    let c = start[0] - x;
+    let u = if a.abs() < 1e-6 {
+        if b.abs() < 1e-9 { 0.0 } else { -c / b }
+    } else {
+        let disc = (b * b - 4.0 * a * c).max(0.0).sqrt();
+        let u1 = (-b + disc) / (2.0 * a);
+        if (0.0..=1.0).contains(&u1) {
+            u1
+        } else {
+            (-b - disc) / (2.0 * a)
+        }
+    }
+    .clamp(0.0, 1.0);
+    let omu = 1.0 - u;
+    omu * omu * start[1] + 2.0 * omu * u * control[1] + u * u * end[1]
 }
 
 impl Default for BlendCurve {
@@ -299,21 +359,30 @@ mod tests {
     }
 
     #[test]
-    fn curve_smoothing_diverges_from_linear_but_keeps_anchors() {
+    fn curve_smoothing_cuts_corners_and_keeps_endpoints() {
         let points = vec![[0.0, 0.2], [0.5, 0.8], [1.0, 0.4]];
-        let linear = BlendCurve::new(points.clone(), 0.0);
         let smooth = BlendCurve::new(points, 1.0);
-        // Anchor points are preserved regardless of smoothing.
+        // Endpoints are still interpolated.
         assert!((smooth.eval(0.0) - 0.2).abs() < 1e-6);
-        assert!((smooth.eval(0.5) - 0.8).abs() < 1e-6);
         assert!((smooth.eval(1.0) - 0.4).abs() < 1e-6);
-        // Between anchors the smoothed curve differs from the linear one.
-        assert!((smooth.eval(0.25) - linear.eval(0.25)).abs() > 1e-3);
-        // Output stays clamped to [0, 1] even when the spline overshoots.
+        // The interior point is now a handle: the corner-cutting curve does NOT
+        // pass through it (it is pulled toward, but short of, 0.8).
+        let mid = smooth.eval(0.5);
+        assert!(mid < 0.8 - 1e-2 && mid > 0.5, "mid={mid}");
+        // Output stays within [0, 1] across the whole range.
         for i in 0..=100 {
             let y = smooth.eval(i as f32 / 100.0);
             assert!((0.0..=1.0).contains(&y), "y={y} out of range");
         }
+    }
+
+    #[test]
+    fn horizontal_segment_yields_horizontal_tangent_when_smoothed() {
+        // Flat then ramp: at full smoothing the midpoint of the flat segment
+        // stays flat (≈ its endpoints' height) rather than bending early.
+        let smooth = BlendCurve::new(vec![[0.0, 0.0], [0.5, 0.0], [1.0, 1.0]], 1.0);
+        // Quarter of the way along the horizontal segment the curve is still ~0.
+        assert!(smooth.eval(0.125).abs() < 1e-3, "{}", smooth.eval(0.125));
     }
 
     #[test]

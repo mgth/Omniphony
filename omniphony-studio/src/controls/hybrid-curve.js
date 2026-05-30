@@ -33,38 +33,79 @@ function clamp01(value) {
   return Math.min(1, Math.max(0, value));
 }
 
+/** Piecewise-linear interpolation through the control points. */
+function linearY(points, x) {
+  const last = points.length - 1;
+  for (let i = 0; i < last; i += 1) {
+    const [x0, y0] = points[i];
+    const [x1, y1] = points[i + 1];
+    if (x <= x1) {
+      const span = Math.max(x1 - x0, 1e-6);
+      return y0 + (y1 - y0) * clamp01((x - x0) / span);
+    }
+  }
+  return points[last][1];
+}
+
+function midpoint(a, b) {
+  return [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])];
+}
+
+/** Quadratic Bézier (start, control, end) evaluated as y at the given x. */
+function bezierYatX(start, control, end, x) {
+  const a = start[0] - 2 * control[0] + end[0];
+  const b = 2 * (control[0] - start[0]);
+  const c = start[0] - x;
+  let u;
+  if (Math.abs(a) < 1e-6) {
+    u = Math.abs(b) < 1e-9 ? 0 : -c / b;
+  } else {
+    const disc = Math.sqrt(Math.max(0, b * b - 4 * a * c));
+    const u1 = (-b + disc) / (2 * a);
+    u = u1 >= 0 && u1 <= 1 ? u1 : (-b - disc) / (2 * a);
+  }
+  u = clamp01(u);
+  const omu = 1 - u;
+  return omu * omu * start[1] + 2 * omu * u * control[1] + u * u * end[1];
+}
+
+/** Approximating quadratic B-spline (corner cutting), as y(x). */
+function bsplineY(points, x) {
+  const last = points.length - 1;
+  if (last <= 1) return linearY(points, x);
+  const mFirst = midpoint(points[0], points[1]);
+  if (x <= mFirst[0]) {
+    const span = Math.max(mFirst[0] - points[0][0], 1e-6);
+    return points[0][1] + (mFirst[1] - points[0][1]) * clamp01((x - points[0][0]) / span);
+  }
+  const mLast = midpoint(points[last - 1], points[last]);
+  if (x >= mLast[0]) {
+    const span = Math.max(points[last][0] - mLast[0], 1e-6);
+    return mLast[1] + (points[last][1] - mLast[1]) * clamp01((x - mLast[0]) / span);
+  }
+  for (let i = 1; i < last; i += 1) {
+    const end = midpoint(points[i], points[i + 1]);
+    if (x <= end[0]) {
+      return bezierYatX(midpoint(points[i - 1], points[i]), points[i], end, x);
+    }
+  }
+  return points[last][1];
+}
+
 /**
  * Evaluate the blend curve at normalised x — mirror of the renderer's
  * BlendCurve::eval so the displayed curve matches the audio. `smoothing` blends
- * piecewise-linear (0) with a Catmull-Rom spline through the points (1).
+ * piecewise-linear (0, through the points) with an approximating quadratic
+ * B-spline (1, corner cutting / tangent to segment midpoints).
  */
 function evalCurve(points, smoothing, x) {
   if (!points.length) return 0;
   if (x <= points[0][0]) return points[0][1];
   const last = points.length - 1;
   if (x >= points[last][0]) return points[last][1];
-  for (let i = 0; i < last; i += 1) {
-    const [x0, y0] = points[i];
-    const [x1, y1] = points[i + 1];
-    if (x <= x1) {
-      const span = Math.max(x1 - x0, 1e-6);
-      const t = clamp01((x - x0) / span);
-      const linear = y0 + (y1 - y0) * t;
-      if (smoothing <= 0) return linear;
-      const ym = i > 0 ? points[i - 1][1] : y0;
-      const yp = i + 2 <= last ? points[i + 2][1] : y1;
-      const m0 = 0.5 * (y1 - ym);
-      const m1 = 0.5 * (yp - y0);
-      const t2 = t * t;
-      const t3 = t2 * t;
-      const spline = (2 * t3 - 3 * t2 + 1) * y0
-        + (t3 - 2 * t2 + t) * m0
-        + (-2 * t3 + 3 * t2) * y1
-        + (t3 - t2) * m1;
-      return clamp01(linear + (spline - linear) * smoothing);
-    }
-  }
-  return points[last][1];
+  const linear = linearY(points, x);
+  if (smoothing <= 0) return linear;
+  return clamp01(linear + (bsplineY(points, x) - linear) * smoothing);
 }
 
 function currentCurve() {
