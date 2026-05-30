@@ -25,8 +25,11 @@ const HIT_RADIUS = 11; // px
 
 let canvas = null;
 let ctx = null;
-let readoutEl = null;
+let pointEditorEl = null;
+let pointXInputEl = null;
+let pointYInputEl = null;
 let dragIndex = -1;
+let selectedIndex = -1;
 let sendTimer = null;
 
 function clamp01(value) {
@@ -195,11 +198,13 @@ function scheduleSend(immediate) {
 
 function onPointerDown(evt) {
   const index = pointIndexNear(evt);
+  selectedIndex = index;
   if (index >= 0) {
     dragIndex = index;
     canvas.setPointerCapture?.(evt.pointerId);
     evt.preventDefault();
   }
+  renderHybridCurve();
 }
 
 function onPointerMove(evt) {
@@ -228,7 +233,6 @@ function onPointerMove(evt) {
   app.vbapRecomputing = true;
   renderVbapStatus();
   renderHybridCurve();
-  updateReadout(curve[dragIndex]);
   scheduleSend(false);
   evt.preventDefault();
 }
@@ -250,14 +254,18 @@ function onDoubleClick(evt) {
       return;
     }
     curve.splice(index, 1);
+    selectedIndex = -1;
     commitCurve(curve, { immediate: true });
     return;
   }
   const [dataX, dataY] = eventToData(evt);
   // Don't drop a new point on top of an endpoint's X.
   const x = Math.min(1 - 1e-3, Math.max(1e-3, dataX));
-  curve.push([x, dataY]);
+  const added = [x, dataY];
+  curve.push(added);
   commitCurve(curve, { immediate: true });
+  selectedIndex = currentCurve().indexOf(added);
+  renderHybridCurve();
 }
 
 /** Max real distance for the active metric (normalised X is scaled by this). */
@@ -265,15 +273,49 @@ function maxDistance() {
   return app.renderBackendState.hybrid?.metric === 'spherical' ? Math.sqrt(3) : 1;
 }
 
-function updateReadout(point) {
-  if (!readoutEl) return;
-  if (!point) {
-    readoutEl.textContent = '—';
+/** Sync the manual edit fields with the selected point (hidden when none). */
+function refreshPointFields() {
+  if (!pointXInputEl || !pointYInputEl) return;
+  const curve = currentCurve();
+  const last = curve.length - 1;
+  const valid = selectedIndex >= 0 && selectedIndex <= last;
+  if (pointEditorEl) {
+    pointEditorEl.style.display = valid ? 'flex' : 'none';
+  }
+  if (!valid) {
+    pointXInputEl.value = '';
+    pointYInputEl.value = '';
     return;
   }
-  // point[0] is the normalised X; show the real distance under the metric.
-  const distance = point[0] * maxDistance();
-  readoutEl.textContent = `d=${distance.toFixed(2)} → ratio=${point[1].toFixed(2)}`;
+  // Endpoints have their X locked at the centre / max distance.
+  const isEndpoint = selectedIndex === 0 || selectedIndex === last;
+  pointXInputEl.disabled = isEndpoint;
+  pointYInputEl.disabled = false;
+  const point = curve[selectedIndex];
+  const md = maxDistance();
+  pointXInputEl.max = md.toFixed(4);
+  pointXInputEl.value = (point[0] * md).toFixed(3);
+  pointYInputEl.value = point[1].toFixed(3);
+}
+
+function onPointXChange() {
+  const curve = currentCurve().map((point) => [point[0], point[1]]);
+  const last = curve.length - 1;
+  if (selectedIndex <= 0 || selectedIndex >= last) return; // endpoints locked
+  const md = maxDistance() || 1;
+  let x = clamp01((Number(pointXInputEl.value) || 0) / md);
+  const lo = curve[selectedIndex - 1][0] + 1e-3;
+  const hi = curve[selectedIndex + 1][0] - 1e-3;
+  x = Math.min(hi, Math.max(lo, x));
+  curve[selectedIndex][0] = x;
+  commitCurve(curve, { immediate: true });
+}
+
+function onPointYChange() {
+  const curve = currentCurve().map((point) => [point[0], point[1]]);
+  if (selectedIndex < 0 || selectedIndex >= curve.length) return;
+  curve[selectedIndex][1] = clamp01(Number(pointYInputEl.value) || 0);
+  commitCurve(curve, { immediate: true });
 }
 
 export function renderHybridCurve() {
@@ -360,12 +402,25 @@ export function renderHybridCurve() {
     ctx.arc(pixel.x, pixel.y, endpoint ? 4 : 5, 0, Math.PI * 2);
     ctx.fillStyle = endpoint ? '#5fb0d6' : '#ffffff';
     ctx.fill();
+    if (index === selectedIndex) {
+      ctx.beginPath();
+      ctx.arc(pixel.x, pixel.y, 8, 0, Math.PI * 2);
+      ctx.strokeStyle = '#ffd166';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
   });
+
+  refreshPointFields();
 }
 
 export function setupHybridCurveEditor() {
   canvas = document.getElementById('hybridCurveCanvas');
-  readoutEl = document.getElementById('hybridCurveReadout');
+  pointEditorEl = document.getElementById('hybridPointEditor');
+  pointXInputEl = document.getElementById('hybridPointXInput');
+  pointYInputEl = document.getElementById('hybridPointYInput');
+  if (pointXInputEl) pointXInputEl.addEventListener('change', onPointXChange);
+  if (pointYInputEl) pointYInputEl.addEventListener('change', onPointYChange);
   if (!canvas) {
     ctx = null;
     return;

@@ -292,7 +292,13 @@ export function rendererPanelMarkup() {
                     <span data-i18n="hybrid.curveHint">Blend curve — X: distance (center → cube surface), Y: external ratio. Double-click to add a point, double-click a point to remove it.</span>
                   </div>
                   <canvas id="hybridCurveCanvas" width="320" height="180" style="width:100%;height:180px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.12);border-radius:6px;cursor:crosshair;touch-action:none"></canvas>
-                  <div id="hybridCurveReadout" style="font-size:11px;color:#9fdcff;min-height:1em">—</div>
+                  <div id="hybridPointEditor" style="display:none;align-items:center;gap:0.3rem;font-size:11px;color:#ffffff">
+                    <span data-i18n="hybrid.selectedPoint">Point</span>
+                    <label for="hybridPointXInput" data-i18n="hybrid.pointDistance">d</label>
+                    <input id="hybridPointXInput" class="delay-input" type="number" step="0.01" style="width:4.5rem" disabled />
+                    <label for="hybridPointYInput" data-i18n="hybrid.pointRatio">ratio</label>
+                    <input id="hybridPointYInput" class="delay-input" type="number" min="0" max="1" step="0.01" style="width:4.5rem" disabled />
+                  </div>
                 </div>
               </div>
             </div>
