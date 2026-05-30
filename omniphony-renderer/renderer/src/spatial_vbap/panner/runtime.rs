@@ -326,18 +326,12 @@ impl VbapPanner {
 
     // ── Runtime lookup ──────────────────────────────────────────────────────
 
-    pub fn get_gains_cartesian(
-        &self,
-        x: f32,
-        y: f32,
-        z: f32,
-        spread: f32,
-        distance_model: DistanceModel,
-    ) -> Gains {
+    pub fn get_gains_cartesian(&self, x: f32, y: f32, z: f32, spread: f32) -> Gains {
         let z = if self.allow_negative_z { z } else { z.max(0.0) };
 
-        let distance = (x * x + y * y + z * z).sqrt();
-        let gains = match self.table_mode {
+        // Distance attenuation is applied by the shared DistanceAttenuatedModel
+        // decorator on the final gains, not here; this returns pure panning gains.
+        match self.table_mode {
             VbapTableMode::Polar => {
                 let (azimuth, elevation, _) = adm_to_spherical(x, y, z);
                 self.get_gains_with_spread(azimuth, elevation, spread)
@@ -345,12 +339,7 @@ impl VbapPanner {
             VbapTableMode::Cartesian { .. } => {
                 self.get_gains_from_cartesian_cache(x, y, z, spread)
             }
-        };
-
-        VbapPanner::apply_gain(
-            &gains,
-            calculate_distance_attenuation(distance, distance_model),
-        )
+        }
     }
 
     /// Get VBAP gains with dynamic spread (interpolated between pre-computed tables).
@@ -547,14 +536,6 @@ impl VbapPanner {
     }
 
     // ── Interpolation helpers ───────────────────────────────────────────────
-
-    fn apply_gain(gains: &Gains, gain: f32) -> Gains {
-        let mut gains_out = Gains::new(gains.len);
-        for i in 0..gains.len {
-            gains_out.data[i] = gains.data[i] * gain;
-        }
-        gains_out
-    }
 
     fn interpol(&self, gains_low: &Gains, gains_high: &Gains, t: f32) -> Gains {
         let mut gains_interp = Gains::new(self.n_speakers);

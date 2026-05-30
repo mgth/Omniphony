@@ -153,18 +153,6 @@ export function rendererPanelMarkup() {
           </div>
             <div id="backendParametersSectionContent" class="conditional-params open">
           <div id="backendSpecificParamsSection" style="display:flex;flex-direction:column">
-          <div class="control-row" id="distanceModelControlRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
-            <div class="title-with-info" style="font-size:12px;font-weight:600;min-width:0">
-              <label for="distanceModelSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="distance.model">Distance model</label>
-              <button id="distanceModelInfoBtn" type="button" class="info-icon-btn" data-i18n-title="distance.modelInfoButton" title="Distance model info">i</button>
-            </div>
-            <select id="distanceModelSelect" class="delay-input" style="min-width:11rem">
-              <option value="none" data-i18n="distance.model.none">None</option>
-              <option value="linear" data-i18n="distance.model.linear">Linear</option>
-              <option value="quadratic" data-i18n="distance.model.quadratic">Quadratic</option>
-              <option value="inverse-square" data-i18n="distance.model.inverseSquare">Inverse-square</option>
-            </select>
-          </div>
           <div class="info-section" id="spreadSection" style="margin:0;padding:0;border:none;background:none">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-i18n="spread.title">Spread</div>
@@ -319,6 +307,22 @@ export function rendererPanelMarkup() {
           </div>
           </div>
           </div>
+          </div>
+          <div class="info-section renderer-subpanel" id="distanceModelSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div class="title-with-info" style="margin:0;font-size:12px;font-weight:600;color:#ffffff">
+                <span data-i18n="distance.model">Distance model</span>
+                <button id="distanceModelInfoBtn" type="button" class="info-icon-btn" data-i18n-title="distance.modelInfoButton" title="Distance model info">i</button>
+              </div>
+              <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
+                <select id="distanceModelSelect" class="delay-input" style="width:auto;min-width:10.5rem;text-align:left">
+                  <option value="none" data-i18n="distance.model.none">None</option>
+                  <option value="linear" data-i18n="distance.model.linear">Linear</option>
+                  <option value="quadratic" data-i18n="distance.model.quadratic">Quadratic</option>
+                  <option value="inverse-square" data-i18n="distance.model.inverseSquare">Inverse-square</option>
+                </select>
+              </div>
+            </div>
           </div>
           </div>
         </div>

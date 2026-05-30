@@ -21,7 +21,6 @@ function getRendererSummaryEl() { return inRendererPanel('rendererSummary'); }
 function getBackendParametersSectionEl() { return inRendererPanel('backendParametersSection'); }
 function getBackendSpecificParamsSectionEl() { return inRendererPanel('backendSpecificParamsSection'); }
 function getEvaluationSectionEl() { return inRendererPanel('evaluationSection'); }
-function getDistanceModelControlRowEl() { return inRendererPanel('distanceModelControlRow'); }
 function getSpreadSectionEl() { return inRendererPanel('spreadSection'); }
 function getDistanceDiffuseSectionEl() { return inRendererPanel('distanceDiffuseSection'); }
 function getSpreadFromDistanceSectionEl() { return inRendererPanel('spreadFromDistanceSection'); }
@@ -96,7 +95,6 @@ function applyRendererBackendVisibility(backend) {
   const backendParametersSectionEl = getBackendParametersSectionEl();
   const evaluationSectionEl = getEvaluationSectionEl();
   const backendSpecificParamsSectionEl = getBackendSpecificParamsSectionEl();
-  const distanceModelControlRowEl = getDistanceModelControlRowEl();
   const spreadSectionEl = getSpreadSectionEl();
   const distanceDiffuseSectionEl = getDistanceDiffuseSectionEl();
   const spreadFromDistanceSectionEl = getSpreadFromDistanceSectionEl();
@@ -109,10 +107,10 @@ function applyRendererBackendVisibility(backend) {
 
   // The base backend whose individual parameters are currently displayed.
   // In hybrid mode that's the active inner-backend tab; otherwise the active
-  // backend itself. VBAP-specific sections (spread, distance model, …) are
-  // gated by capabilities for the active backend, but in hybrid mode VBAP is an
-  // inner model that consumes those same shared params, so we show them when the
-  // VBAP tab is active.
+  // backend itself. VBAP-specific sections (spread, …) are gated by
+  // capabilities for the active backend, but in hybrid mode VBAP is an inner
+  // model that consumes those same shared params, so we show them when the VBAP
+  // tab is active. (Distance model is now a standalone top-level block.)
   let paramBackend = backend;
   let hybridTab = null;
   if (isHybrid) {
@@ -122,9 +120,6 @@ function applyRendererBackendVisibility(backend) {
     paramBackend = hybridTab === 'hybrid' ? null : hybridTab;
   }
 
-  const supportsDistanceModel = isHybrid
-    ? paramBackend === 'vbap'
-    : capabilities?.supportsDistanceModel === true;
   const supportsSpread = isHybrid
     ? paramBackend === 'vbap'
     : capabilities?.supportsSpread === true;
@@ -149,12 +144,9 @@ function applyRendererBackendVisibility(backend) {
     // all tab content, including the inner-backend param sections that follow it
     // in the DOM.
     backendSpecificParamsSectionEl.style.display =
-      supportsDistanceModel || supportsSpread || supportsDistanceDiffuse || showsBarycenter || showsExperimentalDistance || showsHybrid
+      supportsSpread || supportsDistanceDiffuse || showsBarycenter || showsExperimentalDistance || showsHybrid
         ? 'flex'
         : 'none';
-  }
-  if (distanceModelControlRowEl) {
-    distanceModelControlRowEl.style.display = supportsDistanceModel ? '' : 'none';
   }
   if (spreadSectionEl) {
     spreadSectionEl.style.display = supportsSpread ? '' : 'none';

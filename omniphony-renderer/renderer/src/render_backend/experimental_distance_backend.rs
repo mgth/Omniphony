@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use super::room_transform::room_scaled_position;
 use super::{BackendCapabilities, GainModel, GainModelKind, RenderRequest, RenderResponse};
 use crate::spatial_vbap::Gains;
 use crate::speaker_layout::SpeakerLayout;
@@ -25,7 +26,7 @@ impl ExperimentalDistanceBackend {
     }
 
     pub fn compute_gains(&self, req: &RenderRequest) -> RenderResponse {
-        let target = transform_position(
+        let target = room_scaled_position(
             req.adm_position.map(|v| v as f32),
             req.room_ratio,
             req.room_ratio_rear,
@@ -36,7 +37,7 @@ impl ExperimentalDistanceBackend {
         let mut candidates = Vec::with_capacity(self.speaker_positions.len());
         let mut nearest = None::<(usize, f32)>;
         for (index, speaker) in self.speaker_positions.iter().copied().enumerate() {
-            let transformed_position = transform_position(
+            let transformed_position = room_scaled_position(
                 speaker,
                 req.room_ratio,
                 req.room_ratio_rear,
@@ -129,30 +130,6 @@ impl GainModel for ExperimentalDistanceBackend {
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         ExperimentalDistanceBackend::save_to_file(self, path, speaker_layout)
     }
-}
-
-#[inline]
-fn transform_position(
-    position: [f32; 3],
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
-) -> [f32; 3] {
-    [
-        position[0] * room_ratio[0],
-        map_depth_with_room_ratios(
-            position[1],
-            room_ratio[1],
-            room_ratio_rear,
-            room_ratio_center_blend,
-        ),
-        if position[2] >= 0.0 {
-            position[2] * room_ratio[2]
-        } else {
-            position[2] * room_ratio_lower
-        },
-    ]
 }
 
 #[inline]
@@ -269,27 +246,4 @@ fn candidate_subset_span(candidates: &[ExperimentalSpeakerCandidate]) -> f32 {
         }
     }
     span
-}
-
-#[inline]
-fn map_depth_with_room_ratios(
-    depth: f32,
-    front_ratio: f32,
-    rear_ratio: f32,
-    center_blend: f32,
-) -> f32 {
-    let d = depth.clamp(-1.0, 1.0);
-    let blend = center_blend.clamp(0.0, 1.0);
-    let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
-    if d >= 0.0 {
-        let t = d;
-        let a = center_ratio - front_ratio;
-        let b = 2.0 * (front_ratio - center_ratio);
-        a * t * t * t + b * t * t + center_ratio * t
-    } else {
-        let t = -d;
-        let a = center_ratio - rear_ratio;
-        let b = 2.0 * (rear_ratio - center_ratio);
-        -(a * t * t * t + b * t * t + center_ratio * t)
-    }
 }

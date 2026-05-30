@@ -1,7 +1,9 @@
 mod barycenter_backend;
+mod distance_attenuation;
 mod evaluation_artifact;
 mod experimental_distance_backend;
 mod hybrid_backend;
+mod room_transform;
 pub mod size_to_spread;
 mod vbap_backend;
 
@@ -12,6 +14,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 pub use barycenter_backend::BarycenterBackend;
+use distance_attenuation::DistanceAttenuatedModel;
 pub use evaluation_artifact::{
     BackendRestoreSnapshot, SerializedEvaluationMode, build_backend_restore_snapshot,
 };
@@ -836,6 +839,11 @@ pub fn build_prepared_render_engine(
     evaluation_mode: EffectiveEvaluationMode,
     config: &EvaluationBuildConfig,
 ) -> Result<PreparedRenderEngine> {
+    // Wrap the backend so distance attenuation is applied once on the final
+    // gains (after any hybrid blend + renorm), uniformly for every backend.
+    // Identity/metadata still delegate to the inner backend; capabilities gain
+    // `supports_distance_model`.
+    let model: Box<dyn GainModel> = Box::new(DistanceAttenuatedModel::new(model));
     let gain_model_kind = model.kind();
     let backend_id = model.backend_id();
     let backend_label = model.backend_label();

@@ -4,6 +4,7 @@ use super::{
     BackendCapabilities, GainModel, GainModelKind, RenderRequest, RenderResponse,
     reduce_size_to_spread,
 };
+use super::room_transform::map_depth_with_room_ratios;
 use crate::spatial_vbap::{Gains, VbapPanner, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 
@@ -58,13 +59,9 @@ impl VbapBackend {
             (req.spread_min + intrinsic * (req.spread_max - req.spread_min)).clamp(0.0, 1.0)
         };
 
-        let direct_gains = self.panner.get_gains_cartesian(
-            scaled_x,
-            scaled_y,
-            scaled_z,
-            effective_spread,
-            req.distance_model,
-        );
+        let direct_gains =
+            self.panner
+                .get_gains_cartesian(scaled_x, scaled_y, scaled_z, effective_spread);
 
         let gains = if req.use_distance_diffuse {
             let [rx, ry, rz] = rendering_position;
@@ -75,13 +72,9 @@ impl VbapBackend {
             let alpha = 0.5 + 0.5 * t;
             let w_direct = alpha.sqrt();
             let w_mirror = (1.0 - alpha).sqrt();
-            let mirror_gains = self.panner.get_gains_cartesian(
-                -scaled_x,
-                -scaled_y,
-                scaled_z,
-                effective_spread,
-                req.distance_model,
-            );
+            let mirror_gains =
+                self.panner
+                    .get_gains_cartesian(-scaled_x, -scaled_y, scaled_z, effective_spread);
 
             let n = direct_gains.len();
             let mut blended = Gains::zeroed(n);
@@ -159,28 +152,5 @@ impl GainModel for VbapBackend {
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         VbapBackend::save_to_file(self, path, speaker_layout)
-    }
-}
-
-#[inline]
-fn map_depth_with_room_ratios(
-    depth: f32,
-    front_ratio: f32,
-    rear_ratio: f32,
-    center_blend: f32,
-) -> f32 {
-    let d = depth.clamp(-1.0, 1.0);
-    let blend = center_blend.clamp(0.0, 1.0);
-    let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
-    if d >= 0.0 {
-        let t = d;
-        let a = center_ratio - front_ratio;
-        let b = 2.0 * (front_ratio - center_ratio);
-        a * t * t * t + b * t * t + center_ratio * t
-    } else {
-        let t = -d;
-        let a = center_ratio - rear_ratio;
-        let b = 2.0 * (rear_ratio - center_ratio);
-        -(a * t * t * t + b * t * t + center_ratio * t)
     }
 }

@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use super::room_transform::room_scaled_position;
 use super::{BackendCapabilities, GainModel, GainModelKind, RenderRequest, RenderResponse};
 use crate::spatial_vbap::{Gains, MAX_SPEAKERS};
 use crate::speaker_layout::SpeakerLayout;
@@ -29,7 +30,7 @@ impl BarycenterBackend {
             MAX_SPEAKERS
         );
 
-        let target = transform_position(
+        let target = room_scaled_position(
             req.adm_position.map(|value| value as f32),
             req.room_ratio,
             req.room_ratio_rear,
@@ -45,7 +46,7 @@ impl BarycenterBackend {
         let speaker_count = self.speaker_positions.len();
         let mut transformed_speakers = [[0.0f32; 3]; MAX_SPEAKERS];
         for (index, speaker) in self.speaker_positions.iter().copied().enumerate() {
-            transformed_speakers[index] = transform_position(
+            transformed_speakers[index] = room_scaled_position(
                 speaker,
                 req.room_ratio,
                 req.room_ratio_rear,
@@ -154,53 +155,6 @@ impl GainModel for BarycenterBackend {
 
     fn save_to_file(&self, path: &std::path::Path, speaker_layout: &SpeakerLayout) -> Result<()> {
         BarycenterBackend::save_to_file(self, path, speaker_layout)
-    }
-}
-
-#[inline]
-fn transform_position(
-    position: [f32; 3],
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
-) -> [f32; 3] {
-    [
-        position[0] * room_ratio[0],
-        map_depth_with_room_ratios(
-            position[1],
-            room_ratio[1],
-            room_ratio_rear,
-            room_ratio_center_blend,
-        ),
-        if position[2] >= 0.0 {
-            position[2] * room_ratio[2]
-        } else {
-            position[2] * room_ratio_lower
-        },
-    ]
-}
-
-#[inline]
-fn map_depth_with_room_ratios(
-    depth: f32,
-    front_ratio: f32,
-    rear_ratio: f32,
-    center_blend: f32,
-) -> f32 {
-    let d = depth.clamp(-1.0, 1.0);
-    let blend = center_blend.clamp(0.0, 1.0);
-    let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
-    if d >= 0.0 {
-        let t = d;
-        let a = center_ratio - front_ratio;
-        let b = 2.0 * (front_ratio - center_ratio);
-        a * t * t * t + b * t * t + center_ratio * t
-    } else {
-        let t = -d;
-        let a = center_ratio - rear_ratio;
-        let b = 2.0 * (rear_ratio - center_ratio);
-        -(a * t * t * t + b * t * t + center_ratio * t)
     }
 }
 
