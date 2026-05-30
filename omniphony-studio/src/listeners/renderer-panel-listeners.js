@@ -25,6 +25,8 @@ export function setupRendererPanelListeners() {
   const spreadDistanceCurveSliderEl = document.getElementById('spreadDistanceCurveSlider');
   const sizeToSpreadModeSelectEl = document.getElementById('sizeToSpreadModeSelect');
   const distanceModelSelectEl = document.getElementById('distanceModelSelect');
+  const distanceModelMetricSelectEl = document.getElementById('distanceModelMetricSelect');
+  const distanceDiffuseMetricSelectEl = document.getElementById('distanceDiffuseMetricSelect');
   const vbapCartXSizeInputEl = document.getElementById('vbapCartXSizeInput');
   const vbapCartYSizeInputEl = document.getElementById('vbapCartYSizeInput');
   const vbapCartZSizeInputEl = document.getElementById('vbapCartZSizeInput');
@@ -137,6 +139,30 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       invoke('control_distance_model', { value });
+    });
+  }
+
+  if (distanceModelMetricSelectEl) {
+    distanceModelMetricSelectEl.addEventListener('change', () => {
+      const value = String(distanceModelMetricSelectEl.value || '').trim().toLowerCase();
+      if (!['spherical', 'chebyshev'].includes(value)) return;
+      app.distanceModelMetric = value;
+      updateDistanceModelUI();
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      invoke('control_distance_model_metric', { value });
+    });
+  }
+
+  if (distanceDiffuseMetricSelectEl) {
+    distanceDiffuseMetricSelectEl.addEventListener('change', () => {
+      const value = String(distanceDiffuseMetricSelectEl.value || '').trim().toLowerCase();
+      if (!['spherical', 'chebyshev'].includes(value)) return;
+      app.distanceDiffuseState.metric = value;
+      updateDistanceDiffuseUI();
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      invoke('control_distance_diffuse_metric', { value });
     });
   }
 

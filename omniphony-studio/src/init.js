@@ -331,6 +331,16 @@ export function applyInitState(payload) {
       app.distanceModel = value;
     }
   }
+  const distanceModelMetric =
+    typeof payload.distanceModelMetric === 'string'
+      ? payload.distanceModelMetric
+      : payload?.distanceModel?.metric;
+  if (typeof distanceModelMetric === 'string') {
+    const metric = distanceModelMetric.trim().toLowerCase();
+    if (['spherical', 'chebyshev'].includes(metric)) {
+      app.distanceModelMetric = metric;
+    }
+  }
   updateDistanceModelUI();
   if (payload.distanceDiffuse) {
     if (typeof payload.distanceDiffuse.enabled === 'boolean') {
@@ -341,6 +351,12 @@ export function applyInitState(payload) {
     }
     if (typeof payload.distanceDiffuse.curve === 'number') {
       app.distanceDiffuseState.curve = payload.distanceDiffuse.curve;
+    }
+    if (typeof payload.distanceDiffuse.metric === 'string') {
+      const metric = payload.distanceDiffuse.metric.trim().toLowerCase();
+      if (['spherical', 'chebyshev'].includes(metric)) {
+        app.distanceDiffuseState.metric = metric;
+      }
     }
   }
   updateDistanceDiffuseUI();

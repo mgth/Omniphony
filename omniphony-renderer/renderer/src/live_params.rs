@@ -264,6 +264,13 @@ pub struct LiveParams {
     /// Distance attenuation model currently applied by the renderer.
     pub distance_model: crate::spatial_vbap::DistanceModel,
 
+    /// Metric (spherical / chebyshev) used to reduce a position to a scalar
+    /// distance for the distance model stage.
+    pub distance_model_metric: crate::spatial_vbap::DistanceMetric,
+
+    /// Metric (spherical / chebyshev) used by the distance diffuse stage.
+    pub distance_diffuse_metric: crate::spatial_vbap::DistanceMetric,
+
     /// Per-speaker live parameters: gain, mute, delay.
     /// Absent entries use `SpeakerLiveParams::default()` (gain=1.0, muted=false, delay=0 ms).
     pub speakers: HashMap<usize, SpeakerLiveParams>,
@@ -451,6 +458,8 @@ fn evaluation_build_config_from_live(
             distance_max: live.evaluation.polar.distance_max.max(0.01),
             allow_negative_z,
         },
+        distance_model_metric: live.distance_model_metric,
+        distance_diffuse_metric: live.distance_diffuse_metric,
     }
 }
 

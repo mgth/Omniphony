@@ -202,6 +202,12 @@ pub struct RenderConfig {
     pub distance_diffuse_threshold: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_diffuse_curve: Option<f32>,
+    /// Distance metric (spherical / chebyshev) for the distance model stage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_model_metric: Option<String>,
+    /// Distance metric (spherical / chebyshev) for the distance diffuse stage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_diffuse_metric: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental_distance_distance_floor: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]

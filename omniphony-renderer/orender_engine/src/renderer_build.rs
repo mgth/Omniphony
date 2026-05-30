@@ -446,6 +446,24 @@ pub fn build_spatial_renderer(
                     requires_rebuild = true;
                 }
             }
+            if let Some(metric) = render_cfg
+                .and_then(|cfg| cfg.distance_model_metric.as_deref())
+                .and_then(|s| s.parse::<renderer::spatial_vbap::DistanceMetric>().ok())
+            {
+                if live.distance_model_metric != metric {
+                    live.distance_model_metric = metric;
+                    requires_rebuild = true;
+                }
+            }
+            if let Some(metric) = render_cfg
+                .and_then(|cfg| cfg.distance_diffuse_metric.as_deref())
+                .and_then(|s| s.parse::<renderer::spatial_vbap::DistanceMetric>().ok())
+            {
+                if live.distance_diffuse_metric != metric {
+                    live.distance_diffuse_metric = metric;
+                    requires_rebuild = true;
+                }
+            }
         }
         if requires_rebuild {
             if let Some(plan) = control.prepare_topology_rebuild() {

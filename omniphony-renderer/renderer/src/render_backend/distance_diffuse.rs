@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use super::{BackendCapabilities, GainModel, GainModelKind, RenderRequest, RenderResponse};
-use crate::spatial_vbap::Gains;
+use crate::spatial_vbap::{DistanceMetric, Gains};
 use crate::speaker_layout::SpeakerLayout;
 
 /// Decorator that applies distance-based antipodal diffuse blending to the gains
@@ -18,11 +18,12 @@ use crate::speaker_layout::SpeakerLayout;
 /// is false it is a no-op (and skips the second backend evaluation).
 pub struct DistanceDiffuseModel {
     inner: Box<dyn GainModel>,
+    metric: DistanceMetric,
 }
 
 impl DistanceDiffuseModel {
-    pub fn new(inner: Box<dyn GainModel>) -> Self {
-        Self { inner }
+    pub fn new(inner: Box<dyn GainModel>, metric: DistanceMetric) -> Self {
+        Self { inner, metric }
     }
 }
 
@@ -68,9 +69,8 @@ impl GainModel for DistanceDiffuseModel {
         ];
         let mirror = self.inner.compute_gains(&mirror_req).gains;
 
-        // Blend weight from the (raw) ADM distance.
-        let [x, y, z] = req.adm_position;
-        let adm_dist = ((x * x + y * y + z * z) as f32).sqrt();
+        // Blend weight from the (raw) ADM distance, under the selected metric.
+        let adm_dist = self.metric.measure(req.adm_position.map(|v| v as f32));
         let t = (adm_dist / req.distance_diffuse_threshold.max(1e-6))
             .min(1.0)
             .powf(req.distance_diffuse_curve);
@@ -142,7 +142,10 @@ mod tests {
     }
 
     fn wrapped() -> DistanceDiffuseModel {
-        DistanceDiffuseModel::new(Box::new(BarycenterBackend::new(speakers())))
+        DistanceDiffuseModel::new(
+            Box::new(BarycenterBackend::new(speakers())),
+            DistanceMetric::Spherical,
+        )
     }
 
     #[test]

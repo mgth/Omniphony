@@ -12,5 +12,5 @@ mod panner;
 pub(crate) mod vbap_native;
 
 pub use coords::{adm_to_spherical, spherical_to_adm};
-pub use distance::{DistanceModel, calculate_distance_attenuation};
+pub use distance::{DistanceMetric, DistanceModel, calculate_distance_attenuation};
 pub use panner::*;

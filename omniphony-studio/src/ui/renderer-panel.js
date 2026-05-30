@@ -301,6 +301,13 @@ export function rendererPanelMarkup() {
             </div>
             <div id="distanceDiffuseParams" class="conditional-params">
               <div class="renderer-subpanel-body" style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <label for="distanceDiffuseMetricSelect" style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="distance.metric">Distance metric</label>
+                  <select id="distanceDiffuseMetricSelect" class="delay-input" style="min-width:9rem">
+                    <option value="spherical" data-i18n="distance.metric.spherical">Spherical</option>
+                    <option value="chebyshev" data-i18n="distance.metric.chebyshev">Chebyshev</option>
+                  </select>
+                </div>
                 <div class="control-row" style="margin-top:0">
                   <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.threshold">Threshold</span> <span id="distanceDiffuseThresholdVal">1.00</span></label>
                   <input id="distanceDiffuseThresholdSlider" type="range" min="0.1" max="2.0" step="0.01" value="1.0" class="gain-slider" />
@@ -324,6 +331,15 @@ export function rendererPanelMarkup() {
                   <option value="linear" data-i18n="distance.model.linear">Linear</option>
                   <option value="quadratic" data-i18n="distance.model.quadratic">Quadratic</option>
                   <option value="inverse-square" data-i18n="distance.model.inverseSquare">Inverse-square</option>
+                </select>
+              </div>
+            </div>
+            <div class="renderer-subpanel-body" style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+              <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                <label for="distanceModelMetricSelect" style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="distance.metric">Distance metric</label>
+                <select id="distanceModelMetricSelect" class="delay-input" style="min-width:9rem">
+                  <option value="spherical" data-i18n="distance.metric.spherical">Spherical</option>
+                  <option value="chebyshev" data-i18n="distance.metric.chebyshev">Chebyshev</option>
                 </select>
               </div>
             </div>

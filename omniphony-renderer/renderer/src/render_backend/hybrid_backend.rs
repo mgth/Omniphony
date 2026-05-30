@@ -319,6 +319,8 @@ mod tests {
                 distance_max: 1.0,
                 allow_negative_z: false,
             },
+            distance_model_metric: crate::spatial_vbap::DistanceMetric::default(),
+            distance_diffuse_metric: crate::spatial_vbap::DistanceMetric::default(),
         };
 
         let engine = build_prepared_render_engine(

@@ -190,6 +190,17 @@ pub fn save_live_config(
     } else {
         None
     };
+    let default_metric = renderer::spatial_vbap::DistanceMetric::default();
+    render.distance_model_metric = if live.distance_model_metric != default_metric {
+        Some(live.distance_model_metric.to_string())
+    } else {
+        None
+    };
+    render.distance_diffuse_metric = if live.distance_diffuse_metric != default_metric {
+        Some(live.distance_diffuse_metric.to_string())
+    } else {
+        None
+    };
     let experimental_defaults = renderer::live_params::ExperimentalDistanceLiveParams::default();
     render.experimental_distance_distance_floor =
         if (live.experimental_distance.distance_floor - experimental_defaults.distance_floor).abs()

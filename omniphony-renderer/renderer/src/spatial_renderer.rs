@@ -150,6 +150,11 @@ fn evaluation_build_config(
             distance_max,
             allow_negative_z,
         },
+        // Initial build uses default metrics; a configured non-default metric is
+        // applied to live params post-construction, which triggers a rebuild via
+        // evaluation_build_config_from_live.
+        distance_model_metric: crate::spatial_vbap::DistanceMetric::default(),
+        distance_diffuse_metric: crate::spatial_vbap::DistanceMetric::default(),
     }
 }
 
@@ -786,6 +791,8 @@ impl SpatialRenderer {
             },
             use_loudness,
             distance_model,
+            distance_model_metric: crate::spatial_vbap::DistanceMetric::default(),
+            distance_diffuse_metric: crate::spatial_vbap::DistanceMetric::default(),
             speakers: speaker_live,
             room_ratio,
             room_ratio_rear,

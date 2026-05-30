@@ -45,6 +45,12 @@ export function renderDistanceDiffuseUI() {
     const v = app.distanceDiffuseState.curve === null ? '—' : formatNumber(app.distanceDiffuseState.curve, 2);
     distanceDiffuseCurveValEl.textContent = v;
   }
+  const distanceDiffuseMetricSelectEl = inRendererPanel('distanceDiffuseMetricSelect');
+  if (distanceDiffuseMetricSelectEl) {
+    distanceDiffuseMetricSelectEl.value = ['spherical', 'chebyshev'].includes(app.distanceDiffuseState.metric)
+      ? app.distanceDiffuseState.metric
+      : 'spherical';
+  }
 }
 
 export function updateDistanceDiffuseUI() {

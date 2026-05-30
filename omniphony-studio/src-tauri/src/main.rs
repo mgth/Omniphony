@@ -669,6 +669,30 @@ fn control_distance_model(state: State<SharedState>, value: String) {
     );
 }
 
+fn send_distance_metric(state: &State<SharedState>, address: &str, value: String) {
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(normalized.as_str(), "spherical" | "chebyshev") {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: address.to_string(),
+            value: normalized,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_distance_model_metric(state: State<SharedState>, value: String) {
+    send_distance_metric(&state, "/omniphony/control/distance_model_metric", value);
+}
+
+#[tauri::command]
+fn control_distance_diffuse_metric(state: State<SharedState>, value: String) {
+    send_distance_metric(&state, "/omniphony/control/distance_diffuse/metric", value);
+}
+
 #[tauri::command]
 fn control_experimental_distance_distance_floor(state: State<SharedState>, value: f32) {
     send_control(
@@ -2547,6 +2571,8 @@ fn main() {
             control_spread_distance_curve,
             control_size_to_spread_mode,
             control_distance_model,
+            control_distance_model_metric,
+            control_distance_diffuse_metric,
             control_experimental_distance_distance_floor,
             control_experimental_distance_min_active_speakers,
             control_experimental_distance_max_active_speakers,

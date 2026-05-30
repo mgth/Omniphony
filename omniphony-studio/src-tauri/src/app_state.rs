@@ -77,11 +77,13 @@ pub struct DistanceDiffuse {
     pub enabled: Option<bool>,
     pub threshold: Option<f64>,
     pub curve: Option<f64>,
+    pub metric: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DistanceModelState {
     pub value: Option<String>,
+    pub metric: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

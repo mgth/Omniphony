@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use super::room_transform::room_scaled_position;
 use super::{BackendCapabilities, GainModel, GainModelKind, RenderRequest, RenderResponse};
-use crate::spatial_vbap::calculate_distance_attenuation;
+use crate::spatial_vbap::{DistanceMetric, calculate_distance_attenuation};
 use crate::speaker_layout::SpeakerLayout;
 
 /// Decorator that applies the distance attenuation model to the gains produced
@@ -16,11 +16,12 @@ use crate::speaker_layout::SpeakerLayout;
 /// no-op, preserving prior behaviour.
 pub struct DistanceAttenuatedModel {
     inner: Box<dyn GainModel>,
+    metric: DistanceMetric,
 }
 
 impl DistanceAttenuatedModel {
-    pub fn new(inner: Box<dyn GainModel>) -> Self {
-        Self { inner }
+    pub fn new(inner: Box<dyn GainModel>, metric: DistanceMetric) -> Self {
+        Self { inner, metric }
     }
 }
 
@@ -62,7 +63,7 @@ impl GainModel for DistanceAttenuatedModel {
             req.room_ratio_lower,
             req.room_ratio_center_blend,
         );
-        let distance = (scaled[0] * scaled[0] + scaled[1] * scaled[1] + scaled[2] * scaled[2]).sqrt();
+        let distance = self.metric.measure(scaled);
         let attenuation = calculate_distance_attenuation(distance, req.distance_model);
         for gain in response.gains.iter_mut() {
             *gain *= attenuation;
@@ -114,7 +115,10 @@ mod tests {
     }
 
     fn wrapped() -> DistanceAttenuatedModel {
-        DistanceAttenuatedModel::new(Box::new(BarycenterBackend::new(speakers())))
+        DistanceAttenuatedModel::new(
+            Box::new(BarycenterBackend::new(speakers())),
+            DistanceMetric::Spherical,
+        )
     }
 
     #[test]
@@ -139,6 +143,21 @@ mod tests {
         // Barycenter alone is unit energy; Linear attenuation at distance 0.6 is
         // 1/(1+0.6) ≈ 0.625, so energy ≈ 0.625² ≈ 0.39 < 1.
         let expected = (1.0f32 / 1.6).powi(2);
+        assert!((energy - expected).abs() < 1e-3, "energy={energy}, expected≈{expected}");
+    }
+
+    #[test]
+    fn chebyshev_metric_uses_max_norm() {
+        // At (0.6, 0.5, 0.0): spherical ≈ 0.781, chebyshev = 0.6 → different
+        // attenuation, confirming the metric is honoured.
+        let position = [0.6, 0.5, 0.0];
+        let chebyshev = DistanceAttenuatedModel::new(
+            Box::new(BarycenterBackend::new(speakers())),
+            DistanceMetric::Chebyshev,
+        );
+        let gains = chebyshev.compute_gains(&request(position, DistanceModel::Linear)).gains;
+        let energy: f32 = gains.iter().map(|g| g * g).sum();
+        let expected = (1.0f32 / (1.0 + 0.6)).powi(2);
         assert!((energy - expected).abs() < 1e-3, "energy={energy}, expected≈{expected}");
     }
 

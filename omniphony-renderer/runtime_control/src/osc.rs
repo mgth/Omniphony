@@ -1560,6 +1560,17 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == "/omniphony/control/distance_model_metric" {
+        if let Some(OscType::String(metric)) = msg.args.first() {
+            if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
+                ctx.renderer.live.write().unwrap().distance_model_metric = metric;
+                effects.mark_dirty = true;
+                effects.trigger_layout_recompute = true;
+            }
+        }
+        return Some(effects);
+    }
+
     if let Some(rest) = addr.strip_prefix("/omniphony/control/experimental_distance/") {
         let mut live = ctx.renderer.live.write().unwrap();
         let mut changed = false;
@@ -1766,6 +1777,18 @@ pub fn apply_simple_osc_control(
                     ctx.renderer.live.write().unwrap().use_distance_diffuse = v;
                     effects.mark_dirty = true;
                     effects.trigger_layout_recompute = true;
+                }
+                return Some(effects);
+            }
+            "metric" => {
+                if let Some(OscType::String(metric)) = msg.args.first() {
+                    if let Ok(metric) =
+                        metric.parse::<renderer::spatial_vbap::DistanceMetric>()
+                    {
+                        ctx.renderer.live.write().unwrap().distance_diffuse_metric = metric;
+                        effects.mark_dirty = true;
+                        effects.trigger_layout_recompute = true;
+                    }
                 }
                 return Some(effects);
             }

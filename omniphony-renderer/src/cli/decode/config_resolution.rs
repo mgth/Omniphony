@@ -539,6 +539,8 @@ pub(super) fn effective_to_config(
         experimental_distance_position_error_floor: None,
         experimental_distance_position_error_nearest_scale: None,
         experimental_distance_position_error_span_scale: None,
+        distance_model_metric: None,
+        distance_diffuse_metric: None,
         hybrid_external_backend: None,
         hybrid_internal_backend: None,
         hybrid_curve: None,

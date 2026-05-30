@@ -111,6 +111,7 @@ struct RendererDomainState {
     master_gain: Option<f64>,
     ramp_mode: Option<String>,
     distance_model: Option<String>,
+    distance_model_metric: Option<String>,
     room_ratio: Option<RoomRatio>,
     spread: Option<SpreadState>,
     distance_diffuse: Option<DistanceDiffuse>,
@@ -573,6 +574,9 @@ fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
     }
     if let Some(distance_model) = parsed.distance_model {
         s.distance_model.value = Some(distance_model);
+    }
+    if let Some(distance_model_metric) = parsed.distance_model_metric {
+        s.distance_model.metric = Some(distance_model_metric);
     }
     if let Some(room_ratio) = parsed.room_ratio {
         s.room_ratio = room_ratio;

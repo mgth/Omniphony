@@ -118,6 +118,7 @@ pub fn build_renderer_state_json(live: &LiveParams, active_topology: &RenderTopo
         "masterGain": live.master_gain,
         "rampMode": live.ramp_mode.as_str(),
         "distanceModel": live.distance_model.to_string(),
+        "distanceModelMetric": live.distance_model_metric.to_string(),
         "roomRatio": {
             "width": live.room_ratio[0],
             "length": live.room_ratio[1],
@@ -137,7 +138,8 @@ pub fn build_renderer_state_json(live: &LiveParams, active_topology: &RenderTopo
         "distanceDiffuse": {
             "enabled": live.use_distance_diffuse,
             "threshold": live.distance_diffuse_threshold,
-            "curve": live.distance_diffuse_curve
+            "curve": live.distance_diffuse_curve,
+            "metric": live.distance_diffuse_metric.to_string()
         },
         "vbapCartesian": {
             "xSize": live.evaluation.cartesian.x_size,
