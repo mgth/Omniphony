@@ -341,7 +341,7 @@ export function rendererPanelMarkup() {
                 </select>
               </div>
             </div>
-            <div class="renderer-subpanel-body" style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+            <div id="distanceModelMetricRow" class="renderer-subpanel-body" style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
               <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
                 <label for="distanceModelMetricSelect" style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="distance.metric">Distance metric</label>
                 <select id="distanceModelMetricSelect" class="delay-input" style="min-width:9rem">

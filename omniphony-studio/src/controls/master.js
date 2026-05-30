@@ -152,6 +152,11 @@ export function renderDistanceModelUI() {
       ? app.distanceModelMetric
       : 'spherical';
   }
+  // The metric is irrelevant with no attenuation, so hide it when model is none.
+  const distanceModelMetricRowEl = inRendererPanel('distanceModelMetricRow');
+  if (distanceModelMetricRowEl) {
+    distanceModelMetricRowEl.style.display = app.distanceModel === 'none' ? 'none' : '';
+  }
 }
 
 export function updateDistanceModelUI() {
