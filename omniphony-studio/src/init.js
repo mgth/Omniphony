@@ -253,6 +253,12 @@ export function applyInitState(payload) {
             Math.min(1, Math.max(0, point[1]))
           ])
         : null;
+      if (typeof hybrid.metric === 'string') {
+        const metric = hybrid.metric.trim().toLowerCase();
+        if (['spherical', 'chebyshev'].includes(metric)) {
+          app.renderBackendState.hybrid.metric = metric;
+        }
+      }
     }
   }
   if (payload.renderEvaluationModeState && typeof payload.renderEvaluationModeState === 'object') {

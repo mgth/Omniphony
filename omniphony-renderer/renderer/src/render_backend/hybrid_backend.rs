@@ -1,8 +1,18 @@
 use anyhow::Result;
 
 use super::{BackendCapabilities, GainModel, GainModelKind, RenderRequest, RenderResponse};
-use crate::spatial_vbap::Gains;
+use crate::spatial_vbap::{DistanceMetric, Gains};
 use crate::speaker_layout::SpeakerLayout;
+
+/// Largest distance from the cube centre under each metric, used to normalise the
+/// blend curve's X axis to `[0, 1]`. Chebyshev reaches 1 on the cube surface;
+/// spherical (Euclidean) reaches the cube diagonal √3 at a corner.
+pub fn hybrid_max_distance(metric: DistanceMetric) -> f32 {
+    match metric {
+        DistanceMetric::Chebyshev => 1.0,
+        DistanceMetric::Spherical => 3.0_f32.sqrt(),
+    }
+}
 
 /// Backend that blends two other gain models ("external" and "internal") as a
 /// function of the source's normalised distance from the centre of the cube.
@@ -16,10 +26,17 @@ pub struct HybridBackend {
     external: Box<dyn GainModel>,
     internal: Box<dyn GainModel>,
     curve: BlendCurve,
+    metric: DistanceMetric,
+    max_distance: f32,
 }
 
 impl HybridBackend {
-    pub fn new(external: Box<dyn GainModel>, internal: Box<dyn GainModel>, curve: BlendCurve) -> Self {
+    pub fn new(
+        external: Box<dyn GainModel>,
+        internal: Box<dyn GainModel>,
+        curve: BlendCurve,
+        metric: DistanceMetric,
+    ) -> Self {
         debug_assert_eq!(
             external.speaker_count(),
             internal.speaker_count(),
@@ -29,6 +46,8 @@ impl HybridBackend {
             external,
             internal,
             curve,
+            metric,
+            max_distance: hybrid_max_distance(metric),
         }
     }
 
@@ -40,11 +59,16 @@ impl HybridBackend {
         let external = self.external.compute_gains(req).gains;
         let internal = self.internal.compute_gains(req).gains;
 
-        // Chebyshev (L∞) distance on the raw ADM position: 1 over the whole cube
-        // surface, 0 at the centre.
-        let [x, y, z] = req.adm_position;
-        let distance = x.abs().max(y.abs()).max(z.abs()).clamp(0.0, 1.0) as f32;
-        let ratio = self.curve.eval(distance);
+        // Distance on the raw ADM position, normalised by the metric's maximum
+        // (Chebyshev: 1 on the cube surface; spherical: √3 at a corner), so the
+        // blend curve's X axis stays in [0, 1] regardless of metric.
+        let distance = self.metric.measure(req.adm_position.map(|v| v as f32));
+        let normalized = if self.max_distance > 0.0 {
+            (distance / self.max_distance).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let ratio = self.curve.eval(normalized);
 
         let count = internal.len().min(external.len());
         let mut gains = Gains::zeroed(self.speaker_count());
@@ -234,6 +258,7 @@ mod tests {
             Box::new(ExperimentalDistanceBackend::new(speakers())),
             Box::new(BarycenterBackend::new(speakers())),
             curve,
+            crate::spatial_vbap::DistanceMetric::Chebyshev,
         )
     }
 
@@ -301,7 +326,12 @@ mod tests {
         let external: Box<dyn GainModel> = Box::new(VbapBackend::new(panner));
         let internal: Box<dyn GainModel> = Box::new(BarycenterBackend::new(speakers()));
         let model: Box<dyn GainModel> =
-            Box::new(HybridBackend::new(external, internal, BlendCurve::default()));
+            Box::new(HybridBackend::new(
+                external,
+                internal,
+                BlendCurve::default(),
+                crate::spatial_vbap::DistanceMetric::Chebyshev,
+            ));
 
         let config = EvaluationBuildConfig {
             request_template: request([0.0, 0.0, 0.0]),

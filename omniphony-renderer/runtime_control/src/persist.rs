@@ -274,6 +274,11 @@ pub fn save_live_config(
     } else {
         None
     };
+    render.hybrid_metric = if live.hybrid.metric != hybrid_defaults.metric {
+        Some(live.hybrid.metric.to_string())
+    } else {
+        None
+    };
     render.ramp_mode = match control.requested_ramp_mode() {
         RampMode::Frame => None,
         mode => Some(mode.as_str().to_string()),

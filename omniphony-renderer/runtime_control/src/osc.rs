@@ -1692,6 +1692,16 @@ pub fn apply_simple_osc_control(
                     }
                 }
             }
+            "metric" => {
+                if let Some(OscType::String(metric)) = msg.args.first() {
+                    if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
+                        if live.hybrid.metric != metric {
+                            live.hybrid.metric = metric;
+                            changed = true;
+                        }
+                    }
+                }
+            }
             "curve" => {
                 // Flat list of (x, y) pairs: x0, y0, x1, y1, …
                 let mut values: Vec<f32> = Vec::with_capacity(msg.args.len());

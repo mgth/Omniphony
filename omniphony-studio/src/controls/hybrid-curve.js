@@ -221,7 +221,35 @@ export function renderHybridCurve() {
   ctx.fillText('0', 4, r.y + r.h);
   ctx.textBaseline = 'top';
   ctx.fillText('center', r.x, r.y + r.h + 4);
-  ctx.fillText('surface', r.x + r.w - 36, r.y + r.h + 4);
+
+  // Distance reference markers. The X axis is normalised [0, 1] = [centre, max].
+  // Chebyshev's max is the cube surface (1.0). Spherical's max is the cube
+  // diagonal √3, so mark the real distances 1.0 (axis face) and √2 (horizontal
+  // square diagonal) along the way, with the right edge labelled √3.
+  const metric = app.renderBackendState.hybrid?.metric === 'spherical' ? 'spherical' : 'chebyshev';
+  if (metric === 'spherical') {
+    const sqrt3 = Math.sqrt(3);
+    const markers = [
+      { norm: 1 / sqrt3, label: '1.0' },
+      { norm: Math.SQRT2 / sqrt3, label: '√2' }
+    ];
+    ctx.save();
+    ctx.strokeStyle = 'rgba(159,220,255,0.35)';
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1;
+    markers.forEach((marker) => {
+      const mx = r.x + marker.norm * r.w;
+      ctx.beginPath();
+      ctx.moveTo(mx, r.y);
+      ctx.lineTo(mx, r.y + r.h);
+      ctx.stroke();
+      ctx.fillText(marker.label, mx - 6, r.y + r.h + 4);
+    });
+    ctx.restore();
+    ctx.fillText('√3', r.x + r.w - 14, r.y + r.h + 4);
+  } else {
+    ctx.fillText('surface', r.x + r.w - 36, r.y + r.h + 4);
+  }
 
   const curve = currentCurve();
 

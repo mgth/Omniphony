@@ -139,7 +139,8 @@ export const app = {
     hybrid: {
       externalBackend: null,
       internalBackend: null,
-      curve: null
+      curve: null,
+      metric: 'chebyshev'
     }
   },
   // Which inner backend's parameter tab is shown while the hybrid backend is active.

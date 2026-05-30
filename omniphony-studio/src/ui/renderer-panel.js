@@ -277,6 +277,13 @@ export function rendererPanelMarkup() {
                       <option value="experimental_distance">Distance</option>
                     </select>
                   </div>
+                  <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                    <label for="hybridMetricSelect" style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="distance.metric">Distance metric</label>
+                    <select id="hybridMetricSelect" class="delay-input" style="min-width:9rem">
+                      <option value="chebyshev" data-i18n="distance.metric.chebyshev">Chebyshev</option>
+                      <option value="spherical" data-i18n="distance.metric.spherical">Spherical</option>
+                    </select>
+                  </div>
                   <div style="font-size:11px;color:#b8b8b8;margin-top:0.1rem">
                     <span data-i18n="hybrid.curveHint">Blend curve — X: distance (center → cube surface), Y: external ratio. Double-click to add a point, double-click a point to remove it.</span>
                   </div>

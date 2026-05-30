@@ -185,6 +185,7 @@ pub struct HybridState {
     #[serde(rename = "internalBackend", alias = "internal_backend")]
     pub internal_backend: Option<String>,
     pub curve: Vec<[f64; 2]>,
+    pub metric: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

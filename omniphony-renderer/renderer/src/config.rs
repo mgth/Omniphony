@@ -229,6 +229,9 @@ pub struct RenderConfig {
     /// Hybrid backend: editable blend curve as `(distance, ratio)` control points.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hybrid_curve: Option<Vec<[f32; 2]>>,
+    /// Hybrid backend: blend distance metric (spherical / chebyshev).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hybrid_metric: Option<String>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     /// This matters most for `render.*`: any field added by a future
     /// version of the CLI / a host that we haven't migrated into this

@@ -395,6 +395,11 @@ pub fn build_spatial_renderer(
                 .clone()
                 .filter(|points| points.len() >= 2)
                 .unwrap_or(defaults.curve),
+            metric: cfg
+                .hybrid_metric
+                .as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(defaults.metric),
         }
     });
     {
@@ -441,6 +446,7 @@ pub fn build_spatial_renderer(
                 if live.hybrid.external_backend_id != hybrid.external_backend_id
                     || live.hybrid.internal_backend_id != hybrid.internal_backend_id
                     || live.hybrid.curve != hybrid.curve
+                    || live.hybrid.metric != hybrid.metric
                 {
                     live.hybrid = hybrid;
                     requires_rebuild = true;

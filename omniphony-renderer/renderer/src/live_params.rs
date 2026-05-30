@@ -206,6 +206,10 @@ pub struct HybridLiveParams {
     /// Editable blend curve: `(normalised_distance, ratio)` control points,
     /// ratio = weight of the external backend.
     pub curve: Vec<[f32; 2]>,
+    /// Metric used to reduce a position to the (normalised) blend distance.
+    /// Chebyshev (default) reaches 1 on the cube surface; spherical reaches √3
+    /// at a corner.
+    pub metric: crate::spatial_vbap::DistanceMetric,
 }
 
 impl Default for HybridLiveParams {
@@ -214,6 +218,7 @@ impl Default for HybridLiveParams {
             external_backend_id: "vbap".to_string(),
             internal_backend_id: "barycenter".to_string(),
             curve: vec![[0.0, 0.0], [1.0, 1.0]],
+            metric: crate::spatial_vbap::DistanceMetric::Chebyshev,
         }
     }
 }

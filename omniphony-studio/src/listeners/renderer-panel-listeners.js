@@ -54,6 +54,7 @@ export function setupRendererPanelListeners() {
   const experimentalDistanceSpanScaleInputEl = document.getElementById('experimentalDistanceSpanScaleInput');
   const hybridExternalBackendSelectEl = document.getElementById('hybridExternalBackendSelect');
   const hybridInternalBackendSelectEl = document.getElementById('hybridInternalBackendSelect');
+  const hybridMetricSelectEl = document.getElementById('hybridMetricSelect');
 
   if (spreadMinSliderEl) {
     spreadMinSliderEl.addEventListener('input', () => {
@@ -334,6 +335,18 @@ export function setupRendererPanelListeners() {
       renderVbapStatus();
       updateRenderBackend();
       invoke('control_hybrid_internal_backend', { value });
+    });
+  }
+
+  if (hybridMetricSelectEl) {
+    hybridMetricSelectEl.addEventListener('change', () => {
+      const value = String(hybridMetricSelectEl.value || '').trim().toLowerCase();
+      if (!['spherical', 'chebyshev'].includes(value)) return;
+      app.renderBackendState.hybrid.metric = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      updateRenderBackend();
+      invoke('control_hybrid_metric', { value });
     });
   }
 

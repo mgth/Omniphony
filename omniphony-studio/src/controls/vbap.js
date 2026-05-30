@@ -418,6 +418,12 @@ export function renderHybridOptions() {
   if (hybridInternalBackendSelectEl && typeof state.internalBackend === 'string') {
     hybridInternalBackendSelectEl.value = state.internalBackend;
   }
+  const hybridMetricSelectEl = inRendererPanel('hybridMetricSelect');
+  if (hybridMetricSelectEl) {
+    hybridMetricSelectEl.value = ['spherical', 'chebyshev'].includes(state.metric)
+      ? state.metric
+      : 'chebyshev';
+  }
   renderHybridParamTabs();
   renderHybridCurve();
 }

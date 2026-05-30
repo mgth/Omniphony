@@ -801,6 +801,11 @@ fn control_hybrid_internal_backend(state: State<SharedState>, value: String) {
 }
 
 #[tauri::command]
+fn control_hybrid_metric(state: State<SharedState>, value: String) {
+    send_distance_metric(&state, "/omniphony/control/hybrid/metric", value);
+}
+
+#[tauri::command]
 fn control_hybrid_curve(state: State<SharedState>, points: Vec<[f32; 2]>) {
     // Flatten (x, y) control points into a single float list, clamped to [0, 1].
     let args = points
@@ -2582,6 +2587,7 @@ fn main() {
             control_hybrid_external_backend,
             control_hybrid_internal_backend,
             control_hybrid_curve,
+            control_hybrid_metric,
             control_render_evaluation_cartesian_x_size,
             control_render_evaluation_cartesian_y_size,
             control_render_evaluation_cartesian_z_size,
