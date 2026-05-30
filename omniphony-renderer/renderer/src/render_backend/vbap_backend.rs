@@ -5,7 +5,7 @@ use super::{
     reduce_size_to_spread,
 };
 use super::room_transform::map_depth_with_room_ratios;
-use crate::spatial_vbap::{Gains, VbapPanner, adm_to_spherical};
+use crate::spatial_vbap::{VbapPanner, adm_to_spherical};
 use crate::speaker_layout::SpeakerLayout;
 
 pub struct VbapBackend {
@@ -59,45 +59,11 @@ impl VbapBackend {
             (req.spread_min + intrinsic * (req.spread_max - req.spread_min)).clamp(0.0, 1.0)
         };
 
-        let direct_gains =
+        // Distance diffuse blending is applied by the shared DistanceDiffuseModel
+        // decorator; VBAP returns pure panning gains.
+        let gains =
             self.panner
                 .get_gains_cartesian(scaled_x, scaled_y, scaled_z, effective_spread);
-
-        let gains = if req.use_distance_diffuse {
-            let [rx, ry, rz] = rendering_position;
-            let adm_dist = ((rx * rx + ry * ry + rz * rz) as f32).sqrt();
-            let t = (adm_dist / req.distance_diffuse_threshold.max(1e-6))
-                .min(1.0)
-                .powf(req.distance_diffuse_curve);
-            let alpha = 0.5 + 0.5 * t;
-            let w_direct = alpha.sqrt();
-            let w_mirror = (1.0 - alpha).sqrt();
-            let mirror_gains =
-                self.panner
-                    .get_gains_cartesian(-scaled_x, -scaled_y, scaled_z, effective_spread);
-
-            let n = direct_gains.len();
-            let mut blended = Gains::zeroed(n);
-            let mut energy_direct = 0.0f32;
-            let mut energy_blended = 0.0f32;
-            for i in 0..n {
-                let g = w_direct * direct_gains[i] + w_mirror * mirror_gains[i];
-                blended.set(i, g);
-                energy_direct += direct_gains[i] * direct_gains[i];
-                energy_blended += g * g;
-            }
-
-            if energy_blended > 1e-12 {
-                let scale = (energy_direct / energy_blended).sqrt();
-                for g in blended.iter_mut() {
-                    *g *= scale;
-                }
-            }
-
-            blended
-        } else {
-            direct_gains
-        };
 
         RenderResponse { gains }
     }

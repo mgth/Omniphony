@@ -1,5 +1,6 @@
 mod barycenter_backend;
 mod distance_attenuation;
+mod distance_diffuse;
 mod evaluation_artifact;
 mod experimental_distance_backend;
 mod hybrid_backend;
@@ -15,6 +16,7 @@ use serde::Serialize;
 
 pub use barycenter_backend::BarycenterBackend;
 use distance_attenuation::DistanceAttenuatedModel;
+use distance_diffuse::DistanceDiffuseModel;
 pub use evaluation_artifact::{
     BackendRestoreSnapshot, SerializedEvaluationMode, build_backend_restore_snapshot,
 };
@@ -839,10 +841,12 @@ pub fn build_prepared_render_engine(
     evaluation_mode: EffectiveEvaluationMode,
     config: &EvaluationBuildConfig,
 ) -> Result<PreparedRenderEngine> {
-    // Wrap the backend so distance attenuation is applied once on the final
-    // gains (after any hybrid blend + renorm), uniformly for every backend.
-    // Identity/metadata still delegate to the inner backend; capabilities gain
-    // `supports_distance_model`.
+    // Wrap the backend with the shared output stages, applied uniformly for
+    // every backend. Order matters: distance diffuse blends + renormalizes, so
+    // distance attenuation must wrap it (be applied last) or the renorm would
+    // cancel the attenuation. Identity/metadata still delegate to the inner
+    // backend; capabilities gain `supports_distance_diffuse` / `_model`.
+    let model: Box<dyn GainModel> = Box::new(DistanceDiffuseModel::new(model));
     let model: Box<dyn GainModel> = Box::new(DistanceAttenuatedModel::new(model));
     let gain_model_kind = model.kind();
     let backend_id = model.backend_id();

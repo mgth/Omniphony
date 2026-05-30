@@ -22,7 +22,6 @@ function getBackendParametersSectionEl() { return inRendererPanel('backendParame
 function getBackendSpecificParamsSectionEl() { return inRendererPanel('backendSpecificParamsSection'); }
 function getEvaluationSectionEl() { return inRendererPanel('evaluationSection'); }
 function getSpreadSectionEl() { return inRendererPanel('spreadSection'); }
-function getDistanceDiffuseSectionEl() { return inRendererPanel('distanceDiffuseSection'); }
 function getSpreadFromDistanceSectionEl() { return inRendererPanel('spreadFromDistanceSection'); }
 function getBarycenterSectionEl() { return inRendererPanel('barycenterSection'); }
 function getExperimentalDistanceSectionEl() { return inRendererPanel('experimentalDistanceSection'); }
@@ -96,7 +95,6 @@ function applyRendererBackendVisibility(backend) {
   const evaluationSectionEl = getEvaluationSectionEl();
   const backendSpecificParamsSectionEl = getBackendSpecificParamsSectionEl();
   const spreadSectionEl = getSpreadSectionEl();
-  const distanceDiffuseSectionEl = getDistanceDiffuseSectionEl();
   const spreadFromDistanceSectionEl = getSpreadFromDistanceSectionEl();
   const experimentalDistanceSectionEl = getExperimentalDistanceSectionEl();
   const barycenterSectionEl = getBarycenterSectionEl();
@@ -123,9 +121,6 @@ function applyRendererBackendVisibility(backend) {
   const supportsSpread = isHybrid
     ? paramBackend === 'vbap'
     : capabilities?.supportsSpread === true;
-  const supportsDistanceDiffuse = isHybrid
-    ? paramBackend === 'vbap'
-    : capabilities?.supportsDistanceDiffuse === true;
   const supportsSpreadFromDistance = isHybrid
     ? paramBackend === 'vbap'
     : capabilities?.supportsSpreadFromDistance === true;
@@ -144,15 +139,12 @@ function applyRendererBackendVisibility(backend) {
     // all tab content, including the inner-backend param sections that follow it
     // in the DOM.
     backendSpecificParamsSectionEl.style.display =
-      supportsSpread || supportsDistanceDiffuse || showsBarycenter || showsExperimentalDistance || showsHybrid
+      supportsSpread || showsBarycenter || showsExperimentalDistance || showsHybrid
         ? 'flex'
         : 'none';
   }
   if (spreadSectionEl) {
     spreadSectionEl.style.display = supportsSpread ? '' : 'none';
-  }
-  if (distanceDiffuseSectionEl) {
-    distanceDiffuseSectionEl.style.display = supportsDistanceDiffuse ? '' : 'none';
   }
   if (spreadFromDistanceSectionEl) {
     spreadFromDistanceSectionEl.style.display = supportsSpreadFromDistance ? '' : 'none';

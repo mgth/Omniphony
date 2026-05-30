@@ -171,25 +171,6 @@ export function rendererPanelMarkup() {
             </div>
             </div>
           </div>
-          <div class="info-section" id="distanceDiffuseSection" style="margin:0;padding:0;border:none;background:none">
-            <div class="title-with-info" style="font-size:12px;font-weight:600;color:#ffffff">
-              <span data-i18n="distance.title">Distance Diffuse</span>
-              <div class="inline-toggle" style="display:flex;align-items:center;gap:0.35rem">
-                <button id="distanceDiffuseInfoBtn" type="button" class="info-icon-btn" data-i18n-title="distance.infoButton" title="Distance diffuse info">i</button>
-                <input id="distanceDiffuseToggle" type="checkbox" />
-              </div>
-            </div>
-            <div id="distanceDiffuseParams" class="conditional-params">
-              <div class="control-row" style="margin-top:0.2rem">
-                <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.threshold">Threshold</span> <span id="distanceDiffuseThresholdVal">1.00</span></label>
-                <input id="distanceDiffuseThresholdSlider" type="range" min="0.1" max="2.0" step="0.01" value="1.0" class="gain-slider" />
-              </div>
-              <div class="control-row" style="margin-top:0.15rem">
-                <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.curve">Curve</span> <span id="distanceDiffuseCurveVal">1.00</span></label>
-                <input id="distanceDiffuseCurveSlider" type="range" min="0.5" max="2.0" step="0.05" value="1.0" class="gain-slider" />
-              </div>
-            </div>
-          </div>
           <div class="info-section" id="spreadFromDistanceSection" style="margin:0;padding:0;border:none;background:none">
             <div class="title-with-info" style="font-size:12px;font-weight:600;color:#ffffff">
               <span data-i18n="spread.distanceTitle">Spread from Distance</span>
@@ -321,6 +302,29 @@ export function rendererPanelMarkup() {
                   <option value="quadratic" data-i18n="distance.model.quadratic">Quadratic</option>
                   <option value="inverse-square" data-i18n="distance.model.inverseSquare">Inverse-square</option>
                 </select>
+              </div>
+            </div>
+          </div>
+          <div class="info-section renderer-subpanel" id="distanceDiffuseSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div class="title-with-info" style="margin:0;font-size:12px;font-weight:600;color:#ffffff">
+                <span data-i18n="distance.title">Distance Diffuse</span>
+                <button id="distanceDiffuseInfoBtn" type="button" class="info-icon-btn" data-i18n-title="distance.infoButton" title="Distance diffuse info">i</button>
+              </div>
+              <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
+                <input id="distanceDiffuseToggle" type="checkbox" />
+              </div>
+            </div>
+            <div id="distanceDiffuseParams" class="conditional-params">
+              <div class="renderer-subpanel-body" style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                <div class="control-row" style="margin-top:0">
+                  <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.threshold">Threshold</span> <span id="distanceDiffuseThresholdVal">1.00</span></label>
+                  <input id="distanceDiffuseThresholdSlider" type="range" min="0.1" max="2.0" step="0.01" value="1.0" class="gain-slider" />
+                </div>
+                <div class="control-row" style="margin-top:0.15rem">
+                  <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.curve">Curve</span> <span id="distanceDiffuseCurveVal">1.00</span></label>
+                  <input id="distanceDiffuseCurveSlider" type="range" min="0.5" max="2.0" step="0.05" value="1.0" class="gain-slider" />
+                </div>
               </div>
             </div>
           </div>
