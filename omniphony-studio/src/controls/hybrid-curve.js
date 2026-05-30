@@ -185,13 +185,20 @@ function onDoubleClick(evt) {
   commitCurve(curve, { immediate: true });
 }
 
+/** Max real distance for the active metric (normalised X is scaled by this). */
+function maxDistance() {
+  return app.renderBackendState.hybrid?.metric === 'spherical' ? Math.sqrt(3) : 1;
+}
+
 function updateReadout(point) {
   if (!readoutEl) return;
   if (!point) {
     readoutEl.textContent = '—';
     return;
   }
-  readoutEl.textContent = `d=${point[0].toFixed(2)} → ratio=${point[1].toFixed(2)}`;
+  // point[0] is the normalised X; show the real distance under the metric.
+  const distance = point[0] * maxDistance();
+  readoutEl.textContent = `d=${distance.toFixed(2)} → ratio=${point[1].toFixed(2)}`;
 }
 
 export function renderHybridCurve() {
