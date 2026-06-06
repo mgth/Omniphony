@@ -106,8 +106,16 @@ function applyRendererBackendVisibility(backend) {
   const hybridConfigPanelEl = getHybridConfigPanelEl();
   const scriptSectionEl = getScriptSectionEl();
   const capabilities = backendCapabilities();
+  // Section visibility follows what the user is *configuring* (the selection),
+  // not only the active backend: when a freshly selected backend fails to build
+  // (e.g. the script backend before a valid file is set), `effective` lags on
+  // the previous backend, but its config section must still be reachable so the
+  // user can fix it.
+  const selection = typeof app.renderBackendState.selection === 'string'
+    ? app.renderBackendState.selection
+    : backend;
   const isHybrid = backend === 'hybrid';
-  const isScript = backend === 'script';
+  const isScript = backend === 'script' || selection === 'script';
 
   // The base backend whose individual parameters are currently displayed.
   // In hybrid mode that's the active inner-backend tab; otherwise the active
@@ -152,20 +160,23 @@ function applyRendererBackendVisibility(backend) {
   if (scriptSectionEl) {
     scriptSectionEl.style.display = isScript ? '' : 'none';
   }
+  // While the script backend is selected, suppress the previous backend's
+  // param sections (they would otherwise linger because `effective` lags on a
+  // failed build).
   if (spreadSectionEl) {
-    spreadSectionEl.style.display = supportsSpread ? '' : 'none';
+    spreadSectionEl.style.display = supportsSpread && !isScript ? '' : 'none';
   }
   if (spreadFromDistanceSectionEl) {
-    spreadFromDistanceSectionEl.style.display = supportsSpreadFromDistance ? '' : 'none';
+    spreadFromDistanceSectionEl.style.display = supportsSpreadFromDistance && !isScript ? '' : 'none';
   }
   if (experimentalDistanceSectionEl) {
-    experimentalDistanceSectionEl.style.display = showsExperimentalDistance ? '' : 'none';
+    experimentalDistanceSectionEl.style.display = showsExperimentalDistance && !isScript ? '' : 'none';
   }
   if (barycenterSectionEl) {
-    barycenterSectionEl.style.display = showsBarycenter ? '' : 'none';
+    barycenterSectionEl.style.display = showsBarycenter && !isScript ? '' : 'none';
   }
   if (hybridSectionEl) {
-    hybridSectionEl.style.display = showsHybrid ? '' : 'none';
+    hybridSectionEl.style.display = showsHybrid && !isScript ? '' : 'none';
   }
   if (hybridConfigPanelEl) {
     hybridConfigPanelEl.style.display = isHybrid && hybridTab === 'hybrid' ? '' : 'none';
