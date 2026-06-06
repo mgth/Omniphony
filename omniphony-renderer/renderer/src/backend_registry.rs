@@ -342,6 +342,25 @@ fn effective_live_evaluation_mode(
     }
 }
 
+/// Evaluation mode for the script backend, which has `supports_realtime =
+/// false`: an `Auto` or `Realtime` request is forced to a precomputed mode
+/// (the script runs only while the table is sampled, never per audio sample).
+/// An explicitly chosen precomputed mode is respected as-is.
+fn resolve_script_evaluation_mode(
+    requested: LiveEvaluationMode,
+    preferred: PreferredEvaluationMode,
+) -> LiveEvaluationMode {
+    match effective_live_evaluation_mode(requested, preferred) {
+        LiveEvaluationMode::Realtime => match preferred {
+            PreferredEvaluationMode::PrecomputedCartesian => {
+                LiveEvaluationMode::PrecomputedCartesian
+            }
+            PreferredEvaluationMode::PrecomputedPolar => LiveEvaluationMode::PrecomputedPolar,
+        },
+        resolved => resolved,
+    }
+}
+
 fn collect_spatializable_positions(layout: &SpeakerLayout) -> Vec<[f32; 3]> {
     layout
         .speakers
@@ -536,18 +555,7 @@ pub fn prepare_topology_build_plan(
             // never honoured: any Auto/Realtime request is forced to a
             // precomputed mode (the script then runs only at table-build time).
             let preferred = preferred_evaluation_mode(backend_rebuild_params);
-            let evaluation_mode =
-                match effective_live_evaluation_mode(live.evaluation.mode, preferred) {
-                    LiveEvaluationMode::Realtime => match preferred {
-                        PreferredEvaluationMode::PrecomputedCartesian => {
-                            LiveEvaluationMode::PrecomputedCartesian
-                        }
-                        PreferredEvaluationMode::PrecomputedPolar => {
-                            LiveEvaluationMode::PrecomputedPolar
-                        }
-                    },
-                    resolved => resolved,
-                };
+            let evaluation_mode = resolve_script_evaluation_mode(live.evaluation.mode, preferred);
             let speaker_positions = collect_spatializable_positions(&layout);
             Some(TopologyBuildPlan {
                 backend_id: live.backend_id().to_string(),
@@ -564,5 +572,67 @@ pub fn prepare_topology_build_plan(
             })
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn script_realtime_is_forced_to_a_precomputed_mode() {
+        // Realtime is never honoured for the script backend.
+        assert_eq!(
+            resolve_script_evaluation_mode(
+                LiveEvaluationMode::Realtime,
+                PreferredEvaluationMode::PrecomputedPolar
+            ),
+            LiveEvaluationMode::PrecomputedPolar
+        );
+        assert_eq!(
+            resolve_script_evaluation_mode(
+                LiveEvaluationMode::Realtime,
+                PreferredEvaluationMode::PrecomputedCartesian
+            ),
+            LiveEvaluationMode::PrecomputedCartesian
+        );
+    }
+
+    #[test]
+    fn script_auto_follows_the_preferred_precomputed_mode() {
+        assert_eq!(
+            resolve_script_evaluation_mode(
+                LiveEvaluationMode::Auto,
+                PreferredEvaluationMode::PrecomputedCartesian
+            ),
+            LiveEvaluationMode::PrecomputedCartesian
+        );
+        assert_eq!(
+            resolve_script_evaluation_mode(
+                LiveEvaluationMode::Auto,
+                PreferredEvaluationMode::PrecomputedPolar
+            ),
+            LiveEvaluationMode::PrecomputedPolar
+        );
+    }
+
+    #[test]
+    fn script_explicit_precomputed_mode_is_respected() {
+        // An explicitly chosen precomputed mode is left untouched, regardless of
+        // the preferred fallback.
+        assert_eq!(
+            resolve_script_evaluation_mode(
+                LiveEvaluationMode::PrecomputedPolar,
+                PreferredEvaluationMode::PrecomputedCartesian
+            ),
+            LiveEvaluationMode::PrecomputedPolar
+        );
+        assert_eq!(
+            resolve_script_evaluation_mode(
+                LiveEvaluationMode::PrecomputedCartesian,
+                PreferredEvaluationMode::PrecomputedPolar
+            ),
+            LiveEvaluationMode::PrecomputedCartesian
+        );
     }
 }

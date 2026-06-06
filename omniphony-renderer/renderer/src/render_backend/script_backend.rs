@@ -576,6 +576,107 @@ mod tests {
         assert!(backend(src).is_err());
     }
 
+    #[test]
+    fn sandbox_denies_require_and_debug() {
+        // `require` lives in the package lib, `debug` in the debug lib — neither
+        // is loaded, so both are nil and using them raises.
+        assert!(backend("function gains(p,s,st,pa) require('os') return {} end").is_err());
+        assert!(backend("function gains(p,s,st,pa) return { debug.getinfo(1) } end").is_err());
+    }
+
+    #[test]
+    fn runaway_allocation_is_capped() {
+        // A single huge allocation (no big loop, so it's the per-VM memory cap
+        // that trips, not the instruction budget) must fail the build.
+        let src = r#"
+            function gains(pos, speakers, state, params)
+              local big = string.rep("x", 256 * 1024 * 1024)
+              return { #big }
+            end
+        "#;
+        assert!(backend(src).is_err());
+    }
+
+    fn eval_config() -> crate::render_backend::EvaluationBuildConfig {
+        crate::render_backend::EvaluationBuildConfig {
+            request_template: request([0.0, 0.0, 0.0]),
+            position_interpolation: true,
+            cartesian: crate::render_backend::CartesianEvaluationConfig {
+                x_size: 5,
+                y_size: 5,
+                z_size: 3,
+                z_neg_size: 0,
+            },
+            polar: crate::render_backend::PolarEvaluationConfig {
+                azimuth_values: 8,
+                elevation_values: 5,
+                distance_values: 3,
+                distance_max: 1.0,
+                allow_negative_z: true,
+            },
+            distance_model_metric: crate::spatial_vbap::DistanceMetric::default(),
+            distance_diffuse_metric: crate::spatial_vbap::DistanceMetric::default(),
+        }
+    }
+
+    #[test]
+    fn valid_script_builds_and_samples_a_topology_engine() {
+        use crate::backend_registry::ScriptBuildPlan;
+        use crate::render_backend::{EffectiveEvaluationMode, build_prepared_render_engine};
+
+        let plan = ScriptBuildPlan {
+            speaker_positions: speakers(),
+            source: NEAREST.to_string(),
+            params: ScriptParams::default(),
+            error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+        };
+        let model = plan.build_gain_model().expect("valid script builds");
+        let engine = build_prepared_render_engine(
+            model,
+            EffectiveEvaluationMode::PrecomputedPolar,
+            &eval_config(),
+        )
+        .expect("engine builds and samples the table");
+        assert_eq!(engine.speaker_count(), speakers().len());
+        assert!(plan.post_build_check().is_ok());
+    }
+
+    #[test]
+    fn sampling_time_error_surfaces_via_post_build_check() {
+        use crate::backend_registry::ScriptBuildPlan;
+        use crate::render_backend::{EffectiveEvaluationMode, build_prepared_render_engine};
+
+        // Passes the eager probes (all have x >= 0) but errors at the negative-x
+        // grid cells only the full polar sweep visits — so the failure can only
+        // be caught after sampling, via post_build_check.
+        let src = r#"
+            function gains(pos, speakers, state, params)
+              if pos.x < -0.5 then error("boom at negative x") end
+              local out = {}
+              for i = 1, #speakers do out[i] = 0.0 end
+              out[1] = 1.0
+              return out
+            end
+        "#;
+        let plan = ScriptBuildPlan {
+            speaker_positions: speakers(),
+            source: src.to_string(),
+            params: ScriptParams::default(),
+            error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+        };
+        let model = plan.build_gain_model().expect("eager probes pass (x >= 0)");
+        let _engine = build_prepared_render_engine(
+            model,
+            EffectiveEvaluationMode::PrecomputedPolar,
+            &eval_config(),
+        )
+        .expect("the engine build itself does not error");
+        assert!(
+            plan.post_build_check().is_err(),
+            "a sampling-time Lua error must surface as a build failure"
+        );
+    }
+
     /// The shipped example script must load and match a Rust reference of the
     /// same inverse-distance law (identity room transform ⇒ raw positions).
     #[test]

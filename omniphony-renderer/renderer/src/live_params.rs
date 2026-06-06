@@ -250,6 +250,16 @@ pub struct ScriptLiveParams {
     pub generation: u64,
 }
 
+/// Combine the speaker-geometry generation (low 32 bits) and the script
+/// generation (high 32 bits) into the single token compared by
+/// [`TopologyBuildPlan::build_topology_reusing`]. Either changing yields a
+/// different token (forcing a rebuild); both unchanged yields the same token
+/// (allowing reuse). Both counters stay well below 2^32 in practice, so the
+/// halves never collide.
+fn script_mixed_generation(geometry_generation: u64, script_generation: u64) -> u64 {
+    (geometry_generation & 0xFFFF_FFFF) | (script_generation << 32)
+}
+
 /// Live-tunable rendering parameters.
 ///
 /// Written (exclusively) by the OSC listener thread, read via snapshot by the
@@ -866,17 +876,16 @@ impl RendererControl {
             evaluation_build_config,
         )
         .map(|mut plan| {
-            plan.geometry_generation = geometry_generation;
             // The scriptable backend's gain model depends on the Lua source and
-            // params, which are not part of the speaker geometry. Fold the
-            // script generation into the high bits so editing the script
-            // invalidates the topology reuse cache (forcing a fresh sample),
-            // while a geometry-only or grid-only change with an unchanged script
-            // can still reuse the model.
-            if live.backend_id() == "script" {
-                plan.geometry_generation =
-                    (geometry_generation & 0xFFFF_FFFF) | (live.script.generation << 32);
-            }
+            // params, which are not part of the speaker geometry. Fold the script
+            // generation in so editing the script invalidates the topology reuse
+            // cache (forcing a fresh sample), while a geometry-only or grid-only
+            // change with an unchanged script can still reuse the model.
+            plan.geometry_generation = if live.backend_id() == "script" {
+                script_mixed_generation(geometry_generation, live.script.generation)
+            } else {
+                geometry_generation
+            };
             plan
         })
     }
@@ -1041,5 +1050,43 @@ impl RendererControl {
 
     pub fn requested_ramp_mode(&self) -> RampMode {
         *self.requested_ramp_mode.lock().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::script_mixed_generation;
+
+    #[test]
+    fn script_generation_change_changes_the_token() {
+        let geo = 3;
+        // Same geometry, different script generation ⇒ different token (the reuse
+        // cache must rebuild after a script edit).
+        assert_ne!(
+            script_mixed_generation(geo, 1),
+            script_mixed_generation(geo, 2)
+        );
+    }
+
+    #[test]
+    fn geometry_generation_change_changes_the_token() {
+        let script = 7;
+        assert_ne!(
+            script_mixed_generation(1, script),
+            script_mixed_generation(2, script)
+        );
+    }
+
+    #[test]
+    fn identical_inputs_yield_an_identical_token() {
+        // Unchanged geometry + unchanged script ⇒ stable token (reuse allowed).
+        assert_eq!(script_mixed_generation(5, 9), script_mixed_generation(5, 9));
+    }
+
+    #[test]
+    fn small_counters_do_not_collide_across_the_halves() {
+        // The aliasing the high/low split prevents: (geo=2,script=0) vs
+        // (geo=0,script=2) would collide under a naive XOR, but must not here.
+        assert_ne!(script_mixed_generation(2, 0), script_mixed_generation(0, 2));
     }
 }
