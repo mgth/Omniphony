@@ -909,7 +909,7 @@ fn control_render_backend(state: State<SharedState>, value: String) {
     let normalized = value.trim().to_ascii_lowercase();
     if !matches!(
         normalized.as_str(),
-        "vbap" | "barycenter" | "experimental_distance" | "hybrid"
+        "vbap" | "barycenter" | "experimental_distance" | "hybrid" | "script"
     ) {
         return;
     }
@@ -918,6 +918,47 @@ fn control_render_backend(state: State<SharedState>, value: String) {
         OscControlMsg::SendString {
             address: "/omniphony/control/render_backend".to_string(),
             value: normalized,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_script_path(state: State<SharedState>, value: String) {
+    let path = value.trim().to_string();
+    if path.is_empty() {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/script/path".to_string(),
+            value: path,
+        },
+    );
+}
+
+#[tauri::command]
+fn control_script_reload(state: State<SharedState>) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/script/reload".to_string(),
+            args: Vec::new(),
+        },
+    );
+}
+
+#[tauri::command]
+fn control_script_param(state: State<SharedState>, name: String, value: f32) {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/script/param".to_string(),
+            args: vec![rosc::OscType::String(name), rosc::OscType::Float(value)],
         },
     );
 }
@@ -2656,6 +2697,9 @@ fn main() {
             control_hybrid_curve,
             control_hybrid_metric,
             control_hybrid_curve_smoothing,
+            control_script_path,
+            control_script_reload,
+            control_script_param,
             control_render_evaluation_cartesian_x_size,
             control_render_evaluation_cartesian_y_size,
             control_render_evaluation_cartesian_z_size,

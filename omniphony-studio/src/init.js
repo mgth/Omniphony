@@ -271,6 +271,16 @@ export function applyInitState(payload) {
         app.renderBackendState.hybrid.curveSmoothing = Math.min(1, Math.max(0, hybrid.curveSmoothing));
       }
     }
+    const script = payload.renderBackendState.script;
+    if (script && typeof script === 'object') {
+      app.renderBackendState.script.path = typeof script.path === 'string' ? script.path : '';
+      app.renderBackendState.script.params = Array.isArray(script.params)
+        ? script.params
+          .filter((pair) => Array.isArray(pair) && pair.length === 2
+            && typeof pair[0] === 'string' && Number.isFinite(pair[1]))
+          .map((pair) => [pair[0], pair[1]])
+        : [];
+    }
   }
   if (payload.renderEvaluationModeState && typeof payload.renderEvaluationModeState === 'object') {
     if (typeof payload.renderEvaluationModeState.selection === 'string') {

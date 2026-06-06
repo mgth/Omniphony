@@ -244,6 +244,24 @@ pub fn parse_string_arg(arg: Option<&OscType>) -> Option<String> {
     }
 }
 
+/// Read a script file's source for the scriptable backend. A read failure is
+/// turned into a top-level Lua `error(...)` snippet so it surfaces through the
+/// normal recompute error path (a clear message in Studio) instead of a
+/// misleading "missing `gains` function".
+fn read_script_source(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    match std::fs::read_to_string(path) {
+        Ok(src) => src,
+        Err(e) => {
+            let path = path.replace('\\', "\\\\").replace('"', "\\\"");
+            let msg = e.to_string().replace('\\', "\\\\").replace('"', "\\\"");
+            format!("error(\"script backend: cannot read '{path}': {msg}\")")
+        }
+    }
+}
+
 pub fn parse_input_layout_arg(
     arg: Option<&OscType>,
 ) -> Option<renderer::speaker_layout::SpeakerLayout> {
@@ -1225,6 +1243,54 @@ pub fn apply_simple_osc_control(
                         "OSC: hybrid/curve -> {} points",
                         live.hybrid.curve.len()
                     ));
+                }
+            }
+            _ => {}
+        }
+
+        if changed {
+            effects.mark_dirty = true;
+            effects.trigger_layout_recompute = true;
+        }
+        return Some(effects);
+    }
+
+    if let Some(rest) = addr.strip_prefix("/omniphony/control/script/") {
+        let mut live = ctx.renderer.live.write().unwrap();
+        let mut changed = false;
+        match rest {
+            "path" => {
+                if let Some(value) = parse_string_arg(msg.args.first()) {
+                    live.script.path = value.clone();
+                    live.script.source = read_script_source(&value);
+                    live.script.generation = live.script.generation.wrapping_add(1);
+                    changed = true;
+                    effects.log_message = Some(format!("OSC: script/path -> {value}"));
+                }
+            }
+            "reload" => {
+                if !live.script.path.is_empty() {
+                    let path = live.script.path.clone();
+                    live.script.source = read_script_source(&path);
+                    live.script.generation = live.script.generation.wrapping_add(1);
+                    changed = true;
+                    effects.log_message = Some(format!("OSC: script/reload <- {path}"));
+                }
+            }
+            "param" => {
+                // (name: string, value: float) — upsert a single numeric param.
+                if let (Some(name), Some(value)) = (
+                    parse_string_arg(msg.args.first()),
+                    parse_f32_arg(msg.args.get(1)),
+                ) {
+                    let value = value as f64;
+                    match live.script.params.iter_mut().find(|(k, _)| *k == name) {
+                        Some(entry) => entry.1 = value,
+                        None => live.script.params.push((name.clone(), value)),
+                    }
+                    live.script.generation = live.script.generation.wrapping_add(1);
+                    changed = true;
+                    effects.log_message = Some(format!("OSC: script/param {name} -> {value}"));
                 }
             }
             _ => {}

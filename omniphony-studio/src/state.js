@@ -146,6 +146,10 @@ export const app = {
       curve: null,
       curveSmoothing: 0,
       metric: 'chebyshev'
+    },
+    script: {
+      path: '',
+      params: []
     }
   },
   // Which inner backend's parameter tab is shown while the hybrid backend is active.

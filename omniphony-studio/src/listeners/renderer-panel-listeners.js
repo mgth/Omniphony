@@ -57,6 +57,9 @@ export function setupRendererPanelListeners() {
   const hybridMetricSelectEl = document.getElementById('hybridMetricSelect');
   const hybridCurveSmoothingSliderEl = document.getElementById('hybridCurveSmoothingSlider');
   const hybridCurveSmoothingValEl = document.getElementById('hybridCurveSmoothingVal');
+  const scriptPathInputEl = document.getElementById('scriptPathInput');
+  const scriptReloadBtnEl = document.getElementById('scriptReloadBtn');
+  const scriptParamsContainerEl = document.getElementById('scriptParamsContainer');
 
   if (spreadMinSliderEl) {
     spreadMinSliderEl.addEventListener('input', () => {
@@ -370,6 +373,40 @@ export function setupRendererPanelListeners() {
   }
 
   setupHybridCurveEditor();
+
+  if (scriptPathInputEl) {
+    scriptPathInputEl.addEventListener('change', () => {
+      const value = String(scriptPathInputEl.value || '').trim();
+      if (!value) return;
+      if (!app.renderBackendState.script) app.renderBackendState.script = {};
+      app.renderBackendState.script.path = value;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      invoke('control_script_path', { value });
+    });
+  }
+
+  if (scriptReloadBtnEl) {
+    scriptReloadBtnEl.addEventListener('click', () => {
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      invoke('control_script_reload');
+    });
+  }
+
+  if (scriptParamsContainerEl) {
+    // Param rows are rebuilt dynamically (renderScriptOptions), so delegate.
+    scriptParamsContainerEl.addEventListener('change', (event) => {
+      const input = event.target;
+      if (!input || !input.dataset || !input.dataset.scriptParam) return;
+      const name = input.dataset.scriptParam;
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) return;
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      invoke('control_script_param', { name, value });
+    });
+  }
 
   if (restoreBackendBtnEl) {
     restoreBackendBtnEl.addEventListener('click', () => {

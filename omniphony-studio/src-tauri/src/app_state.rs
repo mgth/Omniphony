@@ -195,6 +195,13 @@ pub struct HybridState {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ScriptState {
+    pub path: Option<String>,
+    /// Numeric params as `[name, value]` pairs (mirrors the renderer snapshot).
+    pub params: Vec<(String, f64)>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RenderBackendState {
     pub selection: Option<String>,
     pub effective: Option<String>,
@@ -216,6 +223,7 @@ pub struct RenderBackendState {
     #[serde(rename = "experimentalDistance", alias = "experimental_distance")]
     pub experimental_distance: ExperimentalDistanceState,
     pub hybrid: HybridState,
+    pub script: ScriptState,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

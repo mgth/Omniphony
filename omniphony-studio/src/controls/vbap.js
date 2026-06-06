@@ -26,6 +26,9 @@ function getSpreadFromDistanceSectionEl() { return inRendererPanel('spreadFromDi
 function getBarycenterSectionEl() { return inRendererPanel('barycenterSection'); }
 function getExperimentalDistanceSectionEl() { return inRendererPanel('experimentalDistanceSection'); }
 function getHybridSectionEl() { return inRendererPanel('hybridSection'); }
+function getScriptSectionEl() { return inRendererPanel('scriptSection'); }
+function getScriptPathInputEl() { return inRendererPanel('scriptPathInput'); }
+function getScriptParamsContainerEl() { return inRendererPanel('scriptParamsContainer'); }
 function getHybridExternalBackendSelectEl() { return inRendererPanel('hybridExternalBackendSelect'); }
 function getHybridInternalBackendSelectEl() { return inRendererPanel('hybridInternalBackendSelect'); }
 function getHybridParamTabsEl() { return inRendererPanel('hybridParamTabs'); }
@@ -87,6 +90,7 @@ function backendLabel(backend) {
   if (backend === 'barycenter') return 'Barycenter';
   if (backend === 'experimental_distance') return 'Distance';
   if (backend === 'hybrid') return 'Hybrid';
+  if (backend === 'script') return 'Script';
   return backend || '—';
 }
 
@@ -100,8 +104,10 @@ function applyRendererBackendVisibility(backend) {
   const barycenterSectionEl = getBarycenterSectionEl();
   const hybridSectionEl = getHybridSectionEl();
   const hybridConfigPanelEl = getHybridConfigPanelEl();
+  const scriptSectionEl = getScriptSectionEl();
   const capabilities = backendCapabilities();
   const isHybrid = backend === 'hybrid';
+  const isScript = backend === 'script';
 
   // The base backend whose individual parameters are currently displayed.
   // In hybrid mode that's the active inner-backend tab; otherwise the active
@@ -139,9 +145,12 @@ function applyRendererBackendVisibility(backend) {
     // all tab content, including the inner-backend param sections that follow it
     // in the DOM.
     backendSpecificParamsSectionEl.style.display =
-      supportsSpread || showsBarycenter || showsExperimentalDistance || showsHybrid
+      supportsSpread || showsBarycenter || showsExperimentalDistance || showsHybrid || isScript
         ? 'flex'
         : 'none';
+  }
+  if (scriptSectionEl) {
+    scriptSectionEl.style.display = isScript ? '' : 'none';
   }
   if (spreadSectionEl) {
     spreadSectionEl.style.display = supportsSpread ? '' : 'none';
@@ -339,7 +348,47 @@ export function renderRenderBackend() {
   renderBarycenterOptions();
   renderExperimentalDistanceOptions();
   renderHybridOptions();
+  renderScriptOptions();
   renderEvaluationMode();
+}
+
+export function renderScriptOptions() {
+  const pathInputEl = getScriptPathInputEl();
+  const paramsContainerEl = getScriptParamsContainerEl();
+  const state = app.renderBackendState.script || {};
+  if (pathInputEl && document.activeElement !== pathInputEl) {
+    pathInputEl.value = typeof state.path === 'string' ? state.path : '';
+  }
+  if (paramsContainerEl) {
+    const params = Array.isArray(state.params) ? state.params : [];
+    const keys = params.map((pair) => pair[0]).join('');
+    if (paramsContainerEl.dataset.keys !== keys) {
+      paramsContainerEl.innerHTML = '';
+      paramsContainerEl.dataset.keys = keys;
+      for (const pair of params) {
+        const row = document.createElement('div');
+        row.className = 'control-row';
+        row.style.cssText = 'margin-top:0;grid-template-columns:1fr auto;align-items:center';
+        const label = document.createElement('label');
+        label.style.cssText = 'font-size:12px;white-space:nowrap;color:#ffffff';
+        label.textContent = pair[0];
+        const input = document.createElement('input');
+        input.className = 'delay-input';
+        input.type = 'number';
+        input.step = '0.01';
+        input.style.minWidth = '7rem';
+        input.dataset.scriptParam = pair[0];
+        row.append(label, input);
+        paramsContainerEl.append(row);
+      }
+    }
+    // Keep values in sync without clobbering the field being edited.
+    for (const input of paramsContainerEl.querySelectorAll('input[data-script-param]')) {
+      if (document.activeElement === input) continue;
+      const found = params.find((pair) => pair[0] === input.dataset.scriptParam);
+      input.value = found ? String(found[1]) : '';
+    }
+  }
 }
 
 export function updateRenderBackend() {

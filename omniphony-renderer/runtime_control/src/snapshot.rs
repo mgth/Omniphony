@@ -34,6 +34,12 @@ pub struct HybridOptionsSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ScriptOptionsSnapshot {
+    pub path: String,
+    pub params: Vec<(String, f64)>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RenderBackendStateSnapshot {
     pub selection: String,
     pub effective: String,
@@ -46,6 +52,7 @@ pub struct RenderBackendStateSnapshot {
     pub barycenter: BarycenterOptionsSnapshot,
     pub experimental_distance: ExperimentalDistanceOptionsSnapshot,
     pub hybrid: HybridOptionsSnapshot,
+    pub script: ScriptOptionsSnapshot,
 }
 
 fn allowed_evaluation_modes(
@@ -98,6 +105,10 @@ pub fn build_render_backend_state_snapshot(
             curve: live.hybrid.curve.clone(),
             curve_smoothing: live.hybrid.curve_smoothing,
             metric: live.hybrid.metric.to_string(),
+        },
+        script: ScriptOptionsSnapshot {
+            path: live.script.path.clone(),
+            params: live.script.params.clone(),
         },
     }
 }

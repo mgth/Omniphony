@@ -147,6 +147,7 @@ export function rendererPanelMarkup() {
 	                <option value="barycenter">Barycenter</option>
 	                <option value="experimental_distance">Distance</option>
 	                <option value="hybrid">Hybrid</option>
+	                <option value="script">Script</option>
 	              </select>
               <button id="restoreBackendBtn" type="button" class="secondary-btn" style="display:none;white-space:nowrap">Restore backend</button>
               <div id="renderBackendEffective" class="vbap-step" style="min-width:5.4rem;text-align:right">—</div>
@@ -301,6 +302,26 @@ export function rendererPanelMarkup() {
                     <input id="hybridPointYInput" class="delay-input" type="number" min="0" max="1" step="0.01" style="width:4.5rem" disabled />
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+          <div class="info-section" id="scriptSection" style="margin:0;padding:0;border:none;background:none;display:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div class="title-with-info" style="margin:0;font-size:12px;font-weight:600;color:#ffffff">
+                <span data-i18n="script.title">Script backend</span>
+                <button id="scriptInfoBtn" type="button" class="info-icon-btn" data-i18n-title="script.infoButton" title="Script backend info">i</button>
+              </div>
+            </div>
+            <div id="scriptSectionContent" class="conditional-params open">
+              <div style="margin-top:0.2rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.3rem">
+                <div class="control-row" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                  <label for="scriptPathInput" style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="script.file">Script file</label>
+                  <input id="scriptPathInput" class="delay-input" type="text" placeholder="/path/to/backend.lua" style="min-width:12rem" />
+                </div>
+                <div class="control-row" style="margin-top:0;justify-content:flex-end">
+                  <button id="scriptReloadBtn" type="button" class="secondary-btn" data-i18n="script.reload">Reload</button>
+                </div>
+                <div id="scriptParamsContainer" style="display:grid;gap:0.15rem"></div>
               </div>
             </div>
           </div>
