@@ -253,12 +253,48 @@ pub struct RenderConfig {
     /// Barycenter backend: localization sharpness (`live_params` default 0.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub barycenter_localize: Option<f32>,
+    /// Scriptable backend: path to the Lua script file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script_backend_path: Option<String>,
+    /// Scriptable backend: numeric parameters exposed to the script as a Lua
+    /// table (`{ key = number }`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script_backend_params: Option<Mapping>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     /// This matters most for `render.*`: any field added by a future
     /// version of the CLI / a host that we haven't migrated into this
     /// struct yet survives a save from another embedder.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
+}
+
+/// Convert a YAML mapping of `{ key: number }` into the numeric params list the
+/// scriptable backend consumes. Non-numeric values and non-string keys are
+/// dropped.
+pub fn script_params_from_mapping(map: &Mapping) -> Vec<(String, f64)> {
+    map.iter()
+        .filter_map(|(k, v)| {
+            let key = k.as_str()?.to_string();
+            let value = v.as_f64().or_else(|| v.as_i64().map(|i| i as f64))?;
+            Some((key, value))
+        })
+        .collect()
+}
+
+/// Inverse of [`script_params_from_mapping`], for saving. Returns `None` for an
+/// empty list so the config field is omitted entirely.
+pub fn script_params_to_mapping(params: &[(String, f64)]) -> Option<Mapping> {
+    if params.is_empty() {
+        return None;
+    }
+    let mut map = Mapping::new();
+    for (key, value) in params {
+        map.insert(
+            serde_yaml_ng::Value::from(key.as_str()),
+            serde_yaml_ng::Value::from(*value),
+        );
+    }
+    Some(map)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

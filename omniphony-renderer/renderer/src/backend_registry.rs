@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use parking_lot::Mutex;
 
 use crate::live_params::{
     BackendRebuildParams, LiveEvaluationMode, LiveParams, PreferredEvaluationMode, RenderTopology,
 };
 use crate::render_backend::{
     BlendCurve, EffectiveEvaluationMode, FewSpeakerBackend, GainModel, GainModelKind,
-    HybridBackend, RenderBackendKind, backend_descriptor_by_id, build_prepared_render_engine,
-    wrap_prepared_engine,
+    HybridBackend, RenderBackendKind, ScriptBackend, ScriptParams, backend_descriptor_by_id,
+    build_prepared_render_engine, wrap_prepared_engine,
 };
 use crate::speaker_layout::SpeakerLayout;
 
@@ -22,6 +23,7 @@ pub enum BackendBuildPlan {
     Barycenter(BarycenterBuildPlan),
     ExperimentalDistance(ExperimentalDistanceBuildPlan),
     Hybrid(HybridBuildPlan),
+    Script(ScriptBuildPlan),
 }
 
 impl BackendBuildPlan {
@@ -35,6 +37,17 @@ impl BackendBuildPlan {
             BackendBuildPlan::Barycenter(plan) => plan.build_gain_model(),
             BackendBuildPlan::ExperimentalDistance(plan) => plan.build_gain_model(),
             BackendBuildPlan::Hybrid(plan) => plan.build_gain_model(),
+            BackendBuildPlan::Script(plan) => plan.build_gain_model(),
+        }
+    }
+
+    /// Check for an error that could only surface while the table was being
+    /// sampled (currently: a Lua runtime error in the scriptable backend that
+    /// triggers at some grid positions). No-op for native backends.
+    pub fn post_build_check(&self) -> Result<()> {
+        match self {
+            BackendBuildPlan::Script(plan) => plan.post_build_check(),
+            _ => Ok(()),
         }
     }
 }
@@ -81,6 +94,39 @@ pub struct ExperimentalDistanceBuildPlan {
 #[derive(Clone)]
 pub struct BarycenterBuildPlan {
     pub speaker_positions: Vec<[f32; 3]>,
+}
+
+#[derive(Clone)]
+pub struct ScriptBuildPlan {
+    pub speaker_positions: Vec<[f32; 3]>,
+    /// Lua source for the user backend.
+    pub source: String,
+    /// Numeric parameters exposed to the script as a Lua table.
+    pub params: ScriptParams,
+    /// Error slot shared with the constructed [`ScriptBackend`], so a failure
+    /// that only manifests during sampling can be surfaced by
+    /// [`ScriptBuildPlan::post_build_check`] after the table is built.
+    pub error: Arc<Mutex<Option<String>>>,
+}
+
+impl ScriptBuildPlan {
+    pub fn build_gain_model(&self) -> Result<Box<dyn GainModel>> {
+        *self.error.lock() = None;
+        let backend = ScriptBackend::with_error_slot(
+            self.source.as_str(),
+            self.speaker_positions.clone(),
+            self.params.clone(),
+            Arc::clone(&self.error),
+        )?;
+        Ok(Box::new(backend))
+    }
+
+    pub fn post_build_check(&self) -> Result<()> {
+        if let Some(message) = self.error.lock().take() {
+            anyhow::bail!("{message}");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -196,15 +242,14 @@ impl TopologyBuildPlan {
         // shared realtime builder applies to every backend (the mode is resolved
         // later by `build_prepared_render_engine`'s evaluation wrapper).
         let model = self.backend_build.build_gain_model()?;
-        Ok(RenderTopology::new(
-            Arc::new(build_prepared_render_engine(
-                model,
-                effective_mode,
-                &self.evaluation_build_config,
-            )?),
-            self.layout.clone(),
-        )?
-        .with_geometry_generation(self.geometry_generation))
+        let engine =
+            build_prepared_render_engine(model, effective_mode, &self.evaluation_build_config)?;
+        // A scriptable backend can fail only at some sampled positions; the
+        // table is built by now, so convert any recorded error into a build
+        // failure (surfaced to Studio via the recompute error broadcast).
+        self.backend_build.post_build_check()?;
+        Ok(RenderTopology::new(Arc::new(engine), self.layout.clone())?
+            .with_geometry_generation(self.geometry_generation))
     }
 
     pub fn backend_id(&self) -> &str {
@@ -261,6 +306,12 @@ impl TopologyBuildPlan {
                 inner_backend_summary(&plan.internal),
                 plan.curve.len()
             ),
+            BackendBuildPlan::Script(plan) => format!(
+                "gain_model=script evaluation_mode={} speakers={} params={}",
+                self.evaluation_mode().as_str(),
+                plan.speaker_positions.len(),
+                plan.params.0.len()
+            ),
         }
     }
 }
@@ -272,6 +323,7 @@ fn inner_backend_summary(plan: &BackendBuildPlan) -> &'static str {
         BackendBuildPlan::Barycenter(_) => "barycenter",
         BackendBuildPlan::ExperimentalDistance(_) => "experimental_distance",
         BackendBuildPlan::Hybrid(_) => "hybrid",
+        BackendBuildPlan::Script(_) => "script",
     }
 }
 
@@ -477,6 +529,38 @@ pub fn prepare_topology_build_plan(
                 evaluation_mode: effective_mode,
                 evaluation_build_config,
                 geometry_generation: 0,
+            })
+        }
+        "script" => {
+            // The script backend cannot run per audio sample, so realtime is
+            // never honoured: any Auto/Realtime request is forced to a
+            // precomputed mode (the script then runs only at table-build time).
+            let preferred = preferred_evaluation_mode(backend_rebuild_params);
+            let evaluation_mode =
+                match effective_live_evaluation_mode(live.evaluation.mode, preferred) {
+                    LiveEvaluationMode::Realtime => match preferred {
+                        PreferredEvaluationMode::PrecomputedCartesian => {
+                            LiveEvaluationMode::PrecomputedCartesian
+                        }
+                        PreferredEvaluationMode::PrecomputedPolar => {
+                            LiveEvaluationMode::PrecomputedPolar
+                        }
+                    },
+                    resolved => resolved,
+                };
+            let speaker_positions = collect_spatializable_positions(&layout);
+            Some(TopologyBuildPlan {
+                backend_id: live.backend_id().to_string(),
+                backend_build: BackendBuildPlan::Script(ScriptBuildPlan {
+                    speaker_positions,
+                    source: live.script.source.clone(),
+                    params: ScriptParams(live.script.params.clone()),
+                    error: Arc::new(Mutex::new(None)),
+                }),
+                evaluation_mode,
+                evaluation_build_config,
+                geometry_generation: 0,
+                layout,
             })
         }
         _ => None,

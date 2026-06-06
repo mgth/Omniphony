@@ -865,6 +865,7 @@ impl SpatialRenderer {
             experimental_distance: crate::live_params::ExperimentalDistanceLiveParams::default(),
             barycenter: crate::live_params::BarycenterLiveParams::default(),
             hybrid: crate::live_params::HybridLiveParams::default(),
+            script: crate::live_params::ScriptLiveParams::default(),
         }
     }
 

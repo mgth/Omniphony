@@ -233,6 +233,23 @@ impl Default for HybridLiveParams {
     }
 }
 
+/// Runtime parameters for the user-scriptable (Lua) backend.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptLiveParams {
+    /// Path to the Lua script file, as configured. Empty when unset.
+    pub path: String,
+    /// Loaded Lua source. Held here so a recompute can rebuild the backend
+    /// without re-reading the file; an explicit reload refreshes it and bumps
+    /// `generation`.
+    pub source: String,
+    /// Numeric parameters handed to the script as a Lua table.
+    pub params: Vec<(String, f64)>,
+    /// Bumped on every path/source/params change. The topology builder folds
+    /// this into the geometry generation so a script edit forces a fresh build
+    /// instead of reusing a stale, already-sampled model.
+    pub generation: u64,
+}
+
 /// Live-tunable rendering parameters.
 ///
 /// Written (exclusively) by the OSC listener thread, read via snapshot by the
@@ -347,6 +364,9 @@ pub struct LiveParams {
 
     /// Runtime tuning parameters for the hybrid backend.
     pub hybrid: HybridLiveParams,
+
+    /// Runtime parameters for the user-scriptable (Lua) backend.
+    pub script: ScriptLiveParams,
 
     /// Selected Dynamic Range Control mode (as string).
     pub drc_mode: String,
@@ -847,6 +867,16 @@ impl RendererControl {
         )
         .map(|mut plan| {
             plan.geometry_generation = geometry_generation;
+            // The scriptable backend's gain model depends on the Lua source and
+            // params, which are not part of the speaker geometry. Fold the
+            // script generation into the high bits so editing the script
+            // invalidates the topology reuse cache (forcing a fresh sample),
+            // while a geometry-only or grid-only change with an unchanged script
+            // can still reuse the model.
+            if live.backend_id() == "script" {
+                plan.geometry_generation =
+                    (geometry_generation & 0xFFFF_FFFF) | (live.script.generation << 32);
+            }
             plan
         })
     }

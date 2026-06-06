@@ -6,6 +6,7 @@ mod experimental_distance_backend;
 mod few_speaker_backend;
 mod hybrid_backend;
 mod room_transform;
+mod script_backend;
 pub mod size_to_spread;
 mod vbap_backend;
 
@@ -26,6 +27,7 @@ pub use evaluation_artifact::{
 pub use experimental_distance_backend::ExperimentalDistanceBackend;
 pub use few_speaker_backend::FewSpeakerBackend;
 pub use hybrid_backend::{BlendCurve, HybridBackend};
+pub use script_backend::{ScriptBackend, ScriptParams};
 pub use size_to_spread::{SizeToSpreadMode, reduce_size_to_spread};
 pub use vbap_backend::VbapBackend;
 
@@ -60,6 +62,7 @@ pub enum GainModelKind {
     Barycenter,
     ExperimentalDistance,
     Hybrid,
+    Script,
 }
 
 impl GainModelKind {
@@ -88,6 +91,7 @@ pub enum RenderBackendKind {
     Barycenter,
     ExperimentalDistance,
     Hybrid,
+    Script,
 }
 
 impl RenderBackendKind {
@@ -124,6 +128,7 @@ impl From<GainModelKind> for RenderBackendKind {
             GainModelKind::Barycenter => Self::Barycenter,
             GainModelKind::ExperimentalDistance => Self::ExperimentalDistance,
             GainModelKind::Hybrid => Self::Hybrid,
+            GainModelKind::Script => Self::Script,
         }
     }
 }
@@ -134,7 +139,7 @@ impl From<RenderBackendKind> for GainModelKind {
     }
 }
 
-const BACKEND_DESCRIPTORS: [BackendDescriptor; 4] = [
+const BACKEND_DESCRIPTORS: [BackendDescriptor; 5] = [
     BackendDescriptor {
         kind: RenderBackendKind::Vbap,
         gain_model_kind: GainModelKind::Vbap,
@@ -158,6 +163,12 @@ const BACKEND_DESCRIPTORS: [BackendDescriptor; 4] = [
         gain_model_kind: GainModelKind::Hybrid,
         id: "hybrid",
         label: "Hybrid",
+    },
+    BackendDescriptor {
+        kind: RenderBackendKind::Script,
+        gain_model_kind: GainModelKind::Script,
+        id: "script",
+        label: "Script",
     },
 ];
 

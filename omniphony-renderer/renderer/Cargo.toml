@@ -19,6 +19,7 @@ libc = "0.2"
 parking_lot = "0.12"
 flate2 = "1.0"
 rayon = "1"
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
 sys = { path = "../sys" }
 
 [build-dependencies]

@@ -435,14 +435,56 @@ pub fn build_spatial_renderer(
                 .unwrap_or(defaults.metric),
         }
     });
+    // Scriptable (Lua) backend: load the configured script source + numeric
+    // params. A path that can't be read degrades gracefully (empty source ⇒ the
+    // backend switch below is refused), rather than aborting renderer startup.
+    let script_cfg = render_cfg
+        .and_then(|cfg| cfg.script_backend_path.clone())
+        .map(|path| {
+            let source = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                log::warn!("script backend: failed to read '{path}': {e}");
+                String::new()
+            });
+            let params = render_cfg
+                .and_then(|cfg| cfg.script_backend_params.as_ref())
+                .map(renderer::config::script_params_from_mapping)
+                .unwrap_or_default();
+            (path, source, params)
+        });
     {
         let control = renderer.renderer_control();
         let mut requires_rebuild = false;
         {
             let mut live = control.live.write().unwrap();
             if let Some(configured_backend) = configured_backend {
-                if live.backend_id() != configured_backend.as_str() {
-                    live.backend_id = configured_backend.as_str().to_string();
+                let target = configured_backend.as_str();
+                // Refuse to switch to the script backend with no usable source:
+                // it would guarantee a startup build failure. Keep the previous
+                // backend and warn instead.
+                let blocked_script = target == "script"
+                    && script_cfg
+                        .as_ref()
+                        .map(|(_, source, _)| source.trim().is_empty())
+                        .unwrap_or(true);
+                if blocked_script {
+                    log::warn!(
+                        "script backend selected but no usable script source; keeping '{}'",
+                        live.backend_id()
+                    );
+                } else if live.backend_id() != target {
+                    live.backend_id = target.to_string();
+                    requires_rebuild = true;
+                }
+            }
+            if let Some((path, source, params)) = script_cfg {
+                if live.script.path != path
+                    || live.script.source != source
+                    || live.script.params != params
+                {
+                    live.script.path = path;
+                    live.script.source = source;
+                    live.script.params = params;
+                    live.script.generation = live.script.generation.wrapping_add(1);
                     requires_rebuild = true;
                 }
             }

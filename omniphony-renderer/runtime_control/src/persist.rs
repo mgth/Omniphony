@@ -261,6 +261,14 @@ pub fn save_live_config(
         } else {
             None
         };
+    // Scriptable backend: persist the script path and its numeric params (the
+    // loaded source is re-read from the path on load, never serialized).
+    render.script_backend_path = if live.script.path.is_empty() {
+        None
+    } else {
+        Some(live.script.path.clone())
+    };
+    render.script_backend_params = renderer::config::script_params_to_mapping(&live.script.params);
     renderer::config_fields::ramp_mode::store(render, control.requested_ramp_mode().as_str());
 
     drop(live);
