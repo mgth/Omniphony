@@ -407,6 +407,13 @@ export const app = {
   objectEnergyHeatmapResolution: 64,
   objectEnergyHeatmapFalloffRadius: 0.5,
   objectEnergyHeatmapOpacity: 1,
+  // Min interval (ms) between full energy-volume rebuilds — i.e. how often the
+  // n³ RGBA-float 3D texture is re-uploaded to the GPU. Lower = more fluid but
+  // more GPU upload traffic (which inflates WebView2 memory on Windows); higher
+  // = lighter. Shared by both volume providers (object field + speaker solo).
+  // Default 160 ms (~6 Hz) keeps the upload churn bounded with no visible-quality
+  // loss (the volume still renders every frame). User-adjustable in Display.
+  volumeRefreshMs: 160,
   // Volume sampling: false = crisp cells (NearestFilter), true = trilinear
   // gradient between each cell's 8 corner texels (LinearFilter). Shared by both
   // volumes. Needs the OES_texture_float_linear WebGL2 extension.

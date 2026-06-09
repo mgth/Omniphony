@@ -123,7 +123,8 @@ export function refreshSpeakerSoloVolume(nowMs) {
   if (sigEqual(sig, lastBuildSig)) return;
 
   const now = Number.isFinite(nowMs) ? nowMs : performance.now();
-  if (now - (app.lastSpeakerSoloVolumeAt || 0) < VOLUME_REBUILD_INTERVAL_MS) {
+  const refreshMs = Number(app.volumeRefreshMs) > 0 ? Number(app.volumeRefreshMs) : VOLUME_REBUILD_INTERVAL_MS;
+  if (now - (app.lastSpeakerSoloVolumeAt || 0) < refreshMs) {
     return;
   }
   app.lastSpeakerSoloVolumeAt = now;

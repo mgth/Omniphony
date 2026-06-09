@@ -267,6 +267,7 @@
   "heatmap.objectEnergy.gammaAccumulate": "γ Accumulé",
   "heatmap.objectEnergy.gammaMip": "γ Pic",
   "heatmap.objectEnergy.resolution": "Résolution du champ",
+  "heatmap.objectEnergy.refresh": "Intervalle de rafraîchissement",
   "heatmap.objectEnergy.radius": "Rayon d'atténuation",
   "heatmap.objectEnergy.opacity": "Opacité du champ",
   "display.showObjects": "Afficher les objets",

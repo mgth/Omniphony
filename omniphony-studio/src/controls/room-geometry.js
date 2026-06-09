@@ -70,6 +70,8 @@ function getObjectEnergyVolumeGammaMipSliderEl() { return inDisplayPanel('object
 function getObjectEnergyVolumeGammaMipValEl() { return inDisplayPanel('objectEnergyVolumeGammaMipVal'); }
 function getObjectEnergyHeatmapResolutionSliderEl() { return inDisplayPanel('objectEnergyHeatmapResolutionSlider'); }
 function getObjectEnergyHeatmapResolutionValEl() { return inDisplayPanel('objectEnergyHeatmapResolutionVal'); }
+function getVolumeRefreshSliderEl() { return inDisplayPanel('volumeRefreshSlider'); }
+function getVolumeRefreshValEl() { return inDisplayPanel('volumeRefreshVal'); }
 function getObjectEnergyHeatmapRadiusSliderEl() { return inDisplayPanel('objectEnergyHeatmapRadiusSlider'); }
 function getObjectEnergyHeatmapRadiusValEl() { return inDisplayPanel('objectEnergyHeatmapRadiusVal'); }
 function getObjectEnergyHeatmapOpacitySliderEl() { return inDisplayPanel('objectEnergyHeatmapOpacitySlider'); }
@@ -121,6 +123,7 @@ export function persistEffectiveRenderPrefs() {
       objectEnergyHeatmapResolution: app.objectEnergyHeatmapResolution,
       objectEnergyHeatmapFalloffRadius: app.objectEnergyHeatmapFalloffRadius,
       objectEnergyHeatmapOpacity: app.objectEnergyHeatmapOpacity,
+      volumeRefreshMs: app.volumeRefreshMs,
       volumeSmoothInterpolation: app.volumeSmoothInterpolation,
       objectCustomGradientStops: app.objectCustomGradientStops,
       speakerCustomGradientStops: app.speakerCustomGradientStops
@@ -236,6 +239,8 @@ export function applyEffectiveRenderPrefsToUi() {
   const objectEnergyVolumeGammaMipValEl = getObjectEnergyVolumeGammaMipValEl();
   const objectEnergyHeatmapResolutionSliderEl = getObjectEnergyHeatmapResolutionSliderEl();
   const objectEnergyHeatmapResolutionValEl = getObjectEnergyHeatmapResolutionValEl();
+  const volumeRefreshSliderEl = getVolumeRefreshSliderEl();
+  const volumeRefreshValEl = getVolumeRefreshValEl();
   const objectEnergyHeatmapRadiusSliderEl = getObjectEnergyHeatmapRadiusSliderEl();
   const objectEnergyHeatmapRadiusValEl = getObjectEnergyHeatmapRadiusValEl();
   const objectEnergyHeatmapOpacitySliderEl = getObjectEnergyHeatmapOpacitySliderEl();
@@ -269,6 +274,12 @@ export function applyEffectiveRenderPrefsToUi() {
   }
   if (objectEnergyHeatmapResolutionValEl) {
     objectEnergyHeatmapResolutionValEl.textContent = String(app.objectEnergyHeatmapResolution);
+  }
+  if (volumeRefreshSliderEl) {
+    volumeRefreshSliderEl.value = String(app.volumeRefreshMs);
+  }
+  if (volumeRefreshValEl) {
+    volumeRefreshValEl.textContent = `${app.volumeRefreshMs} ms`;
   }
   if (objectEnergyHeatmapRadiusSliderEl) {
     objectEnergyHeatmapRadiusSliderEl.value = String(app.objectEnergyHeatmapFalloffRadius);
@@ -394,6 +405,10 @@ export function loadEffectiveRenderPrefs() {
       const objectEnergyOpacity = Number(parsed?.objectEnergyHeatmapOpacity);
       if (Number.isFinite(objectEnergyOpacity)) {
         app.objectEnergyHeatmapOpacity = Math.max(0.05, Math.min(1.0, objectEnergyOpacity));
+      }
+      const volumeRefreshMs = Number(parsed?.volumeRefreshMs);
+      if (Number.isFinite(volumeRefreshMs)) {
+        app.volumeRefreshMs = Math.max(40, Math.min(500, Math.round(volumeRefreshMs)));
       }
       if (typeof parsed?.volumeSmoothInterpolation === 'boolean') {
         app.volumeSmoothInterpolation = parsed.volumeSmoothInterpolation;

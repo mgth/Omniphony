@@ -56,6 +56,8 @@ export function setupTrailsAndDisplayListeners() {
   const objectEnergyVolumeGammaMipValEl = document.getElementById('objectEnergyVolumeGammaMipVal');
   const objectEnergyHeatmapResolutionSliderEl = document.getElementById('objectEnergyHeatmapResolutionSlider');
   const objectEnergyHeatmapResolutionValEl = document.getElementById('objectEnergyHeatmapResolutionVal');
+  const volumeRefreshSliderEl = document.getElementById('volumeRefreshSlider');
+  const volumeRefreshValEl = document.getElementById('volumeRefreshVal');
   const objectEnergyHeatmapRadiusSliderEl = document.getElementById('objectEnergyHeatmapRadiusSlider');
   const objectEnergyHeatmapRadiusValEl = document.getElementById('objectEnergyHeatmapRadiusVal');
   const objectEnergyHeatmapOpacitySliderEl = document.getElementById('objectEnergyHeatmapOpacitySlider');
@@ -482,6 +484,23 @@ export function setupTrailsAndDisplayListeners() {
         objectEnergyHeatmapResolutionValEl.textContent = String(app.objectEnergyHeatmapResolution);
       }
       refreshSharedVolumesNow();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  // Energy-volume refresh interval (ms): how often the 3D texture is rebuilt and
+  // re-uploaded. Lower = more fluid, more GPU upload churn; higher = lighter.
+  if (volumeRefreshSliderEl) {
+    volumeRefreshSliderEl.value = String(app.volumeRefreshMs);
+    if (volumeRefreshValEl) {
+      volumeRefreshValEl.textContent = `${app.volumeRefreshMs} ms`;
+    }
+    volumeRefreshSliderEl.addEventListener('input', () => {
+      const next = Number(volumeRefreshSliderEl.value);
+      app.volumeRefreshMs = Math.max(40, Math.min(500, Math.round(Number.isFinite(next) ? next : 160)));
+      if (volumeRefreshValEl) {
+        volumeRefreshValEl.textContent = `${app.volumeRefreshMs} ms`;
+      }
       persistEffectiveRenderPrefs();
     });
   }

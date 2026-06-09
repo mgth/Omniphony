@@ -33,7 +33,8 @@ export function refreshObjectEnergyVolume(nowMs) {
   }
 
   const now = Number.isFinite(nowMs) ? nowMs : performance.now();
-  if (now - (app.lastObjectEnergyHeatmapAt || 0) < VOLUME_REBUILD_INTERVAL_MS) {
+  const refreshMs = Number(app.volumeRefreshMs) > 0 ? Number(app.volumeRefreshMs) : VOLUME_REBUILD_INTERVAL_MS;
+  if (now - (app.lastObjectEnergyHeatmapAt || 0) < refreshMs) {
     return;
   }
   app.lastObjectEnergyHeatmapAt = now;
