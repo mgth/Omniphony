@@ -19,7 +19,7 @@ import * as THREE from 'three';
 import { app } from '../state.js';
 import { EnergyVolume } from './energy-volume-core.js';
 import {
-  MIN_REBUILD_INTERVAL_MS,
+  VOLUME_REBUILD_INTERVAL_MS,
   clampVolumeGamma,
   colormapIndex,
   objectEnergyColor,
@@ -123,7 +123,7 @@ export function refreshSpeakerSoloVolume(nowMs) {
   if (sigEqual(sig, lastBuildSig)) return;
 
   const now = Number.isFinite(nowMs) ? nowMs : performance.now();
-  if (now - (app.lastSpeakerSoloVolumeAt || 0) < MIN_REBUILD_INTERVAL_MS) {
+  if (now - (app.lastSpeakerSoloVolumeAt || 0) < VOLUME_REBUILD_INTERVAL_MS) {
     return;
   }
   app.lastSpeakerSoloVolumeAt = now;

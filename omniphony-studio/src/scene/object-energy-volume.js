@@ -9,7 +9,7 @@
 import { app } from '../state.js';
 import { EnergyVolume } from './energy-volume-core.js';
 import {
-  MIN_REBUILD_INTERVAL_MS,
+  VOLUME_REBUILD_INTERVAL_MS,
   activeObjects,
   collectActiveObjects,
   clampVolumeGamma,
@@ -33,7 +33,7 @@ export function refreshObjectEnergyVolume(nowMs) {
   }
 
   const now = Number.isFinite(nowMs) ? nowMs : performance.now();
-  if (now - (app.lastObjectEnergyHeatmapAt || 0) < MIN_REBUILD_INTERVAL_MS) {
+  if (now - (app.lastObjectEnergyHeatmapAt || 0) < VOLUME_REBUILD_INTERVAL_MS) {
     return;
   }
   app.lastObjectEnergyHeatmapAt = now;

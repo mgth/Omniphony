@@ -18,6 +18,15 @@ export const SILENT_RMS_DBFS = -100;
 // Minimum interval between full field rebuilds (mirror of TRAIL_MIN_REBUILD_INTERVAL_MS).
 export const MIN_REBUILD_INTERVAL_MS = 70;
 
+// The ray-marched energy volumes upload a full n³ RGBA-float 3D texture on every
+// rebuild (≈4 MB at the default resolution 64). At 70 ms that is ~56 MB/s of GPU
+// texture traffic, which balloons the WebView2 GPU process memory on Windows
+// (ANGLE/D3D) — a confirmed major contributor to the Studio memory climb. The
+// volume tracks slowly-changing object levels, so a lower refresh rate is
+// visually fine and cuts the upload churn ~2.3×. Used only for the volume
+// providers (object energy field, speaker solo volume), not the trails.
+export const VOLUME_REBUILD_INTERVAL_MS = 160;
+
 // Colour stops blue → cyan → green → yellow → red, interpolated in RGB.
 // Adjacent stops share a channel at 1.0 so every transition stays vivid (no dark
 // bands), and the stop spacing widens the warm (yellow) band, which a uniform
