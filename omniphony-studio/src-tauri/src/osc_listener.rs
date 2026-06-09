@@ -863,8 +863,16 @@ fn osc_thread(
     emit_osc_status(&app, &state, "reconnecting");
 
     let mut buf = [0u8; 65536];
+    let mut last_batch_flush = Instant::now();
 
     loop {
+        // Flush the coalesced high-frequency emits at ~60 Hz, independent of how
+        // many OSC messages arrived since the last tick.
+        if last_batch_flush.elapsed() >= BATCH_FLUSH_INTERVAL {
+            flush_emit_batch(&app);
+            last_batch_flush = Instant::now();
+        }
+
         // drain control messages (non-blocking)
         loop {
             match ctrl_rx.try_recv() {
@@ -1400,6 +1408,82 @@ fn decode_evaluation_artifact(bytes: &[u8], version: u32) -> Option<serde_json::
         }
         _ => None,
     }
+}
+
+// ── High-frequency emit coalescing ────────────────────────────────────────
+//
+// During playback the renderer pushes one OSC message per object/speaker per
+// frame (positions + meters), and each was turned into its own `app.emit`.
+// That global broadcast is serialised to JSON and posted over the WebView IPC;
+// at thousands of messages/s it grows WebView2 native memory without bound on
+// Windows (Linux/WebKitGTK absorbs it). We coalesce these into a single
+// `state:batch` event flushed at ~60 Hz: only the latest payload per (event,id)
+// in the window survives, collapsing N×(objects+speakers) emits/frame into one.
+// Low-frequency events (config/state/layout changes) keep emitting immediately.
+const BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+
+const BATCHED_EVENTS: &[&str] = &[
+    "source:update",
+    "source:meter",
+    "source:gains",
+    "source:band_gains",
+    "speaker:meter",
+    "master:meter",
+    "meter:drc_gain",
+];
+
+thread_local! {
+    // (event, latest payload) keyed by a dedup string. Lives on the OSC thread,
+    // which is the only thread that queues/flushes it.
+    static EMIT_BATCH: std::cell::RefCell<
+        std::collections::HashMap<String, (&'static str, serde_json::Value)>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn is_batched_event(event: &str) -> bool {
+    BATCHED_EVENTS.contains(&event)
+}
+
+fn batch_dedup_key(event: &str, payload: &serde_json::Value) -> String {
+    let id = payload
+        .get("id")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    if event == "source:band_gains" {
+        let band = payload
+            .get("band")
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        format!("{event}|{id}|{band}")
+    } else {
+        format!("{event}|{id}")
+    }
+}
+
+fn queue_batched_emit(event: &'static str, payload: serde_json::Value) {
+    EMIT_BATCH.with(|b| {
+        b.borrow_mut()
+            .insert(batch_dedup_key(event, &payload), (event, payload));
+    });
+}
+
+fn flush_emit_batch(app: &AppHandle) {
+    let drained: Vec<(&'static str, serde_json::Value)> = EMIT_BATCH.with(|b| {
+        let mut map = b.borrow_mut();
+        if map.is_empty() {
+            Vec::new()
+        } else {
+            map.drain().map(|(_, v)| v).collect()
+        }
+    });
+    if drained.is_empty() {
+        return;
+    }
+    let events: Vec<serde_json::Value> = drained
+        .into_iter()
+        .map(|(event, payload)| serde_json::json!({ "event": event, "payload": payload }))
+        .collect();
+    let _ = app.emit("state:batch", serde_json::json!({ "events": events }));
 }
 
 fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
@@ -2534,6 +2618,10 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
     }
 
     if let Some((event, payload)) = to_emit {
-        let _ = app.emit(event, payload);
+        if is_batched_event(event) {
+            queue_batched_emit(event, payload);
+        } else {
+            let _ = app.emit(event, payload);
+        }
     }
 }

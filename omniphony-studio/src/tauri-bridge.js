@@ -76,7 +76,49 @@ import { applyInitState } from './init.js';
 import { setInputSectionOpen } from './modals.js';
 import { syncSpeakerHeatmapBandSelect } from './scene/speaker-band-select.js';
 
+// Apply one coalesced high-frequency event. The Rust side batches positions and
+// meters (one `app.emit` per object/speaker per frame grew WebView2 memory
+// without bound on Windows) into a single `state:batch`; we replay each entry
+// through the same handlers the individual `listen(...)` calls below use.
+function applyBatchedEvent(event, payload) {
+  switch (event) {
+    case 'source:update':
+      updateSource(payload.id, payload.position);
+      break;
+    case 'source:meter':
+      updateSourceLevel(payload.id, payload.meter);
+      break;
+    case 'source:gains':
+      updateSourceGains(payload.id, payload.gains);
+      break;
+    case 'source:band_gains':
+      updateSourceBandGains(payload.id, payload.band, payload.gains);
+      break;
+    case 'speaker:meter':
+      updateSpeakerLevel(Number(payload.id), payload.meter);
+      break;
+    case 'master:meter':
+      updateMasterLevel(payload.meter);
+      break;
+    case 'meter:drc_gain':
+      updateDrcMeterUI(Number(payload.value));
+      break;
+    default:
+      break;
+  }
+}
+
 export function setupTauriBridge() {
+  listen('state:batch', ({ payload }) => {
+    const events = payload && Array.isArray(payload.events) ? payload.events : null;
+    if (!events) return;
+    for (const entry of events) {
+      if (entry && typeof entry.event === 'string') {
+        applyBatchedEvent(entry.event, entry.payload);
+      }
+    }
+  });
+
   listen('state:snapshot_ready', ({ payload }) => {
     if (payload && typeof payload === 'object') {
       applyInitState(payload);
