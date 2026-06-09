@@ -1529,6 +1529,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     s.sources.remove(id);
                     s.source_levels.remove(id);
                     s.object_speaker_gains.remove(id);
+                    s.object_band_gains.remove(id);
                     s.object_gains.remove(id);
                     s.object_mutes.remove(id);
                 }
@@ -1604,6 +1605,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 s.sources.remove(&id);
                 s.source_levels.remove(&id);
                 s.object_speaker_gains.remove(&id);
+                s.object_band_gains.remove(&id);
                 s.object_gains.remove(&id);
                 s.object_mutes.remove(&id);
                 (
