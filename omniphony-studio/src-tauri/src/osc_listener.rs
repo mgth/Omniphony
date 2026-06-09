@@ -1445,10 +1445,7 @@ fn is_batched_event(event: &str) -> bool {
 }
 
 fn batch_dedup_key(event: &str, payload: &serde_json::Value) -> String {
-    let id = payload
-        .get("id")
-        .map(|v| v.to_string())
-        .unwrap_or_default();
+    let id = payload.get("id").map(|v| v.to_string()).unwrap_or_default();
     if event == "source:band_gains" {
         let band = payload
             .get("band")
