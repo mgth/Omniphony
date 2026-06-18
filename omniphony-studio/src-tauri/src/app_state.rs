@@ -480,6 +480,12 @@ pub struct AppState {
     pub producer_capabilities: Option<serde_json::Value>,
     #[serde(rename = "producerSession")]
     pub producer_session: Option<serde_json::Value>,
+    /// Instance epoch from the last `/omniphony/heartbeat/ack`. A change means a
+    /// different renderer instance now answers on the RX port (a CLI⇄mpv swap)
+    /// → force a re-handshake. Internal detection state, never sent to the UI,
+    /// and cleared by `reset_runtime_state` so it re-latches on each connection.
+    #[serde(skip)]
+    pub producer_epoch: Option<i32>,
     #[serde(rename = "oscMeteringEnabled")]
     pub osc_metering_enabled: Option<u8>,
     #[serde(rename = "logLevel")]
@@ -737,6 +743,7 @@ impl Default for AppState {
             osc_status: Some("initializing".to_string()),
             producer_capabilities: None,
             producer_session: None,
+            producer_epoch: None,
             osc_metering_enabled: Some(0),
             log_level: Some("info".to_string()),
             last_spatial_sample_pos: None,

@@ -826,6 +826,33 @@ fn emit_osc_status(app: &AppHandle, state: &Arc<Mutex<AppState>>, status: &str) 
     let _ = app.emit("osc:status", serde_json::json!({ "status": status }));
 }
 
+/// Inspect a `/heartbeat/ack` payload for the renderer's instance epoch and
+/// update the latched value. Returns `true` only when it *changed* from a
+/// previously latched epoch — i.e. a different renderer instance now answers on
+/// the RX port (a CLI⇄mpv swap) behind an otherwise unbroken connection — so the
+/// caller can force a full re-handshake. A first observation (fresh connection)
+/// or an ack from an older renderer that carries no epoch is not a change.
+fn producer_epoch_changed(state: &Arc<Mutex<AppState>>, args: &[OscType]) -> bool {
+    let Some(epoch) = args.iter().find_map(|a| match a {
+        OscType::Int(i) => Some(*i),
+        _ => None,
+    }) else {
+        return false;
+    };
+    let mut s = state.lock().unwrap();
+    match s.producer_epoch {
+        None => {
+            s.producer_epoch = Some(epoch);
+            false
+        }
+        Some(prev) if prev == epoch => false,
+        Some(_) => {
+            s.producer_epoch = Some(epoch);
+            true
+        }
+    }
+}
+
 // ── public spawn function ─────────────────────────────────────────────────
 
 pub fn spawn_osc_task(
@@ -1208,7 +1235,16 @@ fn handle_packet(
             match is_heartbeat_address(&msg.addr) {
                 HeartbeatResponse::Ack => {
                     *last_ack_at = Instant::now();
-                    if !*is_connected {
+                    if producer_epoch_changed(state, &msg.args) {
+                        // A different renderer instance now answers on this port
+                        // (a CLI⇄mpv swap behind an unbroken link). Re-handshake
+                        // so capabilities, the object snapshot (names) and the
+                        // metering subscription are refreshed for the new producer.
+                        send_register(socket, host, osc_rx_port, listen_port);
+                        send_metering_enabled(socket, host, osc_rx_port, metering_enabled);
+                        *is_connected = false;
+                        emit_osc_status(app, state, "reconnecting");
+                    } else if !*is_connected {
                         *is_connected = true;
                         emit_osc_status(app, state, "connected");
                     }
@@ -1252,7 +1288,15 @@ fn handle_packet(
                         match is_heartbeat_address(&msg.addr) {
                             HeartbeatResponse::Ack => {
                                 *last_ack_at = Instant::now();
-                                if !*is_connected {
+                                if producer_epoch_changed(state, &msg.args) {
+                                    // Producer swap behind an unbroken link → re-handshake.
+                                    send_register(socket, host, osc_rx_port, listen_port);
+                                    send_metering_enabled(
+                                        socket, host, osc_rx_port, metering_enabled,
+                                    );
+                                    *is_connected = false;
+                                    emit_osc_status(app, state, "reconnecting");
+                                } else if !*is_connected {
                                     *is_connected = true;
                                     emit_osc_status(app, state, "connected");
                                 }

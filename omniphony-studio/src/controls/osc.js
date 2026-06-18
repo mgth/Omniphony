@@ -10,7 +10,7 @@
  *     functions (launchOrenderFromPanel, installOrenderServiceFromPanel, etc.)
  */
 
-import { app, dirty, isLinux, producerHost, producerVariant, isEmbeddedProducer } from '../state.js';
+import { app, dirty, isLinux, producerHost, producerVariant, isEmbeddedProducer, sourceNames } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
 import { pushLog, normalizeLogError, normalizeLogLevel, logState } from '../log.js';
@@ -280,6 +280,12 @@ export function setOscStatus(next) {
   const disconnected = previous === 'connected' && next !== 'connected';
   if (disconnected) {
     clearOscLaunchPending();
+    // Drop cached object identities on a drop/producer swap so a renderer that
+    // takes over the port (CLI⇄mpv) can't inherit stale names: the re-handshake
+    // re-sends every object's name via the renderer's forced full frame. Without
+    // this, an id the new stream reuses with an empty name would keep showing the
+    // previous producer's label.
+    sourceNames.clear();
   }
   updateConfigSavedUI();
   renderOscStatus();

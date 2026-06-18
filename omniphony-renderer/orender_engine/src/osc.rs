@@ -324,6 +324,12 @@ pub struct OscSender {
     force_full_next: Arc<AtomicBool>,
     /// Monotonic identifier for the current logical content generation.
     content_generation: u64,
+    /// Random identifier for THIS producer instance, echoed in every
+    /// `/omniphony/heartbeat/ack`. A client that sees this value change knows a
+    /// *different* renderer instance now answers on the same RX port (a CLI⇄mpv
+    /// swap) even when the link never visibly dropped, and can re-handshake.
+    /// Stable for the lifetime of the instance (incl. standby/resume cycles).
+    instance_epoch: i32,
     /// Stop flag for the background OSC listener thread.
     listener_stop: Arc<AtomicBool>,
     /// Join handle for the background OSC listener thread.
@@ -341,6 +347,17 @@ impl OscSender {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
         let clients = Arc::new(OscClientRegistry::new(CLIENT_TIMEOUT));
         clients.insert_permanent(SocketAddr::V4(default_target));
+        // Per-instance id: mixes pid and a sub-second timestamp so it differs
+        // both across processes (CLI vs the mpv-embedded host) and across
+        // successive instances in the same process. Only its *change* matters,
+        // not its distribution, so a cheap hash avoids pulling in an RNG crate.
+        let instance_epoch = {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0);
+            (std::process::id() ^ nanos.rotate_left(13)) as i32
+        };
         Ok(Self {
             socket: Arc::new(socket),
             clients,
@@ -349,6 +366,7 @@ impl OscSender {
             prev_objects: None,
             force_full_next: Arc::new(AtomicBool::new(true)),
             content_generation: 0,
+            instance_epoch,
             listener_stop: Arc::new(AtomicBool::new(false)),
             listener_thread: Mutex::new(None),
             rx_port: 0,
@@ -389,6 +407,7 @@ impl OscSender {
         let control = self.control.clone();
         let host_handler = self.host_handler.clone();
         let force_full_next = Arc::clone(&self.force_full_next);
+        let instance_epoch = self.instance_epoch;
         let stop = Arc::clone(&self.listener_stop);
 
         if let Some(handle) = self.listener_thread.lock().unwrap().take() {
@@ -511,9 +530,11 @@ impl OscSender {
                                     } else {
                                         "/omniphony/heartbeat/unknown"
                                     };
+                                    // Echo this instance's epoch so the client can
+                                    // detect a producer swap behind the same port.
                                     let reply = OscMessage {
                                         addr: reply_addr.to_string(),
-                                        args: vec![],
+                                        args: vec![rosc::OscType::Int(instance_epoch)],
                                     };
                                     match rosc::encoder::encode(&OscPacket::Message(reply)) {
                                         Ok(bytes) => {

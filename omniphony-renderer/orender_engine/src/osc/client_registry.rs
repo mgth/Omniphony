@@ -86,13 +86,23 @@ impl OscClientRegistry {
 
     pub(crate) fn heartbeat(&self, addr: SocketAddr) -> bool {
         let mut clients = self.clients.lock().unwrap();
-        if let Some(entry) = clients.get_mut(&addr) {
-            if entry.last_seen.is_some() {
+        match clients.get_mut(&addr) {
+            // Actively-registered client: refresh its liveness and ack.
+            Some(entry) if entry.last_seen.is_some() => {
                 entry.last_seen = Some(Instant::now());
+                true
             }
-            true
-        } else {
-            false
+            // Known only as a config-seeded *permanent* target that has never
+            // actively registered (`last_seen == None`). Report it as unknown so
+            // the heartbeat is answered with `/heartbeat/unknown`, forcing a
+            // re-`register`. This is what makes a producer swap visible to the
+            // client: when a fresh instance takes over the RX port (CLI⇄mpv),
+            // its registry holds this address only as the permanent seed, so the
+            // client re-registers and receives a new capabilities bundle, a full
+            // object resend (names) and the metering subscription — instead of
+            // being silently acked into a stale connection. Pure listeners that
+            // never heartbeat are unaffected (broadcasts still reach them).
+            _ => false,
         }
     }
 
@@ -278,5 +288,36 @@ mod tests {
 
         reg.set_metering_for_permanent(false);
         assert!(!reg.is_any_metering_live());
+    }
+
+    #[test]
+    fn permanent_seed_is_unknown_until_it_registers() {
+        // Regression guard for the CLI⇄mpv swap: a fresh producer instance seeds
+        // the config default target as a *permanent* client. Its heartbeat must
+        // be reported unknown (→ client re-registers and re-handshakes) instead
+        // of being silently acked, which would mask the producer change.
+        let reg = OscClientRegistry::new(Duration::from_secs(5));
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        reg.insert_permanent(addr);
+
+        // Seeded but never actively registered → heartbeat is unknown.
+        assert!(
+            !reg.heartbeat(addr),
+            "permanent-only seed must not be acked"
+        );
+
+        // Registering reuses the permanent slot (so `is_new` is false — the live
+        // bundle is sent regardless), promotes it to a live client (`last_seen`
+        // set), and from then on its heartbeats are acked.
+        let (is_new, _) = reg.register(addr);
+        assert!(!is_new, "permanent seed already occupies the slot");
+        assert!(reg.heartbeat(addr), "registered client must be acked");
+    }
+
+    #[test]
+    fn unknown_address_heartbeat_is_unknown() {
+        let reg = OscClientRegistry::new(Duration::from_secs(5));
+        let addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        assert!(!reg.heartbeat(addr));
     }
 }
