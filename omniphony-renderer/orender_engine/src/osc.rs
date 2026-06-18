@@ -340,6 +340,12 @@ pub struct OscSender {
     /// while this instance is standing by, waiting for `resume`).
     standby_stop: Arc<AtomicBool>,
     standby_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Whether the OSC RX listener is currently bound and running. Set once the
+    /// listener thread is spawned, cleared on `enter_standby` and on a swallowed
+    /// bind failure in `start_listener`. Lets the standby loop tell a real resume
+    /// (port re-acquired) from one that failed because the port is still held, so
+    /// it can re-arm standby instead of running portless (which strands Studio).
+    listener_bound: bool,
 }
 
 impl OscSender {
@@ -372,6 +378,7 @@ impl OscSender {
             rx_port: 0,
             standby_stop: Arc::new(AtomicBool::new(false)),
             standby_thread: Mutex::new(None),
+            listener_bound: false,
         })
     }
 
@@ -424,6 +431,7 @@ impl OscSender {
                     rx_port,
                     e
                 );
+                self.listener_bound = false;
                 return Ok(());
             }
         };
@@ -596,6 +604,7 @@ impl OscSender {
             })?;
 
         *self.listener_thread.lock().unwrap() = Some(handle);
+        self.listener_bound = true;
 
         Ok(())
     }
@@ -613,6 +622,7 @@ impl OscSender {
             let _ = handle.join();
         }
         self.listener_stop.store(false, Ordering::Relaxed);
+        self.listener_bound = false;
 
         let resume_socket = RESUME_SOCKET.lock().unwrap().take();
         let rx_port = self.rx_port;
@@ -671,6 +681,13 @@ impl OscSender {
         self.start_listener(rx_port, true)
     }
 
+    /// Whether the OSC RX listener is currently bound and running. After
+    /// [`resume`], `false` means the port could not be re-acquired (still held
+    /// by mpv): the caller should re-arm standby rather than run portless.
+    pub fn is_listening(&self) -> bool {
+        self.listener_bound
+    }
+
     /// Send bytes to every live client.
     ///
     /// Clients with a timed entry (`Some(t)`) are dropped if `t.elapsed() >= CLIENT_TIMEOUT`.
@@ -713,10 +730,28 @@ impl OscSender {
 
 impl Drop for OscSender {
     fn drop(&mut self) {
+        // Are we still the current same-process RX-port registrant? A successor
+        // engine (mpv switching audio tracks) overwrites LOCAL_RX_RELEASE with
+        // its own stop flag when it reclaims the port in `start_listener`, which
+        // runs *before* this (now superseded) engine is dropped. If we no longer
+        // match, this drop is a handoff to that successor, not a real release.
+        let still_port_owner = LOCAL_RX_RELEASE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|s| Arc::ptr_eq(s, &self.listener_stop));
+
         // If we took the RX port over from a standby instance, wake it back up
-        // as we release the port (e.g. mpv quitting). Done first, while the port
-        // is still ours, so the standby's re-bind races nothing.
-        send_resume_to_standby();
+        // as we release the port (e.g. mpv quitting). Done while the port is
+        // still ours, so the standby's re-bind races nothing — but only on a
+        // real release. On a same-process track-switch handoff the successor
+        // already holds the port, so resuming the external standby now would be
+        // premature: it would fail to re-bind, drop out of standby and run
+        // portless, stranding Studio on `reconnecting`. Keep RESUME_TARGET so
+        // the eventual final release (real mpv quit) delivers the resume.
+        if still_port_owner {
+            send_resume_to_standby();
+        }
 
         // Graceful-shutdown handoff, done while the RX port is still held so a
         // successor polling for the port is guaranteed to see the sidecar by
@@ -766,14 +801,11 @@ impl Drop for OscSender {
         if let Some(handle) = self.listener_thread.lock().unwrap().take() {
             let _ = handle.join();
         }
-        // Deregister from the same-process release registry if we are still the
-        // entry there (a successor may have already overwritten it).
-        let mut registry = LOCAL_RX_RELEASE.lock().unwrap();
-        if registry
-            .as_ref()
-            .is_some_and(|s| Arc::ptr_eq(s, &self.listener_stop))
-        {
-            *registry = None;
+        // Deregister from the same-process release registry only if we are still
+        // the entry there (a successor may have already overwritten it — see
+        // `still_port_owner` above, computed atomically at the start of drop).
+        if still_port_owner {
+            *LOCAL_RX_RELEASE.lock().unwrap() = None;
         }
     }
 }
@@ -878,7 +910,8 @@ mod yield_tests {
     use super::*;
 
     /// Serialises the tests that exercise a port-contention path, since they
-    /// share the process-global [`LOCAL_RX_RELEASE`] registry.
+    /// share the process-global [`LOCAL_RX_RELEASE`] registry and
+    /// [`RESUME_TARGET`] slot.
     static SERIAL: Mutex<()> = Mutex::new(());
 
     /// Grab a free UDP port by binding port 0, then release it.
@@ -921,6 +954,7 @@ mod yield_tests {
     /// `resume` there as it releases the port.
     #[test]
     fn standby_resume_port_is_captured_and_resume_delivered() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let holder = UdpSocket::bind("127.0.0.1:0").unwrap();
         holder
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -962,6 +996,63 @@ mod yield_tests {
         // Taking it cleared the target.
         assert!(RESUME_TARGET.lock().unwrap().is_none());
         h.join().unwrap();
+    }
+
+    /// A *superseded* engine — a same-process successor (mpv switching audio
+    /// tracks) has already overwritten [`LOCAL_RX_RELEASE`] with its own stop
+    /// flag — must NOT resume the external standby when dropped: the successor
+    /// still holds the RX port, so resuming now would make the standby fail to
+    /// re-bind and strand Studio. [`RESUME_TARGET`] is preserved for the eventual
+    /// real release. Regression guard for the multi-track-then-quit stuck bug.
+    #[test]
+    fn superseded_drop_preserves_resume_target() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let target: SocketAddrV4 = "127.0.0.1:9000".parse().unwrap();
+        let sender = OscSender::new(target).unwrap();
+
+        // A successor reclaimed the port: the registry points at a *different*
+        // stop flag than this (now superseded) sender's.
+        let successor_stop = Arc::new(AtomicBool::new(false));
+        *LOCAL_RX_RELEASE.lock().unwrap() = Some(Arc::clone(&successor_stop));
+        *RESUME_TARGET.lock().unwrap() = Some(12345);
+
+        drop(sender);
+
+        assert_eq!(
+            *RESUME_TARGET.lock().unwrap(),
+            Some(12345),
+            "a track-switch handoff must not consume the standby resume target"
+        );
+        // The superseded drop must not clear the successor's registry entry.
+        assert!(LOCAL_RX_RELEASE.lock().unwrap().is_some());
+
+        *LOCAL_RX_RELEASE.lock().unwrap() = None;
+        *RESUME_TARGET.lock().unwrap() = None;
+    }
+
+    /// The current RX-port owner (no successor took over) DOES resume the standby
+    /// on drop — the real port release, e.g. mpv quitting — clearing
+    /// [`RESUME_TARGET`] and deregistering its own [`LOCAL_RX_RELEASE`] entry.
+    #[test]
+    fn owner_drop_resumes_standby_and_clears_registry() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let target: SocketAddrV4 = "127.0.0.1:9000".parse().unwrap();
+        let sender = OscSender::new(target).unwrap();
+
+        // This sender is still the current registrant (no handoff happened).
+        *LOCAL_RX_RELEASE.lock().unwrap() = Some(Arc::clone(&sender.listener_stop));
+        *RESUME_TARGET.lock().unwrap() = Some(23456);
+
+        drop(sender);
+
+        assert!(
+            RESUME_TARGET.lock().unwrap().is_none(),
+            "a real release fires resume to (and clears) the standby target"
+        );
+        assert!(
+            LOCAL_RX_RELEASE.lock().unwrap().is_none(),
+            "the owner deregisters itself on drop"
+        );
     }
 
     #[test]
