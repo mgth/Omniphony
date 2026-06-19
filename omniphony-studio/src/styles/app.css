@@ -2549,3 +2549,101 @@ body:not(.output-binaural) .speakers-title-binaural {
   background: rgba(82, 226, 162, 0.24);
   color: #aef5d8;
 }
+
+/* Objects/Trails "nature" flyout. The slot only wraps the button + its popup so
+   the absolutely-positioned menu anchors to the button without affecting the
+   bar layout or the renderer canvas geometry. */
+.scene-fx-slot {
+  position: relative;
+  display: inline-flex;
+}
+
+.scene-fx-btn.has-flyout {
+  position: relative;
+}
+
+.fx-caret {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 10px;
+  border-radius: 3px;
+  color: rgba(223, 232, 243, 0.38);
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.scene-fx-btn:hover .fx-caret {
+  color: rgba(223, 232, 243, 0.75);
+}
+
+.fx-caret:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.scene-fx-btn.active .fx-caret {
+  color: rgba(122, 240, 192, 0.8);
+}
+
+.scene-fx-flyout {
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px;
+  background: rgba(18, 22, 28, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 11px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 80;
+}
+
+.scene-fx-flyout[hidden] {
+  display: none;
+}
+
+/* Small pointer tail bridging the menu down to the button. */
+.scene-fx-flyout::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: rgba(18, 22, 28, 0.92);
+}
+
+.fx-flyout-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(223, 232, 243, 0.6);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.fx-flyout-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.fx-flyout-item.selected {
+  background: rgba(82, 226, 162, 0.16);
+  border-color: rgba(82, 226, 162, 0.5);
+  color: #aef5d8;
+}

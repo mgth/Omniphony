@@ -677,15 +677,40 @@
         <button id="fxGridBtn" type="button" class="scene-fx-btn" aria-pressed="false" data-i18n-title="sceneFx.grid" title="Grid">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>
         </button>
-        <button id="fxObjectsBtn" type="button" class="scene-fx-btn" aria-pressed="false" data-i18n-title="sceneFx.objects" title="Objects">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></svg>
-        </button>
+        <div class="scene-fx-slot">
+          <button id="fxObjectsBtn" type="button" class="scene-fx-btn has-flyout" aria-pressed="false" aria-haspopup="menu" aria-expanded="false" data-i18n-title="sceneFx.objects" title="Objects">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></svg>
+            <span class="fx-caret" aria-hidden="true"><svg viewBox="0 0 12 8" width="10" height="7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6l4-4 4 4"/></svg></span>
+          </button>
+          <div id="fxObjectsMenu" class="scene-fx-flyout" role="menu" aria-label="Object appearance" hidden>
+            <button type="button" class="fx-flyout-item" role="menuitemradio" data-value="circle" data-i18n-title="display.objectDisplayMode.circle" data-i18n-aria-label="display.objectDisplayMode.circle" title="Circle" aria-label="Circle">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>
+            </button>
+            <button type="button" class="fx-flyout-item" role="menuitemradio" data-value="transparent-sphere" data-i18n-title="display.objectDisplayMode.transparentSphere" data-i18n-aria-label="display.objectDisplayMode.transparentSphere" title="Transparent sphere" aria-label="Transparent sphere">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="3.4" ry="8"/><ellipse cx="12" cy="12" rx="8" ry="3.4"/></svg>
+            </button>
+            <button type="button" class="fx-flyout-item" role="menuitemradio" data-value="diffuse-sphere" data-i18n-title="display.objectDisplayMode.diffuseSphere" data-i18n-aria-label="display.objectDisplayMode.diffuseSphere" title="Diffuse sphere" aria-label="Diffuse sphere">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="8" stroke-dasharray="1.6 2.6"/></svg>
+            </button>
+          </div>
+        </div>
         <button id="fxLabelsBtn" type="button" class="scene-fx-btn" aria-pressed="false" data-i18n-title="sceneFx.labels" title="Labels">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r="1.5" fill="currentColor" stroke="none"/></svg>
         </button>
-        <button id="fxTrailsBtn" type="button" class="scene-fx-btn" aria-pressed="false" data-i18n-title="sceneFx.trails" title="Trails">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
-        </button>
+        <div class="scene-fx-slot">
+          <button id="fxTrailsBtn" type="button" class="scene-fx-btn has-flyout" aria-pressed="false" aria-haspopup="menu" aria-expanded="false" data-i18n-title="sceneFx.trails" title="Trails">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
+            <span class="fx-caret" aria-hidden="true"><svg viewBox="0 0 12 8" width="10" height="7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6l4-4 4 4"/></svg></span>
+          </button>
+          <div id="fxTrailsMenu" class="scene-fx-flyout" role="menu" aria-label="Trails mode" hidden>
+            <button type="button" class="fx-flyout-item" role="menuitemradio" data-value="diffuse" data-i18n-title="trail.mode.diffuse" data-i18n-aria-label="trail.mode.diffuse" title="Diffuse" aria-label="Diffuse">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="none" aria-hidden="true"><circle cx="5" cy="15" r="1.2" fill="currentColor" opacity="0.4"/><circle cx="10" cy="13" r="1.8" fill="currentColor" opacity="0.62"/><circle cx="15" cy="11" r="2.4" fill="currentColor" opacity="0.82"/><circle cx="20" cy="9" r="3" fill="currentColor"/></svg>
+            </button>
+            <button type="button" class="fx-flyout-item" role="menuitemradio" data-value="line" data-i18n-title="trail.mode.line" data-i18n-aria-label="trail.mode.line" title="Line" aria-label="Line">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 18Q9 4 12 11T21 6"/></svg>
+            </button>
+          </div>
+        </div>
         <button id="fxFieldBtn" type="button" class="scene-fx-btn" aria-pressed="false" data-i18n-title="sceneFx.energyField" title="Object energy field">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg>
         </button>
