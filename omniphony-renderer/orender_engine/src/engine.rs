@@ -199,6 +199,13 @@ impl PerfLog {
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        // Tear down the OSC server (stop + join its listener/standby threads)
+        // *before* the implicit field drops below free the renderer and bridge
+        // those threads read from. `osc` is declared after `bridge`/`renderer`,
+        // so plain field-order drop would stop the threads last, leaving a
+        // teardown window where a worker could read state mid-free. Explicit so
+        // it can't regress if the field order changes.
+        drop(self.osc.take());
         if let Some(perf) = self.perf.as_mut() {
             perf.flush();
         }

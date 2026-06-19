@@ -821,6 +821,14 @@ impl Drop for OscSender {
         if let Some(handle) = self.listener_thread.lock().unwrap().take() {
             let _ = handle.join();
         }
+        // Also stop + join the standby resume-watch thread if this engine is
+        // dropped while in standby (RX port yielded to an mpv-embedded renderer).
+        // Without this it outlives the OscSender, probing `rx_port` after its
+        // owner is gone — a live thread leaked per destroy/create cycle.
+        self.standby_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.standby_thread.lock().unwrap().take() {
+            let _ = handle.join();
+        }
         // Deregister from the same-process release registry only if we are still
         // the entry there (a successor may have already overwritten it — see
         // `still_port_owner` above, computed atomically at the start of drop).

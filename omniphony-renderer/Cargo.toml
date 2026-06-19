@@ -69,6 +69,18 @@ inherits = "release"
 lto = "thin"
 strip = "symbols"
 
+# Diagnostic-only: a release build that keeps full debug info so the cdylib
+# (orender.dll / liborender.so) symbolizes in a crash dump. Used to investigate
+# the intermittent Windows heap/loader access violations (ucrtbase/ntdll
+# c0000005) under PageHeap. Never ship this — the shipped artifact stays
+# `release-deploy` (stripped). Build with:
+#   cargo build --profile release-debug -p orender_ffi
+# On windows-msvc this emits orender.pdb next to orender.dll.
+[profile.release-debug]
+inherits = "release"
+debug = "full"
+strip = false
+
 [features]
 # Pure-Rust native VBAP backend is the default — no external library required.
 default = []
