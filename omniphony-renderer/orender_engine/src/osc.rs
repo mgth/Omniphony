@@ -609,6 +609,42 @@ impl OscSender {
         Ok(())
     }
 
+    /// Write the unsaved live-state handoff sidecar so a successor instance
+    /// (a restarting CLI, or the mpv-embedded renderer taking the RX port over)
+    /// picks the changes up. Best-effort and a no-op when there's nothing dirty
+    /// or no config path. Callers must invoke this **while the RX port is still
+    /// held**: the FFI host settles port ownership before reading the config
+    /// (`negotiate_rx_port` → `from_paths` → `load_or_default_with_live`), so a
+    /// sidecar written before the port frees is guaranteed to be consumed.
+    fn write_live_handoff_sidecar(&self) {
+        let Some(control) = self.control.as_ref() else {
+            return;
+        };
+        // Only unsaved changes are worth handing over; a clean state would just
+        // make the successor flag a phantom "unsaved" diff.
+        if !control.config_dirty.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(path) = control.config_path.lock().as_ref().cloned() else {
+            return;
+        };
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        match runtime_control::persist::save_live_config_to_path(
+            control,
+            self.host_handler.as_deref(),
+            &path,
+            &sidecar,
+        ) {
+            Ok(()) => {
+                // A fresh sidecar invalidates any overlay this process consumed
+                // earlier (destroy→create cycles of the FFI host re-read it).
+                renderer::config::clear_live_overlay_cache();
+                log::info!("live state handed off to {}", sidecar.display());
+            }
+            Err(e) => log::warn!("failed to write live-state sidecar: {e}"),
+        }
+    }
+
     /// Enter standby: stop the OSC RX listener (freeing `rx_port` for an
     /// mpv-embedded renderer) and start a tiny resume-watch thread on the
     /// dynamic socket the yield handler advertised. It resumes this instance
@@ -616,6 +652,16 @@ impl OscSender {
     /// net — when `rx_port` becomes bindable again. The process stays alive; the
     /// render loop releases its audio output in parallel.
     pub fn enter_standby(&mut self) {
+        // Hand off any unsaved live state to the successor (e.g. the mpv-embedded
+        // renderer that just asked us to yield) *before* we release the RX port.
+        // The successor's `negotiate_rx_port` waits for the port to free, then
+        // `from_paths` reads `config + sidecar` — so writing here, while the port
+        // is still ours, guarantees it sees the file. Without this a live import
+        // (or any unsaved edit) made in this instance was stranded in memory and
+        // mpv came up on the stale on-disk config. Mirrors the `Drop` handoff,
+        // except we stay alive and keep our in-memory state for a later resume.
+        self.write_live_handoff_sidecar();
+
         // Release the RX port: stop + join the listener thread.
         self.listener_stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.listener_thread.lock().unwrap().take() {
@@ -759,33 +805,7 @@ impl Drop for OscSender {
         // is "discard live state and re-read the config".
         let reloading = sys::ShutdownHandle::is_restart_from_config_requested();
         if !reloading {
-            if let Some(control) = self.control.as_ref() {
-                // Only unsaved changes are worth handing over; a clean state
-                // would just make the successor flag a phantom "unsaved" diff.
-                if control.config_dirty.load(Ordering::Relaxed) {
-                    let config_path = control.config_path.lock().as_ref().cloned();
-                    if let Some(path) = config_path {
-                        let sidecar = renderer::config::live_sidecar_path(&path);
-                        match runtime_control::persist::save_live_config_to_path(
-                            control,
-                            self.host_handler.as_deref(),
-                            &path,
-                            &sidecar,
-                        ) {
-                            Ok(()) => {
-                                // A fresh sidecar invalidates any overlay this
-                                // process consumed earlier (destroy→create
-                                // cycles of the FFI host re-read it).
-                                renderer::config::clear_live_overlay_cache();
-                                log::info!("live state handed off to {}", sidecar.display());
-                            }
-                            Err(e) => {
-                                log::warn!("failed to write live-state sidecar: {e}")
-                            }
-                        }
-                    }
-                }
-            }
+            self.write_live_handoff_sidecar();
             // Goodbye broadcast: lets clients reconnect to the next instance
             // immediately instead of waiting out their heartbeat timeout.
             let goodbye = OscMessage {
