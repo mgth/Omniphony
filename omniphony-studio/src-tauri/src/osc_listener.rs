@@ -1736,6 +1736,9 @@ fn flush_emit_batch(app: &AppHandle) {
 }
 
 fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
+    // Per-object mutes preserved across a seek/reset so they can be re-emitted to
+    // the frontend after the `source:remove` wipe (see the SpatialFrame arm).
+    let mut restore_object_mutes: Vec<String> = Vec::new();
     // Update state under the lock, collect emit data, then release before emitting.
     let (to_emit, removed_ids): (Option<(&'static str, serde_json::Value)>, Vec<String>) = {
         let mut s = state.lock().unwrap();
@@ -1774,13 +1777,30 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         .collect()
                 };
 
+                // On a seek/reset the renderer keeps each object's mute keyed by
+                // slot index (audio stays correctly soloed), but every source is
+                // dropped here and re-emitted as `source:remove`, which makes the
+                // frontend forget `objectMuted`. Preserve the authoritative mute
+                // mirror and schedule a re-emit so the visual solo/mute state is
+                // restored immediately instead of drifting until the next snapshot
+                // heartbeat. Non-reset stale removals (object count shrank) genuinely
+                // drop the slot, so they still clear the mute.
+                if is_reset {
+                    restore_object_mutes = s
+                        .object_mutes
+                        .iter()
+                        .filter_map(|(id, &m)| (m != 0).then(|| id.clone()))
+                        .collect();
+                }
                 for id in &stale_ids {
                     s.sources.remove(id);
                     s.source_levels.remove(id);
                     s.object_speaker_gains.remove(id);
                     s.object_band_gains.remove(id);
                     s.object_gains.remove(id);
-                    s.object_mutes.remove(id);
+                    if !is_reset {
+                        s.object_mutes.remove(id);
+                    }
                 }
                 removed_ids.extend(stale_ids);
                 (
@@ -2904,6 +2924,13 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
 
     for id in removed_ids {
         let _ = app.emit("source:remove", serde_json::json!({ "id": id }));
+    }
+
+    // Re-emit the mutes preserved across a reset after the `source:remove` wipe so
+    // the frontend rebuilds `objectMuted` before the spatial:frame recreates the
+    // objects — keeping the visual solo/mute state in sync with the audio.
+    for id in restore_object_mutes {
+        let _ = app.emit("object:mute", serde_json::json!({ "id": id, "muted": 1 }));
     }
 
     if let Some((event, payload)) = to_emit {
