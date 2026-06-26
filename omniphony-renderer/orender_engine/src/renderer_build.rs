@@ -657,6 +657,14 @@ pub fn build_spatial_renderer(
                     {
                         live.binaural.tracking.format = fmt;
                     }
+                    // Restore the persisted recenter reference so the centering
+                    // survives an engine rebuild (mpv track change) and a restart.
+                    // `head_pose`/`last_raw` stay at their defaults: the first
+                    // incoming OSC packet re-derives the centered pose.
+                    if let Some(q) = ht.reference_quat {
+                        live.binaural.tracking.reference =
+                            renderer::binaural::HeadPose::from_quat_array(q);
+                    }
                 }
                 // HRIR source: a "sofa" selector resolves its path from
                 // `hrtf_sofa_path` (or an inline "sofa:<path>").

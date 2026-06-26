@@ -425,6 +425,11 @@ pub struct HeadTrackingConfig {
     /// Orientation value format: `"auto"` (default), `"quat"`, `"rotvec"`, `"euler"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
+    /// Recenter "forward" reference quaternion `[w, x, y, z]`, persisted so the
+    /// chosen centering survives an engine rebuild (mpv track change) or restart.
+    /// Absent until the tracker has been recentered (identity = uncentered).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_quat: Option<[f32; 4]>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
@@ -802,6 +807,28 @@ mod tests {
         assert_eq!(rc.room_ratio.as_deref(), Some("1.0,2.000000,1.000000"));
         assert_eq!(rc.room_ratio_rear, Some(1.0));
         assert_eq!(rc.room_ratio_lower, Some(0.5));
+    }
+
+    #[test]
+    fn head_tracking_reference_quat_round_trips_and_omits_when_absent() {
+        // Present: serializes and parses back equal.
+        let ht = HeadTrackingConfig {
+            osc_address: Some("/android/rotationvector".to_string()),
+            reference_quat: Some([0.5, 0.5, 0.5, 0.5]),
+            ..Default::default()
+        };
+        let yaml = serde_yaml_ng::to_string(&ht).unwrap();
+        assert!(yaml.contains("reference_quat"), "field not written: {yaml}");
+        let back: HeadTrackingConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(back.reference_quat, Some([0.5, 0.5, 0.5, 0.5]));
+
+        // Absent: the key is skipped entirely.
+        let bare = HeadTrackingConfig::default();
+        let yaml = serde_yaml_ng::to_string(&bare).unwrap();
+        assert!(
+            !yaml.contains("reference_quat"),
+            "None should omit the key: {yaml}"
+        );
     }
 
     #[test]

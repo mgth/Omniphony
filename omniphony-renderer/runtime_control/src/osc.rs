@@ -54,6 +54,10 @@ pub struct ControlEffects {
     pub evaluation_only: bool,
     pub broadcasts: Vec<BroadcastUpdate>,
     pub log_message: Option<String>,
+    /// Head-tracking recenter reference `[w, x, y, z]` to write straight to
+    /// `config.yaml` (systematic save, like `surround_placement`). The engine
+    /// layer performs the I/O in `apply_control_effects`.
+    pub persist_head_center: Option<[f32; 4]>,
 }
 
 // AdaptiveResamplingPatch / AudioConfigPatch / LiveInputPatch / InputConfigPatch
@@ -1051,6 +1055,9 @@ pub fn apply_simple_osc_control(
         let mut live = ctx.renderer.live.write();
         live.binaural.tracking.recenter();
         live.binaural.head_pose = renderer::binaural::HeadPose::identity();
+        // Persist the new reference to config right away so the centering survives
+        // an engine rebuild (mpv track change) and a restart.
+        effects.persist_head_center = Some(live.binaural.tracking.reference.to_quat_array());
         effects.mark_dirty = true;
         effects.log_message = Some("OSC: head/recenter".to_string());
         return Some(effects);

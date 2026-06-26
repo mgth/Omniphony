@@ -870,6 +870,33 @@ fn persist_output_channel_mapping(
     renderer::config::clear_live_overlay_cache();
 }
 
+/// Persist the head-tracking recenter reference to the on-disk config so the
+/// chosen "forward" survives an engine rebuild (mpv track change) and a restart.
+/// Same targeted, sidecar-clearing write as [`persist_surround_placement`].
+fn persist_head_center(control: &Arc<RendererControl>, reference_quat: [f32; 4]) {
+    let Some(path) = control.config_path() else {
+        return;
+    };
+    persist_head_center_to_path(&path, reference_quat);
+}
+
+fn persist_head_center_to_path(path: &Path, reference_quat: [f32; 4]) {
+    let mut config = renderer::config::Config::load_or_default(path);
+    let render = config.render.get_or_insert_with(Default::default);
+    let bin = render.binaural.get_or_insert_with(Default::default);
+    let ht = bin.head_tracking.get_or_insert_with(Default::default);
+    // Drop the key when back at identity so an "uncentered" tracker leaves a clean
+    // config rather than persisting a no-op quaternion.
+    let identity = renderer::binaural::HeadPose::identity().to_quat_array();
+    ht.reference_quat = (reference_quat != identity).then_some(reference_quat);
+    if let Err(e) = config.save(path) {
+        log::warn!("failed to persist head recenter to {}: {e}", path.display());
+        return;
+    }
+    let _ = std::fs::remove_file(renderer::config::live_sidecar_path(path));
+    renderer::config::clear_live_overlay_cache();
+}
+
 fn apply_control_effects(
     effects: ControlEffects,
     control: &Arc<RendererControl>,
@@ -882,6 +909,9 @@ fn apply_control_effects(
         set_dirty(control, socket, clients);
         let state_bytes = build_live_state_bundle(control, host);
         super::transport::send_raw(socket, clients, &state_bytes);
+    }
+    if let Some(reference_quat) = effects.persist_head_center {
+        persist_head_center(control, reference_quat);
     }
     for update in effects.broadcasts {
         match update.value {
@@ -1278,6 +1308,54 @@ mod tests {
             "unknown key lost: {written}"
         );
         assert!(!sidecar.exists(), "live sidecar not removed");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_head_center_writes_reference_and_clears_sidecar() {
+        let path = temp_config_path("head-center");
+        std::fs::write(
+            &path,
+            "render:\n  bridge_path: /tmp/libbridge.so\n  binaural:\n    head_tracking:\n      osc_address: /android/rotationvector\n",
+        )
+        .unwrap();
+        let sidecar = renderer::config::live_sidecar_path(&path);
+        std::fs::write(&sidecar, "render:\n  surround_placement: back\n").unwrap();
+
+        let reference = [0.5, 0.5, 0.5, 0.5];
+        persist_head_center_to_path(&path, reference);
+
+        // Written under binaural.head_tracking, the existing osc_address kept,
+        // bridge_path preserved, and the stale sidecar removed.
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let ht = cfg
+            .render
+            .as_ref()
+            .and_then(|r| r.binaural.as_ref())
+            .and_then(|b| b.head_tracking.as_ref())
+            .expect("head_tracking present");
+        assert_eq!(ht.reference_quat, Some(reference));
+        assert_eq!(ht.osc_address.as_deref(), Some("/android/rotationvector"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("bridge_path: /tmp/libbridge.so"),
+            "known key lost"
+        );
+        assert!(!sidecar.exists(), "live sidecar not removed");
+
+        // Recentering back to identity drops the key entirely.
+        let identity = renderer::binaural::HeadPose::identity().to_quat_array();
+        persist_head_center_to_path(&path, identity);
+        let cfg = renderer::config::Config::load_or_default(&path);
+        let ht = cfg
+            .render
+            .as_ref()
+            .and_then(|r| r.binaural.as_ref())
+            .and_then(|b| b.head_tracking.as_ref())
+            .expect("head_tracking present");
+        assert_eq!(ht.reference_quat, None, "identity should omit the key");
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

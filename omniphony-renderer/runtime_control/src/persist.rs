@@ -254,6 +254,13 @@ pub fn save_live_config_to_path(
         head_tracking: Some(renderer::config::HeadTrackingConfig {
             osc_address: live.binaural.tracking.address.clone(),
             format: Some(live.binaural.tracking.format.as_str().to_string()),
+            reference_quat: {
+                // Carry the recenter reference through an explicit Save too (the
+                // targeted write-back already persists it on recenter); omit when
+                // back at identity to keep the YAML clean.
+                let r = live.binaural.tracking.reference;
+                (r != renderer::binaural::HeadPose::identity()).then(|| r.to_quat_array())
+            },
             extra: Default::default(),
         }),
         reflections: Some(renderer::config::ReflectionsConfig {

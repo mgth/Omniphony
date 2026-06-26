@@ -52,6 +52,16 @@ impl HeadPose {
         }
     }
 
+    /// Quaternion components as `[w, x, y, z]`, for compact config storage.
+    pub fn to_quat_array(self) -> [f32; 4] {
+        [self.w, self.x, self.y, self.z]
+    }
+
+    /// Rebuild from a `[w, x, y, z]` array (normalising, see [`Self::from_quat`]).
+    pub fn from_quat_array(a: [f32; 4]) -> Self {
+        Self::from_quat(a[0], a[1], a[2], a[3])
+    }
+
     /// Build from intrinsic yaw→pitch→roll Euler angles in degrees.
     ///
     /// Axis convention (ADM): yaw about +Z (turn left/right), pitch about +X
