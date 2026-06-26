@@ -136,7 +136,7 @@ async function saveToFile() {
 
 function buildCsv() {
   const header = 't_ms,elapsed_s,rss_mb,tree_rss_mb,virtual_mb,js_heap_mb,geometries,textures,programs,'
-    + 'sources,source_levels,speaker_levels,object_speaker_gains,object_gains,'
+    + 'sources,source_levels,speaker_levels,object_speaker_gains,'
     + 'object_band_gains,speaker_gains,object_mutes,speaker_mutes,layouts';
   const rows = samples.map((s) => {
     const st = s.state || {};
@@ -144,7 +144,7 @@ function buildCsv() {
       s.t, s.elapsedS, s.rssMB, s.treeRssMB, s.virtualMB, s.jsHeapMB,
       s.geometries, s.textures, s.programs,
       st.sources, st.sourceLevels, st.speakerLevels, st.objectSpeakerGains,
-      st.objectGains, st.objectBandGains, st.speakerGains, st.objectMutes,
+      st.objectBandGains, st.speakerGains, st.objectMutes,
       st.speakerMutes, st.layouts,
     ].map((v) => (v === null || v === undefined ? '' : v)).join(',');
   });

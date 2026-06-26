@@ -220,7 +220,6 @@ fn main() {
             export_layout_to_path,
             control_speaker_gain,
             control_object_mute,
-            control_object_gain,
             control_speaker_mute,
             control_master_gain,
             control_loudness,

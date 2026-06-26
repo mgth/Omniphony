@@ -38,23 +38,6 @@ pub fn control_object_mute(state: State<SharedState>, id: i32, muted: i32) {
 }
 
 #[tauri::command]
-pub fn control_object_gain(state: State<SharedState>, id: String, gain: f32) {
-    let clamped = gain.clamp(0.0, 2.0);
-    let seq = state.realtime_seq.fetch_add(1, Ordering::Relaxed) + 1;
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendArgs {
-            address: "/omniphony/control/realtime/object_gain".to_string(),
-            args: vec![
-                rosc::OscType::String(id),
-                rosc::OscType::Float(clamped),
-                rosc::OscType::Int(seq),
-            ],
-        },
-    );
-}
-
-#[tauri::command]
 pub fn control_speaker_mute(state: State<SharedState>, id: i32, muted: i32) {
     send_json_control(
         &state.osc_tx,

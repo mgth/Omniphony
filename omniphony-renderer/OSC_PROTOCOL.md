@@ -166,7 +166,6 @@ Sequenced realtime controls use `latest-wins` semantics:
 
 - `/omniphony/control/realtime/master_gain [f32 value, i32 seq]`
 - `/omniphony/control/realtime/speaker_gain [i32 id, f32 value, i32 seq]`
-- `/omniphony/control/realtime/object_gain [s id, f32 value, i32 seq]`
 
 Serialized config-domain controls use JSON patches:
 
@@ -182,7 +181,6 @@ Canonical acknowledgements:
 
 - `/omniphony/state/realtime/master_gain [f32 value, i32 seq]`
 - `/omniphony/state/realtime/speaker_gain [i32 id, f32 value, i32 seq]`
-- `/omniphony/state/realtime/object_gain [s id, f32 value, i32 seq]`
 
 Common control addresses include:
 

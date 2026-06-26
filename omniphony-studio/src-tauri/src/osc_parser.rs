@@ -188,8 +188,6 @@ pub enum OscEvent {
 
     #[serde(rename = "state:speaker:gain")]
     StateSpeakerGain { id: String, gain: f64 },
-    #[serde(rename = "state:object:gain")]
-    StateObjectGain { id: String, gain: f64 },
     #[serde(rename = "state:speaker:delay")]
     StateSpeakerDelay { id: String, delay_ms: f64 },
     #[serde(rename = "state:object:mute")]
@@ -243,8 +241,6 @@ pub enum OscEvent {
     StateRealtimeMasterGain { value: f64, seq: i32 },
     #[serde(rename = "state:realtime:speaker_gain")]
     StateRealtimeSpeakerGain { id: String, value: f64, seq: i32 },
-    #[serde(rename = "state:realtime:object_gain")]
-    StateRealtimeObjectGain { id: String, value: f64, seq: i32 },
     #[serde(rename = "state:latency")]
     StateLatency { value: f64 },
     #[serde(rename = "state:latency:instant")]
@@ -689,11 +685,6 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 value: to_number(args.get(1).copied()?)?,
                 seq: to_number(args.get(2).copied()?)? as i32,
             }),
-            "object_gain" => Some(OscEvent::StateRealtimeObjectGain {
-                id: raw_args.first().and_then(unwrap_string)?,
-                value: to_number(args.get(1).copied()?)?,
-                seq: to_number(args.get(2).copied()?)? as i32,
-            }),
             _ => None,
         },
         (5, "debug") if parts[3] == "speaker_gaintable" => match parts[4] {
@@ -871,11 +862,6 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             enabled: to_number(args[0])? != 0.0,
         }),
         (5, kind) if kind == "object" || kind == "speaker" => match parts[4] {
-            "gain" if kind == "object" => {
-                let id = parts[3].to_string();
-                let gain = clamp(to_number(args[0])?, 0.0, 2.0);
-                Some(OscEvent::StateObjectGain { id, gain })
-            }
             "gain" if kind == "speaker" => {
                 let id = parts[3].parse::<u32>().ok()?.to_string();
                 let gain = clamp(to_number(args[0])?, 0.0, 2.0);

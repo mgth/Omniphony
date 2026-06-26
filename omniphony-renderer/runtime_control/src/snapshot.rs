@@ -282,7 +282,7 @@ fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String 
         "variant": if has_audio { "standalone" } else { "embedded" },
         "host": if has_audio { "cli" } else { "mpv" },
         "domains": domains,
-        "realtime": ["master_gain", "speaker_gain", "object_gain"],
+        "realtime": ["master_gain", "speaker_gain"],
         "spatial": true,
         "metering": true,
         "controlConfig": control_config
@@ -597,12 +597,6 @@ pub fn build_live_state_bundle(
     let mut all_messages = messages;
 
     for (&idx, obj) in &live.objects {
-        if obj.gain != 1.0 {
-            all_messages.push(OscPacket::Message(OscMessage {
-                addr: format!("/omniphony/state/object/{}/gain", idx),
-                args: vec![OscType::Float(obj.gain)],
-            }));
-        }
         if obj.muted {
             all_messages.push(OscPacket::Message(OscMessage {
                 addr: format!("/omniphony/state/object/{}/mute", idx),

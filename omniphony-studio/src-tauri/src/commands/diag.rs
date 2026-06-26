@@ -120,7 +120,6 @@ pub fn debug_state_sizes(state: State<SharedState>) -> serde_json::Value {
         "sourceLevels": s.source_levels.len(),
         "speakerLevels": s.speaker_levels.len(),
         "objectSpeakerGains": s.object_speaker_gains.len(),
-        "objectGains": s.object_gains.len(),
         "objectBandGains": s.object_band_gains.len(),
         "speakerGains": s.speaker_gains.len(),
         "objectMutes": s.object_mutes.len(),

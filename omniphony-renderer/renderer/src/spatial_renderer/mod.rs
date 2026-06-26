@@ -648,10 +648,11 @@ impl SpatialRenderer {
             {
                 let mut states = self.channel_states.lock();
                 for c in 0..input_channel_count {
+                    // Object-level mute as a 0/1 factor (per-object output gain was
+                    // removed; only mute remains live-tunable).
                     let obj_gain = match self.object_params_buf.get(c) {
                         Some(o) if o.muted => 0.0,
-                        Some(o) => o.gain,
-                        None => 1.0,
+                        _ => 1.0,
                     };
                     // Stream metadata gain, same semantics as the VBAP path:
                     // silent (-128 = -inf dB) until the first metadata arrives.
@@ -855,11 +856,10 @@ impl SpatialRenderer {
 
         // Process each channel
         for input_channel_idx in 0..input_channel_count {
-            // Per-channel mute (applies to beds and objects).
+            // Per-channel mute (applies to beds and objects), as a 0/1 factor.
             let obj_gain = match live.object_params.get(input_channel_idx) {
                 Some(o) if o.muted => 0.0,
-                Some(o) => o.gain,
-                None => 1.0,
+                _ => 1.0,
             };
 
             // Get gain from cached metadata (common for ALL channels - beds and objects)

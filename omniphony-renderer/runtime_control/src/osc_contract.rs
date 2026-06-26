@@ -155,7 +155,6 @@ pub const CONTROL_OVERLAY_TRAILS: &str = "/omniphony/control/overlay/trails";
 pub const CONTROL_QUIT: &str = "/omniphony/control/quit";
 pub const CONTROL_RAMP_MODE: &str = "/omniphony/control/ramp_mode";
 pub const CONTROL_REALTIME_MASTER_GAIN: &str = "/omniphony/control/realtime/master_gain";
-pub const CONTROL_REALTIME_OBJECT_GAIN: &str = "/omniphony/control/realtime/object_gain";
 pub const CONTROL_REALTIME_SPEAKER_GAIN: &str = "/omniphony/control/realtime/speaker_gain";
 pub const CONTROL_RELOAD_CONFIG: &str = "/omniphony/control/reload_config";
 pub const CONTROL_RENDER_BACKEND: &str = "/omniphony/control/render_backend";
@@ -229,7 +228,6 @@ pub const STATE_MONITORING: &str = "/omniphony/state/monitoring";
 pub const STATE_OSC_DIAG: &str = "/omniphony/state/osc/diag";
 pub const STATE_OSC_METERING: &str = "/omniphony/state/osc/metering";
 pub const STATE_REALTIME_MASTER_GAIN: &str = "/omniphony/state/realtime/master_gain";
-pub const STATE_REALTIME_OBJECT_GAIN: &str = "/omniphony/state/realtime/object_gain";
 pub const STATE_REALTIME_SPEAKER_GAIN: &str = "/omniphony/state/realtime/speaker_gain";
 pub const STATE_RENDER_ABI: &str = "/omniphony/state/render/abi";
 pub const STATE_RENDER_BRIDGE_ERROR: &str = "/omniphony/state/render/bridge_error";
@@ -353,7 +351,6 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_QUIT,
     CONTROL_RAMP_MODE,
     CONTROL_REALTIME_MASTER_GAIN,
-    CONTROL_REALTIME_OBJECT_GAIN,
     CONTROL_REALTIME_SPEAKER_GAIN,
     CONTROL_RELOAD_CONFIG,
     CONTROL_RENDER_BACKEND,
@@ -415,7 +412,6 @@ pub const ALL_STATE: &[&str] = &[
     STATE_OSC_DIAG,
     STATE_OSC_METERING,
     STATE_REALTIME_MASTER_GAIN,
-    STATE_REALTIME_OBJECT_GAIN,
     STATE_REALTIME_SPEAKER_GAIN,
     STATE_RENDER_ABI,
     STATE_RENDER_BRIDGE_ERROR,

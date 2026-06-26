@@ -30,7 +30,6 @@ use super::transport::{
 pub(crate) struct RealtimeSeqState {
     pub master_gain: Option<i32>,
     pub speaker_gain: HashMap<usize, i32>,
-    pub object_gain: HashMap<String, i32>,
 }
 
 pub(crate) fn handle_control_message(
@@ -535,71 +534,6 @@ pub(crate) fn handle_control_message(
         })) {
             super::transport::send_raw(socket, clients, &bytes);
         }
-        return;
-    }
-
-    if addr == osc_contract::CONTROL_REALTIME_OBJECT_GAIN {
-        let Some(id) = msg.args.first().and_then(|arg| match arg {
-            OscType::String(v) => {
-                let trimmed = v.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            }
-            OscType::Int(v) if *v >= 0 => Some(v.to_string()),
-            OscType::Float(v) if *v >= 0.0 => Some((*v as i32).to_string()),
-            _ => None,
-        }) else {
-            return;
-        };
-        let Some(value) = msg.args.get(1).and_then(|arg| match arg {
-            OscType::Float(v) => Some(*v),
-            OscType::Int(v) => Some(*v as f32),
-            _ => None,
-        }) else {
-            return;
-        };
-        let Some(seq) = msg.args.get(2).and_then(|arg| match arg {
-            OscType::Int(v) => Some(*v),
-            _ => None,
-        }) else {
-            return;
-        };
-        if realtime_seq
-            .object_gain
-            .get(&id)
-            .copied()
-            .is_some_and(|last| seq < last)
-        {
-            return;
-        }
-        let Ok(idx) = id.parse::<usize>() else {
-            return;
-        };
-        let clamped = value.clamp(0.0, 2.0);
-        realtime_seq.object_gain.insert(id.clone(), seq);
-        control.live.write().objects.entry(idx).or_default().gain = clamped;
-        control.mark_object_params_dirty();
-        control.mark_dirty();
-        broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
-        if let Ok(bytes) = rosc::encoder::encode(&rosc::OscPacket::Message(rosc::OscMessage {
-            addr: osc_contract::STATE_REALTIME_OBJECT_GAIN.to_string(),
-            args: vec![
-                OscType::String(id.clone()),
-                OscType::Float(clamped),
-                OscType::Int(seq),
-            ],
-        })) {
-            super::transport::send_raw(socket, clients, &bytes);
-        }
-        broadcast_float(
-            socket,
-            clients,
-            &format!("/omniphony/state/object/{idx}/gain"),
-            clamped,
-        );
         return;
     }
 

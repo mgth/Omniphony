@@ -1797,7 +1797,6 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     s.source_levels.remove(id);
                     s.object_speaker_gains.remove(id);
                     s.object_band_gains.remove(id);
-                    s.object_gains.remove(id);
                     if !is_reset {
                         s.object_mutes.remove(id);
                     }
@@ -1875,7 +1874,6 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 s.source_levels.remove(&id);
                 s.object_speaker_gains.remove(&id);
                 s.object_band_gains.remove(&id);
-                s.object_gains.remove(&id);
                 s.object_mutes.remove(&id);
                 (
                     Some(("source:remove", serde_json::json!({ "id": id }))),
@@ -1988,13 +1986,6 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         "speaker:gain",
                         serde_json::json!({ "id": id, "gain": gain }),
                     )),
-                    removed_ids,
-                )
-            }
-            OscEvent::StateObjectGain { id, gain } => {
-                s.object_gains.insert(id.clone(), gain);
-                (
-                    Some(("object:gain", serde_json::json!({ "id": id, "gain": gain }))),
                     removed_ids,
                 )
             }
@@ -2304,17 +2295,6 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
-            OscEvent::StateRealtimeObjectGain { id, value, .. } => {
-                s.object_gains.insert(id.clone(), value);
-                (
-                    Some((
-                        "object:gain",
-                        serde_json::json!({ "id": id, "gain": value }),
-                    )),
-                    removed_ids,
-                )
-            }
-
             OscEvent::StateLatency { value } => {
                 let rounded = s.set_latency_value(value);
                 (
