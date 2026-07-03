@@ -103,6 +103,11 @@ import {
 } from './speakers.js';
 import { rebuildTrailGeometry, captureTrailPointColor } from './trails.js';
 import { muteSoloCallbacks } from './mute-solo.js';
+import { installMemoryDiagnostics } from './debug-memory.js';
+
+// Memory diagnostics: registers window.omniphonyDebug.memory and samples only
+// when opted in via localStorage 'spatialviz.memory_sampler' (see debug-memory.js).
+installMemoryDiagnostics();
 
 flushCallbacks.renderRoomRatioDisplay = renderRoomRatioDisplay;
 flushCallbacks.renderEvaluationMode = renderEvaluationMode;

@@ -189,6 +189,9 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            debug_memory_stats,
+            debug_state_sizes,
+            debug_write_memory_csv,
             get_state,
             get_osc_config,
             renderer_is_local,

@@ -28,6 +28,15 @@ tokio = { version = "1", features = ["sync", "rt", "macros"] }
 log = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
+# Cross-platform process RSS/virtual memory readout for the opt-in memory
+# sampler (debug_memory_stats command). Tiny, no transitive bloat.
+memory-stats = "1"
+
+[features]
+# Ship WebView DevTools (F12, Inspect, heap snapshots) in RELEASE builds too,
+# for memory hunts on Windows where DevTools is otherwise debug-only:
+#   cargo build --release --features devtools
+devtools = ["tauri/devtools"]
 
 [target.'cfg(windows)'.dependencies]
 # Overlapped pipe I/O for the mpv IPC bridge so writes can't park the
@@ -39,6 +48,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp", # process-tree enumeration (debug_memory_stats)
+    "Win32_System_ProcessStatus",        # K32GetProcessMemoryInfo (WebView2 child RSS)
 ] }
 
 [build-dependencies]
