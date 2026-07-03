@@ -121,22 +121,30 @@ fn load_virtual_bed_layout(file_name: &str) -> Option<SpeakerLayout> {
     // The 5.1 / 7.1 virtual-bed layouts are height-less, so they now live in
     // the layouts/legacy/ subfolder. Try that first, then the historical
     // top-level path (older installs / packaging that still ships them flat).
-    // `mut` is used only on Windows (the %ProgramData% push below).
-    #[cfg_attr(not(windows), allow(unused_mut))]
+    // `mut` is unused when the install-dir pushes below are compiled out.
+    #[cfg_attr(test, allow(unused_mut))]
     let mut bases: Vec<PathBuf> = vec![
         // cwd-relative first — matches the CLI run from the workspace root.
         PathBuf::from("layouts"),
         PathBuf::from("omniphony").join("layouts"),
         Path::new(env!("CARGO_MANIFEST_DIR")).join("layouts"),
-        // Fixed install dirs for the embedded host (mpv has no workspace cwd);
-        // reached only when the cwd-relative lookups miss, so CLI parity holds.
-        PathBuf::from("/usr/lib/orender/layouts"),
-        PathBuf::from("/usr/share/orender/layouts"),
     ];
+    // Fixed install dirs for the embedded host (mpv has no workspace cwd);
+    // reached only when the cwd-relative lookups miss, so CLI parity holds.
+    // Compiled out of unit tests: a system package (e.g. the AUR install)
+    // shipping layouts here made test outcomes depend on machine state — the
+    // installed 7.1.yaml's non-spatialized LFE placeholder pose (z=-0.5)
+    // tripped the virtual-bed pose asserts on hosts with orender installed
+    // while CI's clean environment passed.
+    #[cfg(not(test))]
+    {
+        bases.push(PathBuf::from("/usr/lib/orender/layouts"));
+        bases.push(PathBuf::from("/usr/share/orender/layouts"));
+    }
     // Windows: the embedded host (mpv) has no workspace cwd, and the shared
     // install lives under %ProgramData%\omniphony (machine-wide, same as the
     // config + service). Search its layouts dir so layouts ship/resolve there.
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     if let Ok(program_data) = std::env::var("ProgramData") {
         let mut p = PathBuf::from(program_data);
         p.push("omniphony");
