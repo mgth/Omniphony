@@ -124,10 +124,13 @@ export function getObjectDisplayName(id) {
 // the vertical strip so list rows don't grow tall.
 export function objectBadge(id) {
   const name = getObjectDisplayName(id);
-  // Bed→height synth objects: PAD "Ambience_FL", copy_up "Height_Ls_synth".
+  // Bed→height synth objects: PAD "Ambience_FL", copy_up "Height_Ls_synth",
+  // DirAC diffuse "Diffuse_TFL".
   let m = name.match(/^Ambience_(.+)$/i);
   if (m) return { type: 'height', code: m[1] };
   m = name.match(/^Height_(.+)_synth$/i);
+  if (m) return { type: 'height', code: m[1] };
+  m = name.match(/^Diffuse_(.+)$/i);
   if (m) return { type: 'height', code: m[1] };
   // Phantom extraction "Phantom_L_C" → a source localized between two channels;
   // single-label "Phantom_C" → a relocalized channel.
