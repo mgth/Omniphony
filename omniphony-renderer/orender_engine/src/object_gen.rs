@@ -917,7 +917,7 @@ const DIRAC_PARAM_SPECS: [ObjectGenParamSpec; 3] = [
 /// one-pole memory, so on silence its state decays into the denormal range and
 /// stalls the FPU. Cheap branch, applied to the smoothers and the all-pass storage.
 #[inline]
-fn flush_denorm(x: f32) -> f32 {
+pub(crate) fn flush_denorm(x: f32) -> f32 {
     if x.abs() < 1.0e-20 { 0.0 } else { x }
 }
 
