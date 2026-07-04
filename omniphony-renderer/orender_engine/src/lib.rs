@@ -19,6 +19,7 @@ pub mod object_gen;
 pub mod osc;
 pub mod overlay;
 pub mod phantom_extract;
+mod phantom_spectral;
 pub mod render;
 pub mod renderer_build;
 pub mod spatial;
