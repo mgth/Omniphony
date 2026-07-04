@@ -7,6 +7,7 @@
     "build": "vite build",
     "prepare-sidecar": "node scripts/prepare-sidecar.mjs",
     "i18n:check": "node scripts/check-i18n.mjs",
+    "lint:dead": "knip",
     "tauri:build:linux": "NO_STRIP=true tauri build",
     "tauri": "tauri"
   },
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",
+    "knip": "^6.24.0",
     "vite": "^5"
   }
 }

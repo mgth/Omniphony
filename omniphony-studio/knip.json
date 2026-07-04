@@ -1,0 +1,11 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["scripts/*.mjs"],
+  "project": ["src/**/*.js", "scripts/**/*.mjs"],
+  "ignoreBinaries": ["rustc"],
+  "rules": {
+    "exports": "warn",
+    "nsExports": "warn",
+    "duplicates": "warn"
+  }
+}

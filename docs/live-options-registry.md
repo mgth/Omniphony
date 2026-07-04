@@ -1,7 +1,12 @@
 # RFC: a declared registry for live options
 
-Status: proposal — written after the Side/Back state-sync bug (see "The incident"
-below). Related fix: `fix/studio-live-options-state-sync`.
+Status: accepted — written after the Side/Back state-sync bug (see "The
+incident" below); related fix: `fix/studio-live-options-state-sync`. Phase 0
+(safety nets) has landed: the live-options conformance net
+(`omniphony-renderer/runtime_control/tests/live_options_conformance.rs`) and
+the knip dead-code gate in the Studio CI. The registry itself (phases 1+) is
+next; the options-schema contract check lands with it (it needs the registry
+to dump the schema).
 
 ## The problem
 

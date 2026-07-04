@@ -134,6 +134,14 @@ jobs:
         continue-on-error: true
         run: npm run i18n:check
 
+      # Dead-code gate (knip): a module with no importer fails the build.
+      # An orphaned ingestion module is how live-option state silently stopped
+      # reaching the UI for months (see docs/live-options-registry.md, "The
+      # incident"); unused *exports* are only warnings for now.
+      - name: Dead-code lint (knip)
+        working-directory: omniphony-studio
+        run: npm run lint:dead
+
   build-macos:
     # macOS arm64 compile gate. The renderer workspace pulls the CoreAudio
     # output backend (cpal) and the `sys` signal/IO layer, both of which carry
