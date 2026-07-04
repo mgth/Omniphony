@@ -863,6 +863,7 @@ impl Engine {
                 room_ratio_center_blend,
                 object_generator_id,
                 phantom_enabled,
+                options_epoch,
             ) = {
                 let control = self.renderer.renderer_control();
                 let live = control.live.read();
@@ -876,6 +877,7 @@ impl Engine {
                     live.room_ratio_center_blend,
                     live.object_generator_id.clone(),
                     live.phantom_enabled,
+                    control.options_epoch(),
                 )
             };
             let output_layout = self.renderer.speaker_layout();
@@ -942,8 +944,10 @@ impl Engine {
             // Phantom-extraction pre-stage runs first: its planar objects occupy the
             // channel slots right after the bed; the height-lift objects follow. The
             // audio (and the bed reduction) is applied after the bed PCM is built.
-            phantom_count = self.phantom.sync(phantom_enabled, &ctx);
-            synth_count = self.object_gen.sync(&object_generator_id, &ctx);
+            phantom_count = self.phantom.sync(phantom_enabled, &ctx, options_epoch);
+            synth_count = self
+                .object_gen
+                .sync(&object_generator_id, &ctx, options_epoch);
             if phantom_count > 0 || synth_count > 0 {
                 // Push each stage's live param overrides (declared schema; sparse —
                 // absent keys keep the stage's default). Cheap + idempotent, so a

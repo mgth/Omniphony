@@ -659,9 +659,9 @@ fn raw_option_value(arg: Option<&OscType>) -> Option<renderer::options::RawOptio
 }
 
 /// Registry-driven application of a declared live option: validate + apply via
-/// the spec, mark the config dirty, bump the replan epoch (`REPLAN`), commit to
-/// config.yaml (`PERSIST`), and notify clients. Invalid values are dropped with
-/// a warning, per the OSC contract.
+/// `options::apply_to_control` (which marks dirty and bumps the replan epoch
+/// on a real change), then commit to config.yaml (`PERSIST`) and notify
+/// clients. Invalid values are dropped with a warning, per the OSC contract.
 fn apply_live_option(
     control: &Arc<RendererControl>,
     spec: &'static renderer::options::OptionSpec,
@@ -669,18 +669,10 @@ fn apply_live_option(
     socket: &Arc<UdpSocket>,
     clients: &Arc<OscClientRegistry>,
 ) {
-    let applied = {
-        let mut live = control.live.write();
-        (spec.set)(&mut live, raw)
-    };
-    let Some(canonical) = applied else {
+    let Some(canonical) = renderer::options::apply_to_control(control, spec, raw) else {
         log::warn!("OSC option {}: rejected value", spec.key);
         return;
     };
-    control.mark_dirty();
-    if spec.flags.contains(renderer::options::OptionFlags::REPLAN) {
-        control.bump_options_epoch();
-    }
     if spec.flags.contains(renderer::options::OptionFlags::PERSIST) {
         if let Some(path) = control.config_path() {
             persist_render_field_to_path(&path, spec.key, |render| {

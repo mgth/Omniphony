@@ -269,6 +269,34 @@ pub fn find(key: &str) -> Option<&'static OptionSpec> {
     LIVE_OPTIONS.iter().find(|spec| spec.key == key)
 }
 
+/// Apply a client value to a control's live params through `spec`: validate +
+/// set, mark the config dirty, and bump the replan epoch when a
+/// `REPLAN`-flagged option **actually changed value** — a redundant re-send
+/// (Studio reconnecting, a client echoing state back) must not force a
+/// re-plan, which can carry an audible re-prime transient. Returns the
+/// canonical value applied, or `None` when the value was rejected.
+///
+/// Persistence and client notification stay with the transport layer (the OSC
+/// dispatcher), which alone knows the config path and the subscriber list.
+pub fn apply_to_control(
+    control: &crate::live_params::RendererControl,
+    spec: &OptionSpec,
+    raw: &RawOptionValue,
+) -> Option<String> {
+    let (canonical, changed) = {
+        let mut live = control.live.write();
+        let before = (spec.get_json)(&live);
+        let canonical = (spec.set)(&mut live, raw)?;
+        let changed = (spec.get_json)(&live) != before;
+        (canonical, changed)
+    };
+    control.mark_dirty();
+    if changed && spec.flags.contains(OptionFlags::REPLAN) {
+        control.bump_options_epoch();
+    }
+    Some(canonical)
+}
+
 /// Look an option up by its pre-registry dedicated control address.
 pub fn find_by_legacy_addr(addr: &str) -> Option<&'static OptionSpec> {
     LIVE_OPTIONS

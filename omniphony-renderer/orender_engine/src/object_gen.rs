@@ -1359,10 +1359,13 @@ struct PlanSig {
     out_height: bool,
     labels: Vec<RChannelLabel>,
     rate: u32,
-    /// Planned positions depend on the Side/Back surround placement
-    /// ([`channel_top_position`]); a live toggle must re-plan or the already
-    /// synthesized objects keep their stale row.
-    placement: SurroundPlacement,
+    /// `RendererControl::options_epoch` at plan time. Bumped whenever a
+    /// `REPLAN`-flagged registry option actually changes value (e.g. the
+    /// Side/Back surround placement, which moves the planned positions), so a
+    /// live toggle re-plans without this signature enumerating options field
+    /// by field — a new re-planning option cannot be forgotten here (see
+    /// `renderer::options`).
+    options_epoch: u64,
 }
 
 /// Host-side state for the object-generator stage: the registry, the active
@@ -1405,7 +1408,10 @@ impl ObjectGenStage {
 
     /// (Re)build + plan if the selection or environment changed; returns the
     /// number of synthesized objects (`0` = inactive / no-op).
-    pub fn sync(&mut self, desired_id: &str, ctx: &PrepareCtx) -> usize {
+    ///
+    /// `options_epoch` is `RendererControl::options_epoch()`: any change to a
+    /// `REPLAN`-flagged registry option re-plans through it.
+    pub fn sync(&mut self, desired_id: &str, ctx: &PrepareCtx, options_epoch: u64) -> usize {
         let did = desired_id.trim();
         let out_n = ctx.output_layout.speakers.len();
         let out_height = layout_has_height(ctx.output_layout);
@@ -1413,7 +1419,7 @@ impl ObjectGenStage {
             && self.sig.out_n == out_n
             && self.sig.out_height == out_height
             && self.sig.rate == ctx.sample_rate
-            && self.sig.placement == ctx.surround_placement
+            && self.sig.options_epoch == options_epoch
             && self.sig.labels.as_slice() == ctx.input_labels;
         if !unchanged {
             self.sig.id.clear();
@@ -1421,7 +1427,7 @@ impl ObjectGenStage {
             self.sig.out_n = out_n;
             self.sig.out_height = out_height;
             self.sig.rate = ctx.sample_rate;
-            self.sig.placement = ctx.surround_placement;
+            self.sig.options_epoch = options_epoch;
             self.sig.labels.clear();
             self.sig.labels.extend_from_slice(ctx.input_labels);
 
@@ -1587,7 +1593,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_replans_on_surround_placement_change() {
+    fn stage_replans_on_options_epoch_bump() {
         use renderer::live_params::SurroundPlacement;
         let mut stage = ObjectGenStage::new();
         let out = layout_7_1_4();
@@ -1597,24 +1603,32 @@ mod tests {
             sample_rate: 48_000,
             surround_placement: SurroundPlacement::Side,
         };
-        assert_eq!(stage.sync("copy_up", &ctx_side), 5);
-        let ls_y_side = stage
-            .specs()
-            .iter()
-            .find(|s| s.name.contains("Ls"))
-            .expect("Ls object planned")
-            .position[1];
+        assert_eq!(stage.sync("copy_up", &ctx_side, 0), 5);
+        let ls_y = |stage: &ObjectGenStage| {
+            stage
+                .specs()
+                .iter()
+                .find(|s| s.name.contains("Ls"))
+                .expect("Ls object planned")
+                .position[1]
+        };
+        let ls_y_side = ls_y(&stage);
         let ctx_back = PrepareCtx {
             surround_placement: SurroundPlacement::Back,
             ..ctx_side
         };
-        assert_eq!(stage.sync("copy_up", &ctx_back), 5);
-        let ls_y_back = stage
-            .specs()
-            .iter()
-            .find(|s| s.name.contains("Ls"))
-            .expect("Ls object planned")
-            .position[1];
+        // The ctx value alone must NOT re-plan: the options epoch is the
+        // invalidator (a redundant state echo must not re-prime the stages).
+        assert_eq!(stage.sync("copy_up", &ctx_back, 0), 5);
+        assert_eq!(
+            ls_y(&stage),
+            ls_y_side,
+            "no epoch bump: the previous plan must be kept"
+        );
+        // The real flow: a live placement change is a REPLAN-flagged registry
+        // option, so it arrives together with an epoch bump → re-plan.
+        assert_eq!(stage.sync("copy_up", &ctx_back, 1), 5);
+        let ls_y_back = ls_y(&stage);
         assert!(
             ls_y_side > ls_y_back + 0.5,
             "Ls object must move to the back row on a live placement change \

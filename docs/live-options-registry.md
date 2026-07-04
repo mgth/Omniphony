@@ -14,9 +14,12 @@ Progress:
   bootstrap and `Engine::from_paths`; one shared store used by the full save
   and the targeted persists; the snapshot `options` block + the
   `/state/options_schema` publication; the Tauri/JS `options` passthrough; and
-  the options-schema ↔ Studio i18n contract check in CI. The
-  `options_epoch` counter exists on `RendererControl`; the `PlanSig`s migrate
-  onto it in a follow-up (they are owned by files an open engine PR touches).
+  the options-schema ↔ Studio i18n contract check in CI. The plan
+  signatures compare `RendererControl::options_epoch` — bumped by
+  `options::apply_to_control` only when a `REPLAN`-flagged option **actually
+  changes value** (a redundant re-send must not re-prime the stages) — instead
+  of enumerating options field by field, so a new re-planning option cannot be
+  forgotten in a signature.
 - **Next (phase 2)**: the Studio `data-option` binder reading `app.options` +
   the published schema, replacing the typed `LiveOptionsState` mirror and the
   hand-written listeners for simple controls.

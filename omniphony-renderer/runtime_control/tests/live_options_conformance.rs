@@ -363,6 +363,54 @@ mod registry {
         }
     }
 
+    /// `apply_to_control` bumps the replan epoch exactly when a REPLAN-flagged
+    /// option **changes value**: a redundant re-send (a client echoing state
+    /// back) must not force a re-plan, and non-REPLAN options never bump.
+    #[test]
+    fn apply_bumps_epoch_only_on_real_replan_change() {
+        let control = fixture_control();
+        let placement = options::find("surround_placement").expect("registered");
+        let mode = options::find("channel_render_mode").expect("registered");
+
+        let epoch = control.options_epoch();
+        assert_eq!(
+            options::apply_to_control(&control, placement, &RawOptionValue::Str("back")).as_deref(),
+            Some("back")
+        );
+        assert_eq!(control.options_epoch(), epoch + 1, "real change must bump");
+
+        assert!(
+            options::apply_to_control(&control, placement, &RawOptionValue::Str("back")).is_some()
+        );
+        assert_eq!(
+            control.options_epoch(),
+            epoch + 1,
+            "redundant re-send must not bump (it would re-prime the stages)"
+        );
+
+        assert!(
+            options::apply_to_control(&control, placement, &RawOptionValue::Str("bogus")).is_none()
+        );
+        assert_eq!(
+            control.options_epoch(),
+            epoch + 1,
+            "rejected value: no bump"
+        );
+
+        assert!(options::apply_to_control(&control, mode, &RawOptionValue::Str("host")).is_some());
+        assert_eq!(
+            control.options_epoch(),
+            epoch + 1,
+            "non-REPLAN option must not bump"
+        );
+        assert!(
+            control
+                .config_dirty
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "apply must mark the config dirty"
+        );
+    }
+
     /// Every declared option accepts its sample through the setter and reports
     /// a canonical value; the setter rejects a shape no option accepts.
     #[test]
