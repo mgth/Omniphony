@@ -300,6 +300,29 @@ pub struct LiveInputState {
     pub lfe_mode: Option<String>,
 }
 
+/// Live 2D-sources / routing options mirrored verbatim from the renderer's
+/// `/omniphony/state/renderer` domain (camelCase keys, exactly as emitted by
+/// `runtime_control::snapshot::build_renderer_state_json`). Grouped in one
+/// struct flattened into both the domain parser and [`AppState`], so adding an
+/// option here is the single Rust-side change needed for it to reach the UI.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveOptionsState {
+    pub channel_render_mode: Option<String>,
+    pub surround_placement: Option<String>,
+    pub object_generator_id: Option<String>,
+    pub object_generator_params: Option<serde_json::Value>,
+    pub object_generator_layout_has_height: Option<bool>,
+    pub phantom_enabled: Option<bool>,
+    pub phantom_params: Option<serde_json::Value>,
+    pub output_channel_mapping: Option<String>,
+    pub output_channel_mapping_unroutable: Option<Vec<String>>,
+    /// `None` serializes as an explicit `"virtualBed": null` (no skip): the UI
+    /// distinguishes "renderer reports no saved bed" (null → it materialises
+    /// the canonical bed once) from a configured bed object.
+    pub virtual_bed: Option<serde_json::Value>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AppState {
     pub sources: HashMap<String, SourcePosition>,
@@ -428,6 +451,8 @@ pub struct AppState {
     pub resample_ratio: Option<f64>,
     #[serde(flatten)]
     pub audio: RuntimeAudioState,
+    #[serde(flatten)]
+    pub live_options: LiveOptionsState,
     #[serde(rename = "inputMode")]
     pub input_mode: Option<String>,
     #[serde(rename = "inputActiveMode")]
@@ -717,6 +742,7 @@ impl Default for AppState {
                 ramp_mode: Some("sample".to_string()),
                 ..RuntimeAudioState::default()
             },
+            live_options: LiveOptionsState::default(),
             input_mode: Some("pipe_bridge".to_string()),
             input_active_mode: Some("pipe_bridge".to_string()),
             input_apply_pending: Some(0),

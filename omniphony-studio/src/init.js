@@ -46,7 +46,8 @@ import {
   updateVbapPositionInterpolation,
   renderVbapStatus
 } from './controls/vbap.js';
-import { updateAudioFormatDisplay } from './controls/audio.js';
+import { updateAudioFormatDisplay, updateOutputChannelMappingUI } from './controls/audio.js';
+import { materializeDefaultVirtualBed } from './controls/virtual-bed.js';
 import { updateInputControlUI } from './controls/input.js';
 import { updateAdaptiveResamplingUI } from './controls/adaptive.js';
 import { syncMeterRateFromRenderer } from './controls/osc.js';
@@ -451,6 +452,9 @@ export function applyInitState(payload) {
   if (typeof payload.latencyControlMs === 'number') {
     app.latencyControlMs = payload.latencyControlMs;
   }
+  if (typeof payload.latencySmoothedMs === 'number') {
+    app.latencySmoothedMs = payload.latencySmoothedMs;
+  }
   if (typeof payload.latencyDownstreamMs === 'number') {
     app.latencyDownstreamMs = payload.latencyDownstreamMs;
   }
@@ -488,6 +492,68 @@ export function applyInitState(payload) {
     const next = payload.rampMode.trim().toLowerCase();
     if (next === 'off' || next === 'frame' || next === 'sample' || next === 'interp') {
       app.rampMode = next;
+    }
+  }
+  // Live 2D-sources / routing options: mirror the renderer's authoritative
+  // values so the panel reflects the ENGINE state at (re)connect, not the JS
+  // defaults. Without this the Side/Back buttons, spatialize toggle, object
+  // generator and phantom controls silently show stale defaults while the
+  // engine renders something else.
+  if (typeof payload.channelRenderMode === 'string') {
+    const next = payload.channelRenderMode.trim().toLowerCase();
+    // `direct`/`virtual` are legacy values that now collapse to `spatial`.
+    if (next === 'host') {
+      app.channelRenderMode = 'host';
+    } else if (next === 'spatial' || next === 'direct' || next === 'virtual') {
+      app.channelRenderMode = 'spatial';
+    }
+  }
+  if (typeof payload.surroundPlacement === 'string') {
+    const next = payload.surroundPlacement.trim().toLowerCase();
+    if (next === 'side' || next === 'back') {
+      app.surroundPlacement = next;
+    }
+  }
+  if (typeof payload.objectGeneratorId === 'string') {
+    // Empty string from the renderer means "off"; normalise to 'none'.
+    const next = payload.objectGeneratorId.trim().toLowerCase();
+    app.objectGeneratorId = next === '' ? 'none' : next;
+  }
+  if (payload.objectGeneratorParams && typeof payload.objectGeneratorParams === 'object') {
+    app.objectGeneratorParams = payload.objectGeneratorParams;
+  }
+  if (typeof payload.objectGeneratorLayoutHasHeight === 'boolean') {
+    app.objectGeneratorLayoutHasHeight = payload.objectGeneratorLayoutHasHeight;
+  }
+  if (typeof payload.phantomEnabled === 'boolean') {
+    app.phantomEnabled = payload.phantomEnabled;
+  }
+  if (payload.phantomParams && typeof payload.phantomParams === 'object') {
+    app.phantomParams = payload.phantomParams;
+  }
+  if (typeof payload.outputChannelMapping === 'string') {
+    const next = payload.outputChannelMapping.trim().toLowerCase();
+    if (next === 'by_index' || next === 'by_name') {
+      app.outputChannelMapping = next;
+    }
+  }
+  if (Array.isArray(payload.outputChannelMappingUnroutable)) {
+    app.outputChannelMappingUnroutable = payload.outputChannelMappingUnroutable.filter(
+      (n) => typeof n === 'string'
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'virtualBed')) {
+    // null = renderer is on the built-in canonical poses; an object is the
+    // configured/live bed. The editor seeds defaults when this is null.
+    app.virtualBed =
+      payload.virtualBed && typeof payload.virtualBed === 'object' ? payload.virtualBed : null;
+    // First authoritative snapshot reporting no saved bed (and not in host mode):
+    // materialise the canonical cartesian bed so the editor's values persist to
+    // config.yaml (like `current_layout`) and are used in priority, instead of
+    // relying on a built-in default. One-shot; once a bed exists this is skipped.
+    if (!app.virtualBed && !app.virtualBedMaterialized && app.channelRenderMode !== 'host') {
+      app.virtualBedMaterialized = true;
+      materializeDefaultVirtualBed();
     }
   }
   if (typeof payload.audioOutputDevice === 'string') {
@@ -652,6 +718,7 @@ export function applyInitState(payload) {
   updateRenderTimeUI();
   updateResampleRatioDisplay();
   updateAudioFormatDisplay();
+  updateOutputChannelMappingUI();
   updateInputControlUI();
   renderDrcUI();
   // Auto-surface the Audio Input section on a bridge-class error, but only on
