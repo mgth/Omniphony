@@ -117,20 +117,20 @@
         <div id="twoDSourcesBody" style="display:none;gap:0.35rem;padding:0.1rem 0.1rem 0.2rem">
           <label class="switch-row" style="font-size:13px;cursor:pointer">
             <span data-i18n="twoDSources.spatializeLabel" data-help-i18n="help.twoDSources" data-help-anchor=".switch-row">Spatialize 2D sources</span>
-            <input id="channelSpatializeToggle" type="checkbox" />
+            <input id="channelSpatializeToggle" type="checkbox" checked data-option="channel_render_mode" data-option-on="spatial" data-option-off="host" />
           </label>
           <div id="surroundPlacementRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
             <span style="font-size:12px" data-i18n="twoDSources.surroundLabel">Rear channels (4.x/5.x)</span>
             <span style="display:flex;gap:0.25rem">
-              <button id="surroundPlacementSide" type="button" class="toggle-btn" data-i18n="twoDSources.surroundSide">Side</button>
-              <button id="surroundPlacementBack" type="button" class="toggle-btn" data-i18n="twoDSources.surroundBack">Back</button>
+              <button id="surroundPlacementSide" type="button" class="toggle-btn active" data-option="surround_placement" data-option-value="side" data-i18n="twoDSources.surroundSide">Side</button>
+              <button id="surroundPlacementBack" type="button" class="toggle-btn" data-option="surround_placement" data-option-value="back" data-i18n="twoDSources.surroundBack">Back</button>
             </span>
           </div>
           <div id="objectGeneratorRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
             <span style="font-size:12px" data-i18n="twoDSources.objectGeneratorLabel" data-help-i18n="help.objectGenerator" data-help-anchor="#objectGeneratorRow">Height objects from 2D</span>
             <span style="display:flex;align-items:center;gap:0.4rem;min-width:0">
               <span id="objectGeneratorNoHeightNote" style="display:none;font-size:10px;opacity:0.7;white-space:nowrap" data-i18n="twoDSources.objectGenNoHeight">No top speakers</span>
-              <select id="objectGeneratorSelect" style="flex:0 1 auto;min-width:0">
+              <select id="objectGeneratorSelect" style="flex:0 1 auto;min-width:0" data-option="object_generator_id" data-option-empty="none">
                 <option value="none" data-i18n="twoDSources.objectGenNone">Off</option>
                 <option value="copy_up" data-i18n="twoDSources.objectGenCopyUp">Direct copy</option>
                 <option value="pad" data-i18n="twoDSources.objectGenPad">Ambience (PAD)</option>
@@ -146,7 +146,7 @@
                height lift. Off by default. -->
           <label id="phantomExtractRow" class="switch-row" style="font-size:13px;cursor:pointer">
             <span data-i18n="twoDSources.phantomLabel" data-help-i18n="help.phantomExtract" data-help-anchor=".switch-row">Phantom extraction</span>
-            <input id="phantomExtractToggle" type="checkbox" />
+            <input id="phantomExtractToggle" type="checkbox" data-option="phantom_enabled" />
           </label>
           <!-- Phantom-extraction parameter sliders, built dynamically from the
                declared schema (/omniphony/state/phantom). -->

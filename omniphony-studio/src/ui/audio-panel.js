@@ -34,8 +34,8 @@ export function audioPanelMarkup() {
           <div id="outputChannelMappingRow" class="control-row" style="margin-top:0.3rem;grid-template-columns:auto minmax(0, 1fr)">
             <label style="font-size:12px;white-space:nowrap" data-i18n="audio.channelMapping" data-help-i18n="help.audio.channelMapping">Channel mapping</label>
             <span style="display:flex;gap:0.25rem;justify-self:end">
-              <button id="outputChannelMappingByIndex" type="button" class="toggle-btn" data-i18n="audio.channelMapping.byIndex">By index</button>
-              <button id="outputChannelMappingByName" type="button" class="toggle-btn" data-i18n="audio.channelMapping.byName">By name</button>
+              <button id="outputChannelMappingByIndex" type="button" class="toggle-btn active" data-option="output_channel_mapping" data-option-value="by_index" data-i18n="audio.channelMapping.byIndex">By index</button>
+              <button id="outputChannelMappingByName" type="button" class="toggle-btn" data-option="output_channel_mapping" data-option-value="by_name" data-i18n="audio.channelMapping.byName">By name</button>
             </span>
           </div>
           <div id="outputChannelMappingWarning" style="display:none;margin-top:0.2rem;font-size:11px;color:#ffb24d"></div>

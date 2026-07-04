@@ -1657,7 +1657,13 @@ export function resolveEditTarget() {
     if (!mesh) return null;
     return { kind: 'speaker', index: speakerIndex, mesh, label: speakerLabels[speakerIndex] };
   }
-  if (app.channelRenderMode !== 'host' && app.selectedSourceId !== null && app.selectedSourceId !== undefined) {
+  // Direct app.options read (not getLiveOption): per-frame path, and
+  // undefined !== 'host' already means spatial pre-snapshot.
+  if (
+    app.options.channel_render_mode !== 'host' &&
+    app.selectedSourceId !== null &&
+    app.selectedSourceId !== undefined
+  ) {
     const id = String(app.selectedSourceId);
     const mesh = sourceMeshes.get(id);
     if (!mesh) return null;

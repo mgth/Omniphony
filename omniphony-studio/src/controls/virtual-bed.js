@@ -15,7 +15,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { app, sourceMeshes, sourceNames } from '../state.js';
+import { app, sourceMeshes, sourceNames, getLiveOption } from '../state.js';
 import { t } from '../i18n.js';
 import { updateSource, removeSource } from '../sources.js';
 import {
@@ -410,7 +410,7 @@ function removeSyntheticObjects() {
  * per-flush churn unless `force` is set.
  */
 export function syncVirtualBedObjects(force = false) {
-  const spatial = app.channelRenderMode !== 'host';
+  const spatial = getLiveOption('channel_render_mode') !== 'host';
   // The live OSC stream owns the scene only while it is actively streaming
   // spatial frames (recent spatial:frame, which also covers the post-seek gap).
   // Host mode is never streaming. While streaming, the live objects are the
@@ -478,7 +478,7 @@ export function renderChannelEditor(force = false) {
   // the (not-yet-committed) bed and clobber the preview.
   if (!force && app.isDraggingVirtualBed) return;
 
-  const key = app.channelRenderMode === 'host' ? null : selectedChannelName();
+  const key = getLiveOption('channel_render_mode') === 'host' ? null : selectedChannelName();
   if (!key) {
     section.style.display = 'none';
     lastEditorKey = null;

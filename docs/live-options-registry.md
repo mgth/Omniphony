@@ -20,19 +20,33 @@ Progress:
   changes value** (a redundant re-send must not re-prime the stages) — instead
   of enumerating options field by field, so a new re-planning option cannot be
   forgotten in a signature.
-- **Next (phase 2)**: the Studio `data-option` binder reading `app.options` +
-  the published schema, replacing the typed `LiveOptionsState` mirror and the
-  hand-written listeners for simple controls.
+- **Phase 2 landed**: the Studio `data-option` binder
+  (`omniphony-studio/src/options-binder.js`). A control declares its option in
+  markup (`data-option="surround_placement"` + `data-option-value` /
+  `data-option-on`/`-off` / `data-option-empty` by shape); the binder wires
+  both directions through the single generic `control_option` Tauri command.
+  The five per-option apply functions, listener blocks and Tauri commands are
+  deleted; the scalar fields left the typed `LiveOptionsState` mirror (the
+  document-valued companions stay); the hard-coded `state.js` defaults are
+  gone — values come from the snapshot's `options` block, pre-snapshot
+  defaults from the published `/state/options_schema`, and pre-connect the
+  controls keep their baked HTML default.
+- **Next (phase 3)**: fold remaining `LiveParams` scalars opportunistically;
+  CLI flags for the newly-seeded options
+  (`docs/option-surface-parity.fr.md`).
 
-## Adding a live option today (post-phase-1)
+## Adding a live option today (post-phase-2)
 
 1. Add the typed field to `LiveParams` (+ its `RenderConfig`/`config_fields`
    descriptor).
 2. Add ONE `OptionSpec` row in `renderer/src/options.rs` (+ Studio i18n keys).
-3. Done: OSC (generic + schema), persistence, CLI/FFI seeding, the snapshot
-   block and the CI contract checks all derive from the row. The conformance
-   net fails if a layer is missing; UI wiring is still hand-written until the
-   phase-2 binder.
+3. Add the control markup with its `data-option` attribute (a switch, a
+   toggle-btn pair or a select — no JS).
+4. Done: OSC (generic + schema), persistence, CLI/FFI seeding, replan
+   invalidation, the snapshot block, the UI wiring and the CI contract checks
+   all derive from the row + the markup. The conformance net fails if a layer
+   is missing. Only an option with bespoke UI side effects needs code (one
+   entry in the binder's `AFTER_SET`).
 
 ## The problem
 

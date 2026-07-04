@@ -8,9 +8,11 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   app,
   dirty,
+  getLiveOption,
   AUDIO_SAMPLE_RATE_PRESETS,
   hasProducerDomain
 } from '../state.js';
+import { reflectBoundOptions } from '../options-binder.js';
 import { t, tf } from '../i18n.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inAudioPanel, inRendererPanel } from '../ui/panel-roots.js';
@@ -19,7 +21,6 @@ import { syncVirtualBedObjects, renderChannelEditor } from './virtual-bed.js';
 function getAudioFormatInfoEl() { return inAudioPanel('audioFormatInfo'); }
 function getAudioOutputDeviceSelectEl() { return inAudioPanel('audioOutputDeviceSelect'); }
 function getRampModeSelectEl() { return inRendererPanel('rampModeSelect'); }
-function getChannelSpatializeToggleEl() { return document.getElementById('channelSpatializeToggle'); }
 function getAudioSampleRateInputEl() { return inAudioPanel('audioSampleRateInput'); }
 function getAudioSampleRateMenuEl() { return inAudioPanel('audioSampleRateMenu'); }
 function getAudioOutputSummaryEl() { return inAudioPanel('audioOutputSummary'); }
@@ -137,17 +138,19 @@ export function renderAudioFormatDisplay() {
   if (rampModeSelectEl) {
     rampModeSelectEl.value = ['off', 'frame', 'sample', 'interp'].includes(app.rampMode) ? app.rampMode : 'frame';
   }
-  const channelSpatializeToggleEl = getChannelSpatializeToggleEl();
-  if (channelSpatializeToggleEl) {
-    // Off = host (let the player decode), on = spatial (render through the
-    // virtual bed). Legacy `direct`/`virtual` snapshots count as spatial.
-    const spatial = app.channelRenderMode !== 'host';
-    channelSpatializeToggleEl.checked = spatial;
+  {
+    // The registry binder reflects the bound controls (spatialize switch,
+    // Side/Back + mapping buttons, generator select); this render owns what a
+    // value change implies for the panel: row visibility, summaries, and the
+    // schema-driven param sliders. Off = host (let the player decode), on =
+    // spatial (render through the virtual bed).
+    reflectBoundOptions();
+    const spatial = getLiveOption('channel_render_mode') !== 'host';
     const virtualBedActions = document.getElementById('virtualBedActions');
     if (virtualBedActions) virtualBedActions.style.display = spatial ? 'flex' : 'none';
     const surroundRow = document.getElementById('surroundPlacementRow');
     if (surroundRow) surroundRow.style.display = spatial ? 'flex' : 'none';
-    updateSurroundPlacementUI();
+    updateTwoDSourcesSummary();
     const objectGeneratorRow = document.getElementById('objectGeneratorRow');
     if (objectGeneratorRow) objectGeneratorRow.style.display = spatial ? 'flex' : 'none';
     updateObjectGeneratorUI();
@@ -165,7 +168,7 @@ export function renderAudioFormatDisplay() {
     if (!hasAudioDomain) {
       // Host/mpv mode: the renderer doesn't own the output device, so this panel
       // shows only the channel mapping — summarise that, not a (stale) device.
-      const mKey = app.outputChannelMapping === 'by_name'
+      const mKey = getLiveOption('output_channel_mapping') === 'by_name'
         ? 'audio.channelMapping.byName'
         : 'audio.channelMapping.byIndex';
       audioOutputSummaryEl.textContent = `${t('audio.channelMapping')}: ${t(mKey)}`;
@@ -314,57 +317,20 @@ export function applyRampModeNow() {
   invoke('control_ramp_mode', { value: requested });
 }
 
-export function applyChannelRenderModeNow() {
-  const el = getChannelSpatializeToggleEl();
-  if (!el) return;
-  const requested = el.checked ? 'spatial' : 'host';
-  app.channelRenderMode = requested;
-  const virtualBedActions = document.getElementById('virtualBedActions');
-  if (virtualBedActions) virtualBedActions.style.display = el.checked ? 'flex' : 'none';
-  const surroundRow = document.getElementById('surroundPlacementRow');
-  if (surroundRow) surroundRow.style.display = el.checked ? 'flex' : 'none';
-  syncVirtualBedObjects(true);
-  renderChannelEditor(true);
-  updateTwoDSourcesSummary();
-  invoke('control_channel_render_mode', { value: requested });
-}
-
-// Reflect the active Side/Back button from `app.surroundPlacement` (called both
-// on user action and on a state broadcast from the renderer).
-export function updateSurroundPlacementUI() {
-  const placement = app.surroundPlacement === 'back' ? 'back' : 'side';
-  const sideBtn = document.getElementById('surroundPlacementSide');
-  const backBtn = document.getElementById('surroundPlacementBack');
-  if (sideBtn) sideBtn.classList.toggle('active', placement === 'side');
-  if (backBtn) backBtn.classList.toggle('active', placement === 'back');
-  updateTwoDSourcesSummary();
-}
-
 // Header summary shown while the 2D-sources panel is collapsed: whether flat 2D
 // beds are spatialised (with the rear-channel placement) or passed through to the
-// player. Reads `channelRenderMode` and `surroundPlacement` from app state.
+// player. Reads the declared options through `getLiveOption`.
 export function updateTwoDSourcesSummary() {
   const summaryEl = document.getElementById('twoDSourcesSummary');
   if (!summaryEl) return;
-  if (app.channelRenderMode !== 'host') {
-    const placement = app.surroundPlacement === 'back'
+  if (getLiveOption('channel_render_mode') !== 'host') {
+    const placement = getLiveOption('surround_placement') === 'back'
       ? t('twoDSources.surroundBack')
       : t('twoDSources.surroundSide');
     summaryEl.textContent = `${t('twoDSources.summary.spatialized')} · ${placement}`;
   } else {
     summaryEl.textContent = t('twoDSources.summary.passthrough');
   }
-}
-
-// Commit a Side/Back choice: update state + the active button and push it to the
-// engine, which renders it live and persists it to config. The visible effect is
-// at playback of a 4.x/5.x source (the engine streams Ls/Rs at the chosen
-// corner); the at-rest editor keeps showing the full canonical 7.1 set.
-export function applySurroundPlacementNow(value) {
-  const requested = value === 'back' ? 'back' : 'side';
-  app.surroundPlacement = requested;
-  updateSurroundPlacementUI();
-  invoke('control_surround_placement', { value: requested });
 }
 
 // The generator id whose param sliders are currently built into the DOM.
@@ -393,7 +359,7 @@ function schemaLabel(i18nKey, fallback) {
 }
 
 function activeGeneratorSchema() {
-  const id = app.objectGeneratorId || 'none';
+  const id = getLiveOption('object_generator_id') || 'none';
   return (app.objectGenerators || []).find((g) => g && g.id === id) || null;
 }
 
@@ -403,7 +369,7 @@ export function rebuildObjectGeneratorControls() {
   const sel = document.getElementById('objectGeneratorSelect');
   const list = app.objectGenerators || [];
   if (sel && list.length) {
-    const current = app.objectGeneratorId || 'none';
+    const current = getLiveOption('object_generator_id') || 'none';
     sel.innerHTML = '';
     const off = document.createElement('option');
     off.value = 'none';
@@ -463,7 +429,8 @@ function buildParamSliders(schema) {
 // values without disturbing an in-progress drag.
 export function updateObjectGeneratorUI() {
   const sel = document.getElementById('objectGeneratorSelect');
-  if (sel) sel.value = app.objectGeneratorId || 'none';
+  // (Re)set after a schema-driven rebuild; the binder reflects the same value.
+  if (sel && document.activeElement !== sel) sel.value = getLiveOption('object_generator_id') || 'none';
   // Grey out the whole control when the output layout has no top speaker — the
   // 2D-upmix generators are a strict no-op there.
   const hasHeight = app.objectGeneratorLayoutHasHeight !== false;
@@ -473,7 +440,9 @@ export function updateObjectGeneratorUI() {
   const schema = activeGeneratorSchema();
   const row = document.getElementById('objectGenParamsRow');
   const show =
-    !!(schema && (schema.params || []).length) && app.channelRenderMode !== 'host' && hasHeight;
+    !!(schema && (schema.params || []).length) &&
+    getLiveOption('channel_render_mode') !== 'host' &&
+    hasHeight;
   if (row) row.style.display = show ? 'flex' : 'none';
   const wantId = schema ? schema.id : null;
   if (wantId !== builtParamGenId) {
@@ -490,19 +459,6 @@ export function updateObjectGeneratorUI() {
       if (valEl) valEl.textContent = fmtParamValue(spec, v);
     }
   }
-}
-
-// Commit a generator selection: update state + push it to the engine, which
-// synthesizes the height objects live (they appear in the 3D view + object list)
-// for channel content on a height-capable layout. 'none' disables it.
-export function applyObjectGeneratorNow(value) {
-  const requested = String(value || 'none').trim().toLowerCase();
-  app.objectGeneratorId = requested;
-  // Switching generators drops the previous one's overrides (the renderer does
-  // the same) so the new generator shows its declared defaults.
-  app.objectGeneratorParams = {};
-  updateObjectGeneratorUI();
-  invoke('control_object_generator', { value: requested });
 }
 
 // Commit a generator parameter change live (slider drag): store the override and
@@ -594,13 +550,15 @@ export function rebuildPhantomControls() {
   updatePhantomUI();
 }
 
-// Reflect the phantom enable switch + its parameter sliders (only when enabled).
+// Show/hide + refresh the phantom parameter sliders (the enable switch itself
+// is binder-reflected).
 export function updatePhantomUI() {
-  const toggle = document.getElementById('phantomExtractToggle');
-  if (toggle) toggle.checked = !!app.phantomEnabled;
   const params = app.phantomSchema || [];
   const row = document.getElementById('phantomParamsRow');
-  const show = !!app.phantomEnabled && params.length > 0 && app.channelRenderMode !== 'host';
+  const show =
+    !!getLiveOption('phantom_enabled') &&
+    params.length > 0 &&
+    getLiveOption('channel_render_mode') !== 'host';
   if (row) row.style.display = show ? 'flex' : 'none';
   if (!builtPhantomParams && params.length > 0) {
     buildPhantomParamSliders();
@@ -626,13 +584,6 @@ export function updatePhantomUI() {
   }
 }
 
-// Toggle the phantom-extraction stage live.
-export function applyPhantomEnableNow(enabled) {
-  app.phantomEnabled = !!enabled;
-  updatePhantomUI();
-  invoke('control_phantom_extract', { enabled: !!enabled });
-}
-
 // Commit a phantom parameter change live (slider drag).
 export function applyPhantomParamNow(key, value) {
   const v = Number(value);
@@ -644,15 +595,11 @@ export function applyPhantomParamNow(key, value) {
   invoke('control_phantom_extract_param', { key, value: v });
 }
 
-// Reflect the active by-index/by-name buttons from `app.outputChannelMapping`,
-// and show a warning when by-name can't route some speakers (non-standard names
-// for the active backend, reported by the renderer).
+// Show a warning when by-name mapping can't route some speakers (non-standard
+// names for the active backend, reported by the renderer). The by-index/by-name
+// buttons themselves are binder-reflected.
 export function updateOutputChannelMappingUI() {
-  const mapping = app.outputChannelMapping === 'by_name' ? 'by_name' : 'by_index';
-  const idxBtn = document.getElementById('outputChannelMappingByIndex');
-  const nameBtn = document.getElementById('outputChannelMappingByName');
-  if (idxBtn) idxBtn.classList.toggle('active', mapping === 'by_index');
-  if (nameBtn) nameBtn.classList.toggle('active', mapping === 'by_name');
+  const mapping = getLiveOption('output_channel_mapping') === 'by_name' ? 'by_name' : 'by_index';
   const warnEl = document.getElementById('outputChannelMappingWarning');
   if (warnEl) {
     const names = Array.isArray(app.outputChannelMappingUnroutable)
@@ -665,14 +612,4 @@ export function updateOutputChannelMappingUI() {
       warnEl.style.display = 'none';
     }
   }
-}
-
-// Commit a by-index/by-name choice: update state + buttons and push it to the
-// engine (applied live and persisted to config). By-index = positionless
-// passthrough (port N = layout speaker N); by-name = positional routing.
-export function applyOutputChannelMappingNow(value) {
-  const requested = value === 'by_name' ? 'by_name' : 'by_index';
-  app.outputChannelMapping = requested;
-  updateOutputChannelMappingUI();
-  invoke('control_output_channel_mapping', { value: requested });
 }

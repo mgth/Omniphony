@@ -61,6 +61,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { setSpeakerGainTable } from './scene/speaker-gaintable.js';
 import { updateAudioFormatDisplay, rebuildObjectGeneratorControls, rebuildPhantomControls } from './controls/audio.js';
+import { reflectBoundOptions } from './options-binder.js';
 import { updateInputControlUI } from './controls/input.js';
 import { updateDrcMeterUI } from './controls/drc.js';
 import { updateAdaptiveResamplingUI } from './controls/adaptive.js';
@@ -702,6 +703,17 @@ export function setupTauriBridge() {
       app.phantomSchema = [];
     }
     rebuildPhantomControls();
+  });
+
+  // Declared live-options schema (registry rows). Provides the binder's
+  // pre-snapshot defaults, so reflect once it lands.
+  listen('options:schema', ({ payload }) => {
+    try {
+      app.optionsSchema = JSON.parse(payload?.value ?? '[]') || [];
+    } catch (_) {
+      app.optionsSchema = [];
+    }
+    reflectBoundOptions();
   });
 
   listen('latency:target', ({ payload }) => {

@@ -60,52 +60,32 @@ pub fn control_ramp_mode(state: State<SharedState>, value: String) {
     );
 }
 
+/// Set any declared live option (the renderer's `options` registry) through
+/// the generic `/omniphony/control/option [key, value]` address. The value is
+/// a JSON scalar from the `data-option` binder: a string for enum/id options,
+/// a bool for toggles (forwarded as int 0/1), a number for future scalar
+/// kinds. Validation lives renderer-side against the registry spec — an
+/// unknown key or a bad value is dropped there, per the OSC contract.
 #[tauri::command]
-pub fn control_channel_render_mode(state: State<SharedState>, value: String) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    // `direct`/`virtual` are legacy aliases of `spatial`.
-    if !matches!(
-        trimmed.as_str(),
-        "host" | "spatial" | "direct" | "virtual"
-    ) {
+pub fn control_option(state: State<SharedState>, key: String, value: serde_json::Value) {
+    let k = key.trim().to_ascii_lowercase();
+    if k.is_empty() {
         return;
     }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: "/omniphony/control/channel_render_mode".to_string(),
-            value: trimmed,
+    let arg = match value {
+        serde_json::Value::String(s) => rosc::OscType::String(s.trim().to_ascii_lowercase()),
+        serde_json::Value::Bool(b) => rosc::OscType::Int(if b { 1 } else { 0 }),
+        serde_json::Value::Number(n) => match n.as_f64() {
+            Some(f) if f.is_finite() => rosc::OscType::Float(f as f32),
+            _ => return,
         },
-    );
-}
-
-/// Set the surround placement for 4.x/5.x channel content: `side` or `back`.
-#[tauri::command]
-pub fn control_surround_placement(state: State<SharedState>, value: String) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "side" | "back") {
-        return;
-    }
+        _ => return,
+    };
     send_control(
         &state.osc_tx,
-        OscControlMsg::SendString {
-            address: "/omniphony/control/surround_placement".to_string(),
-            value: trimmed,
-        },
-    );
-}
-
-/// Select the bed→height object generator (2D upmix): `none`, `copy_up`, `pad`,
-/// or any contributor id. The renderer resolves the id and falls back to off for
-/// an unknown one, so the id set is not restricted here (out-of-tree generators).
-#[tauri::command]
-pub fn control_object_generator(state: State<SharedState>, value: String) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: "/omniphony/control/object_generator".to_string(),
-            value: trimmed,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/option".to_string(),
+            args: vec![rosc::OscType::String(k), arg],
         },
     );
 }
@@ -129,19 +109,6 @@ pub fn control_object_generator_param(state: State<SharedState>, key: String, va
     );
 }
 
-/// Enable/disable the phantom-source extraction pre-stage (runs before the height
-/// lift). Sent as an int (0/1).
-#[tauri::command]
-pub fn control_phantom_extract(state: State<SharedState>, enabled: bool) {
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendInt {
-            address: "/omniphony/control/phantom_extract".to_string(),
-            value: if enabled { 1 } else { 0 },
-        },
-    );
-}
-
 /// Set a live phantom-extraction parameter (`strength` / `passes` / `lift`). Sent
 /// as `[key, value]`; the renderer clamps and applies it live.
 #[tauri::command]
@@ -155,23 +122,6 @@ pub fn control_phantom_extract_param(state: State<SharedState>, key: String, val
         OscControlMsg::SendArgs {
             address: "/omniphony/control/phantom_extract/param".to_string(),
             args: vec![rosc::OscType::String(k), rosc::OscType::Float(value)],
-        },
-    );
-}
-
-/// Set the output channel mapping: `by_index` (positionless — port N = layout
-/// speaker N) or `by_name` (positional).
-#[tauri::command]
-pub fn control_output_channel_mapping(state: State<SharedState>, value: String) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "by_index" | "by_name") {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: "/omniphony/control/output_channel_mapping".to_string(),
-            value: trimmed,
         },
     );
 }

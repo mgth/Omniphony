@@ -300,22 +300,19 @@ pub struct LiveInputState {
     pub lfe_mode: Option<String>,
 }
 
-/// Live 2D-sources / routing options mirrored verbatim from the renderer's
-/// `/omniphony/state/renderer` domain (camelCase keys, exactly as emitted by
-/// `runtime_control::snapshot::build_renderer_state_json`). Grouped in one
-/// struct flattened into both the domain parser and [`AppState`], so adding an
-/// option here is the single Rust-side change needed for it to reach the UI.
+/// The 2D-sources companions that are NOT scalar registry options, mirrored
+/// verbatim from the renderer's `/omniphony/state/renderer` domain (camelCase
+/// keys). The scalar options themselves (channel render mode, surround
+/// placement, generator id, phantom enable, output mapping) ride the generic
+/// `options` passthrough on [`AppState`] instead — no typed mirror per option
+/// (registry RFC phase 2). Grouped in one struct flattened into both the
+/// domain parser and [`AppState`].
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveOptionsState {
-    pub channel_render_mode: Option<String>,
-    pub surround_placement: Option<String>,
-    pub object_generator_id: Option<String>,
     pub object_generator_params: Option<serde_json::Value>,
     pub object_generator_layout_has_height: Option<bool>,
-    pub phantom_enabled: Option<bool>,
     pub phantom_params: Option<serde_json::Value>,
-    pub output_channel_mapping: Option<String>,
     pub output_channel_mapping_unroutable: Option<Vec<String>>,
     /// `None` serializes as an explicit `"virtualBed": null` (no skip): the UI
     /// distinguishes "renderer reports no saved bed" (null → it materialises

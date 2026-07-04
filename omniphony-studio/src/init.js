@@ -15,8 +15,10 @@ import {
   dirty,
   hasProducerDomain,
   hasControlConfig,
-  isEmbeddedProducer
+  isEmbeddedProducer,
+  getLiveOption
 } from './state.js';
+import { reflectBoundOptions } from './options-binder.js';
 
 import { updateSource, updateSourceLevel, updateSourceGains } from './sources.js';
 import {
@@ -494,30 +496,12 @@ export function applyInitState(payload) {
       app.rampMode = next;
     }
   }
-  // Live 2D-sources / routing options: mirror the renderer's authoritative
-  // values so the panel reflects the ENGINE state at (re)connect, not the JS
-  // defaults. Without this the Side/Back buttons, spatialize toggle, object
-  // generator and phantom controls silently show stale defaults while the
-  // engine renders something else.
-  if (typeof payload.channelRenderMode === 'string') {
-    const next = payload.channelRenderMode.trim().toLowerCase();
-    // `direct`/`virtual` are legacy values that now collapse to `spatial`.
-    if (next === 'host') {
-      app.channelRenderMode = 'host';
-    } else if (next === 'spatial' || next === 'direct' || next === 'virtual') {
-      app.channelRenderMode = 'spatial';
-    }
-  }
-  if (typeof payload.surroundPlacement === 'string') {
-    const next = payload.surroundPlacement.trim().toLowerCase();
-    if (next === 'side' || next === 'back') {
-      app.surroundPlacement = next;
-    }
-  }
-  if (typeof payload.objectGeneratorId === 'string') {
-    // Empty string from the renderer means "off"; normalise to 'none'.
-    const next = payload.objectGeneratorId.trim().toLowerCase();
-    app.objectGeneratorId = next === '' ? 'none' : next;
+  // Declared live options (registry): the renderer's authoritative values,
+  // ingested generically under their canonical snake_case keys — the binder
+  // and every reader go through `app.options`/`getLiveOption`, so the panel
+  // reflects the ENGINE state at (re)connect with no per-option line here.
+  if (payload.options && typeof payload.options === 'object') {
+    Object.assign(app.options, payload.options);
   }
   if (payload.objectGeneratorParams && typeof payload.objectGeneratorParams === 'object') {
     app.objectGeneratorParams = payload.objectGeneratorParams;
@@ -525,17 +509,8 @@ export function applyInitState(payload) {
   if (typeof payload.objectGeneratorLayoutHasHeight === 'boolean') {
     app.objectGeneratorLayoutHasHeight = payload.objectGeneratorLayoutHasHeight;
   }
-  if (typeof payload.phantomEnabled === 'boolean') {
-    app.phantomEnabled = payload.phantomEnabled;
-  }
   if (payload.phantomParams && typeof payload.phantomParams === 'object') {
     app.phantomParams = payload.phantomParams;
-  }
-  if (typeof payload.outputChannelMapping === 'string') {
-    const next = payload.outputChannelMapping.trim().toLowerCase();
-    if (next === 'by_index' || next === 'by_name') {
-      app.outputChannelMapping = next;
-    }
   }
   if (Array.isArray(payload.outputChannelMappingUnroutable)) {
     app.outputChannelMappingUnroutable = payload.outputChannelMappingUnroutable.filter(
@@ -551,15 +526,14 @@ export function applyInitState(payload) {
     // materialise the canonical cartesian bed so the editor's values persist to
     // config.yaml (like `current_layout`) and are used in priority, instead of
     // relying on a built-in default. One-shot; once a bed exists this is skipped.
-    if (!app.virtualBed && !app.virtualBedMaterialized && app.channelRenderMode !== 'host') {
+    if (
+      !app.virtualBed &&
+      !app.virtualBedMaterialized &&
+      getLiveOption('channel_render_mode') !== 'host'
+    ) {
       app.virtualBedMaterialized = true;
       materializeDefaultVirtualBed();
     }
-  }
-  // Declared live options passthrough (registry RFC phase 1) — ingested
-  // generically; no per-option line needed here for registry options.
-  if (payload.options && typeof payload.options === 'object') {
-    Object.assign(app.options, payload.options);
   }
   if (typeof payload.audioOutputDevice === 'string') {
     app.audioOutputDevice = payload.audioOutputDevice.trim() || null;
@@ -723,6 +697,7 @@ export function applyInitState(payload) {
   updateRenderTimeUI();
   updateResampleRatioDisplay();
   updateAudioFormatDisplay();
+  reflectBoundOptions();
   updateOutputChannelMappingUI();
   updateInputControlUI();
   renderDrcUI();
