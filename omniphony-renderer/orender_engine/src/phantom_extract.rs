@@ -1,14 +1,24 @@
 //! Phantom-source extraction pre-stage (runs *before* the bed→height lift).
 //!
-//! For each pair of bed channels — a ring of azimuth-adjacent speakers, optionally
-//! widened to non-adjacent pairs — this estimates the **correlated ("primary")**
-//! component shared by the two channels, re-emits it as a discrete object at the
-//! **real panned position** (derived from the component's relative level in each
-//! channel), and **subtracts** it from the two source channels. The bed handed to
-//! the height stage therefore carries only the decorrelated residual. It is the
-//! conceptual inverse of PAD (which keeps the correlated part grounded and lifts
-//! the residual): here the correlated part becomes a localized object and the
-//! residual stays in the bed (to be lifted by PAD/copy_up afterwards).
+//! Two selectable methods (the `method` param):
+//!
+//! **Broadband (default).** For each pair of bed channels — a ring of
+//! azimuth-adjacent speakers, optionally widened to non-adjacent pairs — this
+//! estimates the **correlated ("primary")** component shared by the two channels,
+//! re-emits it as a discrete object at the **real panned position** (derived from
+//! the component's relative level in each channel), and **subtracts** it from the
+//! two source channels. The bed handed to the height stage therefore carries only
+//! the decorrelated residual. It is the conceptual inverse of PAD (which keeps the
+//! correlated part grounded and lifts the residual): here the correlated part
+//! becomes a localized object and the residual stays in the bed (to be lifted by
+//! PAD/copy_up afterwards). Zero latency.
+//!
+//! **Per-band (spectral).** STFT/intensity-vector analysis
+//! ([`crate::phantom_spectral`]): each frequency bin gets its own direction of
+//! arrival and directness, routed to eight azimuth sector objects — simultaneous
+//! sources at different positions and frequencies are extracted independently.
+//! Adds one FFT frame (1024 samples ≈ 21 ms at 48 kHz) of latency to the whole
+//! bed. The `passes`/`center`/`sides` params apply to the broadband method only.
 //!
 //! Like the object generators it runs in the realtime audio thread: all setup is
 //! in [`PhantomExtractStage::sync`]; the per-frame DSP in
@@ -21,6 +31,7 @@ use crate::object_gen::{
     ObjectGenParamSpec, PrepareCtx, SynthObjectSpec, channel_top_position, input_has_back,
     one_pole_coeff,
 };
+use crate::phantom_spectral::SpectralExtractor;
 
 /// Time constant (ms) of the one-pole smoothers for the inter-channel statistics.
 /// A bit longer than PAD's, so the derived pan position moves smoothly (no jittery
@@ -40,7 +51,20 @@ const PHANTOM_GAIN_DB: i8 = 0;
 const PHANTOM_SIZE: [f32; 3] = [0.3, 0.3, 0.3];
 
 /// Live-tunable params this stage declares (the schema the UI builds sliders from).
-pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 5] = [
+pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 6] = [
+    // Binary method switch (rendered as a switch by Studio): off = broadband
+    // time-domain pairwise extraction, on = per-band spectral (DirAC-style)
+    // extraction. See the module docs for the trade-offs.
+    ObjectGenParamSpec {
+        key: "method",
+        label: "Per-band extraction",
+        i18n_key: "twoDSources.phantomMethod",
+        min: 0.0,
+        max: 1.0,
+        step: 1.0,
+        default: 0.0,
+        unit: "",
+    },
     ObjectGenParamSpec {
         key: "strength",
         label: "Extraction",
@@ -574,6 +598,15 @@ fn is_covered(
         .any(|&(x, y)| (x == a && y == b) || (x == b && y == a))
 }
 
+/// Extraction method selected by the `method` param.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExtractMethod {
+    /// Time-domain pairwise Wiener extraction (zero latency).
+    Broadband,
+    /// Per-band STFT/DOA extraction (one FFT frame of latency).
+    Spectral,
+}
+
 /// Signature of the inputs the current plan was built for; a change (including a
 /// `passes` change) triggers a rebuild. Compared without per-frame allocation.
 #[derive(Default)]
@@ -584,6 +617,7 @@ struct PlanSig {
     passes: usize,
     center: bool,
     sides: bool,
+    spectral: bool,
 }
 
 /// Host-side state for the phantom-extraction stage.
@@ -599,6 +633,9 @@ pub struct PhantomExtractStage {
     right: Option<ArcUnit>,
     /// Remaining ring + wide pairs (those not subsumed by an arc/back unit).
     pairs: Vec<PhantomPair>,
+    /// Per-band extractor; `Some` iff the plan was built with the spectral
+    /// method (the arc/pair units above are then all `None`/empty).
+    spectral: Option<SpectralExtractor>,
     specs: Vec<SynthObjectSpec>,
     /// Per-phantom planar audio scratch (persistent).
     planar: Vec<Vec<f32>>,
@@ -612,6 +649,7 @@ pub struct PhantomExtractStage {
     center_relocalize: bool,
     /// Relocalize each 7.1 surround (single object) instead of the side arcs.
     sides_relocalize: bool,
+    method: ExtractMethod,
     alpha: f32,
 }
 
@@ -623,6 +661,7 @@ impl PhantomExtractStage {
             left: None,
             right: None,
             pairs: Vec::new(),
+            spectral: None,
             specs: Vec::new(),
             planar: Vec::new(),
             pcm_ext: Vec::new(),
@@ -632,6 +671,7 @@ impl PhantomExtractStage {
             lift: 0.0,
             center_relocalize: false,
             sides_relocalize: false,
+            method: ExtractMethod::Broadband,
             alpha: 0.0,
         }
     }
@@ -644,11 +684,16 @@ impl PhantomExtractStage {
     /// refresh the dynamic phantom positions from the smoothed statistics (cheap,
     /// every frame). Returns the phantom count (`0` = inactive / no-op).
     pub fn sync(&mut self, enabled: bool, ctx: &PrepareCtx) -> usize {
+        let spectral = self.method == ExtractMethod::Spectral;
+        // `passes`/`center`/`sides` only shape the broadband plan; ignore their
+        // changes while the spectral method is active (no pointless re-prime).
         let changed = self.sig.enabled != enabled
             || self.sig.rate != ctx.sample_rate
-            || self.sig.passes != self.passes
-            || self.sig.center != self.center_relocalize
-            || self.sig.sides != self.sides_relocalize
+            || self.sig.spectral != spectral
+            || (!spectral
+                && (self.sig.passes != self.passes
+                    || self.sig.center != self.center_relocalize
+                    || self.sig.sides != self.sides_relocalize))
             || self.sig.labels.as_slice() != ctx.input_labels;
         if changed {
             self.sig.enabled = enabled;
@@ -656,6 +701,7 @@ impl PhantomExtractStage {
             self.sig.passes = self.passes;
             self.sig.center = self.center_relocalize;
             self.sig.sides = self.sides_relocalize;
+            self.sig.spectral = spectral;
             self.sig.labels.clear();
             self.sig.labels.extend_from_slice(ctx.input_labels);
             self.rebuild(enabled, ctx);
@@ -668,6 +714,13 @@ impl PhantomExtractStage {
     /// `sync`.
     pub fn set_param(&mut self, key: &str, value: f32, _sample_rate: u32) {
         match key {
+            "method" => {
+                self.method = if value >= 0.5 {
+                    ExtractMethod::Spectral
+                } else {
+                    ExtractMethod::Broadband
+                }
+            }
             "strength" => self.strength = value.clamp(0.0, 1.0),
             "passes" => {
                 self.passes = (value.round() as i64).clamp(1, PHANTOM_MAX_PASSES as i64) as usize
@@ -685,11 +738,21 @@ impl PhantomExtractStage {
         self.left = None;
         self.right = None;
         self.pairs.clear();
+        self.spectral = None;
         self.specs.clear();
         let fs = ctx.sample_rate.max(1) as f32;
         self.alpha = one_pole_coeff(PHANTOM_STAT_TC_MS, fs);
         if !enabled {
             self.planar.clear();
+            return;
+        }
+        if self.method == ExtractMethod::Spectral {
+            if let Some(ext) = SpectralExtractor::prepare(ctx) {
+                self.specs = ext.specs(self.lift as f64);
+                self.spectral = Some(ext);
+            }
+            self.planar.truncate(self.specs.len());
+            self.planar.resize_with(self.specs.len(), Vec::new);
             return;
         }
         // Present, positionable bed channels with their floor position + azimuth.
@@ -868,6 +931,10 @@ impl PhantomExtractStage {
     /// energy, in the same order the units are processed.
     fn refresh_positions(&mut self) {
         let lift = self.lift as f64;
+        if let Some(ext) = self.spectral.as_ref() {
+            ext.refresh_positions(lift, &mut self.specs);
+            return;
+        }
         if let Some(u) = self.front.as_ref() {
             u.refresh(lift, &mut self.specs);
         }
@@ -921,6 +988,11 @@ impl PhantomExtractStage {
         for buf in planar.iter_mut() {
             buf.clear();
             buf.resize(n, 0.0);
+        }
+        if let Some(ext) = self.spectral.as_mut() {
+            ext.process(bed, c, n, strength, &mut planar);
+            self.planar = planar;
+            return;
         }
         // Cascade order: front, then back, then the side arcs (which share the
         // corner channels with front/back — those get first claim), then the rest.
@@ -1383,6 +1455,74 @@ mod tests {
             st.specs()
                 .iter()
                 .all(|sp| (sp.position[2] - 0.8).abs() < 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn method_switch_replans() {
+        let mut st = PhantomExtractStage::new();
+        let layout = dummy_layout();
+        assert_eq!(st.sync(true, &ctx(&LABELS_5_1, &layout)), 5);
+        st.set_param("method", 1.0, 48_000);
+        assert_eq!(st.sync(true, &ctx(&LABELS_5_1, &layout)), 8);
+        let names: Vec<&str> = st.specs().iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"Direct_F") && names.contains(&"Direct_FL"),
+            "spectral plan should expose the sector objects, got {names:?}"
+        );
+        st.set_param("method", 0.0, 48_000);
+        assert_eq!(
+            st.sync(true, &ctx(&LABELS_5_1, &layout)),
+            5,
+            "switching back must restore the broadband ring plan"
+        );
+    }
+
+    #[test]
+    fn spectral_method_extracts_via_stage() {
+        // End-to-end through the stage dispatch: a centre-only source moves to
+        // the front sector object and the C channel empties (single-channel
+        // source → fully direct).
+        let mut st = PhantomExtractStage::new();
+        let layout = dummy_layout();
+        st.set_param("method", 1.0, 48_000);
+        st.set_param("strength", 1.0, 48_000);
+        st.sync(true, &ctx(&LABELS_5_1, &layout));
+        let c = 6usize;
+        let n = 24_000usize;
+        let s = sine(700.0);
+        let mut bed = vec![0.0f32; c * n];
+        let mut in_c = 0.0f32;
+        for i in 0..n {
+            let v = s(i) * 0.5;
+            bed[i * c + 2] = v; // C
+            if i >= n / 2 {
+                in_c += v * v;
+            }
+        }
+        let k = st
+            .specs()
+            .iter()
+            .position(|sp| sp.name == "Direct_F")
+            .unwrap();
+        let (pcm, out_ch) = st.process_and_extend(&mut bed, c, n, 48_000);
+        let tail = n / 2..n;
+        let ph: f32 = tail.clone().map(|i| pcm[i * out_ch + c + k].powi(2)).sum();
+        let c_res: f32 = tail.map(|i| pcm[i * out_ch + 2].powi(2)).sum();
+        assert!(
+            ph > 0.5 * in_c,
+            "front object should carry the centre energy ({ph} vs {in_c})"
+        );
+        assert!(
+            c_res < 0.1 * in_c,
+            "C should be largely emptied ({c_res} vs {in_c})"
+        );
+        // Position: converged stats keep the object at the front centre.
+        st.sync(true, &ctx(&LABELS_5_1, &layout));
+        let pos = st.specs()[k].position;
+        assert!(
+            pos[0].abs() < 0.15 && pos[1] > 0.85,
+            "front object should localize at the front centre, got {pos:?}"
         );
     }
 
