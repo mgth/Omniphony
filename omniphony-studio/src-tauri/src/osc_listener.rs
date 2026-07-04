@@ -142,6 +142,9 @@ struct RendererDomainState {
     vbap_cartesian: Option<VbapCartesian>,
     vbap_polar: Option<VbapPolar>,
     render_backend_state: Option<RenderBackendState>,
+    /// Declared live options (registry RFC phase 1): the renderer's `options`
+    /// block, passed through verbatim — no typed mirror needed per option.
+    options: Option<serde_json::Value>,
     /// The live 2D-sources / routing options, collected by key (flatten) and
     /// mirrored into `AppState` verbatim — see [`LiveOptionsState`].
     #[serde(flatten)]
@@ -644,6 +647,9 @@ fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
     }
     if let Some(render_backend_state) = parsed.render_backend_state {
         s.render_backend_state = render_backend_state;
+    }
+    if let Some(options) = parsed.options {
+        s.options = Some(options);
     }
     // The renderer domain always carries the full option set, so mirror it
     // wholesale (an explicit `virtualBed: null` must reach the UI — it means

@@ -331,6 +331,13 @@ pub struct AppState {
     /// the UI without a typed mirror here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binaural: Option<serde_json::Value>,
+    /// Declared live options (`options` block of `/state/renderer`, canonical
+    /// snake_case keys straight from the renderer's registry). Passthrough
+    /// JSON: a registry row needs no typed mirror here (registry RFC phase 1).
+    /// The typed [`LiveOptionsState`] fields above remain the UI's consumers
+    /// until the `data-option` binder (phase 2) reads this instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
     #[serde(rename = "sourceLevels")]
     pub source_levels: HashMap<String, Meter>,
     #[serde(rename = "speakerLevels")]
@@ -701,6 +708,7 @@ impl Default for AppState {
             render_evaluation_mode_state: RenderEvaluationModeState::default(),
             object_size_intervals: 0,
             binaural: None,
+            options: None,
             vbap_allow_negative_z: None,
             adaptive_resampling: Some(0),
             adaptive_resampling_enable_far_mode: Some(1),

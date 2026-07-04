@@ -556,6 +556,11 @@ export function applyInitState(payload) {
       materializeDefaultVirtualBed();
     }
   }
+  // Declared live options passthrough (registry RFC phase 1) — ingested
+  // generically; no per-option line needed here for registry options.
+  if (payload.options && typeof payload.options === 'object') {
+    Object.assign(app.options, payload.options);
+  }
   if (typeof payload.audioOutputDevice === 'string') {
     app.audioOutputDevice = payload.audioOutputDevice.trim() || null;
   }

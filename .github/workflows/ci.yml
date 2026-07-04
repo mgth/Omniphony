@@ -142,6 +142,16 @@ jobs:
         working-directory: omniphony-studio
         run: npm run lint:dead
 
+      # Options-schema contract: the renderer dumps its declared live options
+      # (registry rows); every option must resolve its Studio i18n keys. Hard
+      # gate — an option declared engine-side but invisible to the UI is the
+      # silent-omission class the registry exists to kill.
+      - name: Check options-schema ↔ Studio contract
+        run: |
+          cargo run -q -p renderer --example dump_options_schema \
+            --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
+          node omniphony-studio/scripts/check-options-schema.mjs /tmp/options-schema.json
+
   build-macos:
     # macOS arm64 compile gate. The renderer workspace pulls the CoreAudio
     # output backend (cpal) and the `sys` signal/IO layer, both of which carry

@@ -263,6 +263,11 @@ export const app = {
   // Parametrable virtual bed for 2D sources (a SpeakerLayout-shaped object, or
   // null = built-in canonical poses). Edited by the virtual-bed editor.
   virtualBed: null,
+  // Declared live options passthrough (registry RFC phase 1): the renderer's
+  // `options` snapshot block, keyed by canonical snake_case option key. The
+  // camelCase fields above stay the UI's consumers until the data-option
+  // binder (phase 2) reads this instead.
+  options: {},
   // One-shot guard: once we've materialised the canonical bed into the
   // renderer/config (when none was saved), don't push it again this session.
   virtualBedMaterialized: false,

@@ -1,12 +1,35 @@
 # RFC: a declared registry for live options
 
 Status: accepted — written after the Side/Back state-sync bug (see "The
-incident" below); related fix: `fix/studio-live-options-state-sync`. Phase 0
-(safety nets) has landed: the live-options conformance net
-(`omniphony-renderer/runtime_control/tests/live_options_conformance.rs`) and
-the knip dead-code gate in the Studio CI. The registry itself (phases 1+) is
-next; the options-schema contract check lands with it (it needs the registry
-to dump the schema).
+incident" below); related fix: `fix/studio-live-options-state-sync`.
+
+Progress:
+
+- **Phase 0 landed**: the live-options conformance net
+  (`omniphony-renderer/runtime_control/tests/live_options_conformance.rs`) and
+  the knip dead-code gate in the Studio CI.
+- **Phase 1 landed**: the registry itself (`renderer/src/options.rs`) with the
+  2D-sources family migrated; the generic `/omniphony/control/option` setter
+  (legacy addresses are aliases); one shared config seed used by BOTH the CLI
+  bootstrap and `Engine::from_paths`; one shared store used by the full save
+  and the targeted persists; the snapshot `options` block + the
+  `/state/options_schema` publication; the Tauri/JS `options` passthrough; and
+  the options-schema ↔ Studio i18n contract check in CI. The
+  `options_epoch` counter exists on `RendererControl`; the `PlanSig`s migrate
+  onto it in a follow-up (they are owned by files an open engine PR touches).
+- **Next (phase 2)**: the Studio `data-option` binder reading `app.options` +
+  the published schema, replacing the typed `LiveOptionsState` mirror and the
+  hand-written listeners for simple controls.
+
+## Adding a live option today (post-phase-1)
+
+1. Add the typed field to `LiveParams` (+ its `RenderConfig`/`config_fields`
+   descriptor).
+2. Add ONE `OptionSpec` row in `renderer/src/options.rs` (+ Studio i18n keys).
+3. Done: OSC (generic + schema), persistence, CLI/FFI seeding, the snapshot
+   block and the CI contract checks all derive from the row. The conformance
+   net fails if a layer is missing; UI wiring is still hand-written until the
+   phase-2 binder.
 
 ## The problem
 
@@ -95,7 +118,7 @@ lookups or allocation in the audio thread, matching the realtime rules.
 
 ### 2. Everything else derived, once
 
-- **OSC**: one generic `/omniphony/control/opt <key> <value>` handler
+- **OSC**: one generic `/omniphony/control/option <key> <value>` handler
   validating against the spec. Existing addresses stay as aliases until
   migration completes.
 - **Persist + seed**: one generic save (options flagged `PERSIST`) and one

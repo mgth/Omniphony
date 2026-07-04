@@ -163,7 +163,8 @@ and heatmap configuration.
 | `/control/debug/speaker_gaintable/nack` | … | Request missing chunks / version. |
 | `/control/log_level` | s | `off`\|`error`\|`warn`\|`info`\|`debug`\|`trace`. |
 | `/control/ramp_mode` | s | `off` \| `frame` \| `sample`. |
-| `/control/channel_render_mode` | s | `host` \| `direct` \| `virtual`. Render mode for non-object content. |
+| `/control/channel_render_mode` | s | `spatial` \| `host` (legacy `direct`/`virtual` load as `spatial`). Render mode for non-object content. Legacy alias of `/control/option`. |
+| `/control/option` | s key, value | Generic setter for any declared live option (`renderer::options` registry; schema on `/state/options_schema`). The dedicated addresses (`channel_render_mode`, `surround_placement`, `output_channel_mapping`, `object_generator`, `phantom_extract`) are aliases of this. |
 | `/control/save_config` | — | Persist the current config. |
 | `/control/reload_config` | — | Reload config from disk. |
 | `/control/quit` | — | Shut the engine down. |
@@ -172,6 +173,11 @@ and heatmap configuration.
 ---
 
 ## State — engine → clients
+
+`/state/options_schema` carries the declared live-options schema (JSON:
+`[{key, kind, values?, default, flags, i18nKey, helpI18nKey?}]`), mirroring the
+generator/phantom param-schema pattern; option values ride in the `options`
+block of the renderer snapshot.
 
 The full state snapshot is published as `/omniphony/state/renderer` (JSON);
 individual deltas use the addresses below. `osc_contract::ALL_STATE` is the
