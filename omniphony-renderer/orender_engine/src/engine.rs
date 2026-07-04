@@ -456,63 +456,14 @@ impl Engine {
         control.set_requested_ramp_mode(ramp_mode);
         control.live.write().ramp_mode = ramp_mode;
 
-        // Channel render mode for non-object content (host / spatial). Mirror
-        // `ramp_mode`: the live snapshot is seeded from config here so the
-        // embedded host matches the CLI bootstrap. Default = Spatial.
-        let channel_render_mode = render_cfg
-            .as_ref()
-            .and_then(renderer::config_fields::channel_render_mode::get)
-            .unwrap_or(renderer::config_fields::channel_render_mode::DEFAULT);
-        control.live.write().channel_render_mode = channel_render_mode;
-
-        // Surround placement (side/back) for 4.x/5.x content; seeded from config
-        // like `channel_render_mode`. Default = Side.
-        let surround_placement = render_cfg
-            .as_ref()
-            .and_then(renderer::config_fields::surround_placement::get)
-            .unwrap_or(renderer::config_fields::surround_placement::DEFAULT);
-        control.live.write().surround_placement = surround_placement;
-
-        // Output channel mapping (by_index/by_name); seeded from config like
-        // `surround_placement`. Default = ByIndex.
-        let output_channel_mapping = render_cfg
-            .as_ref()
-            .and_then(renderer::config_fields::output_channel_mapping::get)
-            .unwrap_or(renderer::config_fields::output_channel_mapping::DEFAULT);
-        control.live.write().output_channel_mapping = output_channel_mapping;
-
-        // Bed→height object generator selection + its live param overrides; seeded
-        // from config so the choice survives a restart (FFI/CLI parity). Empty id
-        // = off; absent params = the generator's declared defaults.
-        let object_generator_id = render_cfg
-            .as_ref()
-            .and_then(renderer::config_fields::object_generator_id::get)
-            .unwrap_or_default();
-        control.live.write().object_generator_id = object_generator_id;
-        if let Some(params) = render_cfg
-            .as_ref()
-            .and_then(|c| c.object_generator_params.clone())
-        {
-            control.live.write().object_generator_params = params;
+        // Declared live options (channel_render_mode, surround_placement,
+        // output_channel_mapping, object_generator_id, phantom_enabled) plus
+        // their param bags and the virtual bed: seeded from config through the
+        // shared registry seed — the same call as the CLI bootstrap, so the
+        // embedded host cannot drift from it (FFI/CLI parity by construction).
+        if let Some(render) = render_cfg.as_ref() {
+            renderer::options::seed_live_from_config(&mut control.live.write(), render);
         }
-
-        // Phantom-source extraction pre-stage: enable flag + its param overrides,
-        // seeded from config (FFI/CLI parity). Absent = off / declared defaults.
-        if let Some(enabled) = render_cfg
-            .as_ref()
-            .and_then(renderer::config_fields::phantom_enabled::get)
-        {
-            control.live.write().phantom_enabled = enabled;
-        }
-        if let Some(params) = render_cfg.as_ref().and_then(|c| c.phantom_params.clone()) {
-            control.live.write().phantom_params = params;
-        }
-
-        // Parametrable virtual bed (per-channel direct/virtual placement). Seed
-        // from config so the embedded host matches the CLI bootstrap; `None`
-        // leaves the built-in canonical poses in effect (LFE direct).
-        let virtual_bed = render_cfg.as_ref().and_then(|c| c.virtual_bed.clone());
-        control.live.write().virtual_bed = virtual_bed;
 
         // DRC: seed the live params from config and publish the bridge's
         // supported modes (so studio shows the DRC control). The decode-side

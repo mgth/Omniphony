@@ -251,6 +251,146 @@ fn snapshot_carries_every_live_option() {
     }
 }
 
+/// Registry-driven nets (phase 1): the declared `renderer::options` rows must
+/// agree with the snapshot, the config round-trip, the schema, and the OSC
+/// catalogue — one non-default sample value per row exercises all of it.
+mod registry {
+    use super::*;
+    use renderer::options::{self, RawOptionValue};
+
+    /// A non-default sample per declared option, keyed by canonical name.
+    /// Extending the registry without extending this list fails loudly below.
+    fn non_default_samples() -> Vec<(&'static str, RawOptionValue<'static>)> {
+        vec![
+            ("channel_render_mode", RawOptionValue::Str("host")),
+            ("surround_placement", RawOptionValue::Str("back")),
+            ("output_channel_mapping", RawOptionValue::Str("by_name")),
+            ("object_generator_id", RawOptionValue::Str("copy_up")),
+            ("phantom_enabled", RawOptionValue::Number(1.0)),
+        ]
+    }
+
+    fn sample_for(key: &str) -> RawOptionValue<'static> {
+        non_default_samples()
+            .into_iter()
+            .find(|(k, _)| *k == key)
+            .unwrap_or_else(|| panic!("no non-default sample for registry option {key}"))
+            .1
+    }
+
+    #[test]
+    fn legacy_addresses_are_catalogued_and_resolvable() {
+        for spec in options::LIVE_OPTIONS {
+            assert!(
+                osc_contract::ALL_CONTROL.contains(&spec.legacy_control_addr),
+                "{}: legacy address missing from ALL_CONTROL",
+                spec.key
+            );
+            assert!(options::find(spec.key).is_some(), "{}", spec.key);
+            assert!(
+                options::find_by_legacy_addr(spec.legacy_control_addr).is_some(),
+                "{}",
+                spec.key
+            );
+        }
+        assert!(
+            osc_contract::ALL_CONTROL.contains(&osc_contract::CONTROL_OPTION),
+            "generic /control/option missing from ALL_CONTROL"
+        );
+    }
+
+    /// The snapshot `options` block carries every registry row, and its
+    /// defaults agree with the published schema defaults — a divergence means
+    /// the constructed `LiveParams` default and the declared default drifted.
+    #[test]
+    fn snapshot_options_block_matches_registry_and_schema_defaults() {
+        let control = fixture_control();
+        let snapshot = snapshot_json(&control);
+        let block = snapshot
+            .get("options")
+            .expect("snapshot has an options block");
+        let schema: serde_json::Value =
+            serde_json::from_str(&options::schema_json()).expect("valid schema");
+        for (spec, schema_entry) in options::LIVE_OPTIONS.iter().zip(schema.as_array().unwrap()) {
+            let value = block
+                .get(spec.key)
+                .unwrap_or_else(|| panic!("{}: missing from the options block", spec.key));
+            assert_eq!(
+                value, &schema_entry["default"],
+                "{}: snapshot default != declared schema default",
+                spec.key
+            );
+        }
+    }
+
+    /// set → store → seed round-trip: a value applied through the registry
+    /// setter survives a config save and re-seeds a fresh boot identically —
+    /// the CLI and FFI boot paths call the exact seed used here.
+    #[test]
+    fn set_store_seed_round_trips_every_option() {
+        let control = fixture_control();
+        {
+            let mut live = control.live.write();
+            for spec in options::LIVE_OPTIONS {
+                let raw = sample_for(spec.key);
+                assert!(
+                    (spec.set)(&mut live, &raw).is_some(),
+                    "{}: sample value rejected",
+                    spec.key
+                );
+            }
+        }
+        let mut render = RenderConfig::default();
+        {
+            let live = control.live.read();
+            options::store_live_to_config(&mut render, &live);
+        }
+
+        let fresh = fixture_control();
+        {
+            let mut live = fresh.live.write();
+            options::seed_live_from_config(&mut live, &render);
+        }
+        let changed = control.live.read();
+        let seeded = fresh.live.read();
+        for spec in options::LIVE_OPTIONS {
+            assert_eq!(
+                (spec.get_json)(&changed),
+                (spec.get_json)(&seeded),
+                "{}: value lost in the store→seed round-trip",
+                spec.key
+            );
+        }
+    }
+
+    /// Every declared option accepts its sample through the setter and reports
+    /// a canonical value; the setter rejects a shape no option accepts.
+    #[test]
+    fn setters_validate_and_report_canonical_values() {
+        let control = fixture_control();
+        let mut live = control.live.write();
+        for spec in options::LIVE_OPTIONS {
+            let raw = sample_for(spec.key);
+            let canonical = (spec.set)(&mut live, &raw);
+            assert!(canonical.is_some(), "{}: sample rejected", spec.key);
+            if let options::OptionKind::Enum(values) = spec.kind {
+                let canonical = canonical.unwrap();
+                assert!(
+                    values.contains(&canonical.as_str()),
+                    "{}: canonical '{}' not in declared values",
+                    spec.key,
+                    canonical
+                );
+                assert!(
+                    (spec.set)(&mut live, &RawOptionValue::Str("no_such_value_xyz")).is_none(),
+                    "{}: junk value accepted",
+                    spec.key
+                );
+            }
+        }
+    }
+}
+
 /// Config save persists every live option when non-default and omits its key
 /// when default (the value==default → key-absent contract). An option dropped
 /// from `persist.rs` silently loses user settings on save.

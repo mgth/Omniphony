@@ -145,32 +145,10 @@ pub fn save_live_config_to_path(
     render.spread_distance_curve = None;
     render.size_to_spread_mode = None;
     renderer::config_fields::use_loudness::store(render, live.use_loudness);
-    renderer::config_fields::channel_render_mode::store(render, live.channel_render_mode);
-    renderer::config_fields::surround_placement::store(render, live.surround_placement);
-    renderer::config_fields::output_channel_mapping::store(render, live.output_channel_mapping);
-    renderer::config_fields::object_generator_id::store(render, &live.object_generator_id);
-    // Active generator's live param overrides (declared-schema map). `None` keeps
-    // the key out of the file so each generator falls back to its declared
-    // defaults.
-    render.object_generator_params = if live.object_generator_params.is_empty() {
-        None
-    } else {
-        Some(live.object_generator_params.clone())
-    };
-    // Phantom-source extraction pre-stage: enable flag + its param overrides.
-    renderer::config_fields::phantom_enabled::store(render, live.phantom_enabled);
-    render.phantom_params = if live.phantom_params.is_empty() {
-        None
-    } else {
-        Some(live.phantom_params.clone())
-    };
-    // Parametrable virtual bed for channel content. Persist the live layout
-    // verbatim (round6 the radius for stable diffs); `None` keeps the key out of
-    // the file so the built-in canonical poses (LFE direct) stay in effect.
-    render.virtual_bed = live.virtual_bed.clone().map(|mut bed| {
-        bed.radius_m = round6(bed.radius_m);
-        bed
-    });
+    // Declared live options (registry rows) + their param bags and the virtual
+    // bed: one call covers what the OSC targeted persists cover, so the full
+    // save and the per-option writes cannot drift.
+    renderer::options::store_live_to_config(render, &live);
     renderer::config_fields::auto_gain::store(render, live.auto_gain);
     renderer::config_fields::auto_gain_ceiling_db::store(render, live.auto_gain_ceiling_db);
     renderer::config_fields::vbap_distance_model::store(render, live.distance_model.to_string());

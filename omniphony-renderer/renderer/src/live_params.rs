@@ -895,6 +895,12 @@ pub struct RendererControl {
     /// wrapper, avoiding re-triangulation. See `build_topology_reusing`.
     pub geometry_generation: std::sync::atomic::AtomicU64,
 
+    /// Monotonic counter bumped whenever a live option flagged `REPLAN` in the
+    /// declared registry ([`crate::options`]) changes. Plan signatures compare
+    /// this single epoch instead of enumerating options field by field, so a
+    /// new re-planning option cannot be forgotten in a signature.
+    pub options_epoch: std::sync::atomic::AtomicU64,
+
     /// Set by the gain stage whenever output clipping is detected (peak > 0 dBFS),
     /// independently of whether auto-gain is enabled. Holds the index of the speaker
     /// channel that held the peak, or `-1` when no clip is pending. The OSC listener
@@ -990,6 +996,7 @@ impl RendererControl {
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             live_state_generation: std::sync::atomic::AtomicU64::new(0),
             geometry_generation: std::sync::atomic::AtomicU64::new(0),
+            options_epoch: std::sync::atomic::AtomicU64::new(0),
             clip_pending: AtomicI32::new(-1),
             config_path: Mutex::new(None),
             config_status: Mutex::new(None),
@@ -1241,6 +1248,16 @@ impl RendererControl {
 
     pub fn geometry_generation(&self) -> u64 {
         self.geometry_generation.load(Ordering::Relaxed)
+    }
+
+    /// Bump the options epoch: a `REPLAN`-flagged live option changed, so the
+    /// synthesized-object plan signatures must invalidate (see [`crate::options`]).
+    pub fn bump_options_epoch(&self) {
+        self.options_epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn options_epoch(&self) -> u64 {
+        self.options_epoch.load(Ordering::Relaxed)
     }
 
     /// Flag that output clipping was detected this frame on `speaker_idx`

@@ -422,6 +422,16 @@ fn init_osc_runtime(
 
         ctrl.set_requested_ramp_mode(args.ramp_mode.into());
         ctrl.live.write().ramp_mode = args.ramp_mode.into();
+
+        // Declared live options + their param-bag companions and the virtual
+        // bed: seeded from the effective config through the shared registry
+        // seed — the same call as the embedded host (`Engine::from_paths`), so
+        // the two boot paths cannot drift (FFI/CLI parity by construction).
+        // The flag-backed options are then overridden from the resolved CLI
+        // args, which already folded config through flag > config > default.
+        if let Some(render) = render_cfg.as_ref() {
+            renderer::options::seed_live_from_config(&mut ctrl.live.write(), render);
+        }
         ctrl.live.write().channel_render_mode = args.channel_render_mode.into();
         ctrl.live.write().surround_placement = args.surround_placement.into();
 

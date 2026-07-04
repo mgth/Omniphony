@@ -148,6 +148,11 @@ pub const CONTROL_OUTPUT_CHANNEL_MAPPING: &str = "/omniphony/control/output_chan
 /// `SpeakerLayout` (one entry per channel label, `spatialize` = virtual/direct);
 /// an empty string resets to the built-in canonical poses (LFE direct).
 pub const CONTROL_VIRTUAL_BED: &str = "/omniphony/control/virtual_bed";
+/// Generic setter for any declared live option (`renderer::options`):
+/// args `[key (string), value]`. The per-option addresses listed above
+/// (`channel_render_mode`, `object_generator`, `phantom_extract`,
+/// `surround_placement`, `output_channel_mapping`) are legacy aliases of this.
+pub const CONTROL_OPTION: &str = "/omniphony/control/option";
 pub const CONTROL_OVERLAY_LABELS: &str = "/omniphony/control/overlay/labels";
 pub const CONTROL_OVERLAY_OBJECTS: &str = "/omniphony/control/overlay/objects";
 pub const CONTROL_OVERLAY_TAG: &str = "/omniphony/control/overlay/tag";
@@ -225,6 +230,9 @@ pub const STATE_LAYOUT: &str = "/omniphony/state/layout";
 pub const STATE_LOG_LEVEL: &str = "/omniphony/state/log_level";
 pub const STATE_LOUDNESS: &str = "/omniphony/state/loudness";
 pub const STATE_MONITORING: &str = "/omniphony/state/monitoring";
+/// Schema of the declared live options (`renderer::options` registry rows),
+/// as a JSON string. Same pattern as `/state/object_generators` / `/state/phantom`.
+pub const STATE_OPTIONS_SCHEMA: &str = "/omniphony/state/options_schema";
 pub const STATE_OSC_DIAG: &str = "/omniphony/state/osc/diag";
 pub const STATE_OSC_METERING: &str = "/omniphony/state/osc/metering";
 pub const STATE_REALTIME_MASTER_GAIN: &str = "/omniphony/state/realtime/master_gain";
@@ -298,6 +306,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_CHANNEL_RENDER_MODE,
     CONTROL_OBJECT_GENERATOR,
     CONTROL_OBJECT_GENERATOR_PARAM,
+    CONTROL_OPTION,
     CONTROL_PHANTOM_EXTRACT,
     CONTROL_PHANTOM_EXTRACT_PARAM,
     CONTROL_SURROUND_PLACEMENT,
@@ -410,6 +419,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_LOG_LEVEL,
     STATE_LOUDNESS,
     STATE_MONITORING,
+    STATE_OPTIONS_SCHEMA,
     STATE_OSC_DIAG,
     STATE_OSC_METERING,
     STATE_REALTIME_MASTER_GAIN,

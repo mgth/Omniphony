@@ -165,6 +165,10 @@ pub fn build_renderer_state_json(
         "surroundPlacement": live.surround_placement.as_str(),
         "outputChannelMapping": live.output_channel_mapping.as_str(),
         "outputChannelMappingUnroutable": unroutable_speaker_names,
+        // Declared live options, emitted generically from the registry under
+        // their canonical (snake_case) keys. The flat camelCase keys above are
+        // the legacy spellings, kept while clients migrate to this block.
+        "options": renderer::options::options_json(live),
         // Parametrable virtual bed for channel content (null = built-in
         // canonical poses, LFE direct). Reuses the speaker-layout schema so the
         // Studio 3D editor can target it.
@@ -395,6 +399,13 @@ pub fn build_live_state_bundle(
             args: vec![OscType::String(build_renderer_capabilities_json(
                 has_audio, has_input,
             ))],
+        }),
+        OscPacket::Message(OscMessage {
+            // Schema of the declared live options (registry rows: key, kind,
+            // default, flags, i18n keys) — same pattern as the generator /
+            // phantom param schemas, so clients can build controls from it.
+            addr: crate::osc_contract::STATE_OPTIONS_SCHEMA.to_string(),
+            args: vec![OscType::String(renderer::options::schema_json())],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/renderer".to_string(),
