@@ -1359,6 +1359,10 @@ struct PlanSig {
     out_height: bool,
     labels: Vec<RChannelLabel>,
     rate: u32,
+    /// Planned positions depend on the Side/Back surround placement
+    /// ([`channel_top_position`]); a live toggle must re-plan or the already
+    /// synthesized objects keep their stale row.
+    placement: SurroundPlacement,
 }
 
 /// Host-side state for the object-generator stage: the registry, the active
@@ -1409,6 +1413,7 @@ impl ObjectGenStage {
             && self.sig.out_n == out_n
             && self.sig.out_height == out_height
             && self.sig.rate == ctx.sample_rate
+            && self.sig.placement == ctx.surround_placement
             && self.sig.labels.as_slice() == ctx.input_labels;
         if !unchanged {
             self.sig.id.clear();
@@ -1416,6 +1421,7 @@ impl ObjectGenStage {
             self.sig.out_n = out_n;
             self.sig.out_height = out_height;
             self.sig.rate = ctx.sample_rate;
+            self.sig.placement = ctx.surround_placement;
             self.sig.labels.clear();
             self.sig.labels.extend_from_slice(ctx.input_labels);
 
@@ -1577,6 +1583,42 @@ mod tests {
         assert!(
             specs.iter().all(|s| s.position[2] > 0.0),
             "all objects above ear level"
+        );
+    }
+
+    #[test]
+    fn stage_replans_on_surround_placement_change() {
+        use renderer::live_params::SurroundPlacement;
+        let mut stage = ObjectGenStage::new();
+        let out = layout_7_1_4();
+        let ctx_side = PrepareCtx {
+            input_labels: &LABELS_5_1,
+            output_layout: &out,
+            sample_rate: 48_000,
+            surround_placement: SurroundPlacement::Side,
+        };
+        assert_eq!(stage.sync("copy_up", &ctx_side), 5);
+        let ls_y_side = stage
+            .specs()
+            .iter()
+            .find(|s| s.name.contains("Ls"))
+            .expect("Ls object planned")
+            .position[1];
+        let ctx_back = PrepareCtx {
+            surround_placement: SurroundPlacement::Back,
+            ..ctx_side
+        };
+        assert_eq!(stage.sync("copy_up", &ctx_back), 5);
+        let ls_y_back = stage
+            .specs()
+            .iter()
+            .find(|s| s.name.contains("Ls"))
+            .expect("Ls object planned")
+            .position[1];
+        assert!(
+            ls_y_side > ls_y_back + 0.5,
+            "Ls object must move to the back row on a live placement change \
+             (side y = {ls_y_side}, back y = {ls_y_back})"
         );
     }
 

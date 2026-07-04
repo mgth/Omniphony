@@ -26,6 +26,7 @@
 //! and never panics.
 
 use bridge_api::RChannelLabel;
+use renderer::live_params::SurroundPlacement;
 
 use crate::object_gen::{
     ObjectGenParamSpec, PrepareCtx, SynthObjectSpec, channel_top_position, input_has_back,
@@ -618,6 +619,10 @@ struct PlanSig {
     center: bool,
     sides: bool,
     spectral: bool,
+    /// The planned arc/sector positions depend on the Side/Back surround
+    /// placement; a live toggle must re-plan or the phantoms keep interpolating
+    /// between the stale source positions.
+    placement: SurroundPlacement,
 }
 
 /// Host-side state for the phantom-extraction stage.
@@ -690,6 +695,7 @@ impl PhantomExtractStage {
         let changed = self.sig.enabled != enabled
             || self.sig.rate != ctx.sample_rate
             || self.sig.spectral != spectral
+            || self.sig.placement != ctx.surround_placement
             || (!spectral
                 && (self.sig.passes != self.passes
                     || self.sig.center != self.center_relocalize
@@ -702,6 +708,7 @@ impl PhantomExtractStage {
             self.sig.center = self.center_relocalize;
             self.sig.sides = self.sides_relocalize;
             self.sig.spectral = spectral;
+            self.sig.placement = ctx.surround_placement;
             self.sig.labels.clear();
             self.sig.labels.extend_from_slice(ctx.input_labels);
             self.rebuild(enabled, ctx);
@@ -1455,6 +1462,34 @@ mod tests {
             st.specs()
                 .iter()
                 .all(|sp| (sp.position[2] - 0.8).abs() < 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn replans_on_surround_placement_change() {
+        let mut st = PhantomExtractStage::new();
+        let layout = dummy_layout();
+        assert_eq!(st.sync(true, &ctx(&LABELS_5_1, &layout)), 5);
+        let find_ls_y = |st: &PhantomExtractStage| {
+            st.specs()
+                .iter()
+                .find(|s| s.name.starts_with("Phantom_Ls"))
+                .expect("Ls-anchored phantom planned")
+                .position[1]
+        };
+        let y_side = find_ls_y(&st);
+        let ctx_back = PrepareCtx {
+            input_labels: &LABELS_5_1,
+            output_layout: &layout,
+            sample_rate: 48_000,
+            surround_placement: renderer::live_params::SurroundPlacement::Back,
+        };
+        assert_eq!(st.sync(true, &ctx_back), 5);
+        let y_back = find_ls_y(&st);
+        assert!(
+            y_side > y_back + 0.5,
+            "Ls-anchored phantom must follow a live placement change \
+             (side y = {y_side}, back y = {y_back})"
         );
     }
 
