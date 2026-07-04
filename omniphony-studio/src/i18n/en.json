@@ -308,6 +308,7 @@
   "twoDSources.phantomCenter": "Relocalize center",
   "twoDSources.phantomSides": "Relocalize sides",
   "twoDSources.phantomMethod": "Per-band extraction",
+  "twoDSources.phantomBroadbandOnly": "Broadband method only",
   "help.phantomExtract": "Before the height lift, extracts the correlated content shared by channel pairs as discrete objects at their real panned position, and removes it from the source channels. The remaining decorrelated bed still feeds the height stage. Extraction: how much is pulled out. Passes: how many pairings (a ring of neighbours, then wider pairs). Lift: raises the extracted objects toward the ceiling. Per-band extraction: analyses each frequency band separately (direction and directness per band), so simultaneous sources at different positions are separated into eight sector objects; adds about 21 ms of latency to the bed while active. Passes and the relocalize switches apply to the pairwise method only. The remaining diffuse bed pairs well with the DirAC height generator.",
   "help.objectGenerator": "Synthesizes height objects from flat (2D) channel content — stereo, 5.1, 7.1 — so a layout with top speakers is used even when the source has no height. Off: nothing is added. Direct copy: the front/surround pairs are copied straight up. Ambience (PAD): only the diffuse, decorrelated part of each pair rises, so dialogue and centred sounds stay grounded. Object-based (3D) audio is never affected. The synthesized objects appear in the 3D view and the Objects list.",
   "virtualBed.virtual": "Virtual",

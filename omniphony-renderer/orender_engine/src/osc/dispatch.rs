@@ -117,6 +117,11 @@ pub(crate) fn handle_control_message(
             .object_generator_params
             .insert(key, value);
         control.mark_dirty();
+        // Params are NOT persisted immediately (a slider drag is a burst of
+        // updates — no config write per tick), so the Save button is the only
+        // way to keep them: tell clients the config is dirty or the button
+        // never lights for a param-only change.
+        broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
         return;
     }
 
@@ -137,6 +142,9 @@ pub(crate) fn handle_control_message(
         }
         control.live.write().phantom_params.insert(key, value);
         control.mark_dirty();
+        // Same as the generator params above: deferred persistence, so the
+        // dirty state must reach the clients' Save button.
+        broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
         return;
     }
 

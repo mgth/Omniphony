@@ -486,6 +486,31 @@ function isBinaryParam(spec) {
   return Number(spec.min) === 0 && Number(spec.max) === 1 && Number(spec.step) === 1;
 }
 
+// Params that only shape the BROADBAND plan: the engine deliberately ignores
+// their changes while the per-band (spectral) method is active (see
+// phantom_extract.rs sync — no pointless re-prime), so grey them out rather
+// than let them look functional.
+const PHANTOM_BROADBAND_ONLY = new Set(['passes', 'center', 'sides']);
+
+function phantomMethodIsSpectral() {
+  const stored = app.phantomParams && app.phantomParams.method;
+  const spec = (app.phantomSchema || []).find((p) => p && p.key === 'method');
+  const v = stored != null ? stored : spec ? spec.default : 0;
+  return Number(v) >= 0.5;
+}
+
+// Reflect a param row's broadband-only gating on its container + control.
+function applyPhantomParamGate(container, control, key, spectral) {
+  const gated = spectral && PHANTOM_BROADBAND_ONLY.has(key);
+  control.disabled = gated;
+  container.style.opacity = gated ? '0.45' : '';
+  if (gated) {
+    container.title = t('twoDSources.phantomBroadbandOnly');
+  } else {
+    container.removeAttribute('title');
+  }
+}
+
 // Build the phantom param controls from the declared schema (app.phantomSchema is
 // the param-spec array directly). Continuous params render as sliders; binary
 // params (min 0, max 1, step 1) render as a switch. Mirrors buildParamSliders.
@@ -494,6 +519,7 @@ function buildPhantomParamSliders() {
   if (!row) return;
   row.innerHTML = '';
   const params = app.phantomSchema || [];
+  const spectral = phantomMethodIsSpectral();
   for (const spec of params) {
     const stored = app.phantomParams && app.phantomParams[spec.key];
     const initial = stored != null ? stored : spec.default;
@@ -509,7 +535,10 @@ function buildPhantomParamSliders() {
       toggle.checked = Number(initial) >= 0.5;
       toggle.addEventListener('change', () => {
         applyPhantomParamNow(spec.key, toggle.checked ? 1 : 0);
+        // The method switch changes which params apply — refresh the gates.
+        if (spec.key === 'method') updatePhantomUI();
       });
+      applyPhantomParamGate(label, toggle, spec.key, spectral);
       label.appendChild(name);
       label.appendChild(toggle);
       row.appendChild(label);
@@ -536,6 +565,7 @@ function buildPhantomParamSliders() {
       valEl.textContent = fmtParamValue(spec, slider.value);
       applyPhantomParamNow(spec.key, slider.value);
     });
+    applyPhantomParamGate(label, slider, spec.key, spectral);
     label.appendChild(name);
     label.appendChild(slider);
     label.appendChild(valEl);
@@ -563,6 +593,7 @@ export function updatePhantomUI() {
   if (!builtPhantomParams && params.length > 0) {
     buildPhantomParamSliders();
   } else if (row) {
+    const spectral = phantomMethodIsSpectral();
     for (const slider of row.querySelectorAll('input[type=range]')) {
       const key = slider.dataset.paramKey;
       const spec = params.find((p) => p.key === key);
@@ -572,6 +603,7 @@ export function updatePhantomUI() {
       if (document.activeElement !== slider) slider.value = String(v);
       const valEl = slider.nextElementSibling;
       if (valEl) valEl.textContent = fmtParamValue(spec, v);
+      applyPhantomParamGate(slider.parentElement, slider, key, spectral);
     }
     for (const toggle of row.querySelectorAll('input[type=checkbox][data-param-key]')) {
       const key = toggle.dataset.paramKey;
@@ -580,6 +612,7 @@ export function updatePhantomUI() {
       const stored = app.phantomParams && app.phantomParams[key];
       const v = stored != null ? stored : spec.default;
       toggle.checked = Number(v) >= 0.5;
+      applyPhantomParamGate(toggle.closest('label') || toggle.parentElement, toggle, key, spectral);
     }
   }
 }

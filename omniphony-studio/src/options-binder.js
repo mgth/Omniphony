@@ -39,7 +39,10 @@ function setOption(key, value) {
   // next snapshot, but the UI must not lag the click.
   app.options[key] = value;
   if (AFTER_SET[key]) AFTER_SET[key]();
-  invoke('control_option', { key, value });
+  invoke('control_option', { key, value }).catch((err) => {
+    // An optimistically-reflected control must never hide a dead send chain.
+    console.error(`control_option ${key} failed:`, err);
+  });
   reflectBoundOptions();
   dirty.audioFormat = true;
   scheduleUIFlush();
