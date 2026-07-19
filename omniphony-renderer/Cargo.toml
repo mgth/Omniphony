@@ -95,3 +95,9 @@ asio = []
 
 # Legacy compatibility alias. PipeWire support is compiled by default on Linux.
 pipewire = []
+
+# sofar 0.3.0 drops variables from netCDF4-written SOFA files (ASH Toolset
+# exports, issue #185). Drop once https://github.com/andreiltd/sofar/pull/29
+# ships in a release.
+[patch.crates-io]
+sofar = { git = "https://github.com/mgth/sofar", rev = "c03ff5cfd997d316ae330e2735e82311769b45a3" }

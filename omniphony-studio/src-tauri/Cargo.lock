@@ -3852,8 +3852,7 @@ dependencies = [
 [[package]]
 name = "sofar"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "060ea9e290d57f909c19dfd5673a489cfedf4fdcf02eeae65a470a4923225be2"
+source = "git+https://github.com/mgth/sofar?rev=c03ff5cfd997d316ae330e2735e82311769b45a3#c03ff5cfd997d316ae330e2735e82311769b45a3"
 dependencies = [
  "arrayvec",
  "audioadapter-buffers",
