@@ -8,7 +8,27 @@ Companion review notes live in the bridge repo
 Progress:
 
 - **Phase 0 (this document)**: contract specification and migration plan.
-- Phases 1–5: not started (see "Migration plan" below).
+- **Phase 1 landed** (#188 + bridge #9): shared label table
+  (`bridge_api::labels`), plus a real push/PR CI gate on the bridge repo.
+- **Phase 2a landed** (#189 + bridge #10): ABI v2 (`RChannelLabel::Object`,
+  `RObjectChannel`, `channel_gains`, `has_objects()`); pipelines and
+  renderer migrated mechanically. Amendment: fixed channels keep
+  metadata-driven *gain* automation (`channel_gains`) — OAMD applies live
+  gains to bed members.
+- **Phase 2b landed**: unified channel plan. Decisions taken in review:
+  - fixed channels are **virtualized by default** for every stream kind
+    (placement layout + crossover apply); direct one-hot routing is a
+    per-entry opt-in via the layout `spatialize` flag (LFE default);
+  - the renderer routes by **label** (`ChannelRoute`), resolved against a
+    per-topology label→speaker map; the 0-9 scheme survives only as the
+    CLI file-export bed order (`legacy_bed_id`);
+  - plan transitions ride a **constant-rate gain slew**
+    (`GAIN_SLEW_SECS` = 20 ms full-scale) applied to every per-channel
+    gain step — no dedicated crossfade machinery;
+  - the CLI keeps a prep-time `has_objects` read for file-output format
+    decisions (inherently a prep-time choice); the render path no longer
+    latches anything.
+- Phases 3–5: not started.
 
 ## The incident
 
@@ -245,8 +265,6 @@ Each phase is one reviewable PR; the stack stays shippable between phases.
 
 ## Open questions
 
-- `PLAN_TRANSITION_RAMP` duration: fixed 20 ms vs. frame-quantised vs. a
-  (non-live) config constant.
 - How far to push the *placement layout* rename in code and UI (the
   `virtual_bed` module, YAML keys, Studio strings) — cosmetic, can trail.
 - Whether `object_channels` should also carry a per-object `RChannelLabel`
