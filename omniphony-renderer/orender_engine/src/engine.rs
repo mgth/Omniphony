@@ -52,7 +52,8 @@ pub struct Engine {
     coordinate_format: RCoordinateFormat,
 
     // ── per-stream spatial state ──
-    bed_indices: Option<Vec<usize>>,
+    /// Shared fixed-channel planner (routing + plan cache, both stream kinds).
+    fixed_planner: virtual_bed::FixedChannelPlanner,
     /// Cached object↔channel declaration from the bridge (sparse emission),
     /// sorted by channel. See `docs/channel-object-contract.md`.
     object_channels: Vec<(u32, usize)>,
@@ -226,7 +227,7 @@ impl Engine {
             renderer,
             sample_rate,
             coordinate_format,
-            bed_indices: None,
+            fixed_planner: virtual_bed::FixedChannelPlanner::new(),
             object_channels: Vec::new(),
             has_objects: false,
             loudness_applied: false,
@@ -643,7 +644,7 @@ impl Engine {
 
     fn reset_segment_state(&mut self) {
         self.has_objects = false;
-        self.bed_indices = None;
+        self.fixed_planner.reset();
         self.object_channels.clear();
         self.frame_events.clear();
         self.loudness_applied = false;
@@ -800,14 +801,16 @@ impl Engine {
                     self.object_channels = decl;
                 }
             }
-            // Renderer bed set = legacy bed ids of the fixed-channel labels
-            // (the 0-9 scheme leaves with the unified channel plan, phase 2b).
-            let new_bed = spatial::derive_bed_indices(&frame.channel_labels);
-            if self.bed_indices.as_ref() != Some(&new_bed) {
-                self.bed_indices = Some(new_bed);
-                self.renderer
-                    .configure_beds(self.bed_indices.as_deref().unwrap_or(&[]));
-            }
+            // Plan the fixed prefix through the shared channel planner:
+            // virtualized by default, per-entry direct opt-in via the
+            // placement layout — identically to fixed-only streams. Mode is
+            // always Spatial here (an object stream cannot pass through the
+            // host), and the plan is cached on (labels, options epoch).
+            self.fixed_planner.plan_object_stream_fixed(
+                &frame.channel_labels,
+                &self.renderer,
+                &mut self.frame_events,
+            );
             let conf = Configuration::from(meta);
             spatial::build_spatial_channel_events(
                 &conf,
@@ -821,19 +824,24 @@ impl Engine {
 
             // Outgoing: broadcast object positions/names to OSC clients and/or
             // feed the in-process mpv overlay.
-            if want_objects {
-                for upd in meta.name_updates.iter() {
+            // Declarations are cached even before an OSC/overlay consumer
+            // connects, so a later Studio attachment sees stable names.
+            for upd in meta.name_updates.iter() {
+                if self.object_names.get(&upd.id).map(String::as_str) != Some(upd.name.as_str()) {
                     self.object_names.insert(upd.id, upd.name.to_string());
                 }
-                let layout = self.renderer.speaker_layout();
-                let objects = spatial::build_object_metas(
+            }
+            if want_objects {
+                let mut objects = virtual_bed::build_fixed_channel_objects(
+                    &self.renderer,
+                    self.fixed_planner.fixed_labels(),
+                )
+                .unwrap_or_default();
+                objects.extend(spatial::build_object_metas(
                     &conf,
                     self.coordinate_format,
-                    Some(&layout),
                     &self.object_names,
-                    &frame.channel_labels,
-                    &meta.channel_gains,
-                );
+                ));
                 if want_osc {
                     let coord_fmt = match self.coordinate_format {
                         RCoordinateFormat::Cartesian => 0,
@@ -913,23 +921,12 @@ impl Engine {
                 room_ratio_center_blend,
                 surround_placement,
             ) {
-                virtual_bed::ChannelRenderPlan::Events {
-                    events,
-                    bed_indices,
-                } => {
-                    // Spatial mode mixes per channel: direct channels carry a
-                    // bed id, virtual channels carry the `usize::MAX` sentinel
-                    // (rendered as VBAP objects). Reconfigure only on change to
-                    // avoid per-frame churn.
-                    let desired: Vec<usize> = bed_indices.unwrap_or_default();
-                    if self.bed_indices.as_deref().unwrap_or(&[]) != desired.as_slice() {
-                        self.renderer.configure_beds(&desired);
-                        self.bed_indices = if desired.is_empty() {
-                            None
-                        } else {
-                            Some(desired)
-                        };
-                    }
+                virtual_bed::ChannelRenderPlan::Events { events, routes } => {
+                    // Spatial mode mixes per channel: direct channels route
+                    // one-hot by label, virtual channels render as VBAP
+                    // objects. Reconfigure only on change to avoid per-frame
+                    // churn.
+                    self.fixed_planner.apply_routes(&self.renderer, routes);
                     self.frame_events = events;
                 }
                 // Host: the mpv decoder declines at the spatial probe and falls
@@ -1129,9 +1126,10 @@ impl Engine {
         )?;
         let render_time_ms = render_started.elapsed().as_secs_f32() * 1000.0;
 
-        // Dynamic object count = decoded channels minus the bed channels. Only
-        // meaningful for object-based content; plain multichannel reports 0.
-        let num_beds = self.bed_indices.as_ref().map_or(0, |b| b.len());
+        // Dynamic object count = decoded channels minus the fixed channels.
+        // Only meaningful for object-based content; plain multichannel
+        // reports 0.
+        let num_beds = self.fixed_planner.fixed_labels().len();
         let n_objects = (channel_count as u32).saturating_sub(num_beds as u32);
         self.last_object_count = if self.has_objects { n_objects } else { 0 };
 

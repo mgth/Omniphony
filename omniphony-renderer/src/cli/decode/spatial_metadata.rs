@@ -1,8 +1,9 @@
 use super::state::SpatialState;
 use anyhow::Result;
-use bridge_api::{RChannelLabel, RCoordinateFormat, RMetadataFrame};
+use bridge_api::{RCoordinateFormat, RMetadataFrame};
 use orender_engine::events::{Configuration, Event};
 use orender_engine::osc::{ObjectMeta, OscSender};
+use orender_engine::virtual_bed::build_fixed_channel_objects;
 
 pub struct SpatialMetadataCoordinator<'a> {
     spatial: &'a mut SpatialState,
@@ -49,24 +50,27 @@ impl<'a> SpatialMetadataCoordinator<'a> {
                 }
             }
 
-            // Renderer bed set = legacy bed ids of the fixed-channel labels
-            // (the 0-9 scheme leaves with the unified channel plan, phase 2b).
+            // Legacy bed ids of the fixed-channel labels: EXPORT-order only
+            // (file-output bed conformance). Rendering goes through the
+            // shared planner below.
             let new_bed_indices =
                 orender_engine::spatial::derive_bed_indices(&frame.channel_labels);
             if self.spatial.bed_indices.as_ref() != Some(&new_bed_indices) {
+                log::debug!("Derived export bed ids from channel labels: {new_bed_indices:?}");
                 self.spatial.bed_indices = Some(new_bed_indices);
-                log::debug!(
-                    "Derived bed indices from channel labels: {:?}",
-                    self.spatial.bed_indices
-                );
-                if let (Some(renderer), Some(bed_indices)) =
-                    (self.spatial_renderer, &self.spatial.bed_indices)
-                {
-                    renderer.configure_beds(bed_indices);
-                }
             }
 
-            self.handle_metadata_writing(meta, conf, &frame.channel_labels, sample_rate)?;
+            // Plan the fixed prefix (virtualized by default, per-entry direct
+            // opt-in), identically to the embedded engine.
+            if let Some(renderer) = self.spatial_renderer {
+                self.spatial.fixed_planner.plan_object_stream_fixed(
+                    &frame.channel_labels,
+                    renderer,
+                    &mut self.spatial.frame_events,
+                );
+            }
+
+            self.handle_metadata_writing(meta, conf, sample_rate)?;
         }
         Ok(())
     }
@@ -74,6 +78,7 @@ impl<'a> SpatialMetadataCoordinator<'a> {
     pub fn reset_for_segment(&mut self) {
         self.spatial.has_objects = false;
         self.spatial.bed_indices = None;
+        self.spatial.fixed_planner.reset();
         self.spatial.object_channels.clear();
         self.spatial.object_names.clear();
         self.spatial.frame_events.clear();
@@ -86,7 +91,6 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         &mut self,
         meta: &RMetadataFrame,
         conf: Configuration,
-        channel_labels: &[RChannelLabel],
         sample_rate: u32,
     ) -> Result<()> {
         let sample_pos = meta.sample_pos;
@@ -115,17 +119,17 @@ impl<'a> SpatialMetadataCoordinator<'a> {
                     .object_names
                     .insert(upd.id, upd.name.to_string());
             }
-            let active_layout = self
+            let mut objects: Vec<ObjectMeta> = self
                 .spatial_renderer
-                .map(|renderer| renderer.speaker_layout());
-            let objects: Vec<ObjectMeta> = orender_engine::spatial::build_object_metas(
+                .and_then(|renderer| {
+                    build_fixed_channel_objects(renderer, self.spatial.fixed_planner.fixed_labels())
+                })
+                .unwrap_or_default();
+            objects.extend(orender_engine::spatial::build_object_metas(
                 &conf,
                 coordinate_format,
-                active_layout.as_ref(),
                 &self.spatial.object_names,
-                channel_labels,
-                &meta.channel_gains,
-            );
+            ));
             let ramp_duration = meta.ramp_duration;
             let osc_coord_format = match coordinate_format {
                 RCoordinateFormat::Cartesian => 0,

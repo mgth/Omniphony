@@ -398,24 +398,11 @@ impl<'a> SampleWriteCoordinator<'a> {
                         room_ratio_center_blend,
                         surround_placement,
                     ) {
-                        ChannelRenderPlan::Events {
-                            events,
-                            bed_indices,
-                        } => {
+                        ChannelRenderPlan::Events { events, routes } => {
                             // Spatial mode mixes per channel: direct channels
-                            // carry a bed id, virtual channels carry `usize::MAX`
-                            // (VBAP objects). Reconfigure only on change.
-                            let desired: Vec<usize> = bed_indices.unwrap_or_default();
-                            if self.spatial.bed_indices.as_deref().unwrap_or(&[])
-                                != desired.as_slice()
-                            {
-                                renderer.configure_beds(&desired);
-                                self.spatial.bed_indices = if desired.is_empty() {
-                                    None
-                                } else {
-                                    Some(desired)
-                                };
-                            }
+                            // route one-hot by label, virtual channels render
+                            // as VBAP objects. Reconfigure only on change.
+                            self.spatial.fixed_planner.apply_routes(renderer, routes);
                             events
                         }
                         ChannelRenderPlan::HostPassthrough => {

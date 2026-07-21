@@ -5,7 +5,7 @@ use crate::events::{Configuration, Event};
 use crate::osc::ObjectMeta;
 use bridge_api::{RChannelGain, RChannelLabel, RCoordinateFormat};
 use renderer::spatial_renderer::SpatialChannelEvent;
-use renderer::speaker_layout::SpeakerLayout;
+
 use std::collections::HashMap;
 
 /// Wrap an azimuth in degrees into `[-180, 180]`.
@@ -30,11 +30,10 @@ pub fn event_pos_raw(event: &Event) -> Option<[f64; 3]> {
     Some([p[0], p[1], p[2]])
 }
 
-/// Renderer bed set for a frame: the legacy 0-9 bed id of each fixed
-/// channel's label, in PCM-channel order, stopping at the first
-/// object-carrying channel. Labels outside the legacy scheme keep their slot
-/// with `usize::MAX` (no speaker routing), mirroring the historical behavior
-/// for beds absent from the layout. The scheme leaves with phase 2b.
+/// Legacy 0-9 bed ids of the fixed channels, in PCM order, stopping at the
+/// first object channel. EXPORT-order helper only (file-output bed
+/// conformance keeps the fixed 10-slot layout); rendering uses the channel
+/// plan instead.
 pub fn derive_bed_indices(channel_labels: &[RChannelLabel]) -> Vec<usize> {
     channel_labels
         .iter()
@@ -43,107 +42,44 @@ pub fn derive_bed_indices(channel_labels: &[RChannelLabel]) -> Vec<usize> {
         .collect()
 }
 
-fn channel_gain_db(channel_gains: &[RChannelGain], channel: u32) -> i32 {
-    channel_gains
-        .iter()
-        .find(|g| g.channel == channel)
-        .map_or(0, |g| g.gain_db as i32)
-}
-
-/// Build the OSC broadcast objects for one metadata payload.
-///
-/// Fixed channels (labels before the first `Object` channel) are reported at
-/// their layout speaker position with `direct_speaker_index` set and named by
-/// their label; dynamic objects report their raw event position in the
-/// bridge's coordinate format, named from the accumulated `object_names` map
-/// (falling back to `Obj_<id>`).
+/// Build the OSC broadcast objects for the dynamic objects of one metadata
+/// payload (fixed channels are displayed separately, from the channel plan —
+/// see `virtual_bed::build_fixed_channel_objects`). Objects report their raw
+/// event position in the bridge's coordinate format, named from the
+/// accumulated `object_names` map (falling back to `Obj_<id>`).
 pub fn build_object_metas(
     conf: &Configuration,
     coordinate_format: RCoordinateFormat,
-    layout: Option<&SpeakerLayout>,
     object_names: &HashMap<u32, String>,
-    channel_labels: &[RChannelLabel],
-    channel_gains: &[RChannelGain],
 ) -> Vec<ObjectMeta> {
-    let bed_to_speaker = layout
-        .map(|l| l.bed_to_speaker_mapping())
-        .unwrap_or_default();
     let fallback_coord_mode = || match coordinate_format {
         RCoordinateFormat::Cartesian => "cartesian".to_string(),
         RCoordinateFormat::Polar => "polar".to_string(),
     };
-    let speaker_pose = |spk: u32| {
-        layout.and_then(|l| {
-            l.speakers.get(spk as usize).map(|speaker| {
-                if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
-                    (
-                        speaker.x as f64,
-                        speaker.y as f64,
-                        speaker.z as f64,
-                        "cartesian".to_string(),
-                    )
-                } else {
-                    (
-                        speaker.azimuth as f64,
-                        speaker.elevation as f64,
-                        speaker.distance as f64,
-                        "polar".to_string(),
-                    )
-                }
+    conf.events
+        .iter()
+        .filter_map(|event| {
+            let id = event.id()?;
+            let [x, y, z] = event_pos_raw(event).unwrap_or([0.0; 3]);
+            Some(ObjectMeta {
+                name: object_names
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Obj_{id}")),
+                x: x as f32,
+                y: y as f32,
+                z: z as f32,
+                coord_mode: fallback_coord_mode(),
+                direct_speaker_index: None,
+                gain: event.gain_db().map_or(-128, |g| g as i32),
+                priority: 0.0,
+                size: event
+                    .size()
+                    .map(|s| [s[0] as f32, s[1] as f32, s[2] as f32])
+                    .unwrap_or([0.0, 0.0, 0.0]),
             })
         })
-    };
-
-    // Fixed channels first, in PCM order — matches the historical bed-first
-    // event order over OSC.
-    let fixed = channel_labels
-        .iter()
-        .take_while(|l| **l != RChannelLabel::Object)
-        .enumerate()
-        .map(|(channel, label)| {
-            let direct_speaker_index = renderer::speaker_layout::legacy_bed_id(*label)
-                .and_then(|id| bed_to_speaker.get(&id).copied())
-                .map(|i| i as u32);
-            let (ox, oy, oz, coord_mode) = direct_speaker_index
-                .and_then(speaker_pose)
-                .unwrap_or_else(|| (0.0, 0.0, 0.0, fallback_coord_mode()));
-            ObjectMeta {
-                name: bridge_api::labels::canonical_name(*label).to_string(),
-                x: ox as f32,
-                y: oy as f32,
-                z: oz as f32,
-                coord_mode,
-                direct_speaker_index,
-                gain: channel_gain_db(channel_gains, channel as u32),
-                priority: 0.0,
-                size: [0.0, 0.0, 0.0],
-            }
-        });
-
-    // Then the dynamic objects, in event order.
-    let objects = conf.events.iter().filter_map(|event| {
-        let id = event.id()?;
-        let [x, y, z] = event_pos_raw(event).unwrap_or([0.0; 3]);
-        Some(ObjectMeta {
-            name: object_names
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(|| format!("Obj_{id}")),
-            x: x as f32,
-            y: y as f32,
-            z: z as f32,
-            coord_mode: fallback_coord_mode(),
-            direct_speaker_index: None,
-            gain: event.gain_db().map_or(-128, |g| g as i32),
-            priority: 0.0,
-            size: event
-                .size()
-                .map(|s| [s[0] as f32, s[1] as f32, s[2] as f32])
-                .unwrap_or([0.0, 0.0, 0.0]),
-        })
-    });
-
-    fixed.chain(objects).collect()
+        .collect()
 }
 
 /// Resolve an event's position to ADM Cartesian `[x, y, z]`, converting from the
@@ -273,53 +209,26 @@ mod tests {
     }
 
     #[test]
-    fn object_metas_list_fixed_channels_first_with_label_names() {
+    fn object_metas_report_named_objects_with_raw_positions() {
         let mut event = Event::with_id(10);
         event.set_pos([0.1, 0.2, 0.3]);
+        event.set_gain_db(-3);
         let conf = Configuration::new(vec![event]);
-        let layout = SpeakerLayout::from_speakers(vec![
-            Speaker::new("FL", -30.0, 0.0),
-            Speaker::new("FR", 30.0, 0.0),
-            Speaker::new("SW", 0.0, -30.0),
-        ])
-        .expect("layout");
         let names = HashMap::from([(10, "Music".to_string())]);
-        let gains = [bridge_api::RChannelGain {
-            channel: 2,
-            gain_db: -6,
-        }];
 
-        let metas = build_object_metas(
-            &conf,
-            RCoordinateFormat::Cartesian,
-            Some(&layout),
-            &names,
-            &[L, R, LFE, Object],
-            &gains,
-        );
+        let metas = build_object_metas(&conf, RCoordinateFormat::Cartesian, &names);
 
-        let listed: Vec<&str> = metas.iter().map(|m| m.name.as_str()).collect();
-        assert_eq!(listed, ["L", "R", "LFE", "Music"]);
-        // Fixed channels carry their speaker routing; the LFE gain automation
-        // is reflected; the object keeps its raw event position.
-        assert_eq!(metas[0].direct_speaker_index, Some(0));
-        assert_eq!(metas[2].direct_speaker_index, Some(2));
-        assert_eq!(metas[2].gain, -6);
-        assert_eq!(metas[3].direct_speaker_index, None);
-        assert!((metas[3].x - 0.1).abs() < 1e-6);
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].name, "Music");
+        assert_eq!(metas[0].direct_speaker_index, None);
+        assert_eq!(metas[0].gain, -3);
+        assert!((metas[0].x - 0.1).abs() < 1e-6);
     }
 
     #[test]
     fn unnamed_objects_fall_back_to_their_id() {
         let conf = Configuration::new(vec![Event::with_id(12)]);
-        let metas = build_object_metas(
-            &conf,
-            RCoordinateFormat::Cartesian,
-            None,
-            &HashMap::new(),
-            &[],
-            &[],
-        );
+        let metas = build_object_metas(&conf, RCoordinateFormat::Cartesian, &HashMap::new());
         assert_eq!(metas[0].name, "Obj_12");
     }
 }
