@@ -351,33 +351,6 @@ impl SpatialRenderer {
         log::debug!("Renderer channel routing configured: {:?}", routes);
     }
 
-    /// Legacy adapter over [`configure_channel_routing`]: translates the
-    /// historical 0-9 bed-id scheme (with the `usize::MAX` "virtualize"
-    /// sentinel). Scheduled for removal with the scheme itself
-    /// (`docs/channel-object-contract.md`, phase 2b).
-    pub fn configure_beds(&self, bed_indices: &[usize]) {
-        use bridge_api::RChannelLabel as Label;
-        let routes: Vec<ChannelRoute> = bed_indices
-            .iter()
-            .map(|&id| match id {
-                0 => ChannelRoute::Direct(Label::L),
-                1 => ChannelRoute::Direct(Label::R),
-                2 => ChannelRoute::Direct(Label::C),
-                3 => ChannelRoute::Direct(Label::LFE),
-                4 => ChannelRoute::Direct(Label::Ls),
-                5 => ChannelRoute::Direct(Label::Rs),
-                6 => ChannelRoute::Direct(Label::Lb),
-                7 => ChannelRoute::Direct(Label::Rb),
-                8 => ChannelRoute::Direct(Label::Tfl),
-                9 => ChannelRoute::Direct(Label::Tfr),
-                usize::MAX => ChannelRoute::Virtual,
-                // Unroutable id: keep the slot, resolves to no speaker.
-                _ => ChannelRoute::Direct(Label::Unknown),
-            })
-            .collect();
-        self.configure_channel_routing(&routes);
-    }
-
     /// Return the shared `RendererControl` Arc so that `OscSender` can hold it.
     pub fn renderer_control(&self) -> Arc<RendererControl> {
         Arc::clone(&self.control)

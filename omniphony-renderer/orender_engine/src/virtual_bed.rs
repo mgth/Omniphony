@@ -648,26 +648,6 @@ pub fn build_virtual_bed_objects(
     }
 }
 
-/// Bed id (0–9, the scheme used by [`SpeakerLayout::bed_to_speaker_mapping`])
-/// for a channel label, or `None` when the label has no direct-speaker slot in
-/// that scheme (e.g. back-centre / top-side channels). Used to route a channel
-/// the virtual bed marks `spatialize:false` direct to its output speaker.
-fn bed_id_for_label(label: RChannelLabel) -> Option<usize> {
-    match label {
-        RChannelLabel::L => Some(0),
-        RChannelLabel::R => Some(1),
-        RChannelLabel::C => Some(2),
-        RChannelLabel::LFE | RChannelLabel::LFE2 => Some(3),
-        RChannelLabel::Ls => Some(4),
-        RChannelLabel::Rs => Some(5),
-        RChannelLabel::Lb => Some(6),
-        RChannelLabel::Rb => Some(7),
-        RChannelLabel::Tfl => Some(8),
-        RChannelLabel::Tfr => Some(9),
-        _ => None,
-    }
-}
-
 /// Default placement for a channel label when the virtual bed has no entry for
 /// it (or no virtual bed is configured): every channel is virtualized except the
 /// LFE, which cannot be VBAP-panned and routes direct to the sub.

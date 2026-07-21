@@ -159,7 +159,6 @@ pub fn build_spatial_channel_events(
 mod tests {
     use super::*;
     use bridge_api::RChannelLabel::*;
-    use renderer::speaker_layout::{Speaker, SpeakerLayout};
 
     fn labels_5_1_2_plus_objects() -> Vec<RChannelLabel> {
         vec![L, R, C, LFE, Ls, Rs, Object, Object]

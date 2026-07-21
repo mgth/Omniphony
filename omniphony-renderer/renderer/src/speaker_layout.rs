@@ -64,10 +64,10 @@ fn map_depth_with_room_ratios(
     }
 }
 
-/// Legacy 0-9 bed id for a channel label, shared by every remaining consumer
-/// of the historical bed-id scheme (renderer bed routing, engine ingestion).
-/// Scheduled to disappear with the scheme itself in phase 2b of
-/// `docs/channel-object-contract.md`.
+/// Legacy 0-9 bed id for a channel label. The renderer no longer routes by
+/// bed id — the only remaining consumer is the CLI file-export bed
+/// conformance, which keeps the fixed 10-slot export order
+/// (`docs/channel-object-contract.md`).
 pub fn legacy_bed_id(label: bridge_api::RChannelLabel) -> Option<usize> {
     use bridge_api::RChannelLabel as Label;
     match label {
@@ -518,20 +518,6 @@ impl SpeakerLayout {
         self.speakers.iter().map(|s| s.name.as_str()).collect()
     }
 
-    /// Create mapping from bed channel ID to speaker index based on speaker names.
-    ///
-    /// Speaker names are resolved to channel labels through the shared alias
-    /// table (`bridge_api::labels`), then labels to the legacy bed-id scheme:
-    ///
-    /// - 0: L, 1: R, 2: C, 3: LFE, 4: Ls, 5: Rs, 6: Lb, 7: Rb, 8: TFL, 9: TFR
-    ///
-    /// The 0-9 scheme itself is scheduled to leave the bridge ABI (see
-    /// `docs/channel-object-contract.md`, phase 2); this mapping then becomes
-    /// label -> speaker index directly.
-    ///
-    /// Returns a HashMap<bed_id, speaker_idx> for beds found in the layout;
-    /// beds without a matching speaker are absent. The first speaker matching
-    /// a label wins.
     /// Per-label speaker lookup: each recognised speaker name (shared alias
     /// table) maps its channel label to the speaker index; the first speaker
     /// matching a label wins. This is the layout-independent routing language
@@ -545,16 +531,6 @@ impl SpeakerLayout {
             let label = bridge_api::labels::label_for_name(&speaker.name);
             if label != bridge_api::RChannelLabel::Unknown {
                 mapping.entry(label).or_insert(speaker_idx);
-            }
-        }
-        mapping
-    }
-
-    pub fn bed_to_speaker_mapping(&self) -> std::collections::HashMap<usize, usize> {
-        let mut mapping = std::collections::HashMap::new();
-        for (speaker_idx, speaker) in self.speakers.iter().enumerate() {
-            if let Some(id) = legacy_bed_id(bridge_api::labels::label_for_name(&speaker.name)) {
-                mapping.entry(id).or_insert(speaker_idx);
             }
         }
         mapping
@@ -704,23 +680,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bed_mapping_accepts_every_legacy_alias() {
-        // Parity net for the shared-table rewrite: every spelling the old
-        // in-place alias table accepted must still resolve to the same bed id.
-        let legacy: [(usize, &[&str]); 10] = [
-            (0, &["L", "FL", "FrontLeft", "LeftFront"]),
-            (1, &["R", "FR", "FrontRight", "RightFront"]),
-            (2, &["C", "FC", "Center", "Centre"]),
-            (3, &["LFE", "Sub", "Subwoofer", "SW"]),
-            (4, &["Ls", "SL", "LeftSurround", "SurroundLeft"]),
+    fn label_mapping_accepts_every_legacy_alias() {
+        // Parity net kept from the bed-id era: every spelling the historical
+        // alias table accepted must still resolve, now to its channel label.
+        use bridge_api::RChannelLabel as L;
+        let legacy: [(L, &[&str]); 10] = [
+            (L::L, &["L", "FL", "FrontLeft", "LeftFront"]),
+            (L::R, &["R", "FR", "FrontRight", "RightFront"]),
+            (L::C, &["C", "FC", "Center", "Centre"]),
+            (L::LFE, &["LFE", "Sub", "Subwoofer", "SW"]),
+            (L::Ls, &["Ls", "SL", "LeftSurround", "SurroundLeft"]),
+            (L::Rs, &["Rs", "SR", "RightSurround", "SurroundRight"]),
             (
-                6,
+                L::Lb,
                 &[
                     "Lb", "BL", "Lrs", "BackLeft", "LeftBack", "RearLeft", "LeftRear",
                 ],
             ),
             (
-                7,
+                L::Rb,
                 &[
                     "Rb",
                     "BR",
@@ -732,7 +710,7 @@ mod tests {
                 ],
             ),
             (
-                8,
+                L::Tfl,
                 &[
                     "Ltf",
                     "TFL",
@@ -743,7 +721,7 @@ mod tests {
                 ],
             ),
             (
-                9,
+                L::Tfr,
                 &[
                     "Rtf",
                     "TFR",
@@ -753,9 +731,8 @@ mod tests {
                     "HR",
                 ],
             ),
-            (5, &["Rs", "SR", "RightSurround", "SurroundRight"]),
         ];
-        for (bed_id, aliases) in legacy {
+        for (label, aliases) in legacy {
             for alias in aliases {
                 let layout = SpeakerLayout::from_speakers(vec![
                     Speaker::new("A", -30.0, 0.0),
@@ -763,25 +740,30 @@ mod tests {
                     Speaker::new("B", 110.0, 0.0),
                 ])
                 .expect("parity layout");
-                let mapping = layout.bed_to_speaker_mapping();
+                let mapping = layout.label_to_speaker_mapping();
                 assert_eq!(
-                    mapping.get(&bed_id),
+                    mapping.get(&label),
                     Some(&1),
-                    "legacy alias {alias:?} no longer maps to bed id {bed_id}"
+                    "legacy alias {alias:?} no longer maps to {label:?}"
                 );
             }
         }
     }
 
     #[test]
-    fn bed_mapping_first_matching_speaker_wins() {
+    fn label_mapping_first_matching_speaker_wins() {
         let layout = SpeakerLayout::from_speakers(vec![
             Speaker::new("FL", -30.0, 0.0),
             Speaker::new("FrontLeft", -31.0, 0.0),
             Speaker::new("FR", 30.0, 0.0),
         ])
         .expect("dup layout");
-        assert_eq!(layout.bed_to_speaker_mapping().get(&0), Some(&0));
+        assert_eq!(
+            layout
+                .label_to_speaker_mapping()
+                .get(&bridge_api::RChannelLabel::L),
+            Some(&0)
+        );
     }
 
     #[test]

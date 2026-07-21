@@ -16,10 +16,9 @@ use crate::RChannelLabel;
 /// whitespace/`_`/`-`). The first entry of each list is only an alias like
 /// the others; canonical display names come from [`canonical_name`].
 ///
-/// This table is the union of the historical matchers it replaces
-/// (`orender_engine::channel_layout::label_for_speaker_name` and
-/// `renderer::speaker_layout::bed_to_speaker_mapping`); parity with both is
-/// pinned by tests here and in the consuming crates.
+/// This table is the union of the historical matchers it replaces; parity
+/// with both is pinned by tests here and in the consuming crates
+/// (`renderer::speaker_layout` keeps the legacy-alias parity net).
 const ALIASES: &[(RChannelLabel, &[&str])] = &[
     (RChannelLabel::L, &["FL", "L", "FRONTLEFT", "LEFTFRONT"]),
     (RChannelLabel::R, &["FR", "R", "FRONTRIGHT", "RIGHTFRONT"]),

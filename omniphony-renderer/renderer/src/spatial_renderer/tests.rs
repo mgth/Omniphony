@@ -484,12 +484,15 @@ fn virtual_bed_mixes_direct_and_virtualized_channels() {
         e
     };
 
-    // bed_indices: channel 0 = sentinel (object), channel 1 = bed id 3 (LFE).
-    let beds = [usize::MAX, 3usize];
+    // Routing: channel 0 = virtual (object), channel 1 = direct LFE.
+    let beds = [
+        ChannelRoute::Virtual,
+        ChannelRoute::Direct(bridge_api::RChannelLabel::LFE),
+    ];
 
     // Pass A: only the object channel (0) carries signal.
     let mut ra = build();
-    ra.configure_beds(&beds);
+    ra.configure_channel_routing(&beds);
     let pcm_a: Vec<f32> = (0..sample_length).flat_map(|_| [0.6f32, 0.0]).collect();
     let events_a = vec![
         SpatialChannelEvent {
@@ -528,7 +531,7 @@ fn virtual_bed_mixes_direct_and_virtualized_channels() {
 
     // Pass B: only the bed channel (1) carries signal → one-hot at the LFE.
     let mut rb = build();
-    rb.configure_beds(&beds);
+    rb.configure_channel_routing(&beds);
     let pcm_b: Vec<f32> = (0..sample_length).flat_map(|_| [0.0f32, 0.6]).collect();
     let eb = energy(
         &rb.render_frame(&pcm_b, 2, &events_a, Vec::new(), false)
@@ -691,8 +694,11 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
     // The stream's own LFE bed channel still routes one-hot to the sub even
     // though the speaker is now spatialized.
     let mut r = build();
-    let beds = [usize::MAX, 3usize];
-    r.configure_beds(&beds);
+    let beds = [
+        ChannelRoute::Virtual,
+        ChannelRoute::Direct(bridge_api::RChannelLabel::LFE),
+    ];
+    r.configure_channel_routing(&beds);
     let bed_len = 8usize;
     let pcm: Vec<f32> = (0..bed_len).flat_map(|_| [0.0f32, 0.6]).collect();
     let events = vec![
@@ -1299,8 +1305,8 @@ fn binaural_lfe_bed_feeds_both_ears_equally_and_dry() {
         9,
     )
     .unwrap();
-    // Channel 0 = bed id 3 → the LFE speaker (index 3, spatialize:false).
-    r.configure_beds(&[3usize]);
+    // Channel 0 = direct LFE → the LFE speaker (index 3, spatialize:false).
+    r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::LFE)]);
     {
         let mut live = r.control.live.write();
         live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
