@@ -34,7 +34,13 @@ Progress:
   object-content routing fix is now on both the `orender` and
   `orender-master` lines. The mpv-omniphony `patches`/`patches-master`
   regeneration happens at the next release, per the patch-based model.
-- Phases 4–5: not started.
+- **Phase 4 landed**: `/omniphony/object/{id}/meta` (sparse, additive)
+  carries the fixed-channel flag + canonical label end to end
+  (`ObjectMeta` → OSC → Tauri parser/`app_state` → JS). Studio's position
+  thumbnail reads the explicit flag (direct fixed channel → speaker-style
+  marker, e.g. LFE → sub) and the label lands in the tooltip;
+  `directSpeakerIndex` is position info only.
+- Phase 5: not started.
 
 ## The incident
 
@@ -225,8 +231,12 @@ fixed channels. Objects are displayed from `name_updates`, falling back to
   "Atmos") come from the container/decoder profile, not from the routing
   fact — a fixed-presentation DTS:X track displays as DTS:X while rendering
   as labeled channels.
-- **OSC / Studio**: the per-source payload gains an explicit
-  `fixed: bool` + `label: string` (serde layer: `app_state.rs`, as usual).
+- **OSC / Studio**: each source slot carries an explicit
+  `fixed: bool` + `label: string` (serde layer: `app_state.rs`, as usual),
+  emitted as a dedicated sparse message
+  `/omniphony/object/{id}/meta [Int fixed, String label, Long generation]`
+  (additive: appending to the positional payload would break older
+  clients' trailing-arg heuristics).
   Fixed channels stay listed as sources (solo/mute, position icon at their
   planned pose — direct or virtual); dynamic objects keep today's
   presentation. `directSpeakerIndex` remains as position information but no
