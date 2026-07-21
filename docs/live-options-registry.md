@@ -9,7 +9,7 @@ Progress:
   (`omniphony-renderer/runtime_control/tests/live_options_conformance.rs`) and
   the knip dead-code gate in the Studio CI.
 - **Phase 1 landed**: the registry itself (`renderer/src/options.rs`) with the
-  2D-sources family migrated; the generic `/omniphony/control/option` setter
+  fixed-channel-source family migrated; the generic `/omniphony/control/option` setter
   (legacy addresses are aliases); one shared config seed used by BOTH the CLI
   bootstrap and `Engine::from_paths`; one shared store used by the full save
   and the targeted persists; the snapshot `options` block + the
@@ -191,7 +191,7 @@ Contributor cost for a new option: **one `OptionSpec` entry + i18n keys.**
   immediate protection for the current hand-wired options.
 - **Phase 1** — registry core: `options.rs` types + store + epoch + generic
   OSC/persist/seed/snapshot + Tauri passthrough + JS generic ingestion.
-  Migrate the 2D-sources family first (`channel_render_mode`,
+  Migrate the fixed-channel-source family first (`channel_render_mode`,
   `surround_placement`, `output_channel_mapping`, `object_generator_id`,
   `phantom_enabled`) — the repeat offenders.
 - **Phase 2** — Studio binder: `data-option` bindings for the migrated
