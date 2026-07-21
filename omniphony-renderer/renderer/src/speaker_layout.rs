@@ -497,91 +497,44 @@ impl SpeakerLayout {
         self.speakers.iter().map(|s| s.name.as_str()).collect()
     }
 
-    /// Create mapping from bed channel ID to speaker index based on speaker names
+    /// Create mapping from bed channel ID to speaker index based on speaker names.
     ///
-    /// Bed channel IDs (0-9) are mapped to speakers by matching names:
-    /// - 0: L, FL, FrontLeft (Left Front)
-    /// - 1: R, FR, FrontRight (Right Front)
-    /// - 2: C, FC, Center (Center)
-    /// - 3: LFE, Sub (Low Frequency Effects)
-    /// - 4: Ls, SL, LeftSurround (Left Surround)
-    /// - 5: Rs, SR, RightSurround (Right Surround)
-    /// - 6: Lb, BL, Lrs, BackLeft (Left Back)
-    /// - 7: Rb, BR, Rrs, BackRight (Right Back)
-    /// - 8: Ltf, TFL, TopFrontLeft (Left Top Front)
-    /// - 9: Rtf, TFR, TopFrontRight (Right Top Front)
+    /// Speaker names are resolved to channel labels through the shared alias
+    /// table (`bridge_api::labels`), then labels to the legacy bed-id scheme:
     ///
-    /// Returns a HashMap<bed_id, speaker_idx> for beds found in the layout.
-    /// Beds not found are not included in the map.
+    /// - 0: L, 1: R, 2: C, 3: LFE, 4: Ls, 5: Rs, 6: Lb, 7: Rb, 8: TFL, 9: TFR
+    ///
+    /// The 0-9 scheme itself is scheduled to leave the bridge ABI (see
+    /// `docs/channel-object-contract.md`, phase 2); this mapping then becomes
+    /// label -> speaker index directly.
+    ///
+    /// Returns a HashMap<bed_id, speaker_idx> for beds found in the layout;
+    /// beds without a matching speaker are absent. The first speaker matching
+    /// a label wins.
     pub fn bed_to_speaker_mapping(&self) -> std::collections::HashMap<usize, usize> {
-        // Bed channel ID → list of possible speaker name aliases (case-insensitive)
-        let bed_aliases: [(usize, &[&str]); 10] = [
-            (0, &["L", "FL", "FrontLeft", "LeftFront"]),
-            (1, &["R", "FR", "FrontRight", "RightFront"]),
-            (2, &["C", "FC", "Center", "Centre"]),
-            (3, &["LFE", "Sub", "Subwoofer", "SW"]),
-            (4, &["Ls", "SL", "LeftSurround", "SurroundLeft"]),
-            (5, &["Rs", "SR", "RightSurround", "SurroundRight"]),
-            (
-                6,
-                &[
-                    "Lb", "BL", "Lrs", "BackLeft", "LeftBack", "RearLeft", "LeftRear",
-                ],
-            ),
-            (
-                7,
-                &[
-                    "Rb",
-                    "BR",
-                    "Rrs",
-                    "BackRight",
-                    "RightBack",
-                    "RearRight",
-                    "RightRear",
-                ],
-            ),
-            (
-                8,
-                &[
-                    "Ltf",
-                    "TFL",
-                    "TopFrontLeft",
-                    "LeftTopFront",
-                    "HeightLeft",
-                    "HL",
-                ],
-            ),
-            (
-                9,
-                &[
-                    "Rtf",
-                    "TFR",
-                    "TopFrontRight",
-                    "RightTopFront",
-                    "HeightRight",
-                    "HR",
-                ],
-            ),
-        ];
-
-        let mut mapping = std::collections::HashMap::new();
-
-        for (bed_id, aliases) in &bed_aliases {
-            // Find speaker matching any alias (case-insensitive)
-            for (speaker_idx, speaker) in self.speakers.iter().enumerate() {
-                let speaker_name_lower = speaker.name.to_lowercase();
-                for alias in *aliases {
-                    if speaker_name_lower == alias.to_lowercase() {
-                        mapping.insert(*bed_id, speaker_idx);
-                        break;
-                    }
-                }
-                if mapping.contains_key(bed_id) {
-                    break;
-                }
+        use bridge_api::RChannelLabel as Label;
+        fn bed_id(label: Label) -> Option<usize> {
+            match label {
+                Label::L => Some(0),
+                Label::R => Some(1),
+                Label::C => Some(2),
+                Label::LFE => Some(3),
+                Label::Ls => Some(4),
+                Label::Rs => Some(5),
+                Label::Lb => Some(6),
+                Label::Rb => Some(7),
+                Label::Tfl => Some(8),
+                Label::Tfr => Some(9),
+                _ => None,
             }
         }
 
+        let mut mapping = std::collections::HashMap::new();
+        for (speaker_idx, speaker) in self.speakers.iter().enumerate() {
+            if let Some(id) = bed_id(bridge_api::labels::label_for_name(&speaker.name)) {
+                mapping.entry(id).or_insert(speaker_idx);
+            }
+        }
         mapping
     }
 
@@ -727,6 +680,87 @@ impl SpeakerLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bed_mapping_accepts_every_legacy_alias() {
+        // Parity net for the shared-table rewrite: every spelling the old
+        // in-place alias table accepted must still resolve to the same bed id.
+        let legacy: [(usize, &[&str]); 10] = [
+            (0, &["L", "FL", "FrontLeft", "LeftFront"]),
+            (1, &["R", "FR", "FrontRight", "RightFront"]),
+            (2, &["C", "FC", "Center", "Centre"]),
+            (3, &["LFE", "Sub", "Subwoofer", "SW"]),
+            (4, &["Ls", "SL", "LeftSurround", "SurroundLeft"]),
+            (
+                6,
+                &[
+                    "Lb", "BL", "Lrs", "BackLeft", "LeftBack", "RearLeft", "LeftRear",
+                ],
+            ),
+            (
+                7,
+                &[
+                    "Rb",
+                    "BR",
+                    "Rrs",
+                    "BackRight",
+                    "RightBack",
+                    "RearRight",
+                    "RightRear",
+                ],
+            ),
+            (
+                8,
+                &[
+                    "Ltf",
+                    "TFL",
+                    "TopFrontLeft",
+                    "LeftTopFront",
+                    "HeightLeft",
+                    "HL",
+                ],
+            ),
+            (
+                9,
+                &[
+                    "Rtf",
+                    "TFR",
+                    "TopFrontRight",
+                    "RightTopFront",
+                    "HeightRight",
+                    "HR",
+                ],
+            ),
+            (5, &["Rs", "SR", "RightSurround", "SurroundRight"]),
+        ];
+        for (bed_id, aliases) in legacy {
+            for alias in aliases {
+                let layout = SpeakerLayout::from_speakers(vec![
+                    Speaker::new("A", -30.0, 0.0),
+                    Speaker::new(*alias, 30.0, 0.0),
+                    Speaker::new("B", 110.0, 0.0),
+                ])
+                .expect("parity layout");
+                let mapping = layout.bed_to_speaker_mapping();
+                assert_eq!(
+                    mapping.get(&bed_id),
+                    Some(&1),
+                    "legacy alias {alias:?} no longer maps to bed id {bed_id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bed_mapping_first_matching_speaker_wins() {
+        let layout = SpeakerLayout::from_speakers(vec![
+            Speaker::new("FL", -30.0, 0.0),
+            Speaker::new("FrontLeft", -31.0, 0.0),
+            Speaker::new("FR", 30.0, 0.0),
+        ])
+        .expect("dup layout");
+        assert_eq!(layout.bed_to_speaker_mapping().get(&0), Some(&0));
+    }
 
     #[test]
     fn test_speaker_creation() {

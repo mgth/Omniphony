@@ -9,50 +9,11 @@
 
 use bridge_api::RChannelLabel;
 
-/// Resolve one speaker name to its channel label. Case-insensitive; tolerates
-/// the common naming variants found across the bundled layouts and hand-edited
-/// configs. Returns [`RChannelLabel::Unknown`] for names it can't place.
+/// Resolve one speaker name to its channel label. Thin wrapper over the
+/// shared alias table (`bridge_api::labels`) — the single source of truth
+/// for name↔label matching, per `docs/channel-object-contract.md` ("Naming").
 pub fn label_for_speaker_name(name: &str) -> RChannelLabel {
-    // Normalise: uppercase, drop spaces/underscores/hyphens so "Top Front Left",
-    // "TOP_FRONT_LEFT" and "TFL" all collapse to the same key.
-    let key: String = name
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '_' && *c != '-')
-        .flat_map(|c| c.to_uppercase())
-        .collect();
-
-    use RChannelLabel::*;
-    match key.as_str() {
-        "FL" | "L" | "FRONTLEFT" | "LEFTFRONT" => L,
-        "FR" | "R" | "FRONTRIGHT" | "RIGHTFRONT" => R,
-        "C" | "FC" | "CENTER" | "CENTRE" | "FRONTCENTER" => C,
-        "LFE" | "LFE1" | "SUB" | "SUBWOOFER" | "SW" => LFE,
-        "LFE2" => LFE2,
-        "SL" | "LS" | "SIDELEFT" | "SURROUNDLEFT" | "LEFTSURROUND" => Ls,
-        "SR" | "RS" | "SIDERIGHT" | "SURROUNDRIGHT" | "RIGHTSURROUND" => Rs,
-        "BL" | "LB" | "LRS" | "BACKLEFT" | "LEFTBACK" | "REARLEFT" | "LEFTREAR" => Lb,
-        "BR" | "RB" | "RRS" | "BACKRIGHT" | "RIGHTBACK" | "REARRIGHT" | "RIGHTREAR" => Rb,
-        "RC" | "BC" | "CB" | "BACKCENTER" | "REARCENTER" | "CENTERBACK" => Cb,
-        // Front-left/right of center (wide-front center pair).
-        "LSC" | "FLC" | "FRONTLEFTCENTER" | "LEFTCENTER" => Lsc,
-        "RSC" | "FRC" | "FRONTRIGHTCENTER" | "RIGHTCENTER" => Rsc,
-        // Front wide.
-        "FWL" | "LW" | "WL" | "WIDELEFT" | "FRONTWIDELEFT" => Lw,
-        "FWR" | "RW" | "WR" | "WIDERIGHT" | "FRONTWIDERIGHT" => Rw,
-        // Side direct (between side surround and back), where layouts use it.
-        "LSD" => Lsd,
-        "RSD" => Rsd,
-        // Height / top tier.
-        "TFL" | "TPFL" | "TOPFRONTLEFT" | "UFL" => Tfl,
-        "TFR" | "TPFR" | "TOPFRONTRIGHT" | "UFR" => Tfr,
-        "TSL" | "TPSL" | "TOPSIDELEFT" | "USL" => Tsl,
-        "TSR" | "TPSR" | "TOPSIDERIGHT" | "USR" => Tsr,
-        "TBL" | "TPBL" | "TOPBACKLEFT" | "UBL" | "TRL" => Tbl,
-        "TBR" | "TPBR" | "TOPBACKRIGHT" | "UBR" | "TRR" => Tbr,
-        "TC" | "TPC" | "TOPCENTER" | "TOPMIDDLECENTER" => Tc,
-        "TFC" | "TOPFRONTCENTER" => Tfc,
-        _ => Unknown,
-    }
+    bridge_api::labels::label_for_name(name)
 }
 
 #[cfg(test)]

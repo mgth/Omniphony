@@ -1,5 +1,7 @@
 #![allow(non_local_definitions)]
 
+pub mod labels;
+
 use abi_stable::{
     StableAbi, declare_root_module_statics,
     library::RootModule,
