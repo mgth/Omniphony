@@ -270,7 +270,7 @@ export function setupModalAndToggleListeners() {
     });
   }
 
-  // 2D sources: collapsed by default, with a header summary while collapsed.
+  // Fixed-channel sources: collapsed by default, with a header summary while collapsed.
   const twoDSourcesToggleBtnEl = document.getElementById('twoDSourcesToggleBtn');
   if (twoDSourcesToggleBtnEl) {
     twoDSourcesToggleBtnEl.addEventListener('click', () => {

@@ -317,9 +317,9 @@ export function applyRampModeNow() {
   invoke('control_ramp_mode', { value: requested });
 }
 
-// Header summary shown while the 2D-sources panel is collapsed: whether flat 2D
-// beds are spatialised (with the rear-channel placement) or passed through to the
-// player. Reads the declared options through `getLiveOption`.
+// Header summary shown while the fixed-channel-source panel is collapsed:
+// whether fixed channels are spatialised (with the rear-channel placement) or
+// passed through to the player. Reads the declared options through `getLiveOption`.
 export function updateTwoDSourcesSummary() {
   const summaryEl = document.getElementById('twoDSourcesSummary');
   if (!summaryEl) return;

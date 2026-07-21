@@ -308,7 +308,7 @@ pub struct LiveInputState {
     pub lfe_mode: Option<String>,
 }
 
-/// The 2D-sources companions that are NOT scalar registry options, mirrored
+/// The fixed-channel-source companions that are NOT scalar registry options, mirrored
 /// verbatim from the renderer's `/omniphony/state/renderer` domain (camelCase
 /// keys). The scalar options themselves (channel render mode, surround
 /// placement, generator id, phantom enable, output mapping) ride the generic

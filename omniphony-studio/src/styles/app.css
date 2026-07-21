@@ -194,7 +194,7 @@
       }
 
       /* Channel editor pinned below the left-overlay scroll — same treatment as
-         the speaker editor: the 2D sources / objects list above keep scrolling
+         the speaker editor: the fixed-channel sources / objects list above keeps scrolling
          while this temporary editing panel stays visible at the bottom. */
       #overlay > #channelEditSection {
         flex: 0 0 auto;

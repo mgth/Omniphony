@@ -145,7 +145,7 @@ struct RendererDomainState {
     /// Declared live options (registry RFC phase 1): the renderer's `options`
     /// block, passed through verbatim — no typed mirror needed per option.
     options: Option<serde_json::Value>,
-    /// The live 2D-sources / routing options, collected by key (flatten) and
+    /// The live fixed-channel-source / routing options, collected by key (flatten) and
     /// mirrored into `AppState` verbatim — see [`LiveOptionsState`].
     #[serde(flatten)]
     live_options: LiveOptionsState,

@@ -246,7 +246,7 @@ export const app = {
   // Speaker names that can't be routed by position in by_name mode (reported by
   // the renderer for the active backend); shown as a warning. Empty when none.
   outputChannelMappingUnroutable: [],
-  // Parametrable virtual bed for 2D sources (a SpeakerLayout-shaped object, or
+  // Parametrable virtual bed for fixed-channel sources (a SpeakerLayout-shaped object, or
   // null = built-in canonical poses). Edited by the virtual-bed editor.
   virtualBed: null,
   // Declared live options (registry RFC): the renderer's `options` snapshot
@@ -420,7 +420,7 @@ export const app = {
   // resolved at drag start so update/end commit to the right model.
   dragEditTarget: null,
 
-  // Virtual-bed channel edit (a 2D-source marker edited via the 3D gizmo).
+  // Virtual-bed channel edit (a fixed-channel-source marker edited via the 3D gizmo).
   // While set, updateSource skips repositioning this id so the live OSC stream
   // doesn't fight the gizmo drag; the new position is sent on release.
   isDraggingVirtualBed: false,
