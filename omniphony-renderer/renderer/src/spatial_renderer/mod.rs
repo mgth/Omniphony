@@ -150,6 +150,12 @@ fn ensure_denormals_flushed() {
 }
 
 /// Spatial audio renderer using VBAP
+/// Time for a full-scale (0 → unity) gain change to complete, in seconds.
+/// Every per-channel gain step is slewed at this constant rate so metadata
+/// jumps, mute toggles and channel-plan transitions never click
+/// (`docs/channel-object-contract.md`, phase 2b).
+pub const GAIN_SLEW_SECS: f32 = 0.02;
+
 /// Per-input-channel routing decision, in the layout-independent label
 /// language of `docs/channel-object-contract.md`: a `Direct` channel is
 /// one-hot routed to the speaker its label resolves to in the active topology
@@ -701,7 +707,16 @@ impl SpatialRenderer {
                     } else {
                         10.0_f32.powf(gain_db as f32 / 20.0)
                     };
-                    self.binaural_gain_buf[c] = obj_gain * gain_linear;
+                    // Slewed like the VBAP path (block-end value: the binaural
+                    // stage updates per block anyway).
+                    let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
+                    if let Some(state) = states.get_mut(&c) {
+                        let (start, step) =
+                            state.slew_gain(obj_gain * gain_linear, sample_length, ramp_samples);
+                        self.binaural_gain_buf[c] = start + step * sample_length as f32;
+                    } else {
+                        self.binaural_gain_buf[c] = 0.0;
+                    }
                     // Same direct/virtual split as the VBAP path.
                     let direct_label = match channel_routing.get(c) {
                         Some(ChannelRoute::Direct(label)) if c < num_routed => Some(*label),
@@ -896,10 +911,8 @@ impl SpatialRenderer {
             };
 
             // Get gain from cached metadata (common for ALL channels - beds and objects)
-            let gain_db = channel_states
-                .get(&input_channel_idx)
-                .map(|s| s.gain_db)
-                .unwrap_or(-128);
+            let state = channel_states.entry(input_channel_idx).or_default();
+            let gain_db = state.gain_db;
 
             // Convert gain from dB to linear
             let gain_linear = if gain_db == -128 {
@@ -907,6 +920,11 @@ impl SpatialRenderer {
             } else {
                 10.0_f32.powf(gain_db as f32 / 20.0)
             };
+            // Slewed per-sample gain factor (includes the mute 0/1 factor):
+            // factor(s) = gain_start + gain_step * s.
+            let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
+            let (gain_start, gain_step) =
+                state.slew_gain(gain_linear * obj_gain, sample_length, ramp_samples);
 
             // A channel is directly routed when its routing entry is
             // `Direct` (channels beyond the routing table are trailing object
@@ -940,8 +958,7 @@ impl SpatialRenderer {
                 // used for objects, but with a one-hot routing table.
                 for sample_idx in 0..sample_length {
                     let sample = input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                        * gain_linear
-                        * obj_gain;
+                        * (gain_start + gain_step * sample_idx as f32);
                     let out_base = sample_idx * self.num_speakers;
                     for (speaker_idx, &gain) in self.bed_routing_gains_buf.iter().enumerate() {
                         output[out_base + speaker_idx] += sample * gain;
@@ -1040,8 +1057,7 @@ impl SpatialRenderer {
                                 &mut self.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * gain_linear
-                                        * obj_gain
+                                        * (gain_start + gain_step * sample_idx as f32)
                                 },
                             );
                             crossover_elapsed += started_at.elapsed();
@@ -1058,8 +1074,7 @@ impl SpatialRenderer {
                             for sample_idx in 0..sample_length {
                                 let raw = input_pcm
                                     [sample_idx * input_channel_count + input_channel_idx]
-                                    * gain_linear
-                                    * obj_gain;
+                                    * (gain_start + gain_step * sample_idx as f32);
                                 let split = split_bands(
                                     raw,
                                     &self.crossover_filter_bank,
@@ -1103,8 +1118,7 @@ impl SpatialRenderer {
                                 &mut self.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * gain_linear
-                                        * obj_gain
+                                        * (gain_start + gain_step * sample_idx as f32)
                                 },
                             );
                             crossover_elapsed += started_at.elapsed();
@@ -1121,8 +1135,7 @@ impl SpatialRenderer {
                             for sample_idx in 0..sample_length {
                                 let raw = input_pcm
                                     [sample_idx * input_channel_count + input_channel_idx]
-                                    * gain_linear
-                                    * obj_gain;
+                                    * (gain_start + gain_step * sample_idx as f32);
                                 let split = split_bands(
                                     raw,
                                     &self.crossover_filter_bank,
@@ -1156,8 +1169,7 @@ impl SpatialRenderer {
                                 &mut self.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * gain_linear
-                                        * obj_gain
+                                        * (gain_start + gain_step * sample_idx as f32)
                                 },
                             );
                             crossover_elapsed += started_at.elapsed();
@@ -1229,8 +1241,7 @@ impl SpatialRenderer {
                                 }
                                 let raw = input_pcm
                                     [sample_idx * input_channel_count + input_channel_idx]
-                                    * gain_linear
-                                    * obj_gain;
+                                    * (gain_start + gain_step * sample_idx as f32);
                                 let split = split_bands(
                                     raw,
                                     &self.crossover_filter_bank,
@@ -1293,8 +1304,7 @@ impl SpatialRenderer {
                                 &mut self.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * gain_linear
-                                        * obj_gain
+                                        * (gain_start + gain_step * sample_idx as f32)
                                 },
                             );
                             crossover_elapsed += started_at.elapsed();
@@ -1329,8 +1339,7 @@ impl SpatialRenderer {
                                 }
                                 let raw = input_pcm
                                     [sample_idx * input_channel_count + input_channel_idx]
-                                    * gain_linear
-                                    * obj_gain;
+                                    * (gain_start + gain_step * sample_idx as f32);
                                 let split = split_bands(
                                     raw,
                                     &self.crossover_filter_bank,

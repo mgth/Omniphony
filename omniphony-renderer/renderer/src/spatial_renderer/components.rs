@@ -124,6 +124,13 @@ pub(super) struct ChannelState {
     /// Gain in dB
     pub(super) gain_db: i8,
 
+    /// Linear gain actually applied at the end of the last rendered block.
+    /// Every gain step (metadata jump, mute toggle, plan transition, stream
+    /// start) is slewed toward its target at a constant rate — full scale in
+    /// [`GAIN_SLEW_SECS`](super::GAIN_SLEW_SECS) — so routing/plan changes
+    /// never click. Starts silent: streams fade in over the slew time.
+    pub(super) slewed_gain: f32,
+
     pub(super) ramp: ChannelRampState,
 
     /// `RampMode::Interp` only: this channel's destination band gains from the
@@ -132,10 +139,38 @@ pub(super) struct ChannelState {
     pub(super) interp_prev_gains: Vec<Gains>,
 }
 
+impl ChannelState {
+    /// Advance the gain slew by one block toward `target`; returns the
+    /// block's `(start, per_sample_step)` so mix loops can interpolate
+    /// `start + step * sample_idx`.
+    pub(super) fn slew_gain(
+        &mut self,
+        target: f32,
+        sample_length: usize,
+        ramp_samples: f32,
+    ) -> (f32, f32) {
+        let start = self.slewed_gain;
+        let max_step = if ramp_samples > 0.0 {
+            sample_length as f32 / ramp_samples
+        } else {
+            f32::INFINITY
+        };
+        let delta = (target - start).clamp(-max_step, max_step);
+        self.slewed_gain = start + delta;
+        let step = if sample_length > 0 {
+            delta / sample_length as f32
+        } else {
+            0.0
+        };
+        (start, step)
+    }
+}
+
 impl Default for ChannelState {
     fn default() -> Self {
         Self {
             gain_db: -128, // -inf dB (muted)
+            slewed_gain: 0.0,
             ramp: ChannelRampState::default(),
             interp_prev_gains: Vec::new(),
         }

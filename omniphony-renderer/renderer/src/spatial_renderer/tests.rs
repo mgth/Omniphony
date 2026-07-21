@@ -1318,6 +1318,12 @@ fn binaural_lfe_bed_feeds_both_ears_equally_and_dry() {
         position: None,
         sample_pos: Some(0),
     }];
+    // Warm up the per-channel gain slew (channels fade in over
+    // GAIN_SLEW_SECS from silence) with one long silent block, so the
+    // asserted block runs at settled gain.
+    let warmup = vec![0.0f32; 4096];
+    r.render_frame(&warmup, 1, &event, Vec::new(), false)
+        .unwrap();
     let out = r
         .render_frame(&pcm, 1, &event, Vec::new(), false)
         .unwrap()
