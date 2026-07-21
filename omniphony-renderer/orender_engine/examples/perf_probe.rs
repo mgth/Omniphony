@@ -90,7 +90,7 @@ fn main() {
         "perf_probe: stream={} ramp={ramp} max_mb={max_mb} channels={} spatial={}",
         stream.display(),
         engine.channel_count(),
-        engine.is_spatial(),
+        engine.has_objects(),
     );
 
     let mut file = std::fs::File::open(&stream).expect("open stream");

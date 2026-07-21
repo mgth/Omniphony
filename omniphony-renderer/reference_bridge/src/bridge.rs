@@ -238,8 +238,8 @@ impl FormatBridge for WavBridge {
         self.frames_emitted > 0
     }
 
-    fn is_spatial(&self) -> bool {
-        // A WAV file is a plain channel bed: no object payloads.
+    fn has_objects(&self) -> bool {
+        // A WAV file carries fixed channels only: no dynamic objects.
         false
     }
 
@@ -332,7 +332,7 @@ mod tests {
         let result = bridge.push_packet(RSlice::from_slice(&wav), RInputTransport::Raw, 0);
         assert!(result.error_message.is_empty());
         assert!(bridge.is_ready());
-        assert!(!bridge.is_spatial());
+        assert!(!bridge.has_objects());
         let total: u32 = result.frames.iter().map(|f| f.sample_count).sum();
         assert_eq!(total, 3);
         let f = &result.frames[0];

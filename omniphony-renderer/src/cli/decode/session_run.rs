@@ -214,7 +214,7 @@ fn prepare_render_run(args: &RenderArgs) -> Result<PreparedDecodeRun> {
             args.presentation
         ));
     }
-    let is_spatial_presentation = bridge.is_spatial();
+    let is_spatial_presentation = bridge.has_objects();
     let coordinate_format = bridge.coordinate_format();
     let vbap_cartesian_defaults = bridge.vbap_cartesian_defaults();
     let preferred_evaluation_mode = bridge.preferred_vbap_table_mode();

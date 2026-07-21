@@ -13,7 +13,7 @@ name = "reference_bridge"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-bridge_api = { version = "0.2.0", path = "../bridge_api" }
+bridge_api = { version = "0.3.0", path = "../bridge_api" }
 abi_stable = "0.11"
 log = "0.4"
 

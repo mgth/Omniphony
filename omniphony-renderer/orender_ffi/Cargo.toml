@@ -24,7 +24,7 @@ env_logger = "0.11"
 
 [dev-dependencies]
 # The OrenderChannelLabel ↔ RChannelLabel discriminant-parity unit test.
-bridge_api = { version = "0.2.0", path = "../bridge_api" }
+bridge_api = { version = "0.3.0", path = "../bridge_api" }
 
 [features]
 # SOFA (personalised HRTF) support, on by default: liborender is the desktop

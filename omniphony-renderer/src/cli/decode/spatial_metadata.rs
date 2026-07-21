@@ -1,6 +1,6 @@
 use super::state::SpatialState;
 use anyhow::Result;
-use bridge_api::{RCoordinateFormat, RMetadataFrame};
+use bridge_api::{RChannelLabel, RCoordinateFormat, RMetadataFrame};
 use orender_engine::events::{Configuration, Event};
 use orender_engine::osc::{ObjectMeta, OscSender};
 
@@ -36,25 +36,37 @@ impl<'a> SpatialMetadataCoordinator<'a> {
             let conf = Configuration::from(meta);
             self.spatial.has_objects = true;
 
-            if !meta.bed_indices.is_empty() {
-                let new_bed_indices: Vec<usize> = meta.bed_indices.iter().copied().collect();
-                let changed = self.spatial.bed_indices.as_ref() != Some(&new_bed_indices);
-                if changed {
-                    self.spatial.bed_indices = Some(new_bed_indices);
-                    log::debug!(
-                        "Extracted bed indices from bridge metadata: {:?}",
-                        self.spatial.bed_indices
-                    );
-
-                    if let (Some(renderer), Some(bed_indices)) =
-                        (self.spatial_renderer, &self.spatial.bed_indices)
-                    {
-                        renderer.configure_beds(bed_indices);
-                    }
+            // Cache the sparse object↔channel declaration.
+            if !meta.object_channels.is_empty() {
+                let mut decl: Vec<(u32, usize)> = meta
+                    .object_channels
+                    .iter()
+                    .map(|oc| (oc.id, oc.channel as usize))
+                    .collect();
+                decl.sort_unstable_by_key(|&(_, channel)| channel);
+                if self.spatial.object_channels != decl {
+                    self.spatial.object_channels = decl;
                 }
             }
 
-            self.handle_metadata_writing(meta, conf, sample_rate)?;
+            // Renderer bed set = legacy bed ids of the fixed-channel labels
+            // (the 0-9 scheme leaves with the unified channel plan, phase 2b).
+            let new_bed_indices =
+                orender_engine::spatial::derive_bed_indices(&frame.channel_labels);
+            if self.spatial.bed_indices.as_ref() != Some(&new_bed_indices) {
+                self.spatial.bed_indices = Some(new_bed_indices);
+                log::debug!(
+                    "Derived bed indices from channel labels: {:?}",
+                    self.spatial.bed_indices
+                );
+                if let (Some(renderer), Some(bed_indices)) =
+                    (self.spatial_renderer, &self.spatial.bed_indices)
+                {
+                    renderer.configure_beds(bed_indices);
+                }
+            }
+
+            self.handle_metadata_writing(meta, conf, &frame.channel_labels, sample_rate)?;
         }
         Ok(())
     }
@@ -62,6 +74,7 @@ impl<'a> SpatialMetadataCoordinator<'a> {
     pub fn reset_for_segment(&mut self) {
         self.spatial.has_objects = false;
         self.spatial.bed_indices = None;
+        self.spatial.object_channels.clear();
         self.spatial.object_names.clear();
         self.spatial.frame_events.clear();
         if let Some(renderer) = self.spatial_renderer {
@@ -73,6 +86,7 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         &mut self,
         meta: &RMetadataFrame,
         conf: Configuration,
+        channel_labels: &[RChannelLabel],
         sample_rate: u32,
     ) -> Result<()> {
         let sample_pos = meta.sample_pos;
@@ -104,80 +118,14 @@ impl<'a> SpatialMetadataCoordinator<'a> {
             let active_layout = self
                 .spatial_renderer
                 .map(|renderer| renderer.speaker_layout());
-            let bed_to_speaker = active_layout
-                .as_ref()
-                .map(|layout| layout.bed_to_speaker_mapping())
-                .unwrap_or_default();
-            let objects: Vec<ObjectMeta> = conf
-                .events
-                .iter()
-                .enumerate()
-                .map(|(idx, event)| {
-                    let logical_id = event.id().unwrap_or(idx as u32);
-                    let direct_speaker_index = if logical_id < 10 {
-                        bed_to_speaker
-                            .get(&(logical_id as usize))
-                            .copied()
-                            .map(|idx| idx as u32)
-                    } else {
-                        None
-                    };
-                    let (ox, oy, oz, coord_mode) = direct_speaker_index
-                        .and_then(|speaker_idx| {
-                            active_layout.as_ref().and_then(|layout| {
-                                layout.speakers.get(speaker_idx as usize).map(|speaker| {
-                                    if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
-                                        (
-                                            speaker.x as f64,
-                                            speaker.y as f64,
-                                            speaker.z as f64,
-                                            "cartesian".to_string(),
-                                        )
-                                    } else {
-                                        (
-                                            speaker.azimuth as f64,
-                                            speaker.elevation as f64,
-                                            speaker.distance as f64,
-                                            "polar".to_string(),
-                                        )
-                                    }
-                                })
-                            })
-                        })
-                        .unwrap_or_else(|| {
-                            let [x, y, z] =
-                                Self::event_pos_raw(coordinate_format, event).unwrap_or([0.0; 3]);
-                            (
-                                x,
-                                y,
-                                z,
-                                match coordinate_format {
-                                    RCoordinateFormat::Cartesian => "cartesian".to_string(),
-                                    RCoordinateFormat::Polar => "polar".to_string(),
-                                },
-                            )
-                        });
-                    ObjectMeta {
-                        name: self
-                            .spatial
-                            .object_names
-                            .get(&logical_id)
-                            .cloned()
-                            .unwrap_or_else(|| format!("Obj_{logical_id}")),
-                        x: ox as f32,
-                        y: oy as f32,
-                        z: oz as f32,
-                        coord_mode,
-                        direct_speaker_index,
-                        gain: event.gain_db().map_or(-128, |g| g as i32),
-                        priority: 0.0,
-                        size: event
-                            .size()
-                            .map(|s| [s[0] as f32, s[1] as f32, s[2] as f32])
-                            .unwrap_or([0.0, 0.0, 0.0]),
-                    }
-                })
-                .collect();
+            let objects: Vec<ObjectMeta> = orender_engine::spatial::build_object_metas(
+                &conf,
+                coordinate_format,
+                active_layout.as_ref(),
+                &self.spatial.object_names,
+                channel_labels,
+                &meta.channel_gains,
+            );
             let ramp_duration = meta.ramp_duration;
             let osc_coord_format = match coordinate_format {
                 RCoordinateFormat::Cartesian => 0,
@@ -198,11 +146,13 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         }
 
         if self.spatial_renderer.is_some() {
-            let bed_indices = self.spatial.bed_indices.as_deref().unwrap_or(&[]);
             orender_engine::spatial::build_spatial_channel_events(
                 &conf,
                 coordinate_format,
-                bed_indices,
+                &self.spatial.object_channels,
+                &meta.channel_gains,
+                meta.sample_pos,
+                meta.ramp_duration,
                 &mut self.spatial.frame_events,
             );
         }

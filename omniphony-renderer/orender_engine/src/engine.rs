@@ -53,6 +53,9 @@ pub struct Engine {
 
     // ── per-stream spatial state ──
     bed_indices: Option<Vec<usize>>,
+    /// Cached object↔channel declaration from the bridge (sparse emission),
+    /// sorted by channel. See `docs/channel-object-contract.md`.
+    object_channels: Vec<(u32, usize)>,
     has_objects: bool,
     loudness_applied: bool,
     decoded_samples: u64,
@@ -224,6 +227,7 @@ impl Engine {
             sample_rate,
             coordinate_format,
             bed_indices: None,
+            object_channels: Vec::new(),
             has_objects: false,
             loudness_applied: false,
             decoded_samples: 0,
@@ -525,11 +529,10 @@ impl Engine {
             .collect()
     }
 
-    /// Whether the current presentation may carry spatial objects. Valid after
-    /// the bridge has been configured; drives the host's spatial-vs-plain
-    /// fallback decision.
-    pub fn is_spatial(&self) -> bool {
-        self.bridge.bridge.is_spatial()
+    /// Whether the current presentation carries dynamic objects. A live fact
+    /// about the stream (it may flip mid-stream); hosts must not latch it.
+    pub fn has_objects(&self) -> bool {
+        self.bridge.bridge.has_objects()
     }
 
     /// Dynamic object count of the last rendered frame (decoded `channel_count`
@@ -641,6 +644,7 @@ impl Engine {
     fn reset_segment_state(&mut self) {
         self.has_objects = false;
         self.bed_indices = None;
+        self.object_channels.clear();
         self.frame_events.clear();
         self.loudness_applied = false;
         self.object_names.clear();
@@ -784,20 +788,34 @@ impl Engine {
         // Spatial metadata → bed config + per-channel events (+ OSC objects).
         for meta in frame.metadata.iter() {
             self.has_objects = true;
-            if !meta.bed_indices.is_empty() {
-                let new_bed: Vec<usize> = meta.bed_indices.iter().copied().collect();
-                if self.bed_indices.as_ref() != Some(&new_bed) {
-                    self.bed_indices = Some(new_bed);
-                    self.renderer
-                        .configure_beds(self.bed_indices.as_deref().unwrap_or(&[]));
+            // Cache the sparse object↔channel declaration.
+            if !meta.object_channels.is_empty() {
+                let mut decl: Vec<(u32, usize)> = meta
+                    .object_channels
+                    .iter()
+                    .map(|oc| (oc.id, oc.channel as usize))
+                    .collect();
+                decl.sort_unstable_by_key(|&(_, channel)| channel);
+                if self.object_channels != decl {
+                    self.object_channels = decl;
                 }
             }
+            // Renderer bed set = legacy bed ids of the fixed-channel labels
+            // (the 0-9 scheme leaves with the unified channel plan, phase 2b).
+            let new_bed = spatial::derive_bed_indices(&frame.channel_labels);
+            if self.bed_indices.as_ref() != Some(&new_bed) {
+                self.bed_indices = Some(new_bed);
+                self.renderer
+                    .configure_beds(self.bed_indices.as_deref().unwrap_or(&[]));
+            }
             let conf = Configuration::from(meta);
-            let bed = self.bed_indices.as_deref().unwrap_or(&[]);
             spatial::build_spatial_channel_events(
                 &conf,
                 self.coordinate_format,
-                bed,
+                &self.object_channels,
+                &meta.channel_gains,
+                meta.sample_pos,
+                meta.ramp_duration,
                 &mut self.frame_events,
             );
 
@@ -813,6 +831,8 @@ impl Engine {
                     self.coordinate_format,
                     Some(&layout),
                     &self.object_names,
+                    &frame.channel_labels,
+                    &meta.channel_gains,
                 );
                 if want_osc {
                     let coord_fmt = match self.coordinate_format {

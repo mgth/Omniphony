@@ -38,7 +38,8 @@ pub type BridgeHostLogSink = extern "C" fn(level: RLogLevel, target: RStr<'_>, m
 pub struct REvent {
     pub id: u32,
     pub sample_pos: u64,
-    /// True when `pos` contains valid 3-D coordinates (bed channels have no position).
+    /// True when `pos` contains valid 3-D coordinates. A `false` event is a
+    /// gain/ramp-only update for its object.
     pub has_pos: bool,
     /// Position payload, interpreted according to [`FormatBridge::coordinate_format`]:
     /// - Cartesian: `[x, y, z]` (ADM convention)
@@ -56,7 +57,8 @@ pub struct REvent {
     pub ramp_duration: u32,
 }
 
-/// Sparse object-name update keyed by object ID (same ID space as `REvent.id`).
+/// Sparse object-name update keyed by object id (same id space as `REvent.id`
+/// and `RObjectChannel.id`). Fixed channels are named by their label instead.
 #[repr(C)]
 #[derive(StableAbi, Clone)]
 pub struct RNameUpdate {
@@ -92,18 +94,51 @@ pub enum RChannelLabel {
     Rw = 21,
     Tfc = 22,
     LFE2 = 23,
+    /// The channel carries dynamic-object audio; its position comes from the
+    /// metadata events of the object bound to it via `RObjectChannel`.
+    Object = 24,
     Unknown = 255,
 }
 
+/// Sparse declaration binding a dynamic object to the PCM channel that
+/// carries its audio. Object ids are opaque, bridge-chosen and stable for the
+/// lifetime of the object; this mapping is the only link between an id and
+/// its channel. See `docs/channel-object-contract.md` ("ABI").
+#[repr(C)]
+#[derive(StableAbi, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RObjectChannel {
+    pub id: u32,
+    pub channel: u32,
+}
+
+/// Metadata-driven gain automation for one fixed channel (e.g. OAMD bed
+/// gains). Applied with the frame's `ramp_duration`.
+#[repr(C)]
+#[derive(StableAbi, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RChannelGain {
+    pub channel: u32,
+    pub gain_db: i8,
+}
+
 /// Spatial metadata for one payload within a decoded frame.
+///
+/// Describes dynamic objects only; fixed channels are fully described by
+/// [`RDecodedFrame::channel_labels`] (channels carrying object audio are
+/// labeled [`RChannelLabel::Object`]). Emitted only by formats that carry
+/// dynamic objects — a fixed-only presentation sends no metadata frames.
 #[repr(C)]
 #[derive(StableAbi)]
 pub struct RMetadataFrame {
-    /// Spatial events for the renderer (one per object).
+    /// Position/gain/size events, keyed by object id.
     pub events: RVec<REvent>,
-    /// Format-provided bed channel IDs (in the same ID space as `REvent.id`).
-    pub bed_indices: RVec<usize>,
-    /// Sparse object-name updates for this frame.
+    /// Sparse object↔channel declaration: emitted on the first metadata
+    /// frame, on any change, and after [`FormatBridge::reset`]. Consumers
+    /// cache it unconditionally.
+    pub object_channels: RVec<RObjectChannel>,
+    /// Gain automation for fixed channels (empty when the format has none).
+    pub channel_gains: RVec<RChannelGain>,
+    /// Sparse object-name updates for this frame (same emission rules as
+    /// `object_channels`).
     pub name_updates: RVec<RNameUpdate>,
     /// Base sample position for this metadata (= decoded_samples at frame start,
     /// without evo_sample_offset). Used for OSC timestamping.
@@ -201,11 +236,14 @@ pub trait FormatBridge: Send + Sync + 'static {
     /// `true` once at least one frame has been successfully decoded.
     fn is_ready(&self) -> bool;
 
-    /// `true` if the current presentation may contain spatial objects.
+    /// `true` while the current presentation carries dynamic objects.
     ///
-    /// Must be called after [`configure`] and before [`push_packet`].
-    /// Drives output-format decisions in the host (e.g. whether to force CAF).
-    fn is_spatial(&self) -> bool;
+    /// A live, observable fact about the stream: it may flip in either
+    /// direction mid-stream (e.g. an extension substream appearing after a
+    /// few frames, or disappearing) and must not be latched by callers.
+    /// Before the first decoded frame it reports the best container-level
+    /// guess. See `docs/channel-object-contract.md`.
+    fn has_objects(&self) -> bool;
 
     /// Set a bridge-specific configuration option.
     ///

@@ -118,12 +118,20 @@ pub struct RMetadataFrame {
     /// Sparse declaration: which PCM channel carries which object.
     /// Emitted on the first metadata frame, on any change, and after reset().
     pub object_channels: RVec<RObjectChannel>,   // { id: u32, channel: u32 }
+    /// Gain automation for fixed channels (e.g. OAMD bed gains).
+    pub channel_gains: RVec<RChannelGain>,       // { channel: u32, gain_db: i8 }
     /// Sparse object-name updates, keyed by object id.
     pub name_updates: RVec<RNameUpdate>,
     pub sample_pos: u64,
     pub ramp_duration: u32,
 }
 ```
+
+Amendment (phase 2a): "objects only" was too strict — OAMD applies live
+gains to bed members too, and dropping them would have changed behavior.
+Fixed channels therefore keep metadata-driven **gain** automation
+(`channel_gains`, keyed by channel index); their *position* remains
+exclusively the renderer's decision.
 
 Removed: `bed_indices`, the 0–9 bed-id scheme, positionless bed events, and
 the `id ≥ 10 → channel num_beds + (id − 10)` arithmetic. `REvent.has_pos`

@@ -158,6 +158,7 @@ pub fn canonical_name(label: RChannelLabel) -> &'static str {
         Tbr => "TBR",
         Tc => "TC",
         Tfc => "TFC",
+        Object => "Object",
         Unknown => "Unknown",
     }
 }

@@ -207,6 +207,8 @@ pub enum OrenderChannelLabel {
     Rw = 21,
     Tfc = 22,
     Lfe2 = 23,
+    /// The channel carries dynamic-object audio (position driven by metadata).
+    Object = 24,
     Unknown = 255,
 }
 
@@ -409,7 +411,7 @@ pub unsafe extern "C" fn orender_is_spatial(r: *const OrenderRenderer) -> c_int 
             return -1;
         }
         let engine = &*(r as *const Engine);
-        if engine.is_spatial() {
+        if engine.has_objects() {
             1
         } else {
             0
@@ -913,6 +915,7 @@ mod tests {
             RChannelLabel::Rw => OrenderChannelLabel::Rw,
             RChannelLabel::Tfc => OrenderChannelLabel::Tfc,
             RChannelLabel::LFE2 => OrenderChannelLabel::Lfe2,
+            RChannelLabel::Object => OrenderChannelLabel::Object,
             RChannelLabel::Unknown => OrenderChannelLabel::Unknown,
         }
     }

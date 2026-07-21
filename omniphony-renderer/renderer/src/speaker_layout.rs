@@ -64,6 +64,27 @@ fn map_depth_with_room_ratios(
     }
 }
 
+/// Legacy 0-9 bed id for a channel label, shared by every remaining consumer
+/// of the historical bed-id scheme (renderer bed routing, engine ingestion).
+/// Scheduled to disappear with the scheme itself in phase 2b of
+/// `docs/channel-object-contract.md`.
+pub fn legacy_bed_id(label: bridge_api::RChannelLabel) -> Option<usize> {
+    use bridge_api::RChannelLabel as Label;
+    match label {
+        Label::L => Some(0),
+        Label::R => Some(1),
+        Label::C => Some(2),
+        Label::LFE => Some(3),
+        Label::Ls => Some(4),
+        Label::Rs => Some(5),
+        Label::Lb => Some(6),
+        Label::Rb => Some(7),
+        Label::Tfl => Some(8),
+        Label::Tfr => Some(9),
+        _ => None,
+    }
+}
+
 /// A single speaker in the layout
 #[derive(Debug, Clone)]
 pub struct Speaker {
@@ -512,26 +533,9 @@ impl SpeakerLayout {
     /// beds without a matching speaker are absent. The first speaker matching
     /// a label wins.
     pub fn bed_to_speaker_mapping(&self) -> std::collections::HashMap<usize, usize> {
-        use bridge_api::RChannelLabel as Label;
-        fn bed_id(label: Label) -> Option<usize> {
-            match label {
-                Label::L => Some(0),
-                Label::R => Some(1),
-                Label::C => Some(2),
-                Label::LFE => Some(3),
-                Label::Ls => Some(4),
-                Label::Rs => Some(5),
-                Label::Lb => Some(6),
-                Label::Rb => Some(7),
-                Label::Tfl => Some(8),
-                Label::Tfr => Some(9),
-                _ => None,
-            }
-        }
-
         let mut mapping = std::collections::HashMap::new();
         for (speaker_idx, speaker) in self.speakers.iter().enumerate() {
-            if let Some(id) = bed_id(bridge_api::labels::label_for_name(&speaker.name)) {
+            if let Some(id) = legacy_bed_id(bridge_api::labels::label_for_name(&speaker.name)) {
                 mapping.entry(id).or_insert(speaker_idx);
             }
         }

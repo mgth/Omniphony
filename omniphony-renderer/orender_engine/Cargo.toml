@@ -13,7 +13,7 @@ renderer = { version = "0.2.4", path = "../renderer" }
 example_backend = { path = "../example_backend" }
 # User-scriptable (Lua) render backend, registered at startup.
 script_backend = { path = "../script_backend" }
-bridge_api = { version = "0.2.0", path = "../bridge_api" }
+bridge_api = { version = "0.3.0", path = "../bridge_api" }
 runtime_control = { version = "0.2.4", path = "../runtime_control" }
 sys = { version = "0.1.0", path = "../sys" }
 # Audio output/input belong to the host_audio crate and reach the OSC server

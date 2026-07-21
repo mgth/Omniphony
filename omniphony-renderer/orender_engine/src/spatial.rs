@@ -3,7 +3,7 @@
 
 use crate::events::{Configuration, Event};
 use crate::osc::ObjectMeta;
-use bridge_api::RCoordinateFormat;
+use bridge_api::{RChannelGain, RChannelLabel, RCoordinateFormat};
 use renderer::spatial_renderer::SpatialChannelEvent;
 use renderer::speaker_layout::SpeakerLayout;
 use std::collections::HashMap;
@@ -30,87 +30,120 @@ pub fn event_pos_raw(event: &Event) -> Option<[f64; 3]> {
     Some([p[0], p[1], p[2]])
 }
 
+/// Renderer bed set for a frame: the legacy 0-9 bed id of each fixed
+/// channel's label, in PCM-channel order, stopping at the first
+/// object-carrying channel. Labels outside the legacy scheme keep their slot
+/// with `usize::MAX` (no speaker routing), mirroring the historical behavior
+/// for beds absent from the layout. The scheme leaves with phase 2b.
+pub fn derive_bed_indices(channel_labels: &[RChannelLabel]) -> Vec<usize> {
+    channel_labels
+        .iter()
+        .take_while(|l| **l != RChannelLabel::Object)
+        .map(|l| renderer::speaker_layout::legacy_bed_id(*l).unwrap_or(usize::MAX))
+        .collect()
+}
+
+fn channel_gain_db(channel_gains: &[RChannelGain], channel: u32) -> i32 {
+    channel_gains
+        .iter()
+        .find(|g| g.channel == channel)
+        .map_or(0, |g| g.gain_db as i32)
+}
+
 /// Build the OSC broadcast objects for one metadata payload.
 ///
-/// Bed objects (id `< 10`) are reported at their layout speaker position with
-/// `direct_speaker_index` set; dynamic objects report their raw event position
-/// in the bridge's coordinate format. Names come from the accumulated
-/// `object_names` map (falling back to `Obj_<id>`).
+/// Fixed channels (labels before the first `Object` channel) are reported at
+/// their layout speaker position with `direct_speaker_index` set and named by
+/// their label; dynamic objects report their raw event position in the
+/// bridge's coordinate format, named from the accumulated `object_names` map
+/// (falling back to `Obj_<id>`).
 pub fn build_object_metas(
     conf: &Configuration,
     coordinate_format: RCoordinateFormat,
     layout: Option<&SpeakerLayout>,
     object_names: &HashMap<u32, String>,
+    channel_labels: &[RChannelLabel],
+    channel_gains: &[RChannelGain],
 ) -> Vec<ObjectMeta> {
     let bed_to_speaker = layout
         .map(|l| l.bed_to_speaker_mapping())
         .unwrap_or_default();
-    conf.events
-        .iter()
-        .enumerate()
-        .map(|(idx, event)| {
-            let logical_id = event.id().unwrap_or(idx as u32);
-            let direct_speaker_index = if logical_id < 10 {
-                bed_to_speaker
-                    .get(&(logical_id as usize))
-                    .copied()
-                    .map(|i| i as u32)
-            } else {
-                None
-            };
-            let (ox, oy, oz, coord_mode) = direct_speaker_index
-                .and_then(|spk| {
-                    layout.and_then(|l| {
-                        l.speakers.get(spk as usize).map(|speaker| {
-                            if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
-                                (
-                                    speaker.x as f64,
-                                    speaker.y as f64,
-                                    speaker.z as f64,
-                                    "cartesian".to_string(),
-                                )
-                            } else {
-                                (
-                                    speaker.azimuth as f64,
-                                    speaker.elevation as f64,
-                                    speaker.distance as f64,
-                                    "polar".to_string(),
-                                )
-                            }
-                        })
-                    })
-                })
-                .unwrap_or_else(|| {
-                    let [x, y, z] = event_pos_raw(event).unwrap_or([0.0; 3]);
+    let fallback_coord_mode = || match coordinate_format {
+        RCoordinateFormat::Cartesian => "cartesian".to_string(),
+        RCoordinateFormat::Polar => "polar".to_string(),
+    };
+    let speaker_pose = |spk: u32| {
+        layout.and_then(|l| {
+            l.speakers.get(spk as usize).map(|speaker| {
+                if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
                     (
-                        x,
-                        y,
-                        z,
-                        match coordinate_format {
-                            RCoordinateFormat::Cartesian => "cartesian".to_string(),
-                            RCoordinateFormat::Polar => "polar".to_string(),
-                        },
+                        speaker.x as f64,
+                        speaker.y as f64,
+                        speaker.z as f64,
+                        "cartesian".to_string(),
                     )
-                });
+                } else {
+                    (
+                        speaker.azimuth as f64,
+                        speaker.elevation as f64,
+                        speaker.distance as f64,
+                        "polar".to_string(),
+                    )
+                }
+            })
+        })
+    };
+
+    // Fixed channels first, in PCM order — matches the historical bed-first
+    // event order over OSC.
+    let fixed = channel_labels
+        .iter()
+        .take_while(|l| **l != RChannelLabel::Object)
+        .enumerate()
+        .map(|(channel, label)| {
+            let direct_speaker_index = renderer::speaker_layout::legacy_bed_id(*label)
+                .and_then(|id| bed_to_speaker.get(&id).copied())
+                .map(|i| i as u32);
+            let (ox, oy, oz, coord_mode) = direct_speaker_index
+                .and_then(speaker_pose)
+                .unwrap_or_else(|| (0.0, 0.0, 0.0, fallback_coord_mode()));
             ObjectMeta {
-                name: object_names
-                    .get(&logical_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Obj_{logical_id}")),
+                name: bridge_api::labels::canonical_name(*label).to_string(),
                 x: ox as f32,
                 y: oy as f32,
                 z: oz as f32,
                 coord_mode,
                 direct_speaker_index,
-                gain: event.gain_db().map_or(-128, |g| g as i32),
+                gain: channel_gain_db(channel_gains, channel as u32),
                 priority: 0.0,
-                size: event
-                    .size()
-                    .map(|s| [s[0] as f32, s[1] as f32, s[2] as f32])
-                    .unwrap_or([0.0, 0.0, 0.0]),
+                size: [0.0, 0.0, 0.0],
             }
+        });
+
+    // Then the dynamic objects, in event order.
+    let objects = conf.events.iter().filter_map(|event| {
+        let id = event.id()?;
+        let [x, y, z] = event_pos_raw(event).unwrap_or([0.0; 3]);
+        Some(ObjectMeta {
+            name: object_names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("Obj_{id}")),
+            x: x as f32,
+            y: y as f32,
+            z: z as f32,
+            coord_mode: fallback_coord_mode(),
+            direct_speaker_index: None,
+            gain: event.gain_db().map_or(-128, |g| g as i32),
+            priority: 0.0,
+            size: event
+                .size()
+                .map(|s| [s[0] as f32, s[1] as f32, s[2] as f32])
+                .unwrap_or([0.0, 0.0, 0.0]),
         })
-        .collect()
+    });
+
+    fixed.chain(objects).collect()
 }
 
 /// Resolve an event's position to ADM Cartesian `[x, y, z]`, converting from the
@@ -140,38 +173,41 @@ pub fn event_pos_as_adm_cartesian(
 /// Build the renderer's per-channel events from one metadata payload and append
 /// them to `out`.
 ///
-/// Object IDs `< 10` are bed channels: they map to a PCM channel index via
-/// `bed_indices` (events for beds not present in the layout are skipped). IDs
-/// `>= 10` are dynamic objects, placed after the beds in PCM order.
+/// Object events map to their PCM channel through the cached
+/// `object_channels` declaration (events for undeclared ids are skipped);
+/// `channel_gains` yields one gain/ramp-only event per listed fixed channel.
 pub fn build_spatial_channel_events(
     conf: &Configuration,
     coordinate_format: RCoordinateFormat,
-    bed_indices: &[usize],
+    object_channels: &[(u32, usize)],
+    channel_gains: &[RChannelGain],
+    sample_pos: u64,
+    ramp_duration: u32,
     out: &mut Vec<SpatialChannelEvent>,
 ) {
-    let bed_id_to_channel: HashMap<usize, usize> = bed_indices
-        .iter()
-        .enumerate()
-        .map(|(idx, &bid)| (bid, idx))
-        .collect();
-    let num_beds = bed_indices.len();
+    for gain in channel_gains {
+        out.push(SpatialChannelEvent {
+            channel_idx: gain.channel as usize,
+            is_bed: true,
+            gain_db: Some(gain.gain_db),
+            ramp_length: Some(ramp_duration),
+            size: None,
+            position: None,
+            sample_pos: Some(sample_pos),
+        });
+    }
 
     for event in &conf.events {
-        let object_id = match event.id() {
-            Some(id) => id as usize,
-            None => continue,
+        let Some(object_id) = event.id() else {
+            continue;
         };
-        let (channel_idx, is_bed) = if object_id < 10 {
-            match bed_id_to_channel.get(&object_id) {
-                Some(&ch) => (ch, true),
-                None => continue,
-            }
-        } else {
-            (num_beds + (object_id - 10), false)
+        let Some(&(_, channel_idx)) = object_channels.iter().find(|(id, _)| *id == object_id)
+        else {
+            continue;
         };
         out.push(SpatialChannelEvent {
             channel_idx,
-            is_bed,
+            is_bed: false,
             gain_db: event.gain_db(),
             ramp_length: event.ramp_length(),
             size: event
@@ -180,5 +216,110 @@ pub fn build_spatial_channel_events(
             position: event_pos_as_adm_cartesian(coordinate_format, event),
             sample_pos: event.sample_pos(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bridge_api::RChannelLabel::*;
+    use renderer::speaker_layout::{Speaker, SpeakerLayout};
+
+    fn labels_5_1_2_plus_objects() -> Vec<RChannelLabel> {
+        vec![L, R, C, LFE, Ls, Rs, Object, Object]
+    }
+
+    #[test]
+    fn derive_bed_indices_maps_labels_and_stops_at_objects() {
+        assert_eq!(
+            derive_bed_indices(&labels_5_1_2_plus_objects()),
+            vec![0, 1, 2, 3, 4, 5]
+        );
+        // A fixed label outside the legacy scheme keeps its slot unroutable.
+        assert_eq!(derive_bed_indices(&[L, Tbl, R]), vec![0, usize::MAX, 1]);
+    }
+
+    #[test]
+    fn channel_events_route_objects_through_the_declaration() {
+        let mut event = Event::with_id(11);
+        event.set_pos([0.5, 0.5, 0.0]);
+        let conf = Configuration::new(vec![event, Event::with_id(99)]);
+        let object_channels = [(11u32, 6usize)];
+        let gains = [bridge_api::RChannelGain {
+            channel: 2,
+            gain_db: -3,
+        }];
+
+        let mut out = Vec::new();
+        build_spatial_channel_events(
+            &conf,
+            RCoordinateFormat::Cartesian,
+            &object_channels,
+            &gains,
+            480,
+            32,
+            &mut out,
+        );
+
+        // One bed-gain event + one object event; the undeclared id 99 is skipped.
+        assert_eq!(out.len(), 2);
+        assert!(out[0].is_bed);
+        assert_eq!(out[0].channel_idx, 2);
+        assert_eq!(out[0].gain_db, Some(-3));
+        assert_eq!(out[0].ramp_length, Some(32));
+        assert_eq!(out[0].sample_pos, Some(480));
+        assert!(!out[1].is_bed);
+        assert_eq!(out[1].channel_idx, 6);
+    }
+
+    #[test]
+    fn object_metas_list_fixed_channels_first_with_label_names() {
+        let mut event = Event::with_id(10);
+        event.set_pos([0.1, 0.2, 0.3]);
+        let conf = Configuration::new(vec![event]);
+        let layout = SpeakerLayout::from_speakers(vec![
+            Speaker::new("FL", -30.0, 0.0),
+            Speaker::new("FR", 30.0, 0.0),
+            Speaker::new("SW", 0.0, -30.0),
+        ])
+        .expect("layout");
+        let names = HashMap::from([(10, "Music".to_string())]);
+        let gains = [bridge_api::RChannelGain {
+            channel: 2,
+            gain_db: -6,
+        }];
+
+        let metas = build_object_metas(
+            &conf,
+            RCoordinateFormat::Cartesian,
+            Some(&layout),
+            &names,
+            &[L, R, LFE, Object],
+            &gains,
+        );
+
+        let listed: Vec<&str> = metas.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(listed, ["L", "R", "LFE", "Music"]);
+        // Fixed channels carry their speaker routing; the LFE gain automation
+        // is reflected; the object keeps its raw event position.
+        assert_eq!(metas[0].direct_speaker_index, Some(0));
+        assert_eq!(metas[2].direct_speaker_index, Some(2));
+        assert_eq!(metas[2].gain, -6);
+        assert_eq!(metas[3].direct_speaker_index, None);
+        assert!((metas[3].x - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unnamed_objects_fall_back_to_their_id() {
+        let conf = Configuration::new(vec![Event::with_id(12)]);
+        let metas = build_object_metas(
+            &conf,
+            RCoordinateFormat::Cartesian,
+            None,
+            &HashMap::new(),
+            &[],
+            &[],
+        );
+        assert_eq!(metas[0].name, "Obj_12");
     }
 }

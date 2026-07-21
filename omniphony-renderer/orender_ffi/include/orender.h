@@ -55,6 +55,8 @@ enum OrenderChannelLabel {
     OrenderChannelLabel_Rw = 21,
     OrenderChannelLabel_Tfc = 22,
     OrenderChannelLabel_Lfe2 = 23,
+    // The channel carries dynamic-object audio (position driven by metadata).
+    OrenderChannelLabel_Object = 24,
     OrenderChannelLabel_Unknown = 255,
 };
 typedef uint8_t OrenderChannelLabel;

@@ -45,7 +45,7 @@ fn renders_real_truehd_atmos_stream() {
         .expect("enable_osc should start the OSC listener");
 
     let channels = engine.channel_count();
-    let spatial_before = engine.is_spatial();
+    let spatial_before = engine.has_objects();
 
     // Output channel-layout export: the 7.1.4 preset must map cleanly to labels
     // (no Unknown), one per speaker, in render order. This is what the FFI's
@@ -83,13 +83,13 @@ fn renders_real_truehd_atmos_stream() {
 
     eprintln!(
         "parity harness: channels={channels} spatial_before={spatial_before} \
-         is_spatial_after={} frames={total_frames} samples={total_samples} peak={peak:.6}",
-        engine.is_spatial()
+         has_objects_after={} frames={total_frames} samples={total_samples} peak={peak:.6}",
+        engine.has_objects()
     );
 
     assert!(
         spatial_before,
-        "Atmos stream must report is_spatial() = true"
+        "Atmos stream must report has_objects() = true"
     );
     assert_eq!(channels, 12, "7.1.4 preset must yield 12 speakers");
     // The engine only emits chunks for frames carrying spatial objects (the

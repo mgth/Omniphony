@@ -111,6 +111,9 @@ impl Default for TelemetryState {
 pub struct SpatialState {
     pub has_objects: bool,
     pub bed_indices: Option<Vec<usize>>,
+    /// Cached object↔channel declaration from the bridge (sparse emission),
+    /// sorted by channel.
+    pub object_channels: Vec<(u32, usize)>,
     pub object_names: std::collections::HashMap<u32, String>,
     pub au_index: u64,
     pub segment_index: u32,
@@ -126,6 +129,7 @@ impl Default for SpatialState {
         Self {
             has_objects: false,
             bed_indices: None,
+            object_channels: Vec::new(),
             object_names: std::collections::HashMap::new(),
             au_index: 0,
             segment_index: 0,
