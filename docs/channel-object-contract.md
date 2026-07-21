@@ -28,7 +28,13 @@ Progress:
   - the CLI keeps a prep-time `has_objects` read for file-output format
     decisions (inherently a prep-time choice); the render path no longer
     latches anything.
-- Phases 3–5: not started.
+- **Phase 3 landed** (#191 + mpv fork PRs #7/#8): `orender_has_objects`
+  exported (ABI minor 6), `orender_is_spatial` kept as a deprecated alias;
+  mpv resolves the preferred symbol with dlsym fallback and the pending
+  object-content routing fix is now on both the `orender` and
+  `orender-master` lines. The mpv-omniphony `patches`/`patches-master`
+  regeneration happens at the next release, per the patch-based model.
+- Phases 4–5: not started.
 
 ## The incident
 
