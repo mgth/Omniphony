@@ -532,6 +532,24 @@ impl SpeakerLayout {
     /// Returns a HashMap<bed_id, speaker_idx> for beds found in the layout;
     /// beds without a matching speaker are absent. The first speaker matching
     /// a label wins.
+    /// Per-label speaker lookup: each recognised speaker name (shared alias
+    /// table) maps its channel label to the speaker index; the first speaker
+    /// matching a label wins. This is the layout-independent routing language
+    /// of `docs/channel-object-contract.md` — a stored `RChannelLabel` stays
+    /// valid across layout swaps, the topology re-resolves it here.
+    pub fn label_to_speaker_mapping(
+        &self,
+    ) -> std::collections::HashMap<bridge_api::RChannelLabel, usize> {
+        let mut mapping = std::collections::HashMap::new();
+        for (speaker_idx, speaker) in self.speakers.iter().enumerate() {
+            let label = bridge_api::labels::label_for_name(&speaker.name);
+            if label != bridge_api::RChannelLabel::Unknown {
+                mapping.entry(label).or_insert(speaker_idx);
+            }
+        }
+        mapping
+    }
+
     pub fn bed_to_speaker_mapping(&self) -> std::collections::HashMap<usize, usize> {
         let mut mapping = std::collections::HashMap::new();
         for (speaker_idx, speaker) in self.speakers.iter().enumerate() {

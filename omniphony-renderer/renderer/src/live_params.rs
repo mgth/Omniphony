@@ -775,6 +775,9 @@ pub struct RenderTopology {
     pub backend: Arc<PreparedRenderEngine>,
     pub backend_to_speaker_mapping: Option<Vec<usize>>,
     pub bed_to_speaker_mapping: HashMap<usize, usize>,
+    /// Per-label speaker lookup for the channel-routing table (re-resolved on
+    /// every topology rebuild, so stored labels survive layout swaps).
+    pub label_to_speaker: HashMap<bridge_api::RChannelLabel, usize>,
     pub num_speakers: usize,
     pub num_spatializable: usize,
     /// The `RendererControl::geometry_generation` this topology's gain models were
@@ -814,6 +817,7 @@ impl RenderTopology {
 
         Ok(Self {
             bed_to_speaker_mapping: speaker_layout.bed_to_speaker_mapping(),
+            label_to_speaker: speaker_layout.label_to_speaker_mapping(),
             num_speakers,
             num_spatializable,
             speaker_layout,

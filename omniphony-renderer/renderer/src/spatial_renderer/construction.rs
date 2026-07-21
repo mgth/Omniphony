@@ -573,7 +573,7 @@ impl SpatialRenderer {
         Ok(Self {
             num_speakers,
             spread_resolution,
-            bed_indices: arc_swap::ArcSwap::new(std::sync::Arc::new(Vec::new())),
+            channel_routing: arc_swap::ArcSwap::new(std::sync::Arc::new(Vec::new())),
             first_render: std::sync::atomic::AtomicBool::new(true),
             frame_counter: std::sync::atomic::AtomicU64::new(0),
             channel_states: parking_lot::Mutex::new(std::collections::HashMap::new()),

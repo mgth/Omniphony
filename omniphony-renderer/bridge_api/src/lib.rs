@@ -68,7 +68,7 @@ pub struct RNameUpdate {
 
 /// ABI-stable channel label (speaker position), encoded as u8.
 #[repr(u8)]
-#[derive(StableAbi, Clone, Copy, Debug, PartialEq)]
+#[derive(StableAbi, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RChannelLabel {
     L = 0,
     R = 1,
