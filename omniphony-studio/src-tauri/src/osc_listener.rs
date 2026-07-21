@@ -1863,6 +1863,45 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                             "gainDb": entry.gain_db,
                             "generation": entry.generation,
                             "directSpeakerIndex": entry.direct_speaker_index,
+                            "fixed": entry.fixed,
+                            "label": entry.label,
+                            "sourceTag": entry.source_tag,
+                            "name": entry.name
+                        }
+                });
+                (Some(("source:update", payload)), removed_ids)
+            }
+
+            OscEvent::UpdateMeta {
+                id,
+                fixed,
+                label,
+                generation,
+            } => {
+                let current_generation = s.current_content_generation;
+                let entry = s.sources.entry(id.clone()).or_default();
+                entry.fixed = Some(fixed);
+                entry.label = label.clone();
+                if entry.generation.is_none() {
+                    entry.generation = generation.or(current_generation);
+                }
+                // Re-emit the source through the regular update event so the
+                // front end has a single ingestion path for source state.
+                let payload = serde_json::json!({
+                    "id": id,
+                    "position": {
+                            "x": entry.x,
+                            "y": entry.y,
+                            "z": entry.z,
+                            "coordMode": entry.coord_mode,
+                            "azimuthDeg": entry.azimuth_deg,
+                            "elevationDeg": entry.elevation_deg,
+                            "distanceM": entry.distance_m,
+                            "gainDb": entry.gain_db,
+                            "generation": entry.generation,
+                            "directSpeakerIndex": entry.direct_speaker_index,
+                            "fixed": entry.fixed,
+                            "label": entry.label,
                             "sourceTag": entry.source_tag,
                             "name": entry.name
                         }

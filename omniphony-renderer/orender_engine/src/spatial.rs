@@ -77,6 +77,8 @@ pub fn build_object_metas(
                     .size()
                     .map(|s| [s[0] as f32, s[1] as f32, s[2] as f32])
                     .unwrap_or([0.0, 0.0, 0.0]),
+                fixed: false,
+                label: String::new(),
             })
         })
         .collect()

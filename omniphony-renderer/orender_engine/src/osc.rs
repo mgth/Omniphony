@@ -237,6 +237,7 @@ pub fn negotiate_rx_port(rx_port: u16) -> bool {
 
 /// Generic description of a single spatial audio object for OSC broadcast.
 /// Built by the caller from whatever source format it uses.
+#[derive(Clone)]
 pub struct ObjectMeta {
     pub name: String,
     pub x: f32,
@@ -250,6 +251,14 @@ pub struct ObjectMeta {
     /// Per-axis object spatial extent (w, d, h), each in [0.0, 1.0].
     /// `[0.0, 0.0, 0.0]` denotes a point source.
     pub size: [f32; 3],
+    /// `true` for a fixed channel (its pose comes from the channel plan —
+    /// direct or virtualized), `false` for a dynamic object. Explicit per
+    /// `docs/channel-object-contract.md` phase 4: clients must not infer
+    /// this from `direct_speaker_index` (which stays as position info).
+    pub fixed: bool,
+    /// Canonical channel-label name for a fixed channel (`"L"`, `"TFL"`…);
+    /// empty for dynamic objects.
+    pub label: String,
 }
 
 /// Epsilon for position/float comparison in delta OSC sending.
@@ -259,6 +268,8 @@ const OBJECT_EPSILON: f32 = 1e-6;
 #[derive(Clone)]
 struct ObjectSnapshot {
     name: String,
+    fixed: bool,
+    label: String,
     x: f32,
     y: f32,
     z: f32,
@@ -273,6 +284,8 @@ impl ObjectSnapshot {
     fn from_meta(o: &ObjectMeta) -> Self {
         Self {
             name: o.name.clone(),
+            fixed: o.fixed,
+            label: o.label.clone(),
             x: o.x,
             y: o.y,
             z: o.z,
@@ -293,6 +306,10 @@ impl ObjectSnapshot {
             && (self.y - o.y).abs() < OBJECT_EPSILON
             && (self.z - o.z).abs() < OBJECT_EPSILON
             && (self.priority - o.priority).abs() < OBJECT_EPSILON
+    }
+
+    fn matches_meta(&self, o: &ObjectMeta) -> bool {
+        self.fixed == o.fixed && self.label == o.label
     }
 
     fn matches_size(&self, o: &ObjectMeta) -> bool {

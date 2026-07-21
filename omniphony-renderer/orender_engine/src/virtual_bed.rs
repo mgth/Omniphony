@@ -639,6 +639,8 @@ pub fn build_virtual_bed_objects(
             gain,
             priority: 0.0,
             size: [0.0, 0.0, 0.0],
+            fixed: true,
+            label: bridge_api::labels::canonical_name(*label).to_string(),
         });
     }
     if objects.is_empty() {

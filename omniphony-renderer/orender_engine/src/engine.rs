@@ -1034,6 +1034,8 @@ impl Engine {
                         gain: spec.gain_db as i32,
                         priority: 0.0,
                         size: spec.size,
+                        fixed: false,
+                        label: String::new(),
                     });
                 }
                 if !objects.is_empty() {

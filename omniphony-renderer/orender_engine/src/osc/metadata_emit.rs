@@ -106,12 +106,42 @@ impl OscSender {
             };
             let size_bytes = rosc::encoder::encode(&OscPacket::Message(size_msg))?;
             self.send_to_all(&size_bytes);
+
+            // Reset the fixed/label meta of the stale slot too.
+            let meta_msg = OscMessage {
+                addr: format!("/omniphony/object/{}/meta", stale_id),
+                args: vec![
+                    OscType::Int(0),
+                    OscType::String(String::new()),
+                    OscType::Long(self.content_generation as i64),
+                ],
+            };
+            let meta_bytes = rosc::encoder::encode(&OscPacket::Message(meta_msg))?;
+            self.send_to_all(&meta_bytes);
         }
 
         for (object_id, obj) in objects.iter().enumerate() {
             let prev = self.prev_objects.as_ref().and_then(|p| p.get(object_id));
             let position_changed = force_full || prev.map_or(true, |p| !p.matches_position(obj));
             let size_changed = force_full || prev.map_or(true, |p| !p.matches_size(obj));
+            let meta_changed = force_full || prev.map_or(true, |p| !p.matches_meta(obj));
+
+            // Sparse per-slot meta: fixed-channel flag + canonical label
+            // ([Int fixed, String label, Long generation]). A dedicated
+            // additive message — appending to the positional payload would
+            // break older clients' trailing-arg heuristics.
+            if meta_changed {
+                let meta_msg = OscMessage {
+                    addr: format!("/omniphony/object/{}/meta", object_id),
+                    args: vec![
+                        OscType::Int(i32::from(obj.fixed)),
+                        OscType::String(obj.label.clone()),
+                        OscType::Long(self.content_generation as i64),
+                    ],
+                };
+                let meta_bytes = rosc::encoder::encode(&OscPacket::Message(meta_msg))?;
+                self.send_to_all(&meta_bytes);
+            }
 
             if position_changed {
                 let suffix = if obj.coord_mode.eq_ignore_ascii_case("cartesian") {

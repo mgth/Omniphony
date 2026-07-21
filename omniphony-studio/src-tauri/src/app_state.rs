@@ -22,6 +22,14 @@ pub struct SourcePosition {
     pub generation: Option<u64>,
     #[serde(rename = "directSpeakerIndex", skip_serializing_if = "Option::is_none")]
     pub direct_speaker_index: Option<u32>,
+    /// `true` for a fixed channel (pose from the channel plan), `false`/absent
+    /// for a dynamic object. Explicit — never inferred from
+    /// `directSpeakerIndex` (which stays as position info).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<bool>,
+    /// Canonical channel-label name for a fixed channel ("L", "TFL"…).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "sourceTag", skip_serializing_if = "Option::is_none")]

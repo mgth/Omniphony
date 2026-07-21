@@ -1440,17 +1440,23 @@ export function createObjectItem(id) {
 // read identically. Cheap enough to call on every position flush.
 export function applyObjectPositionIcon(entry, position) {
   if (!entry?.positionIcon || !position) return;
-  // spatialize:1 → currentColor room frame (objects are always virtualized).
+  // A fixed channel routed direct to a speaker shows the speaker-style marker
+  // (most importantly LFE → sub); virtualized fixed channels and dynamic
+  // objects show the room-frame marker. `fixed` is the explicit contract flag
+  // from the renderer — `directSpeakerIndex` alone is position info and must
+  // not be used to infer "this is a speaker feed".
+  const direct = position.fixed === true && Number.isInteger(position.directSpeakerIndex);
   entry.positionIcon.innerHTML = positionIconMarkup({
     x: position.x,
     y: position.y,
     z: position.z,
-    spatialize: 1
+    spatialize: direct ? 0 : 1
   });
   const x = (Number(position.x) || 0).toFixed(2);
   const y = (Number(position.y) || 0).toFixed(2);
   const z = (Number(position.z) || 0).toFixed(2);
-  entry.positionIcon.title = `X ${x}  Y ${y}  Z ${z}`;
+  const coords = `X ${x}  Y ${y}  Z ${z}`;
+  entry.positionIcon.title = position.label ? `${position.label} — ${coords}` : coords;
 }
 
 // Set an object row's fixed type icon (▲ height upmix, ◇ phantom, blank
