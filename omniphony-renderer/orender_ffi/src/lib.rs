@@ -174,7 +174,9 @@ pub const ORENDER_ABI_MAJOR: u32 = 0;
 // 4: added overlay toggles (labels/objects/trails/heatmap) + heatmap band/colormap cycling.
 // 5: added orender_set_option, orender_build_id, exported ORENDER_ABI_* consts,
 //    OrenderChannelLabel, and the /omniphony/state/render/abi OSC broadcast.
-pub const ORENDER_ABI_MINOR: u32 = 5;
+// 6: added orender_has_objects (live-fact semantics; orender_is_spatial is a
+//    deprecated alias kept for older hosts).
+pub const ORENDER_ABI_MINOR: u32 = 6;
 
 /// Speaker-position labels written by [`orender_channel_layout`] and
 /// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -401,11 +403,17 @@ pub unsafe extern "C" fn orender_destroy(r: *mut OrenderRenderer) {
     }));
 }
 
-/// 1 if the current presentation carries spatial objects, 0 if it is a plain
-/// multichannel stream (the host should fall back to its standard decoder),
-/// <0 on error. Meaningful after at least one [`orender_process`] call.
+/// 1 while the current presentation carries dynamic objects, 0 while it is a
+/// plain multichannel stream, <0 on error.
+///
+/// A live, observable fact about the stream (`docs/channel-object-contract.md`):
+/// it may flip in either direction mid-stream and must not be latched. Before
+/// the first decoded frame it reports the bridge's container-level guess.
+/// Hosts keep object-bearing tracks on the renderer regardless of the channel
+/// mode (a host cannot render objects); channel-based content follows
+/// [`orender_channel_mode`].
 #[no_mangle]
-pub unsafe extern "C" fn orender_is_spatial(r: *const OrenderRenderer) -> c_int {
+pub unsafe extern "C" fn orender_has_objects(r: *const OrenderRenderer) -> c_int {
     catch_unwind(AssertUnwindSafe(|| {
         if r.is_null() {
             return -1;
@@ -418,6 +426,13 @@ pub unsafe extern "C" fn orender_is_spatial(r: *const OrenderRenderer) -> c_int 
         }
     }))
     .unwrap_or(-1)
+}
+
+/// Deprecated alias of [`orender_has_objects`], kept for hosts compiled
+/// against ABI minor < 6. Same values, same live semantics.
+#[no_mangle]
+pub unsafe extern "C" fn orender_is_spatial(r: *const OrenderRenderer) -> c_int {
+    orender_has_objects(r)
 }
 
 /// Dynamic object count of the last rendered frame (decoded channels minus the
@@ -485,7 +500,7 @@ pub unsafe extern "C" fn orender_bed_layout(
 
 /// Configured render mode for channel-based (non-object) content:
 /// 0 = host, 1 = spatial; <0 on error. When this is `host` (0) and
-/// [`orender_is_spatial`] reports 0, the host should decline this track and fall
+/// [`orender_has_objects`] reports 0, the host should decline this track and fall
 /// back to its native decoder. Meaningful once the renderer is created (the mode
 /// comes from config / live params, not from the stream).
 #[no_mangle]
