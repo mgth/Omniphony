@@ -684,7 +684,7 @@ export function setupTauriBridge() {
     app.diagValues = parseDiagPayload(payload);
   });
 
-  // Declared bed→height object-generator schema → build the 2D-upmix selector +
+  // Declared fixed-bed→height object-generator schema → build the selector +
   // parameter sliders dynamically.
   listen('objectGenerators:schema', ({ payload }) => {
     try {

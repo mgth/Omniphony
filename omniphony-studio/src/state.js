@@ -234,8 +234,8 @@ export const app = {
   objectGenerators: [],
   // Live param overrides for the active generator (key → value).
   objectGeneratorParams: {},
-  // Whether the active output layout has top speakers; when false the 2D-upmix
-  // generators are a no-op and the selector is greyed out. Assume yes until the
+  // Whether the active output layout has top speakers; when false a configured
+  // height generator remains editable but cannot run. Assume yes until the
   // renderer reports otherwise.
   objectGeneratorLayoutHasHeight: true,
   // Declared phantom-extraction param schema, published on /omniphony/state/phantom
@@ -243,6 +243,10 @@ export const app = {
   phantomSchema: [],
   // Live param overrides for the phantom stage (key → value).
   phantomParams: {},
+  // Canonical fixed-channel catalogue and current applicability state supplied
+  // by the renderer. They keep the editor useful without a compatible stream.
+  fixedChannelCatalog: [],
+  fixedChannelProcessing: { stream: 'idle', labels: [], phantom: 'no_stream', height: 'no_stream' },
   // Speaker names that can't be routed by position in by_name mode (reported by
   // the renderer for the active backend); shown as a warning. Empty when none.
   outputChannelMappingUnroutable: [],

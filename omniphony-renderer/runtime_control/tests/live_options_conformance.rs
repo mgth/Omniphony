@@ -14,8 +14,7 @@
 //!
 //! Known gaps this net does NOT cover yet (Phase-1 targets, see the RFC and
 //! `docs/option-surface-parity.fr.md`):
-//! * CLI-vs-FFI seed parity: only `channel_render_mode` and
-//!   `surround_placement` are seeded by the CLI bootstrap, while
+//! * CLI-vs-FFI seed parity for the remaining CLI-specific options, while
 //!   `Engine::from_paths` (FFI) seeds the whole family — exercising both boot
 //!   paths needs an engine fixture that doesn't exist yet.
 //! * OSC dispatcher acceptance: `handle_control_message` is crate-private to
@@ -26,7 +25,7 @@ use std::sync::Arc;
 
 use renderer::config::{Config, RenderConfig};
 use renderer::live_params::{
-    ChannelRenderMode, LiveEvaluationMode, LiveParams, OutputChannelMapping,
+    LiveEvaluationMode, LiveParams, OutputChannelMapping, PhantomExtractMode,
     PreferredEvaluationMode, RendererControl, SurroundPlacement,
 };
 use renderer::spatial_renderer::SpatialRenderer;
@@ -54,12 +53,12 @@ struct LiveOptionRow {
 
 const LIVE_OPTIONS: &[LiveOptionRow] = &[
     LiveOptionRow {
-        key: "channel_render_mode",
-        control_addr: osc_contract::CONTROL_CHANNEL_RENDER_MODE,
-        snapshot_key: "channelRenderMode",
-        set_non_default: |live| live.channel_render_mode = ChannelRenderMode::Host,
-        snapshot_reflects: |v| v == "host",
-        config_reflects: |r| r.channel_render_mode == Some(ChannelRenderMode::Host),
+        key: "synthetic_objects_enabled",
+        control_addr: osc_contract::CONTROL_SYNTHETIC_OBJECTS,
+        snapshot_key: "syntheticObjectsEnabled",
+        set_non_default: |live| live.synthetic_objects_enabled = true,
+        snapshot_reflects: |v| v == true,
+        config_reflects: |r| r.synthetic_objects_enabled == Some(true),
     },
     LiveOptionRow {
         key: "surround_placement",
@@ -101,12 +100,12 @@ const LIVE_OPTIONS: &[LiveOptionRow] = &[
         },
     },
     LiveOptionRow {
-        key: "phantom_enabled",
+        key: "phantom_extract_mode",
         control_addr: osc_contract::CONTROL_PHANTOM_EXTRACT,
-        snapshot_key: "phantomEnabled",
-        set_non_default: |live| live.phantom_enabled = true,
-        snapshot_reflects: |v| v == true,
-        config_reflects: |r| r.phantom_enabled == Some(true),
+        snapshot_key: "phantomExtractMode",
+        set_non_default: |live| live.phantom_extract_mode = PhantomExtractMode::Spectral,
+        snapshot_reflects: |v| v == "spectral",
+        config_reflects: |r| r.phantom_extract_mode == Some(PhantomExtractMode::Spectral),
     },
     LiveOptionRow {
         key: "phantom_params",
@@ -190,6 +189,8 @@ fn snapshot_json(control: &Arc<RendererControl>) -> serde_json::Value {
         control.available_backends(),
         control.all_backend_params(),
         &[],
+        "[]",
+        "{}",
     );
     serde_json::from_str(&json).expect("snapshot is valid JSON")
 }
@@ -262,11 +263,11 @@ mod registry {
     /// Extending the registry without extending this list fails loudly below.
     fn non_default_samples() -> Vec<(&'static str, RawOptionValue<'static>)> {
         vec![
-            ("channel_render_mode", RawOptionValue::Str("host")),
             ("surround_placement", RawOptionValue::Str("back")),
             ("output_channel_mapping", RawOptionValue::Str("by_name")),
+            ("synthetic_objects_enabled", RawOptionValue::Bool(true)),
             ("object_generator_id", RawOptionValue::Str("copy_up")),
-            ("phantom_enabled", RawOptionValue::Number(1.0)),
+            ("phantom_extract_mode", RawOptionValue::Str("spectral")),
         ]
     }
 
@@ -370,7 +371,7 @@ mod registry {
     fn apply_bumps_epoch_only_on_real_replan_change() {
         let control = fixture_control();
         let placement = options::find("surround_placement").expect("registered");
-        let mode = options::find("channel_render_mode").expect("registered");
+        let mapping = options::find("output_channel_mapping").expect("registered");
 
         let epoch = control.options_epoch();
         assert_eq!(
@@ -397,7 +398,9 @@ mod registry {
             "rejected value: no bump"
         );
 
-        assert!(options::apply_to_control(&control, mode, &RawOptionValue::Str("host")).is_some());
+        assert!(
+            options::apply_to_control(&control, mapping, &RawOptionValue::Str("by_name")).is_some()
+        );
         assert_eq!(
             control.options_epoch(),
             epoch + 1,
@@ -439,9 +442,74 @@ mod registry {
     }
 }
 
-/// Config save persists every live option when non-default and omits its key
-/// when default (the value==default → key-absent contract). An option dropped
-/// from `persist.rs` silently loses user settings on save.
+#[test]
+fn legacy_fixed_channel_options_migrate_without_reactivating_host_mode() {
+    let control = fixture_control();
+    let mut legacy = RenderConfig {
+        channel_render_mode: Some(renderer::live_params::ChannelRenderMode::Host),
+        object_generator_id: Some("pad".to_string()),
+        phantom_enabled: Some(true),
+        ..Default::default()
+    };
+    legacy.phantom_params = Some(std::collections::HashMap::from([
+        ("method".to_string(), 1.0),
+        ("strength".to_string(), 0.75),
+    ]));
+
+    {
+        let mut live = control.live.write();
+        renderer::options::seed_live_from_config(&mut live, &legacy);
+        assert_eq!(
+            live.channel_render_mode,
+            renderer::live_params::ChannelRenderMode::Spatial
+        );
+        assert!(live.synthetic_objects_enabled);
+        assert_eq!(live.phantom_extract_mode, PhantomExtractMode::Spectral);
+        assert!(!live.phantom_params.contains_key("method"));
+        renderer::options::store_live_to_config(&mut legacy, &live);
+    }
+
+    assert_eq!(legacy.channel_render_mode, None);
+    assert_eq!(legacy.phantom_enabled, None);
+    assert_eq!(legacy.synthetic_objects_enabled, Some(true));
+    assert_eq!(
+        legacy.phantom_extract_mode,
+        Some(PhantomExtractMode::Spectral)
+    );
+    assert!(
+        legacy
+            .phantom_params
+            .as_ref()
+            .is_some_and(|params| !params.contains_key("method"))
+    );
+}
+
+#[test]
+fn disabled_synthesis_master_preserves_non_off_child_selections() {
+    let control = fixture_control();
+    let mut saved = RenderConfig::default();
+    {
+        let mut live = control.live.write();
+        live.synthetic_objects_enabled = false;
+        live.object_generator_id = "dirac".to_string();
+        live.phantom_extract_mode = PhantomExtractMode::Broadband;
+        renderer::options::store_live_to_config(&mut saved, &live);
+    }
+    assert_eq!(saved.synthetic_objects_enabled, Some(false));
+
+    let restored = fixture_control();
+    {
+        let mut live = restored.live.write();
+        renderer::options::seed_live_from_config(&mut live, &saved);
+        assert!(!live.synthetic_objects_enabled);
+        assert_eq!(live.object_generator_id, "dirac");
+        assert_eq!(live.phantom_extract_mode, PhantomExtractMode::Broadband);
+    }
+}
+
+/// Config save persists every live option when non-default and normally omits
+/// its key when default. The synthesized-object master is intentionally explicit
+/// even when false so remembered child selections cannot reactivate on reload.
 #[test]
 fn config_save_covers_every_live_option_and_omits_defaults() {
     let control = fixture_control();
@@ -451,6 +519,10 @@ fn config_save_covers_every_live_option_and_omits_defaults() {
     save_live_config_to_path(&control, None, &base, &out).expect("save at defaults");
     let yaml = std::fs::read_to_string(&out).expect("saved config readable");
     for row in LIVE_OPTIONS {
+        if row.key == "synthetic_objects_enabled" {
+            assert!(yaml.contains("synthetic_objects_enabled: false"));
+            continue;
+        }
         assert!(
             !yaml.contains(&format!("{}:", row.key)),
             "{}: default value should keep the key out of the saved config",

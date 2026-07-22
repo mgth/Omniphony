@@ -1,5 +1,5 @@
 /**
- * Virtual-bed editor: per-channel placement for 2D (channel-based) sources.
+ * Virtual-bed editor: per-channel placement for fixed-channel sources.
  *
  * Each input channel is either routed direct to its speaker (spatialize:false,
  * e.g. LFE → sub) or virtualized as an object at a position (spatialize:true).
@@ -9,13 +9,13 @@
  *
  * Editing reuses the speaker-editing mechanic: the channels appear in the Objects
  * list and selecting one opens a parameter panel below it (cartesian / polar,
- * normalized / real, + Direct/Virtual + gain). When no live stream is playing the
- * channels are synthesized as objects (`syncVirtualBedObjects`) so the bed stays
- * visible and editable at rest; live stream objects take over while playing.
+ * normalized / real, + Direct/Virtual + gain). When no live stream is playing,
+ * Studio creates editor-only scene markers (`syncVirtualBedObjects`) so the bed
+ * stays visible and editable at rest; live stream objects take over while playing.
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { app, sourceMeshes, sourceNames, getLiveOption } from '../state.js';
+import { app, sourceDirectSpeakerIndices, sourceMeshes, sourceNames } from '../state.js';
 import { t } from '../i18n.js';
 import { updateSource, removeSource } from '../sources.js';
 import {
@@ -27,10 +27,11 @@ import {
   formatNumber
 } from '../coordinates.js';
 
-// Canonical editable channel set (7.1) with the default poses as ADM cartesian
+// Fallback editable channel set (7.1.4) with the default poses as ADM cartesian
 // corners (X left/right, Y rear/front, Z down/up; ear level Z = 0). LFE defaults
-// to direct (it cannot be VBAP-panned).
-const CANONICAL_BED = [
+// to direct (it cannot be VBAP-panned). The renderer-published catalogue replaces
+// these values when available.
+const FALLBACK_BED = [
   { name: 'L', x: -1, y: 1, z: 0, spatialize: true },
   { name: 'R', x: 1, y: 1, z: 0, spatialize: true },
   { name: 'C', x: 0, y: 1, z: 0, spatialize: true },
@@ -38,7 +39,11 @@ const CANONICAL_BED = [
   { name: 'Ls', x: -1, y: 0, z: 0, spatialize: true },
   { name: 'Rs', x: 1, y: 0, z: 0, spatialize: true },
   { name: 'Lb', x: -1, y: -1, z: 0, spatialize: true },
-  { name: 'Rb', x: 1, y: -1, z: 0, spatialize: true }
+  { name: 'Rb', x: 1, y: -1, z: 0, spatialize: true },
+  { name: 'TFL', x: -1, y: 1, z: 1, spatialize: true },
+  { name: 'TFR', x: 1, y: 1, z: 1, spatialize: true },
+  { name: 'TBL', x: -1, y: -1, z: 1, spatialize: true },
+  { name: 'TBR', x: 1, y: -1, z: 1, spatialize: true }
 ];
 
 // Name aliases per canonical channel (mirrors the renderer's label_aliases) so
@@ -51,7 +56,11 @@ const CHANNEL_ALIASES = {
   Ls: ['ls', 'sl', 'leftsurround', 'surroundleft'],
   Rs: ['rs', 'sr', 'rightsurround', 'surroundright'],
   Lb: ['lb', 'bl', 'lrs', 'backleft', 'leftback', 'rearleft', 'leftrear'],
-  Rb: ['rb', 'br', 'rrs', 'backright', 'rightback', 'rightrear', 'rearright']
+  Rb: ['rb', 'br', 'rrs', 'backright', 'rightback', 'rightrear', 'rearright'],
+  TFL: ['tfl', 'ltf', 'tpfl', 'topfrontleft', 'upperfrontleft'],
+  TFR: ['tfr', 'rtf', 'tpfr', 'topfrontright', 'upperfrontright'],
+  TBL: ['tbl', 'ltr', 'tpbl', 'topbackleft', 'toprearleft', 'upperbackleft'],
+  TBR: ['tbr', 'rtr', 'tpbr', 'topbackright', 'toprearright', 'upperbackright']
 };
 
 // Canonical channel key (L/R/C/LFE/Ls/Rs/Lb/Rb) for any alias, or null.
@@ -61,11 +70,17 @@ export function canonicalChannelName(name) {
   for (const [key, aliases] of Object.entries(CHANNEL_ALIASES)) {
     if (aliases.includes(lower)) return key;
   }
+  const published = [
+    ...(Array.isArray(app.fixedChannelCatalog) ? app.fixedChannelCatalog.map((e) => e?.label) : []),
+    ...(Array.isArray(app.fixedChannelProcessing?.labels) ? app.fixedChannelProcessing.labels : []),
+    ...(Array.isArray(app.virtualBed?.speakers) ? app.virtualBed.speakers.map((e) => e?.name) : [])
+  ].find((label) => typeof label === 'string' && label.trim().toLowerCase() === lower);
+  if (published) return published.trim();
   return null;
 }
 
 // Canonical 5.1/7.1 channel order (L, R, C, LFE, Ls, Rs, Lb, Rb).
-const CANONICAL_CHANNEL_ORDER = CANONICAL_BED.map((c) => c.name);
+const CANONICAL_CHANNEL_ORDER = FALLBACK_BED.map((c) => c.name);
 
 // Rank of a channel (by any alias) in the canonical order, or -1 if it is not a
 // bed channel. Used to order the objects list for bed sources by the classic
@@ -148,8 +163,32 @@ function readEntry(base, match) {
 // entry from the live virtual bed (matched by alias, case-insensitive).
 export function effectiveChannels() {
   const configured = Array.isArray(app.virtualBed?.speakers) ? app.virtualBed.speakers : [];
-  return CANONICAL_BED.map((base) => {
-    const match = configured.find((s) => canonicalChannelName(s?.name) === base.name);
+  const published = Array.isArray(app.fixedChannelCatalog) && app.fixedChannelCatalog.length
+    ? app.fixedChannelCatalog.map((entry) => ({
+        name: entry.label,
+        x: Number(entry.x) || 0,
+        y: Number(entry.y) || 0,
+        z: Number(entry.z) || 0,
+        spatialize: entry.spatialize !== false
+      }))
+    : FALLBACK_BED;
+  const bases = [...published];
+  const addBase = (name, source = null) => {
+    const key = canonicalChannelName(name) || String(name || '').trim();
+    if (!key || bases.some((base) => canonicalChannelName(base.name) === key)) return;
+    bases.push({
+      name: key,
+      x: Number(source?.x) || 0,
+      y: Number(source?.y) || 0,
+      z: Number(source?.z) || 0,
+      spatialize: source?.spatialize !== false
+    });
+  };
+  configured.forEach((entry) => addBase(entry?.name, entry));
+  (app.fixedChannelProcessing?.labels || []).forEach((label) => addBase(label));
+  return bases.map((base) => {
+    const baseKey = canonicalChannelName(base.name) || base.name;
+    const match = configured.find((s) => canonicalChannelName(s?.name) === baseKey);
     return readEntry(base, match);
   });
 }
@@ -311,14 +350,19 @@ export function applyChannelPlacement(name, spatialize) {
 }
 
 // Reset the bed to the canonical defaults: every channel at its cube-corner
-// position in CARTESIAN mode (the CANONICAL_BED corners), not the renderer's
+// position in CARTESIAN mode (the published/fallback corners), not the renderer's
 // polar fallback angles. Sending an empty string used to hand the renderer its
 // built-in polar poses, which the editor then displayed as cartesian corners —
 // so the polar form changed while the cartesian fields stayed stale even though
 // the coord-mode read "cartesian". Pushing the explicit cartesian bed keeps the
 // editor, the 3D view and the audio render in agreement.
 export function resetVirtualBed() {
-  const channels = CANONICAL_BED.map((base) => defaultEntry(base));
+  const channels = effectiveChannels().map((channel) => {
+    const base = (app.fixedChannelCatalog || []).find((e) => e?.label === channel.name)
+      || FALLBACK_BED.find((e) => e.name === channel.name)
+      || { name: channel.name, x: 0, y: 0, z: 0, spatialize: true };
+    return defaultEntry(base);
+  });
   app.virtualBed = buildLayoutPayload(channels);
   invoke('control_virtual_bed', { value: JSON.stringify(app.virtualBed) });
   syncVirtualBedObjects(true);
@@ -353,10 +397,10 @@ function streamActive() {
 
 // Drop every live (non-synthetic) object mesh. Live objects come from the OSC
 // stream and get NO remove event when the engine simply stops emitting them —
-// e.g. switching to host mode, where ad_orender stops feeding the engine. Left
-// in place they linger as stale meshes and double the next stream's objects (or
-// the synthetic bed) on resume. They are dropped whenever the stream is not
-// active; the engine re-sends them when spatial rendering resumes.
+// e.g. when an embedding host stops feeding the engine. Left in place they
+// linger as stale meshes and double the next stream's objects (or the offline
+// channel markers) on resume. They are dropped whenever the stream is not
+// active; the engine re-sends them when rendering resumes.
 function removeLiveObjects() {
   for (const id of [...sourceMeshes.keys()]) {
     if (!syntheticIds.has(String(id))) {
@@ -379,6 +423,8 @@ function syntheticPosition(ch) {
     elevationDeg: ch.elevation,
     distanceM: Number(ch.distance) > 0 ? Number(ch.distance) : 1.0,
     name: ch.name,
+    fixed: true,
+    label: ch.name,
     gainDb: ch.gainDb,
     directSpeakerIndex,
     _noTrail: true
@@ -395,6 +441,25 @@ function directSpeakerFor(name) {
   return idx >= 0 ? idx : undefined;
 }
 
+// Resolve the output speaker actually used by the selected direct channel.
+// Prefer the renderer-reported index (it includes routing choices such as a
+// 5.1 surround mapped to the back row), then fall back to the label match so
+// the Channel Editor remains informative while offline.
+function directSpeakerTarget(name) {
+  const selectedId = app.selectedSourceId;
+  const reported = selectedId !== null && selectedId !== undefined
+    ? sourceDirectSpeakerIndices.get(String(selectedId))
+    : undefined;
+  const index = Number.isInteger(reported) ? reported : directSpeakerFor(name);
+  const speaker = Number.isInteger(index) ? app.currentLayoutSpeakers?.[index] : null;
+  if (!speaker) return null;
+  return {
+    index,
+    name: String(speaker.id ?? speaker.name ?? index),
+    speaker
+  };
+}
+
 function removeSyntheticObjects() {
   if (syntheticIds.size === 0) return;
   for (const id of [...syntheticIds]) {
@@ -405,30 +470,24 @@ function removeSyntheticObjects() {
 }
 
 /**
- * Materialize one object per channel from the bed when spatial mode is on and no
- * live stream is present; remove them otherwise. Signature-guarded to avoid
- * per-flush churn unless `force` is set.
+ * Materialize one editor marker per channel when no live stream is present;
+ * remove them otherwise. These are Studio-only scene markers, not renderer
+ * metadata or synthesized audio objects. Signature-guarded to avoid per-flush
+ * churn unless `force` is set.
  */
 export function syncVirtualBedObjects(force = false) {
-  const spatial = getLiveOption('channel_render_mode') !== 'host';
   // The live OSC stream owns the scene only while it is actively streaming
   // spatial frames (recent spatial:frame, which also covers the post-seek gap).
-  // Host mode is never streaming. While streaming, the live objects are the
-  // truth — drop the synthetic bed and keep them.
-  const streaming = spatial && streamActive();
+  // While streaming, live objects are the truth — drop the offline channel
+  // markers and keep them.
+  const streaming = streamActive();
   if (streaming) {
     removeSyntheticObjects();
     return;
   }
-  // Not streaming (host mode, or spatial at rest): any live objects are stale
-  // leftovers with no remove event, so drop them — this is what stops them
-  // doubling on the next resume. In host mode the scene is then empty; in
-  // spatial-at-rest we show the synthetic bed below.
+  // Not streaming: any live objects are stale leftovers with no remove event,
+  // so drop them before showing the offline catalogue below.
   removeLiveObjects();
-  if (!spatial) {
-    removeSyntheticObjects();
-    return;
-  }
 
   const channels = effectiveChannels();
   const signature = JSON.stringify(channels);
@@ -465,9 +524,9 @@ function selectedChannelName() {
 let lastEditorKey = null;
 
 /**
- * (Re)build the channel editor from the selected object's channel. Hidden in
- * `host` mode or when the selected object is not a bed channel. Skips the rebuild
- * while a field is focused (so typing isn't clobbered) unless `force` is set.
+ * (Re)build the channel editor from the selected object's channel. Hidden when
+ * the selected object is not a fixed channel. Skips the rebuild while a field is
+ * focused (so typing isn't clobbered) unless `force` is set.
  */
 export function renderChannelEditor(force = false) {
   const section = el('channelEditSection');
@@ -478,7 +537,7 @@ export function renderChannelEditor(force = false) {
   // the (not-yet-committed) bed and clobber the preview.
   if (!force && app.isDraggingVirtualBed) return;
 
-  const key = getLiveOption('channel_render_mode') === 'host' ? null : selectedChannelName();
+  const key = selectedChannelName();
   if (!key) {
     section.style.display = 'none';
     lastEditorKey = null;
@@ -498,32 +557,72 @@ export function renderChannelEditor(force = false) {
   if (titleEl) titleEl.textContent = `${t('channelEdit.title')} — ${ch.name}`;
 
   const spatialize = ch.spatialize !== false;
+  const directTarget = spatialize ? null : directSpeakerTarget(ch.name);
   const toggle = el('channelEditSpatializeToggle');
   if (toggle) toggle.checked = spatialize;
   const toggleText = el('channelEditSpatializeText');
   if (toggleText) toggleText.textContent = spatialize ? t('virtualBed.virtual') : t('virtualBed.direct');
 
-  const mode = app.channelEditCoordMode === 'cartesian' ? 'cartesian' : 'polar';
+  const targetRow = el('channelEditDirectTarget');
+  if (targetRow) targetRow.style.display = spatialize ? 'none' : 'grid';
+  const targetName = el('channelEditDirectTargetName');
+  if (targetName) {
+    targetName.textContent = directTarget?.name || t('channelEdit.noMatchingSpeaker');
+  }
+
+  const mode = !spatialize && directTarget
+    ? (String(directTarget.speaker.coordMode || directTarget.speaker.coord_mode || '').toLowerCase() === 'polar'
+        ? 'polar'
+        : 'cartesian')
+    : (app.channelEditCoordMode === 'cartesian' ? 'cartesian' : 'polar');
   const cartMode = el('channelEditCartesianMode');
   const polarMode = el('channelEditPolarMode');
   if (cartMode) cartMode.checked = mode === 'cartesian';
   if (polarMode) polarMode.checked = mode === 'polar';
 
-  // ADM normalized cartesian + real-world metres, computed exactly like the
-  // speaker editor (room-warp inverted, clamped).
-  const norm = polarToAdm(ch.azimuth, ch.elevation, ch.distance);
-  const meters = normalizedToMeters(norm);
-  const rMeters = Math.hypot(meters.x, meters.y, meters.z);
-  setValueUnlessEditing('channelEditXInput', formatNumber(norm.x, 3));
-  setValueUnlessEditing('channelEditYInput', formatNumber(norm.y, 3));
-  setValueUnlessEditing('channelEditZInput', formatNumber(norm.z, 3));
-  setValueUnlessEditing('channelEditXMetersInput', formatNumber(meters.x, 2));
-  setValueUnlessEditing('channelEditYMetersInput', formatNumber(meters.y, 2));
-  setValueUnlessEditing('channelEditZMetersInput', formatNumber(meters.z, 2));
-  setValueUnlessEditing('channelEditAzInput', formatNumber(ch.azimuth, 1));
-  setValueUnlessEditing('channelEditElInput', formatNumber(ch.elevation, 1));
-  setValueUnlessEditing('channelEditRInput', formatNumber(ch.distance, 3));
-  setValueUnlessEditing('channelEditRMetersInput', formatNumber(rMeters, 2));
+  // Direct mode displays the destination speaker's real position; the channel's
+  // stored virtual pose is deliberately hidden because it is not used. Virtual
+  // mode continues to display/edit the channel pose itself.
+  const displayPosition = directTarget?.speaker || ch;
+  if (!spatialize && !directTarget) {
+    for (const inputId of [
+      'channelEditXInput', 'channelEditYInput', 'channelEditZInput',
+      'channelEditXMetersInput', 'channelEditYMetersInput', 'channelEditZMetersInput',
+      'channelEditAzInput', 'channelEditElInput', 'channelEditRInput',
+      'channelEditRMetersInput'
+    ]) {
+      setValueUnlessEditing(inputId, '');
+    }
+  } else {
+    const norm = {
+      x: Number(displayPosition.x) || 0,
+      y: Number(displayPosition.y) || 0,
+      z: Number(displayPosition.z) || 0
+    };
+    const meters = normalizedToMeters(norm);
+    const scene = normalizedOmniphonyToScenePosition(norm);
+    const spherical = cartesianToSpherical(scene);
+    const azimuth = Number.isFinite(Number(displayPosition.azimuthDeg))
+      ? Number(displayPosition.azimuthDeg)
+      : spherical.az;
+    const elevation = Number.isFinite(Number(displayPosition.elevationDeg))
+      ? Number(displayPosition.elevationDeg)
+      : spherical.el;
+    const distance = Number.isFinite(Number(displayPosition.distanceM))
+      ? Number(displayPosition.distanceM)
+      : spherical.dist;
+    const rMeters = Math.hypot(meters.x, meters.y, meters.z);
+    setValueUnlessEditing('channelEditXInput', formatNumber(norm.x, 3));
+    setValueUnlessEditing('channelEditYInput', formatNumber(norm.y, 3));
+    setValueUnlessEditing('channelEditZInput', formatNumber(norm.z, 3));
+    setValueUnlessEditing('channelEditXMetersInput', formatNumber(meters.x, 2));
+    setValueUnlessEditing('channelEditYMetersInput', formatNumber(meters.y, 2));
+    setValueUnlessEditing('channelEditZMetersInput', formatNumber(meters.z, 2));
+    setValueUnlessEditing('channelEditAzInput', formatNumber(azimuth, 1));
+    setValueUnlessEditing('channelEditElInput', formatNumber(elevation, 1));
+    setValueUnlessEditing('channelEditRInput', formatNumber(distance, 3));
+    setValueUnlessEditing('channelEditRMetersInput', formatNumber(rMeters, 2));
+  }
 
   const gainSlider = el('channelEditGainSlider');
   if (gainSlider) gainSlider.value = String(ch.gainDb || 0);

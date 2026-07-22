@@ -373,6 +373,29 @@ fn fallback_virtual_bed_pose(
     Some((name.to_string(), x, y, z))
 }
 
+/// Stable editor catalogue available even when no stream is active. The common
+/// 7.1.4 set is always present; Studio merges configured and session-discovered
+/// labels on top without maintaining a second table of canonical poses.
+pub fn fixed_channel_catalog_json() -> String {
+    use RChannelLabel::{C, L, LFE, Lb, Ls, R, Rb, Rs, Tbl, Tbr, Tfl, Tfr};
+    const COMMON: [RChannelLabel; 12] = [L, R, C, LFE, Ls, Rs, Lb, Rb, Tfl, Tfr, Tbl, Tbr];
+    let entries: Vec<serde_json::Value> = COMMON
+        .iter()
+        .filter_map(|&label| {
+            let (_, x, y, z) = fallback_virtual_bed_pose(label, true)?;
+            Some(serde_json::json!({
+                "label": bridge_api::labels::canonical_name(label),
+                "group": if z > 0.0 { "height" } else { "floor" },
+                "x": x,
+                "y": y,
+                "z": z,
+                "spatialize": default_channel_spatialize(label),
+            }))
+        })
+        .collect();
+    serde_json::Value::Array(entries).to_string()
+}
+
 /// For a 4.x/5.x source (no back channels) the surround pair (`Ls`/`Rs`) has no
 /// canonical placement, so `surround_placement` decides it: `Side` → the side
 /// corner `(∓1, 0, 0)`, `Back` → the back corner `(∓1, −1, 0)` (sign by L/R).
@@ -996,6 +1019,31 @@ mod tests {
     use super::*;
 
     const UNIT_ROOM: [f32; 3] = [1.0, 1.0, 1.0];
+
+    #[test]
+    fn fixed_channel_catalog_is_stable_7_1_4_and_keeps_lfe_direct() {
+        let catalog: serde_json::Value =
+            serde_json::from_str(&fixed_channel_catalog_json()).expect("valid catalog JSON");
+        let entries = catalog.as_array().expect("catalog array");
+        let labels: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["label"].as_str().expect("label"))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "L", "R", "C", "LFE", "Ls", "Rs", "Lb", "Rb", "TFL", "TFR", "TBL", "TBR"
+            ]
+        );
+
+        let lfe = &entries[3];
+        assert_eq!(lfe["group"], "floor");
+        assert_eq!(lfe["spatialize"], false);
+        for height in &entries[8..12] {
+            assert_eq!(height["group"], "height");
+            assert_eq!(height["z"], 1.0);
+        }
+    }
 
     #[test]
     fn maps_a_5_1_bed_with_fallback_poses() {

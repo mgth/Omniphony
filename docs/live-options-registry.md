@@ -191,9 +191,9 @@ Contributor cost for a new option: **one `OptionSpec` entry + i18n keys.**
   immediate protection for the current hand-wired options.
 - **Phase 1** — registry core: `options.rs` types + store + epoch + generic
   OSC/persist/seed/snapshot + Tauri passthrough + JS generic ingestion.
-  Migrate the fixed-channel-source family first (`channel_render_mode`,
-  `surround_placement`, `output_channel_mapping`, `object_generator_id`,
-  `phantom_enabled`) — the repeat offenders.
+  Migrate the fixed-channel-source family first (`surround_placement`,
+  `output_channel_mapping`, `synthetic_objects_enabled`,
+  `object_generator_id`, `phantom_extract_mode`) — the repeat offenders.
 - **Phase 2** — Studio binder: `data-option` bindings for the migrated
   controls; delete their hand-written listeners/commands.
 - **Phase 3** — fold remaining `LiveParams` scalars opportunistically as they

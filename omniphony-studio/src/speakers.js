@@ -1435,28 +1435,43 @@ export function createObjectItem(id) {
   };
 }
 
+// Resolve the physical output used by a fixed channel in Direct mode. The
+// renderer publishes the final layout index after label aliases and surround
+// routing have been resolved, so this is more accurate than matching names in
+// Studio (notably when 5.1 surrounds use a 7.1 back pair).
+function directFixedSpeakerTarget(position) {
+  if (position?.fixed !== true || !Number.isInteger(position.directSpeakerIndex)) return null;
+  const index = position.directSpeakerIndex;
+  const speaker = get_currentLayoutSpeakers()[index];
+  if (!speaker) return null;
+  return {
+    index,
+    speaker,
+    name: String(speaker.id ?? speaker.name ?? index)
+  };
+}
+
 // Refresh an object row's position thumbnail from a normalized position
-// (`{ x, y, z }` in [-1, 1]). Reuses the speaker marker so objects and speakers
-// read identically. Cheap enough to call on every position flush.
-export function applyObjectPositionIcon(entry, position) {
+// (`{ x, y, z }` in [-1, 1]). Direct fixed channels use the actual destination
+// speaker position and the same black room frame as non-spatialized outputs.
+// Cheap enough to call on every position flush.
+export function applyObjectPositionIcon(entry, position, directTarget = directFixedSpeakerTarget(position)) {
   if (!entry?.positionIcon || !position) return;
-  // A fixed channel routed direct to a speaker shows the speaker-style marker
-  // (most importantly LFE → sub); virtualized fixed channels and dynamic
-  // objects show the room-frame marker. `fixed` is the explicit contract flag
-  // from the renderer — `directSpeakerIndex` alone is position info and must
-  // not be used to infer "this is a speaker feed".
-  const direct = position.fixed === true && Number.isInteger(position.directSpeakerIndex);
+  const displayedPosition = directTarget?.speaker || position;
   entry.positionIcon.innerHTML = positionIconMarkup({
-    x: position.x,
-    y: position.y,
-    z: position.z,
-    spatialize: direct ? 0 : 1
+    x: displayedPosition.x,
+    y: displayedPosition.y,
+    z: displayedPosition.z,
+    spatialize: directTarget ? 0 : 1
   });
-  const x = (Number(position.x) || 0).toFixed(2);
-  const y = (Number(position.y) || 0).toFixed(2);
-  const z = (Number(position.z) || 0).toFixed(2);
+  const x = (Number(displayedPosition.x) || 0).toFixed(2);
+  const y = (Number(displayedPosition.y) || 0).toFixed(2);
+  const z = (Number(displayedPosition.z) || 0).toFixed(2);
   const coords = `X ${x}  Y ${y}  Z ${z}`;
-  entry.positionIcon.title = position.label ? `${position.label} — ${coords}` : coords;
+  const label = position.label || position.name;
+  entry.positionIcon.title = directTarget
+    ? `${label ? `${label} → ` : ''}${directTarget.name} — ${coords}`
+    : label ? `${label} — ${coords}` : coords;
 }
 
 // Set an object row's fixed type icon (▲ height upmix, ◇ phantom, blank
@@ -1492,12 +1507,14 @@ export function updateObjectItem(entry, id, position, name) {
     sourceNames.set(id, name);
   }
   applyObjectIdentity(entry, id);
-  const coords = decomposePosition(position);
+  const directTarget = directFixedSpeakerTarget(position);
+  const coords = decomposePosition(directTarget?.speaker || position);
   Object.keys(entry.axisElems).forEach(axis => {
     entry.axisElems[axis].textContent = `${axis}:${coords[axis]}`;
   });
-  applyObjectPositionIcon(entry, position);
-  entry.topRight.textContent = getObjectDominantSpeakerText(id);
+  applyObjectPositionIcon(entry, position, directTarget);
+  entry.topRight.textContent = directTarget ? `→ ${directTarget.name}` : getObjectDominantSpeakerText(id);
+  entry.topRight.title = directTarget ? `${t('channelEdit.destinationSpeaker')}: ${directTarget.name}` : '';
   entry.root.classList.toggle('has-active-trail', objectHasActiveTrail(id));
   entry.muteBtn.classList.toggle('active', objectMuted.has(id));
   entry.soloBtn.classList.toggle('active', soloTarget === id);
@@ -1663,13 +1680,7 @@ export function resolveEditTarget() {
     if (!mesh) return null;
     return { kind: 'speaker', index: speakerIndex, mesh, label: speakerLabels[speakerIndex] };
   }
-  // Direct app.options read (not getLiveOption): per-frame path, and
-  // undefined !== 'host' already means spatial pre-snapshot.
-  if (
-    app.options.channel_render_mode !== 'host' &&
-    app.selectedSourceId !== null &&
-    app.selectedSourceId !== undefined
-  ) {
+  if (app.selectedSourceId !== null && app.selectedSourceId !== undefined) {
     const id = String(app.selectedSourceId);
     const mesh = sourceMeshes.get(id);
     if (!mesh) return null;

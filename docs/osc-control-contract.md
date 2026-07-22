@@ -163,8 +163,7 @@ and heatmap configuration.
 | `/control/debug/speaker_gaintable/nack` | … | Request missing chunks / version. |
 | `/control/log_level` | s | `off`\|`error`\|`warn`\|`info`\|`debug`\|`trace`. |
 | `/control/ramp_mode` | s | `off` \| `frame` \| `sample`. |
-| `/control/channel_render_mode` | s | `spatial` \| `host` (legacy `direct`/`virtual` load as `spatial`). Render mode for non-object content. Legacy alias of `/control/option`. |
-| `/control/option` | s key, value | Generic setter for any declared live option (`renderer::options` registry; schema on `/state/options_schema`). The dedicated addresses (`channel_render_mode`, `surround_placement`, `output_channel_mapping`, `object_generator`, `phantom_extract`) are aliases of this. |
+| `/control/option` | s key, value | Generic setter for any declared live option (`renderer::options` registry; schema on `/state/options_schema`). The dedicated addresses (`synthetic_objects`, `surround_placement`, `output_channel_mapping`, `object_generator`, `phantom_extract`) are aliases of this. |
 | `/control/save_config` | — | Persist the current config. |
 | `/control/reload_config` | — | Reload config from disk. |
 | `/control/quit` | — | Shut the engine down. |

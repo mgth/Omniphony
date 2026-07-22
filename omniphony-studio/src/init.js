@@ -15,8 +15,7 @@ import {
   dirty,
   hasProducerDomain,
   hasControlConfig,
-  isEmbeddedProducer,
-  getLiveOption
+  isEmbeddedProducer
 } from './state.js';
 import { reflectBoundOptions } from './options-binder.js';
 
@@ -512,6 +511,12 @@ export function applyInitState(payload) {
   if (payload.phantomParams && typeof payload.phantomParams === 'object') {
     app.phantomParams = payload.phantomParams;
   }
+  if (Array.isArray(payload.fixedChannelCatalog)) {
+    app.fixedChannelCatalog = payload.fixedChannelCatalog;
+  }
+  if (payload.fixedChannelProcessing && typeof payload.fixedChannelProcessing === 'object') {
+    app.fixedChannelProcessing = payload.fixedChannelProcessing;
+  }
   if (Array.isArray(payload.outputChannelMappingUnroutable)) {
     app.outputChannelMappingUnroutable = payload.outputChannelMappingUnroutable.filter(
       (n) => typeof n === 'string'
@@ -522,14 +527,13 @@ export function applyInitState(payload) {
     // configured/live bed. The editor seeds defaults when this is null.
     app.virtualBed =
       payload.virtualBed && typeof payload.virtualBed === 'object' ? payload.virtualBed : null;
-    // First authoritative snapshot reporting no saved bed (and not in host mode):
+    // First authoritative snapshot reporting no saved bed:
     // materialise the canonical cartesian bed so the editor's values persist to
     // config.yaml (like `current_layout`) and are used in priority, instead of
     // relying on a built-in default. One-shot; once a bed exists this is skipped.
     if (
       !app.virtualBed &&
-      !app.virtualBedMaterialized &&
-      getLiveOption('channel_render_mode') !== 'host'
+      !app.virtualBedMaterialized
     ) {
       app.virtualBedMaterialized = true;
       materializeDefaultVirtualBed();

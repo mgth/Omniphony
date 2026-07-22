@@ -105,9 +105,23 @@ pub struct Engine {
 
     /// Phantom-source extraction pre-stage: runs before the height lift, pulling
     /// correlated content out of channel pairs as planar objects and reducing the
-    /// bed. Off by default (live param `phantom_enabled`). See
+    /// bed. Off by default (live param `phantom_extract_mode`). See
     /// [`crate::phantom_extract`].
     phantom: phantom_extract::PhantomExtractStage,
+
+    /// Signature of the last published fixed-channel applicability state. The
+    /// JSON snapshot is rebuilt only when this changes, never every frame.
+    fixed_processing_sig: Option<FixedProcessingSig>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct FixedProcessingSig {
+    stream_has_objects: bool,
+    labels: Vec<RChannelLabel>,
+    options_epoch: u64,
+    output_has_height: bool,
+    phantom_count: usize,
+    height_count: usize,
 }
 
 /// Throttled (~1 Hz) aggregate of per-frame render/decode cost, correlated with
@@ -222,7 +236,7 @@ impl Engine {
     /// before the first [`process`](Self::process) call.
     pub fn new(bridge: LoadedBridge, renderer: SpatialRenderer, sample_rate: u32) -> Self {
         let coordinate_format = bridge.bridge.coordinate_format();
-        Self {
+        let engine = Self {
             bridge,
             renderer,
             sample_rate,
@@ -249,7 +263,13 @@ impl Engine {
                 .then(PerfLog::new),
             object_gen: object_gen::ObjectGenStage::new(),
             phantom: phantom_extract::PhantomExtractStage::new(),
-        }
+            fixed_processing_sig: None,
+        };
+        engine
+            .renderer
+            .renderer_control()
+            .set_fixed_channel_catalog(virtual_bed::fixed_channel_catalog_json());
+        engine
     }
 
     /// Register a host-supplied (out-of-tree) bed→height object generator so it
@@ -461,8 +481,8 @@ impl Engine {
         control.set_requested_ramp_mode(ramp_mode);
         control.live.write().ramp_mode = ramp_mode;
 
-        // Declared live options (channel_render_mode, surround_placement,
-        // output_channel_mapping, object_generator_id, phantom_enabled) plus
+        // Declared live options (surround_placement, output_channel_mapping,
+        // synthesized-object master/generators) plus
         // their param bags and the virtual bed: seeded from config through the
         // shared registry seed — the same call as the CLI bootstrap, so the
         // embedded host cannot drift from it (FFI/CLI parity by construction).
@@ -653,6 +673,91 @@ impl Engine {
         self.last_object_count = 0;
         self.last_dialnorm = None;
         self.last_bed_labels.clear();
+        self.fixed_processing_sig = None;
+        self.renderer
+            .renderer_control()
+            .set_fixed_channel_processing(
+                r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
+                    .to_string(),
+            );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_fixed_processing_state(
+        &mut self,
+        stream_has_objects: bool,
+        labels: &[RChannelLabel],
+        options_epoch: u64,
+        output_has_height: bool,
+        phantom_count: usize,
+        height_count: usize,
+        synthetic_objects_enabled: bool,
+        phantom_mode: renderer::live_params::PhantomExtractMode,
+        height_generator_enabled: bool,
+    ) {
+        let unchanged = self.fixed_processing_sig.as_ref().is_some_and(|sig| {
+            sig.stream_has_objects == stream_has_objects
+                && sig.labels.as_slice() == labels
+                && sig.options_epoch == options_epoch
+                && sig.output_has_height == output_has_height
+                && sig.phantom_count == phantom_count
+                && sig.height_count == height_count
+        });
+        if unchanged {
+            return;
+        }
+
+        self.fixed_processing_sig = Some(FixedProcessingSig {
+            stream_has_objects,
+            labels: labels.to_vec(),
+            options_epoch,
+            output_has_height,
+            phantom_count,
+            height_count,
+        });
+
+        let phantom = if phantom_mode == renderer::live_params::PhantomExtractMode::Off {
+            "off"
+        } else if !synthetic_objects_enabled {
+            "master_off"
+        } else if stream_has_objects {
+            "object_stream"
+        } else if phantom_count > 0 {
+            "active"
+        } else {
+            "insufficient_channels"
+        };
+        let input_has_height = object_gen::input_has_height(labels);
+        let height = if !height_generator_enabled {
+            "off"
+        } else if !synthetic_objects_enabled {
+            "master_off"
+        } else if stream_has_objects {
+            "object_stream"
+        } else if input_has_height {
+            "input_has_height"
+        } else if !output_has_height {
+            "output_has_no_height"
+        } else if height_count > 0 {
+            "active"
+        } else {
+            "insufficient_channels"
+        };
+        let names: Vec<&str> = labels
+            .iter()
+            .map(|&label| bridge_api::labels::canonical_name(label))
+            .collect();
+        let state = serde_json::json!({
+            "stream": if stream_has_objects { "objects" } else { "fixed" },
+            "labels": names,
+            "inputHasHeight": input_has_height,
+            "outputHasHeight": output_has_height,
+            "phantom": phantom,
+            "height": height,
+        });
+        self.renderer
+            .renderer_control()
+            .set_fixed_channel_processing(state.to_string());
     }
 
     /// Push the live DRC mode to the bridge when it changes (selects which DRC
@@ -864,6 +969,37 @@ impl Engine {
             }
         }
 
+        if self.has_objects {
+            let (master, phantom_mode, height_generator_enabled, options_epoch, output_has_height) = {
+                let control = self.renderer.renderer_control();
+                let live = control.live.read();
+                (
+                    live.synthetic_objects_enabled,
+                    live.phantom_extract_mode,
+                    !live.object_generator_id.trim().is_empty()
+                        && !live.object_generator_id.eq_ignore_ascii_case("none"),
+                    control.options_epoch(),
+                    object_gen::layout_has_height(&control.active_topology().speaker_layout),
+                )
+            };
+            let fixed_end = frame
+                .channel_labels
+                .iter()
+                .position(|label| *label == RChannelLabel::Object)
+                .unwrap_or(frame.channel_labels.len());
+            self.publish_fixed_processing_state(
+                true,
+                &frame.channel_labels[..fixed_end],
+                options_epoch,
+                output_has_height,
+                0,
+                0,
+                master,
+                phantom_mode,
+                height_generator_enabled,
+            );
+        }
+
         self.decoded_samples += sample_count as u64;
 
         // Number of synthesized height objects planned this frame by the
@@ -890,7 +1026,8 @@ impl Engine {
                 room_ratio_lower,
                 room_ratio_center_blend,
                 object_generator_id,
-                phantom_enabled,
+                synthetic_objects_enabled,
+                phantom_extract_mode,
                 options_epoch,
             ) = {
                 let control = self.renderer.renderer_control();
@@ -904,7 +1041,8 @@ impl Engine {
                     live.room_ratio_lower,
                     live.room_ratio_center_blend,
                     live.object_generator_id.clone(),
-                    live.phantom_enabled,
+                    live.synthetic_objects_enabled,
+                    live.phantom_extract_mode,
                     control.options_epoch(),
                 )
             };
@@ -961,10 +1099,30 @@ impl Engine {
             // Phantom-extraction pre-stage runs first: its planar objects occupy the
             // channel slots right after the bed; the height-lift objects follow. The
             // audio (and the bed reduction) is applied after the bed PCM is built.
+            self.phantom.set_mode(phantom_extract_mode);
+            let phantom_enabled = synthetic_objects_enabled
+                && phantom_extract_mode != renderer::live_params::PhantomExtractMode::Off;
             phantom_count = self.phantom.sync(phantom_enabled, &ctx, options_epoch);
+            let effective_generator_id = if synthetic_objects_enabled {
+                object_generator_id.as_str()
+            } else {
+                "none"
+            };
             synth_count = self
                 .object_gen
-                .sync(&object_generator_id, &ctx, options_epoch);
+                .sync(effective_generator_id, &ctx, options_epoch);
+            self.publish_fixed_processing_state(
+                false,
+                &labels,
+                options_epoch,
+                object_gen::layout_has_height(&output_layout),
+                phantom_count,
+                synth_count,
+                synthetic_objects_enabled,
+                phantom_extract_mode,
+                !object_generator_id.trim().is_empty()
+                    && !object_generator_id.eq_ignore_ascii_case("none"),
+            );
             if phantom_count > 0 || synth_count > 0 {
                 // Push each stage's live param overrides (declared schema; sparse —
                 // absent keys keep the stage's default). Cheap + idempotent, so a

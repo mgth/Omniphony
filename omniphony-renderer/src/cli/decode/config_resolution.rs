@@ -180,11 +180,9 @@ pub(super) fn merge_render_config(
             }
         }
     }
-    if !arg_sources.is_explicit("channel_render_mode") {
-        if let Some(mode) = renderer::config_fields::channel_render_mode::get(cfg) {
-            args.channel_render_mode = mode.into();
-        }
-    }
+    // `render.channel_render_mode` is a read-only legacy key. Fixed-channel
+    // processing defaults to Omniphony; an explicit CLI flag remains available
+    // for diagnostics/raw sink passthrough without becoming global config.
     if !arg_sources.is_explicit("surround_placement") {
         if let Some(placement) = renderer::config_fields::surround_placement::get(cfg) {
             args.surround_placement = placement.into();
@@ -615,10 +613,7 @@ pub(super) fn effective_to_config(
             RampModeArg::Interp => "interp",
         },
     );
-    renderer::config_fields::channel_render_mode::store(
-        &mut render,
-        args.channel_render_mode.into(),
-    );
+    render.channel_render_mode = None;
     renderer::config_fields::surround_placement::store(&mut render, args.surround_placement.into());
     renderer::config_fields::distance_diffuse::store(&mut render, args.distance_diffuse);
     renderer::config_fields::distance_diffuse_threshold::store(

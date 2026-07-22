@@ -310,8 +310,8 @@ pub struct LiveInputState {
 
 /// The fixed-channel-source companions that are NOT scalar registry options, mirrored
 /// verbatim from the renderer's `/omniphony/state/renderer` domain (camelCase
-/// keys). The scalar options themselves (channel render mode, surround
-/// placement, generator id, phantom enable, output mapping) ride the generic
+/// keys). The scalar options themselves (surround placement, synthesized-object
+/// master, generator ids/modes, output mapping) ride the generic
 /// `options` passthrough on [`AppState`] instead — no typed mirror per option
 /// (registry RFC phase 2). Grouped in one struct flattened into both the
 /// domain parser and [`AppState`].
@@ -321,6 +321,8 @@ pub struct LiveOptionsState {
     pub object_generator_params: Option<serde_json::Value>,
     pub object_generator_layout_has_height: Option<bool>,
     pub phantom_params: Option<serde_json::Value>,
+    pub fixed_channel_catalog: Option<serde_json::Value>,
+    pub fixed_channel_processing: Option<serde_json::Value>,
     pub output_channel_mapping_unroutable: Option<Vec<String>>,
     /// `None` serializes as an explicit `"virtualBed": null` (no skip): the UI
     /// distinguishes "renderer reports no saved bed" (null → it materialises

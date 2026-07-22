@@ -126,14 +126,17 @@ pub const CONTROL_OVERLAY_HEATMAP_COLORMAP: &str = "/omniphony/control/overlay/h
 pub const CONTROL_OVERLAY_HEATMAP_CUSTOM_STOPS: &str =
     "/omniphony/control/overlay/heatmap_custom_stops";
 pub const CONTROL_OVERLAY_HEATMAP_ENABLED: &str = "/omniphony/control/overlay/heatmap_enabled";
-pub const CONTROL_CHANNEL_RENDER_MODE: &str = "/omniphony/control/channel_render_mode";
+/// Enables/disables every renderer-synthesized-object stage without clearing
+/// the configured phantom/height selections.
+pub const CONTROL_SYNTHETIC_OBJECTS: &str = "/omniphony/control/synthetic_objects";
 /// Selects the bed→height object generator (2D upmix) for channel content.
 /// Argument is the generator id string (`none` / `copy_up` / …).
 pub const CONTROL_OBJECT_GENERATOR: &str = "/omniphony/control/object_generator";
 /// Sets a live object-generator parameter. Args: key (string), value (float).
 /// Keys: `strength`, `hpf_hz`, `gain_db` (PAD).
 pub const CONTROL_OBJECT_GENERATOR_PARAM: &str = "/omniphony/control/object_generator/param";
-/// Enables/disables the phantom-source extraction pre-stage. Arg: int (0/1).
+/// Selects phantom extraction: `off`, `broadband`, or `spectral`. The old int
+/// 0/1 spelling remains accepted as off/broadband on this legacy address.
 pub const CONTROL_PHANTOM_EXTRACT: &str = "/omniphony/control/phantom_extract";
 /// Sets a live phantom-extraction parameter. Args: key (string), value (float).
 /// Keys: `strength`, `passes`, `lift`.
@@ -150,7 +153,7 @@ pub const CONTROL_OUTPUT_CHANNEL_MAPPING: &str = "/omniphony/control/output_chan
 pub const CONTROL_VIRTUAL_BED: &str = "/omniphony/control/virtual_bed";
 /// Generic setter for any declared live option (`renderer::options`):
 /// args `[key (string), value]`. The per-option addresses listed above
-/// (`channel_render_mode`, `object_generator`, `phantom_extract`,
+/// (`synthetic_objects`, `object_generator`, `phantom_extract`,
 /// `surround_placement`, `output_channel_mapping`) are legacy aliases of this.
 pub const CONTROL_OPTION: &str = "/omniphony/control/option";
 pub const CONTROL_OVERLAY_LABELS: &str = "/omniphony/control/overlay/labels";
@@ -303,7 +306,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_BACKEND_FILE_LIST,
     CONTROL_BACKEND_FILE_PUT,
     CONTROL_BACKEND_PARAM,
-    CONTROL_CHANNEL_RENDER_MODE,
+    CONTROL_SYNTHETIC_OBJECTS,
     CONTROL_OBJECT_GENERATOR,
     CONTROL_OBJECT_GENERATOR_PARAM,
     CONTROL_OPTION,

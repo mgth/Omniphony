@@ -150,6 +150,42 @@ impl ChannelRenderMode {
     }
 }
 
+/// Phantom-source extraction algorithm selected for synthesized objects.
+///
+/// This is deliberately separate from the global synthesized-object master:
+/// the user can prepare/tune a method while synthesis is disabled, then restore
+/// it without losing the choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhantomExtractMode {
+    /// Do not run the phantom extraction stage.
+    #[default]
+    Off,
+    /// Pairwise time-domain extraction.
+    Broadband,
+    /// Per-band STFT extraction.
+    Spectral,
+}
+
+impl PhantomExtractMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Broadband => "broadband",
+            Self::Spectral => "spectral",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "disabled" | "none" => Some(Self::Off),
+            "broadband" | "wideband" => Some(Self::Broadband),
+            "spectral" | "per_band" | "per-band" => Some(Self::Spectral),
+            _ => None,
+        }
+    }
+}
+
 /// Where the surround pair (`Ls`/`Rs`) of a channel-based source WITHOUT
 /// dedicated back channels (4.x / 5.x) is placed when rendered through the
 /// virtual bed. Sources that already carry back channels (7.x: `Lb`/`Rb`/`Cb`)
@@ -622,8 +658,8 @@ pub struct LiveParams {
 
     /// How channel-based (non-object) content is rendered. Only consulted for
     /// streams that carry no spatial objects; object streams ignore it. Read
-    /// identically by the CLI/spdif decode path and the embedded mpv host.
-    /// Live-tunable via `/omniphony/control/channel_render_mode`.
+    /// identically by the CLI/spdif decode path and the embedded mpv host. This
+    /// is an internal/host override, not a Studio or persistent live option.
     pub channel_render_mode: ChannelRenderMode,
 
     /// Where the 4.x/5.x surround pair (`Ls`/`Rs`) is placed: side vs back.
@@ -661,11 +697,14 @@ pub struct LiveParams {
     /// changes. Set via `/omniphony/control/object_generator/param`.
     pub object_generator_params: std::collections::HashMap<String, f32>,
 
-    /// Enables the phantom-source extraction pre-stage: before the height lift, it
-    /// pulls the correlated/primary content out of channel pairs as discrete
-    /// objects at their real panned position and subtracts it from the bed.
-    /// Off by default. Live-tunable via `/omniphony/control/phantom_extract`.
-    pub phantom_enabled: bool,
+    /// Global permission for renderer-synthesized objects. When false, both the
+    /// phantom extractor and height generator are bypassed without clearing
+    /// their configured selections or parameters.
+    pub synthetic_objects_enabled: bool,
+
+    /// Phantom-source extraction algorithm. `Off` disables only this stage;
+    /// the global synthesized-object master may independently suppress it.
+    pub phantom_extract_mode: PhantomExtractMode,
 
     /// Live-tunable parameter overrides for the phantom-extraction stage, keyed by
     /// the param `key` it declares (`strength` / `passes` / `lift`). Sparse: an
@@ -972,6 +1011,15 @@ pub struct RendererControl {
     /// declared params, set by the engine so Studio builds its sliders. `"[]"`
     /// until the engine sets it.
     phantom_schema: RwLock<String>,
+
+    /// Canonical fixed-channel editor catalogue supplied by the engine. Kept as
+    /// JSON because the canonical poses live in `orender_engine`, above this
+    /// crate in the dependency graph.
+    fixed_channel_catalog: RwLock<String>,
+
+    /// Current fixed-channel/synthesized-object applicability state supplied by
+    /// the engine on declaration/topology/option changes (never per sample).
+    fixed_channel_processing: RwLock<String>,
 }
 
 impl RendererControl {
@@ -1015,6 +1063,11 @@ impl RendererControl {
             backend_params: RwLock::new(HashMap::new()),
             object_generators_schema: RwLock::new("[]".to_string()),
             phantom_schema: RwLock::new("[]".to_string()),
+            fixed_channel_catalog: RwLock::new("[]".to_string()),
+            fixed_channel_processing: RwLock::new(
+                r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
+                    .to_string(),
+            ),
         })
     }
 
@@ -1045,6 +1098,28 @@ impl RendererControl {
     /// The published phantom-extraction schema JSON (`"[]"` until the engine sets it).
     pub fn phantom_schema(&self) -> String {
         self.phantom_schema.read().clone()
+    }
+
+    pub fn set_fixed_channel_catalog(&self, json: String) {
+        *self.fixed_channel_catalog.write() = json;
+    }
+
+    pub fn fixed_channel_catalog(&self) -> String {
+        self.fixed_channel_catalog.read().clone()
+    }
+
+    /// Publish a new applicability snapshot only when it actually changed.
+    pub fn set_fixed_channel_processing(&self, json: String) {
+        let mut current = self.fixed_channel_processing.write();
+        if *current != json {
+            *current = json;
+            drop(current);
+            self.bump_live_state();
+        }
+    }
+
+    pub fn fixed_channel_processing(&self) -> String {
+        self.fixed_channel_processing.read().clone()
     }
 
     /// Whether a backend with this id is registered (built-in or host-registered).

@@ -336,6 +336,39 @@
         min-height: 1.55rem;
       }
 
+      /* Keep the scene viewport stable when the fixed-channel controls grow.
+         The section scrolls internally instead of expanding the overlay. */
+      #twoDSourcesBody {
+        max-height: min(52vh, 34rem);
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
+      }
+
+      .channel-direct-target {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 0.15rem 0.5rem;
+        align-items: baseline;
+        margin-bottom: 0.4rem;
+        padding: 0.35rem 0.45rem;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.22);
+        font-size: 11px;
+      }
+
+      .channel-direct-target strong {
+        color: #d9ecff;
+        text-align: right;
+      }
+
+      .channel-direct-target small {
+        grid-column: 1 / -1;
+        color: #8fa3b7;
+        font-size: 10px;
+      }
+
       .input-panel-inline-status {
         display: none;
         margin: -0.2rem 0 0.15rem;

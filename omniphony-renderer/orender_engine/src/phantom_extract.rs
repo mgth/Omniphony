@@ -1,6 +1,6 @@
 //! Phantom-source extraction pre-stage (runs *before* the bed→height lift).
 //!
-//! Two selectable methods (the `method` param):
+//! Two selectable methods (the live `phantom_extract_mode` option):
 //!
 //! **Broadband (default).** For each pair of bed channels — a ring of
 //! azimuth-adjacent speakers, optionally widened to non-adjacent pairs — this
@@ -26,6 +26,7 @@
 //! and never panics.
 
 use bridge_api::RChannelLabel;
+use renderer::live_params::PhantomExtractMode;
 
 use crate::object_gen::{
     ObjectGenParamSpec, PrepareCtx, SynthObjectSpec, channel_top_position, input_has_back,
@@ -51,20 +52,7 @@ const PHANTOM_GAIN_DB: i8 = 0;
 const PHANTOM_SIZE: [f32; 3] = [0.3, 0.3, 0.3];
 
 /// Live-tunable params this stage declares (the schema the UI builds sliders from).
-pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 6] = [
-    // Binary method switch (rendered as a switch by Studio): off = broadband
-    // time-domain pairwise extraction, on = per-band spectral (DirAC-style)
-    // extraction. See the module docs for the trade-offs.
-    ObjectGenParamSpec {
-        key: "method",
-        label: "Per-band extraction",
-        i18n_key: "twoDSources.phantomMethod",
-        min: 0.0,
-        max: 1.0,
-        step: 1.0,
-        default: 0.0,
-        unit: "",
-    },
+pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 5] = [
     ObjectGenParamSpec {
         key: "strength",
         label: "Extraction",
@@ -598,7 +586,7 @@ fn is_covered(
         .any(|&(x, y)| (x == a && y == b) || (x == b && y == a))
 }
 
-/// Extraction method selected by the `method` param.
+/// Extraction algorithm selected by the `phantom_extract_mode` live option.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExtractMethod {
     /// Time-domain pairwise Wiener extraction (zero latency).
@@ -686,6 +674,15 @@ impl PhantomExtractStage {
         &self.specs
     }
 
+    /// Select the extraction implementation independently from the global
+    /// synthesized-object master and from the numeric tuning parameter bag.
+    pub fn set_mode(&mut self, mode: PhantomExtractMode) {
+        self.method = match mode {
+            PhantomExtractMode::Off | PhantomExtractMode::Broadband => ExtractMethod::Broadband,
+            PhantomExtractMode::Spectral => ExtractMethod::Spectral,
+        };
+    }
+
     /// (Re)build the pair plan if the selection/environment/`passes` changed, then
     /// refresh the dynamic phantom positions from the smoothed statistics (cheap,
     /// every frame). Returns the phantom count (`0` = inactive / no-op).
@@ -725,13 +722,6 @@ impl PhantomExtractStage {
     /// `sync`.
     pub fn set_param(&mut self, key: &str, value: f32, _sample_rate: u32) {
         match key {
-            "method" => {
-                self.method = if value >= 0.5 {
-                    ExtractMethod::Spectral
-                } else {
-                    ExtractMethod::Broadband
-                }
-            }
             "strength" => self.strength = value.clamp(0.0, 1.0),
             "passes" => {
                 self.passes = (value.round() as i64).clamp(1, PHANTOM_MAX_PASSES as i64) as usize
@@ -1080,6 +1070,20 @@ mod tests {
 
     fn sine(f: f32) -> impl Fn(usize) -> f32 {
         move |s: usize| (std::f32::consts::TAU * f * s as f32 / 48_000.0).sin()
+    }
+
+    #[test]
+    fn schema_exposes_parameters_but_not_the_algorithm_selector() {
+        let schema: serde_json::Value =
+            serde_json::from_str(&phantom_schema_json()).expect("valid phantom schema");
+        let keys: Vec<&str> = schema
+            .as_array()
+            .expect("schema array")
+            .iter()
+            .map(|entry| entry["key"].as_str().expect("parameter key"))
+            .collect();
+        assert_eq!(keys, ["strength", "passes", "lift", "center", "sides"]);
+        assert!(!keys.contains(&"method"));
     }
 
     #[test]
@@ -1512,14 +1516,14 @@ mod tests {
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
         assert_eq!(st.sync(true, &ctx(&LABELS_5_1, &layout), 0), 5);
-        st.set_param("method", 1.0, 48_000);
+        st.set_mode(PhantomExtractMode::Spectral);
         assert_eq!(st.sync(true, &ctx(&LABELS_5_1, &layout), 0), 8);
         let names: Vec<&str> = st.specs().iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"Direct_F") && names.contains(&"Direct_FL"),
             "spectral plan should expose the sector objects, got {names:?}"
         );
-        st.set_param("method", 0.0, 48_000);
+        st.set_mode(PhantomExtractMode::Broadband);
         assert_eq!(
             st.sync(true, &ctx(&LABELS_5_1, &layout), 0),
             5,
@@ -1534,7 +1538,7 @@ mod tests {
         // source → fully direct).
         let mut st = PhantomExtractStage::new();
         let layout = dummy_layout();
-        st.set_param("method", 1.0, 48_000);
+        st.set_mode(PhantomExtractMode::Spectral);
         st.set_param("strength", 1.0, 48_000);
         st.sync(true, &ctx(&LABELS_5_1, &layout), 0);
         let c = 6usize;

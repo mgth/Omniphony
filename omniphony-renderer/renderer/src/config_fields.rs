@@ -348,10 +348,11 @@ render_field_str! {
 }
 
 render_field! {
-    /// Enable the phantom-source extraction pre-stage (`render.phantom_enabled`).
-    pub phantom_enabled: bool = false,
-    field = phantom_enabled,
-    eq = bool::eq
+    /// Phantom extraction algorithm (`render.phantom_extract_mode`).
+    pub phantom_extract_mode: crate::live_params::PhantomExtractMode =
+        crate::live_params::PhantomExtractMode::Off,
+    field = phantom_extract_mode,
+    eq = crate::live_params::PhantomExtractMode::eq
 }
 
 render_field! {

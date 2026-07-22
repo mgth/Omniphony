@@ -29,7 +29,7 @@
 //! missing a layer.
 
 use crate::config::RenderConfig;
-use crate::live_params::{ChannelRenderMode, LiveParams, OutputChannelMapping, SurroundPlacement};
+use crate::live_params::{LiveParams, OutputChannelMapping, PhantomExtractMode, SurroundPlacement};
 
 /// What kind of value an option takes. Drives wire validation, the published
 /// schema, and (later) which Studio control the binder renders.
@@ -128,32 +128,6 @@ pub struct OptionSpec {
 /// seeding, the snapshot, the schema dump, and the conformance net.
 pub static LIVE_OPTIONS: &[OptionSpec] = &[
     OptionSpec {
-        key: "channel_render_mode",
-        kind: OptionKind::Enum(&["spatial", "host"]),
-        default: OptionDefault::Str("spatial"),
-        flags: OptionFlags::PERSIST,
-        i18n_key: "twoDSources.spatializeLabel",
-        help_i18n_key: Some("help.twoDSources"),
-        legacy_control_addr: "/omniphony/control/channel_render_mode",
-        set: |live, raw| match raw {
-            RawOptionValue::Str(s) => {
-                let mode = ChannelRenderMode::from_str(s)?;
-                live.channel_render_mode = mode;
-                Some(mode.as_str().to_string())
-            }
-            _ => None,
-        },
-        get_json: |live| live.channel_render_mode.as_str().into(),
-        config_store: |render, live| {
-            crate::config_fields::channel_render_mode::store(render, live.channel_render_mode)
-        },
-        config_seed: |live, render| {
-            if let Some(mode) = crate::config_fields::channel_render_mode::get(render) {
-                live.channel_render_mode = mode;
-            }
-        },
-    },
-    OptionSpec {
         key: "surround_placement",
         kind: OptionKind::Enum(&["side", "back"]),
         default: OptionDefault::Str("side"),
@@ -176,6 +150,35 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         config_seed: |live, render| {
             if let Some(placement) = crate::config_fields::surround_placement::get(render) {
                 live.surround_placement = placement;
+            }
+        },
+    },
+    OptionSpec {
+        key: "synthetic_objects_enabled",
+        kind: OptionKind::Bool,
+        default: OptionDefault::Bool(false),
+        flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
+        i18n_key: "twoDSources.syntheticObjectsLabel",
+        help_i18n_key: Some("help.syntheticObjects"),
+        legacy_control_addr: "/omniphony/control/synthetic_objects",
+        set: |live, raw| {
+            let enabled = match raw {
+                RawOptionValue::Number(n) => *n != 0.0,
+                RawOptionValue::Bool(b) => *b,
+                RawOptionValue::Str(_) => return None,
+            };
+            live.synthetic_objects_enabled = enabled;
+            Some(if enabled { "1" } else { "0" }.to_string())
+        },
+        get_json: |live| live.synthetic_objects_enabled.into(),
+        // Always persist this master, including false: an explicit false must
+        // continue to suppress remembered non-off child selections after reload.
+        config_store: |render, live| {
+            render.synthetic_objects_enabled = Some(live.synthetic_objects_enabled);
+        },
+        config_seed: |live, render| {
+            if let Some(enabled) = render.synthetic_objects_enabled {
+                live.synthetic_objects_enabled = enabled;
             }
         },
     },
@@ -236,29 +239,45 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         },
     },
     OptionSpec {
-        key: "phantom_enabled",
-        kind: OptionKind::Bool,
-        default: OptionDefault::Bool(false),
+        key: "phantom_extract_mode",
+        kind: OptionKind::Enum(&["off", "broadband", "spectral"]),
+        default: OptionDefault::Str("off"),
         flags: OptionFlags::PERSIST.or(OptionFlags::REPLAN),
         i18n_key: "twoDSources.phantomLabel",
         help_i18n_key: Some("help.phantomExtract"),
         legacy_control_addr: "/omniphony/control/phantom_extract",
         set: |live, raw| {
-            let on = match raw {
-                RawOptionValue::Number(n) => *n != 0.0,
-                RawOptionValue::Bool(b) => *b,
-                RawOptionValue::Str(_) => return None,
+            let mode = match raw {
+                RawOptionValue::Str(s) => PhantomExtractMode::from_str(s)?,
+                // Backward compatibility for the old boolean legacy OSC
+                // address: enabling selects the historical broadband default.
+                RawOptionValue::Number(n) => {
+                    if *n == 0.0 {
+                        PhantomExtractMode::Off
+                    } else {
+                        PhantomExtractMode::Broadband
+                    }
+                }
+                RawOptionValue::Bool(false) => PhantomExtractMode::Off,
+                RawOptionValue::Bool(true) => PhantomExtractMode::Broadband,
             };
-            live.phantom_enabled = on;
-            Some(if on { "1" } else { "0" }.to_string())
+            live.phantom_extract_mode = mode;
+            Some(mode.as_str().to_string())
         },
-        get_json: |live| live.phantom_enabled.into(),
+        get_json: |live| live.phantom_extract_mode.as_str().into(),
         config_store: |render, live| {
-            crate::config_fields::phantom_enabled::store(render, live.phantom_enabled)
+            crate::config_fields::phantom_extract_mode::store(render, live.phantom_extract_mode);
+            render.phantom_enabled = None;
+            if let Some(params) = render.phantom_params.as_mut() {
+                params.remove("method");
+                if params.is_empty() {
+                    render.phantom_params = None;
+                }
+            }
         },
         config_seed: |live, render| {
-            if let Some(enabled) = crate::config_fields::phantom_enabled::get(render) {
-                live.phantom_enabled = enabled;
+            if let Some(mode) = crate::config_fields::phantom_extract_mode::get(render) {
+                live.phantom_extract_mode = mode;
             }
         },
     },
@@ -319,6 +338,33 @@ pub fn seed_live_from_config(live: &mut LiveParams, render: &RenderConfig) {
     if let Some(params) = render.phantom_params.clone() {
         live.phantom_params = params;
     }
+    // Migrate the old phantom boolean + `phantom_params.method` split into the
+    // explicit three-position mode. A remembered method remains available even
+    // if the old enable switch was off.
+    if render.phantom_extract_mode.is_none() {
+        let legacy_method = live.phantom_params.get("method").copied();
+        live.phantom_extract_mode = match (render.phantom_enabled, legacy_method) {
+            (Some(true), Some(v)) if v >= 0.5 => PhantomExtractMode::Spectral,
+            (Some(true), _) => PhantomExtractMode::Broadband,
+            (_, Some(v)) if v >= 0.5 => PhantomExtractMode::Spectral,
+            (_, Some(_)) => PhantomExtractMode::Broadband,
+            _ => PhantomExtractMode::Off,
+        };
+    }
+    live.phantom_params.remove("method");
+
+    // Old configs had no global master. Infer it once from an active child so
+    // upgrading preserves audible behaviour; new configs always persist the
+    // master explicitly, including false.
+    if render.synthetic_objects_enabled.is_none() {
+        let generator_active = !live.object_generator_id.trim().is_empty()
+            && !live.object_generator_id.eq_ignore_ascii_case("none");
+        live.synthetic_objects_enabled = render.phantom_enabled.unwrap_or(false)
+            || generator_active
+            || render
+                .phantom_extract_mode
+                .is_some_and(|m| m != PhantomExtractMode::Off);
+    }
     // Virtual bed: absent = the built-in canonical poses (LFE direct).
     if let Some(bed) = render.virtual_bed.clone() {
         live.virtual_bed = Some(bed);
@@ -339,11 +385,16 @@ pub fn store_live_to_config(render: &mut RenderConfig, live: &LiveParams) {
     } else {
         Some(live.object_generator_params.clone())
     };
-    render.phantom_params = if live.phantom_params.is_empty() {
+    let mut phantom_params = live.phantom_params.clone();
+    phantom_params.remove("method");
+    render.phantom_params = if phantom_params.is_empty() {
         None
     } else {
-        Some(live.phantom_params.clone())
+        Some(phantom_params)
     };
+    // Legacy global-host and phantom boolean keys are read-only migrations.
+    render.channel_render_mode = None;
+    render.phantom_enabled = None;
     // Virtual bed: persist verbatim (round the radius for stable diffs);
     // `None` keeps the key out so the built-in canonical poses stay in effect.
     render.virtual_bed = live.virtual_bed.clone().map(|mut bed| {

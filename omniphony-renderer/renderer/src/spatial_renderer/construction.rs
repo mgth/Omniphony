@@ -416,7 +416,8 @@ impl SpatialRenderer {
             binaural: crate::live_params::BinauralLiveParams::default(),
             // Seeded to the default (Spatial); the CLI bootstrap and the
             // embedded mpv host (`Engine::from_paths`) override it from
-            // `render.channel_render_mode`, mirroring `ramp_mode`.
+            // Internal host/CLI override; persistent user config is normalized
+            // to the spatial policy by the option/config migration layer.
             channel_render_mode: crate::live_params::ChannelRenderMode::default(),
             // Seeded to the default (Side); the CLI bootstrap and the embedded
             // mpv host override it from `render.surround_placement`.
@@ -432,8 +433,11 @@ impl SpatialRenderer {
             object_generator_id: String::new(),
             // Empty = each generator uses its declared param defaults.
             object_generator_params: std::collections::HashMap::new(),
-            // Phantom-source extraction pre-stage: off by default.
-            phantom_enabled: false,
+            // Renderer-synthesized objects and phantom extraction are both off
+            // by default; their selections remain independent so the master can
+            // temporarily bypass processing without losing setup.
+            synthetic_objects_enabled: false,
+            phantom_extract_mode: crate::live_params::PhantomExtractMode::Off,
             phantom_params: std::collections::HashMap::new(),
         }
     }

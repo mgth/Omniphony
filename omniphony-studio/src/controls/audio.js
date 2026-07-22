@@ -139,24 +139,21 @@ export function renderAudioFormatDisplay() {
     rampModeSelectEl.value = ['off', 'frame', 'sample', 'interp'].includes(app.rampMode) ? app.rampMode : 'frame';
   }
   {
-    // The registry binder reflects the bound controls (spatialize switch,
-    // Side/Back + mapping buttons, generator select); this render owns what a
-    // value change implies for the panel: row visibility, summaries, and the
-    // schema-driven param sliders. Off = host (let the player decode), on =
-    // spatial (render through the virtual bed).
+    // The registry binder reflects the bound controls. Applicability only
+    // changes status text: every setting remains available for offline setup.
     reflectBoundOptions();
-    const spatial = getLiveOption('channel_render_mode') !== 'host';
     const virtualBedActions = document.getElementById('virtualBedActions');
-    if (virtualBedActions) virtualBedActions.style.display = spatial ? 'flex' : 'none';
+    if (virtualBedActions) virtualBedActions.style.display = 'flex';
     const surroundRow = document.getElementById('surroundPlacementRow');
-    if (surroundRow) surroundRow.style.display = spatial ? 'flex' : 'none';
+    if (surroundRow) surroundRow.style.display = 'flex';
     updateTwoDSourcesSummary();
     const objectGeneratorRow = document.getElementById('objectGeneratorRow');
-    if (objectGeneratorRow) objectGeneratorRow.style.display = spatial ? 'flex' : 'none';
+    if (objectGeneratorRow) objectGeneratorRow.style.display = 'flex';
     updateObjectGeneratorUI();
     const phantomRow = document.getElementById('phantomExtractRow');
-    if (phantomRow) phantomRow.style.display = spatial ? 'flex' : 'none';
+    if (phantomRow) phantomRow.style.display = 'flex';
     updatePhantomUI();
+    updateFixedChannelProcessingUI();
     syncVirtualBedObjects();
     renderChannelEditor();
   }
@@ -317,20 +314,66 @@ export function applyRampModeNow() {
   invoke('control_ramp_mode', { value: requested });
 }
 
-// Header summary shown while the fixed-channel-source panel is collapsed:
-// whether fixed channels are spatialised (with the rear-channel placement) or
-// passed through to the player. Reads the declared options through `getLiveOption`.
+// Header summary shown while the fixed-channel-source panel is collapsed.
 export function updateTwoDSourcesSummary() {
   const summaryEl = document.getElementById('twoDSourcesSummary');
   if (!summaryEl) return;
-  if (getLiveOption('channel_render_mode') !== 'host') {
-    const placement = getLiveOption('surround_placement') === 'back'
-      ? t('twoDSources.surroundBack')
-      : t('twoDSources.surroundSide');
-    summaryEl.textContent = `${t('twoDSources.summary.spatialized')} · ${placement}`;
-  } else {
-    summaryEl.textContent = t('twoDSources.summary.passthrough');
+  const placement = getLiveOption('surround_placement') === 'back'
+    ? t('twoDSources.surroundBack')
+    : t('twoDSources.surroundSide');
+  const synthesis = getLiveOption('synthetic_objects_enabled')
+    ? t('twoDSources.summary.syntheticEnabled')
+    : t('twoDSources.summary.fixedOnly');
+  summaryEl.textContent = `${placement} · ${synthesis}`;
+}
+
+const PROCESSING_REASON_KEYS = {
+  active: 'twoDSources.status.active',
+  off: 'twoDSources.status.off',
+  master_off: 'twoDSources.status.masterOff',
+  no_stream: 'twoDSources.status.noStream',
+  object_stream: 'twoDSources.status.objectStream',
+  input_has_height: 'twoDSources.status.inputHasHeight',
+  output_has_no_height: 'twoDSources.status.outputHasNoHeight',
+  insufficient_channels: 'twoDSources.status.insufficientChannels'
+};
+
+function processingReason(value) {
+  return t(PROCESSING_REASON_KEYS[value] || 'twoDSources.status.noStream');
+}
+
+function effectivePhantomReason() {
+  if ((getLiveOption('phantom_extract_mode') || 'off') === 'off') return 'off';
+  if (!getLiveOption('synthetic_objects_enabled')) return 'master_off';
+  return app.fixedChannelProcessing?.phantom || 'no_stream';
+}
+
+function effectiveHeightReason() {
+  const generator = getLiveOption('object_generator_id') || 'none';
+  if (!generator || generator === 'none') return 'off';
+  if (!getLiveOption('synthetic_objects_enabled')) return 'master_off';
+  return app.fixedChannelProcessing?.height || 'no_stream';
+}
+
+export function updateFixedChannelProcessingUI() {
+  const state = app.fixedChannelProcessing || {};
+  const activity = document.getElementById('fixedChannelActivity');
+  if (activity) {
+    const key = state.stream === 'fixed'
+      ? 'twoDSources.stream.fixed'
+      : state.stream === 'objects'
+        ? 'twoDSources.stream.objects'
+        : 'twoDSources.stream.idle';
+    activity.textContent = t(key);
   }
+  const masterStatus = document.getElementById('syntheticObjectsStatus');
+  if (masterStatus) {
+    masterStatus.textContent = getLiveOption('synthetic_objects_enabled')
+      ? t('twoDSources.syntheticConfigured')
+      : t('twoDSources.fixedOnly');
+  }
+  const phantomStatus = document.getElementById('phantomStatus');
+  if (phantomStatus) phantomStatus.textContent = processingReason(effectivePhantomReason());
 }
 
 // The generator id whose param sliders are currently built into the DOM.
@@ -431,18 +474,19 @@ export function updateObjectGeneratorUI() {
   const sel = document.getElementById('objectGeneratorSelect');
   // (Re)set after a schema-driven rebuild; the binder reflects the same value.
   if (sel && document.activeElement !== sel) sel.value = getLiveOption('object_generator_id') || 'none';
-  // Grey out the whole control when the output layout has no top speaker — the
-  // 2D-upmix generators are a strict no-op there.
+  // Applicability never disables configuration. The renderer reports why a
+  // selected generator is currently inactive while offline edits remain valid.
   const hasHeight = app.objectGeneratorLayoutHasHeight !== false;
-  if (sel) sel.disabled = !hasHeight;
+  if (sel) sel.disabled = false;
   const note = document.getElementById('objectGeneratorNoHeightNote');
-  if (note) note.style.display = hasHeight ? 'none' : 'inline';
+  if (note) {
+    const reason = effectiveHeightReason();
+    note.style.display = reason && reason !== 'active' && reason !== 'off' ? 'inline' : 'none';
+    note.textContent = processingReason(reason || (hasHeight ? 'off' : 'output_has_no_height'));
+  }
   const schema = activeGeneratorSchema();
   const row = document.getElementById('objectGenParamsRow');
-  const show =
-    !!(schema && (schema.params || []).length) &&
-    getLiveOption('channel_render_mode') !== 'host' &&
-    hasHeight;
+  const show = !!(schema && (schema.params || []).length);
   if (row) row.style.display = show ? 'flex' : 'none';
   const wantId = schema ? schema.id : null;
   if (wantId !== builtParamGenId) {
@@ -487,23 +531,20 @@ function isBinaryParam(spec) {
 }
 
 // Params that only shape the BROADBAND plan: the engine deliberately ignores
-// their changes while the per-band (spectral) method is active (see
-// phantom_extract.rs sync — no pointless re-prime), so grey them out rather
-// than let them look functional.
+// their changes while spectral mode is active (see phantom_extract.rs sync —
+// no pointless re-prime). Keep them editable for offline configuration, but
+// visually identify that they do not affect the current mode.
 const PHANTOM_BROADBAND_ONLY = new Set(['passes', 'center', 'sides']);
 
 function phantomMethodIsSpectral() {
-  const stored = app.phantomParams && app.phantomParams.method;
-  const spec = (app.phantomSchema || []).find((p) => p && p.key === 'method');
-  const v = stored != null ? stored : spec ? spec.default : 0;
-  return Number(v) >= 0.5;
+  return getLiveOption('phantom_extract_mode') === 'spectral';
 }
 
 // Reflect a param row's broadband-only gating on its container + control.
 function applyPhantomParamGate(container, control, key, spectral) {
   const gated = spectral && PHANTOM_BROADBAND_ONLY.has(key);
-  control.disabled = gated;
-  container.style.opacity = gated ? '0.45' : '';
+  control.disabled = false;
+  container.style.opacity = gated ? '0.7' : '';
   if (gated) {
     container.title = t('twoDSources.phantomBroadbandOnly');
   } else {
@@ -535,8 +576,6 @@ function buildPhantomParamSliders() {
       toggle.checked = Number(initial) >= 0.5;
       toggle.addEventListener('change', () => {
         applyPhantomParamNow(spec.key, toggle.checked ? 1 : 0);
-        // The method switch changes which params apply — refresh the gates.
-        if (spec.key === 'method') updatePhantomUI();
       });
       applyPhantomParamGate(label, toggle, spec.key, spectral);
       label.appendChild(name);
@@ -580,15 +619,13 @@ export function rebuildPhantomControls() {
   updatePhantomUI();
 }
 
-// Show/hide + refresh the phantom parameter sliders (the enable switch itself
-// is binder-reflected).
+// Show/hide + refresh the phantom parameter sliders.
 export function updatePhantomUI() {
   const params = app.phantomSchema || [];
   const row = document.getElementById('phantomParamsRow');
   const show =
-    !!getLiveOption('phantom_enabled') &&
-    params.length > 0 &&
-    getLiveOption('channel_render_mode') !== 'host';
+    getLiveOption('phantom_extract_mode') !== 'off' &&
+    params.length > 0;
   if (row) row.style.display = show ? 'flex' : 'none';
   if (!builtPhantomParams && params.length > 0) {
     buildPhantomParamSliders();

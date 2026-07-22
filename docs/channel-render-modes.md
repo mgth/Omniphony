@@ -1,70 +1,93 @@
-# Channel content render modes
+# Fixed-channel source processing
 
-Some streams carry **spatial objects** (Atmos / JOC E-AC3, object TrueHD): orender
-renders those through VBAP as designed. Others are plain **channel beds** — a 5.1
-or 7.1 mix with no objects (non-JOC E-AC3, channel TrueHD, AC-3, multichannel
-PCM). This page covers how that *channel-based (non-object)* content is rendered.
+This module controls sources whose spatial description is a set of labelled,
+fixed channels: stereo, 5.1, 7.1, or a fixed 7.1.4 presentation. A stream that
+actually carries dynamic objects keeps that fact (`has_objects`) and bypasses
+the synthetic-object stages described below.
 
-There are three modes, applied **identically** by the CLI/spdif decode path and
-by the embedded mpv decoder (`--ad=orender`):
+## Fixed-channel rendering
 
-| Mode      | What happens                                                                                   |
-|-----------|------------------------------------------------------------------------------------------------|
-| `virtual` | **(default)** Each input channel becomes a virtual object placed at its theoretical speaker angle and is rendered through VBAP across your whole layout. The flagship behaviour. |
-| `direct`  | Each bed channel is routed straight to the matching speaker of your layout, with no virtualization. Channels with no matching speaker are dropped. |
-| `host`    | No spatialization. In **mpv** the orender decoder declines and mpv falls back to its native decoder (`ad_lavc`) — its own downmix. In the **CLI** the decoded channels are written straight to the output sink. |
+Omniphony renders every fixed channel according to its entry in the virtual-bed
+layout:
 
-Object-based content is **never** affected by this setting.
+- `spatialize: true` places the channel at its configured fixed position and
+  renders it through VBAP over the output layout;
+- `spatialize: false` routes the channel directly to the output speaker with
+  the matching label. LFE is direct by default, so it reaches the subwoofer
+  rather than becoming a spatialized source.
 
-## How to choose the mode
+Direct and virtualized channels can coexist in one source. Disabling every
+channel's `spatialize` flag is therefore the explicit fixed-speaker-only mode;
+it does not require, and does not create, any objects.
 
-### Studio
-Renderer panel → **Channel content** selector (next to *Ramp mode*). The change is
-live and is saved to the config.
+Studio always exposes the common 7.1.4 catalogue (`L`, `R`, `C`, `LFE`, `Ls`,
+`Rs`, `Lb`, `Rb`, `TFL`, `TFR`, `TBL`, `TBR`) so the layout can be prepared
+offline. Configured extra labels and labels discovered in the current session
+are merged into that catalogue. Controls remain editable when no compatible
+stream is playing.
 
-### Config file (`render.channel_render_mode`)
-The shared config (`~/.config/omniphony/config.yaml`, or
-`%ProgramData%\omniphony\config.yaml` on Windows) is the source of truth for both
-the CLI and mpv:
+`surround_placement` selects whether the single surround pair of a 4.x/5.x
+source is treated as side or back. Sources with dedicated back channels ignore
+this choice.
+
+## Synthetic objects
+
+`synthetic_objects_enabled` is a master gate for renderer-generated objects. It
+does not change the fixed-channel routes and it does not erase its child
+settings when turned off.
+
+Two independent stages can be configured and can run together:
+
+1. Phantom extraction runs first and subtracts the extracted contribution from
+   the fixed bed before exposing it as planar synthetic objects.
+2. The selected height generator then derives height objects from the remaining
+   fixed-channel signal.
+
+Phantom extraction has three explicit modes:
+
+- `off`: no extraction;
+- `broadband`: correlated extraction over the full band;
+- `spectral`: per-band extraction.
+
+The height generator is selected with `object_generator_id`; `none` disables
+it. A selected generator only runs for a fixed-channel source without existing
+height channels and when the output layout has height speakers.
+
+Studio reports why each configured stage is currently inactive (`master_off`,
+`no_stream`, `object_stream`, `input_has_height`, `output_has_no_height`, or
+`insufficient_channels`) instead of hiding or disabling its controls.
+
+## Configuration and live control
+
+The persistent fields live under `render`:
 
 ```yaml
 render:
-  channel_render_mode: virtual   # host | direct | virtual (default: virtual)
+  surround_placement: side
+  synthetic_objects_enabled: false
+  phantom_extract_mode: off
+  object_generator_id: none
+  virtual_bed:
+    speakers:
+      - name: LFE
+        spatialize: false
 ```
 
-### CLI
-```
-orender decode --channel-render-mode virtual|direct|host …
-```
+The declared options are available through `/omniphony/control/option` and the
+dedicated compatibility addresses documented in
+[`osc-control-contract.md`](osc-control-contract.md). Old `phantom_enabled` plus
+the phantom `method` parameter migrate to `phantom_extract_mode`. The former
+global `render.channel_render_mode` key is read only for compatibility and is
+dropped on save.
 
-### mpv
-By default mpv follows the shared config. To override for one invocation:
-```
-mpv --ad=orender --ad-orender-channel-mode=host|direct|virtual …
-```
+## Host override
 
-### OSC
-Live control: `/omniphony/control/channel_render_mode` with a string argument
-(`host` / `direct` / `virtual`). The current value is broadcast in the live-state
-snapshot as `channelRenderMode`.
+The engine still has an internal `spatial`/`host` switch for an embedding host.
+It is intentionally absent from Studio and persistent user options:
 
-## Output speaker layout (5.1.4, 7.1.4, …)
+- the mpv bridge uses it for its explicit decoder override and fallback probe;
+- `orender decode --channel-render-mode host|spatial` keeps the diagnostic CLI
+  path (`direct` and `virtual` remain aliases of `spatial`).
 
-The *output* layout — how many speakers you have and where they sit — is a
-separate setting from the modes above. Configure it in Studio (it is embedded in
-the config as `render.current_layout`) or point `render.speaker_layout` at a
-layout YAML. Bundled layouts live in the `layouts/` folder (height-less 5.1/7.1
-beds are under `layouts/legacy/`). On Windows, layout files are also discovered
-under `%ProgramData%\omniphony\layouts`.
-
-In `virtual` mode every input channel is spread across whatever output layout you
-configure (e.g. a 5.1 bed virtualized over a 7.1.4 rig). In `direct` mode only
-the input channels that have a matching speaker in your layout are heard.
-
-## Troubleshooting
-
-- **Non-Atmos E-AC3 plays but you want your player's normal downmix** → set the
-  mode to `host`.
-- **Playback froze on a non-object track (older builds)** → if the renderer cannot
-  resolve an output layout it now hands the track back to the native decoder
-  instead of stalling. Make sure a speaker layout is configured (see above).
+In normal Studio operation the policy is always `spatial`, with the actual
+direct-versus-virtual decision made per channel as described above.

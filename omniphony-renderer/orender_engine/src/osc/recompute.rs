@@ -114,6 +114,8 @@ pub(crate) fn trigger_layout_recompute(
                             control_clone.available_backends(),
                             control_clone.all_backend_params(),
                             &unroutable,
+                            &control_clone.fixed_channel_catalog(),
+                            &control_clone.fixed_channel_processing(),
                         )
                     };
                     let layout_json = {

@@ -25,7 +25,8 @@ pub(crate) fn build_live_state_bundle(
         messages.extend(h.extend_snapshot());
     }
     // Declared bed→height object-generator schema (id / label / param specs), so
-    // Studio builds the 2D-upmix selector + parameter sliders dynamically. The
+    // Studio builds the fixed-bed height-generator selector + parameter sliders
+    // dynamically. The
     // engine publishes the JSON into `RendererControl` from its registry (which
     // lives in this crate), so any host-registered out-of-tree generators are
     // included.

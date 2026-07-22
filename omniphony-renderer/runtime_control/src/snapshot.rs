@@ -122,6 +122,8 @@ pub fn build_renderer_state_json(
     // Speaker names that can't be routed by position in by_name mode (computed by
     // the engine, which owns the name→label classifier). Shown as a warning.
     unroutable_speaker_names: &[String],
+    fixed_channel_catalog_json: &str,
+    fixed_channel_processing_json: &str,
 ) -> String {
     let effective_backend = active_topology.backend.backend_id();
     let effective_evaluation_mode = active_topology.backend.evaluation_mode().as_str();
@@ -131,6 +133,12 @@ pub fn build_renderer_state_json(
         available_backends,
         backend_param_values_by_id,
     );
+    let fixed_channel_catalog =
+        serde_json::from_str::<serde_json::Value>(fixed_channel_catalog_json)
+            .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
+    let fixed_channel_processing =
+        serde_json::from_str::<serde_json::Value>(fixed_channel_processing_json)
+            .unwrap_or_else(|_| serde_json::json!({ "stream": "idle" }));
     json!({
         "renderBackend": live.backend_id(),
         "renderBackendEffective": effective_backend,
@@ -142,29 +150,34 @@ pub fn build_renderer_state_json(
         "autoGainCeilingDb": live.auto_gain_ceiling_db,
         "rampMode": live.ramp_mode.as_str(),
         "channelRenderMode": live.channel_render_mode.as_str(),
-        // Active bed→height object generator (2D upmix) id; empty = off.
+        "syntheticObjectsEnabled": live.synthetic_objects_enabled,
+        // Active fixed-bed→height object generator id; empty = off.
         "objectGeneratorId": live.object_generator_id.as_str(),
         // Live param overrides for the active generator (key → value), for the
         // Studio sliders. The schema itself is published separately by the engine
         // on `/omniphony/state/object_generators`.
         "objectGeneratorParams":
             serde_json::to_value(&live.object_generator_params).unwrap_or(serde_json::Value::Null),
-        // Whether the active output layout has a top speaker. The 2D-upmix
-        // generators are a strict no-op without one, so Studio greys out the
-        // selector.
+        // Whether the active output layout has a top speaker. Generators are a
+        // strict no-op without one; Studio still leaves them editable for
+        // offline configuration and reports the applicability reason.
         "objectGeneratorLayoutHasHeight": active_topology
             .speaker_layout
             .speakers
             .iter()
             .any(|s| s.spatialize && s.z > 1.0e-3),
-        // Phantom-source extraction pre-stage: enable flag + its param overrides
-        // (the param schema is published by the engine on `/state/phantom`).
-        "phantomEnabled": live.phantom_enabled,
+        // Canonical three-position mode plus the old derived boolean spelling
+        // for clients that have not migrated yet.
+        "phantomExtractMode": live.phantom_extract_mode.as_str(),
+        "phantomEnabled": live.synthetic_objects_enabled
+            && live.phantom_extract_mode != renderer::live_params::PhantomExtractMode::Off,
         "phantomParams":
             serde_json::to_value(&live.phantom_params).unwrap_or(serde_json::Value::Null),
         "surroundPlacement": live.surround_placement.as_str(),
         "outputChannelMapping": live.output_channel_mapping.as_str(),
         "outputChannelMappingUnroutable": unroutable_speaker_names,
+        "fixedChannelCatalog": fixed_channel_catalog,
+        "fixedChannelProcessing": fixed_channel_processing,
         // Declared live options, emitted generically from the registry under
         // their canonical (snake_case) keys. The flat camelCase keys above are
         // the legacy spellings, kept while clients migrate to this block.
@@ -391,6 +404,8 @@ pub fn build_live_state_bundle(
         // which runtime_control can't reach; the engine's recompute broadcast
         // (fired on topology build and every layout edit) carries the real list.
         &[],
+        &control.fixed_channel_catalog(),
+        &control.fixed_channel_processing(),
     );
 
     let mut messages = vec![

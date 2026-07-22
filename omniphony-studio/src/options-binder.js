@@ -6,9 +6,8 @@
 // Tauri command:
 //
 //   toggle-btn pair:  <button data-option="surround_placement" data-option-value="side">
-//   switch (bool):    <input type="checkbox" data-option="phantom_enabled">
-//   switch (enum):    <input type="checkbox" data-option="channel_render_mode"
-//                            data-option-on="spatial" data-option-off="host">
+//   switch (bool):    <input type="checkbox" data-option="synthetic_objects_enabled">
+//   enum select:      <select data-option="phantom_extract_mode">…</select>
 //   select:           <select data-option="object_generator_id" data-option-empty="none">
 //
 // Sending: the generic `control_option` Tauri command → OSC

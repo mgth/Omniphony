@@ -184,7 +184,14 @@ pub struct RenderConfig {
     /// uses its declared defaults.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_generator_params: Option<std::collections::HashMap<String, f32>>,
-    /// Enables the phantom-source extraction pre-stage. Absent = off.
+    /// Global renderer-synthesized-object master. Kept explicit once migrated so
+    /// an off master can retain non-off child selections.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synthetic_objects_enabled: Option<bool>,
+    /// Phantom extraction algorithm. Absent = off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phantom_extract_mode: Option<crate::live_params::PhantomExtractMode>,
+    /// Legacy phantom enable flag, read for migration and dropped on save.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phantom_enabled: Option<bool>,
     /// Live parameter overrides for the phantom-extraction stage (`strength` /
