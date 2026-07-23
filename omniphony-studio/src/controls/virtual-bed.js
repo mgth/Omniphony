@@ -27,10 +27,10 @@ import {
   formatNumber
 } from '../coordinates.js';
 
-// Fallback editable channel set (7.1.4) with the default poses as ADM cartesian
-// corners (X left/right, Y rear/front, Z down/up; ear level Z = 0). LFE defaults
-// to direct (it cannot be VBAP-panned). The renderer-published catalogue replaces
-// these values when available.
+// Fallback editable fixed-channel set with default ADM cartesian poses
+// (X left/right, Y rear/front, Z down/up; ear level Z = 0). LFE channels
+// default to direct because they cannot be VBAP-panned. The renderer-published
+// catalogue replaces these values when available.
 const FALLBACK_BED = [
   { name: 'L', x: -1, y: 1, z: 0, spatialize: true },
   { name: 'R', x: 1, y: 1, z: 0, spatialize: true },
@@ -43,7 +43,19 @@ const FALLBACK_BED = [
   { name: 'TFL', x: -1, y: 1, z: 1, spatialize: true },
   { name: 'TFR', x: 1, y: 1, z: 1, spatialize: true },
   { name: 'TBL', x: -1, y: -1, z: 1, spatialize: true },
-  { name: 'TBR', x: 1, y: -1, z: 1, spatialize: true }
+  { name: 'TBR', x: 1, y: -1, z: 1, spatialize: true },
+  { name: 'Lsc', x: -0.5, y: 1, z: 0, spatialize: true },
+  { name: 'Rsc', x: 0.5, y: 1, z: 0, spatialize: true },
+  { name: 'Cb', x: 0, y: -1, z: 0, spatialize: true },
+  { name: 'Lsd', x: -1, y: -0.5, z: 0, spatialize: true },
+  { name: 'Rsd', x: 1, y: -0.5, z: 0, spatialize: true },
+  { name: 'Lw', x: -1, y: 0.5, z: 0, spatialize: true },
+  { name: 'Rw', x: 1, y: 0.5, z: 0, spatialize: true },
+  { name: 'LFE2', x: 0, y: 1, z: 0, spatialize: false },
+  { name: 'TSL', x: -1, y: 0, z: 1, spatialize: true },
+  { name: 'TSR', x: 1, y: 0, z: 1, spatialize: true },
+  { name: 'TC', x: 0, y: 0, z: 1, spatialize: true },
+  { name: 'TFC', x: 0, y: 1, z: 1, spatialize: true }
 ];
 
 // Name aliases per canonical channel (mirrors the renderer's label_aliases) so
@@ -53,14 +65,26 @@ const CHANNEL_ALIASES = {
   R: ['r', 'fr', 'frontright', 'rightfront'],
   C: ['c', 'fc', 'center', 'centre'],
   LFE: ['lfe', 'lfe1', 'sub', 'subwoofer', 'sw'],
+  LFE2: ['lfe2'],
   Ls: ['ls', 'sl', 'leftsurround', 'surroundleft'],
   Rs: ['rs', 'sr', 'rightsurround', 'surroundright'],
   Lb: ['lb', 'bl', 'lrs', 'backleft', 'leftback', 'rearleft', 'leftrear'],
   Rb: ['rb', 'br', 'rrs', 'backright', 'rightback', 'rightrear', 'rearright'],
+  Cb: ['cb', 'bc', 'rc', 'backcenter', 'rearcenter', 'centerback'],
+  Lsc: ['lsc', 'flc', 'frontleftcenter', 'leftcenter'],
+  Rsc: ['rsc', 'frc', 'frontrightcenter', 'rightcenter'],
+  Lsd: ['lsd'],
+  Rsd: ['rsd'],
+  Lw: ['lw', 'fwl', 'wl', 'wideleft', 'frontwideleft'],
+  Rw: ['rw', 'fwr', 'wr', 'wideright', 'frontwideright'],
   TFL: ['tfl', 'ltf', 'tpfl', 'topfrontleft', 'upperfrontleft'],
   TFR: ['tfr', 'rtf', 'tpfr', 'topfrontright', 'upperfrontright'],
+  TSL: ['tsl', 'tpsl', 'topsideleft', 'uppersideleft'],
+  TSR: ['tsr', 'tpsr', 'topsideright', 'uppersideright'],
   TBL: ['tbl', 'ltr', 'tpbl', 'topbackleft', 'toprearleft', 'upperbackleft'],
-  TBR: ['tbr', 'rtr', 'tpbr', 'topbackright', 'toprearright', 'upperbackright']
+  TBR: ['tbr', 'rtr', 'tpbr', 'topbackright', 'toprearright', 'upperbackright'],
+  TC: ['tc', 'tpc', 'topcenter', 'topmiddlecenter'],
+  TFC: ['tfc', 'tpfc', 'topfrontcenter']
 };
 
 // Canonical channel key (L/R/C/LFE/Ls/Rs/Lb/Rb) for any alias, or null.
@@ -79,7 +103,7 @@ export function canonicalChannelName(name) {
   return null;
 }
 
-// Canonical 5.1/7.1 channel order (L, R, C, LFE, Ls, Rs, Lb, Rb).
+// Stable fixed-channel order, with the common 7.1.4 set first.
 const CANONICAL_CHANNEL_ORDER = FALLBACK_BED.map((c) => c.name);
 
 // Rank of a channel (by any alias) in the canonical order, or -1 if it is not a

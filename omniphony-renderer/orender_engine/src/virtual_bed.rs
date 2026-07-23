@@ -246,9 +246,8 @@ fn label_aliases(label: RChannelLabel, use_7_1: bool) -> Option<&'static [&'stat
         RChannelLabel::L => Some(&["FL", "L", "FrontLeft", "LeftFront"]),
         RChannelLabel::R => Some(&["FR", "R", "FrontRight", "RightFront"]),
         RChannelLabel::C => Some(&["C", "FC", "Center", "Centre"]),
-        RChannelLabel::LFE | RChannelLabel::LFE2 => {
-            Some(&["LFE", "LFE1", "Sub", "Subwoofer", "SW"])
-        }
+        RChannelLabel::LFE => Some(&["LFE", "LFE1", "Sub", "Subwoofer", "SW"]),
+        RChannelLabel::LFE2 => Some(&["LFE2"]),
         RChannelLabel::Ls => {
             if use_7_1 {
                 Some(&["SL", "Ls", "LeftSurround", "SurroundLeft"])
@@ -294,6 +293,12 @@ fn label_aliases(label: RChannelLabel, use_7_1: bool) -> Option<&'static [&'stat
             "RightRear",
         ]),
         RChannelLabel::Cb => Some(&["BC", "Cb", "BackCenter", "RearCenter"]),
+        RChannelLabel::Lsc => Some(&["LSC", "FLC", "FrontLeftCenter", "LeftCenter"]),
+        RChannelLabel::Rsc => Some(&["RSC", "FRC", "FrontRightCenter", "RightCenter"]),
+        RChannelLabel::Lw => Some(&["Lw", "FWL", "WL", "WideLeft", "FrontWideLeft"]),
+        RChannelLabel::Rw => Some(&["Rw", "FWR", "WR", "WideRight", "FrontWideRight"]),
+        RChannelLabel::Lsd => Some(&["LSD"]),
+        RChannelLabel::Rsd => Some(&["RSD"]),
         // Height layer. Aliases cover the common naming schemes (TFL/TBL,
         // Dolby Ltf/Ltr, ADM Tp* / U* upper-layer) so a configured 7.1.4 layout
         // resolves these to its named top speakers.
@@ -333,6 +338,7 @@ fn label_aliases(label: RChannelLabel, use_7_1: bool) -> Option<&'static [&'stat
         ]),
         RChannelLabel::Tsl => Some(&["TSL", "Tsl", "TpSL", "TopSideLeft", "UpperSideLeft"]),
         RChannelLabel::Tsr => Some(&["TSR", "Tsr", "TpSR", "TopSideRight", "UpperSideRight"]),
+        RChannelLabel::Tc => Some(&["TC", "TpC", "TopCenter", "TopMiddleCenter"]),
         RChannelLabel::Tfc => Some(&["TFC", "Tfc", "TpFC", "TopFrontCenter"]),
         _ => None,
     }
@@ -360,6 +366,12 @@ fn fallback_virtual_bed_pose(
         RChannelLabel::Lb => ("BL", -1.0, -1.0, 0.0),
         RChannelLabel::Rb => ("BR", 1.0, -1.0, 0.0),
         RChannelLabel::Cb => ("BC", 0.0, -1.0, 0.0),
+        RChannelLabel::Lsc => ("Lsc", -0.5, 1.0, 0.0),
+        RChannelLabel::Rsc => ("Rsc", 0.5, 1.0, 0.0),
+        RChannelLabel::Lw => ("Lw", -1.0, 0.5, 0.0),
+        RChannelLabel::Rw => ("Rw", 1.0, 0.5, 0.0),
+        RChannelLabel::Lsd => ("Lsd", -1.0, -0.5, 0.0),
+        RChannelLabel::Rsd => ("Rsd", 1.0, -0.5, 0.0),
         // Height layer at the ceiling (z = 1), mirroring the floor corners.
         RChannelLabel::Tfl => ("TFL", -1.0, 1.0, 1.0),
         RChannelLabel::Tfr => ("TFR", 1.0, 1.0, 1.0),
@@ -367,19 +379,26 @@ fn fallback_virtual_bed_pose(
         RChannelLabel::Tbr => ("TBR", 1.0, -1.0, 1.0),
         RChannelLabel::Tsl => ("TSL", -1.0, 0.0, 1.0),
         RChannelLabel::Tsr => ("TSR", 1.0, 0.0, 1.0),
+        RChannelLabel::Tc => ("TC", 0.0, 0.0, 1.0),
         RChannelLabel::Tfc => ("TFC", 0.0, 1.0, 1.0),
         _ => return None,
     };
     Some((name.to_string(), x, y, z))
 }
 
-/// Stable editor catalogue available even when no stream is active. The common
-/// 7.1.4 set is always present; Studio merges configured and session-discovered
-/// labels on top without maintaining a second table of canonical poses.
+/// Stable editor catalogue available even when no stream is active. Every
+/// fixed-channel label has a canonical pose; dynamic objects and unknown
+/// channels are deliberately excluded.
 pub fn fixed_channel_catalog_json() -> String {
-    use RChannelLabel::{C, L, LFE, Lb, Ls, R, Rb, Rs, Tbl, Tbr, Tfl, Tfr};
-    const COMMON: [RChannelLabel; 12] = [L, R, C, LFE, Ls, Rs, Lb, Rb, Tfl, Tfr, Tbl, Tbr];
-    let entries: Vec<serde_json::Value> = COMMON
+    use RChannelLabel::{
+        C, Cb, L, LFE, LFE2, Lb, Ls, Lsc, Lsd, Lw, R, Rb, Rs, Rsc, Rsd, Rw, Tbl, Tbr, Tc, Tfc, Tfl,
+        Tfr, Tsl, Tsr,
+    };
+    const FIXED: [RChannelLabel; 24] = [
+        L, R, C, LFE, Ls, Rs, Lb, Rb, Tfl, Tfr, Tbl, Tbr, Lsc, Rsc, Cb, Lsd, Rsd, Lw, Rw, LFE2,
+        Tsl, Tsr, Tc, Tfc,
+    ];
+    let entries: Vec<serde_json::Value> = FIXED
         .iter()
         .filter_map(|&label| {
             let (_, x, y, z) = fallback_virtual_bed_pose(label, true)?;
@@ -1021,7 +1040,7 @@ mod tests {
     const UNIT_ROOM: [f32; 3] = [1.0, 1.0, 1.0];
 
     #[test]
-    fn fixed_channel_catalog_is_stable_7_1_4_and_keeps_lfe_direct() {
+    fn fixed_channel_catalog_covers_every_fixed_label_with_canonical_poses() {
         let catalog: serde_json::Value =
             serde_json::from_str(&fixed_channel_catalog_json()).expect("valid catalog JSON");
         let entries = catalog.as_array().expect("catalog array");
@@ -1032,7 +1051,8 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "L", "R", "C", "LFE", "Ls", "Rs", "Lb", "Rb", "TFL", "TFR", "TBL", "TBR"
+                "L", "R", "C", "LFE", "Ls", "Rs", "Lb", "Rb", "TFL", "TFR", "TBL", "TBR", "Lsc",
+                "Rsc", "Cb", "Lsd", "Rsd", "Lw", "Rw", "LFE2", "TSL", "TSR", "TC", "TFC",
             ]
         );
 
@@ -1043,6 +1063,46 @@ mod tests {
             assert_eq!(height["group"], "height");
             assert_eq!(height["z"], 1.0);
         }
+
+        let entry = |label: &str| {
+            entries
+                .iter()
+                .find(|entry| entry["label"] == label)
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        let lfe2 = entry("LFE2");
+        assert_eq!(lfe2["spatialize"], false);
+        assert_eq!(lfe2["x"], 0.0);
+        assert_eq!(lfe2["y"], 1.0);
+        assert_eq!(lfe2["z"], 0.0);
+
+        let tc = entry("TC");
+        assert_eq!(tc["x"], 0.0);
+        assert_eq!(tc["y"], 0.0);
+        assert_eq!(tc["z"], 1.0);
+
+        let tfc = entry("TFC");
+        assert_eq!(tfc["group"], "height");
+        assert_eq!(tfc["x"], 0.0);
+        assert_eq!(tfc["y"], 1.0);
+        assert_eq!(tfc["z"], 1.0);
+    }
+
+    #[test]
+    fn fallback_pose_exists_for_every_non_object_label() {
+        use RChannelLabel::*;
+        let fixed = [
+            L, R, C, LFE, Ls, Rs, Tfl, Tfr, Tsl, Tsr, Tbl, Tbr, Lsc, Rsc, Lb, Rb, Cb, Tc, Lsd, Rsd,
+            Lw, Rw, Tfc, LFE2,
+        ];
+        for label in fixed {
+            assert!(
+                fallback_virtual_bed_pose(label, true).is_some(),
+                "missing fallback for {label:?}"
+            );
+        }
+        assert!(fallback_virtual_bed_pose(Object, true).is_none());
+        assert!(fallback_virtual_bed_pose(Unknown, true).is_none());
     }
 
     #[test]
