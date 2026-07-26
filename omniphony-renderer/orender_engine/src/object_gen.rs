@@ -313,6 +313,33 @@ pub(crate) fn channel_top_position(
     Some(pos)
 }
 
+/// Canonical 3D position of any positionable channel: bed channels on the floor
+/// (`z = 0`, honouring the Side/Back surround placement) and height channels at
+/// the ceiling (`z = 1`, the virtual-bed convention). `None` for LFE/unknown.
+pub(crate) fn channel_3d_position(
+    label: RChannelLabel,
+    use_7_1: bool,
+    placement: SurroundPlacement,
+) -> Option<[f64; 3]> {
+    use RChannelLabel::*;
+    let top = match label {
+        Tfl => [-1.0, 1.0, 1.0],
+        Tfr => [1.0, 1.0, 1.0],
+        Tbl => [-1.0, -1.0, 1.0],
+        Tbr => [1.0, -1.0, 1.0],
+        Tsl => [-1.0, 0.0, 1.0],
+        Tsr => [1.0, 0.0, 1.0],
+        Tc => [0.0, 0.0, 1.0],
+        Tfc => [0.0, 1.0, 1.0],
+        _ => {
+            let mut pos = channel_top_position(label, use_7_1, placement)?;
+            pos[2] = 0.0;
+            return Some(pos);
+        }
+    };
+    Some(top)
+}
+
 // ───────────────────────── built-in: copy_up ─────────────────────────
 
 /// Simple reference generator: routes every spatializable floor channel straight

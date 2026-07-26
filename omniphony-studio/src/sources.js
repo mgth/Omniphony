@@ -138,6 +138,12 @@ export function objectBadge(id) {
   if (m) return { type: 'phantom', code: `${m[1]}·${m[2]}` };
   m = name.match(/^Phantom_([^_]+)$/i);
   if (m) return { type: 'phantom', code: m[1] };
+  // Spectral extraction sectors: high ring "DirectH_FL" (marked ↑ to keep the
+  // code distinct from the floor ring's), floor ring "Direct_FL".
+  m = name.match(/^DirectH_(.+)$/i);
+  if (m) return { type: 'phantom', code: `${m[1]}↑` };
+  m = name.match(/^Direct_(.+)$/i);
+  if (m) return { type: 'phantom', code: m[1] };
   // Default: strip a single technical prefix word, as before.
   const u = name.indexOf('_');
   const code = u >= 0 ? name.slice(u + 1) : name;
