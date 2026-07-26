@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "omniphony-studio"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "flate2",
  "image",

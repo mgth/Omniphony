@@ -1,6 +1,6 @@
 {
   "name": "omniphony-studio",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Visualisation 3D d'objets audio spatialisés via OSC",
   "scripts": {
     "dev": "vite",
