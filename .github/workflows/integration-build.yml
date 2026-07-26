@@ -1,7 +1,10 @@
 name: Integration Build
 
 # Rolling pre-release test build for testers, built from `main` (integration).
-# Manual on demand + once daily. Published under a single rolling `integration`
+# Manual on demand + once daily; the daily run is skipped when `main` hasn't
+# moved since the last publish (see the `check` job), so the release date stays
+# meaningful and no identical assets get republished.
+# Published under a single rolling `integration`
 # tag and marked as a pre-release, so GitHub never shows it as the "Latest"
 # release (Latest = newest non-prerelease, non-draft). Testers always grab the
 # same URL; assets are replaced each run, not accumulated.
@@ -15,7 +18,41 @@ on:
     - cron: '0 4 * * *' # daily 04:00 UTC
 
 jobs:
+  # Scheduled runs are skipped when `main` hasn't moved since the last
+  # published integration build (the rolling `integration` tag is recreated at
+  # the built commit on every publish, so tag SHA == HEAD means nothing new).
+  # Manual dispatch always builds, so a rebuild can still be forced on demand
+  # (e.g. after a toolchain or runner-image change).
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.cmp.outputs.should_build }}
+    steps:
+      - name: Compare integration tag with HEAD
+        id: cmp
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch: building unconditionally."
+            exit 0
+          fi
+          # The tag is created by action-gh-release as a lightweight tag, so
+          # object.sha is the commit itself (no annotated-tag dereference).
+          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/integration" \
+            --jq .object.sha 2>/dev/null || true)
+          if [ "$tag_sha" = "$GITHUB_SHA" ]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "integration tag already at $GITHUB_SHA — skipping rebuild."
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "main moved (tag: ${tag_sha:-none}, HEAD: $GITHUB_SHA) — building."
+          fi
+
   build-studio:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
     strategy:
       fail-fast: false
       matrix:
