@@ -40,8 +40,9 @@ jobs:
           - platform: ubuntu-22.04
           - platform: windows-latest
           # macOS Apple Silicon: CoreAudio output backend, no extra system deps.
-          # tauri-action emits a .dmg/.app; the build is unsigned (ad-hoc) until
-          # signing secrets are configured.
+          # tauri-action emits a .dmg/.app; ad-hoc signed (see
+          # APPLE_SIGNING_IDENTITY below) until real signing secrets are
+          # configured.
           - platform: macos-14
 
     runs-on: ${{ matrix.platform }}
@@ -148,6 +149,14 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # "-" = ad-hoc codesign of the whole .app during bundling (before the
+          # .app.tar.gz/.dmg are packaged and uploaded — signing after this step
+          # would be too late). No Developer ID: Gatekeeper still blocks the
+          # quarantined download, but the bundle gets a coherent seal so a
+          # quarantine-cleared app launches instead of showing the "damaged"
+          # dialog (#201). Replace with a real identity + notarization once
+          # Apple signing secrets exist. Ignored on Linux/Windows.
+          APPLE_SIGNING_IDENTITY: '-'
         with:
           projectPath: omniphony-studio
           tagName: ${{ github.ref_name }}
