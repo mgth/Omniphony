@@ -535,7 +535,7 @@ function isBinaryParam(spec) {
 // no pointless re-prime). Keep them editable for offline configuration, but
 // visually identify that they do not affect the current mode.
 const PHANTOM_BROADBAND_ONLY = new Set(['passes', 'center', 'sides']);
-const PHANTOM_SPECTRAL_ONLY = new Set(['heights']);
+const PHANTOM_SPECTRAL_ONLY = new Set(['heights', 'height_split']);
 
 function phantomMethodIsSpectral() {
   return getLiveOption('phantom_extract_mode') === 'spectral';

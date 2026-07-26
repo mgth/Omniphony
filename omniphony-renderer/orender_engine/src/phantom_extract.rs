@@ -57,7 +57,7 @@ const PHANTOM_GAIN_DB: i8 = 0;
 const PHANTOM_SIZE: [f32; 3] = [0.3, 0.3, 0.3];
 
 /// Live-tunable params this stage declares (the schema the UI builds sliders from).
-pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 6] = [
+pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 7] = [
     ObjectGenParamSpec {
         key: "strength",
         label: "Extraction",
@@ -125,6 +125,20 @@ pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 6] = [
         step: 1.0,
         default: 1.0,
         unit: "",
+    },
+    // Spectral only: reference elevation (degrees) of the floor↔high ring
+    // split — the elevation that reads as "fully high". Lower values push
+    // content toward the ceiling. Default ≈ the corner-top channel elevation
+    // (atan(1/√2)). Applies live, no re-plan.
+    ObjectGenParamSpec {
+        key: "height_split",
+        label: "Height split",
+        i18n_key: "twoDSources.phantomHeightSplit",
+        min: 15.0,
+        max: 75.0,
+        step: 1.0,
+        default: 35.0,
+        unit: "°",
     },
 ];
 
@@ -664,6 +678,10 @@ pub struct PhantomExtractStage {
     sides_relocalize: bool,
     /// Spectral only: include the input's height channels in the 3D analysis.
     heights: bool,
+    /// Spectral only: reference elevation (radians) of the floor↔high ring
+    /// split (`height_split`, declared in degrees). Forwarded live to the
+    /// extractor — not part of the plan signature.
+    el_top: f32,
     method: ExtractMethod,
     alpha: f32,
 }
@@ -687,6 +705,7 @@ impl PhantomExtractStage {
             center_relocalize: false,
             sides_relocalize: false,
             heights: true,
+            el_top: 35.0_f32.to_radians(),
             method: ExtractMethod::Broadband,
             alpha: 0.0,
         }
@@ -755,6 +774,12 @@ impl PhantomExtractStage {
             "center" => self.center_relocalize = value >= 0.5,
             "sides" => self.sides_relocalize = value >= 0.5,
             "heights" => self.heights = value >= 0.5,
+            "height_split" => {
+                self.el_top = value.clamp(15.0, 75.0).to_radians();
+                if let Some(ext) = self.spectral.as_mut() {
+                    ext.set_el_top(self.el_top);
+                }
+            }
             _ => {}
         }
     }
@@ -774,7 +799,8 @@ impl PhantomExtractStage {
             return;
         }
         if self.method == ExtractMethod::Spectral {
-            if let Some(ext) = SpectralExtractor::prepare(ctx, self.heights) {
+            if let Some(mut ext) = SpectralExtractor::prepare(ctx, self.heights) {
+                ext.set_el_top(self.el_top);
                 self.specs = ext.specs(self.lift as f64);
                 self.spectral = Some(ext);
             }
@@ -1110,7 +1136,15 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            ["strength", "passes", "lift", "center", "sides", "heights"]
+            [
+                "strength",
+                "passes",
+                "lift",
+                "center",
+                "sides",
+                "heights",
+                "height_split"
+            ]
         );
         assert!(!keys.contains(&"method"));
     }

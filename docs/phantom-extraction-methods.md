@@ -59,8 +59,12 @@ spectral only), the tops join the same analysis in 3D:
 - Four **high sector objects** (`DirectH_FR`, `DirectH_BR`, `DirectH_BL`,
   `DirectH_FL` — 90° each, centred on the ceiling corners) extend the eight
   floor sectors. A bin's direct part splits between the two rings by its
-  elevation, normalised so a pure corner-top channel reads fully high; the
-  azimuth soft-assignment applies within each ring as before.
+  elevation, normalised by the **Height split** param (degrees; default 35°
+  ≈ the corner-top channel elevation, which then reads fully high); the
+  azimuth soft-assignment applies within each ring as before. Intensity
+  elevations are compressed (a 50/50 floor↔ceiling pan reads ≈ half the
+  geometric elevation), so Height split is the ear-tuning knob: **lower
+  values push extracted content toward the ceiling**. Live, no re-plan.
 - **Inter-plane phantoms come out for free**: content panned between a floor
   channel and a top (say L↔Tfl) reads an intermediate elevation, so it lands
   partly in `Direct_FL` and partly in `DirectH_FL` at the same azimuth — and

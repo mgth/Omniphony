@@ -123,16 +123,16 @@ fn sector_position(az: f32, lift: f64) -> [f64; 3] {
 }
 
 /// 3D sector position from an azimuth and a normalised elevation
-/// `nz ∈ [0, 1]` (`el / SPEC_EL_TOP`, clamped): the horizontal square-perimeter
-/// point, pulled toward the room centre above the corner elevation (so
+/// `nz ∈ [0, 1]` (`el / el_top`, clamped): the horizontal square-perimeter
+/// point, pulled toward the room centre above the reference elevation (so
 /// zenith-heavy content — e.g. a lone `Tc` — localises overhead, not at a
 /// wall), at `z = lift + (1 − lift)·nz`.
-fn sector_position_3d(az: f32, el: f32, lift: f64) -> [f64; 3] {
-    let nz = (el / SPEC_EL_TOP).clamp(0.0, 1.0);
-    // Above the corner elevation the direction leaves the wall for the
-    // ceiling: scale the horizontal point by cot(el)/cot(EL_TOP).
-    let shrink = if el > SPEC_EL_TOP {
-        (SPEC_EL_TOP.tan() / el.tan().max(1.0e-6)).clamp(0.0, 1.0)
+fn sector_position_3d(az: f32, el: f32, el_top: f32, lift: f64) -> [f64; 3] {
+    let nz = (el / el_top.max(1.0e-3)).clamp(0.0, 1.0);
+    // Above the reference elevation the direction leaves the wall for the
+    // ceiling: scale the horizontal point by cot(el)/cot(el_top).
+    let shrink = if el > el_top {
+        (el_top.tan() / el.tan().max(1.0e-6)).clamp(0.0, 1.0)
     } else {
         1.0
     };
@@ -201,6 +201,10 @@ pub(crate) struct SpectralExtractor {
     hop_uz: [f32; SPEC_MAX_SECTORS],
     /// Sector centre azimuths (position fallback when a sector is silent).
     centers: [f32; SPEC_MAX_SECTORS],
+    /// Reference elevation (rad) for the floor↔high ring split, the dynamic z
+    /// and the zenith pull-in — the live `height_split` param (default: the
+    /// corner-top elevation [`SPEC_EL_TOP`]). Lower = content reads higher.
+    el_top: f32,
     /// Per-hop one-pole coefficient.
     alpha: f32,
     /// Test hook: force `1 − ψ ≡ 1` to verify extraction/reconstruction gain
@@ -300,6 +304,7 @@ impl SpectralExtractor {
             hop_cy: [0.0; SPEC_MAX_SECTORS],
             hop_uz: [0.0; SPEC_MAX_SECTORS],
             centers,
+            el_top: SPEC_EL_TOP,
             // The smoothers step once per hop, not per sample.
             alpha: one_pole_coeff(SPEC_STAT_TC_MS, fs / SPEC_HOP as f32),
             fft_fwd,
@@ -307,6 +312,12 @@ impl SpectralExtractor {
             #[cfg(test)]
             force_direct: false,
         })
+    }
+
+    /// Set the reference elevation (radians) for the floor↔high ring split —
+    /// the live `height_split` param. Applies immediately, no DSP-state reset.
+    pub(crate) fn set_el_top(&mut self, el_top: f32) {
+        self.el_top = el_top.clamp(0.05, 1.5);
     }
 
     /// The planned sector objects (floor ring + optional high ring), at their
@@ -324,7 +335,7 @@ impl SpectralExtractor {
                 position: if k < SPEC_AZ_SECTORS {
                     sector_position(az, lift)
                 } else {
-                    sector_position_3d(az, SPEC_EL_TOP, lift)
+                    sector_position_3d(az, self.el_top, self.el_top, lift)
                 },
                 gain_db: SPEC_GAIN_DB,
                 size: SPEC_SIZE,
@@ -346,9 +357,9 @@ impl SpectralExtractor {
             } else if k < SPEC_AZ_SECTORS {
                 (self.centers[k], 0.0)
             } else {
-                (self.centers[k], SPEC_EL_TOP)
+                (self.centers[k], self.el_top)
             };
-            spec.position = sector_position_3d(az, el, lift);
+            spec.position = sector_position_3d(az, el, self.el_top, lift);
         }
     }
 
@@ -494,7 +505,7 @@ impl SpectralExtractor {
             let az = self.i_right[b].atan2(self.i_front[b]);
             let el = self.i_up[b].atan2(hor2.sqrt());
             let wh = if high {
-                (el / SPEC_EL_TOP).clamp(0.0, 1.0)
+                (el / self.el_top.max(1.0e-3)).clamp(0.0, 1.0)
             } else {
                 0.0
             };
@@ -843,6 +854,44 @@ mod tests {
                 "sector {k} should sit between the planes, got z {}",
                 pos[2]
             );
+        }
+    }
+
+    #[test]
+    fn height_split_shifts_the_ring_balance() {
+        // The vertical L↔Tfl phantom reads ≈17.6° of elevation. With the split
+        // reference well below that it must land (almost) fully in the high
+        // ring; well above, (almost) fully in the floor ring.
+        let layout = dummy_layout();
+        for (el_top_deg, expect_high) in [(16.0f32, true), (70.0, false)] {
+            let mut ext =
+                SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+            ext.set_el_top(el_top_deg.to_radians());
+            let c = 10usize;
+            let n = 24_000usize;
+            let s = sine(700.0);
+            let mut bed = vec![0.0f32; c * n];
+            for i in 0..n {
+                let v = 0.5 * s(i);
+                bed[i * c] = v; // L
+                bed[i * c + 6] = v; // Tfl
+            }
+            let mut planar = make_planar(n);
+            ext.process(&mut bed, c, n, 1.0, &mut planar);
+            let tail = n / 2..n;
+            let fl = tone_energy(&planar[7][tail.clone()], 700.0); // Direct_FL
+            let hfl = tone_energy(&planar[11][tail.clone()], 700.0); // DirectH_FL
+            if expect_high {
+                assert!(
+                    hfl > 4.0 * fl,
+                    "split at {el_top_deg}°: high ring should dominate ({hfl} vs {fl})"
+                );
+            } else {
+                assert!(
+                    fl > 4.0 * hfl,
+                    "split at {el_top_deg}°: floor ring should dominate ({fl} vs {hfl})"
+                );
+            }
         }
     }
 
