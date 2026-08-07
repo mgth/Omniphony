@@ -972,7 +972,8 @@ export function updateSpeakerBandBars(entry, speakerIndex) {
     const bar = row.querySelector('.band-bar');
     const dbEl = row.querySelector('.band-db');
     if (labelEl) {
-      labelEl.textContent = labels?.[b] ?? (contributions.length === 1 ? 'Full band' : `Band ${b}`);
+      labelEl.textContent = labels?.[b]
+        ?? (contributions.length === 1 ? t('heatmap.bandFull') : tf('heatmap.bandIndex', { index: b }));
     }
     if (bar) {
       bar.style.setProperty('--level', `${Math.min(100, gain * 100).toFixed(1)}%`);

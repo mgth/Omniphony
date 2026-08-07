@@ -80,6 +80,7 @@ import {
   sendObjectMute
 } from './mute-solo.js';
 import { formatNumber } from './coordinates.js';
+import { t, tf } from './i18n.js';
 import { computeCrossoverBandLabels } from './crossover-bands.js';
 
 // ---------------------------------------------------------------------------
@@ -708,7 +709,8 @@ function updateObjectBandBars(entry, id) {
     const bar = row.querySelector('.band-bar');
     const dbEl = row.querySelector('.band-db');
     if (labelEl) {
-      labelEl.textContent = labels?.[b] ?? (contributions.length === 1 ? 'Full band' : `Band ${b}`);
+      labelEl.textContent = labels?.[b]
+        ?? (contributions.length === 1 ? t('heatmap.bandFull') : tf('heatmap.bandIndex', { index: b }));
     }
     if (bar) {
       bar.style.setProperty('--level', `${Math.min(100, gain * 100).toFixed(1)}%`);

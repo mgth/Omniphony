@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+
 function collectCutoffs(speakers) {
   if (!Array.isArray(speakers) || speakers.length === 0) {
     return [];
@@ -30,16 +32,20 @@ export function computeCrossoverBandEdges(speakers) {
   return [0, ...cutoffs, Infinity];
 }
 
+// Band labels are frequency ranges ("< 100 Hz", "1k–4k Hz"), which need no
+// translation, except the single-band case whose label is prose. It defaults to
+// the localized "Full band" and is re-resolved on every call, so callers that
+// rebuild on locale change pick the new wording up for free.
 export function computeCrossoverBandLabels(
   speakers,
-  { includeSingleBand = false, singleBandLabel = 'Full band', useUnicodeGte = false, useUnicodeDash = false } = {},
+  { includeSingleBand = false, singleBandLabel = null, useUnicodeGte = false, useUnicodeDash = false } = {},
 ) {
   const edges = computeCrossoverBandEdges(speakers);
   if (edges.length <= 2 && !includeSingleBand) {
     return null;
   }
   if (edges.length <= 2) {
-    return [singleBandLabel];
+    return [singleBandLabel ?? t('heatmap.bandFull')];
   }
   const gte = useUnicodeGte ? '\u2265' : '>=';
   const dash = useUnicodeDash ? '\u2013' : '-';
