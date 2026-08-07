@@ -253,6 +253,7 @@ fn main() {
             control_distance_model,
             control_distance_model_metric,
             control_distance_diffuse_metric,
+            control_distance_diffuse_mirror_axes,
             control_hybrid_external_backend,
             control_hybrid_internal_backend,
             control_hybrid_curve,

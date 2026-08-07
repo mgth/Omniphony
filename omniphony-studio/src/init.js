@@ -358,6 +358,14 @@ export function applyInitState(payload) {
         app.distanceDiffuseState.metric = metric;
       }
     }
+    const mirrorAxes = payload.distanceDiffuse.mirrorAxes;
+    if (mirrorAxes && typeof mirrorAxes === 'object') {
+      for (const axis of ['x', 'y', 'z']) {
+        if (typeof mirrorAxes[axis] === 'boolean') {
+          app.distanceDiffuseState.mirrorAxes[axis] = mirrorAxes[axis];
+        }
+      }
+    }
   }
   updateDistanceDiffuseUI();
   if (typeof payload.adaptiveResampling === 'number') {

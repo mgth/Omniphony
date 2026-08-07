@@ -625,10 +625,10 @@ pub struct LiveParams {
     /// to compute and broadcast the applied gain.
     pub dialogue_level: Option<i8>,
 
-    /// Enable distance-based antipodal diffuse blending.
+    /// Enable distance-based mirrored diffuse blending.
     ///
-    /// When active, each object's VBAP gains are blended with the gains of the
-    /// antipodal point `(-x, -y, z)` (same elevation, opposite horizontal direction).
+    /// When active, each object's VBAP gains are blended with the gains of a
+    /// mirror image of its position, selected by `distance_diffuse_mirror_axes`.
     /// The mix is controlled by the ADM distance (pre-room_ratio):
     ///   - dist = 0  →  50 % direct + 50 % mirror  (iso-energy weights: √0.5 each)
     ///   - dist ≥ `distance_diffuse_threshold`  →  100 % direct
@@ -640,6 +640,12 @@ pub struct LiveParams {
     /// Curve exponent applied to the normalised distance before computing the
     /// blend weight.  1.0 = linear, < 1 = fast-near, > 1 = slow-near.  Default: 1.0.
     pub distance_diffuse_curve: f32,
+
+    /// ADM axes negated to build the diffuse mirror image.  Default `xy`, the
+    /// half-turn about the vertical axis the stage has always used; `y` alone
+    /// mirrors front/back, `xyz` inverts through the origin.  Updated live via
+    /// `/omniphony/control/distance_diffuse/mirror_axes`.
+    pub distance_diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes,
 
     /// Runtime tuning parameters for the hybrid backend.
     pub hybrid: HybridLiveParams,
@@ -781,6 +787,7 @@ fn evaluation_build_config_from_live(
             use_distance_diffuse: live.use_distance_diffuse,
             distance_diffuse_threshold: live.distance_diffuse_threshold,
             distance_diffuse_curve: live.distance_diffuse_curve,
+            diffuse_mirror_axes: live.distance_diffuse_mirror_axes,
             distance_model: live.distance_model,
         },
         position_interpolation: live.evaluation.position_interpolation,

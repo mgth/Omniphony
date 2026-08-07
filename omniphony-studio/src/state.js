@@ -151,7 +151,16 @@ export const app = {
   vbapCartesianFaceGridEnabled: false,
 
   // Distance diffuse
-  distanceDiffuseState: { enabled: null, threshold: null, curve: null, metric: 'spherical' },
+  distanceDiffuseState: {
+    enabled: null,
+    threshold: null,
+    curve: null,
+    metric: 'spherical',
+    // Axes negated to build the diffuse mirror. `xy` — a half-turn about the
+    // vertical axis — is what the stage has always done and stays the renderer
+    // default; the engine snapshot overwrites this at connect.
+    mirrorAxes: { x: true, y: true, z: false },
+  },
   distanceModel: 'none',
   distanceModelMetric: 'spherical',
 

@@ -566,6 +566,15 @@ pub fn build_spatial_renderer(
                     requires_rebuild = true;
                 }
             }
+            if let Some(axes) = render_cfg
+                .and_then(|cfg| cfg.distance_diffuse_mirror_axes.as_deref())
+                .and_then(|s| s.parse::<renderer::spatial_vbap::MirrorAxes>().ok())
+            {
+                if live.distance_diffuse_mirror_axes != axes {
+                    live.distance_diffuse_mirror_axes = axes;
+                    requires_rebuild = true;
+                }
+            }
             // Per-frame live params (no topology rebuild): seed from config so a
             // saved value is honoured at startup, not only after an OSC tweak.
             if let Some(mode) = render_cfg.and_then(|cfg| cfg.size_to_spread_mode) {

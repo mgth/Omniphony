@@ -558,6 +558,12 @@ pub struct RenderArgs {
     #[arg(long = "distance-diffuse-metric", value_enum)]
     pub distance_diffuse_metric: Option<DistanceMetricArg>,
 
+    /// ADM axes negated to build the diffuse mirror image: any combination of
+    /// x, y and z (`xy` — the default half-turn about the vertical axis — `y`
+    /// for a front/back reflection, `xyz` for a point inversion), or `none`.
+    #[arg(long = "distance-diffuse-mirror-axes", value_name = "AXES")]
+    pub distance_diffuse_mirror_axes: Option<String>,
+
     /// Policy reducing an object's (w, d, h) size to a scalar spread.
     #[arg(long = "size-to-spread-mode", value_enum)]
     pub size_to_spread_mode: Option<SizeToSpreadModeArg>,

@@ -11,7 +11,7 @@ import {
 } from '../controls/vbap.js';
 import { renderHybridCurve, setupHybridCurveEditor } from '../controls/hybrid-curve.js';
 import { updateDistanceModelUI } from '../controls/master.js';
-import { updateDistanceDiffuseUI } from '../controls/distance-diffuse.js';
+import { MIRROR_AXES, updateDistanceDiffuseUI } from '../controls/distance-diffuse.js';
 import { renderVbapCartesianGridToggle, updateVbapCartesianFaceGrid } from '../scene/gizmos.js';
 
 export function setupRendererPanelListeners() {
@@ -76,6 +76,21 @@ export function setupRendererPanelListeners() {
       app.vbapRecomputing = true;
       renderVbapStatus();
       invoke('control_distance_diffuse_metric', { value });
+    });
+  }
+
+  for (const axis of MIRROR_AXES) {
+    const el = document.getElementById(`distanceDiffuseMirror${axis.toUpperCase()}`);
+    if (!el) continue;
+    el.addEventListener('change', () => {
+      app.distanceDiffuseState.mirrorAxes[axis] = el.checked === true;
+      updateDistanceDiffuseUI();
+      app.vbapRecomputing = true;
+      renderVbapStatus();
+      // The renderer takes the whole set as one string, since the flips compose
+      // into a single mirror rather than acting independently.
+      const value = MIRROR_AXES.filter((a) => app.distanceDiffuseState.mirrorAxes[a]).join('') || 'none';
+      invoke('control_distance_diffuse_mirror_axes', { value });
     });
   }
 

@@ -214,7 +214,12 @@ pub fn build_renderer_state_json(
             "enabled": live.use_distance_diffuse,
             "threshold": live.distance_diffuse_threshold,
             "curve": live.distance_diffuse_curve,
-            "metric": live.distance_diffuse_metric.to_string()
+            "metric": live.distance_diffuse_metric.to_string(),
+            "mirrorAxes": {
+                "x": live.distance_diffuse_mirror_axes.x,
+                "y": live.distance_diffuse_mirror_axes.y,
+                "z": live.distance_diffuse_mirror_axes.z
+            }
         },
         "vbapCartesian": {
             "xSize": live.evaluation.cartesian.x_size,

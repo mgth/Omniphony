@@ -21,7 +21,9 @@
 //! * **Hybrid backend** — `/omniphony/control/hybrid/{external_backend,
 //!   internal_backend,metric,curve,curve_smoothing}`.
 //! * **Distance diffuse** — `/omniphony/control/distance_diffuse/{enabled,
-//!   threshold,curve,metric}`.
+//!   threshold,curve,metric,mirror_axes}`. `mirror_axes` takes the axes to
+//!   negate as a string (`xy` — the default half-turn about the vertical axis —
+//!   `y`, `xyz`, `none`, …).
 //! * **Render-evaluation tables** —
 //!   `/omniphony/control/render_evaluation/cartesian/{x_size,y_size,z_size,
 //!   z_neg_size}` and `/omniphony/control/render_evaluation/polar/{azimuth_

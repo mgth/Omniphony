@@ -99,6 +99,7 @@ struct LiveSnapshot<'a> {
     use_distance_diffuse: bool,
     distance_diffuse_threshold: f32,
     distance_diffuse_curve: f32,
+    diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes,
 }
 
 /// Put the calling thread's FPU in flush-to-zero / denormals-are-zero mode,
@@ -384,6 +385,7 @@ impl SpatialRenderer {
             use_distance_diffuse: live.use_distance_diffuse,
             distance_diffuse_threshold: live.distance_diffuse_threshold,
             distance_diffuse_curve: live.distance_diffuse_curve,
+            diffuse_mirror_axes: live.diffuse_mirror_axes,
             distance_model: self.distance_model,
         })
     }
@@ -633,6 +635,7 @@ impl SpatialRenderer {
                 use_distance_diffuse: g.use_distance_diffuse,
                 distance_diffuse_threshold: g.distance_diffuse_threshold,
                 distance_diffuse_curve: g.distance_diffuse_curve,
+                diffuse_mirror_axes: g.distance_diffuse_mirror_axes,
             }
         };
         // Push the live read-time interpolation flag into the precomputed

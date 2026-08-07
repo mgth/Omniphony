@@ -295,6 +295,10 @@ pub struct RenderConfig {
     /// Distance metric (spherical / chebyshev) for the distance diffuse stage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_diffuse_metric: Option<String>,
+    /// ADM axes negated to build the diffuse mirror image (`xy`, `y`, `xyz`,
+    /// `none`, …). Absent means the default `xy`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_diffuse_mirror_axes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental_distance_distance_floor: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]

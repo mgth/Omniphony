@@ -79,6 +79,9 @@ pub(super) fn apply_render_cfg_overrides(
     if let Some(m) = args.distance_diffuse_metric {
         render.distance_diffuse_metric = Some(m.as_config_str().to_string());
     }
+    if let Some(axes) = args.distance_diffuse_mirror_axes.as_deref() {
+        render.distance_diffuse_mirror_axes = Some(axes.to_string());
+    }
     if let Some(mode) = args.size_to_spread_mode {
         render.size_to_spread_mode = Some(mode.into());
     }

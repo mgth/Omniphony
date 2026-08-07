@@ -1670,6 +1670,16 @@ pub fn apply_simple_osc_control(
                 }
                 return Some(effects);
             }
+            "mirror_axes" => {
+                if let Some(OscType::String(axes)) = msg.args.first() {
+                    if let Ok(axes) = axes.parse::<renderer::spatial_vbap::MirrorAxes>() {
+                        ctx.renderer.live.write().distance_diffuse_mirror_axes = axes;
+                        effects.mark_dirty = true;
+                        effects.trigger_layout_recompute = true;
+                    }
+                }
+                return Some(effects);
+            }
             "threshold" => {
                 if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(1e-6)) {
                     ctx.renderer.live.write().distance_diffuse_threshold = v;

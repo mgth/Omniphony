@@ -332,14 +332,24 @@ impl PreparedEvaluator for FileLoadedEvaluator {
         };
         let (azimuth, elevation, distance) = adm_to_spherical(scaled_x, scaled_y, z);
         let direct = self.get_gains_with_spread(azimuth, elevation, effective_spread);
-        let directional = if req.use_distance_diffuse {
+        let directional = if req.use_distance_diffuse && !req.diffuse_mirror_axes.is_identity() {
+            // Same axis selection as `DistanceDiffuseModel`, applied here to the
+            // scaled coordinates because this evaluator indexes its table in
+            // scaled space. A flipped Z still goes through the layout's negative
+            // clamp so a table baked without a lower hemisphere folds onto it
+            // instead of reading out of range.
+            let [mirror_x, mirror_y, flipped_z] = req
+                .diffuse_mirror_axes
+                .reflect([scaled_x as f64, scaled_y as f64, scaled_z as f64]);
+            let (mirror_x, mirror_y, flipped_z) =
+                (mirror_x as f32, mirror_y as f32, flipped_z as f32);
             let mirror_z = if self.allow_negative_z {
-                scaled_z
+                flipped_z
             } else {
-                scaled_z.max(0.0)
+                flipped_z.max(0.0)
             };
             let (mirror_azimuth, mirror_elevation, _) =
-                adm_to_spherical(-scaled_x, -scaled_y, mirror_z);
+                adm_to_spherical(mirror_x, mirror_y, mirror_z);
             let mirror =
                 self.get_gains_with_spread(mirror_azimuth, mirror_elevation, effective_spread);
             let [rx, ry, rz] = rendering_position;
