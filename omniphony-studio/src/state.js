@@ -306,6 +306,11 @@ export const app = {
   // Build fingerprint of the connected renderer (git-describe + build time).
   // Lets About expose a liborender-vs-orender version skew.
   renderVersion: null,
+  // Path of the renderer answering on the OSC port, and the path this
+  // Studio would launch. They differ when we attached to a renderer left
+  // running by another environment — see rendererIsForeign().
+  renderExecutable: null,
+  expectedOrenderPath: null,
   // C-ABI version ("major.minor") of the liborender shim hosting the engine.
   // Null when the engine is linked as a Rust crate (the CLI — no C ABI).
   renderAbi: null,

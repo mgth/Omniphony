@@ -56,6 +56,7 @@ import {
   updateVbapCartesian,
   updateVbapPolar,
   updateVbapPositionInterpolation,
+  clearRecomputeAckWatchdog,
   renderVbapStatus
 } from './controls/vbap.js';
 import { invoke } from '@tauri-apps/api/core';
@@ -421,6 +422,12 @@ export function setupTauriBridge() {
     updateAboutRendererVersion();
   });
 
+  listen('render:executable', ({ payload }) => {
+    app.renderExecutable = String(payload?.value ?? '').trim() || null;
+    updateAboutRendererVersion();
+    renderOscStatus();
+  });
+
   listen('render:abi', ({ payload }) => {
     app.renderAbi = String(payload?.value ?? '').trim() || null;
     updateAboutRendererVersion();
@@ -440,6 +447,9 @@ export function setupTauriBridge() {
   // -----------------------------------------------------------------------
 
   listen('vbap:recomputing', ({ payload }) => {
+    // The engine answered, so it is alive and understood the control that
+    // started this: stand the unreachable-engine watchdog down.
+    clearRecomputeAckWatchdog();
     app.vbapRecomputing = payload.enabled === true;
     if (app.vbapRecomputing) {
       app.recomputeError = null;

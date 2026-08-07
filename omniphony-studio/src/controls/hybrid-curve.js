@@ -17,7 +17,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
-import { renderVbapStatus } from './vbap.js';
+import { markRecomputePending, renderVbapStatus } from './vbap.js';
 import { updateHybridDistanceShape } from '../scene/hybrid-distance.js';
 
 const DEFAULT_CURVE = [[0, 0], [1, 1]];
@@ -175,8 +175,7 @@ function pointIndexNear(evt) {
 function commitCurve(points, { immediate = false } = {}) {
   points.sort((a, b) => a[0] - b[0]);
   app.renderBackendState.hybrid.curve = points;
-  app.vbapRecomputing = true;
-  renderVbapStatus();
+  markRecomputePending();
   renderHybridCurve();
   scheduleSend(immediate);
 }
@@ -231,8 +230,7 @@ function onPointerMove(evt) {
   }
   curve[dragIndex] = [x, dataY];
   app.renderBackendState.hybrid.curve = curve;
-  app.vbapRecomputing = true;
-  renderVbapStatus();
+  markRecomputePending();
   renderHybridCurve();
   scheduleSend(false);
   evt.preventDefault();

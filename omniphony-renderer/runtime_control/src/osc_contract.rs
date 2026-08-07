@@ -271,6 +271,7 @@ pub const STATE_RENDER_EVALUATION_POSITION_INTERPOLATION: &str =
     "/omniphony/state/render_evaluation/position_interpolation";
 pub const STATE_RENDER_TIME_MS: &str = "/omniphony/state/render_time_ms";
 pub const STATE_RENDER_VERSION: &str = "/omniphony/state/render/version";
+pub const STATE_RENDER_EXECUTABLE: &str = "/omniphony/state/render/executable";
 pub const STATE_RESAMPLE_RATIO: &str = "/omniphony/state/resample_ratio";
 pub const STATE_SHUTDOWN: &str = "/omniphony/state/shutdown";
 pub const STATE_SNAPSHOT_COMPLETE: &str = "/omniphony/state/snapshot_complete";
@@ -450,6 +451,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_RENDER_EVALUATION_POSITION_INTERPOLATION,
     STATE_RENDER_TIME_MS,
     STATE_RENDER_VERSION,
+    STATE_RENDER_EXECUTABLE,
     STATE_RESAMPLE_RATIO,
     STATE_SHUTDOWN,
     STATE_SNAPSHOT_COMPLETE,

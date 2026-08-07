@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
 import { formatNumber } from '../coordinates.js';
 import {
+  markRecomputePending,
   renderVbapStatus,
   updateEvaluationMode,
   updateRenderBackend,
@@ -49,8 +50,7 @@ export function setupRendererPanelListeners() {
       if (!['none', 'linear', 'quadratic', 'inverse-square'].includes(value)) return;
       app.distanceModel = value;
       updateDistanceModelUI();
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       invoke('control_distance_model', { value });
     });
   }
@@ -61,8 +61,7 @@ export function setupRendererPanelListeners() {
       if (!['spherical', 'chebyshev'].includes(value)) return;
       app.distanceModelMetric = value;
       updateDistanceModelUI();
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       invoke('control_distance_model_metric', { value });
     });
   }
@@ -73,8 +72,7 @@ export function setupRendererPanelListeners() {
       if (!['spherical', 'chebyshev'].includes(value)) return;
       app.distanceDiffuseState.metric = value;
       updateDistanceDiffuseUI();
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       invoke('control_distance_diffuse_metric', { value });
     });
   }
@@ -83,8 +81,7 @@ export function setupRendererPanelListeners() {
     vbapCartXSizeInputEl.addEventListener('change', () => {
       const value = Math.max(1, Math.round(Number(vbapCartXSizeInputEl.value) || 1));
       app.vbapCartesianState.xSize = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateVbapCartesian();
       invoke('control_render_evaluation_cartesian_x_size', { value });
     });
@@ -95,8 +92,7 @@ export function setupRendererPanelListeners() {
       const value = Math.max(0, Math.round(Number(objectSizeIntervalsInputEl.value) || 0));
       app.objectSizeIntervals = value;
       objectSizeIntervalsInputEl.value = String(value);
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateEvaluationMode();
       invoke('control_render_evaluation_object_size_intervals', { value });
     });
@@ -106,8 +102,7 @@ export function setupRendererPanelListeners() {
     vbapCartYSizeInputEl.addEventListener('change', () => {
       const value = Math.max(1, Math.round(Number(vbapCartYSizeInputEl.value) || 1));
       app.vbapCartesianState.ySize = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateVbapCartesian();
       invoke('control_render_evaluation_cartesian_y_size', { value });
     });
@@ -117,8 +112,7 @@ export function setupRendererPanelListeners() {
     vbapCartZSizeInputEl.addEventListener('change', () => {
       const value = Math.max(1, Math.round(Number(vbapCartZSizeInputEl.value) || 1));
       app.vbapCartesianState.zSize = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateVbapCartesian();
       invoke('control_render_evaluation_cartesian_z_size', { value });
     });
@@ -128,8 +122,7 @@ export function setupRendererPanelListeners() {
     vbapCartZNegSizeInputEl.addEventListener('change', () => {
       const value = Math.max(0, Math.round(Number(vbapCartZNegSizeInputEl.value) || 0));
       app.vbapCartesianState.zNegSize = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateVbapCartesian();
       invoke('control_render_evaluation_cartesian_z_neg_size', { value });
     });
@@ -149,8 +142,7 @@ export function setupRendererPanelListeners() {
       if (!value) return;
       if (app.renderBackendState.selection === value) return;
       app.renderBackendState.selection = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateRenderBackend();
       invoke('control_render_backend', { value });
     });
@@ -171,8 +163,7 @@ export function setupRendererPanelListeners() {
       const value = String(hybridExternalBackendSelectEl.value || '').trim().toLowerCase();
       if (!isValidHybridInner(value)) return;
       app.renderBackendState.hybrid.externalBackend = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateRenderBackend();
       invoke('control_hybrid_external_backend', { value });
     });
@@ -183,8 +174,7 @@ export function setupRendererPanelListeners() {
       const value = String(hybridInternalBackendSelectEl.value || '').trim().toLowerCase();
       if (!isValidHybridInner(value)) return;
       app.renderBackendState.hybrid.internalBackend = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateRenderBackend();
       invoke('control_hybrid_internal_backend', { value });
     });
@@ -195,8 +185,7 @@ export function setupRendererPanelListeners() {
       const value = String(hybridMetricSelectEl.value || '').trim().toLowerCase();
       if (!['spherical', 'chebyshev'].includes(value)) return;
       app.renderBackendState.hybrid.metric = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateRenderBackend();
       invoke('control_hybrid_metric', { value });
     });
@@ -213,8 +202,7 @@ export function setupRendererPanelListeners() {
     hybridCurveSmoothingSliderEl.addEventListener('change', () => {
       const value = Math.min(1, Math.max(0, Number(hybridCurveSmoothingSliderEl.value) || 0));
       app.renderBackendState.hybrid.curveSmoothing = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       invoke('control_hybrid_curve_smoothing', { value });
     });
   }
@@ -224,8 +212,7 @@ export function setupRendererPanelListeners() {
   if (restoreBackendBtnEl) {
     restoreBackendBtnEl.addEventListener('click', () => {
       if (app.renderBackendState.restoreBackendAvailable !== true) return;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateRenderBackend();
       invoke('control_restore_render_backend');
     });
@@ -241,8 +228,7 @@ export function setupRendererPanelListeners() {
       if (!allowed.includes(value)) return;
       if (app.evaluationModeState.selection === value) return;
       app.evaluationModeState.selection = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateEvaluationMode();
       invoke('control_render_evaluation_mode', { value });
     });
@@ -252,8 +238,7 @@ export function setupRendererPanelListeners() {
     vbapPolarAzimuthResolutionInputEl.addEventListener('change', () => {
       const value = Math.max(1, Math.round(Number(vbapPolarAzimuthResolutionInputEl.value) || 1));
       app.vbapPolarState.azimuthResolution = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateVbapPolar();
       invoke('control_render_evaluation_polar_azimuth_resolution', { value });
     });
@@ -263,8 +248,7 @@ export function setupRendererPanelListeners() {
     vbapPolarElevationResolutionInputEl.addEventListener('change', () => {
       const value = Math.max(1, Math.round(Number(vbapPolarElevationResolutionInputEl.value) || 1));
       app.vbapPolarState.elevationResolution = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateVbapPolar();
       invoke('control_render_evaluation_polar_elevation_resolution', { value });
     });
@@ -274,8 +258,7 @@ export function setupRendererPanelListeners() {
     vbapPolarDistanceResInputEl.addEventListener('change', () => {
       const value = Math.max(1, Math.round(Number(vbapPolarDistanceResInputEl.value) || 1));
       app.vbapPolarState.distanceRes = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateVbapPolar();
       invoke('control_render_evaluation_polar_distance_res', { value });
     });
@@ -285,8 +268,7 @@ export function setupRendererPanelListeners() {
     vbapPolarDistanceMaxInputEl.addEventListener('change', () => {
       const value = Math.max(0.01, Number(vbapPolarDistanceMaxInputEl.value) || 2);
       app.vbapPolarState.distanceMax = value;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateVbapPolar();
       invoke('control_render_evaluation_polar_distance_max', { value });
     });
@@ -296,8 +278,7 @@ export function setupRendererPanelListeners() {
     vbapPositionInterpolationToggleEl.addEventListener('change', () => {
       const enabled = vbapPositionInterpolationToggleEl.checked;
       app.vbapPositionInterpolation = enabled;
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       updateVbapPositionInterpolation();
       invoke('control_render_evaluation_position_interpolation', { enable: enabled ? 1 : 0 });
     });

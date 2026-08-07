@@ -578,6 +578,14 @@ pub fn build_live_state_bundle(
             args: vec![OscType::String(crate::build_fingerprint())],
         }),
         OscPacket::Message(OscMessage {
+            // Path of the process serving this engine. Two checkouts of the same
+            // commit share a fingerprint, so only the path tells a client whether
+            // the renderer answering on this port is the one it started or one
+            // left behind by another environment.
+            addr: "/omniphony/state/render/executable".to_string(),
+            args: vec![OscType::String(crate::executable_path())],
+        }),
+        OscPacket::Message(OscMessage {
             // C-ABI version ("major.minor") of the liborender shim hosting this
             // engine, or "" when the engine is linked directly as a Rust crate
             // (the CLI — no C ABI involved). Studio shows it in About next to

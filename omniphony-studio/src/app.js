@@ -310,6 +310,18 @@ invoke('get_about_info')
     console.error('[get_about_info]', e);
   });
 
+// Which orender binary this Studio would launch. Compared against the path the
+// connected renderer reports so a foreign one is called out instead of silently
+// swallowing controls it does not implement.
+invoke('expected_orender_path')
+  .then((path) => {
+    app.expectedOrenderPath = typeof path === 'string' ? path.trim() || null : null;
+    renderOscStatus();
+  })
+  .catch((e) => {
+    console.error('[expected_orender_path]', e);
+  });
+
 // ── Animation loop ──────────────────────────────────────────────────────────
 let animationFrameId = 0;
 

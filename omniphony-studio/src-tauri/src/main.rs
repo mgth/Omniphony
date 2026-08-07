@@ -8,6 +8,7 @@ mod engine_deploy;
 mod layouts;
 mod osc_listener;
 mod osc_parser;
+mod runtime_env;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI32;
@@ -138,10 +139,18 @@ fn main() {
             // path external consumers (the forked mpv) load it from.
             engine_deploy::deploy(app);
 
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .expect("could not resolve app config dir");
+            // `app_config_dir()` is keyed by the bundle identifier, so every
+            // checkout of the tree resolves the same directory and shares one
+            // osc_config.json — including the OSC port, which is what makes two
+            // environments collide. An environment that carved out its own
+            // runtime namespace pins a private directory instead.
+            let config_dir = runtime_env::config_dir()
+                .map(|dir| dir.join("studio"))
+                .unwrap_or_else(|| {
+                    app.path()
+                        .app_config_dir()
+                        .expect("could not resolve app config dir")
+                });
 
             let osc_cfg = load_config(&config_dir);
 
@@ -196,6 +205,7 @@ fn main() {
             get_state,
             get_osc_config,
             renderer_is_local,
+            expected_orender_path,
             get_about_info,
             save_osc_config,
             launch_orender,

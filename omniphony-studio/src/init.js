@@ -631,6 +631,9 @@ export function applyInitState(payload) {
   if (typeof payload.renderConfigStatus === 'string') {
     app.renderConfigStatus = payload.renderConfigStatus.trim() || null;
   }
+  if (typeof payload.renderExecutable === 'string') {
+    app.renderExecutable = payload.renderExecutable.trim() || null;
+  }
   if (typeof payload.renderVersion === 'string') {
     app.renderVersion = payload.renderVersion.trim() || null;
   }

@@ -172,12 +172,12 @@ pub struct RenderArgs {
     pub osc_host: String,
 
     /// OSC target port
-    #[arg(long, value_name = "PORT", default_value_t = renderer::config_fields::osc_port::DEFAULT)]
+    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_port())]
     pub osc_port: u16,
 
     /// OSC registration listener port. Clients register by sending /omniphony/register
     /// to this port and receive the speaker config + all subsequent broadcasts.
-    #[arg(long, value_name = "PORT", default_value_t = renderer::config_fields::osc_rx_port::DEFAULT)]
+    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_rx_port())]
     pub osc_rx_port: u16,
 
     /// Run as a yieldable (standby) instance: shut down cleanly when another
@@ -774,11 +774,11 @@ pub struct InputLiveArgs {
     pub osc_host: String,
 
     /// OSC target port
-    #[arg(long, value_name = "PORT", default_value_t = renderer::config_fields::osc_port::DEFAULT)]
+    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_port())]
     pub osc_port: u16,
 
     /// OSC registration listener port.
-    #[arg(long, value_name = "PORT", default_value_t = renderer::config_fields::osc_rx_port::DEFAULT)]
+    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_rx_port())]
     pub osc_rx_port: u16,
 }
 
