@@ -83,8 +83,7 @@ export function setupRendererPanelListeners() {
     el.addEventListener('change', () => {
       app.distanceDiffuseState.mirrorAxes[axis] = el.checked === true;
       updateDistanceDiffuseUI();
-      app.vbapRecomputing = true;
-      renderVbapStatus();
+      markRecomputePending();
       // The renderer takes the whole set as one string, since the flips compose
       // into a single mirror rather than acting independently.
       const value = MIRROR_AXES.filter((a) => app.distanceDiffuseState.mirrorAxes[a]).join('') || 'none';
