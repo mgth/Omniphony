@@ -18,6 +18,7 @@
 import { app } from '../state.js';
 import { t, onLocaleChange } from '../i18n.js';
 import { computeCrossoverBandLabels } from '../crossover-bands.js';
+import { renderBandCursor } from '../controls/band-cursor.js';
 
 /**
  * Refresh the shared crossover-band selector after a layout/band change.
@@ -35,6 +36,8 @@ export function syncCrossoverBandSelects() {
   const desired = Math.max(0, Math.round(Number(app.heatmapBandIndex) || 0));
   app.heatmapBandIndex = Math.min(maxIndex, desired);
   if (labels.length < 2) app.heatmapAllBands = false;
+  // The floating cursor over the 3D view mirrors the same selection.
+  renderBandCursor(labels);
   if (!selectEl) return labels;
 
   // One option per band, plus "All bands" for multi-band layouts.

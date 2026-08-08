@@ -6,6 +6,7 @@ import { scene } from '../scene/setup.js';
 import { applySpeakerLevel, updateSourceDecorations, updateSourceSelectionStyles, applyObjectsVisibility } from '../sources.js';
 import { refreshOverlayLists, updateSpeakerVisualsFromState, refreshSpeakerOrientations } from '../speakers.js';
 import { syncCrossoverBandSelects } from '../scene/speaker-band-select.js';
+import { setupBandCursor } from '../controls/band-cursor.js';
 import { acquireGainTable, releaseGainTable, refreshGaintableSubscription } from '../scene/speaker-gaintable.js';
 import { refreshObjectEnergyVolume } from '../scene/object-energy-volume.js';
 import { clampVolumeGamma, colormapIndex } from '../scene/object-energy-shared.js';
@@ -449,7 +450,9 @@ export function setupTrailsAndDisplayListeners() {
   }
 
   // The ONE crossover-band selector (Common parameters): every heatmap and
-  // the effective-render / dominant-speaker readouts follow it.
+  // the effective-render / dominant-speaker readouts follow it. The floating
+  // 3D-view cursor clicks through to this select's change event.
+  setupBandCursor();
   const heatmapBandSelectEl = document.getElementById('heatmapBandSelect');
   if (heatmapBandSelectEl) {
     syncCrossoverBandSelects();

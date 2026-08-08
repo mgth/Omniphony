@@ -2563,6 +2563,91 @@ body:not(.output-binaural) .speakers-title-binaural {
   display: none !important;
 }
 
+/* Vertical crossover-band cursor: a fixed pill floating over the 3D view just
+   left of the right overlay — same visual language as #sceneEffectBar. One
+   coloured segment per band (highest on top, palette = bandColor()) plus the
+   "All bands" gradient cap. Fixed-positioned overlay: it never resizes or
+   reflows the renderer canvas. */
+#bandCursor {
+  position: fixed;
+  top: 50%;
+  right: calc(var(--panel-width-right) + 2.6rem);
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 7px;
+  background: rgba(18, 22, 28, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+#bandCursor[hidden] {
+  display: none;
+}
+
+.band-cursor-seg {
+  position: relative;
+  width: 14px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  background: var(--seg-color);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.band-cursor-seg:hover {
+  opacity: 0.85;
+  transform: scaleX(1.18);
+}
+
+.band-cursor-seg.selected {
+  opacity: 1;
+  border-color: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 10px 1px var(--seg-color);
+}
+
+/* The "All bands" cap: shorter, capsule-shaped, band-gradient background. */
+.band-cursor-all {
+  height: 16px;
+  border-radius: 8px;
+  margin-bottom: 3px;
+}
+
+/* Frequency-range chip, floating left of the segment. Shown on hover and kept
+   visible for the selected segment so the current band is always readable. */
+.band-cursor-seg::after {
+  content: attr(data-label);
+  position: absolute;
+  right: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(18, 22, 28, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #d9ecff;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.band-cursor-seg:hover::after,
+.band-cursor-seg.selected::after {
+  opacity: 1;
+}
+
 /* Quick visual-effect toggles: a pill sitting at the top of the bottom-center
    Save/Reload cluster (`.save-footer`, a fixed centered column). It is a flex
    child of that footer, so it never resizes or reflows the renderer canvas and

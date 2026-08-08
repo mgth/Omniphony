@@ -748,6 +748,12 @@
       </div>
     </div>
 
+    <!-- Vertical crossover-band cursor over the 3D view: one coloured segment
+         per band (highest on top) + "All bands". Mirrors and drives the central
+         #heatmapBandSelect (wired in controls/band-cursor.js); hidden for
+         single-band layouts. -->
+    <div id="bandCursor" role="toolbar" hidden></div>
+
     <div id="saveFooterRoot" class="save-footer">
       <!-- Quick visual-effect toggles, sharing the bottom-center cluster with
            Save/Reload. Each button mirrors a checkbox in the renderer/display
