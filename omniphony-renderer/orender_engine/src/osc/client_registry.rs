@@ -27,10 +27,14 @@ pub(crate) struct OscClientState {
     pub(crate) gaintable_targets: BTreeMap<i64, Option<u32>>,
 }
 
-/// Most gain-table targets one client may hold at once. Two displays (the
-/// per-speaker heatmap and the global energy one) is the real case; the margin
-/// covers a third without letting a buggy client accumulate targets forever.
-const MAX_GAINTABLE_TARGETS: usize = 4;
+/// Most gain-table targets one client may hold at once. Three displays (the
+/// per-speaker heatmap, the global energy one and the discontinuity one) is
+/// the real case, and the discontinuity display swaps between two targets
+/// (gain-configuration vs centroid); the margin covers that rotation without
+/// letting a buggy client accumulate targets forever. Kept comfortably above
+/// the real case because eviction drops the LOWEST target first — which is a
+/// negative sentinel, i.e. one of the global heatmaps, not an idle speaker.
+const MAX_GAINTABLE_TARGETS: usize = 6;
 
 pub(crate) struct OscClientRegistry {
     clients: Mutex<HashMap<SocketAddr, OscClientState>>,

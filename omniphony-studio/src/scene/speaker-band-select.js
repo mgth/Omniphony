@@ -71,21 +71,24 @@ export function syncSpeakerHeatmapBandSelect() {
 export function syncCrossoverBandSelects() {
   const labels = syncSpeakerHeatmapBandSelect();
   syncGlobalEnergyBandSelect();
+  syncDiscontinuityBandSelect();
   return labels;
 }
 
 /**
- * Same options for the global energy heatmap, minus the all-bands entry: that
- * composite blends band *colours*, which a diverging dB scale has no room for.
+ * Single-band selector shared by the global heatmaps: one option per crossover
+ * band, no all-bands entry — those composites blend band *colours*, which
+ * neither a diverging dB scale nor a jump scale has room for. Clamps the state
+ * field to the band list and rebuilds the options when the labels change.
  */
-export function syncGlobalEnergyBandSelect() {
-  const selectEl = document.getElementById('globalEnergyHeatmapBandSelect');
+function syncSingleBandSelect(elementId, indexField) {
+  const selectEl = document.getElementById(elementId);
   const labels = computeCrossoverBandLabels(app.currentLayoutSpeakers, {
     includeSingleBand: true,
   }) || [t('heatmap.bandFull')];
   const maxIndex = Math.max(0, labels.length - 1);
-  const desired = Math.max(0, Math.round(Number(app.globalEnergyHeatmapBandIndex) || 0));
-  app.globalEnergyHeatmapBandIndex = Math.min(maxIndex, desired);
+  const desired = Math.max(0, Math.round(Number(app[indexField]) || 0));
+  app[indexField] = Math.min(maxIndex, desired);
   if (!selectEl) return labels;
 
   // Compare the text too: the values are locale-independent, so a value-only
@@ -103,8 +106,16 @@ export function syncGlobalEnergyBandSelect() {
       selectEl.appendChild(option);
     });
   }
-  selectEl.value = String(app.globalEnergyHeatmapBandIndex);
+  selectEl.value = String(app[indexField]);
   return labels;
+}
+
+export function syncGlobalEnergyBandSelect() {
+  return syncSingleBandSelect('globalEnergyHeatmapBandSelect', 'globalEnergyHeatmapBandIndex');
+}
+
+export function syncDiscontinuityBandSelect() {
+  return syncSingleBandSelect('discontinuityHeatmapBandSelect', 'discontinuityHeatmapBandIndex');
 }
 
 // Several option labels are prose ("Full band", "All bands"), so every list has

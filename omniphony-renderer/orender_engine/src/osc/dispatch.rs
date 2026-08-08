@@ -313,11 +313,21 @@ pub(crate) fn handle_control_message(
             Some(OscType::Int(i)) if *i >= 0 => Some(*i as u32),
             _ => None,
         };
-        // A negative index is the all-speaker energy field
-        // (`GLOBAL_ENERGY_INDEX`), not an error: the global heatmap subscribes
-        // through the same path as a per-speaker one.
+        // A negative index selects an all-speaker derived field, not an error:
+        // the global heatmaps subscribe through the same path as a per-speaker
+        // one. Known sentinels pass through; an unknown negative falls back to
+        // the energy field so an older client never gets a field it can't read.
         let speaker = match msg.args.get(1) {
             Some(OscType::Int(i)) if *i >= 0 => *i as i64,
+            Some(OscType::Int(i))
+                if matches!(
+                    *i as i64,
+                    renderer::band_gaintable::GAIN_DISCONTINUITY_INDEX
+                        | renderer::band_gaintable::CENTROID_JUMP_INDEX
+                ) =>
+            {
+                *i as i64
+            }
             Some(OscType::Int(_)) => renderer::band_gaintable::GLOBAL_ENERGY_INDEX,
             _ => 0,
         };

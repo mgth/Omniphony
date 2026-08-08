@@ -22,6 +22,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 const GAINTABLE_CONSUMER_SOLO = 'speakerSoloVolume';
 const GAINTABLE_CONSUMER_GLOBAL = 'globalEnergyVolume';
+const GAINTABLE_CONSUMER_DISCONTINUITY = 'discontinuityVolume';
 
 export function setupTrailsAndDisplayListeners() {
   const trailToggleEl = document.getElementById('trailToggle');
@@ -408,6 +409,65 @@ export function setupTrailsAndDisplayListeners() {
       const next = Number(globalEnergyHeatmapBandSelectEl.value);
       app.globalEnergyHeatmapBandIndex = Math.max(0, Math.round(Number.isFinite(next) ? next : 0));
       app.lastGlobalEnergyVolumeAt = 0;
+      syncCrossoverBandSelects();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  const discontinuityHeatmapToggleEl = document.getElementById('discontinuityHeatmapToggle');
+  if (discontinuityHeatmapToggleEl) {
+    discontinuityHeatmapToggleEl.checked = app.discontinuityHeatmapEnabled;
+    // Honour a persisted-on state at startup, like the other heatmaps.
+    if (app.discontinuityHeatmapEnabled) acquireGainTable(GAINTABLE_CONSUMER_DISCONTINUITY);
+    discontinuityHeatmapToggleEl.addEventListener('change', () => {
+      app.discontinuityHeatmapEnabled = discontinuityHeatmapToggleEl.checked;
+      app.lastDiscontinuityVolumeAt = 0; // rebuild on the next tick
+      if (app.discontinuityHeatmapEnabled) {
+        acquireGainTable(GAINTABLE_CONSUMER_DISCONTINUITY);
+      } else {
+        releaseGainTable(GAINTABLE_CONSUMER_DISCONTINUITY);
+      }
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  const discontinuityHeatmapModeEl = document.getElementById('discontinuityHeatmapMode');
+  if (discontinuityHeatmapModeEl) {
+    discontinuityHeatmapModeEl.value = app.discontinuityHeatmapMode;
+    discontinuityHeatmapModeEl.addEventListener('change', () => {
+      app.discontinuityHeatmapMode = discontinuityHeatmapModeEl.value === 'centroid'
+        ? 'centroid'
+        : 'gain';
+      app.lastDiscontinuityVolumeAt = 0;
+      // The consumer's engine target follows the mode: re-subscribe so the
+      // newly-selected field is fetched (a cached one answers `uptodate`).
+      refreshGaintableSubscription();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  const discontinuityHeatmapScaleEl = document.getElementById('discontinuityHeatmapScale');
+  if (discontinuityHeatmapScaleEl) {
+    discontinuityHeatmapScaleEl.value = String(app.discontinuityHeatmapScale);
+    discontinuityHeatmapScaleEl.addEventListener('change', () => {
+      const raw = Number(discontinuityHeatmapScaleEl.value);
+      const next = Number.isFinite(raw) && raw > 0
+        ? Math.max(0.05, Math.min(2, raw))
+        : 0.5;
+      app.discontinuityHeatmapScale = next;
+      discontinuityHeatmapScaleEl.value = String(next);
+      app.lastDiscontinuityVolumeAt = 0;
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  const discontinuityHeatmapBandSelectEl = document.getElementById('discontinuityHeatmapBandSelect');
+  if (discontinuityHeatmapBandSelectEl) {
+    syncCrossoverBandSelects();
+    discontinuityHeatmapBandSelectEl.addEventListener('change', () => {
+      const next = Number(discontinuityHeatmapBandSelectEl.value);
+      app.discontinuityHeatmapBandIndex = Math.max(0, Math.round(Number.isFinite(next) ? next : 0));
+      app.lastDiscontinuityVolumeAt = 0;
       syncCrossoverBandSelects();
       persistEffectiveRenderPrefs();
     });

@@ -1503,11 +1503,15 @@ impl RendererControl {
                 },
             )
             .collect();
+        // Speaker positions ride along for the centroid-jump derived field —
+        // already in the same normalised [-1, 1] cube as the grid.
+        let speaker_positions = layout.speakers.iter().map(|s| [s.x, s.y, s.z]).collect();
         Ok(crate::band_gaintable::BandGaintableFull {
             x_positions,
             y_positions,
             z_positions,
             speaker_count,
+            speaker_positions,
             bands: band_fields,
         })
     }

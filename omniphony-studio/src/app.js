@@ -27,6 +27,7 @@ import './scene/axes.js';
 import { refreshObjectEnergyVolume } from './scene/object-energy-volume.js';
 import { refreshSpeakerSoloVolume } from './scene/speaker-solo-volume.js';
 import { refreshGlobalEnergyVolume } from './scene/global-energy-volume.js';
+import { refreshDiscontinuityVolume } from './scene/discontinuity-volume.js';
 
 // ── Domain modules (imported for side-effects & to register into state) ─────
 import {
@@ -338,6 +339,7 @@ function animate() {
   refreshObjectEnergyVolume(now);
   refreshSpeakerSoloVolume(now);
   refreshGlobalEnergyVolume(now);
+  refreshDiscontinuityVolume(now);
   enforceObjectsVisibilityIfHidden();
 
   sourceOutlines.forEach((outline) => {

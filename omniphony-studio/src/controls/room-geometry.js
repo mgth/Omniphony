@@ -117,6 +117,10 @@ export function persistEffectiveRenderPrefs() {
       globalEnergyHeatmapEnabled: app.globalEnergyHeatmapEnabled,
       globalEnergyHeatmapScaleDb: app.globalEnergyHeatmapScaleDb,
       globalEnergyHeatmapBandIndex: app.globalEnergyHeatmapBandIndex,
+      discontinuityHeatmapEnabled: app.discontinuityHeatmapEnabled,
+      discontinuityHeatmapMode: app.discontinuityHeatmapMode,
+      discontinuityHeatmapScale: app.discontinuityHeatmapScale,
+      discontinuityHeatmapBandIndex: app.discontinuityHeatmapBandIndex,
       objectEnergyHeatmapEnabled: app.objectEnergyHeatmapEnabled,
       objectEnergyColormap: app.objectEnergyColormap,
       objectEnergyVolumeMix: app.objectEnergyVolumeMix,
@@ -380,6 +384,20 @@ export function loadEffectiveRenderPrefs() {
       const globalScaleDb = Number(parsed?.globalEnergyHeatmapScaleDb);
       if (Number.isFinite(globalScaleDb)) {
         app.globalEnergyHeatmapScaleDb = Math.max(1, Math.min(40, Math.round(globalScaleDb)));
+      }
+      if (typeof parsed?.discontinuityHeatmapEnabled === 'boolean') {
+        app.discontinuityHeatmapEnabled = parsed.discontinuityHeatmapEnabled;
+      }
+      if (parsed?.discontinuityHeatmapMode === 'gain' || parsed?.discontinuityHeatmapMode === 'centroid') {
+        app.discontinuityHeatmapMode = parsed.discontinuityHeatmapMode;
+      }
+      const discontinuityScale = Number(parsed?.discontinuityHeatmapScale);
+      if (Number.isFinite(discontinuityScale) && discontinuityScale > 0) {
+        app.discontinuityHeatmapScale = Math.max(0.05, Math.min(2, discontinuityScale));
+      }
+      const discontinuityBandIndex = Number(parsed?.discontinuityHeatmapBandIndex);
+      if (Number.isFinite(discontinuityBandIndex) && discontinuityBandIndex >= 0) {
+        app.discontinuityHeatmapBandIndex = Math.max(0, Math.round(discontinuityBandIndex));
       }
       const globalBandIndex = Number(parsed?.globalEnergyHeatmapBandIndex);
       if (Number.isFinite(globalBandIndex)) {

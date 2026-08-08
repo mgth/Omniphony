@@ -483,6 +483,17 @@ export const app = {
   globalEnergyHeatmapScaleDb: 6,
   // Crossover band shown by the global heatmap (single band, like the per-speaker one).
   globalEnergyHeatmapBandIndex: 0,
+  // Discontinuity heatmap: breaks in speaker usage between neighbouring grid
+  // cells (see scene/discontinuity-volume.js). 'gain' compares the normalised
+  // per-speaker gain vectors (pure configuration change, level stripped);
+  // 'centroid' the room distance the gain²-weighted speaker centroid jumps.
+  discontinuityHeatmapEnabled: false,
+  discontinuityHeatmapMode: 'gain',
+  // Jump value that saturates the colour. Both metrics top out around 2
+  // (disjoint speaker sets read √2; a wall-to-wall centroid jump reads 2).
+  discontinuityHeatmapScale: 0.5,
+  // Crossover band shown by the discontinuity heatmap.
+  discontinuityHeatmapBandIndex: 0,
   // Object energy field (client-side theoretical field, ray-marched 3D volume).
   objectEnergyHeatmapEnabled: false,
   // Colour gradient: 'heatmap' | 'blueWhite' | 'whiteRed' | 'red'.

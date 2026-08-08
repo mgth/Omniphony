@@ -43,6 +43,23 @@ const versions = new Map();
 export const GLOBAL_ENERGY_INDEX = -1;
 
 /**
+ * Subscription targets for the discontinuity fields, mirroring
+ * `renderer::band_gaintable::{GAIN_DISCONTINUITY_INDEX, CENTROID_JUMP_INDEX}`:
+ * per cell, the worst jump to a grid neighbour — of the energy-normalised gain
+ * vector (configuration change), or of the gain²-weighted speaker centroid
+ * (room distance the sound image moves).
+ */
+export const GAIN_DISCONTINUITY_INDEX = -2;
+export const CENTROID_JUMP_INDEX = -3;
+
+/** The engine target the discontinuity display needs for the current mode. */
+function discontinuityTarget() {
+  return app.discontinuityHeatmapMode === 'centroid'
+    ? CENTROID_JUMP_INDEX
+    : GAIN_DISCONTINUITY_INDEX;
+}
+
+/**
  * Active consumers, mapped to the field each one needs.
  *
  * A map, not a set: every displayed field must be subscribed for. Deriving a
@@ -63,6 +80,7 @@ function currentSpeaker() {
 const TARGET_OF = {
   speakerSoloVolume: () => currentSpeaker(),
   globalEnergyVolume: () => GLOBAL_ENERGY_INDEX,
+  discontinuityVolume: discontinuityTarget,
 };
 
 function targetsInUse() {
@@ -191,4 +209,13 @@ export function getSpeakerGainTable() {
 /** The all-speaker energy field, or `null` until it has been received. */
 export function getGlobalEnergyTable() {
   return tables.get(GLOBAL_ENERGY_INDEX) ?? null;
+}
+
+/**
+ * The discontinuity field for the CURRENT mode, or `null` until received.
+ * Both modes' tables stay cached, so flipping back to an already-fetched mode
+ * paints immediately while the subscribe answers `uptodate`.
+ */
+export function getDiscontinuityTable() {
+  return tables.get(discontinuityTarget()) ?? null;
 }
