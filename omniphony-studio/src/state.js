@@ -468,12 +468,13 @@ export const app = {
   // Own gradient for the speaker heatmap volume (differentiated from the object
   // field). Colour gradient: 'heatmap' | 'blueWhite' | 'whiteRed' | 'red'.
   speakerHeatmapVolumeColormap: 'heatmap',
-  // Crossover band selected for effective-render / dominant-speaker readout, and
-  // for the per-speaker heatmap volume (single band). `speakerHeatmapAllBands`
-  // overrides it for the heatmap with the level-weighted, frequency-coloured
-  // "all bands" composite (effective-render still uses the numeric index).
-  speakerHeatmapBandIndex: 0,
-  speakerHeatmapAllBands: false,
+  // THE crossover-band context, shared by every heatmap and by the
+  // effective-render / dominant-speaker readouts — overlaying heatmaps of
+  // different bands only reads as confusion, so there is one selection.
+  // `heatmapAllBands` switches each display to its own all-bands composite
+  // (the readouts still use the numeric index).
+  heatmapBandIndex: 0,
+  heatmapAllBands: false,
   // Global energy heatmap: total energy over ALL speakers per grid cell, drawn
   // as a deviation from unit energy (see scene/global-energy-volume.js).
   // Transparent at 0 dB, red above, blue below. Shares the gain-table transport
@@ -481,8 +482,6 @@ export const app = {
   globalEnergyHeatmapEnabled: false,
   // Saturation of the diverging dB scale: ±this many dB maps to full opacity.
   globalEnergyHeatmapScaleDb: 6,
-  // Crossover band shown by the global heatmap (single band, like the per-speaker one).
-  globalEnergyHeatmapBandIndex: 0,
   // Discontinuity heatmap: breaks in speaker usage between neighbouring grid
   // cells (see scene/discontinuity-volume.js). 'gain' compares the normalised
   // per-speaker gain vectors (pure configuration change, level stripped);
@@ -492,8 +491,6 @@ export const app = {
   // Jump value that saturates the colour. Both metrics top out around 2
   // (disjoint speaker sets read √2; a wall-to-wall centroid jump reads 2).
   discontinuityHeatmapScale: 0.5,
-  // Crossover band shown by the discontinuity heatmap.
-  discontinuityHeatmapBandIndex: 0,
   // Object energy field (client-side theoretical field, ray-marched 3D volume).
   objectEnergyHeatmapEnabled: false,
   // Colour gradient: 'heatmap' | 'blueWhite' | 'whiteRed' | 'red'.

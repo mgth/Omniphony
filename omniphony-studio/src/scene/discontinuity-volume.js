@@ -90,7 +90,8 @@ export function refreshDiscontinuityVolume(nowMs) {
   const sig = [
     table,
     scale,
-    Number(app.discontinuityHeatmapBandIndex) || 0,
+    Number(app.heatmapBandIndex) || 0,
+    app.heatmapAllBands ? 1 : 0,
     app.volumeSmoothInterpolation ? 1 : 0,
     app.objectEnergyHeatmapResolution,
     app.objectEnergyHeatmapOpacity,
@@ -117,9 +118,22 @@ export function refreshDiscontinuityVolume(nowMs) {
   }
   const bandIndex = Math.max(
     0,
-    Math.min(nbands - 1, Math.round(Number(app.discontinuityHeatmapBandIndex) || 0)),
+    Math.min(nbands - 1, Math.round(Number(app.heatmapBandIndex) || 0)),
   );
-  const jumps = bands[bandIndex].gains;
+  let jumps = bands[bandIndex].gains;
+  if (app.heatmapAllBands && nbands > 1) {
+    // All-bands composite: the worst break in ANY band — a seam that only
+    // exists in the height band is still a seam.
+    const cells = jumps.length;
+    const worst = new Float32Array(cells);
+    for (let b = 0; b < nbands; b += 1) {
+      const g = bands[b].gains;
+      for (let i = 0; i < cells; i += 1) {
+        if (g[i] > worst[i]) worst[i] = g[i];
+      }
+    }
+    jumps = worst;
+  }
   const nxh = nx - 1;
   const nyh = ny - 1;
   const nzh = nz - 1;

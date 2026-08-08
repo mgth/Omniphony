@@ -98,7 +98,8 @@ export function refreshGlobalEnergyVolume(nowMs) {
   const sig = [
     table,
     scaleDb,
-    Number(app.globalEnergyHeatmapBandIndex) || 0,
+    Number(app.heatmapBandIndex) || 0,
+    app.heatmapAllBands ? 1 : 0,
     app.volumeSmoothInterpolation ? 1 : 0,
     app.objectEnergyHeatmapResolution,
     app.objectEnergyHeatmapOpacity,
@@ -125,9 +126,22 @@ export function refreshGlobalEnergyVolume(nowMs) {
   }
   const bandIndex = Math.max(
     0,
-    Math.min(nbands - 1, Math.round(Number(app.globalEnergyHeatmapBandIndex) || 0)),
+    Math.min(nbands - 1, Math.round(Number(app.heatmapBandIndex) || 0)),
   );
-  const amplitudes = bands[bandIndex].gains;
+  let amplitudes = bands[bandIndex].gains;
+  if (app.heatmapAllBands && nbands > 1) {
+    // All-bands composite: the bands partition the spectrum, so their powers
+    // add — per cell, √Σ amp² is the true full-band total energy, still on
+    // the same unit-energy reference.
+    const cells = amplitudes.length;
+    const total = new Float32Array(cells);
+    for (let b = 0; b < nbands; b += 1) {
+      const g = bands[b].gains;
+      for (let i = 0; i < cells; i += 1) total[i] += g[i] * g[i];
+    }
+    for (let i = 0; i < cells; i += 1) total[i] = Math.sqrt(total[i]);
+    amplitudes = total;
+  }
   const nxh = nx - 1;
   const nyh = ny - 1;
   const nzh = nz - 1;

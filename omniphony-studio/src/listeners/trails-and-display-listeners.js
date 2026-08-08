@@ -48,7 +48,6 @@ export function setupTrailsAndDisplayListeners() {
   const localeSelectEl = document.getElementById('localeSelect');
   const speakerHeatmapVolumeToggleEl = document.getElementById('speakerHeatmapVolumeToggle');
   const speakerHeatmapVolumeColormapEl = document.getElementById('speakerHeatmapVolumeColormap');
-  const speakerHeatmapBandSelectEl = document.getElementById('speakerHeatmapBandSelect');
   const objectEnergyHeatmapToggleEl = document.getElementById('objectEnergyHeatmapToggle');
   const objectEnergyColormapEl = document.getElementById('objectEnergyColormap');
   const objectEnergyVolumeMixSliderEl = document.getElementById('objectEnergyVolumeMixSlider');
@@ -402,18 +401,6 @@ export function setupTrailsAndDisplayListeners() {
     });
   }
 
-  const globalEnergyHeatmapBandSelectEl = document.getElementById('globalEnergyHeatmapBandSelect');
-  if (globalEnergyHeatmapBandSelectEl) {
-    syncCrossoverBandSelects();
-    globalEnergyHeatmapBandSelectEl.addEventListener('change', () => {
-      const next = Number(globalEnergyHeatmapBandSelectEl.value);
-      app.globalEnergyHeatmapBandIndex = Math.max(0, Math.round(Number.isFinite(next) ? next : 0));
-      app.lastGlobalEnergyVolumeAt = 0;
-      syncCrossoverBandSelects();
-      persistEffectiveRenderPrefs();
-    });
-  }
-
   const discontinuityHeatmapToggleEl = document.getElementById('discontinuityHeatmapToggle');
   if (discontinuityHeatmapToggleEl) {
     discontinuityHeatmapToggleEl.checked = app.discontinuityHeatmapEnabled;
@@ -461,30 +448,24 @@ export function setupTrailsAndDisplayListeners() {
     });
   }
 
-  const discontinuityHeatmapBandSelectEl = document.getElementById('discontinuityHeatmapBandSelect');
-  if (discontinuityHeatmapBandSelectEl) {
+  // The ONE crossover-band selector (Common parameters): every heatmap and
+  // the effective-render / dominant-speaker readouts follow it.
+  const heatmapBandSelectEl = document.getElementById('heatmapBandSelect');
+  if (heatmapBandSelectEl) {
     syncCrossoverBandSelects();
-    discontinuityHeatmapBandSelectEl.addEventListener('change', () => {
-      const next = Number(discontinuityHeatmapBandSelectEl.value);
-      app.discontinuityHeatmapBandIndex = Math.max(0, Math.round(Number.isFinite(next) ? next : 0));
-      app.lastDiscontinuityVolumeAt = 0;
-      syncCrossoverBandSelects();
-      persistEffectiveRenderPrefs();
-    });
-  }
-
-  if (speakerHeatmapBandSelectEl) {
-    syncCrossoverBandSelects();
-    speakerHeatmapBandSelectEl.addEventListener('change', () => {
-      const value = speakerHeatmapBandSelectEl.value;
+    heatmapBandSelectEl.addEventListener('change', () => {
+      const value = heatmapBandSelectEl.value;
       if (value === 'all') {
-        app.speakerHeatmapAllBands = true; // heatmap composite; band index unchanged
+        app.heatmapAllBands = true; // composites; the numeric index is kept
       } else {
-        app.speakerHeatmapAllBands = false;
+        app.heatmapAllBands = false;
         const nextBandIndex = Number(value);
-        app.speakerHeatmapBandIndex = Math.max(0, Math.round(Number.isFinite(nextBandIndex) ? nextBandIndex : 0));
+        app.heatmapBandIndex = Math.max(0, Math.round(Number.isFinite(nextBandIndex) ? nextBandIndex : 0));
       }
-      app.lastSpeakerSoloVolumeAt = 0; // rebuild the heatmap on the next tick
+      // Every display renders from this band: rebuild them all on the next tick.
+      app.lastSpeakerSoloVolumeAt = 0;
+      app.lastGlobalEnergyVolumeAt = 0;
+      app.lastDiscontinuityVolumeAt = 0;
       syncCrossoverBandSelects();
       refreshOverlayLists();
       refreshEffectiveRenderVisibility();

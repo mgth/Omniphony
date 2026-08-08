@@ -6,7 +6,7 @@
  * renders the selected speaker:
  *  - a single band → energy(cell) = gain_band(cell, speaker)², coloured by the
  *    speaker gradient (`speakerHeatmapVolumeColormap`);
- *  - "all bands" (`speakerHeatmapAllBands`) → per cell, a level-weighted average
+ *  - "all bands" (`heatmapAllBands`) → per cell, a level-weighted average
  *    of each band's colour (band colour = gradient at the band's log-frequency
  *    position), with alpha = total level. Uses the volume core's precoloured path.
  *
@@ -108,8 +108,8 @@ export function refreshSpeakerSoloVolume(nowMs) {
   const ratio = app.roomRatio || {};
   const sig = [
     table, speaker,
-    app.speakerHeatmapAllBands ? 1 : 0,
-    Number(app.speakerHeatmapBandIndex) || 0,
+    app.heatmapAllBands ? 1 : 0,
+    Number(app.heatmapBandIndex) || 0,
     app.speakerHeatmapVolumeColormap,
     app.speakerCustomGradientVersion,
     app.volumeSmoothInterpolation ? 1 : 0,
@@ -165,7 +165,7 @@ export function refreshSpeakerSoloVolume(nowMs) {
     smooth: app.volumeSmoothInterpolation,
   };
 
-  if (app.speakerHeatmapAllBands && nbands > 1) {
+  if (app.heatmapAllBands && nbands > 1) {
     // Precompute each band's gradient colour from its log-frequency position.
     const scratch = new THREE.Color();
     const colormap = app.speakerHeatmapVolumeColormap;
@@ -209,7 +209,7 @@ export function refreshSpeakerSoloVolume(nowMs) {
   }
 
   // Single band.
-  const bandIndex = Math.max(0, Math.min(nbands - 1, Math.round(Number(app.speakerHeatmapBandIndex) || 0)));
+  const bandIndex = Math.max(0, Math.min(nbands - 1, Math.round(Number(app.heatmapBandIndex) || 0)));
   const gains = bands[bandIndex].gains;
   volume.update({
     ...common,

@@ -368,7 +368,7 @@ export function createSourceDiffuseHalo() {
 
 export function computeEffectiveRenderPosition(id) {
   const key = String(id);
-  const selectedBandIndex = Math.max(0, Math.round(Number(app.speakerHeatmapBandIndex) || 0));
+  const selectedBandIndex = Math.max(0, Math.round(Number(app.heatmapBandIndex) || 0));
   const bandGains = sourceBandGains.get(key);
   const gains = Array.isArray(bandGains?.[selectedBandIndex]) && bandGains[selectedBandIndex].length > 0
     ? bandGains[selectedBandIndex]

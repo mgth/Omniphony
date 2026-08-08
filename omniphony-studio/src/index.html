@@ -385,10 +385,6 @@
                     </select>
                   </div>
                   <div id="speakerGradientEditor" class="gradient-editor" style="display:none;margin-top:0.1rem"></div>
-                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
-                    <label for="speakerHeatmapBandSelect" style="font-size:12px;white-space:nowrap" data-help-i18n="help.heatmap.crossoverBand">Crossover band</label>
-                    <select id="speakerHeatmapBandSelect" style="flex:1;min-width:0"></select>
-                  </div>
                 </div>
                 <div style="margin-top:0.3rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
                   <div style="font-size:12px;font-weight:600;opacity:0.85" data-i18n="heatmap.global">Total energy</div>
@@ -399,10 +395,6 @@
                   <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
                     <label for="globalEnergyHeatmapScale" style="font-size:12px;white-space:nowrap" data-i18n="heatmap.globalEnergy.scale" data-help-i18n="help.heatmap.globalEnergyScale">Scale (±dB)</label>
                     <input id="globalEnergyHeatmapScale" class="delay-input" type="number" min="1" max="40" step="1" value="6" style="flex:1;min-width:0" />
-                  </div>
-                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
-                    <label for="globalEnergyHeatmapBandSelect" style="font-size:12px;white-space:nowrap" data-help-i18n="help.heatmap.crossoverBand">Crossover band</label>
-                    <select id="globalEnergyHeatmapBandSelect" style="flex:1;min-width:0"></select>
                   </div>
                 </div>
                 <div style="margin-top:0.3rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
@@ -421,10 +413,6 @@
                   <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
                     <label for="discontinuityHeatmapScale" style="font-size:12px;white-space:nowrap" data-i18n="heatmap.discontinuity.scale" data-help-i18n="help.heatmap.discontinuityScale">Full scale</label>
                     <input id="discontinuityHeatmapScale" class="delay-input" type="number" min="0.05" max="2" step="0.05" value="0.5" style="flex:1;min-width:0" />
-                  </div>
-                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
-                    <label for="discontinuityHeatmapBandSelect" style="font-size:12px;white-space:nowrap" data-help-i18n="help.heatmap.crossoverBand">Crossover band</label>
-                    <select id="discontinuityHeatmapBandSelect" style="flex:1;min-width:0"></select>
                   </div>
                 </div>
                 <div style="margin-top:0.3rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
@@ -451,6 +439,10 @@
                 </div>
                 <div style="margin-top:0.3rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
                   <div style="font-size:12px;font-weight:600;opacity:0.85" data-i18n="heatmap.common">Common parameters</div>
+                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label for="heatmapBandSelect" style="font-size:12px;white-space:nowrap" data-i18n="heatmap.crossoverBand" data-help-i18n="help.heatmap.crossoverBand">Crossover band</label>
+                    <select id="heatmapBandSelect" style="flex:1;min-width:0"></select>
+                  </div>
                   <div class="inline-toggle" style="margin-top:0">
                     <div data-i18n="heatmap.smooth" data-help-i18n="help.heatmap.smooth">Smooth gradient</div>
                     <input id="volumeSmoothToggle" type="checkbox" />
