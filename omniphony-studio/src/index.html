@@ -368,6 +368,13 @@
                 </div>
               </div>
               <div id="heatmapsSectionContent" class="conditional-params open">
+                <!-- The shared band context sits at the head of the block: it
+                     drives EVERY heatmap below, so it must not read as one
+                     panel's setting. -->
+                <div class="control-row" style="margin-top:0.15rem;margin-left:1rem;grid-template-columns:auto 1fr;gap:0.3rem">
+                  <label for="heatmapBandSelect" style="font-size:12px;white-space:nowrap" data-i18n="heatmap.crossoverBand" data-help-i18n="help.heatmap.crossoverBand">Crossover band</label>
+                  <select id="heatmapBandSelect" style="flex:1;min-width:0"></select>
+                </div>
                 <div style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
                   <div style="font-size:12px;font-weight:600;opacity:0.85" data-i18n="heatmap.speakers">Speakers</div>
                   <div class="inline-toggle" style="margin-top:0">
@@ -439,10 +446,6 @@
                 </div>
                 <div style="margin-top:0.3rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
                   <div style="font-size:12px;font-weight:600;opacity:0.85" data-i18n="heatmap.common">Common parameters</div>
-                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
-                    <label for="heatmapBandSelect" style="font-size:12px;white-space:nowrap" data-i18n="heatmap.crossoverBand" data-help-i18n="help.heatmap.crossoverBand">Crossover band</label>
-                    <select id="heatmapBandSelect" style="flex:1;min-width:0"></select>
-                  </div>
                   <div class="inline-toggle" style="margin-top:0">
                     <div data-i18n="heatmap.smooth" data-help-i18n="help.heatmap.smooth">Smooth gradient</div>
                     <input id="volumeSmoothToggle" type="checkbox" />
