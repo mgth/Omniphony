@@ -234,10 +234,21 @@ impl OscSender {
             }));
         }
 
+        // Per-crossover-band RMS rides the object message as EXTRA args after
+        // (peak, rms) — an older client reads the first two and ignores the rest.
+        let band_levels_by_id: std::collections::HashMap<u32, &Vec<f32>> = snapshot
+            .object_band_levels
+            .iter()
+            .map(|(id, bands)| (*id, bands))
+            .collect();
         for &(id, peak, rms) in &snapshot.object_levels {
+            let mut args = vec![OscType::Float(peak), OscType::Float(rms)];
+            if let Some(bands) = band_levels_by_id.get(&id) {
+                args.extend(bands.iter().map(|&db| OscType::Float(db)));
+            }
             messages.push(OscPacket::Message(OscMessage {
                 addr: format!("/omniphony/meter/object/{}", id),
-                args: vec![OscType::Float(peak), OscType::Float(rms)],
+                args,
             }));
             if let Some(gains) = gains_by_id.get(id as usize).and_then(|entry| *entry) {
                 messages.push(OscPacket::Message(OscMessage {

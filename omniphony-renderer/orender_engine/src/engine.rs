@@ -1329,6 +1329,7 @@ impl Engine {
             let drc_gain = self.drc_gain;
             if let Some(meter) = self.audio_meter.as_mut() {
                 meter.process_speakers(&rendered.samples, n_channels as usize);
+                meter.process_object_bands(&rendered.object_band_sq);
                 if let Some(snapshot) = meter.poll() {
                     if overlay_active {
                         let levels: Vec<(u32, f64)> = snapshot

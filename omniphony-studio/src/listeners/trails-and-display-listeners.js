@@ -466,6 +466,7 @@ export function setupTrailsAndDisplayListeners() {
       app.lastSpeakerSoloVolumeAt = 0;
       app.lastGlobalEnergyVolumeAt = 0;
       app.lastDiscontinuityVolumeAt = 0;
+      app.lastObjectEnergyHeatmapAt = 0;
       syncCrossoverBandSelects();
       refreshOverlayLists();
       refreshEffectiveRenderVisibility();

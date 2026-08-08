@@ -164,6 +164,10 @@ pub enum OscEvent {
         peak_dbfs: f64,
         #[serde(rename = "rmsDbfs")]
         rms_dbfs: f64,
+        /// Per-crossover-band RMS (extra args after peak/rms), band order
+        /// matching the band gain table. Empty when no crossover is active.
+        #[serde(rename = "bandRmsDbfs", skip_serializing_if = "Vec::is_empty")]
+        band_rms_dbfs: Vec<f64>,
     },
 
     #[serde(rename = "meter:object:gains")]
@@ -1007,10 +1011,16 @@ fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
         let rms = clamp(to_number(args[1]).unwrap_or(-100.0), -100.0, 0.0);
         match kind {
             "object" => {
+                // Any args past (peak, rms) are per-crossover-band RMS values.
+                let band_rms_dbfs = args[2..]
+                    .iter()
+                    .map(|&v| clamp(to_number(v).unwrap_or(-100.0), -100.0, 0.0))
+                    .collect();
                 return Some(OscEvent::MeterObject {
                     id,
                     peak_dbfs: peak,
                     rms_dbfs: rms,
+                    band_rms_dbfs,
                 })
             }
             "speaker" => {
@@ -1074,6 +1084,45 @@ mod tests {
                 label: Some(label),
                 generation: Some(7),
             }) if id == "3" && label == "LFE"
+        ));
+    }
+
+    #[test]
+    fn object_meter_extra_args_are_per_band_rms() {
+        let parsed = parse_osc_message(
+            "/omniphony/meter/object/2",
+            &[
+                OscType::Float(-3.0),
+                OscType::Float(-9.0),
+                OscType::Float(-12.0),
+                OscType::Float(-40.0),
+            ],
+            CoordinateFormat::Cartesian,
+        );
+        assert!(matches!(
+            parsed,
+            Some(OscEvent::MeterObject {
+                id,
+                peak_dbfs,
+                rms_dbfs,
+                band_rms_dbfs,
+            }) if id == "2"
+                && peak_dbfs == -3.0
+                && rms_dbfs == -9.0
+                && band_rms_dbfs == vec![-12.0, -40.0]
+        ));
+    }
+
+    #[test]
+    fn object_meter_without_band_args_keeps_an_empty_band_list() {
+        let parsed = parse_osc_message(
+            "/omniphony/meter/object/2",
+            &[OscType::Float(-3.0), OscType::Float(-9.0)],
+            CoordinateFormat::Cartesian,
+        );
+        assert!(matches!(
+            parsed,
+            Some(OscEvent::MeterObject { band_rms_dbfs, .. }) if band_rms_dbfs.is_empty()
         ));
     }
 

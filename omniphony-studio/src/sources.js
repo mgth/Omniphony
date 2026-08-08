@@ -1179,9 +1179,15 @@ export function decayTrails(nowMs) {
 
 export function updateSourceLevel(id, meter) {
   const key = String(id);
+  // Per-crossover-band RMS (post object-gain). An empty/absent array means no
+  // crossover is active — store null so consumers fall back to the full band.
+  const bandRms = Array.isArray(meter?.bandRmsDbfs) && meter.bandRmsDbfs.length > 0
+    ? meter.bandRmsDbfs.map(Number)
+    : null;
   sourceLevels.set(key, {
     peakDbfs: Number(meter?.peakDbfs ?? -100),
-    rmsDbfs: Number(meter?.rmsDbfs ?? -100)
+    rmsDbfs: Number(meter?.rmsDbfs ?? -100),
+    bandRmsDbfs: bandRms
   });
   sourceLevelLastSeen.set(key, performance.now());
   const mesh = sourceMeshes.get(id);

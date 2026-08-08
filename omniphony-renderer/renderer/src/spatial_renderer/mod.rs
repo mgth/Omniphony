@@ -879,6 +879,7 @@ impl SpatialRenderer {
                 samples: output,
                 object_gains: Vec::new(),
                 object_band_gains: Vec::new(),
+                object_band_sq: Vec::new(),
                 crossover_time_ms: 0.0,
             });
         }
@@ -898,6 +899,7 @@ impl SpatialRenderer {
             Vec::new()
         };
         let mut object_band_gains_out: Vec<(usize, Vec<Gains>)> = Vec::new();
+        let mut object_band_sq_out: Vec<(usize, Vec<f64>)> = Vec::new();
         let mut crossover_elapsed = std::time::Duration::ZERO;
         let profile_crossover = measure_breakdown && self.crossover_filter_bank.is_some();
 
@@ -1403,6 +1405,20 @@ impl SpatialRenderer {
                     }
                     object_band_gains_out.push((input_channel_idx, band_gains.clone()));
                     object_gains_out.push((input_channel_idx, summed));
+                    // Per-band energy for the meters. Under metering every ramp
+                    // arm took the block path, so `crossover_band_scratch` still
+                    // holds this object's full block of band samples.
+                    if profile_crossover {
+                        let sums: Vec<f64> = (0..band_gains.len())
+                            .map(|b| {
+                                self.crossover_band_scratch[b][..sample_length]
+                                    .iter()
+                                    .map(|&s| (s as f64) * (s as f64))
+                                    .sum()
+                            })
+                            .collect();
+                        object_band_sq_out.push((input_channel_idx, sums));
+                    }
                 }
 
                 // Return the pooled buffer for the next object/frame.
@@ -1526,10 +1542,12 @@ impl SpatialRenderer {
 
         object_gains_out.sort_by_key(|(idx, _)| *idx);
         object_band_gains_out.sort_by_key(|(idx, _)| *idx);
+        object_band_sq_out.sort_by_key(|(idx, _)| *idx);
         Ok(RenderedFrame {
             samples: output,
             object_gains: object_gains_out,
             object_band_gains: object_band_gains_out,
+            object_band_sq: object_band_sq_out,
             crossover_time_ms: crossover_elapsed.as_secs_f32() * 1000.0,
         })
     }

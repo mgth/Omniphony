@@ -1984,6 +1984,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 id,
                 peak_dbfs,
                 rms_dbfs,
+                band_rms_dbfs,
             } => {
                 s.source_levels.insert(
                     id.clone(),
@@ -1992,12 +1993,19 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         rms_dbfs,
                     },
                 );
+                // `bandRmsDbfs` is emitted even when empty so the front-end can
+                // tell "no crossover any more" from "field absent" and drop a
+                // stale per-band level.
                 (
                     Some((
                         "source:meter",
                         serde_json::json!({
                             "id": id,
-                            "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                            "meter": {
+                                "peakDbfs": peak_dbfs,
+                                "rmsDbfs": rms_dbfs,
+                                "bandRmsDbfs": band_rms_dbfs,
+                            }
                         }),
                     )),
                     removed_ids,

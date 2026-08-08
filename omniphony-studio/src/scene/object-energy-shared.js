@@ -11,7 +11,7 @@
  * directly. Updated on a throttled tick from the animation loop, like trails.
  */
 
-import { sourcePositionsRaw, sourceLevels, objectMuted } from '../state.js';
+import { app, sourcePositionsRaw, sourceLevels, objectMuted } from '../state.js';
 
 // Below this RMS the object contributes nothing (mirror of trails.js).
 export const SILENT_RMS_DBFS = -100;
@@ -181,6 +181,19 @@ export function objectEnergyLinear(rmsDbfs) {
 // only one runs per frame, so there is no contention.
 export const activeObjects = [];
 
+// The RMS an object contributes to the field: the shared crossover-band
+// selection picks one band of the engine's per-band meters; "All bands" (or a
+// renderer without crossover, which reports no band meters) uses the full-band
+// level.
+function objectFieldRms(level) {
+  const bands = level?.bandRmsDbfs;
+  if (app.heatmapAllBands || !Array.isArray(bands) || bands.length < 2) {
+    return level?.rmsDbfs;
+  }
+  const index = Math.max(0, Math.round(Number(app.heatmapBandIndex) || 0));
+  return bands[Math.min(index, bands.length - 1)];
+}
+
 // Refill `activeObjects` with { x, y, z, energy } for every audible, non-muted
 // object. Returns the count of usable entries. Coordinates stay in Omniphony
 // normalised space [-1, 1] (raw object positions), matching the energy math.
@@ -191,7 +204,7 @@ export function collectActiveObjects() {
       return;
     }
     const level = sourceLevels.get(id);
-    const energy = objectEnergyLinear(level?.rmsDbfs);
+    const energy = objectEnergyLinear(objectFieldRms(level));
     if (energy <= 0) {
       return;
     }

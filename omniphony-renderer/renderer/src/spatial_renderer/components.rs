@@ -27,6 +27,13 @@ pub struct RenderedFrame {
     /// (`num_speakers`), indexed by global speaker index.
     /// Empty for non-crossover objects or when no crossover is active.
     pub object_band_gains: Vec<(usize, Vec<Gains>)>,
+    /// Per-band sum of squared band samples over this frame for crossover
+    /// objects: `(channel_idx, [band0_sum_sq, ...])`, band order matching
+    /// [`Self::object_band_gains`]. Measured post object-gain — the energy the
+    /// object actually contributes to the render, unlike the full-band input
+    /// meter which is pre-gain. Feeds the per-band object meters; empty when
+    /// metering is off or no crossover is active.
+    pub object_band_sq: Vec<(usize, Vec<f64>)>,
     /// Time spent in the crossover filter-bank stage during `render_frame`.
     ///
     /// This is a subset of the total render time.

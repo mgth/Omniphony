@@ -208,7 +208,12 @@ fn resolve_orender_launch_spec(
         // bundle first then the repo (dev) fallback.
         let layout_path = bundled_layouts_dir(app)
             .into_iter()
-            .flat_map(|dir| [dir.join(&layout_file), dir.join("legacy").join(&layout_file)])
+            .flat_map(|dir| {
+                [
+                    dir.join(&layout_file),
+                    dir.join("legacy").join(&layout_file),
+                ]
+            })
             .chain([
                 repo_root.join("layouts").join(&layout_file),
                 repo_root.join("layouts").join("legacy").join(&layout_file),
