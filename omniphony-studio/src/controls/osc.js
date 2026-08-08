@@ -17,7 +17,7 @@ import { pushLog, normalizeLogError, normalizeLogLevel, logState } from '../log.
 import { invoke } from '@tauri-apps/api/core';
 import { syncRuntimeConnectionLock } from '../runtime-connection.js';
 import { inObjectsPanel, inOscPanel } from '../ui/panel-roots.js';
-import { updateConfigSavedUI } from './config.js';
+import { rendererIsForeign, updateConfigSavedUI } from './config.js';
 import { applyProducerCapabilityVisibility } from '../init.js';
 
 // DOM refs
@@ -94,6 +94,20 @@ export function renderOscStatus() {
     bridgeErrorBannerEl.style.display = bridgeError ? '' : 'none';
     const detailEl = inOscPanel('bridgeErrorDetail');
     if (detailEl) detailEl.textContent = bridgeError;
+  }
+  // Attached to someone else's renderer: the connection looks perfectly healthy,
+  // so this has to be said out loud or every unsupported control just vanishes.
+  const foreignBannerEl = inOscPanel('foreignRendererBanner');
+  if (foreignBannerEl) {
+    const foreign = rendererIsForeign() === true;
+    foreignBannerEl.style.display = foreign ? '' : 'none';
+    const detailEl = inOscPanel('foreignRendererDetail');
+    if (detailEl && foreign) {
+      detailEl.textContent = tf('status.foreignRendererDetail', {
+        running: app.renderExecutable,
+        expected: app.expectedOrenderPath
+      });
+    }
   }
   if (pipeStatusEl && document.activeElement !== pipeStatusEl) {
     pipeStatusEl.value = app.orenderInputPipe || '';

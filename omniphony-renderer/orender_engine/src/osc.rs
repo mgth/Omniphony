@@ -474,6 +474,10 @@ impl OscSender {
                     host_handler.as_ref().map(|h| h.state_generation());
                 let mut last_live_state_generation =
                     control.as_ref().map(|c| c.live_state_generation());
+                // Overlay display prefs: the same generation-poll pattern. The
+                // mpv shim flips them through the FFI toggles, so a client that
+                // only ever hears its own OSC pushes would drift.
+                let mut last_overlay_generation: Option<u64> = None;
 
                 let mut buf = [0u8; 4096];
                 loop {
@@ -488,6 +492,22 @@ impl OscSender {
                             if let Some(ref ctrl) = control {
                                 let state_bytes = build_live_state_bundle(ctrl, Some(host));
                                 send_raw_filtered(&socket, &clients, &state_bytes, |_| true);
+                            }
+                        }
+                    }
+                    {
+                        let generation = crate::overlay::state_generation();
+                        if last_overlay_generation != Some(generation) {
+                            last_overlay_generation = Some(generation);
+                            if let Ok(bytes) =
+                                rosc::encoder::encode(&OscPacket::Message(OscMessage {
+                                    addr: runtime_control::osc_contract::STATE_OVERLAY.to_string(),
+                                    args: vec![rosc::OscType::String(
+                                        crate::overlay::display_state_json(),
+                                    )],
+                                }))
+                            {
+                                send_raw_filtered(&socket, &clients, &bytes, |_| true);
                             }
                         }
                     }

@@ -92,11 +92,35 @@ export function updateAboutRendererVersion() {
   const text = version && abi ? `${version} · ABI ${abi}` : version;
   if (text) {
     el.textContent = text;
-    el.title = text;
+    el.title = withExecutablePath(text);
   } else {
     el.textContent = '—';
     el.removeAttribute('title');
   }
+}
+
+// Two checkouts of the same commit report the same fingerprint, so the path is
+// the only thing telling them apart. It goes on the tooltip rather than the
+// line, which is already long.
+function withExecutablePath(text) {
+  const executable = typeof app.renderExecutable === 'string' ? app.renderExecutable.trim() : '';
+  return executable ? `${text}\n${executable}` : text;
+}
+
+/**
+ * True when the connected renderer is not the binary this Studio would launch.
+ *
+ * Studio sends its controls to whatever answers on the OSC port, and a renderer
+ * left running by another environment answers just as readily as its own. The
+ * connection then looks healthy while every control the other build does not
+ * implement is silently dropped. `null` while either path is still unknown, so
+ * the check cannot cry wolf before the first snapshot lands.
+ */
+export function rendererIsForeign() {
+  const running = typeof app.renderExecutable === 'string' ? app.renderExecutable.trim() : '';
+  const expected = typeof app.expectedOrenderPath === 'string' ? app.expectedOrenderPath.trim() : '';
+  if (!running || !expected) return null;
+  return running !== expected;
 }
 
 // Wire render function into the flush callback registry.

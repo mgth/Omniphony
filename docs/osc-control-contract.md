@@ -43,10 +43,11 @@ that module in sync.
 | `/control/spread/size_to_spread_mode` | s | `max` \| `mean` \| `projection_perpendicular`. |
 | `/control/distance_model` | s | `none` \| `linear` \| `quadratic` \| `inverse-square`. |
 | `/control/distance_model_metric` | s | `spherical` \| `chebyshev`. |
-| `/control/distance_diffuse/enabled` | int bool | Enable antipodal distance-diffuse blend. |
+| `/control/distance_diffuse/enabled` | int bool | Enable the mirrored distance-diffuse blend. |
 | `/control/distance_diffuse/threshold` | f `>0` | ADM distance at which the blend reaches 100 % direct. |
 | `/control/distance_diffuse/curve` | f `≥0` | Blend-weight curve exponent. |
 | `/control/distance_diffuse/metric` | s | `spherical` \| `chebyshev`. |
+| `/control/distance_diffuse/mirror_axes` | s | ADM axes negated to build the mirror image: any combination of `x`, `y`, `z` (`xy` — the default half-turn about the vertical axis — `y` for a front/back reflection, `xyz` for an inversion through the origin), or `none`. |
 | `/control/room_ratio` | f×3 | Room proportions `[w, l, h]` used to scale ADM coords. |
 | `/control/room_ratio_rear` | f | Rear scaling factor. |
 | `/control/room_ratio_lower` | f | Lower-hemisphere scaling factor. |

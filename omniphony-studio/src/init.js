@@ -358,6 +358,14 @@ export function applyInitState(payload) {
         app.distanceDiffuseState.metric = metric;
       }
     }
+    const mirrorAxes = payload.distanceDiffuse.mirrorAxes;
+    if (mirrorAxes && typeof mirrorAxes === 'object') {
+      for (const axis of ['x', 'y', 'z']) {
+        if (typeof mirrorAxes[axis] === 'boolean') {
+          app.distanceDiffuseState.mirrorAxes[axis] = mirrorAxes[axis];
+        }
+      }
+    }
   }
   updateDistanceDiffuseUI();
   if (typeof payload.adaptiveResampling === 'number') {
@@ -630,6 +638,9 @@ export function applyInitState(payload) {
   }
   if (typeof payload.renderConfigStatus === 'string') {
     app.renderConfigStatus = payload.renderConfigStatus.trim() || null;
+  }
+  if (typeof payload.renderExecutable === 'string') {
+    app.renderExecutable = payload.renderExecutable.trim() || null;
   }
   if (typeof payload.renderVersion === 'string') {
     app.renderVersion = payload.renderVersion.trim() || null;

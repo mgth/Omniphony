@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct OscClientState {
     pub(crate) last_seen: Option<Instant>,
     pub(crate) metering_enabled: bool,
@@ -15,13 +15,22 @@ pub(crate) struct OscClientState {
     /// While subscribed, the renderer pushes a fresh table (chunked) on every
     /// topology rebuild — but only if the client's last-pushed version differs.
     pub(crate) gaintable_enabled: bool,
-    /// Version (hash) of the gain table last pushed to this client, so a rebuild
-    /// or a re-subscribe carrying the same version skips re-sending the data.
-    pub(crate) gaintable_version: Option<u32>,
-    /// Speaker index this client wants the gain table for (the heatmap shows one
-    /// speaker; pushes are serialized per speaker). `None` until first subscribe.
-    pub(crate) gaintable_speaker: Option<usize>,
+    /// Every gain-table target this client wants, mapped to the version last
+    /// pushed for it: a speaker index, or
+    /// [`renderer::band_gaintable::GLOBAL_ENERGY_INDEX`] for the all-speaker
+    /// energy field.
+    ///
+    /// A *map*, not a single target: a client showing two heatmaps at once
+    /// needs both fields, and holding one slot meant the second display
+    /// silently starved on a stale cache. Bounded by [`MAX_GAINTABLE_TARGETS`]
+    /// so a misbehaving client cannot grow it without limit.
+    pub(crate) gaintable_targets: BTreeMap<i64, Option<u32>>,
 }
+
+/// Most gain-table targets one client may hold at once. Two displays (the
+/// per-speaker heatmap and the global energy one) is the real case; the margin
+/// covers a third without letting a buggy client accumulate targets forever.
+const MAX_GAINTABLE_TARGETS: usize = 4;
 
 pub(crate) struct OscClientRegistry {
     clients: Mutex<HashMap<SocketAddr, OscClientState>>,
@@ -44,32 +53,24 @@ impl OscClientRegistry {
                 metering_enabled: false,
                 diag_enabled: false,
                 gaintable_enabled: false,
-                gaintable_version: None,
-                gaintable_speaker: None,
+                gaintable_targets: BTreeMap::new(),
             },
         );
     }
 
     pub(crate) fn register(&self, addr: SocketAddr) -> (bool, bool) {
         let mut clients = self.clients.lock().unwrap();
-        let prev_state = clients.get(&addr).copied();
-        let (
-            metering_enabled,
-            diag_enabled,
-            gaintable_enabled,
-            gaintable_version,
-            gaintable_speaker,
-        ) = prev_state
+        let prev_state = clients.get(&addr).cloned();
+        let (metering_enabled, diag_enabled, gaintable_enabled, gaintable_targets) = prev_state
             .map(|e| {
                 (
                     e.metering_enabled,
                     e.diag_enabled,
                     e.gaintable_enabled,
-                    e.gaintable_version,
-                    e.gaintable_speaker,
+                    e.gaintable_targets,
                 )
             })
-            .unwrap_or((false, false, false, None, None));
+            .unwrap_or((false, false, false, BTreeMap::new()));
         let prev = clients.insert(
             addr,
             OscClientState {
@@ -77,8 +78,7 @@ impl OscClientRegistry {
                 metering_enabled,
                 diag_enabled,
                 gaintable_enabled,
-                gaintable_version,
-                gaintable_speaker,
+                gaintable_targets,
             },
         );
         (prev.is_none(), metering_enabled)
@@ -152,36 +152,62 @@ impl OscClientRegistry {
         }
     }
 
-    /// Record the gain-table version last pushed to a client (so future rebuilds
-    /// and re-subscribes can compare and skip).
-    pub(crate) fn set_gaintable_version(&self, addr: SocketAddr, version: u32) {
+    /// Record the version last pushed to a client **for one target**, so a
+    /// rebuild or a re-subscribe carrying the same version can skip the resend.
+    pub(crate) fn set_gaintable_version(&self, addr: SocketAddr, target: i64, version: u32) {
         let mut clients = self.clients.lock().unwrap();
         if let Some(entry) = clients.get_mut(&addr) {
-            entry.gaintable_version = Some(version);
+            entry.gaintable_targets.insert(target, Some(version));
         }
     }
 
-    /// Record which speaker a client wants the gain table for.
-    pub(crate) fn set_gaintable_speaker(&self, addr: SocketAddr, speaker: usize) {
+    /// Add a target this client wants the gain table for, keeping the ones it
+    /// already has. Evicts the lowest target when full rather than refusing, so
+    /// a client that legitimately rotates targets keeps working.
+    pub(crate) fn add_gaintable_target(&self, addr: SocketAddr, target: i64) {
         let mut clients = self.clients.lock().unwrap();
         if let Some(entry) = clients.get_mut(&addr) {
-            entry.gaintable_speaker = Some(speaker);
+            if !entry.gaintable_targets.contains_key(&target)
+                && entry.gaintable_targets.len() >= MAX_GAINTABLE_TARGETS
+            {
+                if let Some(oldest) = entry.gaintable_targets.keys().next().copied() {
+                    entry.gaintable_targets.remove(&oldest);
+                }
+            }
+            entry.gaintable_targets.entry(target).or_insert(None);
         }
     }
 
-    /// The speaker a client is subscribed for, if any.
-    pub(crate) fn gaintable_speaker(&self, addr: SocketAddr) -> Option<usize> {
-        self.clients
-            .lock()
-            .unwrap()
-            .get(&addr)
-            .and_then(|c| c.gaintable_speaker)
+    /// Which target a client last received `version` for. A NACK carries only
+    /// the version, so this is what maps it back to the field to resend —
+    /// correct even with several transfers in flight.
+    pub(crate) fn gaintable_target_for_version(
+        &self,
+        addr: SocketAddr,
+        version: u32,
+    ) -> Option<i64> {
+        self.clients.lock().unwrap().get(&addr).and_then(|c| {
+            c.gaintable_targets
+                .iter()
+                .find(|(_, v)| **v == Some(version))
+                .map(|(target, _)| *target)
+        })
     }
 
-    /// Live gain-table subscribers as `(addr, last_pushed_version, speaker)`.
+    /// Forget every target of a client (on unsubscribe), so a later subscribe
+    /// starts from a clean slate.
+    pub(crate) fn clear_gaintable_targets(&self, addr: SocketAddr) {
+        let mut clients = self.clients.lock().unwrap();
+        if let Some(entry) = clients.get_mut(&addr) {
+            entry.gaintable_targets.clear();
+        }
+    }
+
+    /// Live gain-table subscribers as `(addr, [(target, last_pushed_version)])`.
     /// Permanent clients always count; timed clients only while within the
     /// heartbeat window.
-    pub(crate) fn gaintable_subscribers(&self) -> Vec<(SocketAddr, Option<u32>, Option<usize>)> {
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn gaintable_subscribers(&self) -> Vec<(SocketAddr, Vec<(i64, Option<u32>)>)> {
         let clients = self.clients.lock().unwrap();
         let now = Instant::now();
         clients
@@ -192,7 +218,15 @@ impl OscClientRegistry {
                         .map(|t| now.duration_since(t) < self.timeout)
                         .unwrap_or(true)
             })
-            .map(|(addr, c)| (*addr, c.gaintable_version, c.gaintable_speaker))
+            .map(|(addr, c)| {
+                (
+                    *addr,
+                    c.gaintable_targets
+                        .iter()
+                        .map(|(target, version)| (*target, *version))
+                        .collect(),
+                )
+            })
             .collect()
     }
 

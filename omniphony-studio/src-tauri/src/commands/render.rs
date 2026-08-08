@@ -113,6 +113,26 @@ pub fn control_distance_diffuse_metric(state: State<SharedState>, value: String)
     send_distance_metric(&state, "/omniphony/control/distance_diffuse/metric", value);
 }
 
+/// Axes negated to build the diffuse mirror, as the letters to flip (`xy`, `y`,
+/// `xyz`) or `none`. Validated here so a malformed value never reaches the OSC
+/// bus; the renderer parses the same grammar.
+#[tauri::command]
+pub fn control_distance_diffuse_mirror_axes(state: State<SharedState>, value: String) {
+    let normalized = value.trim().to_ascii_lowercase();
+    let valid = normalized == "none"
+        || (!normalized.is_empty() && normalized.chars().all(|c| matches!(c, 'x' | 'y' | 'z')));
+    if !valid {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/distance_diffuse/mirror_axes".to_string(),
+            value: normalized,
+        },
+    );
+}
+
 #[tauri::command]
 pub fn control_hybrid_external_backend(state: State<SharedState>, value: String) {
     if let Some(normalized) = valid_hybrid_inner_id(&value) {

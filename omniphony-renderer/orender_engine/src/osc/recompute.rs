@@ -160,16 +160,19 @@ pub(crate) fn trigger_layout_recompute(
                     let subscribers = clients_clone.gaintable_subscribers();
                     if !subscribers.is_empty() {
                         let ctx = RuntimeControlContext::new(Arc::clone(&control_clone));
-                        for (addr, client_version, speaker) in subscribers {
-                            let speaker = speaker.unwrap_or(0);
-                            if let Some((version, bytes)) =
-                                gaintable_cache_clone.bytes_for_speaker(&ctx, speaker)
-                            {
-                                if client_version != Some(version) {
-                                    for update in gaintable_chunk_broadcasts(&bytes, None) {
-                                        send_update_to_client(&socket_clone, addr, &update);
+                        for (addr, targets) in subscribers {
+                            // Every target the client holds, not just one: a
+                            // second display must not starve on a stale cache.
+                            for (target, client_version) in targets {
+                                if let Some((version, bytes)) =
+                                    gaintable_cache_clone.bytes_for_target(&ctx, target)
+                                {
+                                    if client_version != Some(version) {
+                                        for update in gaintable_chunk_broadcasts(&bytes, None) {
+                                            send_update_to_client(&socket_clone, addr, &update);
+                                        }
+                                        clients_clone.set_gaintable_version(addr, target, version);
                                     }
-                                    clients_clone.set_gaintable_version(addr, version);
                                 }
                             }
                         }

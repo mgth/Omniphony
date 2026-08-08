@@ -101,6 +101,9 @@ pub struct RenderRequest {
     pub use_distance_diffuse: bool,
     pub distance_diffuse_threshold: f32,
     pub distance_diffuse_curve: f32,
+    /// ADM axes negated to build the diffuse mirror image. See
+    /// [`crate::spatial_vbap::MirrorAxes`].
+    pub diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes,
     pub distance_model: DistanceModel,
 }
 
@@ -1951,6 +1954,7 @@ mod size_interval_tests {
                 room_ratio_lower: 1.0,
                 room_ratio_center_blend: 0.0,
                 use_distance_diffuse: false,
+                diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
                 distance_diffuse_threshold: 1.0,
                 distance_diffuse_curve: 1.0,
                 distance_model: DistanceModel::None,

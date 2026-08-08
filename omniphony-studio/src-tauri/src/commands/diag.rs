@@ -59,7 +59,9 @@ pub fn subscribe_speaker_gaintable(
             address: "/omniphony/control/debug/speaker_gaintable/subscribe".to_string(),
             args: vec![
                 rosc::OscType::Int(have_version.max(0)),
-                rosc::OscType::Int(speaker_index.max(0)),
+                // Not clamped: -1 (GLOBAL_ENERGY_INDEX) selects the
+                // all-speaker energy field instead of one speaker's slice.
+                rosc::OscType::Int(speaker_index),
             ],
         },
     );

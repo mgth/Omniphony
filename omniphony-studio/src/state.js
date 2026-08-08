@@ -151,7 +151,16 @@ export const app = {
   vbapCartesianFaceGridEnabled: false,
 
   // Distance diffuse
-  distanceDiffuseState: { enabled: null, threshold: null, curve: null, metric: 'spherical' },
+  distanceDiffuseState: {
+    enabled: null,
+    threshold: null,
+    curve: null,
+    metric: 'spherical',
+    // Axes negated to build the diffuse mirror. `xy` — a half-turn about the
+    // vertical axis — is what the stage has always done and stays the renderer
+    // default; the engine snapshot overwrites this at connect.
+    mirrorAxes: { x: true, y: true, z: false },
+  },
   distanceModel: 'none',
   distanceModelMetric: 'spherical',
 
@@ -306,6 +315,11 @@ export const app = {
   // Build fingerprint of the connected renderer (git-describe + build time).
   // Lets About expose a liborender-vs-orender version skew.
   renderVersion: null,
+  // Path of the renderer answering on the OSC port, and the path this
+  // Studio would launch. They differ when we attached to a renderer left
+  // running by another environment — see rendererIsForeign().
+  renderExecutable: null,
+  expectedOrenderPath: null,
   // C-ABI version ("major.minor") of the liborender shim hosting the engine.
   // Null when the engine is linked as a Rust crate (the CLI — no C ABI).
   renderAbi: null,
@@ -460,6 +474,15 @@ export const app = {
   // "all bands" composite (effective-render still uses the numeric index).
   speakerHeatmapBandIndex: 0,
   speakerHeatmapAllBands: false,
+  // Global energy heatmap: total energy over ALL speakers per grid cell, drawn
+  // as a deviation from unit energy (see scene/global-energy-volume.js).
+  // Transparent at 0 dB, red above, blue below. Shares the gain-table transport
+  // with the per-speaker heatmap and takes over its subscription while on.
+  globalEnergyHeatmapEnabled: false,
+  // Saturation of the diverging dB scale: ±this many dB maps to full opacity.
+  globalEnergyHeatmapScaleDb: 6,
+  // Crossover band shown by the global heatmap (single band, like the per-speaker one).
+  globalEnergyHeatmapBandIndex: 0,
   // Object energy field (client-side theoretical field, ray-marched 3D volume).
   objectEnergyHeatmapEnabled: false,
   // Colour gradient: 'heatmap' | 'blueWhite' | 'whiteRed' | 'red'.
@@ -508,6 +531,7 @@ export const app = {
   // per-speaker heatmap volume (which renders the selected speaker's gain field
   // from the local table as gain² — see speaker-solo-volume.js).
   lastSpeakerSoloVolumeAt: 0,
+  lastGlobalEnergyVolumeAt: 0,
   speakerSize: 0.08,
   effectiveRenderEnabled: false,
   // Display-only master switch: when false, objects + their labels + trails are

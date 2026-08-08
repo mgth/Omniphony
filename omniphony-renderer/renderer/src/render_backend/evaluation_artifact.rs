@@ -35,7 +35,17 @@ pub struct FrozenRenderRequest {
     pub use_distance_diffuse: bool,
     pub distance_diffuse_threshold: f32,
     pub distance_diffuse_curve: f32,
+    /// Axes negated to build the diffuse mirror, as `MirrorAxes` renders them
+    /// (`xy`, `y`, `xyz`, `none`). Artifacts written before the axes became
+    /// selectable carry no such key and default to `xy`, which is exactly the
+    /// behaviour they were baked with.
+    #[serde(default = "default_diffuse_mirror_axes")]
+    pub diffuse_mirror_axes: String,
     pub distance_model: String,
+}
+
+fn default_diffuse_mirror_axes() -> String {
+    crate::spatial_vbap::MirrorAxes::VERTICAL_AXIS.to_string()
 }
 
 impl From<RenderRequest> for FrozenRenderRequest {
@@ -48,6 +58,7 @@ impl From<RenderRequest> for FrozenRenderRequest {
             use_distance_diffuse: value.use_distance_diffuse,
             distance_diffuse_threshold: value.distance_diffuse_threshold,
             distance_diffuse_curve: value.distance_diffuse_curve,
+            diffuse_mirror_axes: value.diffuse_mirror_axes.to_string(),
             distance_model: value.distance_model.to_string(),
         }
     }

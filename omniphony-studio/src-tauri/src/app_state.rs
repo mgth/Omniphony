@@ -505,6 +505,8 @@ pub struct AppState {
     pub render_config_status: Option<String>,
     #[serde(rename = "renderVersion")]
     pub render_version: Option<String>,
+    #[serde(rename = "renderExecutable")]
+    pub render_executable: Option<String>,
     #[serde(rename = "renderAbi")]
     pub render_abi: Option<String>,
     #[serde(rename = "renderBridgeError")]
@@ -777,6 +779,7 @@ impl Default for AppState {
             render_config_path: None,
             render_config_status: None,
             render_version: None,
+            render_executable: None,
             render_abi: None,
             render_bridge_error: None,
             live_input: LiveInputState::default(),

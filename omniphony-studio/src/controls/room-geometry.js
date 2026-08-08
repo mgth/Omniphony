@@ -19,7 +19,7 @@ import { rebuildTrailGeometry } from '../trails.js';
 import { renderSpeakerEditor } from '../speakers.js';
 import { emitOverlayLayoutChanged } from '../ui/layout/overlay-layout-state.js';
 import { inDisplayPanel, inRoomGeometryPanel } from '../ui/panel-roots.js';
-import { syncSpeakerHeatmapBandSelect } from '../scene/speaker-band-select.js';
+import { syncCrossoverBandSelects } from '../scene/speaker-band-select.js';
 import { createSmallLabelSprite, setLabelSpriteText } from '../scene/labels.js';
 
 const TRAIL_PREFS_STORAGE_KEY = 'spatialviz.trail_prefs';
@@ -114,6 +114,9 @@ export function persistEffectiveRenderPrefs() {
       speakerHeatmapVolumeColormap: app.speakerHeatmapVolumeColormap,
       speakerHeatmapBandIndex: app.speakerHeatmapBandIndex,
       speakerHeatmapAllBands: app.speakerHeatmapAllBands,
+      globalEnergyHeatmapEnabled: app.globalEnergyHeatmapEnabled,
+      globalEnergyHeatmapScaleDb: app.globalEnergyHeatmapScaleDb,
+      globalEnergyHeatmapBandIndex: app.globalEnergyHeatmapBandIndex,
       objectEnergyHeatmapEnabled: app.objectEnergyHeatmapEnabled,
       objectEnergyColormap: app.objectEnergyColormap,
       objectEnergyVolumeMix: app.objectEnergyVolumeMix,
@@ -223,7 +226,7 @@ export function applyEffectiveRenderPrefsToUi() {
   if (speakerHeatmapVolumeColormapEl) {
     speakerHeatmapVolumeColormapEl.value = app.speakerHeatmapVolumeColormap;
   }
-  syncSpeakerHeatmapBandSelect();
+  syncCrossoverBandSelects();
   if (speakerHeatmapBandSelectEl) {
     speakerHeatmapBandSelectEl.value = app.speakerHeatmapAllBands
       ? 'all'
@@ -370,6 +373,17 @@ export function loadEffectiveRenderPrefs() {
       const bandIndex = Number(parsed?.speakerHeatmapBandIndex);
       if (Number.isFinite(bandIndex)) {
         app.speakerHeatmapBandIndex = Math.max(0, Math.round(bandIndex));
+      }
+      if (typeof parsed?.globalEnergyHeatmapEnabled === 'boolean') {
+        app.globalEnergyHeatmapEnabled = parsed.globalEnergyHeatmapEnabled;
+      }
+      const globalScaleDb = Number(parsed?.globalEnergyHeatmapScaleDb);
+      if (Number.isFinite(globalScaleDb)) {
+        app.globalEnergyHeatmapScaleDb = Math.max(1, Math.min(40, Math.round(globalScaleDb)));
+      }
+      const globalBandIndex = Number(parsed?.globalEnergyHeatmapBandIndex);
+      if (Number.isFinite(globalBandIndex)) {
+        app.globalEnergyHeatmapBandIndex = Math.max(0, Math.round(globalBandIndex));
       }
       if (typeof parsed?.speakerHeatmapAllBands === 'boolean') {
         app.speakerHeatmapAllBands = parsed.speakerHeatmapAllBands;

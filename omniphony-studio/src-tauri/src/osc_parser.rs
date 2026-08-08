@@ -223,6 +223,9 @@ pub enum OscEvent {
     StateHeadPose { w: f32, x: f32, y: f32, z: f32 },
     #[serde(rename = "state:clip")]
     StateClip { speaker: i32 },
+    /// Overlay display preferences (JSON), republished by the engine whenever
+    /// they change — including from an mpv keybind, which Studio cannot see.
+    StateOverlay { json: String },
     #[serde(rename = "state:audio")]
     StateAudio { value: String },
     #[serde(rename = "state:layout")]
@@ -301,6 +304,7 @@ pub enum OscEvent {
     StateRenderConfigStatus { value: String },
     #[serde(rename = "state:render:version")]
     StateRenderVersion { value: String },
+    StateRenderExecutable { value: String },
     #[serde(rename = "state:render:abi")]
     StateRenderAbi { value: String },
     #[serde(rename = "state:render:bridge_error")]
@@ -692,6 +696,12 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             y: to_number(args[2])? as f32,
             z: to_number(args[3])? as f32,
         }),
+        (3, "overlay") => Some(OscEvent::StateOverlay {
+            json: match raw_args.first() {
+                Some(OscType::String(v)) => v.clone(),
+                _ => return None,
+            },
+        }),
         (3, "clip") => Some(OscEvent::StateClip {
             speaker: match raw_args.first() {
                 Some(OscType::Int(v)) => *v,
@@ -889,6 +899,12 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (4, "render") if parts[3] == "version" => Some(OscEvent::StateRenderVersion {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
+        // Path of the process serving the engine. Two checkouts of the same
+        // commit share a build fingerprint, so only this tells Studio whether
+        // the renderer answering is the one it would have launched.
+        (4, "render") if parts[3] == "executable" => Some(OscEvent::StateRenderExecutable {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         // C-ABI version of the liborender shim hosting the engine

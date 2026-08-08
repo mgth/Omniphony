@@ -402,6 +402,22 @@ export function rendererPanelMarkup() {
                     <option value="chebyshev" data-i18n="distance.metric.chebyshev">Chebyshev</option>
                   </select>
                 </div>
+                <div class="control-row" style="margin-top:0.15rem;grid-template-columns:1fr auto;align-items:center">
+                  <label style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="distance.mirrorAxes" data-help-i18n="help.distanceDiffuse.mirrorAxes">Mirror axes</label>
+                  <span id="distanceDiffuseSymmetry" style="font-size:11px;color:#8fa6bd" data-i18n="distance.symmetry.axisZ">Half-turn about Z</span>
+                </div>
+                <div class="switch-row" style="margin-top:0;font-size:0.7rem;color:#8fa6bd">
+                  <span data-i18n="distance.mirrorAxis.x">X — left / right</span>
+                  <input id="distanceDiffuseMirrorX" type="checkbox" checked />
+                </div>
+                <div class="switch-row" style="margin-top:0;font-size:0.7rem;color:#8fa6bd">
+                  <span data-i18n="distance.mirrorAxis.y">Y — front / back</span>
+                  <input id="distanceDiffuseMirrorY" type="checkbox" checked />
+                </div>
+                <div class="switch-row" style="margin-top:0;font-size:0.7rem;color:#8fa6bd">
+                  <span data-i18n="distance.mirrorAxis.z">Z — up / down</span>
+                  <input id="distanceDiffuseMirrorZ" type="checkbox" />
+                </div>
                 <div class="control-row" style="margin-top:0">
                   <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.threshold" data-help-i18n="help.distanceDiffuse.threshold">Threshold</span> <span id="distanceDiffuseThresholdVal">1.00</span></label>
                   <input id="distanceDiffuseThresholdSlider" type="range" min="0.1" max="2.0" step="0.01" value="1.0" class="gain-slider" />

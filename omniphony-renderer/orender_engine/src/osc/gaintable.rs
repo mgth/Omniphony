@@ -45,13 +45,21 @@ impl GaintableCache {
 
     /// Serialize one speaker's per-band field for transfer: `(version, bytes)`.
     /// `None` when there's no table.
-    pub(crate) fn bytes_for_speaker(
+    ///
+    /// [`renderer::band_gaintable::GLOBAL_ENERGY_INDEX`] selects the
+    /// all-speaker energy field instead of a single speaker's slice — same
+    /// container, same size, so the chunking path is identical.
+    pub(crate) fn bytes_for_target(
         &self,
         ctx: &RuntimeControlContext,
-        speaker: usize,
+        target: i64,
     ) -> Option<(u32, Arc<Vec<u8>>)> {
         let full = self.ensure(ctx)?;
-        let bytes = full.serialize_for_speaker(speaker);
+        let bytes = if target == renderer::band_gaintable::GLOBAL_ENERGY_INDEX {
+            full.serialize_energy()
+        } else {
+            full.serialize_for_speaker(target.max(0) as usize)
+        };
         let version = gaintable_version(&bytes);
         Some((version, Arc::new(bytes)))
     }

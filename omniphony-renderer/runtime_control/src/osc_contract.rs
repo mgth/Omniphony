@@ -21,7 +21,9 @@
 //! * **Hybrid backend** — `/omniphony/control/hybrid/{external_backend,
 //!   internal_backend,metric,curve,curve_smoothing}`.
 //! * **Distance diffuse** — `/omniphony/control/distance_diffuse/{enabled,
-//!   threshold,curve,metric}`.
+//!   threshold,curve,metric,mirror_axes}`. `mirror_axes` takes the axes to
+//!   negate as a string (`xy` — the default half-turn about the vertical axis —
+//!   `y`, `xyz`, `none`, …).
 //! * **Render-evaluation tables** —
 //!   `/omniphony/control/render_evaluation/cartesian/{x_size,y_size,z_size,
 //!   z_neg_size}` and `/omniphony/control/render_evaluation/polar/{azimuth_
@@ -156,6 +158,11 @@ pub const CONTROL_VIRTUAL_BED: &str = "/omniphony/control/virtual_bed";
 /// (`synthetic_objects`, `object_generator`, `phantom_extract`,
 /// `surround_placement`, `output_channel_mapping`) are legacy aliases of this.
 pub const CONTROL_OPTION: &str = "/omniphony/control/option";
+/// Overlay display preferences as JSON, republished whenever they change —
+/// including when an mpv keybind flips one through the FFI toggles. The overlay
+/// is a process-global singleton with two writers, so a client must read this
+/// rather than trust its own mirror.
+pub const STATE_OVERLAY: &str = "/omniphony/state/overlay";
 pub const CONTROL_OVERLAY_LABELS: &str = "/omniphony/control/overlay/labels";
 pub const CONTROL_OVERLAY_OBJECTS: &str = "/omniphony/control/overlay/objects";
 pub const CONTROL_OVERLAY_TAG: &str = "/omniphony/control/overlay/tag";
@@ -266,6 +273,7 @@ pub const STATE_RENDER_EVALUATION_POSITION_INTERPOLATION: &str =
     "/omniphony/state/render_evaluation/position_interpolation";
 pub const STATE_RENDER_TIME_MS: &str = "/omniphony/state/render_time_ms";
 pub const STATE_RENDER_VERSION: &str = "/omniphony/state/render/version";
+pub const STATE_RENDER_EXECUTABLE: &str = "/omniphony/state/render/executable";
 pub const STATE_RESAMPLE_RATIO: &str = "/omniphony/state/resample_ratio";
 pub const STATE_SHUTDOWN: &str = "/omniphony/state/shutdown";
 pub const STATE_SNAPSHOT_COMPLETE: &str = "/omniphony/state/snapshot_complete";
@@ -397,6 +405,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_BACKEND_FILE_LIST,
     STATE_CAPABILITIES,
     STATE_CLIP,
+    STATE_OVERLAY,
     STATE_CONFIG_SAVED,
     STATE_CONFIG_SAVE_ERROR,
     STATE_CROSSOVER_TIME_MS,
@@ -444,6 +453,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_RENDER_EVALUATION_POSITION_INTERPOLATION,
     STATE_RENDER_TIME_MS,
     STATE_RENDER_VERSION,
+    STATE_RENDER_EXECUTABLE,
     STATE_RESAMPLE_RATIO,
     STATE_SHUTDOWN,
     STATE_SNAPSHOT_COMPLETE,

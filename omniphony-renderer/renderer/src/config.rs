@@ -295,6 +295,10 @@ pub struct RenderConfig {
     /// Distance metric (spherical / chebyshev) for the distance diffuse stage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distance_diffuse_metric: Option<String>,
+    /// ADM axes negated to build the diffuse mirror image (`xy`, `y`, `xyz`,
+    /// `none`, …). Absent means the default `xy`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_diffuse_mirror_axes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental_distance_distance_floor: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -714,6 +718,15 @@ pub fn clear_live_overlay_cache() {
 /// independent, unlike `%APPDATA%` which differs between the logged-in user and
 /// the service's system profile.
 pub fn default_config_path() -> Option<PathBuf> {
+    // An environment that carved out its own runtime namespace pins the
+    // directory, so several checkouts of the tree do not fight over one
+    // config.yaml — nor over its live sidecar, which is consumed on read and
+    // rewritten on exit and therefore propagates whatever the last process to
+    // quit believed.
+    if let Some(dir) = crate::runtime_env::config_dir() {
+        return Some(dir.join("config.yaml"));
+    }
+
     #[cfg(windows)]
     {
         let dir = windows_program_data_dir().join("omniphony");
@@ -1054,5 +1067,38 @@ render:
         assert!(restored);
         assert_eq!(bridge_of(&cfg_b).as_deref(), Some("/tmp/live-b.so"));
         assert!(!sidecar.exists());
+    }
+}
+
+#[cfg(test)]
+mod config_dir_override_tests {
+    /// The env is process-global, so this test owns it for its duration.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_pinned_runtime_namespace_moves_the_config_out_of_the_shared_location() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var("OMNIPHONY_CONFIG_DIR").ok();
+
+        unsafe { std::env::set_var("OMNIPHONY_CONFIG_DIR", "/tmp/omniphony-wf-probe") };
+        let pinned = super::default_config_path();
+        unsafe { std::env::remove_var("OMNIPHONY_CONFIG_DIR") };
+        let shared = super::default_config_path();
+
+        match previous {
+            Some(v) => unsafe { std::env::set_var("OMNIPHONY_CONFIG_DIR", v) },
+            None => unsafe { std::env::remove_var("OMNIPHONY_CONFIG_DIR") },
+        }
+
+        assert_eq!(
+            pinned,
+            Some(std::path::PathBuf::from(
+                "/tmp/omniphony-wf-probe/config.yaml"
+            ))
+        );
+        assert_ne!(
+            pinned, shared,
+            "the override must not resolve to the shared path"
+        );
     }
 }

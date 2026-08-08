@@ -31,7 +31,9 @@ impl Default for OscConfig {
         Self {
             host: "127.0.0.1".to_string(),
             osc_port: 0,
-            osc_rx_port: 9000,
+            // An environment that carved out its own runtime namespace pins the
+            // port, so this Studio only ever meets the renderer belonging to it.
+            osc_rx_port: crate::runtime_env::default_osc_rx_port(),
             osc_metering_enabled: false,
             auto_start_renderer: true,
             keep_renderer_alive_on_quit: false,

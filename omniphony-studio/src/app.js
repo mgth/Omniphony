@@ -26,6 +26,7 @@ import { updateHeadPose } from './scene/head-pose.js';
 import './scene/axes.js';
 import { refreshObjectEnergyVolume } from './scene/object-energy-volume.js';
 import { refreshSpeakerSoloVolume } from './scene/speaker-solo-volume.js';
+import { refreshGlobalEnergyVolume } from './scene/global-energy-volume.js';
 
 // ── Domain modules (imported for side-effects & to register into state) ─────
 import {
@@ -309,6 +310,18 @@ invoke('get_about_info')
     console.error('[get_about_info]', e);
   });
 
+// Which orender binary this Studio would launch. Compared against the path the
+// connected renderer reports so a foreign one is called out instead of silently
+// swallowing controls it does not implement.
+invoke('expected_orender_path')
+  .then((path) => {
+    app.expectedOrenderPath = typeof path === 'string' ? path.trim() || null : null;
+    renderOscStatus();
+  })
+  .catch((e) => {
+    console.error('[expected_orender_path]', e);
+  });
+
 // ── Animation loop ──────────────────────────────────────────────────────────
 let animationFrameId = 0;
 
@@ -324,6 +337,7 @@ function animate() {
   decayMeters(now);
   refreshObjectEnergyVolume(now);
   refreshSpeakerSoloVolume(now);
+  refreshGlobalEnergyVolume(now);
   enforceObjectsVisibilityIfHidden();
 
   sourceOutlines.forEach((outline) => {

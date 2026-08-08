@@ -276,6 +276,7 @@ mod tests {
             room_ratio_lower: 1.0,
             room_ratio_center_blend: 0.5,
             use_distance_diffuse: false,
+            diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
             distance_diffuse_threshold: 1.0,
             distance_diffuse_curve: 1.0,
             distance_model: crate::spatial_vbap::DistanceModel::default(),

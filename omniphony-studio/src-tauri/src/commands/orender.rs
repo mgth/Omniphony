@@ -55,6 +55,12 @@ fn bundled_layouts_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 }
 
 fn default_orender_input_path() -> PathBuf {
+    // An environment that carved out its own runtime namespace pins the pipe,
+    // so two renderers never end up reading the same FIFO.
+    if let Some(path) = crate::runtime_env::input_pipe() {
+        return path;
+    }
+
     #[cfg(target_os = "windows")]
     {
         PathBuf::from(r"\\.\pipe\orender.input")
@@ -67,19 +73,24 @@ fn default_orender_input_path() -> PathBuf {
 }
 
 fn default_orender_log_path() -> PathBuf {
+    // Keep the log inside the environment's own namespace too: two renderers
+    // interleaving lines in one file is its own debugging trap.
+    if let Some(dir) = crate::runtime_env::config_dir() {
+        return dir.join("orender.log");
+    }
     std::env::temp_dir().join("omniphony-orender.log")
 }
 
-fn resolve_orender_launch_spec(
+/// Resolve the `orender` binary this Studio would launch.
+///
+/// Split out of the launch-spec builder, which also persists connection
+/// settings as a side effect, so the answer can be reported without changing
+/// anything — a client needs it to tell whether the renderer that answered on
+/// the OSC port is its own or one another environment left running.
+fn resolve_orender_binary(
     app: &tauri::AppHandle,
-    state: &SharedState,
-    host: String,
-    osc_rx_port: u16,
-    osc_port: u16,
-    osc_metering_enabled: bool,
     orender_path: Option<String>,
-    log_level: Option<String>,
-) -> Result<OrenderLaunchSpec, String> {
+) -> Result<PathBuf, String> {
     let studio_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| "failed to resolve studio directory".to_string())?
@@ -93,7 +104,7 @@ fn resolve_orender_launch_spec(
         repo_root.join("omniphony-renderer/target/debug/orender"),
     ];
 
-    let orender_path = if cfg!(debug_assertions) {
+    if cfg!(debug_assertions) {
         first_existing_path(&repo_orender_candidates)
             .or_else(|| {
                 orender_path
@@ -134,7 +145,28 @@ fn resolve_orender_launch_spec(
                 }
             })
     })
-    .ok_or_else(|| "orender binary not found".to_string())?;
+    .ok_or_else(|| "orender binary not found".to_string())
+}
+
+fn resolve_orender_launch_spec(
+    app: &tauri::AppHandle,
+    state: &SharedState,
+    host: String,
+    osc_rx_port: u16,
+    osc_port: u16,
+    osc_metering_enabled: bool,
+    orender_path: Option<String>,
+    log_level: Option<String>,
+) -> Result<OrenderLaunchSpec, String> {
+    let studio_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "failed to resolve studio directory".to_string())?
+        .to_path_buf();
+    let repo_root = studio_dir
+        .parent()
+        .ok_or_else(|| "failed to resolve Omniphony repository root".to_string())?
+        .to_path_buf();
+    let orender_path = resolve_orender_binary(app, orender_path)?;
 
     let input_path = default_orender_input_path();
 
@@ -198,6 +230,27 @@ fn resolve_orender_launch_spec(
     let _ = save_config(&state.config_dir, &cfg);
 
     Ok(OrenderLaunchSpec { orender_path, args })
+}
+
+/// Path of the `orender` binary this Studio would launch, so the UI can compare
+/// it with the path the connected renderer reports over OSC.
+///
+/// A mismatch means Studio is driving a renderer it did not start — typically
+/// one left running by another environment, or a system-wide install that
+/// happened to hold the OSC port. Every control still *sends*, but anything the
+/// other build does not implement is silently dropped, which is close to
+/// undiagnosable from the UI. Returns `None` when no binary can be resolved at
+/// all; that is a separate, already-reported condition.
+#[tauri::command]
+pub fn expected_orender_path(
+    app: tauri::AppHandle,
+    orender_path: Option<String>,
+) -> Option<String> {
+    // Takes the same optional override the launch commands do, so the caller
+    // gets the answer for the settings it is actually about to use.
+    resolve_orender_binary(&app, orender_path)
+        .ok()
+        .map(|path| path.display().to_string())
 }
 
 fn run_command(mut cmd: ProcessCommand, action: &str) -> Result<String, String> {
@@ -658,6 +711,11 @@ fn spawn_orender_process(
     spec: &OrenderLaunchSpec,
 ) -> Result<serde_json::Value, String> {
     let log_path = default_orender_log_path();
+    // The environment's namespace may not exist yet on a first launch, unlike
+    // the temp dir the built-in default lands in.
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let stdout = File::create(&log_path).map_err(|e| format!("failed to create log file: {e}"))?;
     let stderr = stdout
         .try_clone()

@@ -172,12 +172,12 @@ pub struct RenderArgs {
     pub osc_host: String,
 
     /// OSC target port
-    #[arg(long, value_name = "PORT", default_value_t = renderer::config_fields::osc_port::DEFAULT)]
+    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_port())]
     pub osc_port: u16,
 
     /// OSC registration listener port. Clients register by sending /omniphony/register
     /// to this port and receive the speaker config + all subsequent broadcasts.
-    #[arg(long, value_name = "PORT", default_value_t = renderer::config_fields::osc_rx_port::DEFAULT)]
+    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_rx_port())]
     pub osc_rx_port: u16,
 
     /// Run as a yieldable (standby) instance: shut down cleanly when another
@@ -558,6 +558,12 @@ pub struct RenderArgs {
     #[arg(long = "distance-diffuse-metric", value_enum)]
     pub distance_diffuse_metric: Option<DistanceMetricArg>,
 
+    /// ADM axes negated to build the diffuse mirror image: any combination of
+    /// x, y and z (`xy` — the default half-turn about the vertical axis — `y`
+    /// for a front/back reflection, `xyz` for a point inversion), or `none`.
+    #[arg(long = "distance-diffuse-mirror-axes", value_name = "AXES")]
+    pub distance_diffuse_mirror_axes: Option<String>,
+
     /// Policy reducing an object's (w, d, h) size to a scalar spread.
     #[arg(long = "size-to-spread-mode", value_enum)]
     pub size_to_spread_mode: Option<SizeToSpreadModeArg>,
@@ -774,11 +780,11 @@ pub struct InputLiveArgs {
     pub osc_host: String,
 
     /// OSC target port
-    #[arg(long, value_name = "PORT", default_value_t = renderer::config_fields::osc_port::DEFAULT)]
+    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_port())]
     pub osc_port: u16,
 
     /// OSC registration listener port.
-    #[arg(long, value_name = "PORT", default_value_t = renderer::config_fields::osc_rx_port::DEFAULT)]
+    #[arg(long, value_name = "PORT", default_value_t = renderer::runtime_env::default_osc_rx_port())]
     pub osc_rx_port: u16,
 }
 

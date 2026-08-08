@@ -202,6 +202,13 @@ pub fn save_live_config_to_path(
     } else {
         None
     };
+    let default_mirror_axes = renderer::spatial_vbap::MirrorAxes::default();
+    render.distance_diffuse_mirror_axes =
+        if live.distance_diffuse_mirror_axes != default_mirror_axes {
+            Some(live.distance_diffuse_mirror_axes.to_string())
+        } else {
+            None
+        };
     // Binaural (headphone) stage: persist the live selection so it survives a
     // restart — output mode, HRIR source (+ SOFA path), isotropic scale, and the
     // head-tracking OSC address/format.

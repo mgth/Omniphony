@@ -98,7 +98,7 @@ import { updateHeadphoneMeter, updateHeadphoneControlsUI } from './controls/head
 
 import { createLabelSprite, setLabelSpriteText, updateSpeakerLabelsFromSelection } from './scene/labels.js';
 import { createSpeakerBandBar, updateSpeakerBandBar, bandColor } from './scene/speaker-band-bars.js';
-import { syncSpeakerHeatmapBandSelect } from './scene/speaker-band-select.js';
+import { syncCrossoverBandSelects } from './scene/speaker-band-select.js';
 import { refreshGaintableSubscription } from './scene/speaker-gaintable.js';
 
 import {
@@ -1038,7 +1038,7 @@ export function setSpeakerSpatializeLocal(index, spatialize) {
     mesh.userData.baseOpacity = baseOpacity;
     mesh.material.opacity = baseOpacity * ghostFactor();
   }
-  syncSpeakerHeatmapBandSelect();
+  syncCrossoverBandSelects();
   updateSpeakerColorsFromSelection();
   renderSpeakerEditor();
 }
@@ -2233,7 +2233,7 @@ export function renderLayout(key) {
   set_currentLayoutKey(key);
   const newSpeakers = Array.isArray(layout.speakers) ? layout.speakers : [];
   set_currentLayoutSpeakers(newSpeakers);
-  syncSpeakerHeatmapBandSelect();
+  syncCrossoverBandSelects();
   sceneState.metersPerUnit = Math.max(0.01, Number(layout.radius_m) || 1.0);
   speakerDelays.clear();
   newSpeakers.forEach((speaker, index) => {
@@ -2467,7 +2467,7 @@ function patchCurrentLayout(key) {
   const nextSpeakers = Array.isArray(layout.speakers) ? layout.speakers : [];
   set_currentLayoutKey(key);
   set_currentLayoutSpeakers(nextSpeakers);
-  syncSpeakerHeatmapBandSelect();
+  syncCrossoverBandSelects();
   sceneState.metersPerUnit = Math.max(0.01, Number(layout.radius_m) || 1.0);
   speakerDelays.clear();
   nextSpeakers.forEach((speaker, index) => {
