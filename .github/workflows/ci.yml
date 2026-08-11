@@ -105,6 +105,16 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo test --workspace
 
+      # Compile-only gate for the release-only perf tests. The perf-gate
+      # feature is off in the normal test run and its module is compiled out
+      # in debug builds, so nothing above ever type-checks it and it can rot
+      # silently (it did: E0057, caught on PR #222). Check-only on purpose —
+      # the timing test itself must run alone and stays out of the parallel
+      # PR gate (see renderer/src/spatial_renderer/perf_gate.rs module doc).
+      - name: Check perf-gate feature compiles (release)
+        working-directory: omniphony-renderer
+        run: cargo check --release -p renderer --features perf-gate --tests
+
       # ── C ABI smoke test (liborender) ──────────────────────────────────────
       # Compile and run the header/link smoke test against the debug cdylib
       # (debug builds skip the soname so the bare .so links directly). Guards

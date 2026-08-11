@@ -107,14 +107,11 @@ fn assert_within_budget(label: &str, times: Vec<f64>) {
         fraction * 100.0,
         MAX_BLOCK_FRACTION * 100.0
     );
-    // REPORT-ONLY. A wall-clock percentile measures the machine as much as the
-    // renderer: the same scene read 4.2 % on an idle box and 167 % while other
-    // test binaries were running. Asserting on that gates CI on load, not on
-    // regressions. To make this a real gate it must become load-invariant —
-    // measure a calibration workload in the same run and gate on the *ratio*,
-    // which cancels both machine speed and contention.
-    let _unused_until_load_invariant = |_: bool| {};
-    _unused_until_load_invariant(
+    // A wall-clock percentile also measures the machine, so this assertion is
+    // only meaningful under the run conditions in the module doc: release
+    // build, `--test-threads=1`, nothing else on the machine. The same scene
+    // read 4.2 % on an idle box and 167 % while other test binaries ran.
+    assert!(
         fraction <= MAX_BLOCK_FRACTION,
         "{label}: slowest blocks take {:.1} % of the block period (p{:.1} = {p:.1} µs of \
          {BLOCK_PERIOD_US:.1} µs), over the {:.0} % budget. The renderer is no longer \
