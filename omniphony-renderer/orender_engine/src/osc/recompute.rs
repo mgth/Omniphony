@@ -27,7 +27,13 @@ pub(crate) fn trigger_layout_recompute(
         .recomputing
         .load(std::sync::atomic::Ordering::Relaxed)
     {
-        log::warn!("OSC apply: VBAP recompute already in progress, ignoring");
+        // Don't drop the request: the running rebuild snapshotted the live
+        // state BEFORE this change (a profile switch or layout edit), so it
+        // won't cover it. Flag it and let the finishing recompute re-trigger.
+        control
+            .recompute_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        log::info!("OSC apply: recompute already in progress, queueing a follow-up rebuild");
         broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 1);
         return;
     }
@@ -178,6 +184,20 @@ pub(crate) fn trigger_layout_recompute(
                         }
                     }
                     log::info!("Render backend recompute completed");
+                    // A rebuild request arrived while this one was running:
+                    // it saw pre-change state, so run once more from the
+                    // current live state (spawns a fresh recompute thread).
+                    if control_clone
+                        .recompute_pending
+                        .swap(false, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        trigger_layout_recompute(
+                            &control_clone,
+                            &socket_clone,
+                            &clients_clone,
+                            &gaintable_cache_clone,
+                        );
+                    }
                 }
                 Err(e) => {
                     let message = format!(
@@ -201,6 +221,21 @@ pub(crate) fn trigger_layout_recompute(
                         "/omniphony/state/speakers/recomputing",
                         0,
                     );
+                    // Same follow-up as the success path: a request queued
+                    // behind this failed rebuild still deserves its run (it
+                    // may be exactly the change that fixes the failure, e.g.
+                    // switching away from a broken profile).
+                    if control_clone
+                        .recompute_pending
+                        .swap(false, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        trigger_layout_recompute(
+                            &control_clone,
+                            &socket_clone,
+                            &clients_clone,
+                            &gaintable_cache_clone,
+                        );
+                    }
                 }
             }
         })

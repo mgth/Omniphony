@@ -10,7 +10,7 @@
 use std::net::UdpSocket;
 use std::sync::Arc;
 
-use renderer::live_params::{ProfilesInfo, RendererControl, SpeakerLiveParams};
+use renderer::live_params::RendererControl;
 use rosc::{OscMessage, OscType};
 use runtime_control::HostControlHandler;
 use runtime_control::osc_contract;
@@ -66,13 +66,44 @@ pub(crate) fn handle_profile_message(
         return true;
     };
 
+    let mut config = renderer::config::Config::load_or_default(&path);
+
+    if is_switch {
+        // Switching to the already-active profile must be a true no-op: the
+        // full switch path would wipe runtime speaker gains/mutes and force a
+        // gratuitous rebuild. Re-broadcast so an optimistic client resyncs.
+        if name == config.active_profile_name() {
+            broadcast_profiles_state(control, socket, clients);
+            return true;
+        }
+        // Preflight the target's layout BEFORE committing anything: a profile
+        // whose layout file went missing must fail the switch outright, not
+        // half-apply its params on the previous layout while reporting
+        // success.
+        if let Err(e) = resolve_profile_layout(config.profiles.get(&name)) {
+            let message = format!("profile switch '{name}' refused: {e}");
+            log::warn!("OSC {addr}: {message}");
+            broadcast_string(
+                socket,
+                clients,
+                osc_contract::STATE_CONFIG_SAVE_ERROR,
+                &message,
+            );
+            broadcast_profiles_state(control, socket, clients);
+            return true;
+        }
+    }
+
     // Commit the current live state into `render:` first, so the operation
     // acts on — and the outgoing/copied profile captures — what the user
     // actually hears, including unsaved tweaks (same spirit as the handoff
-    // sidecar: a deliberate profile action must not lose them).
-    let mut config = renderer::config::Config::load_or_default(&path);
-    let host_ref: Option<&dyn HostControlHandler> = host.map(|h| h.as_ref());
-    runtime_control::persist::store_live_into_config(control, host_ref, &mut config);
+    // sidecar: a deliberate profile action must not lose them). Deliberately
+    // WITHOUT the host amend: host-owned fields (output device, live input,
+    // resampling, latency) only take effect at engine start, so after a
+    // switch the running host state describes the PREVIOUS profile — amending
+    // here would overwrite the new profile's saved output settings with it.
+    // The on-disk values (already in `config`) stay as persisted.
+    runtime_control::persist::store_live_into_config(control, None, &mut config);
 
     let result = if is_switch {
         config.switch_profile(&name)
@@ -107,21 +138,19 @@ pub(crate) fn handle_profile_message(
         return true;
     }
     // A deliberate profile mutation supersedes any pending live-handoff overlay.
-    let _ = std::fs::remove_file(renderer::config::live_sidecar_path(&path));
-    renderer::config::clear_live_overlay_cache();
+    renderer::config::discard_live_sidecar(&path);
 
-    control.set_profiles_info(ProfilesInfo {
-        active: config.active_profile_name().to_string(),
-        names: config.profile_names(),
-    });
+    control.set_profiles_info(config.profiles_info());
 
     if is_switch {
         apply_switched_profile(&config, control, socket, clients, gaintable_cache);
     }
 
     // Everything the user heard is now in the file (the commit above), so the
-    // dirty indicator clears like it does after an explicit save.
+    // dirty indicator clears like it does after an explicit save, and any
+    // stale save-error banner from an earlier attempt clears with it.
     control.mark_clean();
+    broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
     broadcast_profiles_state(control, socket, clients);
     // Full state refresh so every client view (options, layout, binaural,
@@ -133,6 +162,28 @@ pub(crate) fn handle_profile_message(
         config.active_profile_name()
     );
     true
+}
+
+/// Resolve the speaker layout a profile's render section describes: the
+/// embedded layout wins, a `speaker_layout` path reference must load, and no
+/// layout at all means "keep the current one" (`Ok(None)`). Errors instead of
+/// falling back so the switch handler can refuse a profile whose layout file
+/// is gone rather than half-applying its params on the previous layout.
+fn resolve_profile_layout(
+    render: Option<&renderer::config::RenderConfig>,
+) -> anyhow::Result<Option<renderer::speaker_layout::SpeakerLayout>> {
+    let Some(render) = render else {
+        return Ok(None);
+    };
+    if let Some(layout) = render.current_layout.clone() {
+        return Ok(Some(layout));
+    }
+    match render.speaker_layout.as_ref() {
+        Some(path) => renderer::speaker_layout::SpeakerLayout::from_file(path)
+            .map(Some)
+            .map_err(|e| anyhow::anyhow!("layout '{}' failed to load: {e}", path.display())),
+        None => Ok(None),
+    }
 }
 
 /// Apply the freshly switched-in `render:` section to the running engine:
@@ -151,38 +202,23 @@ fn apply_switched_profile(
         return;
     };
 
-    // Embedded layout wins; a path reference is resolved best-effort; a
-    // profile without a layout keeps the current one.
-    let new_layout = render.current_layout.clone().or_else(|| {
-        render.speaker_layout.as_ref().and_then(|p| {
-            renderer::speaker_layout::SpeakerLayout::from_file(p)
-                .map_err(|e| {
-                    log::warn!(
-                        "profile switch: layout '{}' failed to load: {e}",
-                        p.display()
-                    )
-                })
-                .ok()
-        })
-    });
+    // Preflighted by the handler, so a load failure here is unexpected — but
+    // still keep the current layout rather than half-applying.
+    let new_layout = match resolve_profile_layout(config.render.as_ref()) {
+        Ok(layout) => layout,
+        Err(e) => {
+            log::warn!("profile switch: layout resolution failed after preflight: {e}");
+            None
+        }
+    };
     if let Some(layout) = new_layout {
         // Per-speaker live params follow the layout: re-seed the delays the
-        // same way construction does, dropping the previous profile's
-        // runtime gains/mutes (they belong to the speakers we just left).
+        // same way construction does (shared helper), dropping the previous
+        // profile's runtime gains/mutes (they belong to the speakers we just
+        // left).
         {
             let mut live = control.live.write();
-            live.speakers.clear();
-            for (idx, spk) in layout.speakers.iter().enumerate() {
-                if spk.delay_ms != 0.0 {
-                    live.speakers.insert(
-                        idx,
-                        SpeakerLiveParams {
-                            delay_ms: spk.delay_ms.max(0.0),
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
+            live.speakers = renderer::live_params::speaker_live_from_layout(&layout);
         }
         control.with_editable_layout(|l| *l = layout);
     }

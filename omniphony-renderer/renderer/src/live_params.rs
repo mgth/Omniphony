@@ -576,6 +576,27 @@ impl Default for SpeakerLiveParams {
     }
 }
 
+/// Per-speaker live params seeded from a layout: only the configured delays
+/// (gains/mutes are runtime-only and start at defaults). Shared by renderer
+/// construction and the live profile switch so the two cannot drift.
+pub fn speaker_live_from_layout(
+    layout: &crate::speaker_layout::SpeakerLayout,
+) -> std::collections::HashMap<usize, SpeakerLiveParams> {
+    let mut speakers = std::collections::HashMap::new();
+    for (idx, spk) in layout.speakers.iter().enumerate() {
+        if spk.delay_ms != 0.0 {
+            speakers.insert(
+                idx,
+                SpeakerLiveParams {
+                    delay_ms: spk.delay_ms.max(0.0),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+    speakers
+}
+
 #[derive(Clone, Copy)]
 pub struct CartesianEvaluationParams {
     pub x_size: usize,
@@ -1052,6 +1073,11 @@ pub struct RendererControl {
 
     /// `true` while a VBAP recompute is running in the background.
     pub recomputing: AtomicBool,
+    /// A rebuild request arrived while `recomputing` was already true; the
+    /// finishing recompute re-triggers once so the request is not dropped
+    /// (a profile switch or layout edit during a running rebuild must still
+    /// take effect).
+    pub recompute_pending: AtomicBool,
 
     /// `true` when live params have been changed via OSC since the last save.
     /// Reset to `false` by a successful `/omniphony/control/save_config`.
@@ -1204,6 +1230,7 @@ impl RendererControl {
             editable_layout: Mutex::new(editable_layout),
             backend_rebuild_params: RwLock::new(backend_rebuild_params),
             recomputing: AtomicBool::new(false),
+            recompute_pending: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
@@ -1238,6 +1265,15 @@ impl RendererControl {
     /// Set the client-visible profiles view (boot seed and OSC profile ops).
     pub fn set_profiles_info(&self, info: ProfilesInfo) {
         *self.profiles_info.lock() = info;
+    }
+
+    /// Drop every host-set backend parameter. The live profile switch calls
+    /// this before replaying the incoming profile's `backend_params`: the
+    /// replay only inserts, so without the clear the outgoing profile's keys
+    /// would survive the switch and be committed into the incoming profile by
+    /// the next save.
+    pub fn clear_backend_params(&self) {
+        self.backend_params.write().clear();
     }
 
     /// Current client-visible profiles view (active name + name list).

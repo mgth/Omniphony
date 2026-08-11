@@ -670,6 +670,16 @@ impl Config {
         names
     }
 
+    /// The client-visible profiles view (active name + name list), built here
+    /// so the embedded engine, the CLI bootstrap and the OSC profile ops all
+    /// derive it from the same accessors.
+    pub fn profiles_info(&self) -> crate::live_params::ProfilesInfo {
+        crate::live_params::ProfilesInfo {
+            active: self.active_profile_name().to_string(),
+            names: self.profile_names(),
+        }
+    }
+
     /// Mirror the active profile: `render:` is authoritative for the active
     /// profile's content, so keep `profiles[active]` aligned with it. On a
     /// flat legacy file this materialises the implicit `"default"` profile.
@@ -703,7 +713,12 @@ impl Config {
             anyhow::bail!("unknown profile '{name}'");
         }
         self.sync_active_profile();
-        let mut incoming = self.profiles.get(name).cloned().unwrap_or_default();
+        let Some(mut incoming) = self.profiles.get(name).cloned() else {
+            // Unreachable behind the contains_key check above, but never fall
+            // back to a default render section: that would silently replace
+            // the user's setup instead of erroring.
+            anyhow::bail!("unknown profile '{name}'");
+        };
         if let Some(outgoing) = self.render.as_ref() {
             incoming.input_mode = outgoing.input_mode.clone();
             incoming.input_pipe = outgoing.input_pipe.clone();
@@ -862,6 +877,16 @@ pub fn live_overlay_active(config_path: &Path) -> bool {
 /// contract is "discard live state").
 pub fn clear_live_overlay_cache() {
     LIVE_OVERLAY.lock().unwrap().clear();
+}
+
+/// Discard the live-handoff sidecar for `config_path`: remove the file AND
+/// clear the consumed-overlay cache. The two must happen together — clearing
+/// only one re-applies a superseded overlay on the next engine rebuild.
+/// Called after any deliberate persistent write (explicit save, targeted
+/// option persist, profile operation).
+pub fn discard_live_sidecar(config_path: &Path) {
+    let _ = std::fs::remove_file(live_sidecar_path(config_path));
+    clear_live_overlay_cache();
 }
 
 /// Returns the platform default config path without external dependencies.

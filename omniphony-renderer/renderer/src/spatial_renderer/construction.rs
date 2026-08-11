@@ -357,18 +357,7 @@ impl SpatialRenderer {
         );
         log::info!("Label to speaker mapping (by name): {:?}", label_to_speaker);
 
-        let mut speaker_live = std::collections::HashMap::new();
-        for (idx, spk) in speaker_layout.speakers.iter().enumerate() {
-            if spk.delay_ms != 0.0 {
-                speaker_live.insert(
-                    idx,
-                    crate::live_params::SpeakerLiveParams {
-                        delay_ms: spk.delay_ms.max(0.0),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
+        let speaker_live = crate::live_params::speaker_live_from_layout(speaker_layout);
 
         LiveParams {
             master_gain,

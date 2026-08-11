@@ -356,6 +356,29 @@ pub fn find_by_legacy_addr(addr: &str) -> Option<&'static OptionSpec> {
         .find(|spec| spec.legacy_control_addr == addr)
 }
 
+/// Reset every declared option — plus the param bags and the virtual bed —
+/// to its declared default. The live profile switch runs this before
+/// [`seed_live_from_config`]: the per-option `config_seed` closures only
+/// assign when the config pins a value, which is correct at construction
+/// (live starts at defaults) but on a running control would silently keep
+/// the previous profile's value for any field the incoming profile stores
+/// as absent (the skip-if-default persist convention).
+pub fn reset_live_to_defaults(live: &mut LiveParams) {
+    for spec in LIVE_OPTIONS {
+        let raw = match spec.default {
+            OptionDefault::Bool(b) => RawOptionValue::Bool(b),
+            OptionDefault::Str(s) => RawOptionValue::Str(s),
+        };
+        if (spec.set)(live, &raw).is_none() {
+            // A spec whose default fails its own validation is a registry bug.
+            log::warn!("live option '{}' rejected its declared default", spec.key);
+        }
+    }
+    live.object_generator_params.clear();
+    live.phantom_params.clear();
+    live.virtual_bed = None;
+}
+
 /// Seed every declared live option — plus the document-valued companions the
 /// registry doesn't model (the two param bags and the virtual bed) — from a
 /// loaded config. Shared by the CLI bootstrap and `Engine::from_paths` so the

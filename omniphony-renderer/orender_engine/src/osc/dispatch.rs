@@ -745,8 +745,7 @@ fn persist_render_field_to_path(
         return;
     }
     // A persisted change supersedes any pending live-handoff overlay.
-    let _ = std::fs::remove_file(renderer::config::live_sidecar_path(path));
-    renderer::config::clear_live_overlay_cache();
+    renderer::config::discard_live_sidecar(path);
 }
 
 /// Persist the head-tracking recenter reference to the on-disk config so the

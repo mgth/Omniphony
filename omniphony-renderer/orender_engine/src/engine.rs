@@ -362,12 +362,7 @@ impl Engine {
         };
         // Client-visible profiles view (active name + list), applied to the
         // control below once it exists; see docs/config-profiles.md.
-        let profiles_info = loaded_cfg
-            .as_ref()
-            .map(|c| renderer::live_params::ProfilesInfo {
-                active: c.active_profile_name().to_string(),
-                names: c.profile_names(),
-            });
+        let profiles_info = loaded_cfg.as_ref().map(Config::profiles_info);
         let render_cfg = loaded_cfg.and_then(|c| c.render);
 
         let layout = if let Some(p) = speaker_layout_path {

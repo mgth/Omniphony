@@ -799,10 +799,58 @@ pub fn apply_render_config_live(
         parse_room_ratio(&params)?;
     let distance_model = DistanceModel::from_str(&params.vbap_distance_model)
         .map_err(|e| anyhow!("Invalid distance model: {}", e))?;
+    // Boot-parity quantization of the polar grid: construction converts the
+    // configured cell counts to integer degree/metre steps and back
+    // (`build_spatial_renderer` → `SpatialRenderer::new`), so e.g. 100
+    // azimuth cells become a 4° step and land as 90 values. The live seed
+    // must round-trip the same way or a switch and a restart into the same
+    // profile disagree on the grid. `allow_negative_z` follows the config
+    // pin, falling back to the resolved value of the current build.
+    let allow_negative_z = if params.vbap_allow_negative_z {
+        true
+    } else if params.no_vbap_allow_negative_z {
+        false
+    } else {
+        control
+            .backend_rebuild_params()
+            .map(|p| p.allow_negative_z)
+            .unwrap_or(false)
+    };
+    let azimuth_step_deg = (360.0f32 / (params.evaluation_polar_azimuth_resolution.max(1) as f32))
+        .max(1.0)
+        .round() as i32;
+    let elevation_range = if allow_negative_z { 180.0f32 } else { 90.0 };
+    let elevation_step_deg = (elevation_range
+        / (params.evaluation_polar_elevation_resolution.max(1) as f32))
+        .max(1.0)
+        .round() as i32;
+    let distance_max = params.evaluation_polar_distance_max.max(0.01);
+    let distance_step = distance_max / (params.evaluation_polar_distance_res.max(1) as f32);
     {
-        // Construction-time scalars that also exist as live params: the same
-        // values `SpatialRenderer::new` would receive for this config.
         let mut live = control.live.write();
+        // Absent-means-default first: the shared seeds below only assign the
+        // fields the config pins. That is correct at construction, where the
+        // live params start at their defaults — but on a running control an
+        // absent key would silently keep the OUTGOING profile's value (the
+        // persist layer deliberately stores defaults as absence), and the
+        // next profile op would then commit that leak into the incoming
+        // profile. Return every profile-covered field to its default before
+        // seeding.
+        live.backend_id = "vbap".to_string();
+        live.set_evaluation_mode(LiveEvaluationMode::Auto);
+        live.evaluation.object_size_intervals = 0;
+        live.hybrid = renderer::live_params::HybridLiveParams::default();
+        live.distance_model_metric = renderer::spatial_vbap::DistanceMetric::default();
+        live.distance_diffuse_metric = renderer::spatial_vbap::DistanceMetric::default();
+        live.distance_diffuse_mirror_axes = renderer::spatial_vbap::MirrorAxes::default();
+        live.size_to_spread_mode = Default::default();
+        live.auto_gain_ceiling_db = renderer::config_fields::auto_gain_ceiling_db::DEFAULT;
+        live.binaural = renderer::live_params::BinauralLiveParams::default();
+        renderer::options::reset_live_to_defaults(&mut live);
+
+        // Construction-time scalars that also exist as live params: the same
+        // values `SpatialRenderer::new` would receive for this config
+        // (`params` already encodes the config defaults for absent keys).
         live.master_gain = 10.0_f32.powf(params.master_gain / 20.0);
         live.auto_gain = params.auto_gain;
         live.use_loudness = params.use_loudness;
@@ -814,12 +862,21 @@ pub fn apply_render_config_live(
         live.room_ratio_rear = room_ratio_rear;
         live.room_ratio_lower = room_ratio_lower;
         live.room_ratio_center_blend = room_ratio_center_blend;
+        // Spread fallbacks (used when the vbap param bag has no entry) —
+        // construction seeds these from the same params.
+        live.spread_min = params.vbap_spread_min;
+        live.spread_max = params.vbap_spread_max;
+        live.spread_from_distance = params.spread_from_distance;
+        live.spread_distance_range = params.spread_distance_range;
+        live.spread_distance_curve = params.spread_distance_curve;
         live.evaluation.position_interpolation = params.render_evaluation_position_interpolation;
-        live.evaluation.polar.azimuth_values = params.evaluation_polar_azimuth_resolution.max(1);
+        live.evaluation.polar.azimuth_values =
+            (360.0 / azimuth_step_deg.max(1) as f32).round() as i32;
         live.evaluation.polar.elevation_values =
-            params.evaluation_polar_elevation_resolution.max(1);
-        live.evaluation.polar.distance_res = params.evaluation_polar_distance_res.max(1);
-        live.evaluation.polar.distance_max = params.evaluation_polar_distance_max.max(0.01);
+            (elevation_range / elevation_step_deg.max(1) as f32).round() as i32;
+        live.evaluation.polar.distance_res =
+            (distance_max / distance_step.max(0.01)).round() as i32;
+        live.evaluation.polar.distance_max = distance_max;
         // Cartesian grid sizes only when the profile pins them; otherwise the
         // bridge-derived defaults from construction stay in effect.
         if let Some(x) = params.evaluation_cartesian_x_size {
@@ -835,6 +892,10 @@ pub fn apply_render_config_live(
             live.evaluation.cartesian.z_neg_size = z_neg;
         }
     }
+    // The replay in `seed_control_from_render_config` only inserts; without
+    // the clear, the outgoing profile's backend params would survive the
+    // switch (and be committed into the incoming profile on the next save).
+    control.clear_backend_params();
     seed_control_from_render_config(control, Some(render_cfg));
     seed_runtime_state_from_render_config(control, Some(render_cfg));
     Ok(())

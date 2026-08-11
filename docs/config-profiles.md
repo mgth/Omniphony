@@ -87,22 +87,35 @@ restart-required behaviour elsewhere.
 
 ## Switching semantics
 
-`switch(new_name)` on the control thread:
+`switch(new_name)` on the control thread. Switching to the already-active
+name is a strict no-op (state re-broadcast only), and the target profile's
+layout is preflighted first: a profile whose `speaker_layout` file no longer
+loads refuses the switch outright instead of half-applying its parameters on
+the previous layout.
 
 1. **Commit** the current live state into `render:`
-   (`options::store_live_to_config` + the same field set as
+   (`options::store_live_to_config` + the same core field set as
    `persist::save_live_config`), then mirror it into `profiles[old_name]`.
    Pending unsaved tweaks are thus captured by the outgoing profile rather
-   than lost — same spirit as the live-handoff sidecar.
+   than lost — same spirit as the live-handoff sidecar. Host-owned fields
+   (output device, live input, resampling, latency) are deliberately NOT
+   amended here: they only take effect at engine start, so after a switch the
+   running host state describes the previous profile; the on-disk values stay
+   as persisted.
 2. **Swap**: `render = profiles[new_name]` (with the input-plumbing carve-over),
    `active_profile = new_name`, `Config::save()`, delete the sidecar and clear
    the overlay cache (a deliberate state change supersedes any pending
    handoff).
-3. **Re-seed** the live params from the new render section through
-   `seed_control_from_render_config` — the *same* function the construction
-   path uses (see parity below). This returns whether a topology rebuild is
-   required; a profile switch always requests one because the layout may have
-   changed.
+3. **Re-seed** the live params from the new render section through the same
+   seeding functions the construction path uses (see parity below) —
+   preceded by a reset of every profile-covered live field to its default.
+   The reset matters: the persist layer stores defaults as *absent* keys and
+   the shared seeds only assign pinned values, so without it the outgoing
+   profile's values (backend, evaluation mode, registry options, backend
+   param bag) would leak into the incoming profile and be committed into it
+   by the next save. A profile switch always requests a rebuild because the
+   layout may have changed; if one is already running, the request is queued
+   and re-triggered when it finishes rather than dropped.
 4. **Stage + rebuild**: install the new profile's layout in
    `editable_layout`, bump the geometry generation and run the existing
    background recompute (`catch_unwind`, `recompute_error` broadcast on
