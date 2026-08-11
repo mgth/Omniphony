@@ -276,7 +276,7 @@ pub fn prepared(
 // tests inside `renderer` must name this type through the fixture crate for
 // the argument types to match.
 pub use renderer::binaural::HrirSource;
-use renderer::live_params::OutputMode;
+use renderer::live_params::{BinauralMode, OutputMode};
 
 /// A renderer switched to the independent binaural (headphone) path, with the
 /// bundled SAF KEMAR set. Output is 2-channel regardless of the layout.
@@ -300,6 +300,35 @@ pub fn prepared_binaural(n_objects: usize, ramp_mode: RampMode) -> (SpatialRende
         let f = r
             .render_frame(&pcm, n_objects, &init, buf, false)
             .expect("prime binaural render");
+        buf = f.samples;
+    }
+    (r, pcm)
+}
+
+/// Like [`prepared_binaural`] but on the cascaded virtual-speaker stage
+/// (`binaural.mode = Cascaded`, default `cascade-12` layout). The priming
+/// blocks force the lazy virtual-topology build, so benches and goldens
+/// measure the steady state rather than the first-frame setup.
+pub fn prepared_binaural_cascaded(
+    n_objects: usize,
+    ramp_mode: RampMode,
+) -> (SpatialRenderer, Vec<f32>) {
+    let mut r = make_renderer("7.1.4", true, false);
+    {
+        let ctrl = r.renderer_control();
+        ctrl.set_requested_ramp_mode(ramp_mode);
+        let mut live = ctrl.live.write();
+        live.ramp_mode = ramp_mode;
+        live.binaural.output_mode = OutputMode::Binaural;
+        live.binaural.mode = BinauralMode::Cascaded;
+    }
+    let pcm = make_pcm(n_objects);
+    let init = move_events(n_objects, 0);
+    let mut buf = Vec::new();
+    for _ in 0..4 {
+        let f = r
+            .render_frame(&pcm, n_objects, &init, buf, false)
+            .expect("prime cascaded binaural render");
         buf = f.samples;
     }
     (r, pcm)

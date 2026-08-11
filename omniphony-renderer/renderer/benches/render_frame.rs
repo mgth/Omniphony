@@ -24,7 +24,10 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use dsp_fixtures::scene::{build_renderer, crossover_layout, make_pcm, move_events, prepared};
+use dsp_fixtures::scene::{
+    build_renderer, crossover_layout, make_pcm, move_events, prepared, prepared_binaural,
+    prepared_binaural_cascaded,
+};
 use renderer::live_params::RampMode;
 
 fn bench_steady(c: &mut Criterion) {
@@ -352,6 +355,53 @@ fn bench_polar_crossover(c: &mut Criterion) {
     group.finish();
 }
 
+/// Direct per-object binaural vs the cascaded virtual-speaker stage
+/// (issue #220), across object counts.
+///
+/// `static` renders with no metadata events after priming — the steady state,
+/// where the direct path still convolves one HRIR pair per object while the
+/// cascade convolves its fixed virtual speakers whatever `n` is. `moving`
+/// re-arms a ramp every block, adding the per-block HRIR refresh (direct) vs
+/// the per-block virtual re-pan (cascaded) on top.
+fn bench_binaural(c: &mut Criterion) {
+    for (scenario, moving) in [("static", false), ("moving", true)] {
+        let mut group = c.benchmark_group(format!("render_binaural_{scenario}"));
+        for &n in &[1usize, 8, 16, 32, 64, 118] {
+            for (label, cascaded) in [("direct", false), ("cascaded", true)] {
+                let (mut r, pcm) = if cascaded {
+                    prepared_binaural_cascaded(n, RampMode::Frame)
+                } else {
+                    prepared_binaural(n, RampMode::Frame)
+                };
+                let mut buf = Vec::new();
+                let mut round = 1u64;
+                group.bench_function(BenchmarkId::new(label, n), |b| {
+                    b.iter(|| {
+                        let events = if moving {
+                            move_events(n, round)
+                        } else {
+                            Vec::new()
+                        };
+                        round = round.wrapping_add(1);
+                        let f = r
+                            .render_frame(
+                                black_box(&pcm),
+                                black_box(n),
+                                &events,
+                                std::mem::take(&mut buf),
+                                false,
+                            )
+                            .expect("render");
+                        buf = f.samples;
+                        black_box(&buf);
+                    });
+                });
+            }
+        }
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     bench_steady,
@@ -362,6 +412,7 @@ criterion_group!(
     bench_cartesian,
     bench_crossover,
     bench_polar,
-    bench_polar_crossover
+    bench_polar_crossover,
+    bench_binaural
 );
 criterion_main!(benches);
