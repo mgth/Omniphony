@@ -604,20 +604,8 @@ impl SpatialRenderer {
                 diffuse_mirror_axes: g.distance_diffuse_mirror_axes,
             }
         };
-        // Push the live read-time interpolation flag into the precomputed
-        // evaluators and the unified table. This flag only selects nearest-cell
-        // vs trilinear at lookup time; the table content is independent of it, so
-        // toggling it no longer rebuilds the table (the OSC handler dropped its
-        // `trigger_layout_recompute`). We sync the current value every frame —
-        // just a handful of relaxed atomic stores.
-        for band in &self.speaker_stage.render_bands {
-            if let Some(engine) = band.engine() {
-                engine.set_position_interpolation(live_position_interpolation);
-            }
-        }
-        if let Some(table) = self.speaker_stage.unified_table.as_ref() {
-            table.set_position_interpolation(live_position_interpolation);
-        }
+        self.speaker_stage
+            .sync_position_interpolation(live_position_interpolation);
 
         let ramp_context = self.ramp_context(&live);
         let ramp_strategy_override = self.ramp_strategy_override.clone();
@@ -1448,45 +1436,9 @@ impl SpatialRenderer {
         // clipping branch below), so it needs no separate factor here.
         let total_gain = live.master_gain * loudness;
 
-        // Pre-compute per-speaker total gains and update delay-line targets in a
-        // single pass over the speaker list — one HashMap lookup per speaker.
-        // Mute overrides gain to 0.0 without touching the stored gain value.
-        self.speaker_stage
-            .speaker_gains_buf
-            .iter_mut()
-            .enumerate()
-            .for_each(|(idx, g)| {
-                let sp = live.speaker_params.get(idx);
-                *g = if sp.is_some_and(|s| s.muted) {
-                    0.0
-                } else {
-                    total_gain * sp.map_or(1.0, |s| s.gain)
-                };
-            });
-        for (idx, dl) in self.speaker_stage.delay_lines.iter_mut().enumerate() {
-            dl.set_target_ms(
-                live.speaker_params.get(idx).map_or(0.0, |s| s.delay_ms),
-                self.sample_rate,
-            );
-        }
-        let speaker_total_gains = &self.speaker_stage.speaker_gains_buf;
-
-        // Apply per-speaker gains and delay lines, and detect peak (tracking which
-        // speaker channel held the peak, for clip reporting).
-        let mut peak_sample: f32 = 0.0;
-        let mut peak_speaker_idx: usize = 0;
-        for sample_idx in 0..sample_length {
-            for speaker_idx in 0..self.num_speakers {
-                let s = &mut output[sample_idx * self.num_speakers + speaker_idx];
-                *s *= speaker_total_gains[speaker_idx];
-                *s = self.speaker_stage.delay_lines[speaker_idx].process(*s);
-                let a = s.abs();
-                if a > peak_sample {
-                    peak_sample = a;
-                    peak_speaker_idx = speaker_idx;
-                }
-            }
-        }
+        let (peak_sample, peak_speaker_idx) =
+            self.speaker_stage
+                .finalize_output(live.speaker_params, total_gain, &mut output);
 
         // Clipping handling. Detection is always at 0 dBFS (peak > 1.0) and the
         // clip flag is raised (with the offending speaker) regardless of auto-gain

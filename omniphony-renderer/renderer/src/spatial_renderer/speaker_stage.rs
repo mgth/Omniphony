@@ -129,6 +129,75 @@ impl SpeakerRenderStage {
         Ok(())
     }
 
+    /// Output stage: per-speaker gains (live gain/mute × `total_gain`), delay
+    /// lines, and peak detection over the interleaved buffer. Returns
+    /// `(peak_sample, peak_speaker_idx)`; the caller owns clip reporting and
+    /// auto-gain (a virtual stage must never fold reductions into the shared
+    /// master gain).
+    pub(super) fn finalize_output(
+        &mut self,
+        speaker_params: &[crate::live_params::SpeakerLiveParams],
+        total_gain: f32,
+        output: &mut [f32],
+    ) -> (f32, usize) {
+        // Pre-compute per-speaker total gains and update delay-line targets in a
+        // single pass over the speaker list — one HashMap lookup per speaker.
+        // Mute overrides gain to 0.0 without touching the stored gain value.
+        self.speaker_gains_buf
+            .iter_mut()
+            .enumerate()
+            .for_each(|(idx, g)| {
+                let sp = speaker_params.get(idx);
+                *g = if sp.is_some_and(|s| s.muted) {
+                    0.0
+                } else {
+                    total_gain * sp.map_or(1.0, |s| s.gain)
+                };
+            });
+        for (idx, dl) in self.delay_lines.iter_mut().enumerate() {
+            dl.set_target_ms(
+                speaker_params.get(idx).map_or(0.0, |s| s.delay_ms),
+                self.sample_rate,
+            );
+        }
+        let speaker_total_gains = &self.speaker_gains_buf;
+
+        // Apply per-speaker gains and delay lines, and detect peak (tracking which
+        // speaker channel held the peak, for clip reporting).
+        let sample_length = output.len() / self.num_speakers.max(1);
+        let mut peak_sample: f32 = 0.0;
+        let mut peak_speaker_idx: usize = 0;
+        for sample_idx in 0..sample_length {
+            for speaker_idx in 0..self.num_speakers {
+                let s = &mut output[sample_idx * self.num_speakers + speaker_idx];
+                *s *= speaker_total_gains[speaker_idx];
+                *s = self.delay_lines[speaker_idx].process(*s);
+                let a = s.abs();
+                if a > peak_sample {
+                    peak_sample = a;
+                    peak_speaker_idx = speaker_idx;
+                }
+            }
+        }
+        (peak_sample, peak_speaker_idx)
+    }
+
+    /// Push the live read-time interpolation flag into the precomputed
+    /// evaluators and the unified table. This flag only selects nearest-cell
+    /// vs trilinear at lookup time; the table content is independent of it, so
+    /// toggling it never rebuilds the table. Synced every frame — just a
+    /// handful of relaxed atomic stores.
+    pub(super) fn sync_position_interpolation(&self, interpolate: bool) {
+        for band in &self.render_bands {
+            if let Some(engine) = band.engine() {
+                engine.set_position_interpolation(interpolate);
+            }
+        }
+        if let Some(table) = self.unified_table.as_ref() {
+            table.set_position_interpolation(interpolate);
+        }
+    }
+
     /// Build crossover band engines from a speaker layout.
     ///
     /// Returns `(render_bands, Some(filter_bank))` when the layout defines finite crossover
