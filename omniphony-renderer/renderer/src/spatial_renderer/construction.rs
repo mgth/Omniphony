@@ -500,6 +500,7 @@ impl SpatialRenderer {
             cascade: None,
             cascade_failed_key: None,
             cascade_failed_identity: 0,
+            last_mix_num_speakers: 0,
             binaural_pos_buf: Vec::new(),
             binaural_gain_buf: Vec::new(),
             binaural_direct_buf: Vec::new(),

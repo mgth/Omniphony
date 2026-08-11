@@ -257,6 +257,13 @@ pub struct SpatialRenderer {
     cascade_failed_key: Option<String>,
     cascade_failed_identity: usize,
 
+    /// Speaker width of the stage that ran the previous frame's mix pass.
+    /// `RampMode::Interp` caches layout-sized gains in the shared
+    /// `ChannelState`s; a width change (speaker↔cascade switch, cascade
+    /// layout change, main relayout) must clear them or stale entries would
+    /// index out of the new width. 0 until the first mix pass.
+    last_mix_num_speakers: usize,
+
     /// Scratch per-channel world positions for the binaural path (reused).
     binaural_pos_buf: Vec<[f64; 3]>,
 
@@ -671,24 +678,35 @@ impl SpatialRenderer {
             output.clear();
             output.resize(sample_length * 2, 0.0);
             if cascade_active && self.cascade.is_some() {
-                // Cascaded stage: mix onto the virtual buses, binauralise the
-                // (fixed) virtual speakers. Taken/put back so the free mix
-                // function can borrow the other renderer fields it needs.
+                // Cascaded stage: run the full speaker pipeline on the virtual
+                // layout, then binauralise the (fixed) virtual speakers.
+                // Taken/put back so the free mix function can borrow the other
+                // renderer fields it needs.
                 let mut stage = self.cascade.take().expect("checked is_some above");
+                cascade::reseed_interp_on_width_change(
+                    &mut self.channel_states,
+                    &mut self.last_mix_num_speakers,
+                    stage.layout.num_speakers(),
+                );
+                let is_first = self
+                    .first_render
+                    .swap(false, std::sync::atomic::Ordering::Relaxed);
                 cascade::render_cascade_frame(
                     &mut stage,
                     &mut self.channel_states,
-                    live.object_params,
                     &mut self.binaural,
-                    self.sample_rate,
-                    input_pcm,
-                    input_channel_count,
-                    sample_length,
-                    &channel_routing,
-                    active_layout,
-                    active_label_to_speaker,
-                    ramp_strategy,
-                    &ramp_context,
+                    cascade::CascadeFrameInputs {
+                        input_pcm,
+                        input_channel_count,
+                        sample_length,
+                        channel_routing: &channel_routing,
+                        object_params: live.object_params,
+                        ramp_mode: live.ramp_mode,
+                        ramp_strategy,
+                        ramp_context: &ramp_context,
+                        log_object_positions: self.log_object_positions,
+                        is_first,
+                    },
                     &binaural_params,
                     &mut output,
                 );
@@ -876,6 +894,11 @@ impl SpatialRenderer {
         let is_first = self
             .first_render
             .swap(false, std::sync::atomic::Ordering::Relaxed);
+        cascade::reseed_interp_on_width_change(
+            &mut self.channel_states,
+            &mut self.last_mix_num_speakers,
+            self.speaker_stage.num_speakers,
+        );
         let frame = speaker_stage::SpeakerStageFrame {
             input_pcm,
             input_channel_count,

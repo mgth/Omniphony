@@ -643,12 +643,14 @@ impl SpeakerLayout {
     /// shell of 12 spatialized speakers around the listener — 8 on the ear
     /// plane (45° spacing, where most content lives) and 4 at 45° elevation.
     /// The zenith is covered by the panner's virtual-pole downmix onto the
-    /// height ring. No LFE entry: input channels routed to a non-spatialized
-    /// speaker bypass the cascade onto a dedicated direct bus instead.
+    /// height ring. The LFE entry (`spatialize: false`) receives one-hot
+    /// LFE-routed channels exactly like a physical room; the binaural stage
+    /// then feeds it to both ears dry (its direct-channel policy).
     pub fn preset_cascade_12() -> Result<Self> {
         Self::from_speakers(vec![
             // Ear-plane ring (8), 45° spacing.
             Speaker::new("C", 0.0, 0.0),
+            Speaker::new_with_spatialize("LFE", 45.0, -10.0, false),
             Speaker::new("FL", -45.0, 0.0),
             Speaker::new("FR", 45.0, 0.0),
             Speaker::new("SL", -90.0, 0.0),

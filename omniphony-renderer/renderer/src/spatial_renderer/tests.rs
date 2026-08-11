@@ -1487,8 +1487,18 @@ speakers:
 /// arguments as the other binaural tests in this file, evaluation mode
 /// selectable (the equivalence test needs `Realtime` so VBAP is exactly
 /// one-hot at a virtual speaker direction, without table interpolation).
-fn build_cascade_test_renderer(eval: LiveEvaluationMode) -> SpatialRenderer {
+///
+/// `neutral_room` builds with an identity room mapping and no distance
+/// attenuation: the cascade honours the full speaker-path options (that is
+/// its point), so only under neutral settings does it collapse to the direct
+/// per-object render at a virtual speaker direction.
+fn build_cascade_test_renderer(eval: LiveEvaluationMode, neutral_room: bool) -> SpatialRenderer {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
+    let (distance_model, room_ratio, rear, lower) = if neutral_room {
+        (DistanceModel::None, [1.0f32, 1.0, 1.0], 1.0f32, 1.0f32)
+    } else {
+        (DistanceModel::Linear, [1.0f32, 2.0, 0.5], 2.0f32, 0.5f32)
+    };
     SpatialRenderer::new(
         layout,
         48_000,
@@ -1504,16 +1514,16 @@ fn build_cascade_test_renderer(eval: LiveEvaluationMode) -> SpatialRenderer {
         },
         false,
         true,
-        DistanceModel::Linear,
+        distance_model,
         false,
         1.0,
         1.0,
         0.0,
         1.0,
         false,
-        [1.0, 2.0, 0.5],
-        2.0,
-        0.5,
+        room_ratio,
+        rear,
+        lower,
         0.0,
         0.0,
         false,
@@ -1537,7 +1547,7 @@ fn build_cascade_test_renderer(eval: LiveEvaluationMode) -> SpatialRenderer {
 /// right ear.
 #[test]
 fn cascaded_binaural_builds_stage_and_lateralizes() {
-    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian);
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
     {
         let mut live = r.control.live.write();
         live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
@@ -1576,9 +1586,14 @@ fn cascaded_binaural_builds_stage_and_lateralizes() {
     );
     let stage = r.cascade.as_ref().unwrap();
     assert_eq!(
-        stage.num_virtual(),
-        12,
-        "cascade-12 must resolve to 12 virtual speakers"
+        stage.num_buses(),
+        13,
+        "cascade-12 must resolve to 12 spatialized virtual speakers + LFE"
+    );
+    assert_eq!(
+        stage.bin_direct.iter().filter(|&&d| d).count(),
+        1,
+        "exactly the LFE entry must bypass the HRTF as a direct bus"
     );
 
     let (mut e_l, mut e_r) = (0.0f32, 0.0f32);
@@ -1612,7 +1627,7 @@ fn cascaded_matches_direct_at_virtual_speaker_direction() {
         0.0,
     ];
     let render = |cascaded: bool| -> Vec<f32> {
-        let mut r = build_cascade_test_renderer(LiveEvaluationMode::Realtime);
+        let mut r = build_cascade_test_renderer(LiveEvaluationMode::Realtime, true);
         {
             let mut live = r.control.live.write();
             live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
@@ -1686,7 +1701,7 @@ fn cascaded_binaural_follows_master_gain() {
     }];
 
     let render = |master: f32| -> Vec<f32> {
-        let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian);
+        let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
         {
             let mut live = r.control.live.write();
             live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
@@ -1719,7 +1734,7 @@ fn cascaded_binaural_follows_master_gain() {
 /// the LFE policy: both ears equal at −3 dB, no HRTF colouration.
 #[test]
 fn cascaded_lfe_routes_direct_to_both_ears() {
-    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian);
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
     {
         let mut live = r.control.live.write();
         live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
@@ -1761,6 +1776,53 @@ fn cascaded_lfe_routes_direct_to_both_ears() {
             s[0]
         );
     }
+}
+
+/// Regression for the shared-`ChannelState` width hazard: `RampMode::Interp`
+/// caches per-band gains sized to the mixing layout; switching the active mix
+/// stage between the physical layout (12) and the virtual cascade layout (13)
+/// must re-seed them instead of indexing stale widths (which used to be an
+/// out-of-bounds panic risk). Round-trips speaker → cascaded binaural →
+/// speaker with a live object under Interp and checks output stays sane.
+#[test]
+fn interp_survives_speaker_cascade_width_switch() {
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian, false);
+    {
+        let ctrl = r.control.clone();
+        ctrl.set_requested_ramp_mode(crate::live_params::RampMode::Interp);
+        let mut live = ctrl.live.write();
+        live.ramp_mode = crate::live_params::RampMode::Interp;
+        live.binaural.mode = crate::live_params::BinauralMode::Cascaded;
+    }
+    let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([0.4, 0.6, 0.2]),
+        sample_pos: Some(0),
+    }];
+
+    let mut set_mode = |r: &mut SpatialRenderer, mode: crate::live_params::OutputMode| {
+        r.control.live.write().binaural.output_mode = mode;
+    };
+    // Seed interp state on the 12-wide speaker path.
+    let out = r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
+    assert_eq!(out.samples.len(), 40 * 12);
+    // Switch to the 13-wide cascade, render, and back — must not panic and
+    // must keep producing signal.
+    set_mode(&mut r, crate::live_params::OutputMode::Binaural);
+    let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    assert_eq!(out.samples.len(), 40 * 2, "cascade output must be stereo");
+    set_mode(&mut r, crate::live_params::OutputMode::SpeakerArray);
+    let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    assert_eq!(out.samples.len(), 40 * 12);
+    assert!(
+        out.samples.iter().any(|s| s.abs() > 1e-6),
+        "speaker output must survive the round-trip"
+    );
 }
 
 // TODO: Add integration test with real spatial metadata
