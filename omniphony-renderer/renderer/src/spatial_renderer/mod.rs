@@ -64,20 +64,19 @@
 //! )?;
 //! ```
 
-use crate::crossover::BiquadState;
 use crate::live_params::{RampMode, RendererControl};
 use crate::ramp_strategy::{
     PositionRampStrategy, RampContext, RampProgress, RampRenderParams, RampStrategy, RampTarget,
 };
-use crate::render_backend::MultiBandTable;
-use crate::spatial_vbap::{DistanceModel, Gains};
+
+use crate::spatial_vbap::DistanceModel;
 use anyhow::Result;
 use std::sync::Arc;
 
 mod components;
 mod construction;
 mod speaker_stage;
-use components::{BandRenderer, ChannelState, evaluation_build_config, split_bands};
+use components::{ChannelState, evaluation_build_config};
 pub use components::{RenderedFrame, SpatialChannelEvent};
 use speaker_stage::SpeakerRenderStage;
 
@@ -258,31 +257,6 @@ pub struct SpatialRenderer {
 }
 
 impl SpatialRenderer {
-    /// Fill `out` with one full-size `Gains` per render band at `position`. Uses
-    /// the unified multi-band table (one cell localisation for all bands) when
-    /// available, else falls back to a per-band lookup. Free-standing (borrows
-    /// only the two fields it needs) so it composes with the other per-channel
-    /// mutable borrows held across the render arms.
-    fn fill_band_gains(
-        unified: &Option<MultiBandTable>,
-        render_bands: &[BandRenderer],
-        render_params: crate::ramp_strategy::RampRenderParams,
-        position: [f64; 3],
-        size: [f32; 3],
-        out: &mut Vec<Gains>,
-    ) {
-        out.clear();
-        if let Some(table) = unified {
-            table.sample_into(position.map(|v| v as f32), out);
-        } else {
-            out.extend(
-                render_bands
-                    .iter()
-                    .map(|b| b.compute_gains(render_params, position, size)),
-            );
-        }
-    }
-
     /// Whether auto-gain has lowered the master gain at least once this session.
     pub fn auto_gain_triggered(&self) -> bool {
         self.auto_gain_triggered
@@ -844,574 +818,28 @@ impl SpatialRenderer {
         output.clear();
         output.resize(required, 0.0);
 
-        // Per-object VBAP gains at the final sample — monitoring only (OSC meter
-        // bundle). Only collected when `measure_breakdown` is set; left empty (no
-        // allocation) on the plain render path (e.g. mpv without Studio open).
-        let mut object_gains_out: Vec<(usize, Gains)> = if measure_breakdown {
-            Vec::with_capacity(input_channel_count)
-        } else {
-            Vec::new()
-        };
-        let mut object_band_gains_out: Vec<(usize, Vec<Gains>)> = Vec::new();
-        let mut object_band_sq_out: Vec<(usize, Vec<f64>)> = Vec::new();
-        let mut crossover_elapsed = std::time::Duration::ZERO;
-        let profile_crossover =
-            measure_breakdown && self.speaker_stage.crossover_filter_bank.is_some();
-
-        // Directly-routed channels always come FIRST in PCM data, then objects.
-        let num_routed = channel_routing.len();
-
         // Check if this is the first render for detailed logging
         let is_first = self
             .first_render
             .swap(false, std::sync::atomic::Ordering::Relaxed);
-        if is_first {
-            log::info!(
-                "VBAP render: {} total PCM channels, {} routed entries, {} trailing object channels",
-                input_channel_count,
-                num_routed,
-                input_channel_count.saturating_sub(num_routed),
-            );
-            log::info!("  Channel routing: {:?}", channel_routing);
-        }
-
-        // Hold channel metadata state lock once for the whole render pass.
-        // This avoids lock/unlock churn in the channel loop.
-
-        // Process each channel
-        for input_channel_idx in 0..input_channel_count {
-            // Per-channel mute (applies to beds and objects), as a 0/1 factor.
-            let obj_gain = match live.object_params.get(input_channel_idx) {
-                Some(o) if o.muted => 0.0,
-                _ => 1.0,
-            };
-
-            // Get gain from cached metadata (common for ALL channels - beds and objects)
-            let state = Self::state_mut(&mut self.channel_states, input_channel_idx);
-            let gain_db = state.gain_db;
-
-            // Convert gain from dB to linear
-            let gain_linear = if gain_db == -128 {
-                0.0 // -inf dB
-            } else {
-                10.0_f32.powf(gain_db as f32 / 20.0)
-            };
-            // Slewed per-sample gain factor (includes the mute 0/1 factor):
-            // factor(s) = gain_start + gain_step * s.
-            let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
-            let (gain_start, gain_step) =
-                state.slew_gain(gain_linear * obj_gain, sample_length, ramp_samples);
-
-            // A channel is directly routed when its routing entry is
-            // `Direct` (channels beyond the routing table are trailing object
-            // channels; `Virtual` entries render through the object path from
-            // their metadata events).
-            let direct_label = match channel_routing.get(input_channel_idx) {
-                Some(ChannelRoute::Direct(label)) => Some(*label),
-                _ => None,
-            };
-            if let Some(label) = direct_label {
-                // DIRECT CHANNEL: one-hot route to the speaker its label
-                // resolves to in the active topology.
-                let speaker_idx = match active_label_to_speaker.get(&label) {
-                    Some(&idx) => idx,
-                    None => {
-                        // No matching speaker in this layout — skip the channel.
-                        if is_first {
-                            log::warn!(
-                                "  Direct ch{} ({label:?}) has no matching speaker in layout, skipping",
-                                input_channel_idx,
-                            );
-                        }
-                        continue;
-                    }
-                };
-
-                self.speaker_stage.bed_routing_gains_buf.fill(0.0);
-                self.speaker_stage.bed_routing_gains_buf[speaker_idx] = 1.0;
-
-                // Mix bed samples through the same per-speaker gain accumulation model
-                // used for objects, but with a one-hot routing table.
-                for sample_idx in 0..sample_length {
-                    let sample = input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                        * (gain_start + gain_step * sample_idx as f32);
-                    let out_base = sample_idx * self.num_speakers;
-                    for (speaker_idx, &gain) in
-                        self.speaker_stage.bed_routing_gains_buf.iter().enumerate()
-                    {
-                        output[out_base + speaker_idx] += sample * gain;
-                    }
-                }
-
-                let mut gains = Gains::zeroed(self.num_speakers);
-                for (speaker_idx, &gain) in
-                    self.speaker_stage.bed_routing_gains_buf.iter().enumerate()
-                {
-                    gains.set(speaker_idx, gain);
-                }
-                object_gains_out.push((input_channel_idx, gains));
-
-                if is_first {
-                    let speaker_name = active_layout.speakers[speaker_idx].name.as_str();
-                    log::info!(
-                        "  Direct ch{} ({label:?}) → Speaker {} ({}) gain={}dB",
-                        input_channel_idx,
-                        speaker_idx,
-                        speaker_name,
-                        gain_db
-                    );
-                }
-            } else {
-                // Deliberately NOT filtered on `initialized`, to match the
-                // HashMap version exactly: `state_mut` above already created
-                // this channel's entry earlier in the same iteration, so the
-                // lookup was always `Some` and the `None` arm was unreachable.
-                // Filtering would make it reachable. No behavioural difference
-                // could be demonstrated either way — `null_partial_metadata`
-                // passes with and without the filter — so this keeps the
-                // original control flow rather than relying on the two being
-                // equivalent.
-                let state_mut = self.channel_states.get_mut(input_channel_idx);
-                let state = match state_mut {
-                    // Skip if no metadata available
-                    Some(s) => s,
-                    None => {
-                        if self.log_object_positions {
-                            log::warn!(
-                                "Channel {} missing cached metadata, skipping",
-                                input_channel_idx
-                            );
-                        }
-                        continue;
-                    }
-                };
-
-                // ── Unified band rendering path ─────────────────────────────────────────
-                // Always iterate over `render_bands` (1 band = no crossover, N bands = LR4).
-                // Each band returns full-size Gains (zeroed for out-of-band speakers) so the
-                // inner mix loop is contiguous and SIMD-friendly.
-
-                // Lazily allocate per-object filter state only when crossover is active.
-                let obj_filter_states: Option<&mut Vec<BiquadState>> = if let Some(fb) =
-                    self.speaker_stage.crossover_filter_bank.as_ref()
-                {
-                    let state_count = fb.state_count();
-                    if self.speaker_stage.crossover_filter_states.len() <= input_channel_idx {
-                        self.speaker_stage
-                            .crossover_filter_states
-                            .resize_with(input_channel_idx + 1, || None);
-                    }
-                    let slot = &mut self.speaker_stage.crossover_filter_states[input_channel_idx];
-                    if slot.is_none() {
-                        *slot = Some(vec![BiquadState::default(); state_count]);
-                    }
-                    slot.as_mut()
-                } else {
-                    None
-                };
-
-                let render_params = ramp_context.render_params();
-
-                // Reuse the per-object band-gain buffer (pooled in the renderer) so
-                // the hot render path does not allocate a fresh Vec per object per
-                // frame. Each arm fills `band_gains`; it is put back at the end.
-                let mut band_gains = std::mem::take(&mut self.speaker_stage.band_gains_scratch);
-                band_gains.clear();
-                match live.ramp_mode {
-                    RampMode::Off => {
-                        state.ramp.remaining_ramp_units = None;
-                        state.ramp.start_position = state.ramp.target_position;
-                        state.ramp.current_position = state.ramp.target_position;
-                        state.ramp.start_size = state.ramp.target_size;
-                        state.ramp.current_size = state.ramp.target_size;
-                        state.ramp.output_position = state.ramp.target_position;
-
-                        let position = state.ramp.output_position;
-                        let size = state.ramp.current_size;
-                        Self::fill_band_gains(
-                            &self.speaker_stage.unified_table,
-                            &self.speaker_stage.render_bands,
-                            render_params,
-                            position,
-                            size,
-                            &mut band_gains,
-                        );
-
-                        let mut fst = obj_filter_states;
-                        if profile_crossover {
-                            let fb = self
-                                .speaker_stage
-                                .crossover_filter_bank
-                                .as_ref()
-                                .expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
-                            let started_at = std::time::Instant::now();
-                            fb.process_block(
-                                sample_length,
-                                fst_slice,
-                                &mut self.speaker_stage.crossover_band_scratch,
-                                |sample_idx| {
-                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * (gain_start + gain_step * sample_idx as f32)
-                                },
-                            );
-                            crossover_elapsed += started_at.elapsed();
-                            for sample_idx in 0..sample_length {
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s =
-                                        self.speaker_stage.crossover_band_scratch[b][sample_idx];
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        } else {
-                            for sample_idx in 0..sample_length {
-                                let raw = input_pcm
-                                    [sample_idx * input_channel_count + input_channel_idx]
-                                    * (gain_start + gain_step * sample_idx as f32);
-                                let split = split_bands(
-                                    raw,
-                                    &self.speaker_stage.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
-                                );
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = split.get(b);
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    RampMode::Frame => {
-                        let progress = state.ramp.current_progress().unwrap_or(RampProgress {
-                            completed_units: 0,
-                            total_units: 0,
-                        });
-                        ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
-                        let position = state.ramp.output_position;
-                        let size = state.ramp.current_size;
-                        Self::fill_band_gains(
-                            &self.speaker_stage.unified_table,
-                            &self.speaker_stage.render_bands,
-                            render_params,
-                            position,
-                            size,
-                            &mut band_gains,
-                        );
-
-                        let mut fst = obj_filter_states;
-                        if profile_crossover {
-                            let fb = self
-                                .speaker_stage
-                                .crossover_filter_bank
-                                .as_ref()
-                                .expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
-                            let started_at = std::time::Instant::now();
-                            fb.process_block(
-                                sample_length,
-                                fst_slice,
-                                &mut self.speaker_stage.crossover_band_scratch,
-                                |sample_idx| {
-                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * (gain_start + gain_step * sample_idx as f32)
-                                },
-                            );
-                            crossover_elapsed += started_at.elapsed();
-                            for sample_idx in 0..sample_length {
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s =
-                                        self.speaker_stage.crossover_band_scratch[b][sample_idx];
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        } else {
-                            for sample_idx in 0..sample_length {
-                                let raw = input_pcm
-                                    [sample_idx * input_channel_count + input_channel_idx]
-                                    * (gain_start + gain_step * sample_idx as f32);
-                                let split = split_bands(
-                                    raw,
-                                    &self.speaker_stage.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
-                                );
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = split.get(b);
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        }
-                        state.ramp.commit_output_position();
-                        state.ramp.advance_ramp(sample_length as u64);
-                    }
-                    RampMode::Sample => {
-                        let mut fst = obj_filter_states;
-                        // One Gains slot per band, reused each sample (and across
-                        // objects/frames via the pooled buffer).
-                        band_gains.resize(
-                            self.speaker_stage.render_bands.len(),
-                            Gains::zeroed(self.num_speakers),
-                        );
-                        if profile_crossover {
-                            let fb = self
-                                .speaker_stage
-                                .crossover_filter_bank
-                                .as_ref()
-                                .expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
-                            let started_at = std::time::Instant::now();
-                            fb.process_block(
-                                sample_length,
-                                fst_slice,
-                                &mut self.speaker_stage.crossover_band_scratch,
-                                |sample_idx| {
-                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * (gain_start + gain_step * sample_idx as f32)
-                                },
-                            );
-                            crossover_elapsed += started_at.elapsed();
-                            // See the non-crossover branch: only recompute the VBAP
-                            // gains when the position/size changes (skips redundant
-                            // per-sample work while the object is static).
-                            let mut last_pos = [f64::NAN; 3];
-                            let mut last_size = [f32::NAN; 3];
-                            for sample_idx in 0..sample_length {
-                                let progress =
-                                    state.ramp.current_progress().unwrap_or(RampProgress {
-                                        completed_units: 0,
-                                        total_units: 0,
-                                    });
-                                ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
-                                let position = state.ramp.output_position;
-                                let size = state.ramp.current_size;
-                                if position != last_pos || size != last_size {
-                                    Self::fill_band_gains(
-                                        &self.speaker_stage.unified_table,
-                                        &self.speaker_stage.render_bands,
-                                        render_params,
-                                        position,
-                                        size,
-                                        &mut band_gains,
-                                    );
-                                    last_pos = position;
-                                    last_size = size;
-                                }
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s =
-                                        self.speaker_stage.crossover_band_scratch[b][sample_idx];
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                                state.ramp.commit_output_position();
-                                state.ramp.advance_ramp(1);
-                            }
-                        } else {
-                            // Recompute the per-band VBAP gains only when the
-                            // interpolated position/size actually changes. While the
-                            // object is not ramping (the common case — metadata is
-                            // sparse) `output_position` is constant across the block,
-                            // so this collapses 1 `compute_gains` call per band per
-                            // sample down to one per block while staying bit-identical.
-                            let mut last_pos = [f64::NAN; 3];
-                            let mut last_size = [f32::NAN; 3];
-                            for sample_idx in 0..sample_length {
-                                let progress =
-                                    state.ramp.current_progress().unwrap_or(RampProgress {
-                                        completed_units: 0,
-                                        total_units: 0,
-                                    });
-                                ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
-                                let position = state.ramp.output_position;
-                                let size = state.ramp.current_size;
-                                if position != last_pos || size != last_size {
-                                    Self::fill_band_gains(
-                                        &self.speaker_stage.unified_table,
-                                        &self.speaker_stage.render_bands,
-                                        render_params,
-                                        position,
-                                        size,
-                                        &mut band_gains,
-                                    );
-                                    last_pos = position;
-                                    last_size = size;
-                                }
-                                let raw = input_pcm
-                                    [sample_idx * input_channel_count + input_channel_idx]
-                                    * (gain_start + gain_step * sample_idx as f32);
-                                let split = split_bands(
-                                    raw,
-                                    &self.speaker_stage.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
-                                );
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = split.get(b);
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                                state.ramp.commit_output_position();
-                                state.ramp.advance_ramp(1);
-                            }
-                        }
-                    }
-                    RampMode::Interp => {
-                        // Destination gains for this block: one VBAP evaluation per
-                        // band at the target position. The object's audible path is
-                        // then a per-sample linear interpolation from the previous
-                        // block's end gains to these — no per-sample VBAP.
-                        state.ramp.remaining_ramp_units = None;
-                        state.ramp.current_position = state.ramp.target_position;
-                        state.ramp.current_size = state.ramp.target_size;
-                        state.ramp.output_position = state.ramp.target_position;
-                        let position = state.ramp.target_position;
-                        let size = state.ramp.target_size;
-
-                        let mut end = std::mem::take(&mut self.speaker_stage.interp_end_scratch);
-                        Self::fill_band_gains(
-                            &self.speaker_stage.unified_table,
-                            &self.speaker_stage.render_bands,
-                            render_params,
-                            position,
-                            size,
-                            &mut end,
-                        );
-                        self.speaker_stage.interp_end_scratch = end;
-                        let n_bands = self.speaker_stage.interp_end_scratch.len();
-
-                        // First block for this channel → start == end (no jump in).
-                        if state.interp_prev_gains.len() != n_bands {
-                            state.interp_prev_gains.clear();
-                            state
-                                .interp_prev_gains
-                                .extend_from_slice(&self.speaker_stage.interp_end_scratch);
-                        }
-                        band_gains.resize(n_bands, Gains::zeroed(self.num_speakers));
-
-                        let mut fst = obj_filter_states;
-                        let inv_n = 1.0 / sample_length.max(1) as f32;
-                        if profile_crossover {
-                            let fb = self
-                                .speaker_stage
-                                .crossover_filter_bank
-                                .as_ref()
-                                .expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
-                            let started_at = std::time::Instant::now();
-                            fb.process_block(
-                                sample_length,
-                                fst_slice,
-                                &mut self.speaker_stage.crossover_band_scratch,
-                                |sample_idx| {
-                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * (gain_start + gain_step * sample_idx as f32)
-                                },
-                            );
-                            crossover_elapsed += started_at.elapsed();
-                            for sample_idx in 0..sample_length {
-                                let f = (sample_idx as f32 + 1.0) * inv_n;
-                                for b in 0..n_bands {
-                                    let (s0, s1) = (
-                                        &state.interp_prev_gains[b],
-                                        &self.speaker_stage.interp_end_scratch[b],
-                                    );
-                                    let slot = &mut band_gains[b];
-                                    for spk in 0..self.num_speakers {
-                                        slot[spk] = s0[spk] * (1.0 - f) + s1[spk] * f;
-                                    }
-                                }
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s =
-                                        self.speaker_stage.crossover_band_scratch[b][sample_idx];
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        } else {
-                            for sample_idx in 0..sample_length {
-                                let f = (sample_idx as f32 + 1.0) * inv_n;
-                                for b in 0..n_bands {
-                                    let (s0, s1) = (
-                                        &state.interp_prev_gains[b],
-                                        &self.speaker_stage.interp_end_scratch[b],
-                                    );
-                                    let slot = &mut band_gains[b];
-                                    for spk in 0..self.num_speakers {
-                                        slot[spk] = s0[spk] * (1.0 - f) + s1[spk] * f;
-                                    }
-                                }
-                                let raw = input_pcm
-                                    [sample_idx * input_channel_count + input_channel_idx]
-                                    * (gain_start + gain_step * sample_idx as f32);
-                                let split = split_bands(
-                                    raw,
-                                    &self.speaker_stage.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
-                                );
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = split.get(b);
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Cache this block's destination as the next block's start.
-                        state.interp_prev_gains.clear();
-                        state
-                            .interp_prev_gains
-                            .extend_from_slice(&self.speaker_stage.interp_end_scratch);
-                    }
-                };
-
-                // Monitoring outputs (OSC meter bundle): only built when requested.
-                // `band_gains` is already full-size — sum across bands for the
-                // per-object gains, and hand a copy of the band gains out.
-                if measure_breakdown {
-                    let mut summed = Gains::zeroed(self.num_speakers);
-                    for gains in &band_gains {
-                        for (i, &g) in gains.iter().enumerate() {
-                            summed[i] += g;
-                        }
-                    }
-                    object_band_gains_out.push((input_channel_idx, band_gains.clone()));
-                    object_gains_out.push((input_channel_idx, summed));
-                    // Per-band energy for the meters. Under metering every ramp
-                    // arm took the block path, so `crossover_band_scratch` still
-                    // holds this object's full block of band samples.
-                    if profile_crossover {
-                        let sums: Vec<f64> = (0..band_gains.len())
-                            .map(|b| {
-                                self.speaker_stage.crossover_band_scratch[b][..sample_length]
-                                    .iter()
-                                    .map(|&s| (s as f64) * (s as f64))
-                                    .sum()
-                            })
-                            .collect();
-                        object_band_sq_out.push((input_channel_idx, sums));
-                    }
-                }
-
-                // Return the pooled buffer for the next object/frame.
-                self.speaker_stage.band_gains_scratch = band_gains;
-            }
-        }
+        let frame = speaker_stage::SpeakerStageFrame {
+            input_pcm,
+            input_channel_count,
+            sample_length,
+            channel_routing: &channel_routing,
+            label_to_speaker: active_label_to_speaker,
+            layout: active_layout,
+            object_params: live.object_params,
+            ramp_mode: live.ramp_mode,
+            ramp_strategy,
+            ramp_context: &ramp_context,
+            log_object_positions: self.log_object_positions,
+            is_first,
+            measure_breakdown,
+        };
+        let mut diag =
+            self.speaker_stage
+                .mix_channels(frame, &mut self.channel_states, &mut output);
 
         // topology_guard is an ArcSwap Guard (no lock held); drop it here to make the
         // intent explicit before the gain/auto-gain section.
@@ -1492,15 +920,15 @@ impl SpatialRenderer {
             }
         }
 
-        object_gains_out.sort_by_key(|(idx, _)| *idx);
-        object_band_gains_out.sort_by_key(|(idx, _)| *idx);
-        object_band_sq_out.sort_by_key(|(idx, _)| *idx);
+        diag.object_gains.sort_by_key(|(idx, _)| *idx);
+        diag.object_band_gains.sort_by_key(|(idx, _)| *idx);
+        diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
         Ok(RenderedFrame {
             samples: output,
-            object_gains: object_gains_out,
-            object_band_gains: object_band_gains_out,
-            object_band_sq: object_band_sq_out,
-            crossover_time_ms: crossover_elapsed.as_secs_f32() * 1000.0,
+            object_gains: diag.object_gains,
+            object_band_gains: diag.object_band_gains,
+            object_band_sq: diag.object_band_sq,
+            crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
         })
     }
 
