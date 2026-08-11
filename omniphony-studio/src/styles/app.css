@@ -2526,24 +2526,27 @@ body.cap-embedded .osc-config-actions {
   display: none !important;
 }
 
-/* ── Output mode (Headphones / Speakers) — renderer panel ─────────────────── */
-/* Headphones: the speaker-path renderer blocks are inert — hide them. */
-body.output-binaural #evaluationSection,
-body.output-binaural #rampSection,
-body.output-binaural #backendParametersSection,
-body.output-binaural #distanceDiffuseSection,
-body.output-binaural #distanceModelSection {
+/* ── Renderer / Binaural editing tabs — renderer panel ────────────────────── */
+/* The two parameter groups are freely switchable tabs, DECOUPLED from the
+   output mode: the cascaded ("virtual room") mode renders the speaker
+   pipeline on a virtual layout, so the renderer options stay meaningful —
+   and editable — while listening on headphones. The active tab auto-follows
+   an output-mode change, but either tab can be opened at any time. */
+body.studio-tab-binaural #evaluationSection,
+body.studio-tab-binaural #rampSection,
+body.studio-tab-binaural #backendParametersSection,
+body.studio-tab-binaural #distanceDiffuseSection,
+body.studio-tab-binaural #distanceModelSection {
   display: none !important;
 }
-/* Speakers: the binaural blocks are inert — hide them. */
-body:not(.output-binaural) .binaural-subpanel {
+body:not(.studio-tab-binaural) .binaural-subpanel {
   display: none !important;
 }
-/* Segmented selector buttons. */
-.output-mode-btn {
+.renderer-tab-btn {
   opacity: 0.55;
+  flex: 1 1 0;
 }
-.output-mode-btn.active {
+.renderer-tab-btn.active {
   opacity: 1;
   border-color: rgba(86, 156, 255, 0.8);
   background: rgba(86, 156, 255, 0.18);

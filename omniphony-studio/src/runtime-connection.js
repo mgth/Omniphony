@@ -45,10 +45,19 @@ const PANEL_COLLAPSE_IDS = [
   'rightPanelCollapseBtn'
 ];
 
+// Pure navigation between the Renderer / Binaural parameter tabs: browsing
+// must stay possible with no runtime connected (the controls inside the tabs
+// are locked individually by the generic selector sweep).
+const TAB_IDS = [
+  'rendererTabRendererBtn',
+  'rendererTabBinauralBtn'
+];
+
 const EXEMPT_CONTROL_IDS = new Set([
   ...OSC_CONTROL_IDS,
   ...PANEL_TOGGLE_IDS,
-  ...PANEL_COLLAPSE_IDS
+  ...PANEL_COLLAPSE_IDS,
+  ...TAB_IDS
 ]);
 
 function runtimeConnected() {
