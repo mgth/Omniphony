@@ -633,10 +633,18 @@
       <div id="audioPanelMount"></div>
       <div id="rendererPanelMount"></div>
       <div class="info-section" id="speakersSection">
-        <div class="panel-header">
+        <!-- Two stacked gauge groups, each with its own header. Speaker mode
+             shows only the Speakers group; direct headphones only the
+             Headphones group; the virtual-room mode shows both. -->
+        <div class="panel-header speakers-header-binaural">
+          <div class="panel-header-main">
+          <div class="info-title panel-title speakers-title-binaural">Headphones</div>
+          </div>
+        </div>
+        <div id="hpChannelsList" class="info-list"></div>
+        <div class="panel-header speakers-header-speakers">
           <div class="panel-header-main">
           <div class="info-title panel-title speakers-title-speakers" data-i18n="section.speakers">Speakers</div>
-          <div class="info-title panel-title speakers-title-binaural">Headphones</div>
           </div>
           <div class="speakers-layout-actions" style="display:flex;align-items:center;gap:0.35rem">
             <button id="presetsBtn" class="ui-btn ui-btn-primary" data-i18n="config.presets" data-i18n-title="config.presetsHint">Presets</button>
@@ -645,7 +653,6 @@
             <button id="speakerAddBtn" type="button" class="toggle-btn">+ <span data-i18n="speaker.add">Add</span></button>
           </div>
         </div>
-        <div id="hpChannelsList" class="info-list"></div>
         <div id="speakersList" class="info-list">No speakers.</div>
       </div>
       </div>

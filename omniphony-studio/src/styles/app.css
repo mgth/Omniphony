@@ -2561,12 +2561,14 @@ body:not(.cap-embedded) .output-mode-mpv-note {
    BOTH — the ear rows on top and the editable per-speaker rows, which drive
    the virtual speakers of the app layout. */
 body.output-binaural:not(.output-cascaded) #speakersList,
-body.output-binaural:not(.output-cascaded) .speakers-layout-actions,
-body.output-binaural:not(.output-cascaded) .speakers-title-speakers,
+body.output-binaural:not(.output-cascaded) .speakers-header-speakers,
 body:not(.output-binaural) #hpChannelsList,
-body:not(.output-binaural) .speakers-title-binaural,
-body.output-cascaded .speakers-title-binaural {
+body:not(.output-binaural) .speakers-header-binaural {
   display: none !important;
+}
+/* Two headers share one section in virtual-room mode: tuck the second one. */
+.speakers-header-speakers {
+  margin-top: 0.35rem;
 }
 
 /* Vertical crossover-band cursor: a fixed pill floating over the 3D view just
