@@ -524,7 +524,11 @@ impl SpatialRenderer {
         let topology_guard = self.control.active_topology();
         let topology = &*topology_guard;
         let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
-        self.refresh_crossover_for_topology(topology_identity, &topology.speaker_layout)?;
+        self.speaker_stage.refresh_for_topology(
+            &self.control,
+            topology_identity,
+            &topology.speaker_layout,
+        )?;
 
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
         let live_position_interpolation;
