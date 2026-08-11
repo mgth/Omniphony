@@ -594,7 +594,26 @@ impl SpatialRenderer {
             loudness_gain: std::sync::atomic::AtomicU32::new(1.0_f32.to_bits()),
             auto_gain_triggered: std::sync::atomic::AtomicBool::new(false),
             control,
-            speaker_gains_buf: vec![0.0f32; num_speakers],
+            speaker_stage: super::SpeakerRenderStage {
+                num_speakers,
+                sample_rate,
+                render_bands,
+                render_bands_topology_identity: topology_identity,
+                unified_table,
+                crossover_filter_bank,
+                crossover_filter_states: Vec::new(),
+                crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
+                band_gains_scratch: Vec::new(),
+                interp_end_scratch: Vec::new(),
+                speaker_gains_buf: vec![0.0f32; num_speakers],
+                bed_routing_gains_buf: vec![0.0f32; num_speakers],
+                delay_lines: {
+                    let max_delay = (0.1 * sample_rate as f32) as usize; // 100 ms
+                    (0..num_speakers)
+                        .map(|_| crate::delay_line::DelayLine::new(max_delay))
+                        .collect()
+                },
+            },
             object_params_buf: Vec::new(),
             speaker_params_buf: vec![
                 crate::live_params::SpeakerLiveParams::default();
@@ -602,26 +621,11 @@ impl SpatialRenderer {
             ],
             object_params_generation_seen: 0,
             speaker_params_generation_seen: 0,
-            bed_routing_gains_buf: vec![0.0f32; num_speakers],
-            delay_lines: {
-                let max_delay = (0.1 * sample_rate as f32) as usize; // 100 ms
-                (0..num_speakers)
-                    .map(|_| crate::delay_line::DelayLine::new(max_delay))
-                    .collect()
-            },
             ramp_strategy_override: None,
             binaural: crate::binaural::BinauralRenderer::new(sample_rate),
             binaural_pos_buf: Vec::new(),
             binaural_gain_buf: Vec::new(),
             binaural_direct_buf: Vec::new(),
-            render_bands,
-            unified_table,
-            render_bands_topology_identity: topology_identity,
-            crossover_filter_bank,
-            crossover_filter_states: Vec::new(),
-            crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
-            band_gains_scratch: Vec::new(),
-            interp_end_scratch: Vec::new(),
         })
     }
 
@@ -630,7 +634,7 @@ impl SpatialRenderer {
         topology_identity: usize,
         active_layout: &crate::speaker_layout::SpeakerLayout,
     ) -> Result<()> {
-        if self.render_bands_topology_identity == topology_identity {
+        if self.speaker_stage.render_bands_topology_identity == topology_identity {
             return Ok(());
         }
 
@@ -642,14 +646,18 @@ impl SpatialRenderer {
             active_layout,
             self.num_speakers,
             self.sample_rate,
-            &self.render_bands,
+            &self.speaker_stage.render_bands,
         )?;
-        self.unified_table = Self::build_unified_table(&render_bands, self.num_speakers);
-        self.render_bands = render_bands;
-        self.crossover_filter_bank = crossover_filter_bank;
-        self.crossover_filter_states.clear();
-        self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
-        self.render_bands_topology_identity = topology_identity;
+        self.speaker_stage.unified_table =
+            Self::build_unified_table(&render_bands, self.num_speakers);
+        self.speaker_stage.render_bands = render_bands;
+        self.speaker_stage.crossover_filter_bank = crossover_filter_bank;
+        self.speaker_stage.crossover_filter_states.clear();
+        self.speaker_stage
+            .crossover_band_scratch
+            .iter_mut()
+            .for_each(Vec::clear);
+        self.speaker_stage.render_bands_topology_identity = topology_identity;
         Ok(())
     }
 }

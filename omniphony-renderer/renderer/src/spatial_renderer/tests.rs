@@ -65,11 +65,11 @@ fn unified_crossover_matches_per_band() {
 
     let mut unified = build();
     assert!(
-        unified.unified_table.is_some(),
+        unified.speaker_stage.unified_table.is_some(),
         "crossover layout should build a unified table"
     );
     let mut per_band = build();
-    per_band.unified_table = None;
+    per_band.speaker_stage.unified_table = None;
 
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
     let event = vec![SpatialChannelEvent {
@@ -150,11 +150,11 @@ fn unified_polar_matches_per_band() {
 
     let mut unified = build();
     assert!(
-        unified.unified_table.is_some(),
+        unified.speaker_stage.unified_table.is_some(),
         "polar crossover layout should build a unified table"
     );
     let mut per_band = build();
-    per_band.unified_table = None;
+    per_band.speaker_stage.unified_table = None;
 
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
     let event = vec![SpatialChannelEvent {
@@ -253,11 +253,11 @@ fn unified_table_with_two_speaker_fallback_band() {
 
     let mut unified = build();
     assert!(
-        unified.unified_table.is_some(),
+        unified.speaker_stage.unified_table.is_some(),
         "a 2-speaker fallback band must not disable the unified table"
     );
     let mut per_band = build();
-    per_band.unified_table = None;
+    per_band.speaker_stage.unified_table = None;
 
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
     let event = vec![SpatialChannelEvent {

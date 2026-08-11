@@ -64,7 +64,7 @@
 //! )?;
 //! ```
 
-use crate::crossover::{BiquadState, LR4CrossoverBank};
+use crate::crossover::BiquadState;
 use crate::live_params::{RampMode, RendererControl};
 use crate::ramp_strategy::{
     PositionRampStrategy, RampContext, RampProgress, RampRenderParams, RampStrategy, RampTarget,
@@ -76,8 +76,10 @@ use std::sync::Arc;
 
 mod components;
 mod construction;
+mod speaker_stage;
 use components::{BandRenderer, ChannelState, evaluation_build_config, split_bands};
 pub use components::{RenderedFrame, SpatialChannelEvent};
+use speaker_stage::SpeakerRenderStage;
 
 /// Snapshot of `LiveParams` taken at the start of each render frame.
 ///
@@ -218,8 +220,10 @@ pub struct SpatialRenderer {
     /// Shared live parameters + speaker layout + pending VBAP swap.
     control: Arc<RendererControl>,
 
-    /// Per-speaker gain scratch buffer — pre-allocated once, reused every frame.
-    speaker_gains_buf: Vec<f32>,
+    /// Per-layout speaker rendering state (band engines, crossover, delay
+    /// lines, per-layout scratch). Extracted so the cascaded binaural mode can
+    /// later run a second stage against a virtual layout.
+    speaker_stage: SpeakerRenderStage,
 
     /// Scratch snapshot of live per-object params, indexed by input channel.
     object_params_buf: Vec<crate::live_params::ObjectLiveParams>,
@@ -232,18 +236,6 @@ pub struct SpatialRenderer {
 
     /// Last integrated generation for per-speaker live params.
     speaker_params_generation_seen: u64,
-
-    /// Scratch routing gains for bed channels.
-    ///
-    /// Keep this as a reusable full speaker-domain buffer instead of collapsing beds
-    /// back to a hardcoded one-speaker fast path. Bed routing is expected to evolve
-    /// beyond strict 1:1 mapping so we can simulate missing or non-standard speakers
-    /// without changing the downstream mix model again.
-    bed_routing_gains_buf: Vec<f32>,
-
-    /// Per-speaker delay lines — one per speaker, fixed 100 ms capacity.
-    /// Owned exclusively by the render thread; no locking required.
-    delay_lines: Vec<crate::delay_line::DelayLine>,
 
     /// Optional contributor-provided ramp strategy override.
     ramp_strategy_override: Option<Arc<dyn RampStrategy>>,
@@ -263,36 +255,6 @@ pub struct SpatialRenderer {
     /// beds mapped to a `spatialize: false` speaker (the LFE) feed both ears
     /// equally instead of being HRTF-spatialized.
     binaural_direct_buf: Vec<bool>,
-
-    /// Per-band VBAP engines.  Always has at least one entry (the "all speakers" band when
-    /// no crossover is configured).  Each engine returns full-size `Gains` (`num_speakers`).
-    render_bands: Vec<BandRenderer>,
-    /// Topology identity used to build the current crossover band engines.
-    render_bands_topology_identity: usize,
-
-    /// Crossover filter bank for splitting objects into frequency bands.
-    /// Unified multi-band cartesian table: when crossover is active and all
-    /// bands use a cartesian evaluator, the per-band tables are merged so a
-    /// lookup localises the cell once for every band. `None` → per-band path.
-    unified_table: Option<MultiBandTable>,
-    /// `None` when `render_bands` has exactly 1 entry (no crossover active).
-    crossover_filter_bank: Option<LR4CrossoverBank>,
-
-    /// Per-object filter states for the crossover bank, keyed by channel index.
-    crossover_filter_states: Vec<Option<Vec<BiquadState>>>,
-
-    /// Reusable per-band scratch used only when collecting crossover timing.
-    crossover_band_scratch: [Vec<f32>; 8],
-
-    /// Reusable per-object band-gain buffer. Taken via `mem::take` at the start
-    /// of each object's render and put back afterwards, so the per-object VBAP
-    /// gain vector is allocated once and reused across objects and frames
-    /// instead of a fresh `Vec` per object per frame.
-    band_gains_scratch: Vec<Gains>,
-
-    /// `RampMode::Interp` only: pooled destination band gains for the object
-    /// currently being rendered (one entry per render band). Reused each object.
-    interp_end_scratch: Vec<Gains>,
 }
 
 impl SpatialRenderer {
@@ -644,12 +606,12 @@ impl SpatialRenderer {
         // toggling it no longer rebuilds the table (the OSC handler dropped its
         // `trigger_layout_recompute`). We sync the current value every frame —
         // just a handful of relaxed atomic stores.
-        for band in &self.render_bands {
+        for band in &self.speaker_stage.render_bands {
             if let Some(engine) = band.engine() {
                 engine.set_position_interpolation(live_position_interpolation);
             }
         }
-        if let Some(table) = self.unified_table.as_ref() {
+        if let Some(table) = self.speaker_stage.unified_table.as_ref() {
             table.set_position_interpolation(live_position_interpolation);
         }
 
@@ -901,7 +863,8 @@ impl SpatialRenderer {
         let mut object_band_gains_out: Vec<(usize, Vec<Gains>)> = Vec::new();
         let mut object_band_sq_out: Vec<(usize, Vec<f64>)> = Vec::new();
         let mut crossover_elapsed = std::time::Duration::ZERO;
-        let profile_crossover = measure_breakdown && self.crossover_filter_bank.is_some();
+        let profile_crossover =
+            measure_breakdown && self.speaker_stage.crossover_filter_bank.is_some();
 
         // Directly-routed channels always come FIRST in PCM data, then objects.
         let num_routed = channel_routing.len();
@@ -972,8 +935,8 @@ impl SpatialRenderer {
                     }
                 };
 
-                self.bed_routing_gains_buf.fill(0.0);
-                self.bed_routing_gains_buf[speaker_idx] = 1.0;
+                self.speaker_stage.bed_routing_gains_buf.fill(0.0);
+                self.speaker_stage.bed_routing_gains_buf[speaker_idx] = 1.0;
 
                 // Mix bed samples through the same per-speaker gain accumulation model
                 // used for objects, but with a one-hot routing table.
@@ -981,13 +944,17 @@ impl SpatialRenderer {
                     let sample = input_pcm[sample_idx * input_channel_count + input_channel_idx]
                         * (gain_start + gain_step * sample_idx as f32);
                     let out_base = sample_idx * self.num_speakers;
-                    for (speaker_idx, &gain) in self.bed_routing_gains_buf.iter().enumerate() {
+                    for (speaker_idx, &gain) in
+                        self.speaker_stage.bed_routing_gains_buf.iter().enumerate()
+                    {
                         output[out_base + speaker_idx] += sample * gain;
                     }
                 }
 
                 let mut gains = Gains::zeroed(self.num_speakers);
-                for (speaker_idx, &gain) in self.bed_routing_gains_buf.iter().enumerate() {
+                for (speaker_idx, &gain) in
+                    self.speaker_stage.bed_routing_gains_buf.iter().enumerate()
+                {
                     gains.set(speaker_idx, gain);
                 }
                 object_gains_out.push((input_channel_idx, gains));
@@ -1033,28 +1000,30 @@ impl SpatialRenderer {
                 // inner mix loop is contiguous and SIMD-friendly.
 
                 // Lazily allocate per-object filter state only when crossover is active.
-                let obj_filter_states: Option<&mut Vec<BiquadState>> =
-                    if let Some(fb) = self.crossover_filter_bank.as_ref() {
-                        let state_count = fb.state_count();
-                        if self.crossover_filter_states.len() <= input_channel_idx {
-                            self.crossover_filter_states
-                                .resize_with(input_channel_idx + 1, || None);
-                        }
-                        let slot = &mut self.crossover_filter_states[input_channel_idx];
-                        if slot.is_none() {
-                            *slot = Some(vec![BiquadState::default(); state_count]);
-                        }
-                        slot.as_mut()
-                    } else {
-                        None
-                    };
+                let obj_filter_states: Option<&mut Vec<BiquadState>> = if let Some(fb) =
+                    self.speaker_stage.crossover_filter_bank.as_ref()
+                {
+                    let state_count = fb.state_count();
+                    if self.speaker_stage.crossover_filter_states.len() <= input_channel_idx {
+                        self.speaker_stage
+                            .crossover_filter_states
+                            .resize_with(input_channel_idx + 1, || None);
+                    }
+                    let slot = &mut self.speaker_stage.crossover_filter_states[input_channel_idx];
+                    if slot.is_none() {
+                        *slot = Some(vec![BiquadState::default(); state_count]);
+                    }
+                    slot.as_mut()
+                } else {
+                    None
+                };
 
                 let render_params = ramp_context.render_params();
 
                 // Reuse the per-object band-gain buffer (pooled in the renderer) so
                 // the hot render path does not allocate a fresh Vec per object per
                 // frame. Each arm fills `band_gains`; it is put back at the end.
-                let mut band_gains = std::mem::take(&mut self.band_gains_scratch);
+                let mut band_gains = std::mem::take(&mut self.speaker_stage.band_gains_scratch);
                 band_gains.clear();
                 match live.ramp_mode {
                     RampMode::Off => {
@@ -1068,8 +1037,8 @@ impl SpatialRenderer {
                         let position = state.ramp.output_position;
                         let size = state.ramp.current_size;
                         Self::fill_band_gains(
-                            &self.unified_table,
-                            &self.render_bands,
+                            &self.speaker_stage.unified_table,
+                            &self.speaker_stage.render_bands,
                             render_params,
                             position,
                             size,
@@ -1078,13 +1047,17 @@ impl SpatialRenderer {
 
                         let mut fst = obj_filter_states;
                         if profile_crossover {
-                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
+                            let fb = self
+                                .speaker_stage
+                                .crossover_filter_bank
+                                .as_ref()
+                                .expect("crossover bank");
                             let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
                             let started_at = std::time::Instant::now();
                             fb.process_block(
                                 sample_length,
                                 fst_slice,
-                                &mut self.crossover_band_scratch,
+                                &mut self.speaker_stage.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
                                         * (gain_start + gain_step * sample_idx as f32)
@@ -1094,7 +1067,8 @@ impl SpatialRenderer {
                             for sample_idx in 0..sample_length {
                                 let out_base = sample_idx * self.num_speakers;
                                 for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = self.crossover_band_scratch[b][sample_idx];
+                                    let s =
+                                        self.speaker_stage.crossover_band_scratch[b][sample_idx];
                                     for (spk, &g) in gains.iter().enumerate() {
                                         output[out_base + spk] += s * g;
                                     }
@@ -1107,7 +1081,7 @@ impl SpatialRenderer {
                                     * (gain_start + gain_step * sample_idx as f32);
                                 let split = split_bands(
                                     raw,
-                                    &self.crossover_filter_bank,
+                                    &self.speaker_stage.crossover_filter_bank,
                                     fst.as_mut().map(|v| v.as_mut_slice()),
                                 );
                                 let out_base = sample_idx * self.num_speakers;
@@ -1129,8 +1103,8 @@ impl SpatialRenderer {
                         let position = state.ramp.output_position;
                         let size = state.ramp.current_size;
                         Self::fill_band_gains(
-                            &self.unified_table,
-                            &self.render_bands,
+                            &self.speaker_stage.unified_table,
+                            &self.speaker_stage.render_bands,
                             render_params,
                             position,
                             size,
@@ -1139,13 +1113,17 @@ impl SpatialRenderer {
 
                         let mut fst = obj_filter_states;
                         if profile_crossover {
-                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
+                            let fb = self
+                                .speaker_stage
+                                .crossover_filter_bank
+                                .as_ref()
+                                .expect("crossover bank");
                             let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
                             let started_at = std::time::Instant::now();
                             fb.process_block(
                                 sample_length,
                                 fst_slice,
-                                &mut self.crossover_band_scratch,
+                                &mut self.speaker_stage.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
                                         * (gain_start + gain_step * sample_idx as f32)
@@ -1155,7 +1133,8 @@ impl SpatialRenderer {
                             for sample_idx in 0..sample_length {
                                 let out_base = sample_idx * self.num_speakers;
                                 for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = self.crossover_band_scratch[b][sample_idx];
+                                    let s =
+                                        self.speaker_stage.crossover_band_scratch[b][sample_idx];
                                     for (spk, &g) in gains.iter().enumerate() {
                                         output[out_base + spk] += s * g;
                                     }
@@ -1168,7 +1147,7 @@ impl SpatialRenderer {
                                     * (gain_start + gain_step * sample_idx as f32);
                                 let split = split_bands(
                                     raw,
-                                    &self.crossover_filter_bank,
+                                    &self.speaker_stage.crossover_filter_bank,
                                     fst.as_mut().map(|v| v.as_mut_slice()),
                                 );
                                 let out_base = sample_idx * self.num_speakers;
@@ -1187,16 +1166,22 @@ impl SpatialRenderer {
                         let mut fst = obj_filter_states;
                         // One Gains slot per band, reused each sample (and across
                         // objects/frames via the pooled buffer).
-                        band_gains
-                            .resize(self.render_bands.len(), Gains::zeroed(self.num_speakers));
+                        band_gains.resize(
+                            self.speaker_stage.render_bands.len(),
+                            Gains::zeroed(self.num_speakers),
+                        );
                         if profile_crossover {
-                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
+                            let fb = self
+                                .speaker_stage
+                                .crossover_filter_bank
+                                .as_ref()
+                                .expect("crossover bank");
                             let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
                             let started_at = std::time::Instant::now();
                             fb.process_block(
                                 sample_length,
                                 fst_slice,
-                                &mut self.crossover_band_scratch,
+                                &mut self.speaker_stage.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
                                         * (gain_start + gain_step * sample_idx as f32)
@@ -1219,8 +1204,8 @@ impl SpatialRenderer {
                                 let size = state.ramp.current_size;
                                 if position != last_pos || size != last_size {
                                     Self::fill_band_gains(
-                                        &self.unified_table,
-                                        &self.render_bands,
+                                        &self.speaker_stage.unified_table,
+                                        &self.speaker_stage.render_bands,
                                         render_params,
                                         position,
                                         size,
@@ -1231,7 +1216,8 @@ impl SpatialRenderer {
                                 }
                                 let out_base = sample_idx * self.num_speakers;
                                 for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = self.crossover_band_scratch[b][sample_idx];
+                                    let s =
+                                        self.speaker_stage.crossover_band_scratch[b][sample_idx];
                                     for (spk, &g) in gains.iter().enumerate() {
                                         output[out_base + spk] += s * g;
                                     }
@@ -1259,8 +1245,8 @@ impl SpatialRenderer {
                                 let size = state.ramp.current_size;
                                 if position != last_pos || size != last_size {
                                     Self::fill_band_gains(
-                                        &self.unified_table,
-                                        &self.render_bands,
+                                        &self.speaker_stage.unified_table,
+                                        &self.speaker_stage.render_bands,
                                         render_params,
                                         position,
                                         size,
@@ -1274,7 +1260,7 @@ impl SpatialRenderer {
                                     * (gain_start + gain_step * sample_idx as f32);
                                 let split = split_bands(
                                     raw,
-                                    &self.crossover_filter_bank,
+                                    &self.speaker_stage.crossover_filter_bank,
                                     fst.as_mut().map(|v| v.as_mut_slice()),
                                 );
                                 let out_base = sample_idx * self.num_speakers;
@@ -1301,37 +1287,41 @@ impl SpatialRenderer {
                         let position = state.ramp.target_position;
                         let size = state.ramp.target_size;
 
-                        let mut end = std::mem::take(&mut self.interp_end_scratch);
+                        let mut end = std::mem::take(&mut self.speaker_stage.interp_end_scratch);
                         Self::fill_band_gains(
-                            &self.unified_table,
-                            &self.render_bands,
+                            &self.speaker_stage.unified_table,
+                            &self.speaker_stage.render_bands,
                             render_params,
                             position,
                             size,
                             &mut end,
                         );
-                        self.interp_end_scratch = end;
-                        let n_bands = self.interp_end_scratch.len();
+                        self.speaker_stage.interp_end_scratch = end;
+                        let n_bands = self.speaker_stage.interp_end_scratch.len();
 
                         // First block for this channel → start == end (no jump in).
                         if state.interp_prev_gains.len() != n_bands {
                             state.interp_prev_gains.clear();
                             state
                                 .interp_prev_gains
-                                .extend_from_slice(&self.interp_end_scratch);
+                                .extend_from_slice(&self.speaker_stage.interp_end_scratch);
                         }
                         band_gains.resize(n_bands, Gains::zeroed(self.num_speakers));
 
                         let mut fst = obj_filter_states;
                         let inv_n = 1.0 / sample_length.max(1) as f32;
                         if profile_crossover {
-                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
+                            let fb = self
+                                .speaker_stage
+                                .crossover_filter_bank
+                                .as_ref()
+                                .expect("crossover bank");
                             let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
                             let started_at = std::time::Instant::now();
                             fb.process_block(
                                 sample_length,
                                 fst_slice,
-                                &mut self.crossover_band_scratch,
+                                &mut self.speaker_stage.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
                                         * (gain_start + gain_step * sample_idx as f32)
@@ -1341,8 +1331,10 @@ impl SpatialRenderer {
                             for sample_idx in 0..sample_length {
                                 let f = (sample_idx as f32 + 1.0) * inv_n;
                                 for b in 0..n_bands {
-                                    let (s0, s1) =
-                                        (&state.interp_prev_gains[b], &self.interp_end_scratch[b]);
+                                    let (s0, s1) = (
+                                        &state.interp_prev_gains[b],
+                                        &self.speaker_stage.interp_end_scratch[b],
+                                    );
                                     let slot = &mut band_gains[b];
                                     for spk in 0..self.num_speakers {
                                         slot[spk] = s0[spk] * (1.0 - f) + s1[spk] * f;
@@ -1350,7 +1342,8 @@ impl SpatialRenderer {
                                 }
                                 let out_base = sample_idx * self.num_speakers;
                                 for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = self.crossover_band_scratch[b][sample_idx];
+                                    let s =
+                                        self.speaker_stage.crossover_band_scratch[b][sample_idx];
                                     for (spk, &g) in gains.iter().enumerate() {
                                         output[out_base + spk] += s * g;
                                     }
@@ -1360,8 +1353,10 @@ impl SpatialRenderer {
                             for sample_idx in 0..sample_length {
                                 let f = (sample_idx as f32 + 1.0) * inv_n;
                                 for b in 0..n_bands {
-                                    let (s0, s1) =
-                                        (&state.interp_prev_gains[b], &self.interp_end_scratch[b]);
+                                    let (s0, s1) = (
+                                        &state.interp_prev_gains[b],
+                                        &self.speaker_stage.interp_end_scratch[b],
+                                    );
                                     let slot = &mut band_gains[b];
                                     for spk in 0..self.num_speakers {
                                         slot[spk] = s0[spk] * (1.0 - f) + s1[spk] * f;
@@ -1372,7 +1367,7 @@ impl SpatialRenderer {
                                     * (gain_start + gain_step * sample_idx as f32);
                                 let split = split_bands(
                                     raw,
-                                    &self.crossover_filter_bank,
+                                    &self.speaker_stage.crossover_filter_bank,
                                     fst.as_mut().map(|v| v.as_mut_slice()),
                                 );
                                 let out_base = sample_idx * self.num_speakers;
@@ -1389,7 +1384,7 @@ impl SpatialRenderer {
                         state.interp_prev_gains.clear();
                         state
                             .interp_prev_gains
-                            .extend_from_slice(&self.interp_end_scratch);
+                            .extend_from_slice(&self.speaker_stage.interp_end_scratch);
                     }
                 };
 
@@ -1411,7 +1406,7 @@ impl SpatialRenderer {
                     if profile_crossover {
                         let sums: Vec<f64> = (0..band_gains.len())
                             .map(|b| {
-                                self.crossover_band_scratch[b][..sample_length]
+                                self.speaker_stage.crossover_band_scratch[b][..sample_length]
                                     .iter()
                                     .map(|&s| (s as f64) * (s as f64))
                                     .sum()
@@ -1422,7 +1417,7 @@ impl SpatialRenderer {
                 }
 
                 // Return the pooled buffer for the next object/frame.
-                self.band_gains_scratch = band_gains;
+                self.speaker_stage.band_gains_scratch = band_gains;
             }
         }
 
@@ -1452,7 +1447,8 @@ impl SpatialRenderer {
         // Pre-compute per-speaker total gains and update delay-line targets in a
         // single pass over the speaker list — one HashMap lookup per speaker.
         // Mute overrides gain to 0.0 without touching the stored gain value.
-        self.speaker_gains_buf
+        self.speaker_stage
+            .speaker_gains_buf
             .iter_mut()
             .enumerate()
             .for_each(|(idx, g)| {
@@ -1463,13 +1459,13 @@ impl SpatialRenderer {
                     total_gain * sp.map_or(1.0, |s| s.gain)
                 };
             });
-        for (idx, dl) in self.delay_lines.iter_mut().enumerate() {
+        for (idx, dl) in self.speaker_stage.delay_lines.iter_mut().enumerate() {
             dl.set_target_ms(
                 live.speaker_params.get(idx).map_or(0.0, |s| s.delay_ms),
                 self.sample_rate,
             );
         }
-        let speaker_total_gains = &self.speaker_gains_buf;
+        let speaker_total_gains = &self.speaker_stage.speaker_gains_buf;
 
         // Apply per-speaker gains and delay lines, and detect peak (tracking which
         // speaker channel held the peak, for clip reporting).
@@ -1479,7 +1475,7 @@ impl SpatialRenderer {
             for speaker_idx in 0..self.num_speakers {
                 let s = &mut output[sample_idx * self.num_speakers + speaker_idx];
                 *s *= speaker_total_gains[speaker_idx];
-                *s = self.delay_lines[speaker_idx].process(*s);
+                *s = self.speaker_stage.delay_lines[speaker_idx].process(*s);
                 let a = s.abs();
                 if a > peak_sample {
                     peak_sample = a;
