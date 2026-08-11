@@ -238,6 +238,8 @@ pub fn build_renderer_state_json(
             .unwrap_or_else(|_| json!({})),
         "binaural": {
             "outputMode": live.binaural.output_mode.as_str(),
+            "mode": live.binaural.mode.as_str(),
+            "cascadeLayout": live.binaural.cascade_layout,
             "unitScaleM": live.binaural.unit_scale_m,
             "headRadiusM": live.binaural.head_radius_m,
             "reflections": {

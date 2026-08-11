@@ -232,6 +232,8 @@ pub fn save_live_config_to_path(
     };
     render.binaural = Some(renderer::config::BinauralConfig {
         output_mode: Some(live.binaural.output_mode.as_str().to_string()),
+        mode: Some(live.binaural.mode.as_str().to_string()),
+        cascade_layout: Some(live.binaural.cascade_layout.clone()),
         unit_scale_m: Some(live.binaural.unit_scale_m),
         head_radius_m: Some(live.binaural.head_radius_m),
         hrir_source: Some(hrir_source),

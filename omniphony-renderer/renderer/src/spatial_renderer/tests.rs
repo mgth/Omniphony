@@ -1483,5 +1483,285 @@ speakers:
     }
 }
 
+/// Builder shared by the cascaded-binaural tests: 7.1.4 main layout, same
+/// arguments as the other binaural tests in this file, evaluation mode
+/// selectable (the equivalence test needs `Realtime` so VBAP is exactly
+/// one-hot at a virtual speaker direction, without table interpolation).
+fn build_cascade_test_renderer(eval: LiveEvaluationMode) -> SpatialRenderer {
+    let layout = SpeakerLayout::preset("7.1.4").unwrap();
+    SpatialRenderer::new(
+        layout,
+        48_000,
+        1,
+        1,
+        0.0,
+        2.0,
+        VbapTableMode::Cartesian {
+            x_size: 21,
+            y_size: 21,
+            z_size: 9,
+            z_neg_size: 9,
+        },
+        false,
+        true,
+        DistanceModel::Linear,
+        false,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        false,
+        [1.0, 2.0, 0.5],
+        2.0,
+        0.5,
+        0.0,
+        0.0,
+        false,
+        false,
+        false,
+        1.0,
+        1.0,
+        PreferredEvaluationMode::PrecomputedCartesian,
+        eval,
+        21,
+        21,
+        9,
+        9,
+    )
+    .unwrap()
+}
+
+/// The cascaded stage must build its virtual topology lazily on the first
+/// active frame, produce stereo, and preserve lateralization: a hard-right
+/// object pans onto right-side virtual speakers, whose HRIRs favour the
+/// right ear.
+#[test]
+fn cascaded_binaural_builds_stage_and_lateralizes() {
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian);
+    {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        live.binaural.mode = crate::live_params::BinauralMode::Cascaded;
+    }
+
+    let mut lcg: u32 = 0x1234_5678;
+    let mut noise_block = move || -> Vec<f32> {
+        (0..40)
+            .map(|_| {
+                lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                (lcg >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect()
+    };
+    let pcm = noise_block();
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([1.0, 0.0, 0.0]),
+        sample_pos: Some(0),
+    }];
+
+    let first = r.render_frame(&pcm, 1, &event, Vec::new(), false).unwrap();
+    assert_eq!(
+        first.samples.len(),
+        40 * 2,
+        "cascaded binaural output must be stereo"
+    );
+    assert!(
+        r.cascade.is_some(),
+        "cascaded stage must be built on the first active frame"
+    );
+    let stage = r.cascade.as_ref().unwrap();
+    assert_eq!(
+        stage.num_virtual(),
+        12,
+        "cascade-12 must resolve to 12 virtual speakers"
+    );
+
+    let (mut e_l, mut e_r) = (0.0f32, 0.0f32);
+    for i in 0..30 {
+        let pcm = noise_block();
+        let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+        if i >= 26 {
+            for s in out.samples.chunks_exact(2) {
+                e_l += s[0] * s[0];
+                e_r += s[1] * s[1];
+            }
+        }
+    }
+    assert!(e_l + e_r > 0.0, "cascaded binaural output is silent");
+    assert!(
+        e_r > 1.5 * e_l,
+        "hard-right object not lateralized through the cascade: E_L={e_l} E_R={e_r}"
+    );
+}
+
+/// A point source sitting exactly on a virtual speaker direction must render
+/// (near-)identically through the cascade and the direct per-object path:
+/// realtime VBAP is one-hot there, so the cascade collapses to the same
+/// single HRIR pair the direct path convolves.
+#[test]
+fn cascaded_matches_direct_at_virtual_speaker_direction() {
+    // cascade-12 "FL": azimuth −45°, elevation 0 — [−√2/2, √2/2, 0] in ADM.
+    let pos = [
+        -std::f64::consts::FRAC_1_SQRT_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+        0.0,
+    ];
+    let render = |cascaded: bool| -> Vec<f32> {
+        let mut r = build_cascade_test_renderer(LiveEvaluationMode::Realtime);
+        {
+            let mut live = r.control.live.write();
+            live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+            live.binaural.mode = if cascaded {
+                crate::live_params::BinauralMode::Cascaded
+            } else {
+                crate::live_params::BinauralMode::Direct
+            };
+        }
+        let event = vec![SpatialChannelEvent {
+            channel_idx: 0,
+            is_bed: false,
+            gain_db: Some(0),
+            ramp_length: Some(0),
+            size: Some([0.0, 0.0, 0.0]),
+            position: Some(pos),
+            sample_pos: Some(0),
+        }];
+        // Deterministic pseudo-noise, same seed for both runs.
+        let mut lcg: u32 = 0xBEEF_CAFE;
+        let mut out = Vec::new();
+        for i in 0..40 {
+            let pcm: Vec<f32> = (0..40)
+                .map(|_| {
+                    lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (lcg >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+                })
+                .collect();
+            let ev: &[SpatialChannelEvent] = if i == 0 { &event } else { &[] };
+            let f = r.render_frame(&pcm, 1, ev, Vec::new(), false).unwrap();
+            // Compare well after the gain slew (20 ms ≈ 24 blocks) and the
+            // HRIR fade-in have settled.
+            if i >= 30 {
+                out.extend_from_slice(&f.samples);
+            }
+        }
+        out
+    };
+
+    let direct = render(false);
+    let cascaded = render(true);
+    assert_eq!(direct.len(), cascaded.len());
+    let energy: f32 = direct.iter().map(|x| x * x).sum();
+    assert!(energy > 0.0, "silent baseline");
+    let err: f32 = direct
+        .iter()
+        .zip(&cascaded)
+        .map(|(a, b)| (a - b) * (a - b))
+        .sum();
+    assert!(
+        err <= energy * 1e-4,
+        "cascade must collapse to the direct render at a virtual speaker \
+         direction: relative error {}",
+        (err / energy).sqrt()
+    );
+}
+
+/// Master gain must scale the cascaded output exactly like every other path
+/// (applied once, on the final stereo — never inside the virtual mix too).
+#[test]
+fn cascaded_binaural_follows_master_gain() {
+    let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([0.5, 1.0, 0.0]),
+        sample_pos: Some(0),
+    }];
+
+    let render = |master: f32| -> Vec<f32> {
+        let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian);
+        {
+            let mut live = r.control.live.write();
+            live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+            live.binaural.mode = crate::live_params::BinauralMode::Cascaded;
+            live.master_gain = master;
+        }
+        let mut out = Vec::new();
+        for i in 0..4 {
+            let ev: &[SpatialChannelEvent] = if i == 0 { &event } else { &[] };
+            out = r
+                .render_frame(&pcm, 1, ev, Vec::new(), false)
+                .unwrap()
+                .samples;
+        }
+        out
+    };
+
+    let unity = render(1.0);
+    let double = render(2.0);
+    assert!(unity.iter().any(|x| x.abs() > 1e-6), "silent baseline");
+    for (a, b) in unity.iter().zip(&double) {
+        assert!(
+            (b - a * 2.0).abs() <= a.abs() * 1e-4 + 1e-6,
+            "master gain must scale the cascade exactly once: {a} vs {b}"
+        );
+    }
+}
+
+/// An LFE-routed bed must bypass the virtual pan onto the direct bus and keep
+/// the LFE policy: both ears equal at −3 dB, no HRTF colouration.
+#[test]
+fn cascaded_lfe_routes_direct_to_both_ears() {
+    let mut r = build_cascade_test_renderer(LiveEvaluationMode::PrecomputedCartesian);
+    {
+        let mut live = r.control.live.write();
+        live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
+        live.binaural.mode = crate::live_params::BinauralMode::Cascaded;
+    }
+    r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::LFE)]);
+
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: true,
+        gain_db: Some(0),
+        ramp_length: Some(0),
+        size: None,
+        position: None,
+        sample_pos: Some(0),
+    }];
+    const IN: f32 = 0.5;
+    let pcm = vec![IN; 40];
+    let mut out = Vec::new();
+    // Render past the 20 ms gain slew (24 blocks of 40 samples).
+    for i in 0..30 {
+        let ev: &[SpatialChannelEvent] = if i == 0 { &event } else { &[] };
+        out = r
+            .render_frame(&pcm, 1, ev, Vec::new(), false)
+            .unwrap()
+            .samples;
+    }
+    let expected = IN * std::f32::consts::FRAC_1_SQRT_2;
+    for s in out.chunks_exact(2) {
+        assert!(
+            (s[0] - s[1]).abs() < 1e-6,
+            "LFE must feed both ears equally: L={} R={}",
+            s[0],
+            s[1]
+        );
+        assert!(
+            (s[0] - expected).abs() < 1e-4,
+            "LFE must land at −3 dB dry: got {} expected {expected}",
+            s[0]
+        );
+    }
+}
+
 // TODO: Add integration test with real spatial metadata
 // For now, testing is done via real spatial audio content decoding

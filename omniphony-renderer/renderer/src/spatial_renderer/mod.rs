@@ -73,6 +73,7 @@ use crate::spatial_vbap::DistanceModel;
 use anyhow::Result;
 use std::sync::Arc;
 
+mod cascade;
 mod components;
 mod construction;
 mod speaker_stage;
@@ -243,6 +244,18 @@ pub struct SpatialRenderer {
     /// `LiveParams::binaural.output_mode == OutputMode::Binaural`; otherwise the
     /// classic VBAP path runs and this holds no live state.
     binaural: crate::binaural::BinauralRenderer,
+
+    /// Cascaded binaural stage (`binaural.mode == Cascaded`): the virtual
+    /// speaker topology + bus scratch. Built lazily on the render thread the
+    /// first frame the mode is active, rebuilt when the main topology identity
+    /// or the configured virtual layout changes. `None` while unused or after
+    /// a failed build (the direct per-object path renders instead).
+    cascade: Option<cascade::CascadeStage>,
+
+    /// Failure memo so a broken `cascade_layout` is not rebuilt (and re-logged)
+    /// every frame: retried only when the key or topology identity changes.
+    cascade_failed_key: Option<String>,
+    cascade_failed_identity: usize,
 
     /// Scratch per-channel world positions for the binaural path (reused).
     binaural_pos_buf: Vec<[f64; 3]>,
@@ -489,10 +502,16 @@ impl SpatialRenderer {
         // after `update_metadata` has applied the pending events (new ramp
         // targets); the branch itself advances each object's position ramp for
         // the block. Flag it here.
-        let binaural_active = matches!(
-            self.control.live.read().binaural.output_mode,
-            crate::live_params::OutputMode::Binaural
-        );
+        let (binaural_active, cascade_active) = {
+            let g = self.control.live.read();
+            (
+                matches!(
+                    g.binaural.output_mode,
+                    crate::live_params::OutputMode::Binaural
+                ),
+                matches!(g.binaural.mode, crate::live_params::BinauralMode::Cascaded),
+            )
+        };
 
         // ── 1. Load the current immutable render topology and keep band engines in sync ──
         let topology_guard = self.control.active_topology();
@@ -503,6 +522,13 @@ impl SpatialRenderer {
             topology_identity,
             &topology.speaker_layout,
         )?;
+        // Cascaded binaural stage: kept in sync only while the mode is active.
+        // Must run before the live snapshot below, which borrows `self` fields
+        // for the rest of the frame. A failed build leaves the stage at `None`
+        // and the direct per-object binaural path renders instead.
+        if binaural_active && cascade_active {
+            self.refresh_cascade_for_topology(topology_identity);
+        }
 
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
         let live_position_interpolation;
@@ -626,81 +652,6 @@ impl SpatialRenderer {
         // ramp position) and gains, then render to interleaved stereo. Bypasses
         // the entire speaker/VBAP path below.
         if binaural_active {
-            self.binaural_pos_buf.clear();
-            self.binaural_pos_buf
-                .resize(input_channel_count, [0.0, 1.0, 0.0]);
-            self.binaural_gain_buf.clear();
-            self.binaural_gain_buf.resize(input_channel_count, 0.0);
-            self.binaural_direct_buf.clear();
-            self.binaural_direct_buf.resize(input_channel_count, false);
-            let num_routed = channel_routing.len();
-            {
-                let states = &mut self.channel_states;
-                for c in 0..input_channel_count {
-                    // Object-level mute as a 0/1 factor (per-object output gain was
-                    // removed; only mute remains live-tunable).
-                    let obj_gain = match self.object_params_buf.get(c) {
-                        Some(o) if o.muted => 0.0,
-                        _ => 1.0,
-                    };
-                    // Stream metadata gain, same semantics as the VBAP path:
-                    // silent (-128 = -inf dB) until the first metadata arrives.
-                    let gain_db = states
-                        .get(c)
-                        .filter(|s| s.initialized)
-                        .map(|s| s.gain_db)
-                        .unwrap_or(-128);
-                    let gain_linear = if gain_db == -128 {
-                        0.0
-                    } else {
-                        10.0_f32.powf(gain_db as f32 / 20.0)
-                    };
-                    // Slewed like the VBAP path (block-end value: the binaural
-                    // stage updates per block anyway).
-                    let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
-                    if let Some(state) = states.get_mut(c) {
-                        let (start, step) =
-                            state.slew_gain(obj_gain * gain_linear, sample_length, ramp_samples);
-                        self.binaural_gain_buf[c] = start + step * sample_length as f32;
-                    } else {
-                        self.binaural_gain_buf[c] = 0.0;
-                    }
-                    // Same direct/virtual split as the VBAP path.
-                    let direct_label = match channel_routing.get(c) {
-                        Some(ChannelRoute::Direct(label)) if c < num_routed => Some(*label),
-                        _ => None,
-                    };
-                    if let Some(label) = direct_label {
-                        // Direct channel: place it at its resolved speaker's
-                        // direction. A channel routed to a non-spatialized
-                        // speaker (the LFE) keeps the direct-routing intent in
-                        // headphone mode too: fed to both ears equally, no
-                        // HRTF (issue #156).
-                        if let Some(&spk) = active_label_to_speaker.get(&label) {
-                            if let Some(s) = active_layout.speakers.get(spk) {
-                                self.binaural_pos_buf[c] = [s.x as f64, s.y as f64, s.z as f64];
-                                self.binaural_direct_buf[c] = !s.spatialize;
-                            }
-                        }
-                    } else if let Some(st) = states.get_mut(c) {
-                        // Advance the position ramp for this block (Frame-mode
-                        // granularity: the binaural stage updates HRIR/ITD once
-                        // per block anyway). Nothing else advances ramps in
-                        // binaural mode — the VBAP mix loop that normally does
-                        // is bypassed — so without this every object stays at
-                        // the ramp default [0,0,0]: dead centre, and rotation-
-                        // invariant (the zero vector ignores the head pose).
-                        let progress = st.ramp.current_progress().unwrap_or(RampProgress {
-                            completed_units: 0,
-                            total_units: 0,
-                        });
-                        ramp_strategy.evaluate(&mut st.ramp, progress, &ramp_context);
-                        self.binaural_pos_buf[c] = st.ramp.output_position;
-                        st.ramp.commit_output_position();
-                        st.ramp.advance_ramp(sample_length as u64);
-                    }
-                }
-            }
             let binaural_params = {
                 let g = self.control.live.read();
                 // Compare against the live source in place: no per-frame clone
@@ -719,16 +670,119 @@ impl SpatialRenderer {
             let mut output = samples_buf;
             output.clear();
             output.resize(sample_length * 2, 0.0);
-            self.binaural.render_frame(
-                input_pcm,
-                input_channel_count,
-                sample_length,
-                &binaural_params,
-                &self.binaural_pos_buf,
-                &self.binaural_gain_buf,
-                &self.binaural_direct_buf,
-                &mut output,
-            );
+            if cascade_active && self.cascade.is_some() {
+                // Cascaded stage: mix onto the virtual buses, binauralise the
+                // (fixed) virtual speakers. Taken/put back so the free mix
+                // function can borrow the other renderer fields it needs.
+                let mut stage = self.cascade.take().expect("checked is_some above");
+                cascade::render_cascade_frame(
+                    &mut stage,
+                    &mut self.channel_states,
+                    live.object_params,
+                    &mut self.binaural,
+                    self.sample_rate,
+                    input_pcm,
+                    input_channel_count,
+                    sample_length,
+                    &channel_routing,
+                    active_layout,
+                    active_label_to_speaker,
+                    ramp_strategy,
+                    &ramp_context,
+                    &binaural_params,
+                    &mut output,
+                );
+                self.cascade = Some(stage);
+            } else {
+                self.binaural_pos_buf.clear();
+                self.binaural_pos_buf
+                    .resize(input_channel_count, [0.0, 1.0, 0.0]);
+                self.binaural_gain_buf.clear();
+                self.binaural_gain_buf.resize(input_channel_count, 0.0);
+                self.binaural_direct_buf.clear();
+                self.binaural_direct_buf.resize(input_channel_count, false);
+                let num_routed = channel_routing.len();
+                {
+                    let states = &mut self.channel_states;
+                    for c in 0..input_channel_count {
+                        // Object-level mute as a 0/1 factor (per-object output gain was
+                        // removed; only mute remains live-tunable).
+                        let obj_gain = match self.object_params_buf.get(c) {
+                            Some(o) if o.muted => 0.0,
+                            _ => 1.0,
+                        };
+                        // Stream metadata gain, same semantics as the VBAP path:
+                        // silent (-128 = -inf dB) until the first metadata arrives.
+                        let gain_db = states
+                            .get(c)
+                            .filter(|s| s.initialized)
+                            .map(|s| s.gain_db)
+                            .unwrap_or(-128);
+                        let gain_linear = if gain_db == -128 {
+                            0.0
+                        } else {
+                            10.0_f32.powf(gain_db as f32 / 20.0)
+                        };
+                        // Slewed like the VBAP path (block-end value: the binaural
+                        // stage updates per block anyway).
+                        let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
+                        if let Some(state) = states.get_mut(c) {
+                            let (start, step) = state.slew_gain(
+                                obj_gain * gain_linear,
+                                sample_length,
+                                ramp_samples,
+                            );
+                            self.binaural_gain_buf[c] = start + step * sample_length as f32;
+                        } else {
+                            self.binaural_gain_buf[c] = 0.0;
+                        }
+                        // Same direct/virtual split as the VBAP path.
+                        let direct_label = match channel_routing.get(c) {
+                            Some(ChannelRoute::Direct(label)) if c < num_routed => Some(*label),
+                            _ => None,
+                        };
+                        if let Some(label) = direct_label {
+                            // Direct channel: place it at its resolved speaker's
+                            // direction. A channel routed to a non-spatialized
+                            // speaker (the LFE) keeps the direct-routing intent in
+                            // headphone mode too: fed to both ears equally, no
+                            // HRTF (issue #156).
+                            if let Some(&spk) = active_label_to_speaker.get(&label) {
+                                if let Some(s) = active_layout.speakers.get(spk) {
+                                    self.binaural_pos_buf[c] = [s.x as f64, s.y as f64, s.z as f64];
+                                    self.binaural_direct_buf[c] = !s.spatialize;
+                                }
+                            }
+                        } else if let Some(st) = states.get_mut(c) {
+                            // Advance the position ramp for this block (Frame-mode
+                            // granularity: the binaural stage updates HRIR/ITD once
+                            // per block anyway). Nothing else advances ramps in
+                            // binaural mode — the VBAP mix loop that normally does
+                            // is bypassed — so without this every object stays at
+                            // the ramp default [0,0,0]: dead centre, and rotation-
+                            // invariant (the zero vector ignores the head pose).
+                            let progress = st.ramp.current_progress().unwrap_or(RampProgress {
+                                completed_units: 0,
+                                total_units: 0,
+                            });
+                            ramp_strategy.evaluate(&mut st.ramp, progress, &ramp_context);
+                            self.binaural_pos_buf[c] = st.ramp.output_position;
+                            st.ramp.commit_output_position();
+                            st.ramp.advance_ramp(sample_length as u64);
+                        }
+                    }
+                }
+                self.binaural.render_frame(
+                    input_pcm,
+                    input_channel_count,
+                    sample_length,
+                    &binaural_params,
+                    &self.binaural_pos_buf,
+                    &self.binaural_gain_buf,
+                    &self.binaural_direct_buf,
+                    &mut output,
+                );
+            }
             // Output gain parity with the speaker path: master gain × dialnorm
             // (auto-gain reductions are already folded into master_gain).
             let loudness = if live.use_loudness {

@@ -347,6 +347,15 @@ pub struct BinauralConfig {
     /// Output path: `"speaker"` (default) or `"binaural"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_mode: Option<String>,
+    /// Binaural stage input: `"direct"` (default, one HRTF per object) or
+    /// `"cascaded"` (VBAP onto a fixed virtual layout first; convolution cost
+    /// bound by the layout size — the embedded/low-power path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Virtual layout for `mode = "cascaded"`: a preset name (default
+    /// `"cascade-12"`) or a path to a layout YAML file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cascade_layout: Option<String>,
     /// Metres represented by one ADM unit (isotropic distance scale). Default 1.0.
     /// Deliberately separate from `room_ratio`, which is anisotropic.
     #[serde(skip_serializing_if = "Option::is_none")]

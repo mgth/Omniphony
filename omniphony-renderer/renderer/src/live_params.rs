@@ -303,6 +303,43 @@ impl OutputMode {
     }
 }
 
+/// How the binaural stage sources its HRTF inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BinauralMode {
+    /// One HRIR pair per input object — best localisation, cost grows with the
+    /// object count.
+    #[default]
+    Direct,
+    /// Objects are first panned (VBAP) onto a fixed virtual speaker layout,
+    /// then each virtual speaker is binauralised as a static source. The
+    /// convolution cost is bound by the layout size, independent of the object
+    /// count — the embedded/low-power path (issue #220).
+    Cascaded,
+}
+
+impl BinauralMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Cascaded => "cascaded",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "direct" | "object" | "objects" => Some(Self::Direct),
+            "cascaded" | "cascade" | "virtual_speakers" | "virtual-speakers" => {
+                Some(Self::Cascaded)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Default virtual layout for the cascaded binaural mode: the built-in
+/// `cascade-12` preset (see `SpeakerLayout::preset_cascade_12`).
+pub const DEFAULT_CASCADE_LAYOUT: &str = "cascade-12";
+
 /// Early-reflection (shoebox) settings for the binaural stage. World-fixed
 /// room, listener at the centre; six first-order image sources per channel.
 /// The direct/reflected ratio falling with distance is the main
@@ -370,6 +407,12 @@ impl Default for BinauralReverb {
 pub struct BinauralLiveParams {
     /// Selected output path. `SpeakerArray` keeps the classic VBAP renderer.
     pub output_mode: OutputMode,
+    /// How the binaural stage is fed: per-object HRTF (`Direct`) or VBAP onto
+    /// a fixed virtual layout first (`Cascaded`).
+    pub mode: BinauralMode,
+    /// Virtual layout for `Cascaded` mode: a preset name (e.g. `cascade-12`)
+    /// or a path to a layout YAML file.
+    pub cascade_layout: String,
     /// Metres represented by one ADM unit; scales physical distance for the
     /// 1/d gain and ITD/ILD without altering object directions.
     pub unit_scale_m: f32,
@@ -396,6 +439,8 @@ impl Default for BinauralLiveParams {
     fn default() -> Self {
         Self {
             output_mode: OutputMode::default(),
+            mode: BinauralMode::default(),
+            cascade_layout: DEFAULT_CASCADE_LAYOUT.to_string(),
             unit_scale_m: 1.0,
             head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
             head_pose: crate::binaural::HeadPose::identity(),

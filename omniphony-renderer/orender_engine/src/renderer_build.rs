@@ -596,6 +596,18 @@ pub fn build_spatial_renderer(
                 {
                     live.binaural.output_mode = mode;
                 }
+                if let Some(mode) = bin
+                    .mode
+                    .as_deref()
+                    .and_then(renderer::live_params::BinauralMode::from_str)
+                {
+                    live.binaural.mode = mode;
+                }
+                if let Some(layout) = bin.cascade_layout.as_deref() {
+                    if !layout.trim().is_empty() {
+                        live.binaural.cascade_layout = layout.trim().to_string();
+                    }
+                }
                 if let Some(scale) = bin.unit_scale_m {
                     if scale.is_finite() && scale > 0.0 {
                         live.binaural.unit_scale_m = scale;

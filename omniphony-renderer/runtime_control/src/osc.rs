@@ -790,6 +790,24 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == "/omniphony/control/binaural_mode" {
+        // Switch the binaural stage between per-object HRTF ("direct") and the
+        // virtual-speaker cascade ("cascaded"). No topology recompute: the
+        // cascade stage builds its own virtual topology lazily on the render
+        // thread when first needed.
+        if let Some(mode) = parse_string_arg(msg.args.first())
+            .and_then(|v| renderer::live_params::BinauralMode::from_str(&v))
+        {
+            let mut live = ctx.renderer.live.write();
+            if live.binaural.mode != mode {
+                live.binaural.mode = mode;
+                effects.mark_dirty = true;
+                effects.log_message = Some(format!("OSC: binaural_mode -> {}", mode.as_str()));
+            }
+        }
+        return Some(effects);
+    }
+
     if addr == "/omniphony/control/head/orientation" {
         // Static head pose from Euler degrees [yaw, pitch, roll]. The live
         // head-tracking input (SensorsOSC) lands in M2; this lets Studio / tests
