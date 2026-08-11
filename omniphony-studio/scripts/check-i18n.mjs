@@ -44,7 +44,15 @@ const LEFTOVER_ALLOW_KEYS = new Set([
   // "Spread" is kept as a loanword in the Latin-script locales, so "Spread
   // min"/"Spread max" are legitimately identical to English there.
   'backendParam.spread_min',
-  'backendParam.spread_max'
+  'backendParam.spread_max',
+  // Literal format token and a proper name (Spagnol's PRTF model), kept
+  // verbatim in every locale.
+  'audio.formatCaf',
+  'binaural.hrtfSource.prtf',
+  // "File", "Stream" and "named pipe" are standard loanwords in Italian, so
+  // these labels are legitimately identical to English there.
+  'audio.backendFile',
+  'audio.namedPipe'
 ]);
 const LEFTOVER_ALLOW_PREFIXES = ['renderer.perf.'];
 

@@ -57,6 +57,7 @@ import { updateDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { setOscStatus } from './controls/osc.js';
 import { renderDrcUI } from './controls/drc.js';
 import { applyBinauralState } from './controls/binaural.js';
+import { applyProfilesState } from './controls/profiles.js';
 import { setHeadPoseTarget } from './scene/head-pose.js';
 import { updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.js';
 import { updateRoomRatioDisplay, applyRoomRatio, applyRoomRatioToScene } from './controls/room-geometry.js';
@@ -90,6 +91,7 @@ export function applyProducerCapabilityVisibility() {
 }
 
 export function applyInitState(payload) {
+  applyProfilesState(payload);
   applyBinauralState(payload?.binaural);
   setHeadPoseTarget(payload?.binaural);
   app.producerCapabilities =

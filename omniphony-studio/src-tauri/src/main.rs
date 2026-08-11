@@ -33,6 +33,7 @@ use commands::layout_io::*;
 use commands::mpv_config::*;
 use commands::mpv_overlay::*;
 use commands::orender::*;
+use commands::profiles::*;
 use commands::render::*;
 use commands::resampling::*;
 use commands::sofa_browser::*;
@@ -323,6 +324,10 @@ fn main() {
             control_object_generator_param,
             control_phantom_extract_param,
             control_virtual_bed,
+            control_profile_switch,
+            control_profile_create,
+            control_profile_delete,
+            control_profile_rename,
             control_output_mode,
             control_binaural_mode,
             control_ear_gain,

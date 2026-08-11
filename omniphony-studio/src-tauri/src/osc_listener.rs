@@ -168,6 +168,13 @@ struct MonitoringDomainState {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProfilesDomainState {
+    active: Option<String>,
+    names: Option<Vec<String>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LayoutDomainState {
     name: Option<String>,
     radius_m: Option<f64>,
@@ -667,6 +674,19 @@ fn apply_loudness_domain_state(s: &mut AppState, value: &str) -> bool {
     }
     s.loudness_source = parsed.source;
     s.loudness_gain = parsed.gain;
+    true
+}
+
+fn apply_profiles_domain_state(s: &mut AppState, value: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<ProfilesDomainState>(value) else {
+        return false;
+    };
+    if let Some(active) = parsed.active {
+        s.active_profile = Some(active);
+    }
+    if let Some(names) = parsed.names {
+        s.profile_names = names;
+    }
     true
 }
 
@@ -2357,6 +2377,19 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateMonitoring { value } => {
                 if apply_monitoring_domain_state(&mut s, &value) {
+                    (
+                        Some((
+                            "state:snapshot_ready",
+                            serde_json::to_value(&*s).unwrap_or_else(|_| serde_json::json!({})),
+                        )),
+                        removed_ids,
+                    )
+                } else {
+                    (None, removed_ids)
+                }
+            }
+            OscEvent::StateProfiles { value } => {
+                if apply_profiles_domain_state(&mut s, &value) {
                     (
                         Some((
                             "state:snapshot_ready",

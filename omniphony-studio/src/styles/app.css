@@ -153,6 +153,43 @@
         flex: 0 0 auto;
       }
 
+      /* Config-profile picker: fixed-height rows pinned above #overlayScroll.
+         They live inside the fixed-position overlay, so showing/hiding the
+         name-editor row never changes the 3D viewport geometry. */
+      #profileRow,
+      #profileNameRow {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        min-width: 0;
+      }
+
+      #profileNameRow input {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 0.75rem;
+        padding: 0.1rem 0.2rem;
+      }
+
+      /* WebKitGTK first-click reliability: no selectable text on the buttons,
+         and the inner glyph spans must never swallow the click. */
+      #profileRow button,
+      #profileNameRow button {
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
+      #profileRow button > span,
+      #profileNameRow button > span {
+        pointer-events: none;
+      }
+
+      #profileRow button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+
       #overlayScroll {
         flex: 1 1 auto;
         min-height: 0;

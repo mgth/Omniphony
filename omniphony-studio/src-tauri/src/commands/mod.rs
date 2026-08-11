@@ -18,6 +18,7 @@ pub mod layout_io;
 pub mod mpv_config;
 pub mod mpv_overlay;
 pub mod orender;
+pub mod profiles;
 pub mod render;
 pub mod resampling;
 pub mod sofa_browser;

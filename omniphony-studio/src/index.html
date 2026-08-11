@@ -46,6 +46,21 @@
           <div class="app-brand-subtitle" data-i18n="app.subtitle">Spatial Control</div>
         </div>
       </div>
+      <!-- Config-profile picker: fixed-height row pinned above the accordion
+           scroll. The overlay is position:fixed over the canvas, so this row
+           never changes the 3D viewport geometry. -->
+      <div id="profileRow">
+        <select id="profileSelect" class="form-select" style="font-size:0.75rem;padding:0.1rem 0.2rem;flex:1 1 auto;min-width:0" data-i18n-title="profiles.selectTitle" title="Config profile"></select>
+        <button id="profileCreateBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.create" title="New profile"><span>+</span></button>
+        <button id="profileRenameBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.rename" title="Rename profile"><span>✎</span></button>
+        <button id="profileDeleteBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.delete" title="Delete profile"><span>✕</span></button>
+      </div>
+      <!-- Inline name editor for profile create/rename (shown on demand). -->
+      <div id="profileNameRow" style="display:none">
+        <input id="profileNameInput" type="text" spellcheck="false" data-i18n-placeholder="profiles.namePlaceholder" placeholder="Profile name" />
+        <button id="profileNameOkBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.confirmName" title="Confirm"><span>✓</span></button>
+        <button id="profileNameCancelBtn" type="button" class="panel-toggle-btn" data-i18n-title="common.cancel" title="Cancel"><span>✕</span></button>
+      </div>
       <div id="overlayScroll">
       <div id="updatePanelRoot">
         <label class="switch-row" style="font-size:13px;cursor:pointer">
