@@ -1740,6 +1740,7 @@ const BATCHED_EVENTS: &[&str] = &[
     "source:gains",
     "source:band_gains",
     "speaker:meter",
+    "ear:meter",
     "master:meter",
     "meter:drc_gain",
 ];
@@ -2061,6 +2062,21 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+
+            OscEvent::MeterEar {
+                id,
+                peak_dbfs,
+                rms_dbfs,
+            } => (
+                Some((
+                    "ear:meter",
+                    serde_json::json!({
+                        "id": id,
+                        "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                    }),
+                )),
+                removed_ids,
+            ),
 
             OscEvent::MeterMaster {
                 peak_dbfs,

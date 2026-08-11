@@ -2556,13 +2556,16 @@ body:not(.studio-tab-binaural) .binaural-subpanel {
 body:not(.cap-embedded) .output-mode-mpv-note {
   display: none;
 }
-/* Speakers section: full control rows in speaker mode, read-only bed-anchor
-   directions in headphones mode (per-speaker gain/mute/delay are inert). */
-body.output-binaural #speakersList,
-body.output-binaural .speakers-layout-actions,
-body.output-binaural .speakers-title-speakers,
+/* Speakers section. Speaker mode: the per-speaker rows. Direct headphones:
+   only the ear rows (per-speaker params are inert). Virtual room (cascaded):
+   BOTH — the ear rows on top and the editable per-speaker rows, which drive
+   the virtual speakers of the app layout. */
+body.output-binaural:not(.output-cascaded) #speakersList,
+body.output-binaural:not(.output-cascaded) .speakers-layout-actions,
+body.output-binaural:not(.output-cascaded) .speakers-title-speakers,
 body:not(.output-binaural) #hpChannelsList,
-body:not(.output-binaural) .speakers-title-binaural {
+body:not(.output-binaural) .speakers-title-binaural,
+body.output-cascaded .speakers-title-binaural {
   display: none !important;
 }
 

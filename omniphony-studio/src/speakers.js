@@ -94,7 +94,7 @@ import {
   sourceNeutralEmissive,
   sourceDefaultEmissive
 } from './scene/materials.js';
-import { updateHeadphoneMeter, updateHeadphoneControlsUI } from './controls/headphone-meter.js';
+import { updateHeadphoneControlsUI } from './controls/headphone-meter.js';
 
 import { createLabelSprite, setLabelSpriteText, updateSpeakerLabelsFromSelection } from './scene/labels.js';
 import { createSpeakerBandBar, updateSpeakerBandBar, bandColor } from './scene/speaker-band-bars.js';
@@ -2363,9 +2363,6 @@ export function updateSpeakerLevel(index, meter) {
   const mesh = speakerMeshes[index];
   if (mesh) {
     applySpeakerLevel(mesh, speakerLevels.get(key));
-  }
-  if (index === 0 || index === 1) {
-    updateHeadphoneMeter(index, speakerLevels.get(key));
   }
   updateSpeakerMeterUI(key);
   dirty.masterMeter = true;

@@ -189,6 +189,15 @@ pub enum OscEvent {
         rms_dbfs: f64,
     },
 
+    #[serde(rename = "meter:ear")]
+    MeterEar {
+        id: String,
+        #[serde(rename = "peakDbfs")]
+        peak_dbfs: f64,
+        #[serde(rename = "rmsDbfs")]
+        rms_dbfs: f64,
+    },
+
     #[serde(rename = "meter:master")]
     MeterMaster {
         #[serde(rename = "peakDbfs")]
@@ -1025,6 +1034,13 @@ fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
             }
             "speaker" => {
                 return Some(OscEvent::MeterSpeaker {
+                    id,
+                    peak_dbfs: peak,
+                    rms_dbfs: rms,
+                })
+            }
+            "ear" => {
+                return Some(OscEvent::MeterEar {
                     id,
                     peak_dbfs: peak,
                     rms_dbfs: rms,

@@ -603,9 +603,16 @@ pub fn build_spatial_renderer(
                 {
                     live.binaural.mode = mode;
                 }
-                if let Some(layout) = bin.cascade_layout.as_deref() {
-                    if !layout.trim().is_empty() {
-                        live.binaural.cascade_layout = layout.trim().to_string();
+                if let Some(gains) = bin.ear_gains {
+                    for (ear, gain) in live.binaural.ears.iter_mut().zip(gains) {
+                        if gain.is_finite() && (0.0..=4.0).contains(&gain) {
+                            ear.gain = gain;
+                        }
+                    }
+                }
+                if let Some(mutes) = bin.ear_mutes {
+                    for (ear, muted) in live.binaural.ears.iter_mut().zip(mutes) {
+                        ear.muted = muted;
                     }
                 }
                 if let Some(scale) = bin.unit_scale_m {

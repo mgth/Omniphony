@@ -41,17 +41,38 @@ pub fn control_binaural_mode(state: State<SharedState>, value: String) {
 }
 
 #[tauri::command]
-pub fn control_cascade_layout(state: State<SharedState>, value: String) {
-    // Virtual layout for the cascaded stage: preset name or layout YAML path.
-    let trimmed = value.trim().to_string();
-    if trimmed.is_empty() {
+pub fn control_ear_gain(state: State<SharedState>, ear: u32, value: f32) {
+    // Headphone L/R output gain: dedicated ear params (the ears no longer
+    // ride the first two per-speaker slots).
+    if ear > 1 || !value.is_finite() {
         return;
     }
     send_control(
         &state.osc_tx,
-        OscControlMsg::SendString {
-            address: "/omniphony/control/binaural/cascade_layout".to_string(),
-            value: trimmed,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/binaural/ear_gain".to_string(),
+            args: vec![
+                rosc::OscType::Int(ear as i32),
+                rosc::OscType::Float(value.clamp(0.0, 4.0)),
+            ],
+        },
+    );
+}
+
+#[tauri::command]
+pub fn control_ear_mute(state: State<SharedState>, ear: u32, muted: bool) {
+    // Headphone L/R mute (solo is composed client-side from the two mutes).
+    if ear > 1 {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/binaural/ear_mute".to_string(),
+            args: vec![
+                rosc::OscType::Int(ear as i32),
+                rosc::OscType::Int(if muted { 1 } else { 0 }),
+            ],
         },
     );
 }

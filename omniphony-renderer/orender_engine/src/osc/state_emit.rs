@@ -271,6 +271,16 @@ impl OscSender {
                 args: vec![OscType::Float(peak), OscType::Float(rms)],
             }));
         }
+        // Headphone L/R meters (binaural modes only): dedicated addresses —
+        // in cascaded mode the speaker meters above carry the virtual buses.
+        if let Some(ears) = snapshot.ear_levels {
+            for (idx, &(peak, rms)) in ears.iter().enumerate() {
+                messages.push(OscPacket::Message(OscMessage {
+                    addr: format!("/omniphony/meter/ear/{}", idx),
+                    args: vec![OscType::Float(peak), OscType::Float(rms)],
+                }));
+            }
+        }
         messages.push(OscPacket::Message(OscMessage {
             addr: "/omniphony/meter/master".to_string(),
             args: vec![

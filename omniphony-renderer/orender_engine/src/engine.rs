@@ -1328,7 +1328,18 @@ impl Engine {
             let frame_duration_ms = sample_count as f32 / sample_rate as f32 * 1000.0;
             let drc_gain = self.drc_gain;
             if let Some(meter) = self.audio_meter.as_mut() {
-                meter.process_speakers(&rendered.samples, n_channels as usize);
+                // Binaural modes meter the stereo output on the dedicated ear
+                // accumulators; the cascaded mode additionally meters the
+                // virtual buses on the speaker accumulators, so Studio's
+                // speaker gauges show the virtual room.
+                if let Some((bus, n_bus)) = self.renderer.virtual_bus() {
+                    meter.process_speakers(bus, n_bus);
+                    meter.process_ears(&rendered.samples);
+                } else if self.renderer.output_is_binaural() {
+                    meter.process_ears(&rendered.samples);
+                } else {
+                    meter.process_speakers(&rendered.samples, n_channels as usize);
+                }
                 meter.process_object_bands(&rendered.object_band_sq);
                 if let Some(snapshot) = meter.poll() {
                     if overlay_active {

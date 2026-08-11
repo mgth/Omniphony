@@ -245,17 +245,11 @@ pub struct SpatialRenderer {
     /// classic VBAP path runs and this holds no live state.
     binaural: crate::binaural::BinauralRenderer,
 
-    /// Cascaded binaural stage (`binaural.mode == Cascaded`): the virtual
-    /// speaker topology + bus scratch. Built lazily on the render thread the
-    /// first frame the mode is active, rebuilt when the main topology identity
-    /// or the configured virtual layout changes. `None` while unused or after
-    /// a failed build (the direct per-object path renders instead).
+    /// Cascaded binaural geometry (`binaural.mode == Cascaded`): binaural
+    /// input positions/flags derived from the app layout + the virtual bus
+    /// scratch. Derived lazily the first frame the mode is active, re-derived
+    /// when the topology identity changes. `None` while unused.
     cascade: Option<cascade::CascadeStage>,
-
-    /// Failure memo so a broken `cascade_layout` is not rebuilt (and re-logged)
-    /// every frame: retried only when the key or topology identity changes.
-    cascade_failed_key: Option<String>,
-    cascade_failed_identity: usize,
 
     /// Speaker width of the stage that ran the previous frame's mix pass.
     /// `RampMode::Interp` caches layout-sized gains in the shared
@@ -529,12 +523,11 @@ impl SpatialRenderer {
             topology_identity,
             &topology.speaker_layout,
         )?;
-        // Cascaded binaural stage: kept in sync only while the mode is active.
-        // Must run before the live snapshot below, which borrows `self` fields
-        // for the rest of the frame. A failed build leaves the stage at `None`
-        // and the direct per-object binaural path renders instead.
+        // Cascaded binaural geometry: derived from the active topology, kept
+        // in sync only while the mode is active. Must run before the live
+        // snapshot below, which borrows `self` fields for the rest of the frame.
         if binaural_active && cascade_active {
-            self.refresh_cascade_for_topology(topology_identity);
+            self.refresh_cascade_for_topology(topology, topology_identity);
         }
 
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
@@ -659,58 +652,68 @@ impl SpatialRenderer {
         // ramp position) and gains, then render to interleaved stereo. Bypasses
         // the entire speaker/VBAP path below.
         if binaural_active {
-            let binaural_params = {
+            let (binaural_params, ears) = {
                 let g = self.control.live.read();
                 // Compare against the live source in place: no per-frame clone
                 // (the `Sofa` variant carries a heap path), and any rebuild is
                 // pushed to the worker inside `ensure_source`.
                 self.binaural.ensure_source(&g.binaural.hrir_source);
-                crate::binaural::BinauralFrameParams {
-                    head_pose: g.binaural.head_pose,
-                    unit_scale_m: g.binaural.unit_scale_m,
-                    head_radius_m: g.binaural.head_radius_m,
-                    reflections: g.binaural.reflections.clone(),
-                    reverb: g.binaural.reverb.clone(),
-                    air_absorption: g.binaural.air_absorption,
-                }
+                (
+                    crate::binaural::BinauralFrameParams {
+                        head_pose: g.binaural.head_pose,
+                        unit_scale_m: g.binaural.unit_scale_m,
+                        head_radius_m: g.binaural.head_radius_m,
+                        reflections: g.binaural.reflections.clone(),
+                        reverb: g.binaural.reverb.clone(),
+                        air_absorption: g.binaural.air_absorption,
+                    },
+                    g.binaural.ears,
+                )
             };
             let mut output = samples_buf;
             output.clear();
             output.resize(sample_length * 2, 0.0);
+            let mut cascade_diag = None;
             if cascade_active && self.cascade.is_some() {
-                // Cascaded stage: run the full speaker pipeline on the virtual
-                // layout, then binauralise the (fixed) virtual speakers.
-                // Taken/put back so the free mix function can borrow the other
-                // renderer fields it needs.
-                let mut stage = self.cascade.take().expect("checked is_some above");
+                // Cascaded mode: the MAIN speaker stage renders the app layout
+                // as a virtual room, then the fixed virtual speakers are
+                // binauralised. Taken/put back so the free function can borrow
+                // the other renderer fields it needs.
+                let mut geometry = self.cascade.take().expect("checked is_some above");
                 cascade::reseed_interp_on_width_change(
                     &mut self.channel_states,
                     &mut self.last_mix_num_speakers,
-                    stage.layout.num_speakers(),
+                    self.speaker_stage.num_speakers,
                 );
                 let is_first = self
                     .first_render
                     .swap(false, std::sync::atomic::Ordering::Relaxed);
-                cascade::render_cascade_frame(
-                    &mut stage,
+                let diag = cascade::render_cascade_frame(
+                    &mut geometry,
+                    &mut self.speaker_stage,
                     &mut self.channel_states,
                     &mut self.binaural,
-                    cascade::CascadeFrameInputs {
+                    speaker_stage::SpeakerStageFrame {
                         input_pcm,
                         input_channel_count,
                         sample_length,
                         channel_routing: &channel_routing,
+                        label_to_speaker: active_label_to_speaker,
+                        layout: active_layout,
                         object_params: live.object_params,
                         ramp_mode: live.ramp_mode,
                         ramp_strategy,
                         ramp_context: &ramp_context,
                         log_object_positions: self.log_object_positions,
                         is_first,
+                        measure_breakdown,
                     },
+                    live.speaker_params,
                     &binaural_params,
                     &mut output,
                 );
-                self.cascade = Some(stage);
+                cascade_diag = Some(diag);
+                self.cascade = Some(geometry);
             } else {
                 self.binaural_pos_buf.clear();
                 self.binaural_pos_buf
@@ -812,13 +815,12 @@ impl SpatialRenderer {
                 1.0
             };
             let total_gain = live.master_gain * loudness;
-            // Ear-channel mute/gain: Studio's headphone L/R rows reuse the
-            // first two speaker param slots (the same slots the L/R meters
-            // ride), so M/S on them works in binaural mode too.
+            // Ear-channel mute/gain: dedicated live params (the ears used to
+            // ride the first two per-speaker slots, which now belong to the
+            // virtual FL/FR rows in cascaded mode).
             let ear = |idx: usize| -> f32 {
-                live.speaker_params
-                    .get(idx)
-                    .map_or(1.0, |p| if p.muted { 0.0 } else { p.gain })
+                let e = ears[idx.min(1)];
+                if e.muted { 0.0 } else { e.gain }
             };
             let gain_l = total_gain * ear(0);
             let gain_r = total_gain * ear(1);
@@ -846,9 +848,7 @@ impl SpatialRenderer {
             // Clipping handling — same policy as the speaker path below:
             // detection always at 0 dBFS so the UI indicators work with
             // auto-gain off; the correction (when enabled) folds into the
-            // shared master gain, targeting the configured ceiling. The ear
-            // index reuses the first two speaker param slots, the same slots
-            // Studio's headphone L/R rows already ride for mute/gain.
+            // shared master gain, targeting the configured ceiling.
             if peak_sample > 1.0 {
                 self.control.note_clip(peak_ear);
                 if live.auto_gain {
@@ -875,12 +875,28 @@ impl SpatialRenderer {
                     );
                 }
             }
-            return Ok(RenderedFrame {
-                samples: output,
-                object_gains: Vec::new(),
-                object_band_gains: Vec::new(),
-                object_band_sq: Vec::new(),
-                crossover_time_ms: 0.0,
+            // Cascaded mode returns the virtual mix diagnostics: they index
+            // the app layout, so the object meters stay valid on headphones.
+            return Ok(match cascade_diag {
+                Some(mut diag) => {
+                    diag.object_gains.sort_by_key(|(idx, _)| *idx);
+                    diag.object_band_gains.sort_by_key(|(idx, _)| *idx);
+                    diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
+                    RenderedFrame {
+                        samples: output,
+                        object_gains: diag.object_gains,
+                        object_band_gains: diag.object_band_gains,
+                        object_band_sq: diag.object_band_sq,
+                        crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
+                    }
+                }
+                None => RenderedFrame {
+                    samples: output,
+                    object_gains: Vec::new(),
+                    object_band_gains: Vec::new(),
+                    object_band_sq: Vec::new(),
+                    crossover_time_ms: 0.0,
+                },
             });
         }
 
@@ -1010,6 +1026,38 @@ impl SpatialRenderer {
     }
 
     /// Get the number of output speakers
+    /// Whether the binaural (headphone) output path is active — hosts use this
+    /// to route their metering (ears vs speakers) without guessing from the
+    /// channel count (a 2.0 speaker layout is also 2-channel).
+    pub fn output_is_binaural(&self) -> bool {
+        matches!(
+            self.control.live.read().binaural.output_mode,
+            crate::live_params::OutputMode::Binaural
+        )
+    }
+
+    /// The virtual-speaker bus of the last cascaded frame, when the cascaded
+    /// binaural mode rendered it: `(interleaved_samples, channel_count)` in
+    /// app-layout speaker order, post per-speaker params. The host meters
+    /// this so Studio's speaker gauges show the virtual room while the
+    /// stereo output feeds the ear meters. `None` outside cascaded mode.
+    pub fn virtual_bus(&self) -> Option<(&[f32], usize)> {
+        let active = {
+            let g = self.control.live.read();
+            matches!(
+                g.binaural.output_mode,
+                crate::live_params::OutputMode::Binaural
+            ) && matches!(g.binaural.mode, crate::live_params::BinauralMode::Cascaded)
+        };
+        if !active {
+            return None;
+        }
+        self.cascade
+            .as_ref()
+            .filter(|c| !c.bus.is_empty())
+            .map(|c| (c.bus.as_slice(), c.num_buses()))
+    }
+
     pub fn num_speakers(&self) -> usize {
         self.num_speakers
     }

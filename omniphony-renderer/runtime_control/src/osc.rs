@@ -808,21 +808,37 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/cascade_layout" {
-        // Virtual layout for the cascaded stage: a preset name (e.g.
-        // "cascade-12") or a layout YAML path. No topology recompute here —
-        // the render thread compares the live key against the built stage
-        // every frame and rebuilds lazily; an invalid key falls back to the
-        // direct path with a log.
-        if let Some(layout) = parse_string_arg(msg.args.first())
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-        {
+    if addr == "/omniphony/control/binaural/ear_gain" {
+        // Headphone L/R output gain: [ear_idx (0|1), linear_gain]. Dedicated
+        // params — the ears no longer ride the first two per-speaker slots
+        // (those drive the virtual FL/FR in cascaded mode).
+        let idx = parse_nonnegative_u32_arg(msg.args.first());
+        let gain = parse_f32_arg(msg.args.get(1));
+        if let (Some(idx @ 0..=1), Some(gain)) = (idx, gain) {
+            if gain.is_finite() && (0.0..=4.0).contains(&gain) {
+                let mut live = ctx.renderer.live.write();
+                let ear = &mut live.binaural.ears[idx as usize];
+                if ear.gain != gain {
+                    ear.gain = gain;
+                    effects.mark_dirty = true;
+                    effects.log_message = Some(format!("OSC: binaural ear_gain {idx} -> {gain}"));
+                }
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/binaural/ear_mute" {
+        // Headphone L/R mute: [ear_idx (0|1), 0|1].
+        let idx = parse_nonnegative_u32_arg(msg.args.first());
+        let mute = parse_bool_arg(msg.args.get(1));
+        if let (Some(idx @ 0..=1), Some(muted)) = (idx, mute) {
             let mut live = ctx.renderer.live.write();
-            if live.binaural.cascade_layout != layout {
-                live.binaural.cascade_layout = layout.clone();
+            let ear = &mut live.binaural.ears[idx as usize];
+            if ear.muted != muted {
+                ear.muted = muted;
                 effects.mark_dirty = true;
-                effects.log_message = Some(format!("OSC: binaural cascade_layout -> {layout}"));
+                effects.log_message = Some(format!("OSC: binaural ear_mute {idx} -> {muted}"));
             }
         }
         return Some(effects);

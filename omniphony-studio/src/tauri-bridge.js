@@ -61,6 +61,7 @@ import {
 } from './controls/vbap.js';
 import { invoke } from '@tauri-apps/api/core';
 import { setSpeakerGainTable } from './scene/speaker-gaintable.js';
+import { updateHeadphoneMeter } from './controls/headphone-meter.js';
 import { applyOverlayState } from './mpvOverlay.js';
 import { updateAudioFormatDisplay, rebuildObjectGeneratorControls, rebuildPhantomControls } from './controls/audio.js';
 import { reflectBoundOptions } from './options-binder.js';
@@ -102,6 +103,12 @@ function applyBatchedEvent(event, payload) {
       break;
     case 'speaker:meter':
       updateSpeakerLevel(Number(payload.id), payload.meter);
+      break;
+    case 'ear:meter':
+      updateHeadphoneMeter(Number(payload.id), {
+        peakDbfs: Number(payload.meter?.peakDbfs ?? -100),
+        rmsDbfs: Number(payload.meter?.rmsDbfs ?? -100)
+      });
       break;
     case 'master:meter':
       updateMasterLevel(payload.meter);
@@ -267,6 +274,13 @@ export function setupTauriBridge() {
 
   listen('speaker:meter', ({ payload }) => {
     updateSpeakerLevel(Number(payload.id), payload.meter);
+  });
+
+  listen('ear:meter', ({ payload }) => {
+    updateHeadphoneMeter(Number(payload.id), {
+      peakDbfs: Number(payload.meter?.peakDbfs ?? -100),
+      rmsDbfs: Number(payload.meter?.rmsDbfs ?? -100)
+    });
   });
 
   listen('master:meter', ({ payload }) => {

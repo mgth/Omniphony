@@ -22,6 +22,10 @@ pub struct MeterSnapshot {
     pub object_band_levels: Vec<(u32, Vec<f32>)>,
     /// (peak_dbfs, rms_dbfs) — one per output speaker
     pub speaker_levels: Vec<(f32, f32)>,
+    /// (peak_dbfs, rms_dbfs) for the headphone L/R output, when a binaural
+    /// mode rendered this interval. `None` in speaker mode, where the stereo
+    /// bus does not exist.
+    pub ear_levels: Option<[(f32, f32); 2]>,
     /// Master output level (peak_dbfs, rms_dbfs), aggregated from the
     /// post-master-gain speaker accumulators: peak = max over speakers, rms =
     /// combined RMS across all speakers over the send interval.
@@ -41,6 +45,9 @@ pub struct AudioMeter {
     spk_peak: Vec<f32>,
     spk_rms_sq: Vec<f64>,
     spk_count: u64,
+    ear_peak: [f32; 2],
+    ear_rms_sq: [f64; 2],
+    ear_count: u64,
     num_speakers: usize,
     last_send: Instant,
     send_interval: Duration,
@@ -61,6 +68,9 @@ impl AudioMeter {
             spk_peak: vec![0.0f32; num_speakers],
             spk_rms_sq: vec![0.0f64; num_speakers],
             spk_count: 0,
+            ear_peak: [0.0; 2],
+            ear_rms_sq: [0.0; 2],
+            ear_count: 0,
             num_speakers,
             last_send: Instant::now(),
             send_interval: Duration::from_secs_f32(1.0 / rate_hz.max(1.0)),
@@ -83,6 +93,9 @@ impl AudioMeter {
             spk_peak: vec![0.0f32; num_speakers],
             spk_rms_sq: vec![0.0f64; num_speakers],
             spk_count: 0,
+            ear_peak: [0.0; 2],
+            ear_rms_sq: [0.0; 2],
+            ear_count: 0,
             num_speakers,
             last_send: Instant::now(),
             send_interval: Duration::from_secs_f32(1.0 / initial),
@@ -154,6 +167,22 @@ impl AudioMeter {
         self.spk_count += frame_count as u64;
     }
 
+    /// Call with the interleaved STEREO headphone output of a binaural mode.
+    /// Feeds the dedicated ear meters — separate from the speaker meters,
+    /// which in cascaded mode measure the virtual buses instead.
+    pub fn process_ears(&mut self, interleaved_stereo: &[f32]) {
+        for frame in interleaved_stereo.chunks_exact(2) {
+            for (ear, &sample) in frame.iter().enumerate() {
+                let s = sample.abs();
+                if s > self.ear_peak[ear] {
+                    self.ear_peak[ear] = s;
+                }
+                self.ear_rms_sq[ear] += (s as f64) * (s as f64);
+            }
+        }
+        self.ear_count += (interleaved_stereo.len() / 2) as u64;
+    }
+
     /// Returns Some(snapshot) when the send interval has elapsed, resetting accumulators.
     pub fn poll(&mut self) -> Option<MeterSnapshot> {
         if let Some(atomic) = &self.rate_hz_bits {
@@ -220,6 +249,15 @@ impl AudioMeter {
             linear_to_dbfs((energy / total).sqrt() as f32)
         };
 
+        let ear_levels = (self.ear_count > 0).then(|| {
+            let count = self.ear_count as f64;
+            [0usize, 1].map(|i| {
+                let peak = linear_to_dbfs(self.ear_peak[i]);
+                let rms = linear_to_dbfs((self.ear_rms_sq[i] / count).sqrt() as f32);
+                (peak, rms)
+            })
+        });
+
         // Reset accumulators
         for v in &mut self.obj_peak {
             *v = 0.0;
@@ -241,12 +279,16 @@ impl AudioMeter {
             *v = 0.0;
         }
         self.spk_count = 0;
+        self.ear_peak = [0.0; 2];
+        self.ear_rms_sq = [0.0; 2];
+        self.ear_count = 0;
         self.last_send = Instant::now();
 
         Some(MeterSnapshot {
             object_levels,
             object_band_levels,
             speaker_levels,
+            ear_levels,
             master_peak,
             master_rms,
         })

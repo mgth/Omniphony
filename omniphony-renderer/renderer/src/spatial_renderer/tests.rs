@@ -1070,11 +1070,12 @@ fn binaural_output_follows_master_gain() {
     }
 }
 
-/// In binaural mode the first two speaker param slots act as the L/R ear
-/// channels (Studio's headphone rows drive them): muting slot 0 must silence
-/// the left ear and leave the right ear untouched.
+/// The binaural ears carry dedicated live params (they used to ride the
+/// first two speaker slots, which now belong to the virtual FL/FR rows in
+/// cascaded mode): muting ear 0 must silence the left ear and leave the
+/// right ear untouched.
 #[test]
-fn binaural_ear_mute_uses_first_speaker_slots() {
+fn binaural_ear_mute_uses_dedicated_ear_params() {
     let layout = SpeakerLayout::preset("7.1.4").unwrap();
     let mut r = SpatialRenderer::new(
         layout,
@@ -1119,17 +1120,8 @@ fn binaural_ear_mute_uses_first_speaker_slots() {
     {
         let mut live = r.control.live.write();
         live.binaural.output_mode = crate::live_params::OutputMode::Binaural;
-        live.speakers.insert(
-            0,
-            crate::live_params::SpeakerLiveParams {
-                muted: true,
-                ..Default::default()
-            },
-        );
+        live.binaural.ears[0].muted = true;
     }
-    r.control
-        .speaker_params_generation
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
     let event = vec![SpatialChannelEvent {
@@ -1587,8 +1579,8 @@ fn cascaded_binaural_builds_stage_and_lateralizes() {
     let stage = r.cascade.as_ref().unwrap();
     assert_eq!(
         stage.num_buses(),
-        13,
-        "cascade-12 must resolve to 12 spatialized virtual speakers + LFE"
+        12,
+        "the virtual room must mirror the app layout (7.1.4 = 12 speakers)"
     );
     assert_eq!(
         stage.bin_direct.iter().filter(|&&d| d).count(),

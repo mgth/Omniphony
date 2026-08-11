@@ -58,16 +58,6 @@ export function rendererPanelMarkup() {
             <button id="rendererTabRendererBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="rendererTabs.renderer">Renderer</button>
             <button id="rendererTabBinauralBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="rendererTabs.binaural">Binaural</button>
           </div>
-          <div class="info-section renderer-subpanel binaural-subpanel" id="binauralVirtualLayoutSection" style="display:none;margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
-            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
-              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-i18n="binaural.virtualLayout" data-help-i18n="help.binaural.virtualLayout">Virtual layout</div>
-              <select id="binauralCascadeLayout" class="form-select" style="font-size:0.75rem;padding:0.1rem 0.2rem;width:auto;" data-i18n-title="binaural.cascadeLayoutTitle" title="Virtual speaker layout for the cascaded mode">
-                <option value="cascade-12">cascade-12</option>
-                <option value="7.1.4">7.1.4</option>
-                <option value="9.1.6">9.1.6</option>
-              </select>
-            </div>
-          </div>
           <div class="info-section renderer-subpanel binaural-subpanel" id="binauralHrtfSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
             <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-help-i18n="help.binaural.hrtf">HRTF</div>

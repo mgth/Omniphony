@@ -336,9 +336,26 @@ impl BinauralMode {
     }
 }
 
-/// Default virtual layout for the cascaded binaural mode: the built-in
-/// `cascade-12` preset (see `SpeakerLayout::preset_cascade_12`).
-pub const DEFAULT_CASCADE_LAYOUT: &str = "cascade-12";
+/// Live-tunable parameters for one headphone ear channel of the binaural
+/// output. Dedicated storage: the ears used to ride the first two per-speaker
+/// slots, which collides now that the cascaded mode applies the per-speaker
+/// params to the virtual speakers of the (shared) app layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EarLiveParams {
+    /// Linear gain override (default 1.0 = unity).
+    pub gain: f32,
+    /// Mute flag — independent of `gain`; unmuting restores the stored value.
+    pub muted: bool,
+}
+
+impl Default for EarLiveParams {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            muted: false,
+        }
+    }
+}
 
 /// Early-reflection (shoebox) settings for the binaural stage. World-fixed
 /// room, listener at the centre; six first-order image sources per channel.
@@ -407,12 +424,12 @@ impl Default for BinauralReverb {
 pub struct BinauralLiveParams {
     /// Selected output path. `SpeakerArray` keeps the classic VBAP renderer.
     pub output_mode: OutputMode,
-    /// How the binaural stage is fed: per-object HRTF (`Direct`) or VBAP onto
-    /// a fixed virtual layout first (`Cascaded`).
+    /// How the binaural stage is fed: per-object HRTF (`Direct`), or the full
+    /// speaker pipeline rendered on the app's speaker layout as a virtual
+    /// room, then binauralised (`Cascaded`).
     pub mode: BinauralMode,
-    /// Virtual layout for `Cascaded` mode: a preset name (e.g. `cascade-12`)
-    /// or a path to a layout YAML file.
-    pub cascade_layout: String,
+    /// Headphone L/R output gain/mute (dedicated — see [`EarLiveParams`]).
+    pub ears: [EarLiveParams; 2],
     /// Metres represented by one ADM unit; scales physical distance for the
     /// 1/d gain and ITD/ILD without altering object directions.
     pub unit_scale_m: f32,
@@ -440,7 +457,7 @@ impl Default for BinauralLiveParams {
         Self {
             output_mode: OutputMode::default(),
             mode: BinauralMode::default(),
-            cascade_layout: DEFAULT_CASCADE_LAYOUT.to_string(),
+            ears: [EarLiveParams::default(); 2],
             unit_scale_m: 1.0,
             head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
             head_pose: crate::binaural::HeadPose::identity(),

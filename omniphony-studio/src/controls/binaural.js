@@ -9,7 +9,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { initSofaBrowser, setActiveSofaPath } from './sofa-browser.js';
 import { setSpeakersGhosted } from '../speakers.js';
-import { initHeadphoneChannels } from './headphone-meter.js';
+import { applyEarState, initHeadphoneChannels } from './headphone-meter.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -97,14 +97,6 @@ export function initBinauralPanel() {
   }
   // Reflect the initial tab (Renderer) on the buttons.
   setStudioTab(document.body.classList.contains('studio-tab-binaural'));
-
-  const cascadeLayout = el('binauralCascadeLayout');
-  if (cascadeLayout) {
-    cascadeLayout.addEventListener('change', (e) => {
-      if (applying) return;
-      send('control_cascade_layout', { value: e.target.value });
-    });
-  }
 
   // The SOFA browser only makes sense for the 'sofa' source (KEMAR is
   // embedded, synthetic is analytic) — show the button accordingly.
@@ -385,26 +377,15 @@ export function applyBinauralState(b) {
       }
     }
     if (typeof b.mode === 'string') {
-      const cascaded = b.mode === 'cascaded';
-      // The virtual-layout row only means something in cascaded mode.
-      const layoutSection = el('binauralVirtualLayoutSection');
-      if (layoutSection) layoutSection.style.display = cascaded ? '' : 'none';
-      const layoutSel = el('binauralCascadeLayout');
-      if (layoutSel && typeof b.cascadeLayout === 'string' && b.cascadeLayout) {
-        // A custom YAML path from the config may not be one of the preset
-        // options — surface it as an extra entry instead of mis-selecting.
-        if (
-          document.activeElement !== layoutSel &&
-          ![...layoutSel.options].some((o) => o.value === b.cascadeLayout)
-        ) {
-          const opt = document.createElement('option');
-          opt.value = b.cascadeLayout;
-          opt.textContent = b.cascadeLayout.split('/').pop();
-          layoutSel.appendChild(opt);
-        }
-        setVal('binauralCascadeLayout', b.cascadeLayout);
-      }
+      // Cascaded ("virtual room") shows the per-speaker rows alongside the
+      // headphone rows in the Speakers section: the rows drive the virtual
+      // speakers of the app layout (see app.css gating).
+      document.body.classList.toggle(
+        'output-cascaded',
+        b.outputMode === 'binaural' && b.mode === 'cascaded',
+      );
     }
+    applyEarState(b.ears);
     if (typeof b.hrirSource === 'string') {
       setVal('binauralHrirSource', b.hrirSource);
       const btn = el('sofaBrowseBtn');
