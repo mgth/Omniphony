@@ -360,6 +360,14 @@ impl Engine {
             }
             None => (None, false),
         };
+        // Client-visible profiles view (active name + list), applied to the
+        // control below once it exists; see docs/config-profiles.md.
+        let profiles_info = loaded_cfg
+            .as_ref()
+            .map(|c| renderer::live_params::ProfilesInfo {
+                active: c.active_profile_name().to_string(),
+                names: c.profile_names(),
+            });
         let render_cfg = loaded_cfg.and_then(|c| c.render);
 
         let layout = if let Some(p) = speaker_layout_path {
@@ -451,49 +459,20 @@ impl Engine {
         }
 
         control.set_bridge_path(Some(resolved_bridge.clone()));
-        control.set_meter_rate_hz(
-            render_cfg
-                .as_ref()
-                .and_then(|c| c.meter_rate)
-                .unwrap_or(10.0),
-        );
-        control.set_diag_rate_hz(
-            render_cfg
-                .as_ref()
-                .and_then(|c| c.diag_rate)
-                .unwrap_or(10.0),
-        );
-
-        // Object-transition ramp mode. `SpatialRenderer::new` seeds the live
-        // params with `RampMode::Sample` (per-sample `compute_gains` — the most
-        // expensive path); the CLI overrides this from `render.ramp_mode` in
-        // config_resolution + bootstrap, but this embedded/mpv host never did,
-        // so it silently ran every render in per-sample mode. Mirror the CLI:
-        // honour `render.ramp_mode` (default "frame"). Both the requested-mode
-        // mutex and the live snapshot field must be set — the render loop reads
-        // the latter.
-        let ramp_mode = render_cfg
-            .as_ref()
-            .and_then(renderer::config_fields::ramp_mode::get)
-            .as_deref()
-            .and_then(renderer::live_params::RampMode::from_str)
-            .unwrap_or(renderer::live_params::RampMode::Frame);
-        control.set_requested_ramp_mode(ramp_mode);
-        control.live.write().ramp_mode = ramp_mode;
-
-        // Declared live options (surround_placement, output_channel_mapping,
-        // synthesized-object master/generators) plus
-        // their param bags and the virtual bed: seeded from config through the
-        // shared registry seed — the same call as the CLI bootstrap, so the
-        // embedded host cannot drift from it (FFI/CLI parity by construction).
-        if let Some(render) = render_cfg.as_ref() {
-            renderer::options::seed_live_from_config(&mut control.live.write(), render);
+        if let Some(info) = profiles_info {
+            control.set_profiles_info(info);
         }
 
-        // DRC: seed the live params from config and publish the bridge's
-        // supported modes (so studio shows the DRC control). The decode-side
-        // mode itself is pushed to the bridge lazily in `process` (see
-        // `sync_drc_mode`), mirroring the CLI's decoder thread.
+        // Monitoring cadences, ramp mode, declared live options and the DRC
+        // selection: seeded through the shared runtime seed — the same call
+        // the CLI-shaped bootstrap semantics expect and the one the live
+        // profile switch replays, so the embedded host cannot drift from
+        // either (FFI/CLI parity by construction; see docs/config-profiles.md).
+        crate::renderer_build::seed_runtime_state_from_render_config(&control, render_cfg.as_ref());
+
+        // Publish the bridge's supported DRC modes (so studio shows the DRC
+        // control). The decode-side mode itself is pushed to the bridge lazily
+        // in `process` (see `sync_drc_mode`), mirroring the CLI's decoder thread.
         let supported_drc: Vec<String> = bridge
             .bridge
             .supported_drc_modes()
@@ -501,18 +480,6 @@ impl Engine {
             .map(|m| m.as_str().to_string())
             .collect();
         control.set_bridge_supported_drc_modes(supported_drc);
-        {
-            let mut live = control.live.write();
-            live.drc_mode = render_cfg
-                .as_ref()
-                .and_then(|c| c.drc_mode.clone())
-                .unwrap_or_else(|| "Off".to_string());
-            live.drc_weight = render_cfg
-                .as_ref()
-                .and_then(|c| c.drc_weight)
-                .unwrap_or(1.0)
-                .clamp(0.0, 1.0);
-        }
 
         let engine = Self::new(bridge, renderer, sample_rate);
         log::info!(

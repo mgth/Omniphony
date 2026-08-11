@@ -9,7 +9,7 @@
 use anyhow::{Result, anyhow, bail};
 use bridge_api::{RVbapCartesianDefaults, RVbapTableMode};
 use renderer::config::RenderConfig;
-use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode};
+use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RendererControl};
 use renderer::render_backend::canonical_builtin_backend_id;
 use renderer::spatial_renderer::SpatialRenderer;
 use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
@@ -368,12 +368,6 @@ pub fn build_spatial_renderer(
     };
 
     log::info!("VBAP spatial rendering enabled");
-    // Raw configured backend id; resolved against the enum aliases *and* the
-    // registry below (so a registered out-of-tree backend id is selectable too).
-    let configured_backend_cfg = render_cfg.and_then(|cfg| cfg.render_backend.as_deref());
-    let configured_evaluation = render_cfg
-        .and_then(|cfg| cfg.render_evaluation_mode.as_deref())
-        .and_then(LiveEvaluationMode::from_str);
     {
         let control = renderer.renderer_control();
         // Register the demonstration backend so `backend_id = "example"` resolves.
@@ -381,6 +375,34 @@ pub fn build_spatial_renderer(
         // User-scriptable (Lua) backend; selecting `backend_id = "script"` routes
         // a rebuild through it, reading its `.lua` path from the param store.
         control.register_backend(Box::new(script_backend::ScriptFactory));
+        if seed_control_from_render_config(&control, render_cfg) {
+            if let Some(plan) = control.prepare_topology_rebuild() {
+                let topology = plan.build_topology()?;
+                control.publish_topology(topology);
+            }
+        }
+    }
+
+    Ok(renderer)
+}
+
+/// Seed a running control's live params and backend param store from a render
+/// config — the config→control half of [`build_spatial_renderer`], shared with
+/// the live profile switch (docs/config-profiles.md) so a profile activated at
+/// boot and the same one activated live cannot drift. Returns whether the
+/// seeded changes require a topology rebuild; the caller owns the rebuild.
+pub fn seed_control_from_render_config(
+    control: &RendererControl,
+    render_cfg: Option<&RenderConfig>,
+) -> bool {
+    // Raw configured backend id; resolved against the enum aliases *and* the
+    // registry (so a registered out-of-tree backend id is selectable too).
+    let configured_backend_cfg = render_cfg.and_then(|cfg| cfg.render_backend.as_deref());
+    let configured_evaluation = render_cfg
+        .and_then(|cfg| cfg.render_evaluation_mode.as_deref())
+        .and_then(LiveEvaluationMode::from_str);
+    let mut requires_rebuild = false;
+    {
         // Resolved after registration so any registered backend (not just the
         // historical concrete ones) is accepted as a hybrid inner model; a nested
         // hybrid or an unregistered id falls back to the default.
@@ -421,7 +443,6 @@ pub fn build_spatial_renderer(
                 .map(|id| id.to_string())
                 .or_else(|| control.has_backend(raw).then(|| raw.to_string()))
         });
-        let mut requires_rebuild = false;
         // Replay persisted generic backend param values, and migrate the legacy
         // dedicated keys (barycenter_localize / experimental_distance_*) into the
         // same bag so old configs keep working. All are read at the rebuild below
@@ -715,13 +736,106 @@ pub fn build_spatial_renderer(
                 }
             }
         }
-        if requires_rebuild {
-            if let Some(plan) = control.prepare_topology_rebuild() {
-                let topology = plan.build_topology()?;
-                control.publish_topology(topology);
-            }
-        }
+    }
+    requires_rebuild
+}
+
+/// Seed the host-runtime live state (monitoring cadences, ramp mode, declared
+/// options, DRC selection) from a render config. Shared by the embedded engine
+/// boot ([`crate::engine::Engine::from_paths`]) and the live profile switch;
+/// the CLI seeds the same fields through its arg-aware bootstrap.
+pub fn seed_runtime_state_from_render_config(
+    control: &RendererControl,
+    render_cfg: Option<&RenderConfig>,
+) {
+    control.set_meter_rate_hz(render_cfg.and_then(|c| c.meter_rate).unwrap_or(10.0));
+    control.set_diag_rate_hz(render_cfg.and_then(|c| c.diag_rate).unwrap_or(10.0));
+
+    // Object-transition ramp mode: honour `render.ramp_mode` (default "frame";
+    // per-sample `compute_gains` is the most expensive path and must be an
+    // explicit choice). Both the requested-mode mutex and the live snapshot
+    // field must be set — the render loop reads the latter.
+    let ramp_mode = render_cfg
+        .and_then(renderer::config_fields::ramp_mode::get)
+        .as_deref()
+        .and_then(renderer::live_params::RampMode::from_str)
+        .unwrap_or(renderer::live_params::RampMode::Frame);
+    control.set_requested_ramp_mode(ramp_mode);
+    control.live.write().ramp_mode = ramp_mode;
+
+    // Declared live options (registry rows) plus their param bags and the
+    // virtual bed: one shared registry seed, same call as the CLI bootstrap.
+    if let Some(render) = render_cfg {
+        renderer::options::seed_live_from_config(&mut control.live.write(), render);
     }
 
-    Ok(renderer)
+    // DRC selection. The decode-side mode is pushed to the bridge lazily by
+    // the host (see the engine's `sync_drc_mode`); the bridge's supported-mode
+    // list is host knowledge and stays with the host.
+    {
+        let mut live = control.live.write();
+        live.drc_mode = render_cfg
+            .and_then(|c| c.drc_mode.clone())
+            .unwrap_or_else(|| "Off".to_string());
+        live.drc_weight = render_cfg
+            .and_then(|c| c.drc_weight)
+            .unwrap_or(1.0)
+            .clamp(0.0, 1.0);
+    }
+}
+
+/// Re-apply a render config to a RUNNING engine — the live profile switch
+/// (docs/config-profiles.md). Covers the construction-path seeding minus what
+/// needs a new renderer instance (input plumbing, output device, bridge):
+/// those land in the saved config and take effect at the next start. The
+/// caller stages the new layout and triggers the topology rebuild — a switch
+/// always rebuilds, so the `requires_rebuild` result is not surfaced here.
+pub fn apply_render_config_live(
+    control: &RendererControl,
+    render_cfg: &RenderConfig,
+) -> Result<()> {
+    let params = SpatialRendererParams::from_render_config(Some(render_cfg));
+    let (room_ratio, room_ratio_rear, room_ratio_lower, room_ratio_center_blend) =
+        parse_room_ratio(&params)?;
+    let distance_model = DistanceModel::from_str(&params.vbap_distance_model)
+        .map_err(|e| anyhow!("Invalid distance model: {}", e))?;
+    {
+        // Construction-time scalars that also exist as live params: the same
+        // values `SpatialRenderer::new` would receive for this config.
+        let mut live = control.live.write();
+        live.master_gain = 10.0_f32.powf(params.master_gain / 20.0);
+        live.auto_gain = params.auto_gain;
+        live.use_loudness = params.use_loudness;
+        live.distance_model = distance_model;
+        live.use_distance_diffuse = params.distance_diffuse;
+        live.distance_diffuse_threshold = params.distance_diffuse_threshold;
+        live.distance_diffuse_curve = params.distance_diffuse_curve;
+        live.room_ratio = room_ratio;
+        live.room_ratio_rear = room_ratio_rear;
+        live.room_ratio_lower = room_ratio_lower;
+        live.room_ratio_center_blend = room_ratio_center_blend;
+        live.evaluation.position_interpolation = params.render_evaluation_position_interpolation;
+        live.evaluation.polar.azimuth_values = params.evaluation_polar_azimuth_resolution.max(1);
+        live.evaluation.polar.elevation_values =
+            params.evaluation_polar_elevation_resolution.max(1);
+        live.evaluation.polar.distance_res = params.evaluation_polar_distance_res.max(1);
+        live.evaluation.polar.distance_max = params.evaluation_polar_distance_max.max(0.01);
+        // Cartesian grid sizes only when the profile pins them; otherwise the
+        // bridge-derived defaults from construction stay in effect.
+        if let Some(x) = params.evaluation_cartesian_x_size {
+            live.evaluation.cartesian.x_size = x.max(1);
+        }
+        if let Some(y) = params.evaluation_cartesian_y_size {
+            live.evaluation.cartesian.y_size = y.max(1);
+        }
+        if let Some(z) = params.evaluation_cartesian_z_size {
+            live.evaluation.cartesian.z_size = z.max(1);
+        }
+        if let Some(z_neg) = params.evaluation_cartesian_z_neg_size {
+            live.evaluation.cartesian.z_neg_size = z_neg;
+        }
+    }
+    seed_control_from_render_config(control, Some(render_cfg));
+    seed_runtime_state_from_render_config(control, Some(render_cfg));
+    Ok(())
 }

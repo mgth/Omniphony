@@ -14,6 +14,7 @@ mod dispatch;
 mod export;
 mod gaintable;
 mod metadata_emit;
+mod profiles;
 mod recompute;
 mod state_emit;
 mod transport;

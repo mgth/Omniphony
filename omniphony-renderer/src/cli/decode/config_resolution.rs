@@ -640,6 +640,8 @@ pub(super) fn effective_to_config(
     Ok(Config {
         global: global_opt,
         render: Some(render),
+        active_profile: None,
+        profiles: Default::default(),
         extra: Default::default(),
     })
 }

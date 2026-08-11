@@ -500,6 +500,13 @@ fn init_osc_runtime(
                     .as_str()
                     .to_string(),
             ));
+            // Client-visible profiles view (active name + list), mirroring the
+            // embedded host; see docs/config-profiles.md.
+            let cfg = renderer::config::Config::load_or_default(path);
+            ctrl.set_profiles_info(renderer::live_params::ProfilesInfo {
+                active: cfg.active_profile_name().to_string(),
+                names: cfg.profile_names(),
+            });
         }
         if let Some(sender) = &mut handler.telemetry.osc_sender {
             sender.attach_renderer_control(Arc::clone(&ctrl));

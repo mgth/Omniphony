@@ -1161,6 +1161,28 @@ pub struct RendererControl {
     /// Current fixed-channel/synthesized-object applicability state supplied by
     /// the engine on declaration/topology/option changes (never per sample).
     fixed_channel_processing: RwLock<String>,
+
+    /// Named config profiles as seen by clients: active name + full name list
+    /// (see docs/config-profiles.md). Seeded from the config at boot and
+    /// updated by the OSC profile operations; read by the state snapshot.
+    /// Control-plane only, never touched on the audio path.
+    profiles_info: Mutex<ProfilesInfo>,
+}
+
+/// Client-visible view of the named config profiles (active + names).
+#[derive(Debug, Clone)]
+pub struct ProfilesInfo {
+    pub active: String,
+    pub names: Vec<String>,
+}
+
+impl Default for ProfilesInfo {
+    fn default() -> Self {
+        Self {
+            active: crate::config::DEFAULT_PROFILE.to_string(),
+            names: vec![crate::config::DEFAULT_PROFILE.to_string()],
+        }
+    }
 }
 
 impl RendererControl {
@@ -1209,7 +1231,18 @@ impl RendererControl {
                 r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
                     .to_string(),
             ),
+            profiles_info: Mutex::new(ProfilesInfo::default()),
         })
+    }
+
+    /// Set the client-visible profiles view (boot seed and OSC profile ops).
+    pub fn set_profiles_info(&self, info: ProfilesInfo) {
+        *self.profiles_info.lock() = info;
+    }
+
+    /// Current client-visible profiles view (active name + name list).
+    pub fn profiles_info(&self) -> ProfilesInfo {
+        self.profiles_info.lock().clone()
     }
 
     /// Register an additional render backend. Call at startup, before audio runs;

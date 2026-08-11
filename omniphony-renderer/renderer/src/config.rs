@@ -12,6 +12,16 @@ pub struct Config {
     pub global: Option<GlobalConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render: Option<RenderConfig>,
+    /// Name of the active configuration profile (see docs/config-profiles.md).
+    /// `render:` always holds the active profile's authoritative content;
+    /// this key names it. Absent means the implicit `"default"` profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_profile: Option<String>,
+    /// Named configuration profiles: each entry is a complete render section
+    /// (same schema as `render:`). The active entry is a mirror of `render:`,
+    /// realigned by [`Config::save`]; the others are the switch targets.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profiles: BTreeMap<String, RenderConfig>,
     /// Captures any top-level key not modelled above so a load → mutate
     /// → save round-trip preserves it verbatim. Without this, every
     /// embedder of the engine that triggers `persist::save_live_config`
@@ -20,6 +30,9 @@ pub struct Config {
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,
 }
+
+/// Name of the implicit profile a flat legacy config migrates into.
+pub const DEFAULT_PROFILE: &str = "default";
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct GlobalConfig {
@@ -624,12 +637,137 @@ impl Config {
 
     /// Serialize this config to YAML and write it to `path`.
     /// Parent directories are created automatically.
+    ///
+    /// Saving realigns the profile mirror first (see [`Config::sync_active_profile`]):
+    /// the written file always has `profiles[active] == render`, and a flat
+    /// legacy file is migrated into the implicit `"default"` profile on its
+    /// first save by a profiles-aware binary.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let yaml = serde_yaml_ng::to_string(self)?;
+        let mut out = self.clone();
+        out.sync_active_profile();
+        let yaml = serde_yaml_ng::to_string(&out)?;
         std::fs::write(path, yaml)?;
+        Ok(())
+    }
+
+    /// Name of the active profile (`"default"` when the file predates profiles).
+    pub fn active_profile_name(&self) -> &str {
+        self.active_profile.as_deref().unwrap_or(DEFAULT_PROFILE)
+    }
+
+    /// All profile names, active first-class: the active name is present even
+    /// before the mirror entry exists (flat legacy file).
+    pub fn profile_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.profiles.keys().cloned().collect();
+        let active = self.active_profile_name();
+        if !names.iter().any(|n| n == active) {
+            names.push(active.to_string());
+            names.sort();
+        }
+        names
+    }
+
+    /// Mirror the active profile: `render:` is authoritative for the active
+    /// profile's content, so keep `profiles[active]` aligned with it. On a
+    /// flat legacy file this materialises the implicit `"default"` profile.
+    /// No-op without a render section (nothing to profile yet).
+    pub fn sync_active_profile(&mut self) {
+        let Some(render) = self.render.as_ref() else {
+            return;
+        };
+        let name = self.active_profile_name().to_string();
+        self.profiles.insert(name.clone(), render.clone());
+        self.active_profile = Some(name);
+    }
+
+    /// Switch the active profile to `name`: mirror the current `render:` into
+    /// the outgoing profile, install the target profile's content as the new
+    /// `render:` — carrying over the machine-level input plumbing
+    /// (`input_mode`, `input_pipe`, `live_input`, `bridge_path`), which
+    /// belongs to the machine, not to a listening setup — and point
+    /// `active_profile` at it. Fails without touching anything if the target
+    /// does not exist. The caller re-seeds the live state and rebuilds the
+    /// topology from the new `render:` (see docs/config-profiles.md).
+    pub fn switch_profile(&mut self, name: &str) -> anyhow::Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            anyhow::bail!("profile name is empty");
+        }
+        if name == self.active_profile_name() {
+            return Ok(());
+        }
+        if !self.profiles.contains_key(name) {
+            anyhow::bail!("unknown profile '{name}'");
+        }
+        self.sync_active_profile();
+        let mut incoming = self.profiles.get(name).cloned().unwrap_or_default();
+        if let Some(outgoing) = self.render.as_ref() {
+            incoming.input_mode = outgoing.input_mode.clone();
+            incoming.input_pipe = outgoing.input_pipe.clone();
+            incoming.live_input = outgoing.live_input.clone();
+            incoming.bridge_path = outgoing.bridge_path.clone();
+        }
+        incoming.normalize_room_meters();
+        self.render = Some(incoming);
+        self.active_profile = Some(name.to_string());
+        self.sync_active_profile();
+        Ok(())
+    }
+
+    /// Create profile `name` as a copy of the current `render:` (no switch).
+    /// Fails if the name is empty or already taken.
+    pub fn create_profile(&mut self, name: &str) -> anyhow::Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            anyhow::bail!("profile name is empty");
+        }
+        if name == self.active_profile_name() || self.profiles.contains_key(name) {
+            anyhow::bail!("profile '{name}' already exists");
+        }
+        self.sync_active_profile();
+        let content = self.render.clone().unwrap_or_default();
+        self.profiles.insert(name.to_string(), content);
+        Ok(())
+    }
+
+    /// Delete profile `name`. The active profile cannot be deleted (switch
+    /// away first) — that keeps `render:`, `active_profile` and the mirror
+    /// trivially consistent.
+    pub fn delete_profile(&mut self, name: &str) -> anyhow::Result<()> {
+        let name = name.trim();
+        if name == self.active_profile_name() {
+            anyhow::bail!("cannot delete the active profile '{name}'");
+        }
+        if self.profiles.remove(name).is_none() {
+            anyhow::bail!("unknown profile '{name}'");
+        }
+        Ok(())
+    }
+
+    /// Rename profile `old` to `new`; follows `active_profile` when renaming
+    /// the active one. Fails on an unknown source or a colliding target.
+    pub fn rename_profile(&mut self, old: &str, new: &str) -> anyhow::Result<()> {
+        let (old, new) = (old.trim(), new.trim());
+        if new.is_empty() {
+            anyhow::bail!("profile name is empty");
+        }
+        if old == new {
+            return Ok(());
+        }
+        if new == self.active_profile_name() || self.profiles.contains_key(new) {
+            anyhow::bail!("profile '{new}' already exists");
+        }
+        self.sync_active_profile();
+        let Some(content) = self.profiles.remove(old) else {
+            anyhow::bail!("unknown profile '{old}'");
+        };
+        self.profiles.insert(new.to_string(), content);
+        if self.active_profile_name() == old {
+            self.active_profile = Some(new.to_string());
+        }
         Ok(())
     }
 
@@ -1085,6 +1223,145 @@ render:
         assert!(restored);
         assert_eq!(bridge_of(&cfg_b).as_deref(), Some("/tmp/live-b.so"));
         assert!(!sidecar.exists());
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    fn render_with_backend(backend: &str) -> RenderConfig {
+        RenderConfig {
+            render_backend: Some(backend.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn profile_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "omniphony-profile-test-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_flat_legacy_file_migrates_into_a_default_profile_on_save() {
+        let dir = profile_test_dir("migrate");
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, "render:\n  render_backend: barycenter\n").unwrap();
+
+        let cfg = Config::load_or_default(&path);
+        assert_eq!(cfg.active_profile_name(), DEFAULT_PROFILE);
+        assert_eq!(cfg.profile_names(), vec![DEFAULT_PROFILE.to_string()]);
+
+        cfg.save(&path).unwrap();
+        let reloaded = Config::load_or_default(&path);
+        assert_eq!(reloaded.active_profile.as_deref(), Some(DEFAULT_PROFILE));
+        assert_eq!(
+            reloaded.profiles[DEFAULT_PROFILE].render_backend.as_deref(),
+            Some("barycenter")
+        );
+    }
+
+    #[test]
+    fn switch_mirrors_the_outgoing_profile_and_installs_the_target() {
+        let mut cfg = Config {
+            render: Some(RenderConfig {
+                render_backend: Some("vbap".into()),
+                input_pipe: Some(PathBuf::from("/tmp/pipe")),
+                bridge_path: Some(PathBuf::from("/tmp/bridge.so")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        cfg.create_profile("headphones").unwrap();
+        cfg.profiles.get_mut("headphones").unwrap().render_backend = Some("barycenter".into());
+        // Divergent input plumbing in the stored profile must NOT win: the
+        // machine's input side carries over from the outgoing render section.
+        cfg.profiles.get_mut("headphones").unwrap().input_pipe =
+            Some(PathBuf::from("/tmp/stale-pipe"));
+
+        cfg.switch_profile("headphones").unwrap();
+
+        assert_eq!(cfg.active_profile.as_deref(), Some("headphones"));
+        let render = cfg.render.as_ref().unwrap();
+        assert_eq!(render.render_backend.as_deref(), Some("barycenter"));
+        assert_eq!(render.input_pipe.as_deref(), Some(Path::new("/tmp/pipe")));
+        assert_eq!(
+            render.bridge_path.as_deref(),
+            Some(Path::new("/tmp/bridge.so"))
+        );
+        // The outgoing profile captured the previous render content.
+        assert_eq!(
+            cfg.profiles[DEFAULT_PROFILE].render_backend.as_deref(),
+            Some("vbap")
+        );
+        // The mirror invariant holds for the new active profile too.
+        assert_eq!(
+            cfg.profiles["headphones"].render_backend.as_deref(),
+            Some("barycenter")
+        );
+    }
+
+    #[test]
+    fn switch_to_unknown_or_active_profile_is_safe() {
+        let mut cfg = Config {
+            render: Some(render_with_backend("vbap")),
+            ..Default::default()
+        };
+        assert!(cfg.switch_profile("nope").is_err());
+        assert_eq!(cfg.active_profile_name(), DEFAULT_PROFILE);
+        // Switching to the already-active name is a no-op, not an error.
+        cfg.switch_profile(DEFAULT_PROFILE).unwrap();
+        assert_eq!(
+            cfg.render.as_ref().unwrap().render_backend.as_deref(),
+            Some("vbap")
+        );
+    }
+
+    #[test]
+    fn create_delete_rename_enforce_name_rules() {
+        let mut cfg = Config {
+            render: Some(render_with_backend("vbap")),
+            ..Default::default()
+        };
+        assert!(cfg.create_profile("  ").is_err());
+        assert!(cfg.create_profile(DEFAULT_PROFILE).is_err());
+        cfg.create_profile("desk").unwrap();
+        assert!(cfg.create_profile("desk").is_err());
+
+        assert!(cfg.delete_profile(DEFAULT_PROFILE).is_err());
+        assert!(cfg.delete_profile("nope").is_err());
+
+        assert!(cfg.rename_profile("desk", DEFAULT_PROFILE).is_err());
+        cfg.rename_profile("desk", "couch").unwrap();
+        assert!(cfg.profiles.contains_key("couch"));
+        assert!(!cfg.profiles.contains_key("desk"));
+
+        // Renaming the active profile follows `active_profile`.
+        cfg.rename_profile(DEFAULT_PROFILE, "speakers").unwrap();
+        assert_eq!(cfg.active_profile.as_deref(), Some("speakers"));
+
+        cfg.delete_profile("couch").unwrap();
+        assert_eq!(cfg.profile_names(), vec!["speakers".to_string()]);
+    }
+
+    #[test]
+    fn unknown_keys_inside_a_profile_survive_the_round_trip() {
+        let yaml = "render:\n  render_backend: vbap\nactive_profile: speakers\nprofiles:\n  speakers:\n    render_backend: vbap\n  headphones:\n    some_future_key: keep-me\n";
+        let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse");
+        assert_eq!(cfg.active_profile.as_deref(), Some("speakers"));
+        assert!(
+            cfg.profiles["headphones"]
+                .extra
+                .contains_key("some_future_key")
+        );
+        let out = serde_yaml_ng::to_string(&cfg).expect("serialize");
+        assert!(out.contains("some_future_key: keep-me"));
     }
 }
 

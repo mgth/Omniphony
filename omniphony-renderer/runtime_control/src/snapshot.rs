@@ -390,6 +390,17 @@ pub fn build_speakers_state_json(
 /// core never references host-owned audio/input state directly; capabilities
 /// are passed in (`has_audio`/`has_input`) by the engine wrapper, derived from
 /// whether a `HostControlHandler` is attached.
+/// JSON payload of [`crate::osc_contract::STATE_PROFILES`]:
+/// `{"active": "...", "names": ["..."]}`.
+pub fn profiles_state_json(control: &RendererControl) -> String {
+    let info = control.profiles_info();
+    json!({
+        "active": info.active,
+        "names": info.names,
+    })
+    .to_string()
+}
+
 pub fn build_live_state_bundle(
     control: &Arc<RendererControl>,
     has_audio: bool,
@@ -431,6 +442,12 @@ pub fn build_live_state_bundle(
             // phantom param schemas, so clients can build controls from it.
             addr: crate::osc_contract::STATE_OPTIONS_SCHEMA.to_string(),
             args: vec![OscType::String(renderer::options::schema_json())],
+        }),
+        OscPacket::Message(OscMessage {
+            // Named config profiles (docs/config-profiles.md): active + list,
+            // so clients render the picker without reading the config file.
+            addr: crate::osc_contract::STATE_PROFILES.to_string(),
+            args: vec![OscType::String(profiles_state_json(control))],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/renderer".to_string(),

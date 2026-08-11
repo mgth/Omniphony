@@ -164,6 +164,13 @@ pub const CONTROL_BINAURAL_HRIR_UPDATE_LATTICE: &str =
 /// (`synthetic_objects`, `object_generator`, `phantom_extract`,
 /// `surround_placement`, `output_channel_mapping`) are legacy aliases of this.
 pub const CONTROL_OPTION: &str = "/omniphony/control/option";
+/// Named config profiles (docs/config-profiles.md). `switch`/`create`/`delete`
+/// take `[name (string)]`; `rename` takes `[old (string), new (string)]`.
+/// Every mutation saves the config and re-broadcasts [`STATE_PROFILES`].
+pub const CONTROL_PROFILE_SWITCH: &str = "/omniphony/control/profile/switch";
+pub const CONTROL_PROFILE_CREATE: &str = "/omniphony/control/profile/create";
+pub const CONTROL_PROFILE_DELETE: &str = "/omniphony/control/profile/delete";
+pub const CONTROL_PROFILE_RENAME: &str = "/omniphony/control/profile/rename";
 /// Overlay display preferences as JSON, republished whenever they change —
 /// including when an mpv keybind flips one through the FFI toggles. The overlay
 /// is a process-global singleton with two writers, so a client must read this
@@ -249,6 +256,9 @@ pub const STATE_MONITORING: &str = "/omniphony/state/monitoring";
 /// Schema of the declared live options (`renderer::options` registry rows),
 /// as a JSON string. Same pattern as `/state/object_generators` / `/state/phantom`.
 pub const STATE_OPTIONS_SCHEMA: &str = "/omniphony/state/options_schema";
+/// Named config profiles view as JSON: `{"active": "...", "names": ["..."]}`.
+/// Broadcast in the state snapshot and after every profile mutation.
+pub const STATE_PROFILES: &str = "/omniphony/state/profiles";
 pub const STATE_OSC_DIAG: &str = "/omniphony/state/osc/diag";
 pub const STATE_OSC_METERING: &str = "/omniphony/state/osc/metering";
 pub const STATE_REALTIME_MASTER_GAIN: &str = "/omniphony/state/realtime/master_gain";
@@ -325,6 +335,10 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_OBJECT_GENERATOR,
     CONTROL_OBJECT_GENERATOR_PARAM,
     CONTROL_OPTION,
+    CONTROL_PROFILE_SWITCH,
+    CONTROL_PROFILE_CREATE,
+    CONTROL_PROFILE_DELETE,
+    CONTROL_PROFILE_RENAME,
     CONTROL_PHANTOM_EXTRACT,
     CONTROL_PHANTOM_EXTRACT_PARAM,
     CONTROL_SURROUND_PLACEMENT,
@@ -439,6 +453,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_LOUDNESS,
     STATE_MONITORING,
     STATE_OPTIONS_SCHEMA,
+    STATE_PROFILES,
     STATE_OSC_DIAG,
     STATE_OSC_METERING,
     STATE_REALTIME_MASTER_GAIN,
