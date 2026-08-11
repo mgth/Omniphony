@@ -75,14 +75,28 @@ fn stop_degraded_reporter_global() {
     }
 }
 
-// Resolve OSC options from the C override → config → defaults, or None when OSC
-// is off. Shared by the normal path and the degraded reporter.
+// Resolve OSC options from the C override → config → environment → defaults,
+// or None when OSC is off. Shared by the normal path and the degraded reporter.
+//
+// A workflow launcher that sets OMNIPHONY_OSC_PORT is assigning this engine a
+// control port, so the variable both supplies the default port AND turns OSC on
+// when the config doesn't decide (`render.osc` unset). Without that, an
+// embedded engine in a fresh workflow config dir came up with no listener at
+// all — unreachable from Studio. An explicit `render.osc: false` still wins.
 fn resolve_osc_opts(
     cfg: &OrenderConfig,
     render_cfg: Option<&orender_engine::RenderConfig>,
 ) -> Option<OscOptions> {
-    let osc_on = cfg.osc_enabled != 0 || render_cfg.and_then(|c| c.osc).unwrap_or(false);
+    let env_port = orender_engine::runtime_env::osc_port();
+    let osc_on = cfg.osc_enabled != 0
+        || render_cfg
+            .and_then(|c| c.osc)
+            .unwrap_or_else(|| env_port.is_some());
     if !osc_on {
+        log::info!(
+            "OSC disabled: render.osc is unset/false, no host override, \
+             and no OMNIPHONY_OSC_PORT in the environment"
+        );
         return None;
     }
     let host = unsafe { opt_str(cfg.osc_host) }
@@ -92,12 +106,16 @@ fn resolve_osc_opts(
     let port_out = if cfg.osc_port_out != 0 {
         cfg.osc_port_out
     } else {
-        render_cfg.and_then(|c| c.osc_port).unwrap_or(9000)
+        render_cfg
+            .and_then(|c| c.osc_port)
+            .unwrap_or_else(orender_engine::runtime_env::default_osc_port)
     };
     let port_in = if cfg.osc_port_in != 0 {
         cfg.osc_port_in
     } else {
-        render_cfg.and_then(|c| c.osc_rx_port).unwrap_or(9000)
+        render_cfg
+            .and_then(|c| c.osc_rx_port)
+            .unwrap_or_else(orender_engine::runtime_env::default_osc_rx_port)
     };
     Some(OscOptions {
         host,
@@ -142,11 +160,16 @@ pub struct OrenderConfig {
     /// Disambiguates the bridge's raw transport (which carries no data-type
     /// byte). NULL → the bridge sniffs the sync word.
     pub codec: *const c_char,
-    /// Enable the OSC live-control server. (Not yet wired in this build.)
+    /// Force the OSC live-control server on (non-zero). 0 → follow the
+    /// config's `render.osc`; when that is unset too, OSC defaults to on iff
+    /// `OMNIPHONY_OSC_PORT` is set (a workflow-assigned control port implies
+    /// the engine must be reachable there).
     pub osc_enabled: c_int,
-    /// Incoming OSC port (0 = auto).
+    /// Incoming OSC port (0 → config `render.osc_rx_port`, else
+    /// `OMNIPHONY_OSC_PORT`, else 9000).
     pub osc_port_in: u16,
-    /// Outgoing/monitoring OSC port.
+    /// Outgoing/monitoring OSC port (0 → config `render.osc_port`, else
+    /// `OMNIPHONY_OSC_PORT`, else 9000).
     pub osc_port_out: u16,
     /// OSC bind address (default "127.0.0.1").
     pub osc_bind: *const c_char,
@@ -970,6 +993,106 @@ mod tests {
                 mirror(label) as u8,
                 "discriminant mismatch for {label:?}"
             );
+        }
+    }
+
+    mod resolve_osc {
+        use crate::{resolve_osc_opts, OrenderConfig};
+        use orender_engine::RenderConfig;
+        use std::ptr;
+
+        /// The env is process-global; serialise the tests that touch it and
+        /// restore the previous value so parallel tests never observe a
+        /// half-set variable.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        fn with_env_port<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let name = "OMNIPHONY_OSC_PORT";
+            let previous = std::env::var(name).ok();
+            match value {
+                Some(v) => unsafe { std::env::set_var(name, v) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+            let out = f();
+            match previous {
+                Some(v) => unsafe { std::env::set_var(name, v) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+            out
+        }
+
+        fn host_cfg() -> OrenderConfig {
+            OrenderConfig {
+                sample_rate: 0,
+                config_yaml_path: ptr::null(),
+                speaker_layout_path: ptr::null(),
+                bridge_path: ptr::null(),
+                codec: ptr::null(),
+                osc_enabled: 0,
+                osc_port_in: 0,
+                osc_port_out: 0,
+                osc_bind: ptr::null(),
+                osc_host: ptr::null(),
+            }
+        }
+
+        #[test]
+        fn off_when_nothing_enables_it() {
+            with_env_port(None, || {
+                assert!(resolve_osc_opts(&host_cfg(), None).is_none());
+                let render = RenderConfig::default();
+                assert!(resolve_osc_opts(&host_cfg(), Some(&render)).is_none());
+            });
+        }
+
+        #[test]
+        fn workflow_port_enables_osc_and_supplies_both_ports() {
+            with_env_port(Some("9010"), || {
+                let opts = resolve_osc_opts(&host_cfg(), None)
+                    .expect("OMNIPHONY_OSC_PORT alone must bring OSC up");
+                assert_eq!(opts.port_in, 9010);
+                assert_eq!(opts.port_out, 9010);
+            });
+        }
+
+        #[test]
+        fn explicit_config_off_beats_the_workflow_port() {
+            with_env_port(Some("9010"), || {
+                let render = RenderConfig {
+                    osc: Some(false),
+                    ..RenderConfig::default()
+                };
+                assert!(resolve_osc_opts(&host_cfg(), Some(&render)).is_none());
+            });
+        }
+
+        #[test]
+        fn host_port_override_beats_the_workflow_port() {
+            with_env_port(Some("9010"), || {
+                let cfg = OrenderConfig {
+                    osc_port_in: 9020,
+                    ..host_cfg()
+                };
+                let opts = resolve_osc_opts(&cfg, None).expect("env enables OSC");
+                assert_eq!(opts.port_in, 9020);
+                assert_eq!(opts.port_out, 9010);
+            });
+        }
+
+        #[test]
+        fn config_port_beats_the_workflow_port() {
+            with_env_port(Some("9010"), || {
+                let render = RenderConfig {
+                    osc: Some(true),
+                    osc_rx_port: Some(9005),
+                    ..RenderConfig::default()
+                };
+                let opts =
+                    resolve_osc_opts(&host_cfg(), Some(&render)).expect("config enables OSC");
+                assert_eq!(opts.port_in, 9005);
+                assert_eq!(opts.port_out, 9010);
+            });
         }
     }
 }
