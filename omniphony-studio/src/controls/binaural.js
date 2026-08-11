@@ -60,6 +60,31 @@ export function initBinauralPanel() {
     });
   }
 
+  // Binaural render mode: per-object HRTF vs the virtual-speaker cascade.
+  // Same segmented-button contract as the output mode above: the pressed
+  // state follows the renderer's state broadcast, never the click itself.
+  const directBtn = el('binauralModeDirectBtn');
+  if (directBtn) {
+    directBtn.addEventListener('click', () => {
+      if (applying) return;
+      send('control_binaural_mode', { value: 'direct' });
+    });
+  }
+  const cascadedBtn = el('binauralModeCascadedBtn');
+  if (cascadedBtn) {
+    cascadedBtn.addEventListener('click', () => {
+      if (applying) return;
+      send('control_binaural_mode', { value: 'cascaded' });
+    });
+  }
+  const cascadeLayout = el('binauralCascadeLayout');
+  if (cascadeLayout) {
+    cascadeLayout.addEventListener('change', (e) => {
+      if (applying) return;
+      send('control_cascade_layout', { value: e.target.value });
+    });
+  }
+
   // The SOFA browser only makes sense for the 'sofa' source (KEMAR is
   // embedded, synthetic is analytic) — show the button accordingly.
   const syncSofaBrowseVisibility = (value) => {
@@ -329,6 +354,32 @@ export function applyBinauralState(b) {
       const sp = el('outputModeSpeakersBtn');
       if (hp) hp.classList.toggle('active', binaural);
       if (sp) sp.classList.toggle('active', !binaural);
+    }
+    if (typeof b.mode === 'string') {
+      const cascaded = b.mode === 'cascaded';
+      const direct = el('binauralModeDirectBtn');
+      const casc = el('binauralModeCascadedBtn');
+      if (direct) direct.classList.toggle('active', !cascaded);
+      if (casc) casc.classList.toggle('active', cascaded);
+      // The virtual-layout selector only means something in cascaded mode.
+      const layoutSel = el('binauralCascadeLayout');
+      if (layoutSel) {
+        layoutSel.style.display = cascaded ? '' : 'none';
+        if (typeof b.cascadeLayout === 'string' && b.cascadeLayout) {
+          // A custom YAML path from the config may not be one of the preset
+          // options — surface it as an extra entry instead of mis-selecting.
+          if (
+            document.activeElement !== layoutSel &&
+            ![...layoutSel.options].some((o) => o.value === b.cascadeLayout)
+          ) {
+            const opt = document.createElement('option');
+            opt.value = b.cascadeLayout;
+            opt.textContent = b.cascadeLayout.split('/').pop();
+            layoutSel.appendChild(opt);
+          }
+          setVal('binauralCascadeLayout', b.cascadeLayout);
+        }
+      }
     }
     if (typeof b.hrirSource === 'string') {
       setVal('binauralHrirSource', b.hrirSource);

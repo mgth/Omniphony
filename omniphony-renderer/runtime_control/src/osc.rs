@@ -808,6 +808,26 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == "/omniphony/control/binaural/cascade_layout" {
+        // Virtual layout for the cascaded stage: a preset name (e.g.
+        // "cascade-12") or a layout YAML path. No topology recompute here —
+        // the render thread compares the live key against the built stage
+        // every frame and rebuilds lazily; an invalid key falls back to the
+        // direct path with a log.
+        if let Some(layout) = parse_string_arg(msg.args.first())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            let mut live = ctx.renderer.live.write();
+            if live.binaural.cascade_layout != layout {
+                live.binaural.cascade_layout = layout.clone();
+                effects.mark_dirty = true;
+                effects.log_message = Some(format!("OSC: binaural cascade_layout -> {layout}"));
+            }
+        }
+        return Some(effects);
+    }
+
     if addr == "/omniphony/control/head/orientation" {
         // Static head pose from Euler degrees [yaw, pitch, roll]. The live
         // head-tracking input (SensorsOSC) lands in M2; this lets Studio / tests

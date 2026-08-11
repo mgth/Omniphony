@@ -324,6 +324,8 @@ fn main() {
             control_phantom_extract_param,
             control_virtual_bed,
             control_output_mode,
+            control_binaural_mode,
+            control_cascade_layout,
             control_hrir_source,
             control_binaural_unit_scale,
             control_binaural_head_radius,

@@ -24,6 +24,39 @@ pub fn control_output_mode(state: State<SharedState>, value: String) {
 }
 
 #[tauri::command]
+pub fn control_binaural_mode(state: State<SharedState>, value: String) {
+    // Binaural stage input: per-object HRTF ("direct") or the fixed
+    // virtual-speaker cascade ("cascaded").
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(normalized.as_str(), "direct" | "cascaded") {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/binaural_mode".to_string(),
+            value: normalized,
+        },
+    );
+}
+
+#[tauri::command]
+pub fn control_cascade_layout(state: State<SharedState>, value: String) {
+    // Virtual layout for the cascaded stage: preset name or layout YAML path.
+    let trimmed = value.trim().to_string();
+    if trimmed.is_empty() {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/binaural/cascade_layout".to_string(),
+            value: trimmed,
+        },
+    );
+}
+
+#[tauri::command]
 pub fn control_hrir_source(state: State<SharedState>, value: String) {
     // "synthetic" | "saf"/"kemar" | "sofa:<path>".
     send_control(

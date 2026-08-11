@@ -51,6 +51,20 @@ export function rendererPanelMarkup() {
         <div id="rendererSectionContent" class="conditional-params">
           <div class="renderer-panel-stack" style="margin-top:0.25rem;display:grid;gap:0.35rem">
           <div class="output-mode-mpv-note" style="font-size:0.65rem;color:#8fa6bd;padding:0 0.1rem;" data-i18n="outputMode.mpvNote">mpv host: the output mode is applied at player start — restart playback after switching.</div>
+          <div class="info-section renderer-subpanel binaural-subpanel" id="binauralModeSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem;flex-wrap:wrap">
+              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-i18n="binaural.renderMode" data-help-i18n="help.binaural.renderMode">Render mode</div>
+              <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap">
+                <select id="binauralCascadeLayout" class="form-select" style="display:none;font-size:0.75rem;padding:0.1rem 0.2rem;width:auto;" data-i18n-title="binaural.cascadeLayoutTitle" title="Virtual speaker layout for the cascaded mode">
+                  <option value="cascade-12">cascade-12</option>
+                  <option value="7.1.4">7.1.4</option>
+                  <option value="9.1.6">9.1.6</option>
+                </select>
+                <button id="binauralModeDirectBtn" type="button" class="toggle-btn"><span data-i18n="binaural.renderMode.direct">Direct (per object)</span></button>
+                <button id="binauralModeCascadedBtn" type="button" class="toggle-btn"><span data-i18n="binaural.renderMode.cascaded">Cascaded (virtual speakers)</span></button>
+              </div>
+            </div>
+          </div>
           <div class="info-section renderer-subpanel binaural-subpanel" id="binauralHrtfSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
             <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-help-i18n="help.binaural.hrtf">HRTF</div>
