@@ -39,7 +39,7 @@ pub use tracking::{HeadTracking, HeadTrackingFormat};
 use crate::delay_line::DelayLine;
 use crate::live_params::{BinauralReflections, BinauralReverb};
 use convolver::EarConvolver;
-use hrir::{HRIR_LEN, HrirPair, HrirSet, ParametricPinnaHrir};
+use hrir::{DirectionKey, HRIR_LEN, HrirPair, HrirSet, ParametricPinnaHrir};
 use measured::MeasuredHrirData;
 use prtf::SpagnolPrtfHrir;
 use reflections::ReflectionBank;
@@ -201,6 +201,11 @@ struct ChannelDsp {
     /// Air-absorption smoothing coefficient for the current block
     /// (0 = bypass, →1 = heavy low-pass). Updated per block from distance.
     air_coeff: f32,
+    /// Lattice direction the loaded kernels were built from, tagged with the
+    /// HRIR grid generation they came out of — a live source switch replaces
+    /// the grid under us, and a key alone would then match across two
+    /// different datasets and freeze the stale kernels in place.
+    last_dir: Option<(u32, DirectionKey)>,
 }
 
 impl ChannelDsp {
@@ -214,6 +219,7 @@ impl ChannelDsp {
             refl: None,
             air_state: 0.0,
             air_coeff: 0.0,
+            last_dir: None,
         }
     }
 }
@@ -247,6 +253,9 @@ pub struct BinauralRenderer {
     channels: Vec<Option<ChannelDsp>>,
     /// Reusable HRIR scratch so `at()` writes in place (no per-channel alloc).
     hrir_scratch: HrirPair,
+    /// Bumped every time a rebuilt grid is swapped in, so the per-channel
+    /// direction cache cannot match across two different datasets.
+    hrir_generation: u32,
     /// Shared late-reverb tail; allocated lazily while enabled.
     fdn: Option<Fdn>,
     /// Mono reverb send bus, one sample per frame (reused).
@@ -291,6 +300,7 @@ impl BinauralRenderer {
                 left: [0.0; HRIR_LEN],
                 right: [0.0; HRIR_LEN],
             },
+            hrir_generation: 0,
             fdn: None,
             reverb_bus: Vec::new(),
         }
@@ -375,6 +385,9 @@ impl BinauralRenderer {
     pub fn ensure_source(&mut self, source: &HrirSource) {
         if let Some(set) = self.incoming.swap(None) {
             self.hrir = set;
+            // Invalidates every channel's cached lattice direction at once —
+            // the new grid answers differently for the same key.
+            self.hrir_generation = self.hrir_generation.wrapping_add(1);
         }
         if &self.source != source {
             self.source = source.clone();
@@ -486,21 +499,35 @@ impl BinauralRenderer {
             let dist_norm = ((pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt()) as f32;
             let dist_m = (dist_norm * unit_scale_m).max(0.0);
 
-            // Per-frame HRIR + ITD update (continuous: delay/convolver state persists).
-            self.hrir.at(
-                az_rad.to_degrees(),
-                el_rad.to_degrees(),
-                &mut self.hrir_scratch,
-            );
+            // ITD stays continuous: it is the dominant lateralisation cue, and
+            // it is a closed-form formula feeding an interpolating delay line —
+            // cheap enough that quantizing it would buy nothing.
             let (itd_l, itd_r) = itd::ear_delays_seconds(az_rad, el_rad, head_radius_m);
 
+            // The HRIR is the expensive one, so it updates on a lattice
+            // instead. The kernel is a pure function of this key, so an
+            // unchanged key means `at()` would rebuild the very kernels the
+            // convolvers already hold: skip the four-pair gather *and* the
+            // kernel compare rather than paying both to learn nothing moved.
+            // Skipping also leaves no crossfade armed, which halves the tap
+            // loop for the block (one dot product instead of two).
+            let dir = (
+                self.hrir_generation,
+                self.hrir
+                    .quantize_direction(az_rad.to_degrees(), el_rad.to_degrees()),
+            );
             let dsp = self.channels[c].get_or_insert_with(|| ChannelDsp::new(self.sample_rate));
-            // Kernel changes (moving object / head) crossfade over the block
-            // — capped at HRIR_LEN samples for large offline blocks — so the
-            // transfer function never jumps at a block boundary (issue #155).
-            let fade = sample_length.min(HRIR_LEN);
-            dsp.conv_l.set_coeffs_smooth(&self.hrir_scratch.left, fade);
-            dsp.conv_r.set_coeffs_smooth(&self.hrir_scratch.right, fade);
+            if dsp.last_dir != Some(dir) {
+                dsp.last_dir = Some(dir);
+                self.hrir.at_key(dir.1, &mut self.hrir_scratch);
+                // Kernel changes (moving object / head) crossfade over the
+                // block — capped at HRIR_LEN samples for large offline blocks
+                // — so the transfer function never jumps at a block boundary
+                // (issue #155).
+                let fade = sample_length.min(HRIR_LEN);
+                dsp.conv_l.set_coeffs_smooth(&self.hrir_scratch.left, fade);
+                dsp.conv_r.set_coeffs_smooth(&self.hrir_scratch.right, fade);
+            }
             dsp.delay_l.set_target_ms(itd_l * 1000.0, self.sample_rate);
             dsp.delay_r.set_target_ms(itd_r * 1000.0, self.sample_rate);
 

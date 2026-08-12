@@ -25,8 +25,8 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use dsp_fixtures::scene::{
-    build_renderer, crossover_layout, make_pcm, move_events, prepared, prepared_binaural,
-    prepared_binaural_cascaded,
+    build_renderer, crossover_layout, drift_events, make_pcm, move_events, prepared,
+    prepared_binaural, prepared_binaural_cascaded,
 };
 use renderer::live_params::RampMode;
 
@@ -363,8 +363,13 @@ fn bench_polar_crossover(c: &mut Criterion) {
 /// cascade convolves its fixed virtual speakers whatever `n` is. `moving`
 /// re-arms a ramp every block, adding the per-block HRIR refresh (direct) vs
 /// the per-block virtual re-pan (cascaded) on top.
+///
+/// `drifting` is the one that reflects real content: `moving` redraws every
+/// position at random each block, which is not motion but teleportation, and
+/// it hides any benefit from direction coherence between blocks. Read
+/// `drifting` for the expected case and `moving` as the pathological bound.
 fn bench_binaural(c: &mut Criterion) {
-    for (scenario, moving) in [("static", false), ("moving", true)] {
+    for scenario in ["static", "moving", "drifting"] {
         let mut group = c.benchmark_group(format!("render_binaural_{scenario}"));
         for &n in &[1usize, 8, 16, 32, 64, 118] {
             for (label, cascaded) in [("direct", false), ("cascaded", true)] {
@@ -377,10 +382,10 @@ fn bench_binaural(c: &mut Criterion) {
                 let mut round = 1u64;
                 group.bench_function(BenchmarkId::new(label, n), |b| {
                     b.iter(|| {
-                        let events = if moving {
-                            move_events(n, round)
-                        } else {
-                            Vec::new()
+                        let events = match scenario {
+                            "moving" => move_events(n, round),
+                            "drifting" => drift_events(n, round),
+                            _ => Vec::new(),
                         };
                         round = round.wrapping_add(1);
                         let f = r

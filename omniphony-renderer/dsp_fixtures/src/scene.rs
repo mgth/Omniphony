@@ -236,6 +236,36 @@ pub fn move_events(n_objects: usize, seed_round: u64) -> Vec<SpatialChannelEvent
         .collect()
 }
 
+/// One movement event per object on a *continuous* trajectory: each object
+/// circles the listener at its own angular rate, at its own fixed height.
+///
+/// This is the realistic counterpart to [`move_events`], which redraws every
+/// position at random each round. Random redraw is a legitimate worst case, but
+/// no stream produces it — it teleports every object across the dome every
+/// [`BLOCK_SAMPLES`] samples, which by construction defeats anything that
+/// exploits direction coherence between consecutive blocks, and so reports no
+/// gain for optimisations that real content would benefit from.
+///
+/// Rates span 12°/s to 96°/s; at 1200 blocks/s that is 0.01° to 0.08° of
+/// azimuth per block, the order of magnitude a panned object actually moves.
+pub fn drift_events(n_objects: usize, seed_round: u64) -> Vec<SpatialChannelEvent> {
+    (0..n_objects)
+        .map(|ch| {
+            let deg_per_block = (12.0 + (ch % 8) as f64 * 12.0) / 1200.0;
+            let az = (ch as f64 * 37.0 + seed_round as f64 * deg_per_block).to_radians();
+            SpatialChannelEvent {
+                channel_idx: ch,
+                is_bed: false,
+                gain_db: Some(0),
+                ramp_length: Some(BLOCK_SAMPLES as u32),
+                size: Some([0.0, 0.0, 0.0]),
+                position: Some([az.sin(), az.cos(), (ch % 5) as f64 * 0.25]),
+                sample_pos: Some(0),
+            }
+        })
+        .collect()
+}
+
 /// Build a renderer with `n_objects` already registered at initial positions,
 /// returns it plus a reusable PCM buffer. The first `render_frame` consumes the
 /// registration events so subsequent steady frames find populated channel state.
