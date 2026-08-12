@@ -1,8 +1,8 @@
 //! Direct-form FIR convolver for one ear of one object.
 //!
-//! Length is fixed at [`HRIR_LEN`]. The input-history ring buffer persists
-//! across coefficient swaps, so updating the HRIR between frames (as the object
-//! or head moves) keeps the *state* continuous — and a kernel change is
+//! Length is fixed at [`HRIR_LEN`]. The input history persists across
+//! coefficient swaps, so updating the HRIR between frames (as the object or
+//! head moves) keeps the *state* continuous — and a kernel change is
 //! additionally crossfaded over a caller-chosen ramp
 //! ([`set_coeffs_smooth`](EarConvolver::set_coeffs_smooth)): the old and new
 //! kernels run over the same history and blend linearly, which is exactly
@@ -10,18 +10,105 @@
 //! function moves without a block-boundary discontinuity (issue #155). The
 //! doubled dot product is paid only during fade samples of blocks whose kernel
 //! actually changed. Direct-form FIR is the simplest steady-state cost for
-//! short kernels; a partitioned-FFT path can replace this in M2/M3 if
-//! profiling on the object count demands it.
+//! short kernels; a partitioned-FFT path can replace this if profiling on the
+//! object count demands it.
+//!
+//! # Tap-loop layout
+//!
+//! The tap loop is the renderer's hottest inner loop — `HRIR_LEN` multiply-adds
+//! per sample *per ear per object* — so its shape is deliberate on two counts:
+//!
+//! * **The history is linear and double-written**, not a ring walked backwards.
+//!   Each input lands at both `pos` and `pos + HRIR_LEN`, which makes
+//!   `hist[pos + 1 ..= pos + HRIR_LEN]` the last `HRIR_LEN` inputs in
+//!   oldest→newest order, contiguous and ascending whatever `pos` is. The
+//!   kernel is stored reversed to match, so the loop is a plain forward dot
+//!   product over two contiguous slices — no wrap test and no descending index
+//!   in the way of the load/store units.
+//! * **The accumulation is split across [`ACC_LANES`] independent partial
+//!   sums** (see that constant).
+//!
+//! Neither is a micro-optimisation: together they take the loop from
+//! latency-bound scalar to throughput-bound. The change is a *reassociation* of
+//! `f32` additions, so outputs move at the ULP level — which is exactly the
+//! cross-host noise the golden gate is dimensioned for
+//! (`dsp_fixtures::golden::BINAURAL_RESIDUAL_GATE_DBFS`).
 
 use super::hrir::HRIR_LEN;
 
+/// Independent partial sums accumulated by the tap loop.
+///
+/// A single `acc += c * h` chain is bound by floating-point add/FMA *latency*
+/// (~4-7 cycles per tap on both x86 and Cortex-A), not by throughput: the taps
+/// serialise on one register. Splitting the accumulation into this many
+/// independent chains keeps several multiply-adds in flight at once.
+///
+/// It has to be written in the source rather than left to the optimiser:
+/// `f32` addition is not associative, so re-associating a plain reduction would
+/// change results, and no compiler will do it without fast-math — on *any*
+/// target. That matters for the embedded target in particular (issue #220): the
+/// CoreELEC images for its Amlogic SoC run a 32-bit ARM userspace, where Rust
+/// exposes no stable NEON intrinsics and AArch32's non-IEEE flush-to-zero
+/// makes LLVM more conservative still, so this is the only vectorisation-shaped
+/// win available there.
+///
+/// 8 covers the FMA latency on the in-order Cortex-A53 as well as on wide x86,
+/// maps onto 2 NEON or 1 AVX2 vector where those *are* reachable, and divides
+/// `HRIR_LEN`.
+const ACC_LANES: usize = 8;
+
+const _: () = assert!(
+    HRIR_LEN.is_multiple_of(ACC_LANES),
+    "the tap loop consumes the kernel in whole ACC_LANES chunks"
+);
+
+/// Forward dot product of a reversed kernel with the ascending history window.
+#[inline(always)]
+fn dot(coeffs: &[f32; HRIR_LEN], win: &[f32]) -> f32 {
+    let mut acc = [0.0f32; ACC_LANES];
+    for (c, h) in coeffs
+        .chunks_exact(ACC_LANES)
+        .zip(win.chunks_exact(ACC_LANES))
+    {
+        for l in 0..ACC_LANES {
+            acc[l] += c[l] * h[l];
+        }
+    }
+    acc.iter().sum()
+}
+
+/// Both kernels of a running crossfade over the same window, in one pass — the
+/// history loads are shared between them.
+#[inline(always)]
+fn dot2(new_c: &[f32; HRIR_LEN], old_c: &[f32; HRIR_LEN], win: &[f32]) -> (f32, f32) {
+    let mut acc_new = [0.0f32; ACC_LANES];
+    let mut acc_old = [0.0f32; ACC_LANES];
+    for ((cn, co), h) in new_c
+        .chunks_exact(ACC_LANES)
+        .zip(old_c.chunks_exact(ACC_LANES))
+        .zip(win.chunks_exact(ACC_LANES))
+    {
+        for l in 0..ACC_LANES {
+            let hv = h[l];
+            acc_new[l] += cn[l] * hv;
+            acc_old[l] += co[l] * hv;
+        }
+    }
+    (acc_new.iter().sum(), acc_old.iter().sum())
+}
+
 pub struct EarConvolver {
-    /// Past inputs; `pos` marks the slot just written (most recent sample).
-    hist: [f32; HRIR_LEN],
+    /// Past inputs, each written twice (`pos` and `pos + HRIR_LEN`) so the
+    /// live window is always a contiguous ascending slice. `pos` marks the
+    /// primary slot of the most recent sample.
+    hist: [f32; 2 * HRIR_LEN],
     pos: usize,
-    coeffs: [f32; HRIR_LEN],
-    /// Fade-out kernel of a running crossfade (valid while `fade_pos < fade_len`).
-    prev_coeffs: [f32; HRIR_LEN],
+    /// Current kernel, stored **reversed** (`rcoeffs[j] == coeffs[N - 1 - j]`)
+    /// to match the oldest→newest history window.
+    rcoeffs: [f32; HRIR_LEN],
+    /// Fade-out kernel of a running crossfade (valid while `fade_pos <
+    /// fade_len`), reversed the same way.
+    prev_rcoeffs: [f32; HRIR_LEN],
     fade_pos: u32,
     fade_len: u32,
 }
@@ -35,10 +122,10 @@ impl Default for EarConvolver {
 impl EarConvolver {
     pub fn new() -> Self {
         Self {
-            hist: [0.0; HRIR_LEN],
+            hist: [0.0; 2 * HRIR_LEN],
             pos: 0,
-            coeffs: [0.0; HRIR_LEN],
-            prev_coeffs: [0.0; HRIR_LEN],
+            rcoeffs: [0.0; HRIR_LEN],
+            prev_rcoeffs: [0.0; HRIR_LEN],
             fade_pos: 0,
             fade_len: 0,
         }
@@ -50,9 +137,18 @@ impl EarConvolver {
     /// on live update paths.
     #[inline]
     pub fn set_coeffs(&mut self, coeffs: &[f32; HRIR_LEN]) {
-        self.coeffs.copy_from_slice(coeffs);
+        for (dst, &c) in self.rcoeffs.iter_mut().zip(coeffs.iter().rev()) {
+            *dst = c;
+        }
         self.fade_pos = 0;
         self.fade_len = 0;
+    }
+
+    /// Whether `coeffs` is the kernel already loaded (compared in natural
+    /// order against the reversed store — no temporary).
+    #[inline]
+    fn kernel_is(&self, coeffs: &[f32; HRIR_LEN]) -> bool {
+        self.rcoeffs.iter().eq(coeffs.iter().rev())
     }
 
     /// Replace the FIR kernel, crossfading from the current one over the next
@@ -62,7 +158,7 @@ impl EarConvolver {
     /// from the currently *effective* (blended) kernel, so back-to-back
     /// changes stay click-free too.
     pub fn set_coeffs_smooth(&mut self, coeffs: &[f32; HRIR_LEN], fade_len: usize) {
-        if *coeffs == self.coeffs {
+        if self.kernel_is(coeffs) {
             return;
         }
         if fade_len == 0 {
@@ -73,12 +169,14 @@ impl EarConvolver {
             // Freeze the running blend as the new fade-out kernel.
             let w = self.fade_pos as f32 / self.fade_len as f32;
             for i in 0..HRIR_LEN {
-                self.prev_coeffs[i] += (self.coeffs[i] - self.prev_coeffs[i]) * w;
+                self.prev_rcoeffs[i] += (self.rcoeffs[i] - self.prev_rcoeffs[i]) * w;
             }
         } else {
-            self.prev_coeffs.copy_from_slice(&self.coeffs);
+            self.prev_rcoeffs.copy_from_slice(&self.rcoeffs);
         }
-        self.coeffs.copy_from_slice(coeffs);
+        for (dst, &c) in self.rcoeffs.iter_mut().zip(coeffs.iter().rev()) {
+            *dst = c;
+        }
         self.fade_pos = 0;
         self.fade_len = fade_len as u32;
     }
@@ -86,35 +184,26 @@ impl EarConvolver {
     /// Push one input sample and return the filtered output.
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
-        self.hist[self.pos] = x;
-        let mut idx = self.pos;
-        let acc = if self.fade_pos < self.fade_len {
-            // Crossfade: both kernels over the shared history, linear blend.
-            self.fade_pos += 1;
-            let w = self.fade_pos as f32 / self.fade_len as f32;
-            let mut acc_new = 0.0f32;
-            let mut acc_old = 0.0f32;
-            for i in 0..HRIR_LEN {
-                let h = self.hist[idx];
-                acc_new += self.coeffs[i] * h;
-                acc_old += self.prev_coeffs[i] * h;
-                idx = if idx == 0 { HRIR_LEN - 1 } else { idx - 1 };
-            }
-            acc_old + (acc_new - acc_old) * w
-        } else {
-            let mut acc = 0.0f32;
-            for &c in self.coeffs.iter() {
-                acc += c * self.hist[idx];
-                idx = if idx == 0 { HRIR_LEN - 1 } else { idx - 1 };
-            }
-            acc
-        };
+        // Advance first, then write both copies: the window below is then the
+        // last HRIR_LEN inputs, oldest→newest, with `x` as its final element.
         self.pos = if self.pos + 1 == HRIR_LEN {
             0
         } else {
             self.pos + 1
         };
-        acc
+        self.hist[self.pos] = x;
+        self.hist[self.pos + HRIR_LEN] = x;
+        let win = &self.hist[self.pos + 1..self.pos + 1 + HRIR_LEN];
+
+        if self.fade_pos < self.fade_len {
+            // Crossfade: both kernels over the shared history, linear blend.
+            self.fade_pos += 1;
+            let w = self.fade_pos as f32 / self.fade_len as f32;
+            let (acc_new, acc_old) = dot2(&self.rcoeffs, &self.prev_rcoeffs, win);
+            acc_old + (acc_new - acc_old) * w
+        } else {
+            dot(&self.rcoeffs, win)
+        }
     }
 }
 
@@ -141,6 +230,48 @@ mod tests {
         let xs = [1.0, 0.0, 0.0, 0.0, 0.0];
         let ys: Vec<f32> = xs.iter().map(|&x| c.process(x)).collect();
         assert_eq!(ys, vec![0.0, 0.0, 0.0, 1.0, 0.0]);
+    }
+
+    /// The last tap is the one the doubled history has to reach across the
+    /// wrap, and `pos` visits every slot — so drive the impulse through a full
+    /// lap and a bit more. A window that mirrors the wrong copy shows up here
+    /// and nowhere else.
+    #[test]
+    fn last_tap_delays_by_full_kernel_length() {
+        let mut c = EarConvolver::new();
+        let mut k = [0.0; HRIR_LEN];
+        k[HRIR_LEN - 1] = 1.0;
+        c.set_coeffs(&k);
+        // Impulse at t=0, then silence: the echo must come back exactly once,
+        // at t = HRIR_LEN - 1, whatever lap of the buffer that lands on.
+        let mut hits = Vec::new();
+        for t in 0..(3 * HRIR_LEN) {
+            let y = c.process(if t == 0 { 1.0 } else { 0.0 });
+            if y != 0.0 {
+                hits.push((t, y));
+            }
+        }
+        assert_eq!(hits, vec![(HRIR_LEN - 1, 1.0)]);
+    }
+
+    /// Every tap index must map to its own delay — a full sweep catches an
+    /// off-by-one in the reversed kernel that a single probe tap would miss.
+    #[test]
+    fn every_tap_maps_to_its_own_delay() {
+        for tap in [0, 1, 2, 7, 8, 63, HRIR_LEN - 2, HRIR_LEN - 1] {
+            let mut c = EarConvolver::new();
+            let mut k = [0.0; HRIR_LEN];
+            k[tap] = 1.0;
+            c.set_coeffs(&k);
+            let mut hits = Vec::new();
+            for t in 0..(2 * HRIR_LEN) {
+                let y = c.process(if t == 0 { 1.0 } else { 0.0 });
+                if y != 0.0 {
+                    hits.push(t);
+                }
+            }
+            assert_eq!(hits, vec![tap], "tap {tap} landed at the wrong delay");
+        }
     }
 
     #[test]
