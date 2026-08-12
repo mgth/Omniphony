@@ -829,5 +829,11 @@
   "backendParamOption.size_to_spread_mode.projection_perpendicular": "垂直投影",
   "log.mpvOrenderEnabled": "已在 {path} 中启用 orender",
   "log.mpvOrenderDisabled": "已在 {path} 中注释掉 orender",
-  "log.mpvOrenderFailed": "修改 mpv 配置失败：{error}"
+  "log.mpvOrenderFailed": "修改 mpv 配置失败：{error}",
+  "binaural.hrirUpdateLatticeLabel": "HRIR 更新",
+  "binaural.hrirLattice.exact": "精确",
+  "binaural.hrirLattice.fine": "精细",
+  "binaural.hrirLattice.balanced": "均衡",
+  "binaural.hrirLattice.coarse": "粗略",
+  "help.hrirUpdateLattice": "对象需要转动多少角度才重新计算其 HRTF 滤波器。“精确”在任何移动时都重算，与不做优化的结果逐位一致；较粗的档位让几乎未移动的对象保留原滤波器，在性能较弱的硬件上可显著节省 CPU，但会改变输出。除非需要余量，否则请保持“精确”。"
 }

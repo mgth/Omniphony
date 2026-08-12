@@ -336,6 +336,75 @@ impl BinauralMode {
     }
 }
 
+/// How finely an object has to turn before its HRIR is rebuilt.
+///
+/// Interpolating a fresh HRIR pair is the most expensive per-block operation of
+/// the binaural stage, and it is repeated for a move of a hundredth of a degree
+/// — precision the measured grid (10° steps) does not contain. Snapping
+/// directions onto a coarser lattice lets an object that barely turned keep its
+/// kernel, which also leaves no crossfade armed and so halves that block's tap
+/// loop.
+///
+/// This is a **quality/cost trade, not a free optimisation**: every setting
+/// other than [`Exact`](Self::Exact) changes the rendered output. Measured on
+/// the `drifting` bench at 16 objects, against the binaural golden:
+///
+/// | setting    | lattice | peak residual | direct/16 |
+/// |------------|---------|---------------|-----------|
+/// | `exact`    | —       | bit-exact     | 49.3 µs   |
+/// | `fine`     | 0.020°  | −53.3 dBFS    | 47.5 µs   |
+/// | `balanced` | 0.078°  | −43.9 dBFS    | 35.1 µs   |
+/// | `coarse`   | 0.313°  | −30.9 dBFS    | 20.8 µs   |
+///
+/// `exact` is the default: it still skips the rebuild whenever nothing moved
+/// (static objects, and every virtual speaker of the cascaded mode), which
+/// costs nothing in fidelity. The coarser rungs are worth their residual only
+/// once judged by ear, which has not been done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HrirUpdateLattice {
+    /// Rebuild whenever the direction changes at all. Bit-identical output.
+    #[default]
+    Exact,
+    /// 1/512 of a measured cell.
+    Fine,
+    /// 1/128 of a measured cell.
+    Balanced,
+    /// 1/32 of a measured cell — the cheapest, and the one that makes object
+    /// motion nearly free on constrained hardware.
+    Coarse,
+}
+
+impl HrirUpdateLattice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Fine => "fine",
+            Self::Balanced => "balanced",
+            Self::Coarse => "coarse",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "exact" | "off" | "none" => Some(Self::Exact),
+            "fine" => Some(Self::Fine),
+            "balanced" | "medium" => Some(Self::Balanced),
+            "coarse" => Some(Self::Coarse),
+            _ => None,
+        }
+    }
+
+    /// Sub-steps per measured grid cell, or `None` for exact matching.
+    pub fn subdiv(self) -> Option<i32> {
+        match self {
+            Self::Exact => None,
+            Self::Fine => Some(512),
+            Self::Balanced => Some(128),
+            Self::Coarse => Some(32),
+        }
+    }
+}
+
 /// Live-tunable parameters for one headphone ear channel of the binaural
 /// output. Dedicated storage: the ears used to ride the first two per-speaker
 /// slots, which collides now that the cascaded mode applies the per-speaker
@@ -443,6 +512,8 @@ pub struct BinauralLiveParams {
     pub tracking: crate::binaural::HeadTracking,
     /// HRIR data set to convolve with (synthetic / embedded KEMAR / SOFA).
     pub hrir_source: crate::binaural::HrirSource,
+    /// How finely a direction must change before its HRIR is rebuilt.
+    pub hrir_update_lattice: HrirUpdateLattice,
     /// Shoebox early-reflection settings (externalization).
     pub reflections: BinauralReflections,
     /// Late-reverb tail settings (distance / externalization).
@@ -463,6 +534,7 @@ impl Default for BinauralLiveParams {
             head_pose: crate::binaural::HeadPose::identity(),
             tracking: crate::binaural::HeadTracking::default(),
             hrir_source: crate::binaural::HrirSource::default(),
+            hrir_update_lattice: HrirUpdateLattice::default(),
             reflections: BinauralReflections::default(),
             reverb: BinauralReverb::default(),
             air_absorption: true,

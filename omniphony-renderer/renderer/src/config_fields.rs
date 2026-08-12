@@ -405,9 +405,67 @@ pub mod presentation {
     }
 }
 
+/// HRIR update lattice (`render.binaural.hrir_update_lattice`). Bespoke: it
+/// lives in the nested `binaural` section rather than among the `render.*`
+/// scalars the generic macros cover, next to the other binaural settings.
+pub mod hrir_update_lattice {
+    use super::RenderConfig;
+    use crate::live_params::HrirUpdateLattice;
+
+    /// Canonical default — the single copy of this field's default.
+    pub const DEFAULT: HrirUpdateLattice = HrirUpdateLattice::Exact;
+
+    pub fn get(cfg: &RenderConfig) -> Option<HrirUpdateLattice> {
+        cfg.binaural
+            .as_ref()?
+            .hrir_update_lattice
+            .as_deref()
+            .and_then(HrirUpdateLattice::from_str)
+    }
+
+    /// Skip-if-default: the key stays out of the file at `exact`.
+    pub fn store(cfg: &mut RenderConfig, value: HrirUpdateLattice) {
+        let stored = (value != DEFAULT).then(|| value.as_str().to_string());
+        if stored.is_none() && cfg.binaural.is_none() {
+            return; // don't materialise the section just to omit a key
+        }
+        cfg.binaural
+            .get_or_insert_with(Default::default)
+            .hrir_update_lattice = stored;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::RenderConfig;
+    use crate::live_params::HrirUpdateLattice;
+
+    #[test]
+    fn hrir_lattice_round_trips_and_omits_the_default() {
+        let mut cfg = RenderConfig::default();
+        super::hrir_update_lattice::store(&mut cfg, HrirUpdateLattice::Coarse);
+        assert_eq!(
+            super::hrir_update_lattice::get(&cfg),
+            Some(HrirUpdateLattice::Coarse)
+        );
+        super::hrir_update_lattice::store(&mut cfg, HrirUpdateLattice::Exact);
+        assert_eq!(super::hrir_update_lattice::get(&cfg), None);
+        assert!(
+            cfg.binaural
+                .as_ref()
+                .is_none_or(|b| b.hrir_update_lattice.is_none()),
+            "the default must not be written to the file"
+        );
+    }
+
+    /// Storing the default into a config with no binaural section must not
+    /// create one — an empty `binaural: {}` block in every saved file.
+    #[test]
+    fn hrir_lattice_default_does_not_materialise_the_section() {
+        let mut cfg = RenderConfig::default();
+        super::hrir_update_lattice::store(&mut cfg, HrirUpdateLattice::Exact);
+        assert!(cfg.binaural.is_none());
+    }
 
     #[test]
     fn store_non_default_sets_some() {

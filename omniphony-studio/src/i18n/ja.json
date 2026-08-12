@@ -829,5 +829,11 @@
   "backendParamOption.size_to_spread_mode.projection_perpendicular": "垂直投影",
   "log.mpvOrenderEnabled": "{path} で orender を有効化しました",
   "log.mpvOrenderDisabled": "{path} で orender をコメントアウトしました",
-  "log.mpvOrenderFailed": "mpv 設定の変更に失敗しました: {error}"
+  "log.mpvOrenderFailed": "mpv 設定の変更に失敗しました: {error}",
+  "binaural.hrirUpdateLatticeLabel": "HRIR の更新",
+  "binaural.hrirLattice.exact": "厳密",
+  "binaural.hrirLattice.fine": "細かい",
+  "binaural.hrirLattice.balanced": "標準",
+  "binaural.hrirLattice.coarse": "粗い",
+  "help.hrirUpdateLattice": "オブジェクトがどれだけ向きを変えたら HRTF フィルターを再計算するかを決めます。「厳密」はわずかな動きでも再計算し、最適化なしとビット単位で同一の結果になります。粗い段階ではほとんど動いていないオブジェクトがフィルターを保持するため、非力なハードウェアで CPU を大きく節約できますが、出力は変化します。余裕が必要でなければ「厳密」のままにしてください。"
 }

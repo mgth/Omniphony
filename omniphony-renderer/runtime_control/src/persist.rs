@@ -267,8 +267,13 @@ pub fn save_live_config_to_path(
             extra: Default::default(),
         }),
         air_absorption: Some(live.binaural.air_absorption),
+        // Written just below through its descriptor, so the skip-if-default
+        // rule lives in one place — this wholesale rebuild of the section runs
+        // *after* `store_live_to_config` and would otherwise clobber it.
+        hrir_update_lattice: None,
         extra: Default::default(),
     });
+    renderer::config_fields::hrir_update_lattice::store(render, live.binaural.hrir_update_lattice);
     // barycenter / experimental_distance params now live in the generic param bag
     // (`render.backend_params`, written below), so drop the legacy dedicated keys
     // on save. Reading an old config still migrates them into the bag on load.

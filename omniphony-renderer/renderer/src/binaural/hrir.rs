@@ -230,23 +230,6 @@ impl HrirSet {
     const EL_STEP_DEG: f32 = 10.0;
     const EL_MIN_DEG: f32 = -40.0;
     const EL_MAX_DEG: f32 = 90.0;
-    /// Sub-steps per measured cell on the HRIR update lattice, or `None` to
-    /// update on any change of direction at all.
-    ///
-    /// This is a **quality/cost knob, not a free optimisation**. Measured on
-    /// the `drifting` bench at 16 objects, against the binaural golden:
-    ///
-    /// | value      | lattice | peak residual | direct/16 |
-    /// |------------|---------|---------------|-----------|
-    /// | `None`     | exact   | bit-exact     | 49.3 µs   |
-    /// | `Some(512)`| 0.020°  | −53.3 dBFS    | 47.5 µs   |
-    /// | `Some(128)`| 0.078°  | −43.9 dBFS    | 35.1 µs   |
-    /// | `Some(32)` | 0.313°  | −30.9 dBFS    | 20.8 µs   |
-    ///
-    /// `None` still pays off on *static* content (nothing moved ⇒ nothing
-    /// recomputed) and costs nothing at all in fidelity, which is why it is the
-    /// default until the lattice has been judged by ear rather than by residual.
-    const DIR_SUBDIV: Option<i32> = None;
 
     /// Precompute the grid from `provider` at `sample_rate`.
     pub fn new(provider: &dyn HrirProvider, sample_rate: u32) -> Self {
@@ -338,15 +321,19 @@ impl HrirSet {
     ///
     /// The key carries the very angles [`at_key`](Self::at_key) will feed to
     /// [`at`](Self::at), so "same key ⇒ same kernel" holds by construction
-    /// rather than by argument — and [`DIR_SUBDIV`](Self::DIR_SUBDIV) `= None`
+    /// rather than by argument — and `subdiv = None`
+    /// ([`HrirUpdateLattice::Exact`](crate::live_params::HrirUpdateLattice::Exact))
     /// degenerates to an exact-direction cache that skips only when nothing
     /// moved at all, which is bit-identical to never skipping.
-    pub fn quantize_direction(&self, az_deg: f32, el_deg: f32) -> DirectionKey {
-        self.key_at(az_deg, el_deg, Self::DIR_SUBDIV)
+    pub fn quantize_direction(
+        &self,
+        az_deg: f32,
+        el_deg: f32,
+        subdiv: Option<i32>,
+    ) -> DirectionKey {
+        self.key_at(az_deg, el_deg, subdiv)
     }
 
-    /// [`quantize_direction`](Self::quantize_direction) with the lattice passed
-    /// explicitly, so tests can exercise both settings of a compile-time knob.
     fn key_at(&self, az_deg: f32, el_deg: f32, subdiv: Option<i32>) -> DirectionKey {
         let az = az_deg.rem_euclid(360.0);
         // Elevation is clamped here, exactly as `at` clamps it, so two
@@ -464,12 +451,12 @@ mod tests {
     fn azimuth_wraps_to_a_single_key() {
         let set = HrirSet::synthetic(48_000);
         assert_eq!(
-            set.quantize_direction(0.0, 0.0),
-            set.quantize_direction(360.0, 0.0)
+            set.key_at(0.0, 0.0, Some(32)),
+            set.key_at(360.0, 0.0, Some(32))
         );
         assert_eq!(
-            set.quantize_direction(-90.0, 0.0),
-            set.quantize_direction(270.0, 0.0)
+            set.key_at(-90.0, 0.0, Some(32)),
+            set.key_at(270.0, 0.0, Some(32))
         );
     }
 
@@ -479,8 +466,8 @@ mod tests {
     fn elevation_past_the_pole_shares_one_key() {
         let set = HrirSet::synthetic(48_000);
         assert_eq!(
-            set.quantize_direction(10.0, 95.0),
-            set.quantize_direction(10.0, 120.0)
+            set.key_at(10.0, 95.0, Some(32)),
+            set.key_at(10.0, 120.0, Some(32))
         );
     }
 

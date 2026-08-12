@@ -81,6 +81,15 @@ export function rendererPanelMarkup() {
                 </div>
                 <input id="binauralHeadRadius" type="range" min="5" max="15" step="0.1" value="8.75" style="width:100%;" />
               </div>
+              <div class="binaural-help-row" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem;">
+                <span style="font-size:0.65rem;color:#888;" data-i18n="binaural.hrirUpdateLatticeLabel" data-help-i18n="help.hrirUpdateLattice" data-help-anchor=".binaural-help-row">HRIR update</span>
+                <select id="binauralHrirUpdateLattice" class="form-select" data-option="hrir_update_lattice" style="font-size:0.7rem;padding:0.1rem 0.2rem;width:auto;">
+                  <option value="exact" data-i18n="binaural.hrirLattice.exact">Exact</option>
+                  <option value="fine" data-i18n="binaural.hrirLattice.fine">Fine</option>
+                  <option value="balanced" data-i18n="binaural.hrirLattice.balanced">Balanced</option>
+                  <option value="coarse" data-i18n="binaural.hrirLattice.coarse">Coarse</option>
+                </select>
+              </div>
               <div id="binauralPinnaControls" style="display:none;gap:0.3rem;">
                 <div class="binaural-help-row" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem;">
                   <span style="font-size:0.65rem;color:#888;" data-i18n="binaural.pinnaPreset" data-help-i18n="help.binaural.pinnaPreset" data-help-anchor=".binaural-help-row">Pinna preset (D)</span>

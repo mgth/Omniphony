@@ -829,5 +829,11 @@
   "backendParamOption.size_to_spread_mode.projection_perpendicular": "Perpendicular projection",
   "log.mpvOrenderEnabled": "orender enabled in {path}",
   "log.mpvOrenderDisabled": "orender commented out in {path}",
-  "log.mpvOrenderFailed": "mpv config change failed: {error}"
+  "log.mpvOrenderFailed": "mpv config change failed: {error}",
+  "binaural.hrirUpdateLatticeLabel": "HRIR update",
+  "binaural.hrirLattice.exact": "Exact",
+  "binaural.hrirLattice.fine": "Fine",
+  "binaural.hrirLattice.balanced": "Balanced",
+  "binaural.hrirLattice.coarse": "Coarse",
+  "help.hrirUpdateLattice": "How far an object must turn before its HRTF filter is rebuilt. Exact rebuilds on any movement and is bit-identical to no optimisation; the coarser steps let a barely-moving object keep its filter, which costs noticeably less CPU on weak hardware but does alter the output. Leave on Exact unless you need the headroom."
 }

@@ -233,6 +233,8 @@ pub struct BinauralFrameParams {
     pub reflections: BinauralReflections,
     pub reverb: BinauralReverb,
     pub air_absorption: bool,
+    /// How finely a direction must change before its HRIR is rebuilt.
+    pub hrir_update_lattice: crate::live_params::HrirUpdateLattice,
 }
 
 /// Owns the per-channel binaural DSP state and the HRIR set; renders all input
@@ -425,6 +427,7 @@ impl BinauralRenderer {
             ref reflections,
             ref reverb,
             air_absorption,
+            hrir_update_lattice,
         } = *params;
         debug_assert_eq!(out.len(), sample_length * 2);
         if input_channel_count == 0 || sample_length == 0 {
@@ -513,8 +516,11 @@ impl BinauralRenderer {
             // loop for the block (one dot product instead of two).
             let dir = (
                 self.hrir_generation,
-                self.hrir
-                    .quantize_direction(az_rad.to_degrees(), el_rad.to_degrees()),
+                self.hrir.quantize_direction(
+                    az_rad.to_degrees(),
+                    el_rad.to_degrees(),
+                    hrir_update_lattice.subdiv(),
+                ),
             );
             let dsp = self.channels[c].get_or_insert_with(|| ChannelDsp::new(self.sample_rate));
             if dsp.last_dir != Some(dir) {
@@ -648,6 +654,7 @@ mod tests {
                 ..Default::default()
             },
             air_absorption: false,
+            hrir_update_lattice: crate::live_params::HrirUpdateLattice::default(),
         }
     }
 

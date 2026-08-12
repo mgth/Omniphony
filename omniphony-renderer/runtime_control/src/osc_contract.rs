@@ -153,6 +153,12 @@ pub const CONTROL_OUTPUT_CHANNEL_MAPPING: &str = "/omniphony/control/output_chan
 /// `SpeakerLayout` (one entry per channel label, `spatialize` = virtual/direct);
 /// an empty string resets to the built-in canonical poses (LFE direct).
 pub const CONTROL_VIRTUAL_BED: &str = "/omniphony/control/virtual_bed";
+/// How finely an object must turn before its HRIR is rebuilt: `exact`
+/// (default, bit-identical output), `fine`, `balanced` or `coarse`. Coarser
+/// lattices skip more HRIR interpolation — and the crossfade that goes with it
+/// — at a measurable cost in fidelity. Persisted to config.
+pub const CONTROL_BINAURAL_HRIR_UPDATE_LATTICE: &str =
+    "/omniphony/control/binaural/hrir_update_lattice";
 /// Generic setter for any declared live option (`renderer::options`):
 /// args `[key (string), value]`. The per-option addresses listed above
 /// (`synthetic_objects`, `object_generator`, `phantom_extract`,
@@ -287,6 +293,7 @@ pub const STATE_WRITE_TIME_MS: &str = "/omniphony/state/write_time_ms";
 
 pub const ALL_CONTROL: &[&str] = &[
     CONTROL_ADAPTIVE_RESAMPLING,
+    CONTROL_BINAURAL_HRIR_UPDATE_LATTICE,
     CONTROL_ADAPTIVE_RESAMPLING_ENABLE_FAR_MODE,
     CONTROL_ADAPTIVE_RESAMPLING_FAR_MODE_RETURN_FADE_IN_MS,
     CONTROL_ADAPTIVE_RESAMPLING_FORCE_SILENCE_IN_FAR_MODE,

@@ -829,5 +829,11 @@
   "backendParamOption.size_to_spread_mode.projection_perpendicular": "Senkrechte Projektion",
   "log.mpvOrenderEnabled": "orender in {path} aktiviert",
   "log.mpvOrenderDisabled": "orender in {path} auskommentiert",
-  "log.mpvOrenderFailed": "Änderung der mpv-Konfiguration fehlgeschlagen: {error}"
+  "log.mpvOrenderFailed": "Änderung der mpv-Konfiguration fehlgeschlagen: {error}",
+  "binaural.hrirUpdateLatticeLabel": "HRIR-Aktualisierung",
+  "binaural.hrirLattice.exact": "Exakt",
+  "binaural.hrirLattice.fine": "Fein",
+  "binaural.hrirLattice.balanced": "Ausgewogen",
+  "binaural.hrirLattice.coarse": "Grob",
+  "help.hrirUpdateLattice": "Wie weit sich ein Objekt drehen muss, bevor sein HRTF-Filter neu berechnet wird. „Exakt“ rechnet bei jeder Bewegung neu und ist bitgenau identisch mit „keine Optimierung“; gröbere Stufen lassen ein kaum bewegtes Objekt sein Filter behalten, was auf schwacher Hardware deutlich CPU spart, aber das Ergebnis verändert. Bleiben Sie bei „Exakt“, sofern Sie die Reserve nicht brauchen."
 }

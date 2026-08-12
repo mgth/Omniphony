@@ -666,6 +666,7 @@ impl SpatialRenderer {
                         reflections: g.binaural.reflections.clone(),
                         reverb: g.binaural.reverb.clone(),
                         air_absorption: g.binaural.air_absorption,
+                        hrir_update_lattice: g.binaural.hrir_update_lattice,
                     },
                     g.binaural.ears,
                 )

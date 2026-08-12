@@ -829,5 +829,11 @@
   "backendParamOption.size_to_spread_mode.projection_perpendicular": "Proyección perpendicular",
   "log.mpvOrenderEnabled": "orender activado en {path}",
   "log.mpvOrenderDisabled": "orender comentado en {path}",
-  "log.mpvOrenderFailed": "Error al modificar la configuración de mpv: {error}"
+  "log.mpvOrenderFailed": "Error al modificar la configuración de mpv: {error}",
+  "binaural.hrirUpdateLatticeLabel": "Actualización HRIR",
+  "binaural.hrirLattice.exact": "Exacta",
+  "binaural.hrirLattice.fine": "Fina",
+  "binaural.hrirLattice.balanced": "Equilibrada",
+  "binaural.hrirLattice.coarse": "Gruesa",
+  "help.hrirUpdateLattice": "Cuánto debe girar un objeto antes de recalcular su filtro HRTF. «Exacta» recalcula con cualquier movimiento y es idéntica bit a bit a no optimizar; los pasos más gruesos permiten que un objeto casi inmóvil conserve su filtro, lo que ahorra bastante CPU en hardware modesto pero altera la salida. Mantén «Exacta» salvo que necesites el margen."
 }

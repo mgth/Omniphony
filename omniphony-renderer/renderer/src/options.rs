@@ -29,7 +29,9 @@
 //! missing a layer.
 
 use crate::config::RenderConfig;
-use crate::live_params::{LiveParams, OutputChannelMapping, PhantomExtractMode, SurroundPlacement};
+use crate::live_params::{
+    HrirUpdateLattice, LiveParams, OutputChannelMapping, PhantomExtractMode, SurroundPlacement,
+};
 
 /// What kind of value an option takes. Drives wire validation, the published
 /// schema, and (later) which Studio control the binder renders.
@@ -278,6 +280,37 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         config_seed: |live, render| {
             if let Some(mode) = crate::config_fields::phantom_extract_mode::get(render) {
                 live.phantom_extract_mode = mode;
+            }
+        },
+    },
+    OptionSpec {
+        key: "hrir_update_lattice",
+        kind: OptionKind::Enum(&["exact", "fine", "balanced", "coarse"]),
+        default: OptionDefault::Str("exact"),
+        // No REPLAN: the lattice only gates a per-block cache in the binaural
+        // stage, it does not change any synthesized-object topology.
+        flags: OptionFlags::PERSIST,
+        i18n_key: "binaural.hrirUpdateLatticeLabel",
+        help_i18n_key: Some("help.hrirUpdateLattice"),
+        legacy_control_addr: "/omniphony/control/binaural/hrir_update_lattice",
+        set: |live, raw| match raw {
+            RawOptionValue::Str(s) => {
+                let lattice = HrirUpdateLattice::from_str(s)?;
+                live.binaural.hrir_update_lattice = lattice;
+                Some(lattice.as_str().to_string())
+            }
+            _ => None,
+        },
+        get_json: |live| live.binaural.hrir_update_lattice.as_str().into(),
+        config_store: |render, live| {
+            crate::config_fields::hrir_update_lattice::store(
+                render,
+                live.binaural.hrir_update_lattice,
+            )
+        },
+        config_seed: |live, render| {
+            if let Some(lattice) = crate::config_fields::hrir_update_lattice::get(render) {
+                live.binaural.hrir_update_lattice = lattice;
             }
         },
     },
