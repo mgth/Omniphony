@@ -456,3 +456,79 @@ SAF adds them whenever no speaker is within 60° of a pole), and the MDAP spread
 path folds out-of-hull members at full weight where Pulkki's discards them.
 
 Not to be described as parity with SAF or with Pulkki.
+
+# The ITD tests were flaky: the fixture raced its own HRIR request
+
+After the Phase 2 retraction above put all three ITD gates live, two of them
+(`itd_magnitude_tracks_the_model`, `itd_magnitude_grows_toward_the_interaural_axis`)
+began failing intermittently in full-suite runs — roughly 1 run in 3 — while
+passing every time in isolation. `itd_is_antisymmetric_about_the_median_plane`
+was re-deferred with an `#[ignore]` pointing at this report, which never
+recorded the cause. This section closes that.
+
+## Not what it looked like
+
+The `#[ignore]` text blamed nondeterminism "under test parallelism" and pointed
+at rayon workers missing the `ensure_denormals_flushed` FTZ/DAZ guard. Other
+plausible suspects were a process-global HRIR cache or a `OnceLock` mutated by
+another test. All of these were wrong: **no state is shared between these tests
+at all.** Each `measured_lag` call builds its own `SpatialRenderer`.
+
+The race is inside a single renderer instance. `render_single_object_binaural`
+requests `HrirSource::Synthetic`, but a source switch is asynchronous by design
+(issue #153): `ensure_source` hands the request to the rebuild worker and frames
+keep rendering with the **previous** grid until the new one lands. The previous
+grid is the default, `HrirSource::SafKemar`. The fixture then discarded 64 prime
+blocks — which is *compute*, not wall-clock, and provides no synchronisation. On
+an idle machine the worker won the race; under a loaded one it did not, and the
+measurement convolved KEMAR instead of the synthetic set.
+
+KEMAR is not time-aligned and is left/right asymmetric — the property already
+deferred as `hrir_providers_return_time_aligned_pairs`. Its intrinsic interaural
+lag *is* the observed error, exactly:
+
+| az | synthetic (correct) | observed when the race was lost | KEMAR intrinsic |
+| --- | --- | --- | --- |
+| 0° | +0.000 | +0.025 … +0.055 | asymmetric at centre |
+| +30° | −12.836 | −13.460 | −1.103 |
+| −90° | +32.227 | +38.325 | ≈ +6.998 (mirror of +90°) |
+
+## Confirmed, not inferred
+
+A `binaural_rebuild_pending()` accessor was added and the fixture instrumented
+to report it at the moment of measurement. Over 25 full-suite runs the
+correlation was total: **every** failing run had the rebuild still pending for at
+least one azimuth, **every** passing run had zero.
+
+Controlled comparison under 48 competing CPU hogs, same machine, same binary
+otherwise:
+
+| Code | Result |
+| --- | --- |
+| before | 7 / 15 runs failed (47 %) |
+| after | 0 / 25 runs failed |
+
+Unloaded, after the fix: 25 / 25 green, and the printed measurements are now
+bit-identical run to run.
+
+## The fix
+
+`render_single_object_binaural` settles in two ordered stages: drive frames
+until `binaural_rebuild_pending()` clears, and *then* discard the 64 prime
+blocks. The order is the point — priming before the swap leaves the delay lines
+and convolver holding KEMAR-convolved history, so the measurement would still be
+a mixture of the two sets. The settle blocks draw their excitation from a
+disjoint seed range, so how many of them the machine's load required cannot
+reach the measured window.
+
+Two supporting changes make that observable: the HRIR grid and the source it was
+built from now travel as one `Grid` allocation, so swapping a grid in also swaps
+the answer to "which source is live" (they cannot disagree), and
+`SpatialRenderer::binaural_rebuild_pending` exposes it. This is also the honest
+answer for any offline render, where the async swap is latency insurance nobody
+needs and determinism is worth more.
+
+`itd_is_antisymmetric_about_the_median_plane` is a live gate again — the gate
+state table above was already correct, and is now true again. Note that the
+tolerance was never the problem and was not touched, and the suite was not
+serialised.

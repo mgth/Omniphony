@@ -316,6 +316,19 @@ impl SpatialRenderer {
         Arc::clone(&self.control)
     }
 
+    /// `true` while a requested binaural HRIR source change has been handed to
+    /// the rebuild worker but not yet swapped into the render path.
+    ///
+    /// The swap is deliberately asynchronous so a source change never blocks
+    /// the audio thread (issue #153), which means frames rendered right after
+    /// the request still carry the *previous* HRIR set. Callers that need the
+    /// requested set to actually be in effect — offline renders, and any
+    /// measurement that attributes its result to a specific set — must drive
+    /// frames until this returns `false`.
+    pub fn binaural_rebuild_pending(&self) -> bool {
+        self.binaural.rebuild_pending()
+    }
+
     pub fn set_ramp_strategy(&mut self, strategy: Arc<dyn RampStrategy>) {
         self.ramp_strategy_override = Some(strategy);
         self.reset_runtime_state();

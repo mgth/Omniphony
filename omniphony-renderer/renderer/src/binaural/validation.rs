@@ -78,13 +78,8 @@ fn itd_magnitude_tracks_the_model() {
     }
 }
 
-/// **Deferred: `measured_lag` is not deterministic under test parallelism.**
-///
-/// Reproduced in a full `cargo test --release --workspace` run — not in 30
-/// runs of this module alone, so it needs the rest of the suite loading the
-/// machine. The evidence is unambiguous and is recorded here because it is the
-/// starting point for whoever fixes it: in **one and the same run**, two tests
-/// called `measured_lag` with identical arguments and got different answers.
+/// Previously deferred as "`measured_lag` is not deterministic under test
+/// parallelism", with this evidence from a single full-suite run:
 ///
 /// ```text
 /// itd_magnitude_tracks_the_model (passed):
@@ -93,18 +88,19 @@ fn itd_magnitude_tracks_the_model() {
 ///   az=  0.0 -> +0.025    az=+30.0 -> -13.460    az=-30.0 -> +12.435
 /// ```
 ///
-/// A source dead ahead must give exactly 0; one test got 0.000 and the other
-/// 0.025. So the render itself differs between threads, and no tolerance
-/// adjustment is the right fix — the nondeterminism is.
+/// The cause was not thread-local FP state and not shared global state: it was
+/// the fixture racing its own HRIR request. `render_single_object_binaural`
+/// asks for [`HrirSource::Synthetic`](super::HrirSource::Synthetic), but that
+/// switch is asynchronous by design — the grid is built off the audio thread
+/// and swapped in later. A loaded machine could delay the swap past the prime
+/// blocks, so the measurement convolved the *default* SAF KEMAR grid instead.
+/// KEMAR is not time-aligned (see `hrir_providers_return_time_aligned_pairs`),
+/// and its intrinsic interaural lag is exactly the error seen above: −1.103
+/// samples at +30° gives −13.46 against the synthetic −12.836, and its
+/// left/right asymmetry moves 0° off zero.
 ///
-/// An earlier hypothesis blamed `ensure_denormals_flushed` leaving threads
-/// without FTZ/DAZ. That guard is a `thread_local!` and is correct for any
-/// thread entering `render_frame`. It does **not** cover rayon workers, which
-/// the renderer uses during construction (`live_params.rs`, `render_backend.rs`
-/// `into_par_iter`) and which never call it — that is the most promising lead,
-/// but it is a lead, not a finding: nobody has shown the binaural path reads
-/// anything those workers produce.
-#[ignore = "measured_lag is not deterministic under test parallelism: the same call returned -12.836 and -13.460 in one run, and az=0 gave 0.000 and 0.025. Tracked deferral, see the doc comment and docs/dsp-validation-report.md"]
+/// The fixture now drives frames until `binaural_rebuild_pending()` clears
+/// before priming, so the requested grid is provably the one measured.
 #[test]
 fn itd_is_antisymmetric_about_the_median_plane() {
     let centre = measured_lag(0.0);

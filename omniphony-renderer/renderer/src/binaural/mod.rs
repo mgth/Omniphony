@@ -237,16 +237,27 @@ pub struct BinauralFrameParams {
     pub hrir_update_lattice: crate::live_params::HrirUpdateLattice,
 }
 
+/// An HRIR grid together with the source it was built from.
+///
+/// The two travel as one allocation so that swapping a grid in also swaps the
+/// answer to "which source is actually live" — see
+/// [`BinauralRenderer::rebuild_pending`]. Keeping them in separate fields would
+/// let the pair disagree, which is exactly what this type exists to prevent.
+struct Grid {
+    source: HrirSource,
+    set: HrirSet,
+}
+
 /// Owns the per-channel binaural DSP state and the HRIR set; renders all input
 /// channels of a frame to interleaved stereo.
 pub struct BinauralRenderer {
     sample_rate: u32,
-    hrir: std::sync::Arc<HrirSet>,
+    hrir: std::sync::Arc<Grid>,
     /// HRIR source last *requested* (the active grid may briefly lag it while
     /// the worker builds — see [`Self::ensure_source`]).
     source: HrirSource,
     /// Finished grids from the rebuild worker, awaiting the audio-thread swap.
-    incoming: std::sync::Arc<arc_swap::ArcSwapOption<HrirSet>>,
+    incoming: std::sync::Arc<arc_swap::ArcSwapOption<Grid>>,
     /// Requests to the long-lived rebuild worker. Dropping the renderer drops
     /// the sender, which terminates the worker.
     rebuild_tx: std::sync::mpsc::Sender<HrirSource>,
@@ -267,7 +278,7 @@ pub struct BinauralRenderer {
 impl BinauralRenderer {
     pub fn new(sample_rate: u32) -> Self {
         let source = HrirSource::default();
-        let incoming: std::sync::Arc<arc_swap::ArcSwapOption<HrirSet>> =
+        let incoming: std::sync::Arc<arc_swap::ArcSwapOption<Grid>> =
             std::sync::Arc::new(arc_swap::ArcSwapOption::empty());
         // Long-lived rebuild worker: grid builds (allocations, provider
         // renders, SOFA file I/O) must never run on the audio thread. The
@@ -284,7 +295,7 @@ impl BinauralRenderer {
                             req = newer;
                         }
                         let set = Self::build_hrir(&req, sample_rate);
-                        slot.store(Some(std::sync::Arc::new(set)));
+                        slot.store(Some(std::sync::Arc::new(Grid { source: req, set })));
                     }
                 })
                 .expect("spawn binaural HRIR rebuild worker");
@@ -293,7 +304,10 @@ impl BinauralRenderer {
             sample_rate,
             // The initial (default) grid is built synchronously: `new` runs on
             // a control thread, and the renderer must be usable immediately.
-            hrir: std::sync::Arc::new(Self::build_hrir(&source, sample_rate)),
+            hrir: std::sync::Arc::new(Grid {
+                set: Self::build_hrir(&source, sample_rate),
+                source: source.clone(),
+            }),
             source,
             incoming,
             rebuild_tx,
@@ -312,6 +326,17 @@ impl BinauralRenderer {
     #[cfg(test)]
     fn hrir_grid_id(&self) -> usize {
         std::sync::Arc::as_ptr(&self.hrir) as usize
+    }
+
+    /// Whether a requested source change has not been swapped in yet, i.e. the
+    /// grid being convolved is not the one last requested.
+    ///
+    /// [`Self::ensure_source`] hands a request to the rebuild worker and keeps
+    /// rendering with the previous grid until the result lands, so "requested"
+    /// and "live" are genuinely different questions. Anything that must
+    /// attribute its output to a specific HRIR set has to wait on this.
+    pub fn rebuild_pending(&self) -> bool {
+        self.source != self.hrir.source
     }
 
     fn build_hrir(source: &HrirSource, sample_rate: u32) -> HrirSet {
@@ -385,8 +410,8 @@ impl BinauralRenderer {
     /// here (issue #153). Frames keep rendering with the previous grid until
     /// the worker's result lands.
     pub fn ensure_source(&mut self, source: &HrirSource) {
-        if let Some(set) = self.incoming.swap(None) {
-            self.hrir = set;
+        if let Some(grid) = self.incoming.swap(None) {
+            self.hrir = grid;
             // Invalidates every channel's cached lattice direction at once —
             // the new grid answers differently for the same key.
             self.hrir_generation = self.hrir_generation.wrapping_add(1);
@@ -516,7 +541,7 @@ impl BinauralRenderer {
             // loop for the block (one dot product instead of two).
             let dir = (
                 self.hrir_generation,
-                self.hrir.quantize_direction(
+                self.hrir.set.quantize_direction(
                     az_rad.to_degrees(),
                     el_rad.to_degrees(),
                     hrir_update_lattice.subdiv(),
@@ -525,7 +550,7 @@ impl BinauralRenderer {
             let dsp = self.channels[c].get_or_insert_with(|| ChannelDsp::new(self.sample_rate));
             if dsp.last_dir != Some(dir) {
                 dsp.last_dir = Some(dir);
-                self.hrir.at_key(dir.1, &mut self.hrir_scratch);
+                self.hrir.set.at_key(dir.1, &mut self.hrir_scratch);
                 // Kernel changes (moving object / head) crossfade over the
                 // block — capped at HRIR_LEN samples for large offline blocks
                 // — so the transfer function never jumps at a block boundary

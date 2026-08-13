@@ -460,8 +460,23 @@ pub fn render_blocks_partial_metadata(
 /// `room_ratio` (see `BINAURAL.md`), so the azimuth is not distorted by the
 /// `[1.0, 2.0, 0.5]` ratio the fixture renderer is built with.
 ///
-/// The first `PRIME_BLOCKS` blocks are discarded: the 20 ms gain slew and the
-/// position ramp must settle before the lag measurement is meaningful.
+/// Switching `hrir_source` away from the default is asynchronous: the request
+/// goes to the rebuild worker and frames keep rendering with the previous grid
+/// until it lands. So the render is settled in two ordered stages, and the
+/// order matters:
+///
+/// 1. Drive frames until [`SpatialRenderer::binaural_rebuild_pending`] clears,
+///    so the requested set is the one actually being convolved.
+/// 2. *Then* discard `PRIME_BLOCKS` blocks, so the 20 ms gain slew, the
+///    position ramp, and the delay/convolver history left by the previous grid
+///    have all settled before the lag measurement.
+///
+/// Priming before the swap would measure a mixture of the two sets. That was a
+/// real bug: the fixture used to prime only, and a run that lost the race
+/// measured the default SAF KEMAR grid instead of the requested one — which
+/// carries its own intrinsic interaural lag (up to ~7 samples at ±90°, see
+/// `hrir_providers_return_time_aligned_pairs`) and so failed the ITD tests
+/// intermittently under a loaded machine.
 pub fn render_single_object_binaural(
     azimuth_deg: f32,
     blocks: usize,
@@ -483,7 +498,7 @@ pub fn render_single_object_binaural(
         let mut live = ctrl.live.write();
         live.ramp_mode = RampMode::Frame;
         live.binaural.output_mode = OutputMode::Binaural;
-        live.binaural.hrir_source = hrir_source;
+        live.binaural.hrir_source = hrir_source.clone();
     }
 
     let event = vec![SpatialChannelEvent {
@@ -497,12 +512,50 @@ pub fn render_single_object_binaural(
     }];
 
     let mut buf = Vec::new();
-    for block in 0..PRIME_BLOCKS {
+
+    let mut render_one = |r: &mut SpatialRenderer, buf: Vec<f32>, seed: usize| {
         let f = r
-            .render_frame(&make_pcm_block(1, block), 1, &event, buf, false)
-            .expect("prime binaural ITD render");
-        buf = f.samples;
-        buf.clear();
+            .render_frame(&make_pcm_block(1, seed), 1, &event, buf, false)
+            .expect("binaural ITD render");
+        let mut s = f.samples;
+        s.clear();
+        s
+    };
+
+    // Stage 1: wait for the requested HRIR grid to actually be live.
+    //
+    // The renderer only reads the live params from inside `render_frame`, so
+    // the first frame is what registers the request — `binaural_rebuild_pending`
+    // is still false before it. Hence render-then-check, not check-then-render.
+    // The swap likewise only happens inside `render_frame`, so frames must keep
+    // being driven; the yield keeps a fully-loaded machine (the whole test
+    // suite in parallel) from starving the rebuild worker we are waiting on.
+    //
+    // These blocks take their excitation from a disjoint seed range: how many
+    // of them run is timing-dependent, and the seeds the measurement depends on
+    // must not be.
+    const SETTLE_SEED_BASE: usize = 1 << 20;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut settled = 0usize;
+    buf = render_one(&mut r, buf, SETTLE_SEED_BASE);
+    while r.binaural_rebuild_pending() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "binaural HRIR rebuild for {hrir_source:?} never landed"
+        );
+        std::thread::yield_now();
+        settled += 1;
+        buf = render_one(&mut r, buf, SETTLE_SEED_BASE + settled);
+    }
+
+    // Stage 2: now that the right grid is convolving, prime the DSP state with
+    // a fixed excitation. Starting the sequence over here — rather than
+    // continuing from stage 1 — is what makes the measurement reproducible: the
+    // state entering the measurement window is then a pure function of these
+    // 64 blocks, not of how many settle blocks the machine's load happened to
+    // require.
+    for block in 0..PRIME_BLOCKS {
+        buf = render_one(&mut r, buf, block);
     }
 
     let mut left = Vec::with_capacity(blocks * BLOCK_SAMPLES);
