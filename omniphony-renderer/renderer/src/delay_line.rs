@@ -59,6 +59,25 @@ impl DelayLine {
         self.target == 0.0 && self.current == 0.0
     }
 
+    /// Keep the ring warm without doing the fractional read.
+    ///
+    /// While [`is_bypass`](Self::is_bypass) holds, `process` reduces to the
+    /// identity: the read pointer sits exactly on the write position with a
+    /// zero fractional part, so the interpolation returns `input` unchanged.
+    /// A caller that has already checked `is_bypass` can skip to the write —
+    /// but it must still *do* the write, or the history is missing when a
+    /// non-zero delay is set later and the ramp starts reading behind the
+    /// write pointer.
+    #[inline]
+    pub fn push_history(&mut self, input: f32) {
+        debug_assert!(
+            self.is_bypass(),
+            "push_history is only the identity while bypassed",
+        );
+        self.buf[self.write_pos] = input;
+        self.write_pos = (self.write_pos + 1) % self.buf.len();
+    }
+
     /// Process one sample through the delay line.
     ///
     /// Write `input` into the buffer, ramp the read pointer one step toward the
