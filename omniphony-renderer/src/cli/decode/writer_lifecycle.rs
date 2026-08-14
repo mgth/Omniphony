@@ -86,7 +86,18 @@ impl<'a> WriterLifecycleCoordinator<'a> {
 
             #[cfg(target_os = "linux")]
             if output_backend == OutputBackend::Pipewire {
-                if self.spatial_renderer.is_some() {
+                // The bootstrap wait is there to let the decoder settle its
+                // channel plan before the stream opens — it is the decoded
+                // stream's geometry we are waiting to trust. A speaker test has
+                // no decoder: its width comes from the layout and is known at
+                // once, so waiting only delays the sound for nothing. Skip it
+                // when a test is what asked for the output and nothing has been
+                // decoded.
+                let test_only_start = self.session.decoded_frames == 0
+                    && self
+                        .spatial_renderer
+                        .is_some_and(|r| r.speaker_test_running());
+                if self.spatial_renderer.is_some() && !test_only_start {
                     self.output
                         .bootstrap_started_at
                         .get_or_insert_with(Instant::now);
