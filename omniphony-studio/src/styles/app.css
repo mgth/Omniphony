@@ -433,6 +433,28 @@
         cursor: pointer;
       }
 
+      /* Buttons sharing a row must agree on height. A label that wraps to two
+         lines grows its own button, and with the row on `align-items: center`
+         the others stayed at their one-line height — e.g. the layout row came
+         out 20 / 33.6 / 33.6 / 28.8px.
+
+         `align-self` fixes that from the button rather than the row: it
+         overrides the container's align-items, so none of the four affected
+         rows (three are anonymous divs carrying inline styles) has to change.
+         It is inert outside flex and grid, and it does not inflate anything on
+         its own — a row where no label wraps keeps the compact height, because
+         every button then measures the same. The inline-flex centring is what
+         keeps a one-line label vertically centred inside a stretched button
+         instead of riding at the top. */
+      .ui-btn,
+      .toggle-btn {
+        align-self: stretch;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+
       .ui-btn-primary {
         background: rgba(255,255,255,0.1);
         border-color: rgba(255,255,255,0.25);
