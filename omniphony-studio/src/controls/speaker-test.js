@@ -245,8 +245,7 @@ export function setupSpeakerTestListeners() {
     });
   }
 
-  // A test belongs to the speaker it was started on: selecting another one, or
-  // closing the editor, must not leave it playing.
+  // Whatever the trigger mode, closing the window must not leave noise playing.
   window.addEventListener('beforeunload', () => {
     stopSpeakerTest({ force: true });
     if (idleFeedArmed) sendIdleFeed(false);
@@ -255,7 +254,18 @@ export function setupSpeakerTestListeners() {
 
 /** Called when the speaker selection changes. */
 export function onSpeakerSelectionChanged() {
-  if (running !== null && running !== app.selectedSpeakerIndex) stopSpeakerTest();
-  else renderSpeakerTestUI();
+  const selected = app.selectedSpeakerIndex;
+  const hasSpeaker = selected !== null && selected !== undefined;
+  if (running !== null && running !== selected) {
+    // Toggle means "keep testing until I say stop", and the whole point of
+    // testing several speakers is comparing them: walk the selection down the
+    // layout and the noise walks with it. Hold and burst each own an end
+    // condition of their own (release, timeout), so for those a selection
+    // change still ends the test rather than silently re-arming it elsewhere.
+    if (hasSpeaker && load(MODE_KEY, 'toggle') === 'toggle') startSpeakerTest(selected);
+    else stopSpeakerTest();
+  } else {
+    renderSpeakerTestUI();
+  }
   syncIdleFeed();
 }

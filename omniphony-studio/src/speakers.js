@@ -1177,8 +1177,9 @@ export function applySpeakerPolarEdit(index, az, el, r, sendOsc = true) {
 // ---------------------------------------------------------------------------
 
 export function renderSpeakerEditor() {
-  // A running test belongs to the speaker it was started on; this both stops it
-  // on a selection change and refreshes the button's label/enabled state.
+  // Hands a selection change to the test controls: in toggle mode the running
+  // test follows the new speaker, otherwise it stops. Also refreshes the
+  // button's label/enabled state.
   onSpeakerSelectionChanged();
   const speakerEditSectionEl = getSpeakerEditSectionEl();
   const speakerEditBodyEl = getSpeakerEditBodyEl();
