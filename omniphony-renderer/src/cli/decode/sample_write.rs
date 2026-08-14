@@ -1,6 +1,7 @@
 use super::handler::{BedChannelMapper, ChannelCountCalculator};
 use super::output::AudioSamples;
 use super::state::{DecodeSessionState, OutputState, SpatialState, TelemetryState};
+use super::writer_lifecycle::WriterLifecycleCoordinator;
 use anyhow::Result;
 use audio_input::InputControl;
 use bridge_api::RChannelLabel;
@@ -647,15 +648,43 @@ impl super::handler::DecodeHandler {
     /// A no-op unless a test is armed, so an idle renderer stays idle and pays
     /// one boolean read per tick.
     pub fn pump_speaker_test(&mut self) -> Result<()> {
-        let Some(renderer) = self.spatial_renderer.as_mut() else {
+        // Read what is needed and drop the borrow: the writer coordinator below
+        // wants the renderer immutably while `output` and `telemetry` are held
+        // mutably, which cannot coexist with the render borrow taken later.
+        let Some((running, sample_rate, channels)) = self.spatial_renderer.as_ref().map(|r| {
+            (
+                r.speaker_test_running(),
+                r.sample_rate(),
+                r.output_channel_count(),
+            )
+        }) else {
             return Ok(());
         };
-        if !renderer.speaker_test_running() {
+        if !running {
             // Forget the clock so the next test starts from a clean interval
             // instead of trying to catch up the time it was not running.
             self.output.last_test_pump = None;
             return Ok(());
         }
+
+        // The audio output is built on the first decoded frame, so with nothing
+        // playing it never existed and the test had nowhere to go — no sink
+        // appearing in PipeWire and no sound. Drive the same creation path from
+        // here. The PipeWire branch gates on a few bootstrap frames before it
+        // opens the stream, which these pumps satisfy in turn, so a test started
+        // from cold sounds after a fraction of a second rather than never.
+        let backend = self.runtime.active_output_backend;
+        WriterLifecycleCoordinator::new(
+            &mut self.output,
+            &self.runtime,
+            &mut self.telemetry,
+            &self.spatial,
+            &self.session,
+            self.spatial_renderer.as_ref(),
+            self.audio_control.as_ref(),
+            self.input_control.as_ref(),
+        )
+        .create_audio_writer_if_needed(backend, sample_rate, channels)?;
 
         let now = Instant::now();
         let elapsed = self
@@ -665,14 +694,15 @@ impl super::handler::DecodeHandler {
             .unwrap_or_else(|| std::time::Duration::from_millis(TEST_PUMP_FIRST_MS));
         self.output.last_test_pump = Some(now);
 
-        let sample_rate = renderer.sample_rate().max(1) as f32;
-        let max_frames = (sample_rate * TEST_PUMP_MAX_SECS) as usize;
-        let frames = ((elapsed.as_secs_f32() * sample_rate) as usize).clamp(1, max_frames);
+        let rate = sample_rate.max(1) as f32;
+        let max_frames = (rate * TEST_PUMP_MAX_SECS) as usize;
+        let frames = ((elapsed.as_secs_f32() * rate) as usize).clamp(1, max_frames);
 
         // One silent input channel: the routing table decides where it would
         // go, and zero contributes nothing wherever that is.
         let silence = vec![0.0f32; frames];
         let donated = std::mem::take(&mut self.output.render_buf);
+        let renderer = self.spatial_renderer.as_mut().expect("checked above");
         let rendered = renderer.render_frame(&silence, 1, &[], donated, false)?;
         let channels = rendered.n_channels;
         if let Some(writer) = self.output.audio_writer.as_mut() {
