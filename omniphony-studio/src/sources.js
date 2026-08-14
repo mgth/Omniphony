@@ -895,7 +895,12 @@ export function updateSpeakerColorsFromSelection() {
 
   speakerMeshes.forEach((mesh, index) => {
     const mix = gainToMix(gains?.[index]);
-    mesh.material.color.copy(speakerBaseColor).lerp(speakerHotColor, mix);
+    // Per-speaker base colour when the layout has a crossover split (set by
+    // applySpeakerBandBaseColor, so the cube matches its band gauge); the
+    // shared blue otherwise, which is also what a single-band layout resolves
+    // to. Hot blending and the selection override still apply on top.
+    const base = mesh.userData.baseColor ?? speakerBaseColor;
+    mesh.material.color.copy(base).lerp(speakerHotColor, mix);
     if (app.selectedSpeakerIndex !== null && index === app.selectedSpeakerIndex) {
       mesh.material.color.copy(speakerSelectedColor);
     }
