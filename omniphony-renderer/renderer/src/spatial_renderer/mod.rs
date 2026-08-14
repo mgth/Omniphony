@@ -170,9 +170,42 @@ pub enum ChannelRoute {
     Virtual,
 }
 
+/// Cross-fade covering a live output-mode change.
+///
+/// Switching between the binaural and speaker paths swaps two independent DSP
+/// chains mid-sample, which steps the waveform and clicks. The switch is
+/// therefore deferred: the old mode keeps rendering while it ramps to zero, the
+/// mode changes at the bottom, and the new one ramps back up. Both halves use
+/// the same length.
+struct OutputModeFade {
+    /// Samples left in the current ramp.
+    remaining: usize,
+    /// Ramp length, so a partial frame can compute its gain.
+    total: usize,
+    /// Ramping the outgoing mode down; otherwise ramping the incoming one up.
+    fading_out: bool,
+}
+
 pub struct SpatialRenderer {
     /// Number of output speakers (total, including non-spatialized like LFE)
     num_speakers: usize,
+
+    /// The mode actually being rendered, which lags the live one across a
+    /// cross-fade. Everything the host derives from the output — the channel
+    /// count, the metering route — follows this rather than the live flag, so a
+    /// pending switch never describes samples that have not been produced yet.
+    active_output_mode: crate::live_params::OutputMode,
+
+    /// In-flight output-mode cross-fade, `None` in steady state.
+    mode_fade: Option<OutputModeFade>,
+
+    /// Ramp length in samples for [`Self::mode_fade`], from the sample rate.
+    mode_fade_samples: usize,
+
+    /// Whether any frame has been emitted yet. Before the first one there is no
+    /// discontinuity to hide, so a mode change is adopted outright instead of
+    /// fading in from silence and clipping the opening block.
+    has_rendered_frame: bool,
 
     /// Spread resolution for multi-table VBAP (0.0 = single table)
     spread_resolution: f32,
@@ -516,16 +549,35 @@ impl SpatialRenderer {
         // after `update_metadata` has applied the pending events (new ramp
         // targets); the branch itself advances each object's position ramp for
         // the block. Flag it here.
-        let (binaural_active, cascade_active) = {
+        let (requested_output_mode, cascade_active) = {
             let g = self.control.live.read();
             (
-                matches!(
-                    g.binaural.output_mode,
-                    crate::live_params::OutputMode::Binaural
-                ),
+                g.binaural.output_mode,
                 matches!(g.binaural.mode, crate::live_params::BinauralMode::Cascaded),
             )
         };
+        // A mode change does not take effect here: it arms a cross-fade and the
+        // OLD mode keeps rendering until the ramp reaches zero (see
+        // `apply_output_mode_fade`). Rendering the branch that is on its way out
+        // is the whole point — swapping chains mid-sample is what clicks.
+        if requested_output_mode != self.active_output_mode {
+            if !self.has_rendered_frame {
+                // Nothing emitted yet: there is no discontinuity to hide, and
+                // fading in here would just clip the opening block.
+                self.active_output_mode = requested_output_mode;
+            } else if self.mode_fade.is_none() {
+                self.mode_fade = Some(OutputModeFade {
+                    remaining: self.mode_fade_samples,
+                    total: self.mode_fade_samples,
+                    fading_out: true,
+                });
+            }
+        }
+        self.has_rendered_frame = true;
+        let binaural_active = matches!(
+            self.active_output_mode,
+            crate::live_params::OutputMode::Binaural
+        );
 
         // ── 1. Load the current immutable render topology and keep band engines in sync ──
         let topology_guard = self.control.active_topology();
@@ -889,6 +941,7 @@ impl SpatialRenderer {
                     );
                 }
             }
+            self.apply_output_mode_fade(&mut output, 2);
             // Cascaded mode returns the virtual mix diagnostics: they index
             // the app layout, so the object meters stay valid on headphones.
             return Ok(match cascade_diag {
@@ -1031,6 +1084,8 @@ impl SpatialRenderer {
             }
         }
 
+        let speaker_channels = self.num_speakers;
+        self.apply_output_mode_fade(&mut output, speaker_channels);
         diag.object_gains.sort_by_key(|(idx, _)| *idx);
         diag.object_band_gains.sort_by_key(|(idx, _)| *idx);
         diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
@@ -1081,6 +1136,50 @@ impl SpatialRenderer {
             .map(|c| (c.bus.as_slice(), c.num_buses()))
     }
 
+    /// Apply the in-flight output-mode cross-fade to an interleaved block, and
+    /// adopt the requested mode when the outgoing ramp bottoms out.
+    ///
+    /// No-op in steady state — the common case costs one `Option` check. The
+    /// ramp is linear and spans `mode_fade_samples`, which may be longer than
+    /// one block, so the gain is carried across frames by `remaining`.
+    fn apply_output_mode_fade(&mut self, output: &mut [f32], n_channels: usize) {
+        let Some(fade) = self.mode_fade.as_mut() else {
+            return;
+        };
+        if n_channels == 0 || fade.total == 0 {
+            self.mode_fade = None;
+            return;
+        }
+        let frames = output.len() / n_channels;
+        let total = fade.total as f32;
+        for f in 0..frames {
+            // `remaining` counts down through the ramp; a frame past the end
+            // holds the endpoint gain rather than overshooting.
+            let left = fade.remaining.saturating_sub(f) as f32;
+            let ramp = left / total; // 1 → 0 across the ramp
+            let gain = if fade.fading_out { ramp } else { 1.0 - ramp };
+            let base = f * n_channels;
+            for s in &mut output[base..base + n_channels] {
+                *s *= gain;
+            }
+        }
+        fade.remaining = fade.remaining.saturating_sub(frames);
+        if fade.remaining > 0 {
+            return;
+        }
+        if fade.fading_out {
+            // Bottom of the ramp: the block just faded to silence, so swapping
+            // chains here is inaudible. Re-read the request rather than caching
+            // it — the user may have flipped again mid-fade, and the newest
+            // intent is the right one to land on.
+            self.active_output_mode = self.control.live.read().binaural.output_mode;
+            fade.remaining = fade.total;
+            fade.fading_out = false;
+        } else {
+            self.mode_fade = None;
+        }
+    }
+
     pub fn num_speakers(&self) -> usize {
         self.num_speakers
     }
@@ -1089,7 +1188,11 @@ impl SpatialRenderer {
     /// (headphone) mode, otherwise the speaker count. Hosts must size their sink
     /// and `RenderedAudio` from this, not from [`num_speakers`](Self::num_speakers).
     pub fn output_channel_count(&self) -> usize {
-        match self.control.live.read().binaural.output_mode {
+        // The ACTIVE mode, not the live one: across a cross-fade the live flag
+        // already names the incoming mode while the samples are still the
+        // outgoing one's. Reporting the request would tell the host to resize
+        // its sink for audio that has not been rendered yet.
+        match self.active_output_mode {
             crate::live_params::OutputMode::Binaural => 2,
             crate::live_params::OutputMode::SpeakerArray => self.num_speakers,
         }

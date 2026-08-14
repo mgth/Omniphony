@@ -460,8 +460,20 @@ impl SpatialRenderer {
             sample_rate,
         )?;
 
+        // Read before the struct literal: the guard's temporary would otherwise
+        // outlive the borrow and block moving `control` into the struct below.
+        // Start already settled on the configured mode — the cross-fade is for
+        // *changes*, and fading in at startup would clip the opening.
+        let initial_output_mode = control.live.read().binaural.output_mode;
+
         Ok(Self {
             num_speakers,
+            active_output_mode: initial_output_mode,
+            mode_fade: None,
+            has_rendered_frame: false,
+            // 5 ms: long enough to bury the step between two DSP chains, short
+            // enough that the switch still feels immediate.
+            mode_fade_samples: ((sample_rate as f32) * 0.005).round().max(1.0) as usize,
             spread_resolution,
             channel_routing: arc_swap::ArcSwap::new(std::sync::Arc::new(Vec::new())),
             first_render: std::sync::atomic::AtomicBool::new(true),
