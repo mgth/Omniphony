@@ -2064,3 +2064,163 @@ fn an_output_mode_change_is_ramped_not_stepped() {
          (head {head_peak:.5} vs block peak {new_peak:.5})"
     );
 }
+
+/// Build a 7.1.4 renderer whose first three speakers are split into distinct
+/// crossover bands, so a test signal can be checked against band assignment.
+fn crossover_renderer() -> SpatialRenderer {
+    let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
+    // speaker 0: sub (…80 Hz), speaker 1: mid (80…2000), speaker 2: top (2000…)
+    layout.speakers[0].freq_low = None;
+    layout.speakers[0].freq_high = Some(80.0);
+    layout.speakers[1].freq_low = Some(80.0);
+    layout.speakers[1].freq_high = Some(2000.0);
+    layout.speakers[2].freq_low = Some(2000.0);
+    layout.speakers[2].freq_high = None;
+    SpatialRenderer::new(
+        layout,
+        48_000,
+        1,
+        1,
+        0.0,
+        2.0,
+        VbapTableMode::Cartesian {
+            x_size: 21,
+            y_size: 21,
+            z_size: 9,
+            z_neg_size: 9,
+        },
+        false,
+        false,
+        DistanceModel::Linear,
+        false,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        false,
+        [1.0, 2.0, 0.5],
+        2.0,
+        0.5,
+        0.0,
+        0.0,
+        false,
+        false,
+        false,
+        1.0,
+        1.0,
+        PreferredEvaluationMode::PrecomputedCartesian,
+        LiveEvaluationMode::PrecomputedCartesian,
+        21,
+        21,
+        9,
+        9,
+    )
+    .unwrap()
+}
+
+/// The test signal must reach only the speaker under test.
+///
+/// A speaker test that bleeds into its neighbours is worse than none: the whole
+/// point is to answer "is THIS the speaker I think it is".
+#[test]
+fn speaker_test_reaches_only_the_speaker_under_test() {
+    let mut r = crossover_renderer();
+    let frames = 512;
+    let pcm = vec![0.0f32; frames]; // silent programme, so anything heard is the test
+    let target = 1usize;
+
+    r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
+        speaker_idx: target,
+        level: 0.1,
+        isolation: crate::live_params::TestIsolation::TestOnly,
+    });
+
+    let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    let n = out.n_channels;
+    for spk in 0..n {
+        let energy: f32 = (0..frames).map(|f| out.samples[f * n + spk].abs()).sum();
+        if spk == target {
+            assert!(
+                energy > 0.0,
+                "the speaker under test must receive the signal"
+            );
+        } else {
+            assert_eq!(
+                energy, 0.0,
+                "speaker {spk} must stay silent during the test"
+            );
+        }
+    }
+}
+
+/// The signal must be band-limited to what the speaker reproduces.
+///
+/// Measured by how fast the waveform moves, not by how much energy it carries.
+/// Total energy is the wrong discriminator here and was tried first: pink noise
+/// carries equal energy per octave, so a sub covering 2-3 octaves and a tweeter
+/// covering 3.6 land within a factor of 1.4 of each other even when the filter
+/// works perfectly — a threshold tight enough to catch a bug would also fail on
+/// correct output.
+///
+/// The mean sample-to-sample step, normalised by amplitude, separates them
+/// cleanly instead: a signal low-passed at 80 Hz barely changes between
+/// consecutive samples at 48 kHz, while one high-passed at 2 kHz changes a lot.
+/// A regression that skipped band assignment would send identical full-range
+/// noise to both and the two figures would converge.
+#[test]
+fn speaker_test_is_limited_to_the_speakers_bands() {
+    let frames = 4096;
+    let pcm = vec![0.0f32; frames];
+
+    let mut slew_ratio_for = |idx: usize| -> f32 {
+        let mut r = crossover_renderer();
+        r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
+            speaker_idx: idx,
+            level: 0.1,
+            isolation: crate::live_params::TestIsolation::TestOnly,
+        });
+        let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+        let n = out.n_channels;
+        let ch: Vec<f32> = (0..frames).map(|f| out.samples[f * n + idx]).collect();
+        let amp: f32 = ch.iter().map(|s| s.abs()).sum::<f32>() / frames as f32;
+        let step: f32 =
+            ch.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f32>() / (frames - 1) as f32;
+        assert!(amp > 0.0, "speaker {idx} produced no signal");
+        step / amp
+    };
+
+    let sub = slew_ratio_for(0);
+    let top = slew_ratio_for(2);
+    assert!(
+        sub < top * 0.25,
+        "the sub's band must move far more slowly than the tweeter's \
+         (sub {sub:.4}, top {top:.4})"
+    );
+}
+
+/// Clearing the test must stop it, and must not leave the speaker attenuated or
+/// the programme suppressed.
+#[test]
+fn clearing_the_test_restores_normal_output() {
+    let mut r = crossover_renderer();
+    let frames = 256;
+    let pcm = vec![0.0f32; frames];
+
+    r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
+        speaker_idx: 1,
+        level: 0.1,
+        isolation: crate::live_params::TestIsolation::TestOnly,
+    });
+    let during = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    let n = during.n_channels;
+    let heard: f32 = (0..frames).map(|f| during.samples[f * n + 1].abs()).sum();
+    assert!(heard > 0.0, "the test must be audible while it runs");
+
+    r.control.live.write().speaker_test = None;
+    let after = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+    let silent: f32 = after.samples.iter().map(|s| s.abs()).sum();
+    assert_eq!(
+        silent, 0.0,
+        "with the test cleared and a silent programme the output must be silent"
+    );
+}

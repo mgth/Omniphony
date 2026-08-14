@@ -49,6 +49,18 @@ pub(super) struct SpeakerRenderStage {
     pub(super) crossover_filter_bank: Option<LR4CrossoverBank>,
     /// Per-object filter states for the crossover bank, keyed by channel index.
     pub(super) crossover_filter_states: Vec<Option<Vec<BiquadState>>>,
+    /// Generator for the speaker test signal. Kept on the stage (not created per
+    /// test) so starting one allocates nothing and the render path stays clean.
+    pub(super) test_noise: crate::speaker_test::PinkNoise,
+    /// Crossover states for the test signal, sized on first use. Separate from
+    /// `crossover_filter_states`: the test is its own source and must not share
+    /// filter memory with an input channel.
+    pub(super) test_filter_states: Vec<BiquadState>,
+    /// Samples the current test has been running, against the safety cap. Reset
+    /// whenever the test target or level changes.
+    pub(super) test_elapsed_samples: u64,
+    /// The test the elapsed count belongs to, to spot a restart.
+    pub(super) test_identity: Option<(usize, u32)>,
     /// Reusable per-band scratch used only when collecting crossover timing.
     pub(super) crossover_band_scratch: [Vec<f32>; 8],
     /// Reusable per-object band-gain buffer (taken via `mem::take` per object).
@@ -718,6 +730,10 @@ impl SpeakerRenderStage {
             unified_table,
             crossover_filter_bank,
             crossover_filter_states: Vec::new(),
+            test_noise: crate::speaker_test::PinkNoise::default(),
+            test_filter_states: Vec::new(),
+            test_elapsed_samples: 0,
+            test_identity: None,
             crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
             band_gains_scratch: Vec::new(),
             interp_end_scratch: Vec::new(),
@@ -771,6 +787,118 @@ impl SpeakerRenderStage {
     /// `(peak_sample, peak_speaker_idx)`; the caller owns clip reporting and
     /// auto-gain (a virtual stage must never fold reductions into the shared
     /// master gain).
+    /// Longest a test may run without the client refreshing it. A client that
+    /// dies mid-test must not leave a speaker making noise indefinitely.
+    const TEST_MAX_SECONDS: u64 = 120;
+
+    /// Write the speaker test signal into `output`, band-limited to the bands the
+    /// target speaker actually reproduces.
+    ///
+    /// Called between the mix and `finalize_output`, so the test then goes
+    /// through the same per-speaker gain, delay and mute as programme audio —
+    /// the point being to hear what that speaker will actually do.
+    ///
+    /// "Bands the speaker reproduces" is literal rather than approximate: the
+    /// crossover already computes, per band, which speakers cover it
+    /// (`BandRenderer::speaker_indices`), so the noise goes through the very
+    /// same LR4 bank as programme audio and only the bands listing this speaker
+    /// are summed. A full-range speaker sums all of them and hears the whole
+    /// signal; a sub hears only its own.
+    ///
+    /// Returns true while a test is running, so the caller can skip peak
+    /// tracking — a loud test must not drive the auto-gain and quietly rescale
+    /// the very thing being judged.
+    pub(super) fn inject_speaker_test(
+        &mut self,
+        test: Option<crate::live_params::SpeakerTest>,
+        sample_rate: u32,
+        output: &mut [f32],
+    ) -> bool {
+        let Some(test) = test else {
+            // Idle: forget the elapsed count so the next test starts fresh, and
+            // drop the generator state so two tests never sound spliced.
+            if self.test_identity.is_some() {
+                self.test_identity = None;
+                self.test_elapsed_samples = 0;
+                self.test_noise.reset();
+            }
+            return false;
+        };
+        if test.speaker_idx >= self.num_speakers || self.num_speakers == 0 {
+            return false;
+        }
+
+        // Level is part of the identity: nudging the slider restarts the clock,
+        // which is what a listener adjusting by ear expects.
+        let identity = (test.speaker_idx, test.level.to_bits());
+        if self.test_identity != Some(identity) {
+            self.test_identity = Some(identity);
+            self.test_elapsed_samples = 0;
+            self.test_noise.reset();
+            for s in &mut self.test_filter_states {
+                *s = BiquadState::default();
+            }
+        }
+
+        let frames = output.len() / self.num_speakers;
+        let cap = Self::TEST_MAX_SECONDS * sample_rate.max(1) as u64;
+        if self.test_elapsed_samples >= cap {
+            return false;
+        }
+        let frames = frames.min((cap - self.test_elapsed_samples) as usize);
+        if frames == 0 {
+            return false;
+        }
+
+        match test.isolation {
+            crate::live_params::TestIsolation::WithProgramme => {}
+            crate::live_params::TestIsolation::TestOnly => {
+                // Silence the programme on the speaker under test only: the
+                // other speakers keep playing, which is what you want when
+                // checking one speaker against a running mix.
+                for f in 0..frames {
+                    output[f * self.num_speakers + test.speaker_idx] = 0.0;
+                }
+            }
+            crate::live_params::TestIsolation::TestOnlySoloSpeaker => {
+                for f in 0..frames {
+                    let base = f * self.num_speakers;
+                    output[base..base + self.num_speakers].fill(0.0);
+                }
+            }
+        }
+
+        // Sum only the bands this speaker covers. Without a crossover there is
+        // one band covering everything, so this degenerates to unfiltered noise.
+        match self.crossover_filter_bank.as_ref() {
+            Some(bank) => {
+                if self.test_filter_states.len() != bank.state_count() {
+                    self.test_filter_states = vec![BiquadState::default(); bank.state_count()];
+                }
+                for f in 0..frames {
+                    let raw = self.test_noise.next_sample();
+                    let bands = bank.process_sample(raw, &mut self.test_filter_states);
+                    let mut acc = 0.0f32;
+                    for (b, band) in self.render_bands.iter().enumerate() {
+                        if b < bands.len() && band.speaker_indices.contains(&test.speaker_idx) {
+                            acc += bands.get(b);
+                        }
+                    }
+                    output[f * self.num_speakers + test.speaker_idx] += acc * test.level;
+                }
+            }
+            None => {
+                for f in 0..frames {
+                    let raw = self.test_noise.next_sample();
+                    output[f * self.num_speakers + test.speaker_idx] += raw * test.level;
+                }
+            }
+        }
+
+        self.test_elapsed_samples += frames as u64;
+        true
+    }
+
     pub(super) fn finalize_output(
         &mut self,
         speaker_params: &[crate::live_params::SpeakerLiveParams],

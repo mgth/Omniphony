@@ -576,6 +576,56 @@ impl Default for SpeakerLiveParams {
     }
 }
 
+/// What the rest of the output does while a speaker test runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TestIsolation {
+    /// Programme muted; only the test is heard. The default, because the point
+    /// of the test is to hear one speaker on its own.
+    #[default]
+    TestOnly,
+    /// Test summed on top of whatever is playing.
+    WithProgramme,
+    /// Programme muted AND every other speaker silenced, so nothing but the
+    /// speaker under test produces sound — including any bleed from a bed
+    /// channel routed elsewhere.
+    TestOnlySoloSpeaker,
+}
+
+impl TestIsolation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TestOnly => "test_only",
+            Self::WithProgramme => "with_programme",
+            Self::TestOnlySoloSpeaker => "test_only_solo",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "test_only" | "solo" => Some(Self::TestOnly),
+            "with_programme" | "with_program" | "mix" => Some(Self::WithProgramme),
+            "test_only_solo" | "exclusive" => Some(Self::TestOnlySoloSpeaker),
+            _ => None,
+        }
+    }
+}
+
+/// A running per-speaker test signal.
+///
+/// Deliberately carries no timing: how long a test lasts is a UI policy (hold,
+/// fixed burst, toggle), so Studio owns the clock and simply clears this when
+/// the test should stop. The renderer keeps only a safety cap, so a client that
+/// dies mid-test cannot leave noise playing forever.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpeakerTest {
+    /// Index into the layout of the speaker under test.
+    pub speaker_idx: usize,
+    /// Linear amplitude, applied to a unit-RMS generator — so the panel's dBFS
+    /// value converts directly.
+    pub level: f32,
+    pub isolation: TestIsolation,
+}
+
 /// Per-speaker live params seeded from a layout: only the configured delays
 /// (gains/mutes are runtime-only and start at defaults). Shared by renderer
 /// construction and the live profile switch so the two cannot drift.
@@ -757,6 +807,11 @@ pub struct LiveParams {
     /// Per-speaker live parameters: gain, mute, delay.
     /// Absent entries use `SpeakerLiveParams::default()` (gain=1.0, muted=false, delay=0 ms).
     pub speakers: HashMap<usize, SpeakerLiveParams>,
+
+    /// Speaker test signal, `None` when no test is running. Transient by
+    /// design: never persisted to the config, and cleared on a fresh start, so
+    /// a saved session can never come up making noise.
+    pub speaker_test: Option<SpeakerTest>,
 
     /// Room proportions `[width, length, height]` used to scale ADM coordinates
     /// before VBAP panning.  Updated live via `/omniphony/control/room_ratio`.

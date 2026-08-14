@@ -842,5 +842,21 @@
   "binaural.hrirLattice.fine": "Fine",
   "binaural.hrirLattice.balanced": "Bilanciato",
   "binaural.hrirLattice.coarse": "Grossolano",
-  "help.hrirUpdateLattice": "Di quanto deve ruotare un oggetto prima che il suo filtro HRTF venga ricalcolato. «Esatto» ricalcola a ogni movimento ed è identico bit per bit all'assenza di ottimizzazione; i passi più grossolani lasciano che un oggetto quasi fermo mantenga il filtro, con un risparmio di CPU notevole su hardware modesto ma alterando l'uscita. Lascia «Esatto» se non ti serve il margine."
+  "help.hrirUpdateLattice": "Di quanto deve ruotare un oggetto prima che il suo filtro HRTF venga ricalcolato. «Esatto» ricalcola a ogni movimento ed è identico bit per bit all'assenza di ottimizzazione; i passi più grossolani lasciano che un oggetto quasi fermo mantenga il filtro, con un risparmio di CPU notevole su hardware modesto ma alterando l'uscita. Lascia «Esatto» se non ti serve il margine.",
+  "speaker.test": "Test",
+  "speaker.testPlay": "Rumore rosa",
+  "speaker.testStop": "Ferma",
+  "speaker.testMode": "Attivazione",
+  "speaker.testMode.toggle": "Alterna",
+  "speaker.testMode.burst": "Raffica 2 s",
+  "speaker.testMode.hold": "Tieni premuto",
+  "speaker.testIsolation": "Isolamento",
+  "speaker.testIsolation.testOnly": "Solo test",
+  "speaker.testIsolation.withProgramme": "Test + programma",
+  "speaker.testIsolation.solo": "Solo test, altri muti",
+  "speaker.testLevel": "Livello test",
+  "help.speaker.test": "Riproduce rumore rosa su questo diffusore, limitato alle bande di frequenza che riproduce realmente, attraverso il suo guadagno e ritardo. Serve a identificare un diffusore e a verificarne a orecchio l'assegnazione del crossover.",
+  "help.speaker.testMode": "Comportamento del pulsante: Alterna avvia e ferma al clic (e si ferma da solo dopo un minuto), Raffica riproduce una durata fissa, Tieni premuto riproduce finché il pulsante è premuto.",
+  "help.speaker.testIsolation": "Cosa fa il resto dell'uscita durante un test: silenziare il programma solo su questo diffusore, lasciarlo suonare, oppure silenziare anche tutti gli altri diffusori.",
+  "help.speaker.testLevel": "Livello del segnale di test in dBFS. Il rumore rosa ha un fattore di cresta elevato: -20 dBFS raggiunge picchi di circa -8 dBFS."
 }

@@ -842,5 +842,21 @@
   "binaural.hrirLattice.fine": "Fein",
   "binaural.hrirLattice.balanced": "Ausgewogen",
   "binaural.hrirLattice.coarse": "Grob",
-  "help.hrirUpdateLattice": "Wie weit sich ein Objekt drehen muss, bevor sein HRTF-Filter neu berechnet wird. „Exakt“ rechnet bei jeder Bewegung neu und ist bitgenau identisch mit „keine Optimierung“; gröbere Stufen lassen ein kaum bewegtes Objekt sein Filter behalten, was auf schwacher Hardware deutlich CPU spart, aber das Ergebnis verändert. Bleiben Sie bei „Exakt“, sofern Sie die Reserve nicht brauchen."
+  "help.hrirUpdateLattice": "Wie weit sich ein Objekt drehen muss, bevor sein HRTF-Filter neu berechnet wird. „Exakt“ rechnet bei jeder Bewegung neu und ist bitgenau identisch mit „keine Optimierung“; gröbere Stufen lassen ein kaum bewegtes Objekt sein Filter behalten, was auf schwacher Hardware deutlich CPU spart, aber das Ergebnis verändert. Bleiben Sie bei „Exakt“, sofern Sie die Reserve nicht brauchen.",
+  "speaker.test": "Test",
+  "speaker.testPlay": "Rosa Rauschen",
+  "speaker.testStop": "Stopp",
+  "speaker.testMode": "Auslösung",
+  "speaker.testMode.toggle": "Umschalten",
+  "speaker.testMode.burst": "2-s-Stoß",
+  "speaker.testMode.hold": "Halten",
+  "speaker.testIsolation": "Isolierung",
+  "speaker.testIsolation.testOnly": "Nur Test",
+  "speaker.testIsolation.withProgramme": "Test + Programm",
+  "speaker.testIsolation.solo": "Nur Test, andere stumm",
+  "speaker.testLevel": "Testpegel",
+  "help.speaker.test": "Spielt rosa Rauschen auf diesem Lautsprecher ab, begrenzt auf die Frequenzbänder, die er tatsächlich wiedergibt, über seine eigene Verstärkung und Verzögerung. Dient zum Identifizieren eines Lautsprechers und zum Prüfen seiner Frequenzweichen-Zuordnung nach Gehör.",
+  "help.speaker.testMode": "Verhalten der Testtaste: Umschalten startet und stoppt per Klick (und stoppt nach einer Minute von selbst), 2-s-Stoß spielt eine feste Dauer, Halten spielt, solange die Taste gedrückt wird.",
+  "help.speaker.testIsolation": "Was der Rest der Ausgabe während eines Tests tut: nur auf diesem Lautsprecher stummschalten, weiterlaufen lassen, oder alle anderen Lautsprecher ebenfalls stummschalten.",
+  "help.speaker.testLevel": "Pegel des Testsignals in dBFS. Rosa Rauschen hat einen hohen Crest-Faktor: -20 dBFS erreicht Spitzen um -8 dBFS."
 }

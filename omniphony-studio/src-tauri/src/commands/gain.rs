@@ -96,3 +96,25 @@ pub fn control_auto_gain_ceiling(state: State<SharedState>, db: f32) {
         },
     );
 }
+
+/// Start or stop the per-speaker test signal (band-limited pink noise).
+///
+/// `id < 0` stops any running test. The trigger policy — hold, fixed burst or
+/// toggle — lives in the UI, so this is the whole renderer-facing contract:
+/// start this speaker, or stop.
+#[tauri::command]
+pub fn control_speaker_test(state: State<SharedState>, id: i32, level: f32, isolation: String) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/speaker_test".to_string(),
+            args: vec![
+                rosc::OscType::Int(id),
+                // Clamped here as well as renderer-side: this drives a speaker,
+                // and a stray value from the UI must not reach the audio path.
+                rosc::OscType::Float(level.clamp(0.0, 1.0)),
+                rosc::OscType::String(isolation),
+            ],
+        },
+    );
+}

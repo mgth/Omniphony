@@ -842,5 +842,21 @@
   "binaural.hrirLattice.fine": "細かい",
   "binaural.hrirLattice.balanced": "標準",
   "binaural.hrirLattice.coarse": "粗い",
-  "help.hrirUpdateLattice": "オブジェクトがどれだけ向きを変えたら HRTF フィルターを再計算するかを決めます。「厳密」はわずかな動きでも再計算し、最適化なしとビット単位で同一の結果になります。粗い段階ではほとんど動いていないオブジェクトがフィルターを保持するため、非力なハードウェアで CPU を大きく節約できますが、出力は変化します。余裕が必要でなければ「厳密」のままにしてください。"
+  "help.hrirUpdateLattice": "オブジェクトがどれだけ向きを変えたら HRTF フィルターを再計算するかを決めます。「厳密」はわずかな動きでも再計算し、最適化なしとビット単位で同一の結果になります。粗い段階ではほとんど動いていないオブジェクトがフィルターを保持するため、非力なハードウェアで CPU を大きく節約できますが、出力は変化します。余裕が必要でなければ「厳密」のままにしてください。",
+  "speaker.test": "テスト",
+  "speaker.testPlay": "ピンクノイズ",
+  "speaker.testStop": "停止",
+  "speaker.testMode": "トリガー",
+  "speaker.testMode.toggle": "トグル",
+  "speaker.testMode.burst": "2秒バースト",
+  "speaker.testMode.hold": "押している間",
+  "speaker.testIsolation": "分離",
+  "speaker.testIsolation.testOnly": "テストのみ",
+  "speaker.testIsolation.withProgramme": "テスト + 番組音声",
+  "speaker.testIsolation.solo": "テストのみ、他はミュート",
+  "speaker.testLevel": "テストレベル",
+  "help.speaker.test": "このスピーカーでピンクノイズを再生します。実際に再生する周波数帯域に制限され、そのスピーカー自身のゲインとディレイを通ります。スピーカーの特定と、クロスオーバー割り当ての試聴確認に使います。",
+  "help.speaker.testMode": "テストボタンの動作: トグルはクリックで開始・停止し（1分後に自動停止）、2秒バーストは固定長を再生し、押している間はボタンを押している間だけ再生します。",
+  "help.speaker.testIsolation": "テスト中に出力の残りが行う動作: このスピーカーの番組音声のみをミュート、そのまま再生、または他のすべてのスピーカーもミュート。",
+  "help.speaker.testLevel": "テスト信号のレベル（dBFS）。ピンクノイズは波高率が高く、-20 dBFS でピークは約 -8 dBFS になります。"
 }

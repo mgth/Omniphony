@@ -233,6 +233,7 @@ fn main() {
             control_speaker_gain,
             control_object_mute,
             control_speaker_mute,
+            control_speaker_test,
             control_master_gain,
             control_loudness,
             control_auto_gain,

@@ -790,6 +790,51 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == crate::osc_contract::CONTROL_SPEAKER_TEST {
+        // Start/stop the per-speaker test signal. A negative index stops: the
+        // client owns the trigger policy (hold, fixed burst, toggle), so the
+        // renderer only ever sees "play this" or "stop".
+        let idx = match msg.args.first() {
+            Some(OscType::Int(v)) => *v,
+            _ => {
+                log::warn!("OSC {addr}: expected [speaker_idx, level, isolation]");
+                return Some(effects);
+            }
+        };
+        let next = if idx < 0 {
+            None
+        } else {
+            let level = match msg.args.get(1) {
+                Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
+                _ => 0.1,
+            };
+            let isolation = parse_string_arg(msg.args.get(2))
+                .and_then(|v| renderer::live_params::TestIsolation::from_str(&v))
+                .unwrap_or_default();
+            Some(renderer::live_params::SpeakerTest {
+                speaker_idx: idx as usize,
+                level,
+                isolation,
+            })
+        };
+        let mut live = ctx.renderer.live.write();
+        if live.speaker_test != next {
+            live.speaker_test = next;
+            // Deliberately NOT mark_dirty: the test is transient and must never
+            // reach the config or a live-handoff sidecar.
+            effects.log_message = Some(match next {
+                Some(t) => format!(
+                    "OSC: speaker_test -> speaker {} at {:.3} ({})",
+                    t.speaker_idx,
+                    t.level,
+                    t.isolation.as_str()
+                ),
+                None => "OSC: speaker_test -> off".to_string(),
+            });
+        }
+        return Some(effects);
+    }
+
     if addr == "/omniphony/control/binaural_mode" {
         // Switch the binaural stage between per-object HRTF ("direct") and the
         // virtual-speaker cascade ("cascaded"). No topology recompute: the

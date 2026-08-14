@@ -842,5 +842,21 @@
   "binaural.hrirLattice.fine": "Fina",
   "binaural.hrirLattice.balanced": "Equilibrada",
   "binaural.hrirLattice.coarse": "Grossa",
-  "help.hrirUpdateLattice": "Quanto um objeto precisa girar antes de seu filtro HRTF ser recalculado. «Exata» recalcula a qualquer movimento e é idêntica bit a bit a não otimizar; os passos mais grossos deixam um objeto quase parado manter seu filtro, o que economiza bastante CPU em hardware modesto mas altera a saída. Mantenha «Exata» a menos que precise da folga."
+  "help.hrirUpdateLattice": "Quanto um objeto precisa girar antes de seu filtro HRTF ser recalculado. «Exata» recalcula a qualquer movimento e é idêntica bit a bit a não otimizar; os passos mais grossos deixam um objeto quase parado manter seu filtro, o que economiza bastante CPU em hardware modesto mas altera a saída. Mantenha «Exata» a menos que precise da folga.",
+  "speaker.test": "Teste",
+  "speaker.testPlay": "Ruído rosa",
+  "speaker.testStop": "Parar",
+  "speaker.testMode": "Acionamento",
+  "speaker.testMode.toggle": "Alternar",
+  "speaker.testMode.burst": "Rajada 2 s",
+  "speaker.testMode.hold": "Segurar",
+  "speaker.testIsolation": "Isolamento",
+  "speaker.testIsolation.testOnly": "Somente teste",
+  "speaker.testIsolation.withProgramme": "Teste + programa",
+  "speaker.testIsolation.solo": "Somente teste, demais mudos",
+  "speaker.testLevel": "Nível do teste",
+  "help.speaker.test": "Reproduz ruído rosa nesta caixa, limitado às faixas de frequência que ela realmente reproduz, através do seu próprio ganho e atraso. Serve para identificar uma caixa e conferir de ouvido a atribuição do divisor de frequências.",
+  "help.speaker.testMode": "Comportamento do botão: Alternar inicia e para ao clicar (e para sozinho após um minuto), Rajada reproduz uma duração fixa, Segurar reproduz enquanto o botão estiver pressionado.",
+  "help.speaker.testIsolation": "O que o restante da saída faz durante um teste: silenciar o programa apenas nesta caixa, deixá-lo tocando, ou silenciar também todas as outras caixas.",
+  "help.speaker.testLevel": "Nível do sinal de teste em dBFS. O ruído rosa tem fator de crista alto: -20 dBFS atinge picos de cerca de -8 dBFS."
 }

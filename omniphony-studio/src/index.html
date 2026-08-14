@@ -766,6 +766,38 @@
             <label for="speakerEditFreqHighInput" data-help-i18n="help.speaker.freqHigh">Freq. max (Hz)</label>
             <input id="speakerEditFreqHighInput" class="delay-input" type="number" min="0" step="10" placeholder="full range" />
           </div>
+          <!-- Speaker test: pink noise limited to the bands this speaker
+               reproduces, through its own gain and delay. Trigger, isolation
+               and level are global settings rather than per-speaker ones, so
+               they sit beside the button instead of repeating for every
+               speaker. -->
+          <div class="editor-row">
+            <label for="speakerTestBtn" data-i18n="speaker.test" data-help-i18n="help.speaker.test">Test</label>
+            <div style="display:flex;gap:0.3rem;justify-content:flex-end;flex:1 1 auto;min-width:0">
+              <button id="speakerTestBtn" type="button" class="toggle-btn" data-i18n="speaker.testPlay">Pink noise</button>
+            </div>
+          </div>
+          <div class="editor-row">
+            <label for="speakerTestModeSelect" data-i18n="speaker.testMode" data-help-i18n="help.speaker.testMode">Test trigger</label>
+            <select id="speakerTestModeSelect" style="width:auto;min-width:7rem">
+              <option value="toggle" data-i18n="speaker.testMode.toggle">Toggle</option>
+              <option value="burst" data-i18n="speaker.testMode.burst">2 s burst</option>
+              <option value="hold" data-i18n="speaker.testMode.hold">Hold</option>
+            </select>
+          </div>
+          <div class="editor-row">
+            <label for="speakerTestIsolationSelect" data-i18n="speaker.testIsolation" data-help-i18n="help.speaker.testIsolation">Test isolation</label>
+            <select id="speakerTestIsolationSelect" style="width:auto;min-width:7rem">
+              <option value="test_only" data-i18n="speaker.testIsolation.testOnly">Test only</option>
+              <option value="with_programme" data-i18n="speaker.testIsolation.withProgramme">Test + programme</option>
+              <option value="test_only_solo" data-i18n="speaker.testIsolation.solo">Test only, others muted</option>
+            </select>
+          </div>
+          <div class="editor-row gain-row">
+            <label for="speakerTestLevelSlider" data-i18n="speaker.testLevel" data-help-i18n="help.speaker.testLevel">Test level</label>
+            <input id="speakerTestLevelSlider" class="gain-slider" type="range" min="-60" max="-6" step="1" value="-20" />
+            <div id="speakerTestLevelBox" class="gain-box">-20 dBFS</div>
+          </div>
         </div>
       </div>
     </div>

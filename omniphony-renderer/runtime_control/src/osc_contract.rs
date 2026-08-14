@@ -185,6 +185,13 @@ pub const CONTROL_RAMP_MODE: &str = "/omniphony/control/ramp_mode";
 pub const CONTROL_REALTIME_MASTER_GAIN: &str = "/omniphony/control/realtime/master_gain";
 pub const CONTROL_REALTIME_SPEAKER_GAIN: &str = "/omniphony/control/realtime/speaker_gain";
 pub const CONTROL_RELOAD_CONFIG: &str = "/omniphony/control/reload_config";
+/// Start or stop the per-speaker test signal (band-limited pink noise).
+///
+/// Args: `[speaker_idx: Int, level: Float, isolation: String]`. A negative
+/// index stops any running test — the trigger policy (hold, fixed burst,
+/// toggle) is the client's, so the renderer only ever hears "start this" or
+/// "stop". Transient: never persisted, and cleared on a fresh start.
+pub const CONTROL_SPEAKER_TEST: &str = "/omniphony/control/speaker_test";
 pub const CONTROL_RENDER_BACKEND: &str = "/omniphony/control/render_backend";
 pub const CONTROL_RENDER_BACKEND_RESTORE: &str = "/omniphony/control/render_backend/restore";
 pub const CONTROL_RENDER_BRIDGE_PATH: &str = "/omniphony/control/render/bridge_path";
@@ -395,6 +402,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_REALTIME_MASTER_GAIN,
     CONTROL_REALTIME_SPEAKER_GAIN,
     CONTROL_RELOAD_CONFIG,
+    CONTROL_SPEAKER_TEST,
     CONTROL_RENDER_BACKEND,
     CONTROL_RENDER_BACKEND_RESTORE,
     CONTROL_RENDER_BRIDGE_PATH,

@@ -123,6 +123,7 @@ import { pushLog } from './log.js';
 import { scheduleUIFlush } from './flush.js';
 import { updateItemClasses, updateSpeakerMeterUI, updateObjectMeterUI } from './flush.js';
 import { computeCrossoverBandLabels, computeCrossoverBandEdges } from './crossover-bands.js';
+import { onSpeakerSelectionChanged } from './controls/speaker-test.js';
 
 import {
   linearToDb,
@@ -1176,6 +1177,9 @@ export function applySpeakerPolarEdit(index, az, el, r, sendOsc = true) {
 // ---------------------------------------------------------------------------
 
 export function renderSpeakerEditor() {
+  // A running test belongs to the speaker it was started on; this both stops it
+  // on a selection change and refreshes the button's label/enabled state.
+  onSpeakerSelectionChanged();
   const speakerEditSectionEl = getSpeakerEditSectionEl();
   const speakerEditBodyEl = getSpeakerEditBodyEl();
   const speakerAddBtnEl = getSpeakerAddBtnEl();

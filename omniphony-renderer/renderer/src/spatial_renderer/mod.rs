@@ -94,6 +94,8 @@ struct LiveSnapshot<'a> {
     auto_gain: bool,
     auto_gain_ceiling_db: f32,
     speaker_params: &'a [crate::live_params::SpeakerLiveParams],
+    /// Running speaker test, `None` in normal operation.
+    speaker_test: Option<crate::live_params::SpeakerTest>,
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -659,6 +661,7 @@ impl SpatialRenderer {
                 auto_gain: g.auto_gain,
                 auto_gain_ceiling_db: g.auto_gain_ceiling_db,
                 speaker_params: &self.speaker_params_buf[..self.num_speakers],
+                speaker_test: g.speaker_test,
                 room_ratio: g.room_ratio,
                 room_ratio_rear: g.room_ratio_rear,
                 room_ratio_lower: g.room_ratio_lower,
@@ -1028,6 +1031,15 @@ impl SpatialRenderer {
         // clipping branch below), so it needs no separate factor here.
         let total_gain = live.master_gain * loudness;
 
+        // Before finalize, so the test goes through the same per-speaker gain,
+        // delay and mute as programme audio — the point is to hear what the
+        // speaker will actually do, not a bypassed signal.
+        let test_active = self.speaker_stage.inject_speaker_test(
+            live.speaker_test,
+            self.sample_rate,
+            &mut output,
+        );
+
         let (peak_sample, peak_speaker_idx) =
             self.speaker_stage
                 .finalize_output(live.speaker_params, total_gain, &mut output);
@@ -1035,7 +1047,11 @@ impl SpatialRenderer {
         // Clipping handling. Detection is always at 0 dBFS (peak > 1.0) and the
         // clip flag is raised (with the offending speaker) regardless of auto-gain
         // so the UI clip indicators work even when auto-gain is disabled.
-        if peak_sample > 1.0 {
+        //
+        // Suppressed while a test runs: a deliberately loud test signal would
+        // otherwise fold itself into the master gain and quietly rescale the
+        // very thing being judged by ear, leaving the mix attenuated afterwards.
+        if peak_sample > 1.0 && !test_active {
             self.control.note_clip(peak_speaker_idx);
 
             // Auto-gain: fold the required attenuation directly into the live

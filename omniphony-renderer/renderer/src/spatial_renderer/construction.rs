@@ -361,6 +361,9 @@ impl SpatialRenderer {
 
         LiveParams {
             master_gain,
+            // Never restored from config: a session must not come up making
+            // noise because a test was running when it was last saved.
+            speaker_test: None,
             objects: std::collections::HashMap::new(),
             spread_min,
             spread_max,
