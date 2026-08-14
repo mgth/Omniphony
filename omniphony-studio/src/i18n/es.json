@@ -858,5 +858,7 @@
   "help.speaker.test": "Reproduce ruido rosa en este altavoz, limitado a las bandas de frecuencia que realmente reproduce, a través de su propia ganancia y retardo. Sirve para identificar un altavoz y comprobar de oído su asignación de filtro divisor.",
   "help.speaker.testMode": "Comportamiento del botón: Alternar inicia y detiene al hacer clic (y se detiene solo tras un minuto), Ráfaga reproduce una duración fija, Mantener reproduce mientras se pulsa el botón.",
   "help.speaker.testIsolation": "Qué hace el resto de la salida durante una prueba: silenciar el programa solo en este altavoz, dejarlo sonando, o silenciar también todos los demás altavoces.",
-  "help.speaker.testLevel": "Nivel de la señal de prueba en dBFS. El ruido rosa tiene un factor de cresta alto: -20 dBFS alcanza picos de unos -8 dBFS."
+  "help.speaker.testLevel": "Nivel de la señal de prueba en dBFS. El ruido rosa tiene un factor de cresta alto: -20 dBFS alcanza picos de unos -8 dBFS.",
+  "speakerTabs.edit": "Edición",
+  "speakerTabs.test": "Prueba"
 }

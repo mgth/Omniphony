@@ -674,6 +674,12 @@
       <!-- Speaker editor pinned below the scroll so it stays visible while editing. -->
       <div class="info-section" id="speakerEditSection" style="display:none">
         <div class="info-title" id="speakerEditTitle" data-i18n="section.speakerEditor">Speaker Editor</div>
+        <!-- Edit / Test tabs. Same shape as the Renderer/Binaural pair: a body
+             class drives visibility, the buttons only mirror it. -->
+        <div id="speakerTabsBar" style="display:flex;gap:0.25rem;padding:0 0.1rem;margin-bottom:0.3rem">
+          <button id="speakerTabEditBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="speakerTabs.edit">Edit</button>
+          <button id="speakerTabTestBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="speakerTabs.test">Test</button>
+        </div>
         <div class="editor-row" style="margin-bottom:0.35rem">
           <label data-i18n="speaker.layout" data-help-i18n="help.speaker.layout">Layout</label>
           <div style="display:flex;gap:0.3rem;justify-content:flex-end">
@@ -683,6 +689,7 @@
           </div>
         </div>
         <div id="speakerEditBody" class="editor-body" style="display:none">
+          <div id="speakerEditTabEdit">
           <div class="editor-meta">
             <div><strong data-i18n="common.name">Name:</strong></div>
             <input id="speakerEditNameInput" class="name-input" type="text" value="" />
@@ -766,6 +773,8 @@
             <label for="speakerEditFreqHighInput" data-help-i18n="help.speaker.freqHigh">Freq. max (Hz)</label>
             <input id="speakerEditFreqHighInput" class="delay-input" type="number" min="0" step="10" placeholder="full range" />
           </div>
+          </div>
+          <div id="speakerEditTabTest">
           <!-- Speaker test: pink noise limited to the bands this speaker
                reproduces, through its own gain and delay. Trigger, isolation
                and level are global settings rather than per-speaker ones, so

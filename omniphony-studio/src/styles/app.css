@@ -2704,6 +2704,14 @@ body:not(.studio-tab-binaural) .binaural-subpanel {
   background: rgba(86, 156, 255, 0.18);
   color: #cfe4ff;
 }
+/* Speaker editor Edit / Test tabs. Same mechanism as the Renderer/Binaural
+   pair above: a body class selects the pane, the buttons only mirror it, so
+   nothing has to be re-rendered on a tab change. */
+body.speaker-tab-test #speakerEditTabEdit,
+body:not(.speaker-tab-test) #speakerEditTabTest {
+  display: none;
+}
+
 /* The mode is locked at player start only under the embedded (mpv) host. */
 body:not(.cap-embedded) .output-mode-mpv-note {
   display: none;

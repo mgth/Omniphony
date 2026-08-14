@@ -94,14 +94,32 @@ function startSpeakerTest(index) {
   renderSpeakerTestUI();
 }
 
-/** Reflect state on the button and the level readout. */
+/**
+ * Reflect state on the test controls.
+ *
+ * Also owns their enabled state. The speaker editor starts with everything
+ * disabled and each control re-enables itself here once a speaker is selected —
+ * the same contract `renderSpeakerEditor` follows for the layout and coordinate
+ * controls. A control with no owner stays disabled forever, which is exactly
+ * what happened to the tabs before this.
+ */
 export function renderSpeakerTestUI() {
+  const hasSpeaker = app.selectedSpeakerIndex !== null && app.selectedSpeakerIndex !== undefined;
+  // The tabs are navigation, not editing: usable whenever the editor is open.
+  for (const id of ['speakerTabEditBtn', 'speakerTabTestBtn']) {
+    const tab = el(id);
+    if (tab) tab.disabled = !hasSpeaker;
+  }
+  for (const id of ['speakerTestModeSelect', 'speakerTestIsolationSelect', 'speakerTestLevelSlider']) {
+    const c = el(id);
+    if (c) c.disabled = !hasSpeaker;
+  }
   const btn = el('speakerTestBtn');
   if (btn) {
     const active = running !== null && running === app.selectedSpeakerIndex;
     btn.classList.toggle('active', active);
     btn.textContent = active ? t('speaker.testStop') : t('speaker.testPlay');
-    btn.disabled = app.selectedSpeakerIndex === null;
+    btn.disabled = !hasSpeaker;
   }
   const box = el('speakerTestLevelBox');
   if (box) box.textContent = `${levelDb()} dBFS`;
@@ -113,7 +131,31 @@ export function renderSpeakerTestUI() {
   if (isoSel) isoSel.value = load(ISOLATION_KEY, 'test_only');
 }
 
+/**
+ * Select the Edit or Test pane of the speaker editor. Pure UI: a body class
+ * drives the CSS, so nothing re-renders on a tab change.
+ */
+function setSpeakerTab(testTab) {
+  document.body.classList.toggle('speaker-tab-test', testTab);
+  const edit = el('speakerTabEditBtn');
+  const test = el('speakerTabTestBtn');
+  if (edit) edit.classList.toggle('active', !testTab);
+  if (test) test.classList.toggle('active', testTab);
+}
+
 export function setupSpeakerTestListeners() {
+  const tabEdit = el('speakerTabEditBtn');
+  if (tabEdit) {
+    tabEdit.addEventListener('click', () => {
+      // Leaving the Test pane must not leave noise playing behind it.
+      stopSpeakerTest();
+      setSpeakerTab(false);
+    });
+  }
+  const tabTest = el('speakerTabTestBtn');
+  if (tabTest) tabTest.addEventListener('click', () => setSpeakerTab(true));
+  setSpeakerTab(document.body.classList.contains('speaker-tab-test'));
+
   const btn = el('speakerTestBtn');
   if (btn) {
     // Hold mode needs press/release; the other two act on a plain click. Both

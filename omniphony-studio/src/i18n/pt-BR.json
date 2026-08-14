@@ -858,5 +858,7 @@
   "help.speaker.test": "Reproduz ruído rosa nesta caixa, limitado às faixas de frequência que ela realmente reproduz, através do seu próprio ganho e atraso. Serve para identificar uma caixa e conferir de ouvido a atribuição do divisor de frequências.",
   "help.speaker.testMode": "Comportamento do botão: Alternar inicia e para ao clicar (e para sozinho após um minuto), Rajada reproduz uma duração fixa, Segurar reproduz enquanto o botão estiver pressionado.",
   "help.speaker.testIsolation": "O que o restante da saída faz durante um teste: silenciar o programa apenas nesta caixa, deixá-lo tocando, ou silenciar também todas as outras caixas.",
-  "help.speaker.testLevel": "Nível do sinal de teste em dBFS. O ruído rosa tem fator de crista alto: -20 dBFS atinge picos de cerca de -8 dBFS."
+  "help.speaker.testLevel": "Nível do sinal de teste em dBFS. O ruído rosa tem fator de crista alto: -20 dBFS atinge picos de cerca de -8 dBFS.",
+  "speakerTabs.edit": "Edição",
+  "speakerTabs.test": "Teste"
 }

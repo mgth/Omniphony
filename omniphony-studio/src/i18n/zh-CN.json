@@ -858,5 +858,7 @@
   "help.speaker.test": "在此扬声器上播放粉红噪声，限制在它实际重放的频段内，并经过其自身的增益与延时。用于辨认扬声器并凭听感检查分频分配。",
   "help.speaker.testMode": "测试按钮的行为：切换为点击开始与停止（一分钟后自动停止），2 秒脉冲播放固定时长，按住则在按住按钮期间播放。",
   "help.speaker.testIsolation": "测试期间输出其余部分的行为：仅静音此扬声器上的节目声、保持播放，或同时静音其他所有扬声器。",
-  "help.speaker.testLevel": "测试信号电平（dBFS）。粉红噪声波峰因数较高，-20 dBFS 时峰值约为 -8 dBFS。"
+  "help.speaker.testLevel": "测试信号电平（dBFS）。粉红噪声波峰因数较高，-20 dBFS 时峰值约为 -8 dBFS。",
+  "speakerTabs.edit": "编辑",
+  "speakerTabs.test": "测试"
 }
