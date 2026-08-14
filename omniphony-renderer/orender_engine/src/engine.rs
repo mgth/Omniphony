@@ -1284,7 +1284,18 @@ impl Engine {
         self.pcm_f32_buf = pcm_f32;
         self.frame_events.clear();
 
-        let n_channels = self.renderer.output_channel_count() as u32;
+        // Take the geometry from the render that produced `rendered.samples`,
+        // never from a fresh output_channel_count(): that re-reads the live
+        // output mode, which the OSC listener flips on its own thread. A switch
+        // to speakers landing between render_frame() above and this line used to
+        // publish `n_channels = 12` alongside 2-channel binaural samples,
+        // breaking RenderedAudio's `samples.len() == n_frames * n_channels`
+        // contract. The FFI's capacity check passed (it measures the real
+        // buffer), so the host trusted the metadata and copied n_frames * 12
+        // floats out of a buffer holding a sixth of that — adjacent heap read
+        // past the end and played as PCM. Intermittent, and only on the way back
+        // to speakers, because that is the direction where the count grows.
+        let n_channels = rendered.n_channels as u32;
 
         if want_metering {
             let frame_duration_ms = sample_count as f32 / sample_rate as f32 * 1000.0;
@@ -1342,6 +1353,15 @@ impl Engine {
             }
         }
 
+        // The FFI hands (n_frames, n_channels) to the host, which sizes its copy
+        // from them and trusts them — so a violation here is not a wrong number,
+        // it is the host reading past the end of this buffer. Cheap enough to
+        // state, and free in release.
+        debug_assert_eq!(
+            rendered.samples.len(),
+            sample_count * n_channels as usize,
+            "RenderedAudio contract: samples.len() must equal n_frames * n_channels"
+        );
         Ok(Some(RenderedAudio {
             samples: rendered.samples,
             n_channels,

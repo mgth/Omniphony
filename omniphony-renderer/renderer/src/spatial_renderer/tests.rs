@@ -1819,3 +1819,106 @@ fn interp_survives_speaker_cascade_width_switch() {
 
 // TODO: Add integration test with real spatial metadata
 // For now, testing is done via real spatial audio content decoding
+
+/// A rendered frame must describe its own geometry, so a live output-mode flip
+/// cannot make the caller mis-read it.
+///
+/// The engine used to pair `rendered.samples` with a freshly-read
+/// `output_channel_count()`. The OSC listener flips that mode on another
+/// thread, so a switch to speakers landing after a binaural render published
+/// "12 channels" for 2-channel data; the host then copied `n_frames * 12`
+/// floats out of a buffer holding a sixth of that, reading adjacent heap and
+/// playing it as PCM. Only on the way back to speakers, because that is the
+/// direction where the count grows.
+#[test]
+fn rendered_frame_reports_the_geometry_it_produced() {
+    let mut renderer = SpatialRenderer::new(
+        SpeakerLayout::preset("7.1.4").unwrap(),
+        48_000,
+        1,
+        1,
+        0.0,
+        2.0,
+        VbapTableMode::Cartesian {
+            x_size: 21,
+            y_size: 21,
+            z_size: 9,
+            z_neg_size: 9,
+        },
+        false,
+        false,
+        DistanceModel::Linear,
+        false,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        false,
+        [1.0, 2.0, 0.5],
+        2.0,
+        0.5,
+        0.0,
+        0.0,
+        false,
+        false,
+        false,
+        1.0,
+        1.0,
+        PreferredEvaluationMode::PrecomputedCartesian,
+        LiveEvaluationMode::PrecomputedCartesian,
+        21,
+        21,
+        9,
+        9,
+    )
+    .unwrap();
+
+    let frames = 40;
+    let pcm: Vec<f32> = (0..frames)
+        .map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5)
+        .collect();
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0),
+        ramp_length: Some(frames as u32),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([0.3, -0.2, 0.4]),
+        sample_pos: Some(0),
+    }];
+
+    let speakers = renderer.num_speakers();
+    assert!(
+        speakers > 2,
+        "7.1.4 must have more channels than a stereo pair"
+    );
+
+    let spk = renderer
+        .render_frame(&pcm, 1, &event, Vec::new(), false)
+        .unwrap();
+    assert_eq!(
+        spk.n_channels, speakers,
+        "speaker render reports its own width"
+    );
+    assert_eq!(spk.samples.len(), frames * spk.n_channels);
+
+    renderer.control.live.write().binaural.output_mode = crate::live_params::OutputMode::Binaural;
+
+    let bin = renderer
+        .render_frame(&pcm, 1, &event, Vec::new(), false)
+        .unwrap();
+    assert_eq!(bin.n_channels, 2, "binaural render is a stereo ear pair");
+    assert_eq!(bin.samples.len(), frames * bin.n_channels);
+
+    // The regression: flipping back to speakers after the render must not
+    // retroactively change what this frame says about itself.
+    renderer.control.live.write().binaural.output_mode =
+        crate::live_params::OutputMode::SpeakerArray;
+    assert_eq!(
+        bin.n_channels, 2,
+        "a completed binaural frame must keep reporting 2 channels even though \
+         the live mode now says speakers — this is exactly the mismatch that \
+         made the host read past the end of the buffer"
+    );
+    assert_eq!(bin.samples.len(), frames * bin.n_channels);
+}

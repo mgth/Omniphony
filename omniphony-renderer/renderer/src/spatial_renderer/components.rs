@@ -18,6 +18,17 @@ use std::sync::Arc;
 pub struct RenderedFrame {
     /// Interleaved speaker audio: `[sample0_spk0, sample0_spk1, ..., sample1_spk0, ...]`.
     pub samples: Vec<f32>,
+    /// Channels interleaved in [`Self::samples`] — 2 for the binaural path,
+    /// the speaker count otherwise.
+    ///
+    /// Reported by the render itself rather than re-read from the live output
+    /// mode afterwards. The mode is flipped by the OSC thread, so a second read
+    /// can disagree with the branch that actually produced these samples: a
+    /// switch to speakers landing after a binaural render made the caller
+    /// publish "12 channels" for 2-channel data, and the host then copied
+    /// `n_frames * 12` floats out of a buffer holding a sixth of that — heap
+    /// read past the end, played as PCM.
+    pub n_channels: usize,
     /// VBAP gains at the final sample for each rendered object channel.
     /// `(channel_idx, gains)` — `gains[speaker_idx]` is the gain applied to that speaker.
     /// Ordered by `channel_idx`. Empty if no objects were spatialized this frame.

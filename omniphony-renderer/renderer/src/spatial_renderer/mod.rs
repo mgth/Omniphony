@@ -898,6 +898,9 @@ impl SpatialRenderer {
                     diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
                     RenderedFrame {
                         samples: output,
+                        // Matches the `sample_length * 2` resize above: this
+                        // branch always emits a stereo ear pair.
+                        n_channels: 2,
                         object_gains: diag.object_gains,
                         object_band_gains: diag.object_band_gains,
                         object_band_sq: diag.object_band_sq,
@@ -906,6 +909,7 @@ impl SpatialRenderer {
                 }
                 None => RenderedFrame {
                     samples: output,
+                    n_channels: 2,
                     object_gains: Vec::new(),
                     object_band_gains: Vec::new(),
                     object_band_sq: Vec::new(),
@@ -1032,6 +1036,11 @@ impl SpatialRenderer {
         diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
         Ok(RenderedFrame {
             samples: output,
+            // Matches the `sample_length * self.num_speakers` resize above.
+            // Read from the field, not from output_channel_count(): that one
+            // re-reads the live output mode, which the OSC thread may have
+            // flipped since this branch was chosen.
+            n_channels: self.num_speakers,
             object_gains: diag.object_gains,
             object_band_gains: diag.object_band_gains,
             object_band_sq: diag.object_band_sq,
