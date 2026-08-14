@@ -192,6 +192,16 @@ pub const CONTROL_RELOAD_CONFIG: &str = "/omniphony/control/reload_config";
 /// toggle) is the client's, so the renderer only ever hears "start this" or
 /// "stop". Transient: never persisted, and cleared on a fresh start.
 pub const CONTROL_SPEAKER_TEST: &str = "/omniphony/control/speaker_test";
+/// Arm/disarm the speaker-test idle feed.
+///
+/// Args: `[on: Int]` (non-zero arms). While armed, the decode loop fabricates
+/// silence input frames whenever no real input is flowing, so the output chain
+/// is already warm when a speaker test starts and the noise is heard
+/// immediately instead of after the writer/latency-controller settling time.
+/// The arm expires after a keepalive window; clients re-send it periodically
+/// while their test pane is open, so a dead client cannot leave the feed
+/// running forever. Transient: never persisted, cleared on a fresh start.
+pub const CONTROL_SPEAKER_TEST_IDLE_FEED: &str = "/omniphony/control/speaker_test/idle_feed";
 pub const CONTROL_RENDER_BACKEND: &str = "/omniphony/control/render_backend";
 pub const CONTROL_RENDER_BACKEND_RESTORE: &str = "/omniphony/control/render_backend/restore";
 pub const CONTROL_RENDER_BRIDGE_PATH: &str = "/omniphony/control/render/bridge_path";
@@ -403,6 +413,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_REALTIME_SPEAKER_GAIN,
     CONTROL_RELOAD_CONFIG,
     CONTROL_SPEAKER_TEST,
+    CONTROL_SPEAKER_TEST_IDLE_FEED,
     CONTROL_RENDER_BACKEND,
     CONTROL_RENDER_BACKEND_RESTORE,
     CONTROL_RENDER_BRIDGE_PATH,

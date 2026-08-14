@@ -102,6 +102,22 @@ pub fn control_auto_gain_ceiling(state: State<SharedState>, db: f32) {
 /// `id < 0` stops any running test. The trigger policy — hold, fixed burst or
 /// toggle — lives in the UI, so this is the whole renderer-facing contract:
 /// start this speaker, or stop.
+/// Arm/disarm the speaker-test idle feed: while armed the renderer fabricates
+/// silence input frames when nothing is playing, so the output chain is warm
+/// and a test is heard immediately. The arm expires renderer-side after a
+/// keepalive window; the UI re-sends it periodically while the Test pane is
+/// open.
+#[tauri::command]
+pub fn control_speaker_test_idle_feed(state: State<SharedState>, enable: bool) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/speaker_test/idle_feed".to_string(),
+            value: if enable { 1 } else { 0 },
+        },
+    );
+}
+
 #[tauri::command]
 pub fn control_speaker_test(state: State<SharedState>, id: i32, level: f32, isolation: String) {
     send_control(

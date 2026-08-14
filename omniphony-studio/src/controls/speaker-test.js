@@ -21,11 +21,21 @@ const BURST_MS = 2000;
 /** Toggle mode cannot run forever: an unattended test is a room full of noise. */
 const TOGGLE_SAFETY_MS = 60_000;
 
+/**
+ * The renderer expires an idle-feed arm after a keepalive window (10 min)
+ * rather than trust a client to always say goodbye; re-arm well inside it.
+ * The periodic re-send also re-covers a renderer restart mid-session.
+ */
+const IDLE_FEED_REARM_MS = 120_000;
+
 const DEFAULT_LEVEL_DB = -20;
 
 let stopTimer = null;
 /** Speaker index currently under test, or null. */
 let running = null;
+
+let idleFeedTimer = null;
+let idleFeedArmed = false;
 
 function el(id) { return document.getElementById(id); }
 
@@ -63,6 +73,33 @@ function send(id) {
     level: levelLinear(),
     isolation: load(ISOLATION_KEY, 'test_only')
   }).catch(() => { /* renderer gone: the test is moot */ });
+}
+
+function sendIdleFeed(enable) {
+  invoke('control_speaker_test_idle_feed', { enable })
+    .catch(() => { /* renderer gone: nothing to keep warm */ });
+}
+
+/**
+ * The idle feed keeps the renderer's input→output chain warm while the Test
+ * pane is open, so a test makes sound immediately even with nothing playing.
+ * Armed exactly while (Test pane visible AND a speaker is selected); re-sent
+ * periodically because the renderer expires the arm on a keepalive rather
+ * than trust a client to always say goodbye.
+ */
+function syncIdleFeed() {
+  const hasSpeaker = app.selectedSpeakerIndex !== null && app.selectedSpeakerIndex !== undefined;
+  const want = document.body.classList.contains('speaker-tab-test') && hasSpeaker;
+  if (want === idleFeedArmed) return;
+  idleFeedArmed = want;
+  if (want) {
+    sendIdleFeed(true);
+    idleFeedTimer = setInterval(() => sendIdleFeed(true), IDLE_FEED_REARM_MS);
+  } else {
+    clearInterval(idleFeedTimer);
+    idleFeedTimer = null;
+    sendIdleFeed(false);
+  }
 }
 
 /**
@@ -141,6 +178,7 @@ function setSpeakerTab(testTab) {
   const test = el('speakerTabTestBtn');
   if (edit) edit.classList.toggle('active', !testTab);
   if (test) test.classList.toggle('active', testTab);
+  syncIdleFeed();
 }
 
 export function setupSpeakerTestListeners() {
@@ -209,11 +247,15 @@ export function setupSpeakerTestListeners() {
 
   // A test belongs to the speaker it was started on: selecting another one, or
   // closing the editor, must not leave it playing.
-  window.addEventListener('beforeunload', () => stopSpeakerTest({ force: true }));
+  window.addEventListener('beforeunload', () => {
+    stopSpeakerTest({ force: true });
+    if (idleFeedArmed) sendIdleFeed(false);
+  });
 }
 
 /** Called when the speaker selection changes. */
 export function onSpeakerSelectionChanged() {
   if (running !== null && running !== app.selectedSpeakerIndex) stopSpeakerTest();
   else renderSpeakerTestUI();
+  syncIdleFeed();
 }

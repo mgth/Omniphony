@@ -835,6 +835,31 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == crate::osc_contract::CONTROL_SPEAKER_TEST_IDLE_FEED {
+        // Arm/disarm the idle feed that keeps the output chain warm while the
+        // client's test pane is open. Arming always bumps the generation (even
+        // when already armed) so the decode loop refreshes its keepalive
+        // deadline on every re-arm.
+        let Some(on) = parse_bool_arg(msg.args.first()) else {
+            log::warn!("OSC {addr}: expected [on]");
+            return Some(effects);
+        };
+        // Deliberately NOT mark_dirty: transient like speaker_test. Log only
+        // the arm/disarm edges, not the periodic re-arms.
+        let mut live = ctx.renderer.live.write();
+        if on {
+            if live.speaker_test_idle_feed_gen == 0 {
+                effects.log_message = Some("OSC: speaker_test idle feed -> armed".to_string());
+            }
+            live.speaker_test_idle_feed_gen =
+                live.speaker_test_idle_feed_gen.wrapping_add(1).max(1);
+        } else if live.speaker_test_idle_feed_gen != 0 {
+            live.speaker_test_idle_feed_gen = 0;
+            effects.log_message = Some("OSC: speaker_test idle feed -> off".to_string());
+        }
+        return Some(effects);
+    }
+
     if addr == "/omniphony/control/binaural_mode" {
         // Switch the binaural stage between per-object HRTF ("direct") and the
         // virtual-speaker cascade ("cascaded"). No topology recompute: the

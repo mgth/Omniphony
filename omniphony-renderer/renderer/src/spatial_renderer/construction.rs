@@ -364,6 +364,7 @@ impl SpatialRenderer {
             // Never restored from config: a session must not come up making
             // noise because a test was running when it was last saved.
             speaker_test: None,
+            speaker_test_idle_feed_gen: 0,
             objects: std::collections::HashMap::new(),
             spread_min,
             spread_max,

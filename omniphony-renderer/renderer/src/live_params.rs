@@ -813,6 +813,15 @@ pub struct LiveParams {
     /// a saved session can never come up making noise.
     pub speaker_test: Option<SpeakerTest>,
 
+    /// Idle-feed arm generation for the speaker-test pane: 0 = off, and every
+    /// arm message bumps it, so the decode loop can refresh its keepalive
+    /// deadline on each re-arm even though the armed state itself does not
+    /// change. While armed (and while a test runs), the decode loop fabricates
+    /// silence input frames when no real input is flowing, keeping the whole
+    /// output chain warm so a test is audible immediately. Transient like
+    /// `speaker_test`: never persisted, cleared on a fresh start.
+    pub speaker_test_idle_feed_gen: u64,
+
     /// Room proportions `[width, length, height]` used to scale ADM coordinates
     /// before VBAP panning.  Updated live via `/omniphony/control/room_ratio`.
     pub room_ratio: [f32; 3],
