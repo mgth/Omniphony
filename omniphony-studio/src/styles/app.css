@@ -4,6 +4,10 @@
         --panel-open-max-height-large: min(52vh, 520px);
         --panel-width-left: min(440px, 92vw);
         --panel-width-right: min(440px, 92vw);
+        /* Select chevron, held in one place because several field classes set
+           the `background` shorthand — which resets background-image — and so
+           have to restore it explicitly. */
+        --select-chevron: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="%23d9ecff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>');
       }
 
       body {
@@ -635,13 +639,10 @@
       }
 
       .log-panel-level select {
+        /* Shell comes from the shared `select` rule; only the width is local.
+           It used to hand-roll a pill variant, which left no room for the
+           chevron and made this the one select with a different radius. */
         min-width: 6.8rem;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        color: #d9ecff;
-        border-radius: 999px;
-        padding: 0.2rem 0.55rem;
-        font-size: 12px;
       }
 
       .log-panel-filter {
@@ -1702,6 +1703,92 @@
       .delay-input:focus {
         outline: none;
         border-color: rgba(255, 255, 255, 0.45);
+      }
+
+      /* Selects were left native: the platform default is a 13.3px font on an
+         opaque grey chrome with a platform chevron, which reads taller and
+         heavier than the 12px translucent text fields sitting next to it.
+         Give them the same shell as .delay-input and the OSC inputs, and draw
+         our own chevron so the control keeps one predictable height across
+         WebKitGTK, WebView2 and WKWebView instead of three different ones. */
+      select {
+        box-sizing: border-box;
+        appearance: none;
+        -webkit-appearance: none;
+        font-family: inherit;
+        font-size: 12px;
+        /* An explicit ratio, not `normal`: a select resolves `normal` taller
+           than an input does, so the two would not line up on the same row.
+           1.2 + the padding below lands the box on the inputs' 20px. */
+        line-height: 1.2;
+        color: #d9ecff;
+        background-color: rgba(255, 255, 255, 0.08);
+        /* Chevron drawn as a background image, so it never becomes a separate
+           hit target that could swallow the click that opens the popup. */
+        background-image: var(--select-chevron);
+        background-repeat: no-repeat;
+        background-position: right 0.45rem center;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 6px;
+        /* Right padding reserves the chevron lane so long option labels stop
+           before it instead of running underneath. */
+        padding: 0.125rem 1.35rem 0.125rem 0.4rem;
+        cursor: pointer;
+        /* Same WebKitGTK first-click guard as the buttons: a drag on the label
+           text must not start a text selection instead of opening the popup. */
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
+      select:hover:not(:disabled) {
+        background-color: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.32);
+      }
+
+      select:focus-visible {
+        outline: none;
+        border-color: rgba(255, 255, 255, 0.45);
+      }
+
+      select:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      /* The popup list is drawn by the platform, which does not inherit the
+         control's colours — without this it falls back to grey-on-grey. */
+      select option {
+        background-color: #12141c;
+        color: #d9ecff;
+      }
+
+      /* Compact variant: the renderer and input panels pair selects with
+         .delay-input text fields on the same row, at 11px. Those inputs come
+         out at 16.8px, so this trims the vertical padding to land there too —
+         the default padding above is tuned for the 12px/20px pairing. */
+      select.delay-input {
+        padding-top: 1px;
+        padding-bottom: 1px;
+        /* .delay-input sets the `background` shorthand, which wipes the chevron
+           set above — and since a class outranks the bare `select` selector,
+           these would end up with no dropdown affordance at all. */
+        background-image: var(--select-chevron);
+        background-repeat: no-repeat;
+        background-position: right 0.4rem center;
+        /* Same reason: .delay-input is a 52px right-aligned numeric field. A
+           select shows a word, and its width comes from the panel rules. */
+        text-align: left;
+      }
+
+      /* Densest variant: the diag-plot strip sets 10px selects beside 10px
+         labels inside a bordered pill, so the chevron lane tightens to match.
+         These used to carry an inline `background:` shorthand, which reset the
+         chevron image while `appearance: none` still removed the native one —
+         leaving a select with no affordance at all. */
+      select.micro-select {
+        font-size: 10px;
+        padding: 1px 1.05rem 1px 0.3rem;
+        background-position: right 0.32rem center;
       }
 
       .input-panel-shell {

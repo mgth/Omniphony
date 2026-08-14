@@ -255,7 +255,7 @@ export function audioPanelMarkup() {
               </div>
               <div id="adaptiveControlSmoothingOrderRow" class="control-row" style="margin-top:0.2rem">
                 <label for="adaptiveControlSmoothingOrderSelect" style="font-size:12px;white-space:nowrap" data-i18n="adaptive.controlSmoothingOrder" data-help-i18n="help.adaptive.controlSmoothingOrder">IIR order</label>
-                <select id="adaptiveControlSmoothingOrderSelect" style="font-size:11px;background:rgba(255,255,255,0.06);color:#d9ecff;border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:0.1rem 0.25rem">
+                <select id="adaptiveControlSmoothingOrderSelect">
                   <option value="1" data-i18n="adaptive.controlSmoothingOrder.opt1">1 (single pole, 6 dB/oct)</option>
                   <option value="2" data-i18n="adaptive.controlSmoothingOrder.opt2">2 (Butterworth, 12 dB/oct)</option>
                 </select>
