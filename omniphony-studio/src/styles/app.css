@@ -1455,8 +1455,14 @@
         gap: 0.18rem;
       }
 
-      #objectsList,
-      #speakersList {
+      /* #speakersList used to share this gutter, from when these lists scrolled
+         themselves. It no longer does: #speakersOverlayScroll is the scroll
+         container and already reserves the bar (its own padding, plus the width
+         a thin scrollbar takes out of layout). The leftover padding stopped the
+         speaker rows 9.6px short of the right edge while the headphone rows in
+         the very same container reached it, so the two gauge blocks failed to
+         line up in virtual-room mode, where both are shown. */
+      #objectsList {
         padding-right: 0.6rem;
         box-sizing: border-box;
       }
