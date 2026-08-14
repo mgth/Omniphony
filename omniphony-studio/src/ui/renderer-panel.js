@@ -9,7 +9,7 @@ export function rendererPanelMarkup() {
             <div class="panel-header-main">
             <div class="info-title panel-title" data-i18n="section.renderer">Renderer</div>
             <div style="display:flex;gap:0.25rem;flex:0 0 auto;margin-left:auto">
-              <select id="outputModeSelect" class="form-select" style="font-size:0.75rem;padding:0.1rem 0.2rem;width:auto;" data-i18n-title="outputMode.selectTitle" title="Output mode">
+              <select id="outputModeSelect" class="form-select" style="width:auto;" data-i18n-title="outputMode.selectTitle" title="Output mode">
                 <option value="speaker" data-i18n="outputMode.speakers">Speakers</option>
                 <option value="binaural-direct" data-i18n="outputMode.headphones">Headphones</option>
                 <option value="binaural-cascaded" data-i18n="outputMode.headphonesVirtual">Headphones (virtual room)</option>

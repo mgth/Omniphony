@@ -50,7 +50,7 @@
            scroll. The overlay is position:fixed over the canvas, so this row
            never changes the 3D viewport geometry. -->
       <div id="profileRow">
-        <select id="profileSelect" class="form-select" style="font-size:0.75rem;padding:0.1rem 0.2rem;flex:1 1 auto;min-width:0" data-i18n-title="profiles.selectTitle" title="Config profile"></select>
+        <select id="profileSelect" class="form-select" style="flex:1 1 auto;min-width:0" data-i18n-title="profiles.selectTitle" title="Config profile"></select>
         <button id="profileCreateBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.create" title="New profile"><span>+</span></button>
         <button id="profileRenameBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.rename" title="Rename profile"><span>✎</span></button>
         <button id="profileDeleteBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.delete" title="Delete profile"><span>✕</span></button>
@@ -518,7 +518,7 @@
           <div style="margin-top:0.25rem;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03);display:grid;gap:0.35rem">
             <div class="inline-toggle" id="drcControlRow" style="margin-top:0; display:none;">
               <div data-i18n="input.drc" data-help-i18n="help.drc.mode">DRC</div>
-              <select id="drcModeSelect" class="form-select" style="font-size:0.75rem; padding:0.1rem 0.2rem; width:auto; min-width:80px;"></select>
+              <select id="drcModeSelect" class="form-select" style="width:auto; min-width:80px;"></select>
             </div>
             <div id="drcWeightRow" style="display:none;">
               <div style="font-size: 0.65rem; color: #888; margin-bottom: 0.15rem; display: flex; justify-content: space-between;">
@@ -560,7 +560,7 @@
           <select
             id="oscMeteringRateSelect"
             title="Audio meter publish rate (Hz) — drives the level meters only. Diag publication has its own rate in the diag plot controls."
-            style="font-size:11px;background:rgba(255,255,255,0.06);color:#d9ecff;border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:0.1rem 0.25rem;margin-left:auto"
+            style="margin-left:auto"
           >
             <option value="10">10 Hz</option>
             <option value="20">20 Hz</option>
