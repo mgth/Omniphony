@@ -198,9 +198,17 @@ fn resolve_profile_layout(
 ///
 /// The handoff is now symmetric: whichever side departs writes the sidecar, and
 /// whichever side takes the port over consumes it. `load_or_default_with_live`
-/// is consume-once, so this both reads and clears it; `restored == false` means
-/// there was nothing unsaved to hand over (or it aged past the sidecar TTL), in
-/// which case our in-memory state is still the truth and is left alone.
+/// is consume-once, so this both reads and clears it.
+///
+/// Two ways the truth can have moved while we stood by, and both must be picked
+/// up for the switchover to be invisible:
+///
+/// * a **sidecar** — the departing host had unsaved changes and handed them over;
+/// * a **newer config.yaml** — the departing host *saved* instead, which cleared
+///   its dirty flag and so wrote no sidecar at all.
+///
+/// Neither means our in-memory state is still valid. Only when both are absent
+/// is it left alone.
 ///
 /// Reuses the profile-switch application path: a config arriving from outside
 /// the process is the same problem as a profile being switched in — re-seed the
@@ -211,25 +219,55 @@ pub(crate) fn adopt_handoff_live_state(
     socket: &Arc<UdpSocket>,
     clients: &Arc<OscClientRegistry>,
     gaintable_cache: &Arc<GaintableCache>,
+    config_mtime_at_standby: Option<std::time::SystemTime>,
 ) {
     let Some(path) = control.config_path.lock().as_ref().cloned() else {
         return;
     };
     let (config, restored) = renderer::config::Config::load_or_default_with_live(&path);
-    if !restored {
+    // The sidecar only carries *unsaved* state. If the departing host saved
+    // instead, it cleared the dirty flag, so it wrote no sidecar at all — and
+    // the truth moved to config.yaml while we stood by. Adopting only on a
+    // restored sidecar would leave us running our pre-yield state against a
+    // config file that now says something else, and reporting it as saved.
+    // That is the case where the user was most explicit about the change.
+    if !restored && !config_changed_since(&path, config_mtime_at_standby) {
         return;
     }
     apply_switched_profile(&config, control, socket, clients, gaintable_cache);
-    // The adopted state is by definition unsaved — it only ever lived in the
-    // sidecar — so the save indicator must show it as pending, exactly as the
-    // engine does when it restores a sidecar at startup.
-    control.mark_dirty();
-    // `mark_dirty` only flips the saved flag; the state bundle is re-broadcast
-    // off the live-state generation. Without this the adoption would be applied
-    // to the audio but never reach Studio, which would keep displaying — and
-    // then save — the values we just replaced.
+    if restored {
+        // Sidecar state only ever lived in that file, so it is unsaved by
+        // definition — the save indicator must show it as pending, exactly as
+        // the engine does when it restores a sidecar at startup.
+        control.mark_dirty();
+    } else {
+        // Adopted straight from config.yaml, which the departing host saved.
+        // Marking it dirty here would invent a phantom unsaved diff against the
+        // very file it came from.
+        control.mark_clean();
+    }
+    // The save flag alone changes nothing on the wire: the state bundle is
+    // re-broadcast off the live-state generation. Without this the adoption
+    // would be applied to the audio but never reach Studio, which would keep
+    // displaying — and then save — the values we just replaced.
     control.bump_live_state();
-    log::info!("standby resume: adopted the live state handed off by the previous host");
+    log::info!(
+        "standby resume: adopted the live state handed off by the previous host ({})",
+        if restored { "sidecar" } else { "saved config" }
+    );
+}
+
+/// Whether `path` was modified after we entered standby. Conservative: an
+/// unreadable mtime, or no recorded baseline, reports no change — a spurious
+/// adopt would rebuild the topology on every mpv quit for nothing.
+fn config_changed_since(path: &std::path::Path, since: Option<std::time::SystemTime>) -> bool {
+    let Some(since) = since else {
+        return false;
+    };
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .map(|modified| modified > since)
+        .unwrap_or(false)
 }
 
 /// Apply the freshly switched-in `render:` section to the running engine:
@@ -279,4 +317,50 @@ fn apply_switched_profile(
     control.bump_options_epoch();
     control.bump_geometry_generation();
     trigger_layout_recompute(control, socket, clients, gaintable_cache);
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::config_changed_since;
+    use std::time::{Duration, SystemTime};
+
+    fn temp_config(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("omniphony-handoff-{name}.yaml"));
+        std::fs::write(&path, "render: {}\n").unwrap();
+        path
+    }
+
+    /// The second trigger of the adoption: the departing host saved over
+    /// config.yaml, which writes no sidecar because saving clears the dirty
+    /// flag. A newer mtime is then the only evidence the truth moved.
+    #[test]
+    fn a_config_saved_during_standby_is_detected() {
+        let path = temp_config("saved");
+        let before_save = SystemTime::now() - Duration::from_secs(60);
+        assert!(
+            config_changed_since(&path, Some(before_save)),
+            "a config written after we stood by must trigger the adoption"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// An untouched config must NOT trigger it: a spurious adopt would rebuild
+    /// the topology on every single mpv quit for no reason.
+    #[test]
+    fn an_untouched_config_does_not_trigger_adoption() {
+        let path = temp_config("untouched");
+        let after_write = SystemTime::now() + Duration::from_secs(60);
+        assert!(!config_changed_since(&path, Some(after_write)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// No baseline (never stood by) and an unreadable path both stay quiet,
+    /// rather than adopting on a guess.
+    #[test]
+    fn missing_baseline_or_file_stays_quiet() {
+        let path = temp_config("baseline");
+        assert!(!config_changed_since(&path, None));
+        let _ = std::fs::remove_file(&path);
+        assert!(!config_changed_since(&path, Some(SystemTime::UNIX_EPOCH)));
+    }
 }

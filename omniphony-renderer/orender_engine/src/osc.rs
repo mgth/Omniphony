@@ -369,6 +369,10 @@ pub struct OscSender {
     /// another instance; the first `start_listener` of a process follows the
     /// engine's own startup load, which already consumed any sidecar.
     adopt_live_on_listen: bool,
+    /// `config.yaml`'s mtime when this instance entered standby, so the resume
+    /// can tell whether the departing host *saved* over it — which writes no
+    /// sidecar, having cleared the dirty flag — while we were standing by.
+    standby_config_mtime: Option<std::time::SystemTime>,
 }
 
 impl OscSender {
@@ -403,6 +407,7 @@ impl OscSender {
             standby_thread: Mutex::new(None),
             listener_bound: false,
             adopt_live_on_listen: false,
+            standby_config_mtime: None,
         })
     }
 
@@ -469,6 +474,7 @@ impl OscSender {
         // re-acquire the port re-arms standby, and the next attempt must still
         // adopt the handoff.
         let adopt_live = std::mem::take(&mut self.adopt_live_on_listen);
+        let standby_config_mtime = self.standby_config_mtime.take();
 
         let handle = std::thread::Builder::new()
             .name("osc-listener".into())
@@ -504,6 +510,7 @@ impl OscSender {
                             &socket,
                             &clients,
                             &gaintable_cache,
+                            standby_config_mtime,
                         );
                     }
                 }
@@ -727,6 +734,16 @@ impl OscSender {
         // mpv came up on the stale on-disk config. Mirrors the `Drop` handoff,
         // except we stay alive and keep our in-memory state for a later resume.
         self.write_live_handoff_sidecar();
+
+        // Baseline for the resume: if the successor *saves* rather than leaving
+        // unsaved edits, it clears the dirty flag and hands over no sidecar at
+        // all — a newer mtime here is then the only trace that the truth moved.
+        self.standby_config_mtime = self
+            .control
+            .as_ref()
+            .and_then(|control| control.config_path.lock().as_ref().cloned())
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|meta| meta.modified().ok());
 
         // Release the RX port: stop + join the listener thread.
         self.listener_stop.store(true, Ordering::Relaxed);
