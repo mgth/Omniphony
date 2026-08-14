@@ -2,7 +2,7 @@
  * Config saved indicator.
  */
 
-import { app, dirty } from '../state.js';
+import { app, dirty, isEmbeddedProducer } from '../state.js';
 import { scheduleUIFlush, flushCallbacks } from '../flush.js';
 import { inAudioPanel, inSaveFooter } from '../ui/panel-roots.js';
 import { t } from '../i18n.js';
@@ -115,8 +115,16 @@ function withExecutablePath(text) {
  * connection then looks healthy while every control the other build does not
  * implement is silently dropped. `null` while either path is still unknown, so
  * the check cannot cry wolf before the first snapshot lands.
+ *
+ * An embedded producer is exempt. liborender hosted by mpv is never the binary
+ * Studio would launch, so the path comparison flags every single mpv session —
+ * and it asks the wrong question there: a different path is the expected
+ * topology, not a symptom. The premise does not hold either, because the
+ * capability handshake (`variant`/`host`, `realtime`) already tells Studio what
+ * this producer implements, so controls are gated rather than silently dropped.
  */
 export function rendererIsForeign() {
+  if (isEmbeddedProducer()) return false;
   const running = typeof app.renderExecutable === 'string' ? app.renderExecutable.trim() : '';
   const expected = typeof app.expectedOrenderPath === 'string' ? app.expectedOrenderPath.trim() : '';
   if (!running || !expected) return null;
