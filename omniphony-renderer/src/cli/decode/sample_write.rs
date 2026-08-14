@@ -1,7 +1,6 @@
 use super::handler::{BedChannelMapper, ChannelCountCalculator};
 use super::output::AudioSamples;
 use super::state::{DecodeSessionState, OutputState, SpatialState, TelemetryState};
-use super::writer_lifecycle::WriterLifecycleCoordinator;
 use anyhow::Result;
 use audio_input::InputControl;
 use bridge_api::RChannelLabel;
@@ -618,100 +617,6 @@ impl<'a> SampleWriteCoordinator<'a> {
 
             writer.write_pcm_samples(&AudioSamples::I32(samples), conformed_channel_count)?;
         }
-        Ok(())
-    }
-}
-
-/// Longest block the idle pump will emit in one go (~250 ms). Bounds the
-/// catch-up after a stall so a hiccup cannot dump a wall of noise.
-const TEST_PUMP_MAX_SECS: f32 = 0.25;
-/// Assumed interval for the first block, before there is an elapsed time to
-/// measure. Matches the receive timeout that drives the pump.
-const TEST_PUMP_FIRST_MS: u64 = 50;
-
-impl super::handler::DecodeHandler {
-    /// Render and emit one block of silence so a running speaker test has a
-    /// clock of its own.
-    ///
-    /// The test signal is generated inside `render_frame`, which the decode path
-    /// only reaches once per decoded frame — so with nothing playing, the test
-    /// was never rendered and never sounded. Feeding silence supplies the beat
-    /// that was missing, without a special case anywhere in the audio path: the
-    /// mix produces zero, and the test is added on top through the same
-    /// per-speaker gain, delay and crossover as programme audio.
-    ///
-    /// The block is sized from elapsed wall time rather than a fixed count.
-    /// What drives this is a receive timeout, not a clock: it fires *at most*
-    /// every 50 ms and returns early whenever a frame arrives, so a fixed block
-    /// would under- or over-feed the output and the test would stutter.
-    ///
-    /// A no-op unless a test is armed, so an idle renderer stays idle and pays
-    /// one boolean read per tick.
-    pub fn pump_speaker_test(&mut self) -> Result<()> {
-        // Read what is needed and drop the borrow: the writer coordinator below
-        // wants the renderer immutably while `output` and `telemetry` are held
-        // mutably, which cannot coexist with the render borrow taken later.
-        let Some((running, sample_rate, channels)) = self.spatial_renderer.as_ref().map(|r| {
-            (
-                r.speaker_test_running(),
-                r.sample_rate(),
-                r.output_channel_count(),
-            )
-        }) else {
-            return Ok(());
-        };
-        if !running {
-            // Forget the clock so the next test starts from a clean interval
-            // instead of trying to catch up the time it was not running.
-            self.output.last_test_pump = None;
-            return Ok(());
-        }
-
-        // The audio output is built on the first decoded frame, so with nothing
-        // playing it never existed and the test had nowhere to go — no sink
-        // appearing in PipeWire and no sound. Drive the same creation path from
-        // here. The PipeWire branch gates on a few bootstrap frames before it
-        // opens the stream, which these pumps satisfy in turn, so a test started
-        // from cold sounds after a fraction of a second rather than never.
-        let backend = self.runtime.active_output_backend;
-        WriterLifecycleCoordinator::new(
-            &mut self.output,
-            &self.runtime,
-            &mut self.telemetry,
-            &self.spatial,
-            &self.session,
-            self.spatial_renderer.as_ref(),
-            self.audio_control.as_ref(),
-            self.input_control.as_ref(),
-        )
-        .create_audio_writer_if_needed(backend, sample_rate, channels)?;
-
-        let now = Instant::now();
-        let elapsed = self
-            .output
-            .last_test_pump
-            .map(|last| now.duration_since(last))
-            .unwrap_or_else(|| std::time::Duration::from_millis(TEST_PUMP_FIRST_MS));
-        self.output.last_test_pump = Some(now);
-
-        let rate = sample_rate.max(1) as f32;
-        let max_frames = (rate * TEST_PUMP_MAX_SECS) as usize;
-        let frames = ((elapsed.as_secs_f32() * rate) as usize).clamp(1, max_frames);
-
-        // One silent input channel: the routing table decides where it would
-        // go, and zero contributes nothing wherever that is.
-        let silence = vec![0.0f32; frames];
-        let donated = std::mem::take(&mut self.output.render_buf);
-        let renderer = self.spatial_renderer.as_mut().expect("checked above");
-        let rendered = renderer.render_frame(&silence, 1, &[], donated, false)?;
-        let channels = rendered.n_channels;
-        if let Some(writer) = self.output.audio_writer.as_mut() {
-            // `write_pcm_samples` needs owned samples, so this copies — only
-            // while a test runs, never on the programme path.
-            writer.write_pcm_samples(&AudioSamples::F32(rendered.samples.clone()), channels)?;
-        }
-        // Return the buffer to the pool so the next pump allocates nothing.
-        self.output.render_buf = rendered.samples;
         Ok(())
     }
 }
