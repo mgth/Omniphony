@@ -553,6 +553,11 @@ fn process_decoder_messages(
                     break;
                 }
                 handler.poll_runtime_state()?;
+                // Nothing decoded this tick. A speaker test is generated inside
+                // render_frame, so without this it would stay silent whenever
+                // the input is idle — which is exactly when you want to walk the
+                // room and listen.
+                handler.pump_speaker_test()?;
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,

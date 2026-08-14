@@ -153,6 +153,10 @@ pub struct OutputState {
     pub bootstrap_frames_seen: u32,
     pub bootstrap_started_at: Option<Instant>,
     pub render_buf: Vec<f32>,
+    /// When the speaker-test idle pump last emitted, so it can size its next
+    /// block from real elapsed time instead of a fixed count — the tick that
+    /// drives it is a receive timeout, not a clock.
+    pub last_test_pump: Option<std::time::Instant>,
     pub pcm_f32_buf: Vec<f32>,
     pub output_init_failed: bool,
     pub last_audio_delay_written_ms: Option<f32>,
@@ -173,6 +177,7 @@ impl Default for OutputState {
             bootstrap_frames_seen: 0,
             bootstrap_started_at: None,
             render_buf: Vec::new(),
+            last_test_pump: None,
             pcm_f32_buf: Vec::new(),
             output_init_failed: false,
             last_audio_delay_written_ms: None,

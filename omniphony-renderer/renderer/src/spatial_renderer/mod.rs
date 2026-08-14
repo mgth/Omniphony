@@ -1196,6 +1196,21 @@ impl SpatialRenderer {
         }
     }
 
+    /// Sample rate the renderer was built for, so a host pacing its own calls
+    /// (the speaker-test idle pump) can size a block in real time.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Whether a speaker test is currently armed.
+    ///
+    /// Hosts poll this to decide whether to keep the render loop ticking while
+    /// nothing is decoding: the test is generated inside `render_frame`, so with
+    /// no input there is no call and no sound.
+    pub fn speaker_test_running(&self) -> bool {
+        self.control.live.read().speaker_test.is_some()
+    }
+
     pub fn num_speakers(&self) -> usize {
         self.num_speakers
     }
