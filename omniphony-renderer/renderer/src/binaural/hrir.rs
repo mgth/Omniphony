@@ -388,6 +388,30 @@ impl HrirSet {
                 w00 * p00.right[n] + w10 * p10.right[n] + w01 * p01.right[n] + w11 * p11.right[n];
         }
     }
+
+    /// The largest absolute tap in the whole grid.
+    ///
+    /// Zero exactly when every direction renders silence — and that is a state
+    /// the level normalization in [`new`](Self::new) cannot rescue, since a
+    /// zero mean energy skips the rescale. Build-time only; the audio thread
+    /// never asks.
+    pub fn peak(&self) -> f32 {
+        self.grid
+            .iter()
+            .flat_map(|p| p.left.iter().chain(p.right.iter()))
+            .fold(0.0f32, |m, &x| m.max(x.abs()))
+    }
+
+    /// True when every node of the grid holds the same kernel — the provider
+    /// collapsed onto a single response, so the set carries no direction
+    /// information at all and the image cannot move.
+    pub fn is_direction_invariant(&self) -> bool {
+        let Some((first, rest)) = self.grid.split_first() else {
+            return true;
+        };
+        rest.iter()
+            .all(|p| p.left == first.left && p.right == first.right)
+    }
 }
 
 #[cfg(test)]

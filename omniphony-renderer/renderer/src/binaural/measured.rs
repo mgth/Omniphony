@@ -238,7 +238,52 @@ pub fn hrir_set_from_sofa(path: &str, sample_rate: u32) -> anyhow::Result<super:
         .map_err(|e| anyhow::anyhow!("open SOFA '{path}': {e:?}"))?;
     let filter_len = sofa.filter_len();
     let provider = SofaProvider { sofa, filter_len };
-    Ok(super::hrir::HrirSet::new(&provider, sample_rate))
+    let set = super::hrir::HrirSet::new(&provider, sample_rate);
+    check_loaded_set(&set, path, filter_len)?;
+    Ok(set)
+}
+
+/// Below this peak a set is silence: [`HrirSet::new`](super::hrir::HrirSet::new)
+/// normalizes any usable set to unit mean energy, so a surviving one peaks
+/// around 1 — six orders of magnitude clear of this bound.
+const SILENT_PEAK: f32 = 1e-9;
+
+/// Refuse an HRIR set a SOFA file cannot actually drive.
+///
+/// `sofar` reports no error when it fails to locate the impulse responses: it
+/// fills every query with zeros (the fallback in `Sofar::filter`), so a file
+/// whose layout it misreads yields a complete, entirely silent grid. Left
+/// alone that reaches the render path and mutes the binaural output — every
+/// channel except the LFE, which bypasses the binaural stage, hence "only the
+/// LFE is audible" (issue #219). Failing here turns that silence into a
+/// message and lets the caller keep the previous set.
+///
+/// The known trigger is a room impulse response. `MultiSpeakerBRIR` stores
+/// `Data.IR` as `[M][R][E][N]`; `sofar` reads it as `[M][R][N]`, takes the
+/// emitter count for the filter length, and so slices the handful of samples
+/// that *precede* the direct sound — all zeros, in every direction.
+fn check_loaded_set(
+    set: &super::hrir::HrirSet,
+    path: &str,
+    filter_len: usize,
+) -> anyhow::Result<()> {
+    if set.peak() <= SILENT_PEAK {
+        anyhow::bail!(
+            "SOFA '{path}' builds a silent HRIR set (filter length {filter_len}): the reader \
+             returned no impulse response for any direction. Room impulse responses \
+             (MultiSpeakerBRIR, SingleRoom*SRIR) are not supported — the binaural stage needs \
+             a free-field set such as SimpleFreeFieldHRIR."
+        );
+    }
+    if set.is_direction_invariant() {
+        log::warn!(
+            "SOFA '{path}': every direction resolves to the same impulse response, so the \
+             binaural image will not move. The file carries no per-direction measurement the \
+             reader can use — typically a single SourcePosition, with the directions held in \
+             ListenerView (the SingleRoomSRIR convention)."
+        );
+    }
+    Ok(())
 }
 
 /// Adapts a loaded SOFA file to [`HrirProvider`]: maps the renderer's direction
@@ -508,6 +553,66 @@ mod tests {
             e >= lo * 0.99 && e <= hi * 1.01,
             "blend energy {e} outside source range [{lo}, {hi}]"
         );
+    }
+
+    /// What `sofar` hands back for every direction once it has failed to
+    /// locate the impulse responses: zeros, with no error (issue #219).
+    struct SilentProvider;
+    impl HrirProvider for SilentProvider {
+        fn render(&self, _az: f32, _el: f32, _fs: u32) -> HrirPair {
+            HrirPair {
+                left: [0.0; HRIR_LEN],
+                right: [0.0; HRIR_LEN],
+            }
+        }
+    }
+
+    /// One fixed response whatever the direction — a set whose lookup
+    /// collapsed onto a single measurement.
+    struct ConstantProvider;
+    impl HrirProvider for ConstantProvider {
+        fn render(&self, _az: f32, _el: f32, _fs: u32) -> HrirPair {
+            let mut pair = HrirPair {
+                left: [0.0; HRIR_LEN],
+                right: [0.0; HRIR_LEN],
+            };
+            pair.left[3] = 0.5;
+            pair.right[5] = 0.25;
+            pair
+        }
+    }
+
+    /// A silent set must be refused rather than handed to the render path,
+    /// where it would mute everything but the LFE (issue #219).
+    #[test]
+    fn a_silent_set_is_refused() {
+        let set = HrirSet::new(&SilentProvider, 48_000);
+        assert_eq!(set.peak(), 0.0, "the fixture must really be silent");
+        let err = check_loaded_set(&set, "silent.sofa", 7).expect_err("a silent set must not load");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("silent.sofa") && msg.contains("filter length 7"),
+            "{msg}"
+        );
+    }
+
+    /// A direction-invariant set is degenerate but audible: it must load (with
+    /// a warning), not fail — refusing it would take sound away from a file
+    /// the listener can still hear.
+    #[test]
+    fn a_direction_invariant_set_still_loads() {
+        let set = HrirSet::new(&ConstantProvider, 48_000);
+        assert!(set.is_direction_invariant());
+        assert!(check_loaded_set(&set, "flat.sofa", 128).is_ok());
+    }
+
+    /// The guard must not reject a real set: the bundled KEMAR data is the
+    /// reference for "this is what a usable set looks like".
+    #[test]
+    fn a_usable_set_passes_the_guard() {
+        let set = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
+        assert!(check_loaded_set(&set, "kemar", 128).is_ok());
+        assert!(!set.is_direction_invariant());
     }
 
     /// At the native rate the resample must be a strict no-op.
