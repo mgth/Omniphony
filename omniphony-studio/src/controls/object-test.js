@@ -191,7 +191,6 @@ const MARKER_R = 2.4;
  * Lay the three views out as a CAD sheet and return every rectangle in one
  * shared coordinate system.
  *
- *       ·  ·  ·  ·  ·  ·  ·  ·      a lane for the horizontal sliders
  *       side        front
  *        ·          floor           the empty corner carries the 45° mitre
  *
@@ -212,15 +211,13 @@ function sheetLayout() {
   const H = r.height;
   const g = GUTTER * Math.max(W, D, H);
   const rawW = D + g + W;
-  // A gutter above the elevations as well, so the horizontal sliders have a
-  // lane of their own instead of hanging off the top edge.
-  const rawH = g + H + g + D;
+  const rawH = H + g + D;
   // Normalise the larger sheet dimension to 100 so stroke widths, marker size
   // and type size read the same whatever the room's proportions.
   const s = 100 / Math.max(rawW, rawH);
   const col2 = (D + g) * s;
-  const row1 = g * s;
-  const row2 = (g + H + g) * s;
+  const row1 = 0;
+  const row2 = (H + g) * s;
   return {
     sheet: { w: rawW * s, h: rawH * s },
     mitre: { x: 0, y: row2, w: D * s, h: D * s },
@@ -236,9 +233,13 @@ function sheetLayout() {
 /**
  * The single-axis sliders, one per gutter.
  *
- *       [y]        [x]              [x] above the front view
- *       side       front            [z] left of the front view
- *        ·    [y]  floor            [y] above the side view, left of the floor
+ *       side       front            [x] below the front view
+ *       [y]        [x]              [z] left of the front view
+ *        ·    [y]  floor            [y] below the side view, left of the floor
+ *
+ * The two horizontal ones share the middle gutter, between the elevations and
+ * the plan — so every control sits inside the drawing's own frame rather than
+ * hanging off its edge, and the sheet needs no lane of its own for them.
  *
  * Each lies in the gutter beside the view whose axis it drives, running
  * parallel to that axis *in that view* — so a slider and the marker it moves
@@ -254,19 +255,23 @@ function sheetLayout() {
  * write the same coordinate, so they cannot disagree.
  */
 const SLIDERS = [
-  { id: 'x', face: 'front', use: 'h', lane: 'above', labelKey: 'objectTest.sliderX' },
+  { id: 'x', face: 'front', use: 'h', lane: 'below', labelKey: 'objectTest.sliderX' },
   { id: 'z', face: 'front', use: 'v', lane: 'left', labelKey: 'objectTest.sliderZ' },
-  { id: 'yTop', face: 'side', use: 'h', lane: 'above', labelKey: 'objectTest.sliderY' },
-  { id: 'yLeft', face: 'floor', use: 'v', lane: 'left', labelKey: 'objectTest.sliderY' }
+  { id: 'ySide', face: 'side', use: 'h', lane: 'below', labelKey: 'objectTest.sliderY' },
+  { id: 'yFloor', face: 'floor', use: 'v', lane: 'left', labelKey: 'objectTest.sliderY' }
 ];
 
 /** Track geometry for a slider, in sheet units. */
 function sliderTrack(slider, layout) {
   const rect = layout.rects[slider.face];
   const half = layout.gutter / 2;
-  return slider.lane === 'above'
-    // Horizontal, centred in the gutter above its view, exactly as long as it.
-    ? { x1: rect.x, y1: rect.y - half, x2: rect.x + rect.w, y2: rect.y - half, horizontal: true }
+  return slider.lane === 'below'
+    // Horizontal, centred in the gutter below its view, exactly as long as it.
+    ? {
+      x1: rect.x, y1: rect.y + rect.h + half,
+      x2: rect.x + rect.w, y2: rect.y + rect.h + half,
+      horizontal: true
+    }
     // Vertical, centred in the gutter to its left.
     : { x1: rect.x - half, y1: rect.y, x2: rect.x - half, y2: rect.y + rect.h, horizontal: false };
 }
