@@ -175,6 +175,13 @@ pub const CONTROL_PROFILE_RENAME: &str = "/omniphony/control/profile/rename";
 /// including when an mpv keybind flips one through the FFI toggles. The overlay
 /// is a process-global singleton with two writers, so a client must read this
 /// rather than trust its own mirror.
+/// What the object test's clip is, after a [`CONTROL_OBJECT_TEST_CLIP`] request.
+///
+/// Args: `[json: String]` — `{"name","path","seconds","sourceRate","channels",
+/// "truncated"}` when one is loaded, `{"error":"…"}` when the file was refused,
+/// and `{}` when it was cleared.
+pub const STATE_OBJECT_TEST_CLIP: &str = "/omniphony/state/object_test/clip";
+
 pub const STATE_OVERLAY: &str = "/omniphony/state/overlay";
 pub const CONTROL_OVERLAY_LABELS: &str = "/omniphony/control/overlay/labels";
 pub const CONTROL_OVERLAY_OBJECTS: &str = "/omniphony/control/overlay/objects";
@@ -249,6 +256,24 @@ pub const CONTROL_OBJECT_TEST: &str = "/omniphony/control/object_test";
 /// instead of arcing through it. The alternative silently shrinks the radius
 /// that was asked for. Transient like the rest of the test.
 pub const CONTROL_OBJECT_TEST_ROTATION: &str = "/omniphony/control/object_test/rotation";
+
+/// Choose (or clear) the WAV file [`ObjectTestSignal::Clip`] plays.
+///
+/// Args: `[path: String]`. An empty path clears the clip. The file is read,
+/// downmixed to mono, resampled to the render rate and peak-normalised **once,
+/// here on the control thread** — the render path then only walks an array, so
+/// choosing a file cannot cause a dropout.
+///
+/// Separate from [`CONTROL_OBJECT_TEST`] for the same reason the orbit is: that
+/// message is re-sent on every pointer move while dragging, and a path is a
+/// long argument to restate hundreds of times a second.
+///
+/// The result comes back on [`STATE_OBJECT_TEST_CLIP`], including the failure
+/// case — a file that cannot be read exactly is refused rather than guessed at,
+/// since the point of the feature is to hear a *known* signal.
+///
+/// [`ObjectTestSignal::Clip`]: renderer::live_params::ObjectTestSignal::Clip
+pub const CONTROL_OBJECT_TEST_CLIP: &str = "/omniphony/control/object_test/clip";
 
 /// Arm/disarm the test idle feed.
 ///
@@ -477,6 +502,9 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_RENDER_BACKEND,
     CONTROL_RENDER_BACKEND_RESTORE,
     CONTROL_RENDER_BRIDGE_PATH,
+    CONTROL_OBJECT_TEST,
+    CONTROL_OBJECT_TEST_CLIP,
+    CONTROL_OBJECT_TEST_ROTATION,
     CONTROL_RENDER_EVALUATION_MODE,
     CONTROL_RENDER_EVALUATION_MODE_FROM_FILE,
     CONTROL_RENDER_EVALUATION_POSITION_INTERPOLATION,
@@ -505,6 +533,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_BACKEND_FILE_LIST,
     STATE_CAPABILITIES,
     STATE_CLIP,
+    STATE_OBJECT_TEST_CLIP,
     STATE_OVERLAY,
     STATE_CONFIG_SAVED,
     STATE_CONFIG_SAVE_ERROR,

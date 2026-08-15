@@ -365,6 +365,7 @@ impl SpatialRenderer {
             // noise because a test was running when it was last saved.
             speaker_test: None,
             object_test: None,
+            object_test_clip: None,
             object_test_rotation: Default::default(),
             speaker_test_idle_feed_gen: 0,
             objects: std::collections::HashMap::new(),
@@ -470,6 +471,11 @@ impl SpatialRenderer {
         // outlive the borrow and block moving `control` into the struct below.
         // Start already settled on the configured mode — the cross-fade is for
         // *changes*, and fading in at startup would clip the opening.
+        // Publish the rate for control-thread consumers (clip loading).
+        control
+            .sample_rate
+            .store(sample_rate, std::sync::atomic::Ordering::Relaxed);
+
         let initial_output_mode = control.live.read().binaural.output_mode;
 
         Ok(Self {

@@ -8,8 +8,13 @@
 //! in one place is what stops the two paths from quietly disagreeing about what
 //! a level means or about whether a move should click.
 
+pub mod clip;
+pub mod signal;
+
+pub use clip::ObjectTestClip;
+
 use crate::live_params::{ObjectTest, ObjectTestRotation};
-use crate::speaker_test::PinkNoise;
+use signal::SignalGen;
 
 /// Cap on a single uninterrupted test, in seconds. Same reasoning as the
 /// speaker test's: Studio owns the trigger policy, so the renderer's only job
@@ -40,10 +45,10 @@ pub struct ObjectTestBlock<'a> {
 
 /// Pink noise for the object test, level-bounded and cap-limited.
 pub struct ObjectTestSource {
-    noise: PinkNoise,
+    source: SignalGen,
     /// What the running test is, for restart detection. Deliberately excludes
     /// position — see [`Self::identity_of`].
-    identity: Option<(u32, u8)>,
+    identity: Option<(u32, u8, u8)>,
     /// Last position seen, to spot a move. Only the safety cap cares: a move
     /// must not touch the generator.
     last_position: Option<[f32; 3]>,
@@ -72,8 +77,9 @@ impl Default for ObjectTestSource {
         Self {
             // A different seed from the speaker test's generator: when both run
             // at once, two identical noise streams would correlate and comb
-            // rather than sound like two independent sources.
-            noise: PinkNoise::new(0x85EB_CA6B),
+            // rather than sound like two independent sources. The rate is
+            // corrected on the first block, which is where it is known.
+            source: SignalGen::new(0x85EB_CA6B, 48_000),
             identity: None,
             last_position: None,
             elapsed_samples: 0,
@@ -92,8 +98,12 @@ impl ObjectTestSource {
     /// string of clicks instead of a source moving. Level and isolation do
     /// restart, matching the speaker test — nudging those is a deliberate "try
     /// again from the top", and the ear expects the clock to restart with it.
-    fn identity_of(test: &ObjectTest) -> (u32, u8) {
-        (test.level.to_bits(), test.isolation as u8)
+    fn identity_of(test: &ObjectTest) -> (u32, u8, u8) {
+        (
+            test.level.to_bits(),
+            test.isolation as u8,
+            test.signal as u8,
+        )
     }
 
     /// Produce this block's noise, or `None` when nothing should be heard.
@@ -106,14 +116,19 @@ impl ObjectTestSource {
     /// has to place them. Scaling by `1/CREST` puts the typical peak on the
     /// requested level and the clamp makes that ceiling exact — the same two
     /// steps the speaker test takes, for the same reason (see
-    /// [`PinkNoise::CREST`]).
-    pub fn next_block(
-        &mut self,
+    /// [`crate::speaker_test::PinkNoise::CREST`]) — with the crest taken per
+    /// signal, since a sine's is √2 and an impulse train's is 1.
+    ///
+    /// `clip` is what [`crate::live_params::ObjectTestSignal::Clip`] plays and
+    /// is ignored by every other signal.
+    pub fn next_block<'a>(
+        &'a mut self,
         test: Option<ObjectTest>,
         rotation: ObjectTestRotation,
+        clip: Option<&ObjectTestClip>,
         sample_rate: u32,
         frames: usize,
-    ) -> Option<ObjectTestBlock<'_>> {
+    ) -> Option<ObjectTestBlock<'a>> {
         let Some(test) = test else {
             // Idle: drop the state so the next test starts clean rather than
             // spliced onto the tail of the last one.
@@ -122,7 +137,7 @@ impl ObjectTestSource {
                 self.last_position = None;
                 self.elapsed_samples = 0;
                 self.rotation_phase = 0.0;
-                self.noise.reset();
+                self.source.reset(sample_rate);
             }
             return None;
         };
@@ -132,7 +147,7 @@ impl ObjectTestSource {
             self.identity = Some(identity);
             self.elapsed_samples = 0;
             self.rotation_phase = 0.0;
-            self.noise.reset();
+            self.source.reset(sample_rate);
         }
 
         // A move refreshes the cap without touching the generator.
@@ -161,14 +176,14 @@ impl ObjectTestSource {
         }
 
         // Hoisted: one divide per block, not per sample.
-        let gain = test.level / PinkNoise::CREST;
+        let gain = test.level / signal::level_divisor_of(test.signal);
         let ceiling = test.level.abs();
         self.block.clear();
         self.block.reserve(frames);
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f64;
         for _ in 0..frames {
-            let raw = self.noise.next_sample();
+            let raw = self.source.next_sample(test.signal, clip);
             let s = (raw * gain).clamp(-ceiling, ceiling);
             peak = peak.max(s.abs());
             sum_sq += (s as f64) * (s as f64);
@@ -239,6 +254,7 @@ mod tests {
             size: [0.0; 3],
             level,
             isolation: TestIsolation::TestOnly,
+            signal: crate::live_params::ObjectTestSignal::PinkNoise,
         }
     }
 
@@ -259,7 +275,7 @@ mod tests {
         for _ in 0..8 {
             a.extend_from_slice(
                 still
-                    .next_block(Some(test_at([0.0, 1.0, 0.0], 0.5)), OFF, 48_000, 256)
+                    .next_block(Some(test_at([0.0, 1.0, 0.0], 0.5)), OFF, None, 48_000, 256)
                     .unwrap()
                     .pcm,
             );
@@ -271,7 +287,13 @@ mod tests {
             let x = -1.0 + 0.25 * i as f32;
             b.extend_from_slice(
                 moving
-                    .next_block(Some(test_at([x, 1.0 - x, x * 0.5], 0.5)), OFF, 48_000, 256)
+                    .next_block(
+                        Some(test_at([x, 1.0 - x, x * 0.5], 0.5)),
+                        OFF,
+                        None,
+                        48_000,
+                        256,
+                    )
                     .unwrap()
                     .pcm,
             );
@@ -300,17 +322,17 @@ mod tests {
         // Reference: same generator, level held constant, so any difference
         // below is attributable to the level change and nothing else.
         let mut held = ObjectTestSource::default();
-        let _ = held.next_block(Some(test_at(pos, 0.5)), OFF, 48_000, 64);
+        let _ = held.next_block(Some(test_at(pos, 0.5)), OFF, None, 48_000, 64);
         let unchanged = held
-            .next_block(Some(test_at(pos, 0.5)), OFF, 48_000, 64)
+            .next_block(Some(test_at(pos, 0.5)), OFF, None, 48_000, 64)
             .unwrap()
             .pcm
             .to_vec();
 
         let mut changed = ObjectTestSource::default();
-        let _ = changed.next_block(Some(test_at(pos, 0.5)), OFF, 48_000, 64);
+        let _ = changed.next_block(Some(test_at(pos, 0.5)), OFF, None, 48_000, 64);
         let after = changed
-            .next_block(Some(test_at(pos, 0.25)), OFF, 48_000, 64)
+            .next_block(Some(test_at(pos, 0.25)), OFF, None, 48_000, 64)
             .unwrap()
             .pcm
             .to_vec();
@@ -333,7 +355,7 @@ mod tests {
         let mut peak = 0.0f32;
         for _ in 0..64 {
             for &s in src
-                .next_block(Some(test_at([0.0, 1.0, 0.0], 1.0)), OFF, 48_000, 1024)
+                .next_block(Some(test_at([0.0, 1.0, 0.0], 1.0)), OFF, None, 48_000, 1024)
                 .unwrap()
                 .pcm
             {
@@ -366,8 +388,14 @@ mod tests {
         for i in 0..blocks_to_cap * 2 {
             let x = if i % 2 == 0 { -0.5 } else { 0.5 };
             assert!(
-                src.next_block(Some(test_at([x, 1.0, 0.0], 0.5)), OFF, sample_rate, block)
-                    .is_some(),
+                src.next_block(
+                    Some(test_at([x, 1.0, 0.0], 0.5)),
+                    OFF,
+                    None,
+                    sample_rate,
+                    block
+                )
+                .is_some(),
                 "a moving object test expired at block {i}, despite the client \
                  demonstrably being alive"
             );
@@ -375,11 +403,23 @@ mod tests {
 
         // Still capped once it stops moving: an abandoned test must expire.
         for _ in 0..blocks_to_cap {
-            src.next_block(Some(test_at([0.5, 1.0, 0.0], 0.5)), OFF, sample_rate, block);
+            src.next_block(
+                Some(test_at([0.5, 1.0, 0.0], 0.5)),
+                OFF,
+                None,
+                sample_rate,
+                block,
+            );
         }
         assert!(
-            src.next_block(Some(test_at([0.5, 1.0, 0.0], 0.5)), OFF, sample_rate, block)
-                .is_none(),
+            src.next_block(
+                Some(test_at([0.5, 1.0, 0.0], 0.5)),
+                OFF,
+                None,
+                sample_rate,
+                block
+            )
+            .is_none(),
             "a stationary test outlived its cap — the refresh must need a move"
         );
     }
@@ -534,16 +574,40 @@ mod tests {
         let mut moved = ObjectTestSource::default();
         // Advance both a quarter turn.
         for _ in 0..3 {
-            still.next_block(Some(test_at([0.0, 0.0, 0.0], 0.5)), rot, sample_rate, block);
-            moved.next_block(Some(test_at([0.0, 0.0, 0.0], 0.5)), rot, sample_rate, block);
+            still.next_block(
+                Some(test_at([0.0, 0.0, 0.0], 0.5)),
+                rot,
+                None,
+                sample_rate,
+                block,
+            );
+            moved.next_block(
+                Some(test_at([0.0, 0.0, 0.0], 0.5)),
+                rot,
+                None,
+                sample_rate,
+                block,
+            );
         }
         // One keeps still; the other has its centre dragged sideways.
         let a = still
-            .next_block(Some(test_at([0.0, 0.0, 0.0], 0.5)), rot, sample_rate, block)
+            .next_block(
+                Some(test_at([0.0, 0.0, 0.0], 0.5)),
+                rot,
+                None,
+                sample_rate,
+                block,
+            )
             .unwrap()
             .position;
         let b = moved
-            .next_block(Some(test_at([0.5, 0.0, 0.0], 0.5)), rot, sample_rate, block)
+            .next_block(
+                Some(test_at([0.5, 0.0, 0.0], 0.5)),
+                rot,
+                None,
+                sample_rate,
+                block,
+            )
             .unwrap()
             .position;
         // Same point on the circle, just around a centre 0.5 further right.
@@ -580,14 +644,14 @@ mod tests {
         let mut last = [0.0f32; 3];
         for _ in 0..17 {
             last = src
-                .next_block(Some(test_at(base, 0.5)), slow, sample_rate, block)
+                .next_block(Some(test_at(base, 0.5)), slow, None, sample_rate, block)
                 .unwrap()
                 .position;
         }
         // Now speed it up. The very next position must continue from where the
         // source was, not from wherever `elapsed / new_period` happens to land.
         let after = src
-            .next_block(Some(test_at(base, 0.5)), fast, sample_rate, block)
+            .next_block(Some(test_at(base, 0.5)), fast, None, sample_rate, block)
             .unwrap()
             .position;
         let jump = ((after[0] - last[0]).powi(2) + (after[1] - last[1]).powi(2)).sqrt();
@@ -604,7 +668,7 @@ mod tests {
         let mut prev = after;
         for _ in 0..3 {
             let p = src
-                .next_block(Some(test_at(base, 0.5)), fast, sample_rate, block)
+                .next_block(Some(test_at(base, 0.5)), fast, None, sample_rate, block)
                 .unwrap()
                 .position;
             fast_travel += ((p[0] - prev[0]).powi(2) + (p[1] - prev[1]).powi(2)).sqrt();
@@ -613,12 +677,12 @@ mod tests {
         let mut slow_src = ObjectTestSource::default();
         let mut slow_travel = 0.0f32;
         let mut prev = slow_src
-            .next_block(Some(test_at(base, 0.5)), slow, sample_rate, block)
+            .next_block(Some(test_at(base, 0.5)), slow, None, sample_rate, block)
             .unwrap()
             .position;
         for _ in 0..3 {
             let p = slow_src
-                .next_block(Some(test_at(base, 0.5)), slow, sample_rate, block)
+                .next_block(Some(test_at(base, 0.5)), slow, None, sample_rate, block)
                 .unwrap()
                 .position;
             slow_travel += ((p[0] - prev[0]).powi(2) + (p[1] - prev[1]).powi(2)).sqrt();
@@ -641,13 +705,25 @@ mod tests {
         let blocks_to_cap = (MAX_SECONDS * sample_rate as u64) / block as u64;
         for _ in 0..blocks_to_cap {
             assert!(
-                src.next_block(Some(test_at([0.0, 1.0, 0.0], 0.5)), OFF, sample_rate, block)
-                    .is_some()
+                src.next_block(
+                    Some(test_at([0.0, 1.0, 0.0], 0.5)),
+                    OFF,
+                    None,
+                    sample_rate,
+                    block
+                )
+                .is_some()
             );
         }
         assert!(
-            src.next_block(Some(test_at([0.0, 1.0, 0.0], 0.5)), OFF, sample_rate, block)
-                .is_none(),
+            src.next_block(
+                Some(test_at([0.0, 1.0, 0.0], 0.5)),
+                OFF,
+                None,
+                sample_rate,
+                block
+            )
+            .is_none(),
             "the test outlived its {MAX_SECONDS} s cap"
         );
     }

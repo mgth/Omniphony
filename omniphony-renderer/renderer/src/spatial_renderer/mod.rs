@@ -688,6 +688,15 @@ impl SpatialRenderer {
         self.speaker_stage
             .sync_position_interpolation(live_position_interpolation);
 
+        // The clip is kept out of `LiveSnapshot` — that struct is copied around
+        // the render path and an `Arc` in it would be cloned on every hop. Taken
+        // only while a test is running, so an idle renderer pays nothing.
+        let object_test_clip = if live.object_test.is_some() {
+            self.control.live.read().object_test_clip.clone()
+        } else {
+            None
+        };
+
         let ramp_context = self.ramp_context(&live);
         let ramp_strategy_override = self.ramp_strategy_override.clone();
         // The ramp always interpolates the object POSITION across the block; the
@@ -763,6 +772,7 @@ impl SpatialRenderer {
             let object_test_block = self.object_test_source.next_block(
                 live.object_test,
                 live.object_test_rotation,
+                object_test_clip.as_deref(),
                 self.sample_rate,
                 sample_length,
             );
@@ -1098,6 +1108,7 @@ impl SpatialRenderer {
         let block = self.object_test_source.next_block(
             live.object_test,
             live.object_test_rotation,
+            object_test_clip.as_deref(),
             self.sample_rate,
             frames,
         );

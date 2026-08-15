@@ -610,6 +610,62 @@ impl TestIsolation {
     }
 }
 
+/// Which waveform an object test is made of.
+///
+/// One control, several stimuli, because they answer different questions:
+/// continuous noise judges timbre, gated noise judges precision, a band judges
+/// which cue is carrying the direction, a tone judges gain along a path. See
+/// [`crate::object_test::signal`] for what each one exposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectTestSignal {
+    /// Continuous pink noise — the default, and the best broadband reference.
+    #[default]
+    PinkNoise,
+    /// The same noise in short gated bursts, for onsets.
+    PinkBursts,
+    /// Pink noise below ~1.5 kHz: interaural time cues, essentially alone.
+    PinkLow,
+    /// Pink noise above ~3 kHz: level and spectral cues.
+    PinkHigh,
+    /// A third-octave around 8 kHz: the elevation band.
+    PinkBand,
+    /// A 500 Hz sine — a poor localiser and an excellent level meter.
+    Tone,
+    /// An impulse train, for comb filtering and pre-echo.
+    Clicks,
+    /// A WAV file chosen by the client, looped.
+    Clip,
+}
+
+impl ObjectTestSignal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PinkNoise => "pink",
+            Self::PinkBursts => "bursts",
+            Self::PinkLow => "low",
+            Self::PinkHigh => "high",
+            Self::PinkBand => "band",
+            Self::Tone => "tone",
+            Self::Clicks => "clicks",
+            Self::Clip => "clip",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "pink" | "pink_noise" | "noise" => Some(Self::PinkNoise),
+            "bursts" | "pink_bursts" | "burst" => Some(Self::PinkBursts),
+            "low" | "pink_low" | "lf" => Some(Self::PinkLow),
+            "high" | "pink_high" | "hf" => Some(Self::PinkHigh),
+            "band" | "pink_band" | "elevation" => Some(Self::PinkBand),
+            "tone" | "sine" => Some(Self::Tone),
+            "clicks" | "click" | "impulse" => Some(Self::Clicks),
+            "clip" | "file" | "wav" => Some(Self::Clip),
+            _ => None,
+        }
+    }
+}
+
 /// A running per-speaker test signal.
 ///
 /// Deliberately carries no timing: how long a test lasts is a UI policy (hold,
@@ -668,6 +724,12 @@ pub struct ObjectTest {
     /// meaning here — an object has no one speaker to solo — and is treated as
     /// [`TestIsolation::TestOnly`].
     pub isolation: TestIsolation,
+    /// Which waveform to place there.
+    ///
+    /// Changing it *does* restart the signal, unlike moving the source: it is a
+    /// deliberate "try that again with something else", and the ear expects the
+    /// new stimulus to start at its beginning.
+    pub signal: ObjectTestSignal,
 }
 
 /// The axis an object test orbits around.
@@ -1032,6 +1094,15 @@ pub struct LiveParams {
     /// test itself. A diameter of 0 means no rotation.
     pub object_test_rotation: ObjectTestRotation,
 
+    /// The clip [`ObjectTestSignal::Clip`] plays, once a client has chosen one.
+    ///
+    /// Beside `object_test` rather than inside it for two reasons: it would make
+    /// that `Copy` struct own a heap allocation the render path copies every
+    /// frame, and the file is chosen once while the test message is re-sent on
+    /// every pointer move. Behind an `Arc` so swapping clips never blocks the
+    /// render thread on a deallocation.
+    pub object_test_clip: Option<std::sync::Arc<crate::object_test::ObjectTestClip>>,
+
     /// Idle-feed arm generation for the speaker-test pane: 0 = off, and every
     /// arm message bumps it, so the decode loop can refresh its keepalive
     /// deadline on each re-arm even though the armed state itself does not
@@ -1369,6 +1440,11 @@ pub struct RendererControl {
     pub config_dirty: AtomicBool,
 
     /// Bumped whenever per-object live params change.
+    /// Render sample rate, published so control-thread work that has to produce
+    /// samples — loading a test clip, which is resampled once on the way in —
+    /// can target the rate the render path actually runs at.
+    pub sample_rate: std::sync::atomic::AtomicU32,
+
     pub object_params_generation: std::sync::atomic::AtomicU64,
 
     /// Bumped whenever per-speaker live params change.
@@ -1531,6 +1607,8 @@ impl RendererControl {
             bridge_path: Mutex::new(None),
             bridge_supported_drc_modes: Mutex::new(Vec::new()),
             requested_ramp_mode: Mutex::new(RampMode::Frame),
+            // Seeded by the renderer at construction; 48 kHz until then.
+            sample_rate: std::sync::atomic::AtomicU32::new(48_000),
             // Seeded from config (or a host default) after construction.
             meter_rate_hz_bits: Arc::new(std::sync::atomic::AtomicU32::new(50.0_f32.to_bits())),
             diag_rate_hz_bits: Arc::new(std::sync::atomic::AtomicU32::new(50.0_f32.to_bits())),

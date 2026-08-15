@@ -872,16 +872,23 @@ pub fn apply_simple_osc_control(
             let isolation = parse_string_arg(msg.args.get(6))
                 .and_then(|v| renderer::live_params::TestIsolation::from_str(&v))
                 .unwrap_or_default();
+            // Absent = pink noise, so a client that predates the signal
+            // selector keeps getting exactly what it used to.
+            let signal = parse_string_arg(msg.args.get(7))
+                .and_then(|v| renderer::live_params::ObjectTestSignal::from_str(&v))
+                .unwrap_or_default();
             Some(renderer::live_params::ObjectTest {
                 position,
                 size: [size; 3],
                 level,
                 isolation,
+                signal,
             })
         };
         let mut live = ctx.renderer.live.write();
         if live.object_test != next {
             let was_running = live.object_test.is_some();
+            let was_signal = live.object_test.map(|t| t.signal);
             live.object_test = next;
             // Deliberately NOT mark_dirty: transient like `speaker_test`, and it
             // must never reach the config or a live-handoff sidecar.
@@ -890,14 +897,18 @@ pub fn apply_simple_osc_control(
             // logging each one would bury the session log in noise about noise.
             effects.log_message = match (was_running, next) {
                 (false, Some(t)) => Some(format!(
-                    "OSC: object_test -> on at [{:.2}, {:.2}, {:.2}] {:.3} ({})",
+                    "OSC: object_test -> on at [{:.2}, {:.2}, {:.2}] {:.3} ({}, {})",
                     t.position[0],
                     t.position[1],
                     t.position[2],
                     t.level,
-                    t.isolation.as_str()
+                    t.isolation.as_str(),
+                    t.signal.as_str()
                 )),
                 (true, None) => Some("OSC: object_test -> off".to_string()),
+                (true, Some(t)) => was_signal
+                    .filter(|prev| *prev != t.signal)
+                    .map(|_| format!("OSC: object_test signal -> {}", t.signal.as_str())),
                 _ => None,
             };
         }
@@ -952,6 +963,64 @@ pub fn apply_simple_osc_control(
                 _ => None,
             };
         }
+        return Some(effects);
+    }
+
+    if addr == crate::osc_contract::CONTROL_OBJECT_TEST_CLIP {
+        // Choosing the file the `clip` signal plays. Everything expensive
+        // happens here, on the control thread: read, downmix, resample,
+        // normalise. The render path gets an array and an index.
+        let path = parse_string_arg(msg.args.first()).unwrap_or_default();
+        let path = path.trim().to_string();
+        let state = if path.is_empty() {
+            ctx.renderer.live.write().object_test_clip = None;
+            effects.log_message = Some("OSC: object_test clip -> cleared".to_string());
+            "{}".to_string()
+        } else {
+            let rate = ctx
+                .renderer
+                .sample_rate
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .max(1);
+            match renderer::object_test::clip::load(&path, rate) {
+                Ok(clip) => {
+                    let name = std::path::Path::new(&clip.path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| clip.path.clone());
+                    effects.log_message = Some(format!(
+                        "OSC: object_test clip -> {} ({:.1} s, {} Hz, {} ch{})",
+                        name,
+                        clip.duration_s(),
+                        clip.source_rate,
+                        clip.source_channels,
+                        if clip.truncated { ", truncated" } else { "" }
+                    ));
+                    let json = format!(
+                        "{{\"name\":{},\"path\":{},\"seconds\":{:.3},\"sourceRate\":{},\"channels\":{},\"truncated\":{}}}",
+                        serde_json::Value::from(name.as_str()),
+                        serde_json::Value::from(clip.path.as_str()),
+                        clip.duration_s(),
+                        clip.source_rate,
+                        clip.source_channels,
+                        clip.truncated
+                    );
+                    ctx.renderer.live.write().object_test_clip = Some(std::sync::Arc::new(clip));
+                    json
+                }
+                Err(e) => {
+                    // Left as it was on failure: dropping a working clip because
+                    // the next pick was unreadable would be a second surprise on
+                    // top of the first.
+                    effects.log_message = Some(format!("OSC: object_test clip refused: {e}"));
+                    format!("{{\"error\":{}}}", serde_json::Value::from(e.as_str()))
+                }
+            }
+        };
+        effects.broadcasts.push(BroadcastUpdate {
+            addr: crate::osc_contract::STATE_OBJECT_TEST_CLIP.to_string(),
+            value: BroadcastValue::String(state),
+        });
         return Some(effects);
     }
 
