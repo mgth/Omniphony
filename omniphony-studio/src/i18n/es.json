@@ -881,5 +881,18 @@
   "objectTest.markerLabel": "Objeto de prueba",
   "objectTest.sliderX": "Izquierda / derecha",
   "objectTest.sliderY": "Detrás / delante",
-  "objectTest.sliderZ": "Suelo / techo"
+  "objectTest.sliderZ": "Suelo / techo",
+  "objectTest.rotationAxis": "Eje de rotación",
+  "objectTest.axisZ": "Horizontal (sobre Z)",
+  "objectTest.axisX": "Sobre X",
+  "objectTest.axisY": "Sobre Y",
+  "objectTest.axisFree": "Eje libre",
+  "objectTest.period": "Duración de la vuelta",
+  "objectTest.axisAzimuth": "Azimut del eje",
+  "objectTest.axisElevation": "Elevación del eje",
+  "help.objectTestRotation": "Hace girar la fuente alrededor de la posición donde la situaste, en el plano perpendicular a este eje. El renderizador avanza el movimiento por sí mismo, así que se mantiene fluido haga lo que haga la interfaz.",
+  "help.objectTestPeriod": "Segundos de una vuelta completa. Lento para seguir de cerca el paneo, rápido para oír el círculo como una trayectoria.",
+  "objectTest.radius": "Radio",
+  "objectTest.radiusOff": "apagado",
+  "help.objectTestRadius": "Radio del círculo, en unidades de sala. Cero detiene la rotación. La pista está marcada con las distancias propias de la sala: desde el centro, √2 alcanza una arista vertical y √3 una esquina; sus dobles son el mismo alcance desde la pared opuesta. El valor se imanta a una marca cuando se acerca. Un círculo que saldría de la sala se recorta en las paredes y se vuelve una D: la fuente recorre la pared en línea recta durante parte de la vuelta en lugar de atravesarla en arco, pero nunca deja de moverse."
 }

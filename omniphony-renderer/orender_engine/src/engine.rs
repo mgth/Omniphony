@@ -1330,6 +1330,7 @@ impl Engine {
                             &snapshot,
                             &rendered.object_gains,
                             &rendered.object_band_gains,
+                            rendered.object_test_position,
                             Some(decode_time_ms),
                             Some(rendered.crossover_time_ms),
                             Some(render_time_ms),

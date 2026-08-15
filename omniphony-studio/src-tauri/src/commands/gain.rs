@@ -155,6 +155,35 @@ pub fn control_object_test(
     );
 }
 
+/// Set the object test's orbit.
+///
+/// Its own command rather than more arguments on `control_object_test`, for the
+/// same reason the OSC address is separate: that one fires on every pointer
+/// move while dragging, and this changes only when a knob does.
+#[tauri::command]
+pub fn control_object_test_rotation(
+    state: State<SharedState>,
+    axis: String,
+    radius: f32,
+    period: f32,
+    azimuth: f32,
+    elevation: f32,
+) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/object_test/rotation".to_string(),
+            args: vec![
+                rosc::OscType::String(axis),
+                rosc::OscType::Float(radius.clamp(0.0, 4.0)),
+                rosc::OscType::Float(period.clamp(0.05, 600.0)),
+                rosc::OscType::Float(azimuth),
+                rosc::OscType::Float(elevation),
+            ],
+        },
+    );
+}
+
 #[tauri::command]
 pub fn control_speaker_test(state: State<SharedState>, id: i32, level: f32, isolation: String) {
     send_control(

@@ -881,5 +881,18 @@
   "objectTest.markerLabel": "Objet de test",
   "objectTest.sliderX": "Gauche / droite",
   "objectTest.sliderY": "Arrière / avant",
-  "objectTest.sliderZ": "Sol / plafond"
+  "objectTest.sliderZ": "Sol / plafond",
+  "objectTest.rotationAxis": "Axe de rotation",
+  "objectTest.axisZ": "Horizontale (autour de Z)",
+  "objectTest.axisX": "Autour de X",
+  "objectTest.axisY": "Autour de Y",
+  "objectTest.axisFree": "Axe libre",
+  "objectTest.period": "Durée du tour",
+  "objectTest.axisAzimuth": "Azimut de l'axe",
+  "objectTest.axisElevation": "Élévation de l'axe",
+  "help.objectTestRotation": "Fait tourner la source autour de la position où vous l'avez placée, dans le plan perpendiculaire à cet axe. Le renderer fait avancer le mouvement lui-même : il reste fluide quoi que fasse l'interface.",
+  "help.objectTestPeriod": "Durée d'un tour complet, en secondes. Lent pour suivre le panning de près, rapide pour entendre le cercle comme une trajectoire.",
+  "objectTest.radius": "Rayon",
+  "objectTest.radiusOff": "arrêt",
+  "help.objectTestRadius": "Rayon du cercle, en unités de pièce. Zéro arrête la rotation. La piste est marquée aux distances propres à la pièce : depuis le centre, √2 atteint une arête verticale et √3 un coin ; leurs doubles valent la même portée depuis le mur opposé. La valeur s'aimante sur un repère quand elle en approche. Un cercle qui sortirait de la pièce est écrêté aux murs et devient un D : la source longe le mur en ligne droite pendant une portion du tour au lieu de le traverser en arc, mais ne s'arrête jamais."
 }

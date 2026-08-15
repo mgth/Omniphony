@@ -56,6 +56,7 @@ const TEST_COLOR = new THREE.Color(0x5cff9a);
 const TEST_TRAIL_COLOR = new THREE.Color(0x2fd47a);
 
 let mesh = null;
+let orbitLine = null;
 let outline = null;
 let halo = null;
 let label = null;
@@ -64,6 +65,16 @@ let trail = null;
 /** Last ADM position applied, so a room-ratio change can be re-projected. */
 let lastPosition = [0, 1, 0];
 let playing = false;
+/**
+ * Where the renderer last said the source is, in scene units, or null when it
+ * is not reporting. Held separately from the placed position because they are
+ * different facts: one is where you put the source, the other is where its
+ * orbit has carried it.
+ */
+let reportedTarget = null;
+/** The smoothed position actually drawn. See `tickObjectTestMarker`. */
+const drawn = new THREE.Vector3();
+let drawnValid = false;
 
 function build() {
   if (mesh) return;
@@ -76,12 +87,26 @@ function build() {
   mesh.userData.levelScale = 1;
   mesh.userData.objectTrailColor = TEST_TRAIL_COLOR.clone();
 
+  // The orbit path. Drawn rather than animated: the renderer owns the phase, so
+  // Studio cannot know where the source is at this instant — but it knows the
+  // path, and a line that is right beats a dot that is plausibly wrong.
+  orbitLine = new THREE.Line(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({
+      color: TEST_TRAIL_COLOR.clone(),
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false
+    })
+  );
+  orbitLine.renderOrder = 14;
+
   outline = createSourceOutline();
   halo = createSourceDiffuseHalo();
   label = createSmallLabelSprite(t('objectTest.markerLabel'), '#5cff9a');
   trail = { line: createTrailRenderable(), positions: [], lastRebuildAt: 0 };
 
-  for (const item of [mesh, outline, halo, label, trail.line]) {
+  for (const item of [mesh, orbitLine, outline, halo, label, trail.line]) {
     item.visible = false;
     scene.add(item);
   }
@@ -138,7 +163,7 @@ function applyDecorations(visible) {
  * source is visible whether or not it is making sound, because placing it is
  * the reason the panel is open.
  */
-export function updateObjectTestMarker({ position, visible, playing: isPlaying }) {
+export function updateObjectTestMarker({ position, reported, visible, playing: isPlaying, orbit }) {
   if (!visible && !mesh) return; // never opened: build nothing
   build();
   playing = Boolean(isPlaying);
@@ -150,26 +175,61 @@ export function updateObjectTestMarker({ position, visible, playing: isPlaying }
     lastPosition = position.slice();
   }
 
+  // The renderer's report wins when it is talking: it is the only party that
+  // knows the orbit phase. Falling back to the placed position keeps a
+  // stationary test — and a test that is merely placed, not playing — exactly
+  // where the faces say it is.
+  const shown = Array.isArray(reported) && reported.length === 3 ? reported : lastPosition;
   const scenePos = normalizedOmniphonyToScenePosition({
-    x: lastPosition[0],
-    y: lastPosition[1],
-    z: lastPosition[2]
+    x: shown[0],
+    y: shown[1],
+    z: shown[2]
   });
-  mesh.position.set(scenePos.x, scenePos.y, scenePos.z);
+  if (Array.isArray(reported) && reported.length === 3) {
+    reportedTarget = new THREE.Vector3(scenePos.x, scenePos.y, scenePos.z);
+  } else {
+    reportedTarget = null;
+    drawnValid = false;
+    mesh.position.set(scenePos.x, scenePos.y, scenePos.z);
+  }
+  if (reportedTarget && !drawnValid) {
+    // First report of a run: start where it says, rather than sliding in from
+    // wherever the source was last parked.
+    drawn.copy(reportedTarget);
+    drawnValid = true;
+    mesh.position.copy(drawn);
+  }
 
   // Record the wake only while visible, and only on a real move: a stationary
   // source must not pile up coincident points that the decay then has to chew
   // through, and a hidden one has no wake to leave.
-  if (visible && moved && app.trailsEnabled && shouldAppendTrailPoint(trail, performance.now())) {
+  const wakeAt = Array.isArray(reported) && reported.length === 3 ? reported : lastPosition;
+  const leavesWake = Array.isArray(reported) ? visible : (visible && moved);
+  if (leavesWake && app.trailsEnabled && shouldAppendTrailPoint(trail, performance.now())) {
     trail.positions.push({
-      x: lastPosition[0],
-      y: lastPosition[1],
-      z: lastPosition[2],
+      x: wakeAt[0],
+      y: wakeAt[1],
+      z: wakeAt[2],
       directSpeakerIndex: null,
       t: performance.now()
     });
     rebuildTrail();
   }
+
+  // Project the orbit into the scene with the same mapping the source uses, so
+  // the path lands on the room geometry rather than beside it.
+  if (Array.isArray(orbit) && orbit.length > 1) {
+    const pts = orbit.map((p) => {
+      const s = normalizedOmniphonyToScenePosition({ x: p[0], y: p[1], z: p[2] });
+      return new THREE.Vector3(s.x, s.y, s.z);
+    });
+    orbitLine.geometry.dispose();
+    orbitLine.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+    orbitLine.visible = Boolean(visible);
+  } else {
+    orbitLine.visible = false;
+  }
+  orbitLine.material.opacity = playing ? 0.75 : 0.35;
 
   applyDecorations(Boolean(visible));
 }
@@ -181,6 +241,19 @@ export function updateObjectTestMarker({ position, visible, playing: isPlaying }
  */
 export function tickObjectTestMarker(nowMs) {
   if (!mesh || !mesh.parent) return;
+
+  // Chase the reported position instead of snapping to it. The renderer reports
+  // on the metering clock — 10 Hz on the CLI's default — while the scene draws
+  // at frame rate, so snapping would step the source round the orbit in visible
+  // jerks. A short chase costs a few milliseconds of lag and buys continuous
+  // motion; it also cuts the corners slightly, so a fast orbit reads a hair
+  // smaller than it is.
+  if (reportedTarget && drawnValid) {
+    drawn.lerp(reportedTarget, 0.25);
+    mesh.position.copy(drawn);
+    applyDecorations(mesh.visible || outline.visible || halo.visible);
+  }
+
   outline.quaternion.copy(camera.quaternion);
   if (!trail.positions.length) return;
   const cutoff = nowMs - app.trailPointTtlMs;

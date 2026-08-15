@@ -303,6 +303,10 @@ pub enum OscEvent {
     StateDecodeTimeMs { value: f64 },
     #[serde(rename = "state:render_time_ms")]
     StateRenderTimeMs { value: f64 },
+    /// Where the object test's source is right now, orbit and clamp applied.
+    /// Published by the renderer because it owns the orbit phase — an interface
+    /// animating its own copy would drift from what is being heard.
+    StateObjectTestPosition { x: f64, y: f64, z: f64 },
     #[serde(rename = "state:crossover_time_ms")]
     StateCrossoverTimeMs { value: f64 },
     #[serde(rename = "state:write_time_ms")]
@@ -748,6 +752,13 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (3, "profiles") => Some(OscEvent::StateProfiles {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
+        (4, "object_test") if parts[3] == "position" => {
+            Some(OscEvent::StateObjectTestPosition {
+                x: to_number(args.first().copied()?)?,
+                y: to_number(args.get(1).copied()?)?,
+                z: to_number(args.get(2).copied()?)?,
+            })
+        }
         (4, "realtime") => match parts[3] {
             "master_gain" => Some(OscEvent::StateRealtimeMasterGain {
                 value: to_number(args.first().copied()?)?,

@@ -881,5 +881,18 @@
   "objectTest.markerLabel": "Objeto de teste",
   "objectTest.sliderX": "Esquerda / direita",
   "objectTest.sliderY": "Trás / frente",
-  "objectTest.sliderZ": "Piso / teto"
+  "objectTest.sliderZ": "Piso / teto",
+  "objectTest.rotationAxis": "Eixo de rotação",
+  "objectTest.axisZ": "Horizontal (em torno de Z)",
+  "objectTest.axisX": "Em torno de X",
+  "objectTest.axisY": "Em torno de Y",
+  "objectTest.axisFree": "Eixo livre",
+  "objectTest.period": "Duração da volta",
+  "objectTest.axisAzimuth": "Azimute do eixo",
+  "objectTest.axisElevation": "Elevação do eixo",
+  "help.objectTestRotation": "Faz a fonte orbitar em torno da posição onde você a colocou, no plano perpendicular a este eixo. O renderizador avança o movimento sozinho, então ele permanece suave independentemente do que a interface esteja fazendo.",
+  "help.objectTestPeriod": "Segundos para uma volta completa. Lento para acompanhar o pan de perto, rápido para ouvir o círculo como uma trajetória.",
+  "objectTest.radius": "Raio",
+  "objectTest.radiusOff": "desligado",
+  "help.objectTestRadius": "Raio do círculo, em unidades de sala. Zero para a rotação. A trilha é marcada nas distâncias próprias da sala: a partir do centro, √2 alcança uma aresta vertical e √3 um canto; seus dobros são o mesmo alcance a partir da parede oposta. O valor se prende a uma marca quando chega perto. Um círculo que sairia da sala é recortado nas paredes e vira um D: a fonte percorre a parede em linha reta durante parte da volta em vez de atravessá-la em arco, mas nunca para de se mover."
 }

@@ -152,6 +152,7 @@ contract address. See `omniphony-renderer/BINAURAL.md`.
 |---|---|---|
 | `/control/speaker_test` | idx int, level f `[0,1]`, isolation s | Play band-limited pink noise on one speaker; negative idx stops. |
 | `/control/object_test` | on int bool, x f, y f, z f `[-1,1]`, level f `[0,1]`, size f `[0,1]`, isolation s | Play pink noise as an object at a position, panned by the active backend; `on = 0` stops. |
+| `/control/object_test/rotation` | axis s (`x`\|`y`\|`z`\|`free`), diameter f `[0,2]`, period_s f, azimuth f, elevation f | Orbit the object test around its placed position; diameter `0` stops it. |
 | `/control/speaker_test/idle_feed` | int bool | Keep the output chain warm so a test is heard immediately. Serves both tests. |
 
 `isolation` is one of `test_only` (mute the programme on that speaker only),
@@ -209,6 +210,37 @@ the ear expects the clock to restart with them.
 everywhere): an object has no single speaker to solo. When both tests run at
 once the speaker test's isolation wins on the speaker it targets, being the
 narrower statement.
+
+##### The orbit
+
+`/control/object_test/rotation` turns the source around the position it was
+placed at, in the plane perpendicular to `axis`. The two angles are read only
+for `free`, where they give the axis direction in the usual ADM convention.
+Diameter is in ADM units, `0` stops it, and there is deliberately no separate
+on/off flag.
+
+**The renderer advances the phase, not the client.** The whole point of this
+test is to judge how smoothly the panning moves; a client stepping the angle
+over OSC would hand that judgement to its own UI thread's worst moment, and one
+long layout or a throttled timer would produce a stutter the listener would
+blame on the renderer. Phase advances on the block clock, sampled once per block
+at its midpoint.
+
+Moving the source while it orbits slides the circle's centre and leaves the
+phase alone, so a drag does not snap the source back to the start of its turn —
+the same principle that keeps the noise from restarting.
+
+The circle is **clamped per axis to the room**, which changes its shape rather
+than its motion. Clamping acts on each axis separately, so a circle centred near
+a wall keeps sweeping the axes that still fit: it becomes a D, running straight
+along the wall for that part of the turn instead of arcing through it. On a
+circle of diameter 2 centred at `x = 0.9`, 47% of the turn runs along the wall
+and the source never stops moving. The alternative — shrinking the diameter
+until the circle fits — would quietly hand back a smaller circle than the one
+asked for.
+
+The safety cap is unchanged and still applies: an orbit is not proof that anyone
+is listening, so an unattended rotating test stops with all the others.
 
 Unlike a speaker test, an object test works in `output_mode: binaural`: it is an
 object, so it renders through the HRIR path — direction, ITD, air absorption,

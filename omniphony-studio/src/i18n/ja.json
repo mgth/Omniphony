@@ -881,5 +881,18 @@
   "objectTest.markerLabel": "テストオブジェクト",
   "objectTest.sliderX": "左 / 右",
   "objectTest.sliderY": "後 / 前",
-  "objectTest.sliderZ": "床 / 天井"
+  "objectTest.sliderZ": "床 / 天井",
+  "objectTest.rotationAxis": "回転軸",
+  "objectTest.axisZ": "水平（Z軸まわり）",
+  "objectTest.axisX": "X軸まわり",
+  "objectTest.axisY": "Y軸まわり",
+  "objectTest.axisFree": "任意の軸",
+  "objectTest.period": "一周の時間",
+  "objectTest.axisAzimuth": "軸の方位角",
+  "objectTest.axisElevation": "軸の仰角",
+  "help.objectTestRotation": "配置した位置を中心に、この軸に垂直な面内でソースを周回させます。動きはレンダラー側で進めるため、UIの状態に関わらず滑らかなままです。",
+  "help.objectTestPeriod": "一周にかかる秒数。ゆっくりにするとパンニングを細かく追え、速くすると円が軌跡として聞こえます。",
+  "objectTest.radius": "半径",
+  "objectTest.radiusOff": "オフ",
+  "help.objectTestRadius": "円の半径（部屋単位）。ゼロで回転を停止します。トラックには部屋固有の距離が刻まれています。中心から √2 は垂直の稜、√3 は隅に届き、その2倍は対向壁からの同じ到達距離です。値は近づくと目盛りに吸着します。部屋からはみ出す円は壁で切り取られてD字になり、ソースは一周のうち一部を弧ではなく壁沿いに直線で進みますが、止まることはありません。"
 }

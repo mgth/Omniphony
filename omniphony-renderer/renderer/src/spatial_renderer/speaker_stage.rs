@@ -973,17 +973,18 @@ impl SpeakerRenderStage {
     pub(super) fn inject_object_test(
         &mut self,
         test: Option<crate::live_params::ObjectTest>,
-        noise: Option<&[f32]>,
+        block: Option<&crate::object_test::ObjectTestBlock<'_>>,
         render_params: crate::ramp_strategy::RampRenderParams,
         output: &mut [f32],
     ) -> bool {
-        let (Some(test), Some(noise)) = (test, noise) else {
+        let (Some(test), Some(block)) = (test, block) else {
             // Drop the ramp start point: a test that starts later must begin at
             // its own position, not slide there from wherever the last one
             // ended.
             self.object_test_prev_gains.clear();
             return false;
         };
+        let noise = block.pcm;
         if self.num_speakers == 0 || noise.is_empty() {
             return false;
         }
@@ -1014,7 +1015,9 @@ impl SpeakerRenderStage {
             &self.unified_table,
             &self.render_bands,
             render_params,
-            test.position.map(|v| v as f64),
+            // The orbit position, not the placed one: the source is wherever
+            // this block puts it.
+            block.position.map(|v| v as f64),
             test.size,
             &mut end,
         );

@@ -224,6 +224,32 @@ pub const CONTROL_SPEAKER_TEST: &str = "/omniphony/control/speaker_test";
 /// and subject to the same safety cap.
 pub const CONTROL_OBJECT_TEST: &str = "/omniphony/control/object_test";
 
+/// Set the orbit applied to the object test's placed position.
+///
+/// Args: `[axis: String, radius: Float, period_s: Float, azimuth: Float,
+/// elevation: Float]`. `axis` is `x`, `y`, `z` or `free`; the two angles are
+/// read only for `free` and describe the axis direction in the usual ADM
+/// convention. `radius` is in ADM units and `0` stops the orbit, so there is no
+/// separate on/off. `period_s` is seconds per revolution.
+///
+/// A radius rather than a diameter because that is what the room's geometry is
+/// stated in: √2 from the centre reaches a vertical edge, √3 a corner.
+///
+/// **Separate from [`CONTROL_OBJECT_TEST`] on purpose.** That message is
+/// re-sent on every pointer move while dragging; folding the orbit into it
+/// would mean re-stating these five arguments hundreds of times a second, or
+/// losing the orbit the first time a client forgot them.
+///
+/// The renderer advances the phase itself, on the block clock. A client
+/// stepping the angle over OSC would hand the smoothness of the motion — the
+/// very thing this test exists to judge — to its own UI thread's worst moment.
+///
+/// The circle is clamped per axis to the room, which changes its shape rather
+/// than its motion: it becomes a D, running along the wall for part of the turn
+/// instead of arcing through it. The alternative silently shrinks the radius
+/// that was asked for. Transient like the rest of the test.
+pub const CONTROL_OBJECT_TEST_ROTATION: &str = "/omniphony/control/object_test/rotation";
+
 /// Arm/disarm the test idle feed.
 ///
 /// Args: `[on: Int]` (non-zero arms). While armed, the decode loop fabricates

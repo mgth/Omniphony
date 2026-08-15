@@ -48,6 +48,14 @@ pub struct RenderedFrame {
     /// Time spent in the crossover filter-bank stage during `render_frame`.
     ///
     /// This is a subset of the total render time.
+    /// Where the object test's source sits, once its orbit and the room clamp
+    /// are applied — `None` when no test is running.
+    ///
+    /// Reported because the renderer owns the orbit phase, so it is the only
+    /// party that knows this. Without it a client can draw the path but not the
+    /// source on it, and an interface animating its own copy would drift away
+    /// from what is actually being heard.
+    pub object_test_position: Option<[f32; 3]>,
     pub crossover_time_ms: f32,
 }
 

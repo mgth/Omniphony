@@ -2592,6 +2592,17 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateObjectTestPosition { x, y, z } => {
+                // Straight through: this is the renderer telling the scene where
+                // the test source actually is, and nothing here needs to keep it.
+                (
+                    Some((
+                        "objectTest:position",
+                        serde_json::json!({ "x": x, "y": y, "z": z }),
+                    )),
+                    removed_ids,
+                )
+            }
             OscEvent::StateRenderTimeMs { value } => {
                 s.render_time_ms = Some(value);
                 (

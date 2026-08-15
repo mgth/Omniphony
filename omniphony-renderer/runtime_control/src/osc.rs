@@ -904,6 +904,57 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == crate::osc_contract::CONTROL_OBJECT_TEST_ROTATION {
+        let Some(axis_name) = parse_string_arg(msg.args.first()) else {
+            log::warn!("OSC {addr}: expected [axis, radius, period, azimuth, elevation]");
+            return Some(effects);
+        };
+        let float_at = |i: usize, fallback: f32| match msg.args.get(i) {
+            Some(OscType::Float(v)) => *v,
+            _ => fallback,
+        };
+        let axis = match renderer::live_params::RotationAxis::from_str(&axis_name) {
+            Some(renderer::live_params::RotationAxis::Free { .. }) => {
+                renderer::live_params::RotationAxis::Free {
+                    azimuth_deg: float_at(3, 0.0),
+                    elevation_deg: float_at(4, 0.0),
+                }
+            }
+            Some(other) => other,
+            None => {
+                log::warn!("OSC {addr}: unknown axis {axis_name:?}");
+                return Some(effects);
+            }
+        };
+        let next = renderer::live_params::ObjectTestRotation {
+            axis,
+            // 4 covers every distance worth reaching: √3 gets to a room corner
+            // from the centre, 2√3 gets there from the opposite one.
+            radius: float_at(1, 0.0).clamp(0.0, 4.0),
+            // Floored well above zero: a period approaching it is not a fast
+            // orbit, it is a discontinuity.
+            period_s: float_at(2, 4.0).clamp(0.05, 600.0),
+        };
+        let mut live = ctx.renderer.live.write();
+        if live.object_test_rotation != next {
+            let was_active = live.object_test_rotation.is_active();
+            live.object_test_rotation = next;
+            // Deliberately NOT mark_dirty: transient like the test itself.
+            // Log only the edges — a diameter slider drag is a burst.
+            effects.log_message = match (was_active, next.is_active()) {
+                (false, true) => Some(format!(
+                    "OSC: object_test rotation -> {} axis, radius {:.2}, {:.2} s/turn",
+                    next.axis.as_str(),
+                    next.radius,
+                    next.period_s
+                )),
+                (true, false) => Some("OSC: object_test rotation -> off".to_string()),
+                _ => None,
+            };
+        }
+        return Some(effects);
+    }
+
     if addr == crate::osc_contract::CONTROL_SPEAKER_TEST_IDLE_FEED {
         // Arm/disarm the idle feed that keeps the output chain warm while the
         // client's test pane is open. Arming always bumps the generation (even

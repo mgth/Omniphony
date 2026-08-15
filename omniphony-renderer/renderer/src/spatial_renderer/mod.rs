@@ -98,6 +98,8 @@ struct LiveSnapshot<'a> {
     speaker_test: Option<crate::live_params::SpeakerTest>,
     /// Running object test, `None` in normal operation.
     object_test: Option<crate::live_params::ObjectTest>,
+    /// Orbit applied to it. Inert at diameter 0.
+    object_test_rotation: crate::live_params::ObjectTestRotation,
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -672,6 +674,7 @@ impl SpatialRenderer {
                 speaker_params: &self.speaker_params_buf[..self.num_speakers],
                 speaker_test: g.speaker_test,
                 object_test: g.object_test,
+                object_test_rotation: g.object_test_rotation,
                 room_ratio: g.room_ratio,
                 room_ratio_rear: g.room_ratio_rear,
                 room_ratio_lower: g.room_ratio_lower,
@@ -757,11 +760,13 @@ impl SpatialRenderer {
             // signal's continuity. Which arm consumes it differs — cascaded mode
             // pans it onto the virtual speakers, direct mode gives it its own
             // HRIR pair — but both are the same block.
-            let object_test_noise = self.object_test_source.next_block(
+            let object_test_block = self.object_test_source.next_block(
                 live.object_test,
+                live.object_test_rotation,
                 self.sample_rate,
                 sample_length,
             );
+            let object_test_position = object_test_block.as_ref().map(|b| b.position);
             let mut cascade_diag = None;
             if cascade_active && self.cascade.is_some() {
                 // Cascaded mode: the MAIN speaker stage renders the app layout
@@ -800,7 +805,7 @@ impl SpatialRenderer {
                     live.speaker_params,
                     &binaural_params,
                     live.object_test,
-                    object_test_noise,
+                    object_test_block.as_ref(),
                     &mut output,
                 );
                 cascade_diag = Some(diag);
@@ -889,13 +894,15 @@ impl SpatialRenderer {
                 // the way a speaker test necessarily is here (there is no
                 // speaker to excite). Level is already folded into the block,
                 // so the gain is unity.
-                let extra = live.object_test.zip(object_test_noise).map(|(test, pcm)| {
-                    crate::binaural::ExtraSource {
-                        pcm,
-                        position: test.position.map(|v| v as f64),
+                let extra = object_test_block
+                    .as_ref()
+                    .map(|block| crate::binaural::ExtraSource {
+                        pcm: block.pcm,
+                        // The orbit position, so the HRIR follows the source round
+                        // the room exactly as the speaker path's gains do.
+                        position: block.position.map(|v| v as f64),
                         gain: 1.0,
-                    }
-                });
+                    });
                 self.binaural.render_frame(
                     input_pcm,
                     input_channel_count,
@@ -995,6 +1002,7 @@ impl SpatialRenderer {
                         object_gains: diag.object_gains,
                         object_band_gains: diag.object_band_gains,
                         object_band_sq: diag.object_band_sq,
+                        object_test_position,
                         crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
                     }
                 }
@@ -1004,6 +1012,7 @@ impl SpatialRenderer {
                     object_gains: Vec::new(),
                     object_band_gains: Vec::new(),
                     object_band_sq: Vec::new(),
+                    object_test_position,
                     crossover_time_ms: 0.0,
                 },
             });
@@ -1081,12 +1090,16 @@ impl SpatialRenderer {
             0
         };
         // Disjoint field borrows: the source lends the block, the stage places it.
-        let noise = self
-            .object_test_source
-            .next_block(live.object_test, self.sample_rate, frames);
+        let block = self.object_test_source.next_block(
+            live.object_test,
+            live.object_test_rotation,
+            self.sample_rate,
+            frames,
+        );
+        let object_test_position = block.as_ref().map(|b| b.position);
         let object_test_active = self.speaker_stage.inject_object_test(
             live.object_test,
-            noise,
+            block.as_ref(),
             ramp_context.render_params(),
             &mut output,
         );
@@ -1172,6 +1185,7 @@ impl SpatialRenderer {
             object_gains: diag.object_gains,
             object_band_gains: diag.object_band_gains,
             object_band_sq: diag.object_band_sq,
+            object_test_position,
             crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
         })
     }

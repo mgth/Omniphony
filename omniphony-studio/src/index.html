@@ -226,6 +226,46 @@
             <input id="objectTestLevelSlider" class="gain-slider" type="range" min="-60" max="0" step="1" value="-8" />
             <div id="objectTestLevelBox" class="gain-box">-8 dBFS</div>
           </div>
+          <!-- Orbit. The renderer advances the phase, so these set the shape of
+               the motion and never its instantaneous angle. -->
+          <div id="objectTestRotationRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+            <span style="font-size:12px" data-i18n="objectTest.rotationAxis" data-help-i18n="help.objectTestRotation">Rotation axis</span>
+            <select id="objectTestRotationAxis">
+              <option value="z" data-i18n="objectTest.axisZ">Horizontal (about Z)</option>
+              <option value="x" data-i18n="objectTest.axisX">About X</option>
+              <option value="y" data-i18n="objectTest.axisY">About Y</option>
+              <option value="free" data-i18n="objectTest.axisFree">Free axis</option>
+            </select>
+          </div>
+          <div class="editor-row gain-row">
+            <label for="objectTestRadiusSlider" data-i18n="objectTest.radius" data-help-i18n="help.objectTestRadius">Radius</label>
+            <!-- 0 stops the orbit, which is why there is no separate switch. The
+                 track is marked at the room's own distances — see
+                 .object-test-radius-slider in the stylesheet. -->
+            <span class="object-test-radius-wrap"><span class="object-test-radius-ticks" aria-hidden="true"></span><input id="objectTestRadiusSlider" class="gain-slider object-test-radius-slider" type="range" min="0" max="4" step="0.01" value="0" /></span>
+            <div id="objectTestRadiusBox" class="gain-box">off</div>
+          </div>
+          <div class="editor-row gain-row">
+            <label for="objectTestPeriodSlider" data-i18n="objectTest.period" data-help-i18n="help.objectTestPeriod">Turn time</label>
+            <!-- Position along a log scale, not seconds: a period is chosen by
+                 ratio, so equal travel should buy equal ratio. See
+                 sliderToPeriod() in controls/object-test.js. -->
+            <input id="objectTestPeriodSlider" class="gain-slider" type="range" min="0" max="1000" step="1" value="508" />
+            <div id="objectTestPeriodBox" class="gain-box">4.0 s</div>
+          </div>
+          <!-- Only meaningful for the free axis, so hidden until it is chosen. -->
+          <div id="objectTestFreeAxisRows" style="display:none;flex-direction:column;gap:0.35rem">
+            <div class="editor-row gain-row">
+              <label for="objectTestAzimuthSlider" data-i18n="objectTest.axisAzimuth">Axis azimuth</label>
+              <input id="objectTestAzimuthSlider" class="gain-slider" type="range" min="-180" max="180" step="1" value="0" />
+              <div id="objectTestAzimuthBox" class="gain-box">0°</div>
+            </div>
+            <div class="editor-row gain-row">
+              <label for="objectTestElevationSlider" data-i18n="objectTest.axisElevation">Axis elevation</label>
+              <input id="objectTestElevationSlider" class="gain-slider" type="range" min="-90" max="90" step="1" value="0" />
+              <div id="objectTestElevationBox" class="gain-box">0°</div>
+            </div>
+          </div>
           <div id="objectTestIsolationRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
             <span style="font-size:12px" data-i18n="objectTest.isolation" data-help-i18n="help.objectTestIsolation">Programme</span>
             <select id="objectTestIsolationSelect">

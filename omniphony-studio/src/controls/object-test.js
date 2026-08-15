@@ -35,6 +35,12 @@ import {
 const LEVEL_KEY = 'objectTest.levelDb.v1';
 const ISOLATION_KEY = 'objectTest.isolation.v1';
 const POSITION_KEY = 'objectTest.position.v1';
+/**
+ * Bumped to v2 when the size became a radius instead of a diameter: the same
+ * stored number now describes a circle twice as wide, so reusing v1 would
+ * silently double every existing orbit.
+ */
+const ROTATION_KEY = 'objectTest.rotation.v2';
 
 /** Peak dBFS, matching the speaker test's default loudness. */
 const DEFAULT_LEVEL_DB = -8;
@@ -97,6 +103,11 @@ const FACES = [
 
 /** Current source position, ADM Cartesian. Front-centre at ear level. */
 let position = [0, 1, 0];
+/**
+ * The orbit. `radius: 0` means none, matching the renderer, so there is no
+ * separate flag to keep in step with it.
+ */
+let rotation = { axis: 'z', radius: 0, period: 4, azimuth: 0, elevation: 0 };
 let enabled = false;
 /** Guards against redrawing faces when only the marker moved. */
 let builtRatioKey = null;
@@ -107,9 +118,34 @@ let builtRatioKey = null;
  */
 let panelOpen = false;
 
+/**
+ * Where the renderer says the source actually is, or null when it has not said.
+ *
+ * Only the renderer knows: it owns the orbit phase. The 2D faces deliberately
+ * keep showing the *placed* position instead — those markers are the handle you
+ * drag, and a handle that runs away from the pointer is not a handle.
+ */
+let reportedPosition = null;
+
+/** The renderer reported the source's live position. */
+export function setObjectTestReportedPosition(p) {
+  if (!Array.isArray(p) || p.length !== 3 || !p.every(Number.isFinite)) return;
+  reportedPosition = p;
+  syncMarker();
+}
+
 /** Mirror the current state onto the 3D scene marker. */
 function syncMarker() {
-  updateObjectTestMarker({ position, visible: panelOpen || enabled, playing: enabled });
+  updateObjectTestMarker({
+    // The scene shows where the source *is*; the faces show where it was put.
+    // While a test runs those differ by the orbit, and the 3D view is the one
+    // that can afford to move.
+    position,
+    reported: enabled ? reportedPosition : null,
+    visible: panelOpen || enabled,
+    playing: enabled,
+    orbit: orbitPath(128),
+  });
 }
 
 function el(id) { return document.getElementById(id); }
@@ -166,9 +202,155 @@ function send() {
   }).catch(() => { /* renderer gone */ });
 }
 
+// ── Radius: marked at the room's own distances ──────────────────────────────
+//
+// The marks are not decoration. In a room spanning [-1, 1] on every axis, the
+// distance from the centre to a vertical edge is √2 and to a corner is √3 —
+// the two radii at which a horizontal orbit passes exactly through the room's
+// geometry rather than somewhere near it. Their doubles are the same reach
+// from the far wall instead of the centre, which is where you put the centre
+// when you want the orbit to sweep the whole room rather than ring the middle
+// of it. 4 covers the largest of them with a little room to spare.
+//
+// Landing on one by dragging would otherwise be luck, so the value snaps when
+// it comes close. The window is a hundredth of the range: enough to catch a
+// deliberate approach, too small to fight a deliberate miss.
+
+const RADIUS_MAX = 4;
+const RADIUS_SNAP = 0.04;
+const RADIUS_MARKS = [
+  { value: Math.SQRT2, label: '√2' },
+  { value: Math.sqrt(3), label: '√3' },
+  { value: 2 * Math.SQRT2, label: '2√2' },
+  { value: 2 * Math.sqrt(3), label: '2√3' },
+];
+
+/** Pull a near-miss onto a landmark, so the marks can actually be hit. */
+function snapRadius(v) {
+  const r = Math.min(RADIUS_MAX, Math.max(0, v));
+  for (const mark of RADIUS_MARKS) {
+    if (Math.abs(r - mark.value) <= RADIUS_SNAP) return mark.value;
+  }
+  return r;
+}
+
+/** Name the landmark when sitting on one — otherwise the snap is invisible. */
+function formatRadius(r) {
+  const mark = RADIUS_MARKS.find((m) => Math.abs(r - m.value) < 1e-6);
+  return mark ? `${r.toFixed(2)} ${mark.label}` : r.toFixed(2);
+}
+
+// ── Turn time: a logarithmic control ────────────────────────────────────────
+//
+// A period is chosen by ratio, not by difference: the step from 1 s to 2 s is
+// the same musical change as the one from 10 s to 20 s, and on a linear scale
+// the first costs a thirtieth of the travel while the second costs a third.
+// Linear spent 92% of the slider on turns slower than 3 s — the region where
+// one second either way barely reads — and crammed everything quick into the
+// first sliver. Equal travel now buys equal ratio.
+
+const PERIOD_MIN = 0.5;
+const PERIOD_MAX = 30;
+/** Slider positions. Fine enough that the quantisation below does the rounding. */
+const PERIOD_STEPS = 1000;
+
+/** Slider position → seconds per turn. */
+function sliderToPeriod(pos) {
+  const t = Math.min(1, Math.max(0, pos / PERIOD_STEPS));
+  const raw = PERIOD_MIN * (PERIOD_MAX / PERIOD_MIN) ** t;
+  // Round to something a reader can hold, coarser as the number grows: a
+  // hundredth of a second matters at half a second and is noise at twenty.
+  if (raw < 1) return Math.round(raw * 20) / 20;
+  if (raw < 10) return Math.round(raw * 10) / 10;
+  return Math.round(raw * 2) / 2;
+}
+
+/** Seconds per turn → slider position. */
+function periodToSlider(period) {
+  const p = Math.min(PERIOD_MAX, Math.max(PERIOD_MIN, period));
+  return Math.round(PERIOD_STEPS * (Math.log(p / PERIOD_MIN) / Math.log(PERIOD_MAX / PERIOD_MIN)));
+}
+
+/** Seconds per turn, written the way it was rounded. */
+function formatPeriod(period) {
+  return period < 1 ? `${period.toFixed(2)} s` : `${period.toFixed(1)} s`;
+}
+
+/** Send the orbit. Its own message, since it changes only when a knob does. */
+function sendRotation() {
+  invoke('control_object_test_rotation', {
+    axis: rotation.axis,
+    radius: rotation.radius,
+    period: rotation.period,
+    azimuth: rotation.azimuth,
+    elevation: rotation.elevation,
+  }).catch(() => { /* renderer gone */ });
+}
+
+// ── Orbit geometry, mirrored from the renderer ───────────────────────────────
+//
+// This duplicates `RotationAxis::frame` and `ObjectTestRotation::position_at`
+// from renderer/src/live_params.rs, deliberately and for display only. The
+// renderer owns the phase, so Studio can never know exactly where the source is
+// at a given instant — but it can know the *path*, and drawing it is the only
+// way the radius and axis controls mean anything before you press play.
+//
+// It mirrors the room clamp too. A drawn circle where the heard one is
+// flattened against a wall would be a picture of something that is not
+// happening, which is worse than no picture.
+
+function normalize3(v) {
+  const n = Math.hypot(v[0], v[1], v[2]);
+  return n < 1e-6 ? [1, 0, 0] : [v[0] / n, v[1] / n, v[2] / n];
+}
+
+function cross3(a, b) {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+/** The plane the source circles in: two unit vectors spanning it. */
+function orbitPlane() {
+  switch (rotation.axis) {
+    case 'x': return [[0, 1, 0], [0, 0, 1]];
+    case 'y': return [[0, 0, 1], [1, 0, 0]];
+    case 'free': {
+      const az = (rotation.azimuth * Math.PI) / 180;
+      const el = (rotation.elevation * Math.PI) / 180;
+      const axis = [Math.cos(el) * Math.sin(az), Math.cos(el) * Math.cos(az), Math.sin(el)];
+      const seed = Math.abs(axis[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const u = normalize3(cross3(seed, axis));
+      return [u, normalize3(cross3(axis, u))];
+    }
+    default: return [[1, 0, 0], [0, 1, 0]];
+  }
+}
+
+/** Where the source sits `t` turns into the orbit. Clamped, like the renderer. */
+function orbitPositionAt(t) {
+  const [u, v] = orbitPlane();
+  const theta = t * Math.PI * 2;
+  const r = rotation.radius;
+  const c = Math.cos(theta);
+  const s = Math.sin(theta);
+  return position.map((base, i) => clamp1(base + r * (u[i] * c + v[i] * s)));
+}
+
+/** The orbit sampled as a closed path, or null when it is off. */
+function orbitPath(samples = 96) {
+  if (!(rotation.radius > 0)) return null;
+  const pts = [];
+  for (let i = 0; i <= samples; i += 1) pts.push(orbitPositionAt(i / samples));
+  return pts;
+}
+
 export function stopObjectTest({ force = false } = {}) {
   if (!enabled && !force) return;
   enabled = false;
+  reportedPosition = null;
   send();
   renderObjectTestUI();
   syncMarker();
@@ -427,6 +609,12 @@ function buildFaces() {
       }
     }
 
+    // The orbit's shadow on this face. Drawn before the marker so the marker,
+    // which is the thing you are placing, stays on top of it.
+    const orbit = svgEl('polyline', { class: 'object-test-orbit', points: '' });
+    orbit.dataset.role = 'orbit';
+    group.appendChild(orbit);
+
     const marker = svgEl('circle', { r: MARKER_R, class: 'object-test-marker' });
     marker.dataset.role = 'marker';
     group.appendChild(marker);
@@ -609,12 +797,28 @@ function updateMarkers() {
   const host = el('objectTestFaces');
   if (!host) return;
   const layout = sheetLayout();
+  const path = orbitPath();
   for (const face of FACES) {
-    const marker = host.querySelector(`g[data-face-id="${face.id}"] [data-role="marker"]`);
+    const group = host.querySelector(`g[data-face-id="${face.id}"]`);
+    const marker = group?.querySelector('[data-role="marker"]');
     if (!marker) continue;
-    const { cx, cy } = faceToSheet(face, layout.rects[face.id], position);
+    const rect = layout.rects[face.id];
+    const { cx, cy } = faceToSheet(face, rect, position);
     marker.setAttribute('cx', String(cx));
     marker.setAttribute('cy', String(cy));
+
+    // A circle in 3D projects to an ellipse on a face — or, once the clamp
+    // bites, to something with flats on it. Sampling the same function the
+    // renderer uses draws whichever it really is, instead of assuming a shape.
+    const orbit = group.querySelector('[data-role="orbit"]');
+    if (orbit) {
+      orbit.setAttribute('points', path
+        ? path.map((p) => {
+          const q = faceToSheet(face, rect, p);
+          return `${q.cx.toFixed(2)},${q.cy.toFixed(2)}`;
+        }).join(' ')
+        : '');
+    }
   }
   for (const slider of SLIDERS) {
     const group = host.querySelector(`g[data-slider-id="${slider.id}"]`);
@@ -652,6 +856,39 @@ function renderCoords() {
   if (summary) summary.textContent = enabled ? `▶ ${x}, ${y}, ${z}` : `${x}, ${y}, ${z}`;
 }
 
+function renderRotationUI() {
+  const axis = el('objectTestRotationAxis');
+  if (axis) axis.value = rotation.axis;
+  const free = el('objectTestFreeAxisRows');
+  if (free) free.style.display = rotation.axis === 'free' ? 'flex' : 'none';
+  const rad = el('objectTestRadiusSlider');
+  if (rad && document.activeElement !== rad) rad.value = String(rotation.radius);
+  const radBox = el('objectTestRadiusBox');
+  // "off" rather than "0.00": zero radius is a state, not a size.
+  if (radBox) radBox.textContent = rotation.radius > 0 ? formatRadius(rotation.radius) : t('objectTest.radiusOff');
+  const per = el('objectTestPeriodSlider');
+  if (per && document.activeElement !== per) per.value = String(periodToSlider(rotation.period));
+  const perBox = el('objectTestPeriodBox');
+  if (perBox) perBox.textContent = formatPeriod(rotation.period);
+  const az = el('objectTestAzimuthSlider');
+  if (az && document.activeElement !== az) az.value = String(rotation.azimuth);
+  const azBox = el('objectTestAzimuthBox');
+  if (azBox) azBox.textContent = `${Math.round(rotation.azimuth)}°`;
+  const elv = el('objectTestElevationSlider');
+  if (elv && document.activeElement !== elv) elv.value = String(rotation.elevation);
+  const elvBox = el('objectTestElevationBox');
+  if (elvBox) elvBox.textContent = `${Math.round(rotation.elevation)}°`;
+}
+
+/** A rotation control changed: push it, redraw the path, save it. */
+function applyRotation() {
+  save(ROTATION_KEY, JSON.stringify(rotation));
+  renderRotationUI();
+  updateMarkers();
+  syncMarker();
+  sendRotation();
+}
+
 export function renderObjectTestUI() {
   const toggle = el('objectTestEnableToggle');
   if (toggle) toggle.checked = enabled;
@@ -661,6 +898,7 @@ export function renderObjectTestUI() {
   if (slider && document.activeElement !== slider) slider.value = String(levelDb());
   const iso = el('objectTestIsolationSelect');
   if (iso) iso.value = isolation();
+  renderRotationUI();
   renderCoords();
 }
 
@@ -676,6 +914,8 @@ export function onObjectTestPanelToggled(open) {
   if (panelOpen) {
     buildFaces();
     renderObjectTestUI();
+    // The renderer starts with no orbit; a restored one has to be stated.
+    sendRotation();
   } else {
     if (enabled) {
       // stopObjectTest() re-syncs the marker, which then hides with the panel.
@@ -709,6 +949,18 @@ export function setupObjectTestListeners() {
       position = saved.map(clamp1);
     }
   } catch (_) { /* keep the default */ }
+  try {
+    const saved = JSON.parse(load(ROTATION_KEY, 'null'));
+    if (saved && typeof saved === 'object') {
+      rotation = {
+        axis: ['x', 'y', 'z', 'free'].includes(saved.axis) ? saved.axis : 'z',
+        radius: Number.isFinite(saved.radius) ? Math.min(RADIUS_MAX, Math.max(0, saved.radius)) : 0,
+        period: Number.isFinite(saved.period) ? Math.min(30, Math.max(0.5, saved.period)) : 4,
+        azimuth: Number.isFinite(saved.azimuth) ? saved.azimuth : 0,
+        elevation: Number.isFinite(saved.elevation) ? saved.elevation : 0,
+      };
+    }
+  } catch (_) { /* keep the default */ }
 
   const toggle = el('objectTestEnableToggle');
   if (toggle) {
@@ -734,6 +986,30 @@ export function setupObjectTestListeners() {
     iso.addEventListener('change', () => {
       save(ISOLATION_KEY, iso.value);
       if (enabled) send();
+    });
+  }
+
+  const axisSel = el('objectTestRotationAxis');
+  if (axisSel) {
+    axisSel.addEventListener('change', () => {
+      rotation.axis = axisSel.value;
+      applyRotation();
+    });
+  }
+  for (const [id, key, parse] of [
+    ['objectTestRadiusSlider', 'radius', (v) => snapRadius(Number(v))],
+    // The only control whose slider position is not its value.
+    ['objectTestPeriodSlider', 'period', (v) => sliderToPeriod(Number(v))],
+    ['objectTestAzimuthSlider', 'azimuth', Number],
+    ['objectTestElevationSlider', 'elevation', Number],
+  ]) {
+    const node = el(id);
+    if (!node) continue;
+    node.addEventListener('input', () => {
+      const v = parse(node.value);
+      if (!Number.isFinite(v)) return;
+      rotation[key] = v;
+      applyRotation();
     });
   }
 

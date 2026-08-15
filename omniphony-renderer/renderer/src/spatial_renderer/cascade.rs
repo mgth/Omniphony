@@ -131,7 +131,7 @@ pub(super) fn render_cascade_frame(
     speaker_params: &[crate::live_params::SpeakerLiveParams],
     binaural_params: &crate::binaural::BinauralFrameParams,
     object_test: Option<crate::live_params::ObjectTest>,
-    object_test_noise: Option<&[f32]>,
+    object_test_block: Option<&crate::object_test::ObjectTestBlock<'_>>,
     output: &mut [f32],
 ) -> SpeakerStageDiagnostics {
     let total = cascade.num_buses();
@@ -149,7 +149,7 @@ pub(super) fn render_cascade_frame(
     // path: the per-speaker rows must apply to it too.
     stage.inject_object_test(
         object_test,
-        object_test_noise,
+        object_test_block,
         render_params,
         &mut cascade.bus,
     );

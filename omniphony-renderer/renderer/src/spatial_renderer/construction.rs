@@ -365,6 +365,7 @@ impl SpatialRenderer {
             // noise because a test was running when it was last saved.
             speaker_test: None,
             object_test: None,
+            object_test_rotation: Default::default(),
             speaker_test_idle_feed_gen: 0,
             objects: std::collections::HashMap::new(),
             spread_min,

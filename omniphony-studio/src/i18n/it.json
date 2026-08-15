@@ -881,5 +881,18 @@
   "objectTest.markerLabel": "Oggetto di test",
   "objectTest.sliderX": "Sinistra / destra",
   "objectTest.sliderY": "Dietro / davanti",
-  "objectTest.sliderZ": "Pavimento / soffitto"
+  "objectTest.sliderZ": "Pavimento / soffitto",
+  "objectTest.rotationAxis": "Asse di rotazione",
+  "objectTest.axisZ": "Orizzontale (attorno a Z)",
+  "objectTest.axisX": "Attorno a X",
+  "objectTest.axisY": "Attorno a Y",
+  "objectTest.axisFree": "Asse libero",
+  "objectTest.period": "Durata del giro",
+  "objectTest.axisAzimuth": "Azimut dell'asse",
+  "objectTest.axisElevation": "Elevazione dell'asse",
+  "help.objectTestRotation": "Fa ruotare la sorgente attorno alla posizione in cui l'hai messa, nel piano perpendicolare a questo asse. Il renderer fa avanzare il movimento da sé, quindi resta fluido qualunque cosa stia facendo l'interfaccia.",
+  "help.objectTestPeriod": "Secondi per un giro completo. Lento per seguire da vicino il panning, veloce per sentire il cerchio come una traiettoria.",
+  "objectTest.radius": "Raggio",
+  "objectTest.radiusOff": "spento",
+  "help.objectTestRadius": "Raggio del cerchio, in unità di stanza. Zero ferma la rotazione. La traccia è marcata alle distanze proprie della stanza: dal centro, √2 raggiunge uno spigolo verticale e √3 un angolo; i loro doppi sono la stessa portata dalla parete opposta. Il valore si aggancia a una tacca quando le si avvicina. Un cerchio che uscirebbe dalla stanza viene tagliato alle pareti e diventa una D: la sorgente percorre la parete in linea retta per una parte del giro invece di attraversarla in arco, ma non si ferma mai."
 }

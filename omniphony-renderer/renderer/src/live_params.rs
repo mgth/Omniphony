@@ -670,6 +670,167 @@ pub struct ObjectTest {
     pub isolation: TestIsolation,
 }
 
+/// The axis an object test orbits around.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum RotationAxis {
+    /// Left/right axis: the circle stands in the back-front / floor-ceiling plane.
+    X,
+    /// Back/front axis: the circle stands in the floor-ceiling / left-right plane.
+    Y,
+    /// Floor/ceiling axis: a horizontal circle. The default, and the one a
+    /// listener reads most easily — the classic "around the room" sweep.
+    #[default]
+    Z,
+    /// An arbitrary axis, given as a direction in the usual ADM angles.
+    Free {
+        azimuth_deg: f32,
+        elevation_deg: f32,
+    },
+}
+
+impl RotationAxis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::X => "x",
+            Self::Y => "y",
+            Self::Z => "z",
+            Self::Free { .. } => "free",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "x" => Some(Self::X),
+            "y" => Some(Self::Y),
+            "z" => Some(Self::Z),
+            "free" => Some(Self::Free {
+                azimuth_deg: 0.0,
+                elevation_deg: 0.0,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The axis, plus two unit vectors spanning the plane the object circles in.
+    ///
+    /// Returned together because they have to agree: `(u, v, axis)` is
+    /// right-handed, so a rising phase always turns the same way about the axis
+    /// whichever variant this is.
+    pub fn frame(self) -> ([f32; 3], [f32; 3], [f32; 3]) {
+        match self {
+            // For the canonical axes the plane vectors are picked so the circle
+            // starts where a reader expects: about Z (a horizontal circle),
+            // phase 0 is out to the right and the source turns towards the front.
+            Self::X => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+            Self::Y => ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+            Self::Z => ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            Self::Free {
+                azimuth_deg,
+                elevation_deg,
+            } => {
+                let az = azimuth_deg.to_radians();
+                let el = elevation_deg.to_radians();
+                let axis = [el.cos() * az.sin(), el.cos() * az.cos(), el.sin()];
+                // Any pair perpendicular to the axis will do. Seeding from
+                // whichever world axis is *least* aligned with it keeps the
+                // cross product well away from zero — which is exactly what a
+                // fixed seed would hit when the user points the axis at it.
+                let seed = if axis[2].abs() < 0.9 {
+                    [0.0, 0.0, 1.0]
+                } else {
+                    [1.0, 0.0, 0.0]
+                };
+                let u = normalize(cross(seed, axis));
+                let v = normalize(cross(axis, u));
+                (axis, u, v)
+            }
+        }
+    }
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n < 1e-6 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [v[0] / n, v[1] / n, v[2] / n]
+    }
+}
+
+/// An orbit applied to the object test's placed position.
+///
+/// Advanced by the renderer rather than driven by the client, deliberately. The
+/// point of this test is to judge how smoothly the panning moves, and a client
+/// stepping it over OSC would hand that judgement to the UI thread's worst
+/// moment: one long layout or a throttled timer and the orbit stutters, which a
+/// listener would blame on the renderer. Advancing it on the block clock makes
+/// the motion a property of the signal instead of of the window manager.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObjectTestRotation {
+    pub axis: RotationAxis,
+    /// Radius of the circle in ADM units. `0` means no rotation, which is why
+    /// this needs no separate on/off flag.
+    ///
+    /// A radius rather than a diameter because that is the number the geometry
+    /// is stated in: the distance from the centre to a room corner is √3, to a
+    /// vertical edge √2, and those are the sizes worth reaching for.
+    pub radius: f32,
+    /// Seconds per revolution.
+    pub period_s: f32,
+}
+
+impl Default for ObjectTestRotation {
+    fn default() -> Self {
+        Self {
+            axis: RotationAxis::Z,
+            radius: 0.0,
+            period_s: 4.0,
+        }
+    }
+}
+
+impl ObjectTestRotation {
+    /// Whether this actually moves anything.
+    pub fn is_active(&self) -> bool {
+        self.radius > 0.0 && self.period_s > 0.0
+    }
+
+    /// Where the source sits `phase_turns` into the orbit, given its placed
+    /// position.
+    ///
+    /// Clamped per axis to the room — the literal reading of "keep it inside
+    /// the room", and the one that keeps the requested radius honest.
+    ///
+    /// The cost is a change of shape, not of motion. Clamping acts on each axis
+    /// separately, so a circle centred near a wall keeps sweeping the axes that
+    /// still fit: it becomes a D, running straight along the wall for that part
+    /// of the turn instead of arcing through it. Measured on a circle of radius
+    /// 1 centred at x = 0.9, 47% of the turn runs along the wall and the source
+    /// never once stops. The alternative — shrinking the radius until the circle
+    /// fits — would quietly hand back a smaller circle than the one asked for.
+    pub fn position_at(&self, base: [f32; 3], phase_turns: f32) -> [f32; 3] {
+        if !self.is_active() {
+            return base;
+        }
+        let (_, u, v) = self.axis.frame();
+        let (s, c) = (phase_turns * std::f32::consts::TAU).sin_cos();
+        let r = self.radius;
+        let mut out = [0.0f32; 3];
+        for i in 0..3 {
+            out[i] = (base[i] + r * (u[i] * c + v[i] * s)).clamp(-1.0, 1.0);
+        }
+        out
+    }
+}
+
 /// Per-speaker live params seeded from a layout: only the configured delays
 /// (gains/mutes are runtime-only and start at defaults). Shared by renderer
 /// construction and the live profile switch so the two cannot drift.
@@ -862,6 +1023,14 @@ pub struct LiveParams {
     /// once, which is the direct way to compare a rendered position against the
     /// speaker it should be favouring.
     pub object_test: Option<ObjectTest>,
+
+    /// Orbit applied to the object test's placed position. Kept beside
+    /// `object_test` rather than inside it because the two change on completely
+    /// different clocks: the position is re-sent on every pointer move while
+    /// dragging, and folding the orbit into that message would mean re-stating
+    /// it hundreds of times a second — or losing it once. Transient like the
+    /// test itself. A diameter of 0 means no rotation.
+    pub object_test_rotation: ObjectTestRotation,
 
     /// Idle-feed arm generation for the speaker-test pane: 0 = off, and every
     /// arm message bumps it, so the decode loop can refresh its keepalive

@@ -22,6 +22,7 @@ import {
   usesNumericSpatialPlaceholders
 } from './state.js';
 
+import { setObjectTestReportedPosition } from './controls/object-test.js';
 import { updateSource, updateSourceLevel, updateSourceGains, updateSourceBandGains, updateSourceSize, updateSourceTag, removeSource } from './sources.js';
 import { syncVirtualBedObjects } from './controls/virtual-bed.js';
 import {
@@ -91,6 +92,9 @@ function applyBatchedEvent(event, payload) {
   switch (event) {
     case 'source:update':
       updateSource(payload.id, payload.position);
+      break;
+    case 'objectTest:position':
+      setObjectTestReportedPosition([payload.x, payload.y, payload.z]);
       break;
     case 'source:meter':
       updateSourceLevel(payload.id, payload.meter);
@@ -164,6 +168,13 @@ export function setupTauriBridge() {
   // -----------------------------------------------------------------------
   // Sources
   // -----------------------------------------------------------------------
+
+  // Where the object test's source actually is. The renderer advances the orbit
+  // phase, so this is the only source of truth for it — Studio draws the path
+  // but cannot know the angle.
+  listen('objectTest:position', ({ payload }) => {
+    setObjectTestReportedPosition([payload.x, payload.y, payload.z]);
+  });
 
   listen('source:update', ({ payload }) => {
     updateSource(payload.id, payload.position);

@@ -3069,3 +3069,71 @@ body:not(.output-binaural) .speakers-header-binaural {
   -webkit-user-select: none;
   user-select: none;
 }
+
+/* The orbit path, drawn on each CAD face. Thin and unfilled: it is the shape
+   the source will travel, not a region, and the marker must stay readable on
+   top of it. */
+.object-test-orbit {
+  fill: none;
+  stroke: rgba(92, 255, 154, 0.55);
+  stroke-width: 0.6;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+
+
+/* Radius slider: the room's own distances marked on the track. √2 from the
+   centre reaches a vertical edge, √3 a corner; the doubles are the same reach
+   from the far wall.
+
+   Drawn on a layer of its own behind the input rather than as the input's own
+   background. A range input keeps its native appearance here — every other
+   slider in the panel does — and a native track paints over anything set on
+   the element, so the marks would simply not show. Styling the track
+   pseudo-element instead would mean `appearance: none` and rebuilding the
+   slider's whole look for one control.
+
+   The marks sit at value/4 of the width, a hair off the thumb's centre at each
+   end since the thumb has width and the value does not. They are guides; the
+   snap in snapRadius() is what lands on them exactly. */
+.object-test-radius-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.object-test-radius-ticks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 9px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  background-image: linear-gradient(
+    to right,
+      transparent calc(35.355% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(35.355% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(35.355% + 0.5px),
+      transparent calc(35.355% + 0.5px),
+      transparent calc(43.301% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(43.301% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(43.301% + 0.5px),
+      transparent calc(43.301% + 0.5px),
+      transparent calc(70.711% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(70.711% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(70.711% + 0.5px),
+      transparent calc(70.711% + 0.5px),
+      transparent calc(86.603% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(86.603% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(86.603% + 0.5px),
+      transparent calc(86.603% + 0.5px),
+      transparent 100%
+  );
+}
+
+.object-test-radius-slider {
+  position: relative;
+  background: transparent;
+}

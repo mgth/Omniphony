@@ -79,6 +79,11 @@ impl OscSender {
         snapshot: &renderer::metering::MeterSnapshot,
         object_gains: &[(usize, renderer::spatial_vbap::Gains)],
         object_band_gains: &[(usize, Vec<renderer::spatial_vbap::Gains>)],
+        // Where the object test's source is, orbit and room clamp applied.
+        // Rides the meter bundle because it is the same kind of thing: a
+        // per-interval readout of what the render just did, wanted at the same
+        // rate and by the same clients, and already gated by that subscription.
+        object_test_position: Option<[f32; 3]>,
         decode_time_ms: Option<f32>,
         crossover_time_ms: Option<f32>,
         render_time_ms: Option<f32>,
@@ -280,6 +285,12 @@ impl OscSender {
                     args: vec![OscType::Float(peak), OscType::Float(rms)],
                 }));
             }
+        }
+        if let Some([x, y, z]) = object_test_position {
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/object_test/position".to_string(),
+                args: vec![OscType::Float(x), OscType::Float(y), OscType::Float(z)],
+            }));
         }
         messages.push(OscPacket::Message(OscMessage {
             addr: "/omniphony/meter/master".to_string(),

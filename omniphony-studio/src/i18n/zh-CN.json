@@ -881,5 +881,18 @@
   "objectTest.markerLabel": "测试对象",
   "objectTest.sliderX": "左 / 右",
   "objectTest.sliderY": "后 / 前",
-  "objectTest.sliderZ": "地面 / 天花板"
+  "objectTest.sliderZ": "地面 / 天花板",
+  "objectTest.rotationAxis": "旋转轴",
+  "objectTest.axisZ": "水平（绕 Z 轴）",
+  "objectTest.axisX": "绕 X 轴",
+  "objectTest.axisY": "绕 Y 轴",
+  "objectTest.axisFree": "自由轴",
+  "objectTest.period": "一圈时长",
+  "objectTest.axisAzimuth": "轴方位角",
+  "objectTest.axisElevation": "轴仰角",
+  "help.objectTestRotation": "让声源绕你放置的位置旋转，运动平面垂直于该轴。运动由渲染器自身推进，因此无论界面在做什么都保持流畅。",
+  "help.objectTestPeriod": "转一整圈所需的秒数。慢速便于细听声像移动，快速则把圆听成一条轨迹。",
+  "objectTest.radius": "半径",
+  "objectTest.radiusOff": "关闭",
+  "help.objectTestRadius": "圆的半径（以房间为单位）。为零则停止旋转。滑轨上标出了房间自身的距离：从中心出发，√2 抵达一条竖棱，√3 抵达一个角；其两倍是从对面墙出发的相同距离。数值靠近刻度时会自动吸附。超出房间的圆会被墙面裁切而变成 D 形：声源在一圈中的一段时间沿墙直线行进，而不是划弧穿过，但始终不会停下。"
 }
