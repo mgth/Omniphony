@@ -896,5 +896,8 @@
   "objectTest.radiusOff": "off",
   "help.objectTestRadius": "Radius of the circle, in room units. Zero stops the orbit. The track is marked at the room's own distances: from the centre, √2 reaches a vertical edge and √3 a corner; their doubles are the same reach from the far wall. The value snaps to a mark when it comes close. A circle that would leave the room is clipped at the walls, so it becomes a D — the source runs straight along the wall for part of the turn instead of arcing through it, but never stops moving.",
   "objectTest.feature": "Object injection",
-  "help.objectTestFeature": "Add a test source to the object list. It behaves like any other object — selectable, metered, drawn in the room — but Studio invents it rather than the stream carrying it. Select it to place it and to play a test signal from where you put it."
+  "help.objectTestFeature": "Add a test source to the object list. It behaves like any other object — selectable, metered, drawn in the room — but Studio invents it rather than the stream carrying it. Select it to place it and to play a test signal from where you put it.",
+  "objectTest.snap": "Snap to grid",
+  "objectTest.snapNoGrid": "No Cartesian grid: the backend is not precomputed on one.",
+  "help.objectTestSnap": "Place the source on the render backend's Cartesian sampling grid. With position interpolation off the lookup is nearest-cell, so everything inside one cell renders identically — snapping puts the source on the node it would be rounded to anyway, turning \"somewhere near here\" into \"this cell\". Placement only: an orbit keeps moving continuously."
 }

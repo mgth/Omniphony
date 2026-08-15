@@ -896,5 +896,8 @@
   "objectTest.radiusOff": "apagado",
   "help.objectTestRadius": "Radio del círculo, en unidades de sala. Cero detiene la rotación. La pista está marcada con las distancias propias de la sala: desde el centro, √2 alcanza una arista vertical y √3 una esquina; sus dobles son el mismo alcance desde la pared opuesta. El valor se imanta a una marca cuando se acerca. Un círculo que saldría de la sala se recorta en las paredes y se vuelve una D: la fuente recorre la pared en línea recta durante parte de la vuelta en lugar de atravesarla en arco, pero nunca deja de moverse.",
   "objectTest.feature": "Inyección de objeto",
-  "help.objectTestFeature": "Añade una fuente de prueba a la lista de objetos. Se comporta como cualquier otro objeto —seleccionable, con medidor, dibujada en la sala— pero la inventa Studio en vez de traerla el flujo. Selecciónala para situarla y reproducir una señal de prueba desde donde la pongas."
+  "help.objectTestFeature": "Añade una fuente de prueba a la lista de objetos. Se comporta como cualquier otro objeto —seleccionable, con medidor, dibujada en la sala— pero la inventa Studio en vez de traerla el flujo. Selecciónala para situarla y reproducir una señal de prueba desde donde la pongas.",
+  "objectTest.snap": "Ajustar a la rejilla",
+  "objectTest.snapNoGrid": "Sin rejilla cartesiana: el backend no está precalculado sobre una.",
+  "help.objectTestSnap": "Sitúa la fuente en la rejilla de muestreo cartesiana del backend de renderizado. Con la interpolación de posición desactivada la consulta usa la celda más cercana, así que todo lo que hay dentro de una celda suena igual: el ajuste coloca la fuente en el nodo al que se redondearía de todos modos. Solo al situarla: una órbita sigue moviéndose de forma continua."
 }

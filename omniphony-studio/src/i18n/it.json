@@ -896,5 +896,8 @@
   "objectTest.radiusOff": "spento",
   "help.objectTestRadius": "Raggio del cerchio, in unità di stanza. Zero ferma la rotazione. La traccia è marcata alle distanze proprie della stanza: dal centro, √2 raggiunge uno spigolo verticale e √3 un angolo; i loro doppi sono la stessa portata dalla parete opposta. Il valore si aggancia a una tacca quando le si avvicina. Un cerchio che uscirebbe dalla stanza viene tagliato alle pareti e diventa una D: la sorgente percorre la parete in linea retta per una parte del giro invece di attraversarla in arco, ma non si ferma mai.",
   "objectTest.feature": "Iniezione di oggetto",
-  "help.objectTestFeature": "Aggiunge una sorgente di test all'elenco degli oggetti. Si comporta come qualsiasi altro oggetto — selezionabile, con misuratore, disegnata nella stanza — ma la inventa Studio anziché portarla il flusso. Selezionala per posizionarla e riprodurre un segnale di test da dove l'hai messa."
+  "help.objectTestFeature": "Aggiunge una sorgente di test all'elenco degli oggetti. Si comporta come qualsiasi altro oggetto — selezionabile, con misuratore, disegnata nella stanza — ma la inventa Studio anziché portarla il flusso. Selezionala per posizionarla e riprodurre un segnale di test da dove l'hai messa.",
+  "objectTest.snap": "Aggancia alla griglia",
+  "objectTest.snapNoGrid": "Nessuna griglia cartesiana: il backend non è precalcolato su una.",
+  "help.objectTestSnap": "Colloca la sorgente sulla griglia di campionamento cartesiana del backend di rendering. Con l'interpolazione di posizione disattivata la lettura usa la cella più vicina, quindi tutto ciò che sta in una cella suona identico: l'aggancio mette la sorgente sul nodo a cui verrebbe comunque arrotondata. Solo in posizionamento: un'orbita continua a muoversi con continuità."
 }

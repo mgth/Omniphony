@@ -79,14 +79,32 @@ export function updateVbapCartesianFaceGrid() {
   const zMin = roomBounds.zMin;
   const zMax = roomBounds.zMax;
 
-  // Cart axes mapping in scene:
-  // cart_x -> scene x (depth), cart_y -> scene z (width), cart_z -> scene y (height)
-  const xsRaw = axisValues(-1, 1, xN + 1);
-  const xs = xsRaw.map((x) => mapRoomPosition({ x, y: 0, z: 0 }).x);
+  // Grid axis → scene axis.
+  //
+  // The renderer samples the table in native ADM coordinates: x_size walks
+  // adm_position[0], y_size walks [1], z_size walks [2] (render_backend.rs,
+  // SampledCartesianEvaluator::new). The scene swaps those round —
+  // `omniphonyToSceneCartesian` maps ADM x→scene z, ADM y→scene x, ADM z→scene y
+  // — so the sizes have to cross over with them:
+  //
+  //   x_size (ADM x, left/right) -> scene z   (width)
+  //   y_size (ADM y, back/front) -> scene x   (depth)
+  //   z_size (ADM z, floor/ceil) -> scene y   (height)
+  //
+  // This read x_size onto the depth axis and y_size onto the width axis, which
+  // is the crossover applied once too few. It was invisible because both come
+  // from the same 6-bit OAMD field and are equal in every real configuration;
+  // it only shows if the two are set apart by hand.
+  //
+  // The `+ 1` is not an off-by-one: the published sizes are INTERVAL counts, and
+  // the renderer adds one before sampling (live_params.rs), so n intervals are
+  // n + 1 nodes.
+  const depthRaw = axisValues(-1, 1, yN + 1);
+  const xs = depthRaw.map((x) => mapRoomPosition({ x, y: 0, z: 0 }).x);
   const positiveYs = axisValues(0, yMax, zN + 1);
   const negativeYs = zNegN > 0 ? axisValues(yMin, 0, zNegN + 1).slice(0, -1) : [];
   const ys = negativeYs.concat(positiveYs);
-  const zs = axisValues(zMin, zMax, yN + 1);
+  const zs = axisValues(zMin, zMax, xN + 1);
 
   const line = (x0, y0, z0, x1, y1, z1) => {
     return [x0, y0, z0, x1, y1, z1];

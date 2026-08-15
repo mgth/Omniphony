@@ -596,6 +596,11 @@
                overlay instead of resizing it (and the 3D viewport with it). -->
           <div id="objectTestFaces" style="display:flex;flex-direction:column;gap:0.4rem"></div>
           <div id="objectTestCoords" class="option-status-note" style="font-size:10px;opacity:0.85;font-variant-numeric:tabular-nums"></div>
+          <label id="objectTestSnapRow" class="switch-row" style="font-size:13px;cursor:pointer">
+            <span data-i18n="objectTest.snap" data-help-i18n="help.objectTestSnap" data-help-anchor=".switch-row">Snap to grid</span>
+            <input id="objectTestSnapToggle" type="checkbox" />
+          </label>
+          <div id="objectTestSnapNote" class="option-status-note" style="font-size:10px;opacity:0.75;display:none"></div>
           <label id="objectTestEnableRow" class="switch-row" style="font-size:13px;cursor:pointer">
             <span data-i18n="objectTest.enable" data-help-i18n="help.objectTestEnable" data-help-anchor=".switch-row">Play test signal</span>
             <input id="objectTestEnableToggle" type="checkbox" />

@@ -896,5 +896,8 @@
   "objectTest.radiusOff": "arrêt",
   "help.objectTestRadius": "Rayon du cercle, en unités de pièce. Zéro arrête la rotation. La piste est marquée aux distances propres à la pièce : depuis le centre, √2 atteint une arête verticale et √3 un coin ; leurs doubles valent la même portée depuis le mur opposé. La valeur s'aimante sur un repère quand elle en approche. Un cercle qui sortirait de la pièce est écrêté aux murs et devient un D : la source longe le mur en ligne droite pendant une portion du tour au lieu de le traverser en arc, mais ne s'arrête jamais.",
   "objectTest.feature": "Injection d'objet",
-  "help.objectTestFeature": "Ajoute une source de test à la liste des objets. Elle se comporte comme n'importe quel autre objet — sélectionnable, mesurée, dessinée dans la pièce — mais c'est Studio qui l'invente, pas le flux qui la porte. Sélectionnez-la pour la placer et pour jouer un signal de test depuis l'endroit où vous l'avez mise."
+  "help.objectTestFeature": "Ajoute une source de test à la liste des objets. Elle se comporte comme n'importe quel autre objet — sélectionnable, mesurée, dessinée dans la pièce — mais c'est Studio qui l'invente, pas le flux qui la porte. Sélectionnez-la pour la placer et pour jouer un signal de test depuis l'endroit où vous l'avez mise.",
+  "objectTest.snap": "Aimanter à la grille",
+  "objectTest.snapNoGrid": "Pas de grille cartésienne : le backend n'est pas précalculé dessus.",
+  "help.objectTestSnap": "Place la source sur la grille d'échantillonnage cartésienne du backend de rendu. Avec l'interpolation de position désactivée, la lecture se fait à la cellule la plus proche : tout ce qui est dans une cellule rend à l'identique. L'aimantation pose donc la source sur le nœud auquel elle serait arrondie de toute façon, ce qui transforme « quelque part par là » en « cette cellule ». Placement seulement : une orbite continue de se déplacer sans à-coups."
 }

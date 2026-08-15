@@ -896,5 +896,8 @@
   "objectTest.radiusOff": "desligado",
   "help.objectTestRadius": "Raio do círculo, em unidades de sala. Zero para a rotação. A trilha é marcada nas distâncias próprias da sala: a partir do centro, √2 alcança uma aresta vertical e √3 um canto; seus dobros são o mesmo alcance a partir da parede oposta. O valor se prende a uma marca quando chega perto. Um círculo que sairia da sala é recortado nas paredes e vira um D: a fonte percorre a parede em linha reta durante parte da volta em vez de atravessá-la em arco, mas nunca para de se mover.",
   "objectTest.feature": "Injeção de objeto",
-  "help.objectTestFeature": "Adiciona uma fonte de teste à lista de objetos. Ela se comporta como qualquer outro objeto — selecionável, medida, desenhada na sala — mas é o Studio que a inventa, não o fluxo que a carrega. Selecione-a para posicioná-la e reproduzir um sinal de teste de onde você a colocou."
+  "help.objectTestFeature": "Adiciona uma fonte de teste à lista de objetos. Ela se comporta como qualquer outro objeto — selecionável, medida, desenhada na sala — mas é o Studio que a inventa, não o fluxo que a carrega. Selecione-a para posicioná-la e reproduzir um sinal de teste de onde você a colocou.",
+  "objectTest.snap": "Encaixar na grade",
+  "objectTest.snapNoGrid": "Sem grade cartesiana: o backend não está pré-calculado em uma.",
+  "help.objectTestSnap": "Coloca a fonte na grade de amostragem cartesiana do backend de renderização. Com a interpolação de posição desligada, a consulta usa a célula mais próxima, então tudo dentro de uma célula soa igual: o encaixe põe a fonte no nó para o qual ela seria arredondada de qualquer forma. Apenas no posicionamento: uma órbita continua se movendo continuamente."
 }

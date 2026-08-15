@@ -33,6 +33,7 @@ export { OBJECT_TEST_SOURCE_ID };
 
 const LEVEL_KEY = 'objectTest.levelDb.v1';
 const FEATURE_KEY = 'objectTest.feature.v1';
+const SNAP_KEY = 'objectTest.snap.v1';
 const ISOLATION_KEY = 'objectTest.isolation.v1';
 const POSITION_KEY = 'objectTest.position.v1';
 /**
@@ -105,6 +106,8 @@ const FACES = [
 let bootFeatureOn = false;
 /** Muted from the object list's M/S buttons. Distinct from not playing. */
 let testMuted = false;
+/** Snap placed positions to the renderer's Cartesian grid. */
+let snapOn = false;
 
 /** Current source position, ADM Cartesian. Front-centre at ear level. */
 let position = [0, 1, 0];
@@ -246,6 +249,75 @@ function send() {
     size: 0,
     isolation: isolation(),
   }).catch(() => { /* renderer gone */ });
+}
+
+// ── Snap to the renderer's Cartesian grid ───────────────────────────────────
+//
+// When the render backend is precomputed on a Cartesian grid, a position
+// between two nodes is not a position between two answers: with position
+// interpolation off the lookup is nearest-cell, so everything inside a cell
+// renders identically. Snapping puts the source on the node it would be
+// rounded to anyway, which turns "somewhere near here" into "this cell".
+//
+// **The published sizes are INTERVAL counts, not node counts.** `snapshot.rs`
+// sends `live.evaluation.cartesian.*`, which the renderer turns into an
+// evaluator config by adding one (`live_params.rs`: `x_size.max(1) + 1`) before
+// handing it to `evenly_spaced_axis`. So a published 62 means 63 nodes at a
+// step of 2/62 — and, because 62 is even, a node exactly at zero.
+//
+// That is not a coincidence, and it is why reading this wrong matters. The
+// bridge picks the default to mirror the OAMD position quantisation: Atmos
+// encodes x and y on 6 bits at a scale of 1/62 and the bridge maps them with
+// `(x - 0.5) * 2`, so the decodable positions are exactly `code/31 - 1` for
+// code 0..62 — 63 values, centred on zero. z is a sign bit plus 4 bits at 1/15,
+// which is why its two halves join seamlessly at a step of 1/15. Every position
+// an Atmos stream can express is a node of this grid. Snapping to a grid built
+// from the wrong count would miss all of them.
+//
+// z is still not one axis: its negative half is `z_neg_size` nodes spaced
+// 1/z_neg_size and stopping short of zero (that node belongs to the positive
+// half), its positive half is `z_size + 1` nodes from zero. Hence an explicit
+// list of nodes rather than a step.
+
+/** The grid the renderer is actually sampling on, or null when there is none. */
+function gridAxes() {
+  const g = app.vbapCartesianState || {};
+  const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0);
+  // Intervals, as published.
+  const xI = n(g.xSize);
+  const yI = n(g.ySize);
+  const zI = n(g.zSize);
+  const zNegNodes = Math.max(0, n(g.zNegSize));
+  if (xI < 1 || yI < 1 || zI < 1) return null;
+
+  const evenly = (count, min, max) => {
+    if (count <= 1) return [min];
+    const step = (max - min) / (count - 1);
+    return Array.from({ length: count }, (_, i) => min + step * i);
+  };
+  const zAxis = [];
+  for (let i = 0; i < zNegNodes; i += 1) zAxis.push(-1 + i / zNegNodes);
+  zAxis.push(...evenly(zI + 1, 0, 1));
+  return [evenly(xI + 1, -1, 1), evenly(yI + 1, -1, 1), zAxis];
+}
+
+/** Nearest node on one axis. */
+function nearest(nodes, v) {
+  let best = nodes[0];
+  let bestD = Math.abs(v - best);
+  for (const n of nodes) {
+    const d = Math.abs(v - n);
+    if (d < bestD) { bestD = d; best = n; }
+  }
+  return best;
+}
+
+/** Pull a position onto the grid, or return it untouched when there is none. */
+function snapToGrid(p) {
+  if (!snapOn) return p;
+  const axes = gridAxes();
+  if (!axes) return p;
+  return [nearest(axes[0], p[0]), nearest(axes[1], p[1]), nearest(axes[2], p[2])];
 }
 
 // ── Radius: marked at the room's own distances ──────────────────────────────
@@ -881,8 +953,12 @@ function updateMarkers() {
 // ── State ────────────────────────────────────────────────────────────────────
 
 function setPosition(next) {
-  const changed = next.some((v, i) => v !== position[i]);
-  position = next.map(clamp1);
+  // Placement snaps; the orbit does not. Rounding a continuous sweep onto a
+  // grid would turn smooth motion into a series of jumps, which is the one
+  // thing this whole feature is built to avoid.
+  const snapped = snapToGrid(next.map(clamp1));
+  const changed = snapped.some((v, i) => v !== position[i]);
+  position = snapped;
   if (!changed) return;
   save(POSITION_KEY, JSON.stringify(position));
   updateMarkers();
@@ -939,6 +1015,19 @@ function applyRotation() {
 export function renderObjectTestUI() {
   const feature = el('objectTestFeatureToggle');
   if (feature) feature.checked = featureOn;
+  const snap = el('objectTestSnapToggle');
+  const axes = gridAxes();
+  if (snap) {
+    snap.checked = snapOn;
+    // Offered but inert without a grid: the control stays visible so its state
+    // is not silently forgotten, and the note says why nothing is happening.
+    snap.disabled = !axes;
+  }
+  const snapNote = el('objectTestSnapNote');
+  if (snapNote) {
+    snapNote.style.display = snapOn && !axes ? 'block' : 'none';
+    if (snapOn && !axes) snapNote.textContent = t('objectTest.snapNoGrid');
+  }
   const toggle = el('objectTestEnableToggle');
   if (toggle) toggle.checked = enabled;
   const box = el('objectTestLevelBox');
@@ -1050,6 +1139,7 @@ export function setupObjectTestListeners() {
   // 3D scene are not ready this early in boot. `objectTestBoot()` does it once
   // they are.
   bootFeatureOn = load(FEATURE_KEY, '0') === '1';
+  snapOn = load(SNAP_KEY, '0') === '1';
 
   const slider = el('objectTestLevelSlider');
   if (slider) {
@@ -1071,6 +1161,18 @@ export function setupObjectTestListeners() {
   const feature = el('objectTestFeatureToggle');
   if (feature) {
     feature.addEventListener('change', () => setObjectTestFeatureOn(feature.checked));
+  }
+
+  const snap = el('objectTestSnapToggle');
+  if (snap) {
+    snap.addEventListener('change', () => {
+      snapOn = snap.checked;
+      save(SNAP_KEY, snapOn ? '1' : '0');
+      // Turning it on pulls the source onto the grid at once, rather than
+      // waiting for the next drag to reveal what it does.
+      if (snapOn) setPosition(position.slice());
+      renderObjectTestUI();
+    });
   }
 
   const axisSel = el('objectTestRotationAxis');

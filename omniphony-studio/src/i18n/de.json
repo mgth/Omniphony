@@ -896,5 +896,8 @@
   "objectTest.radiusOff": "aus",
   "help.objectTestRadius": "Radius des Kreises in Raumeinheiten. Null stoppt die Rotation. Die Spur ist an den raumeigenen Abständen markiert: vom Zentrum aus erreicht √2 eine senkrechte Kante und √3 eine Ecke; ihre Doppelten sind dieselbe Reichweite von der gegenüberliegenden Wand. Der Wert rastet an einer Marke ein, wenn er ihr nahe kommt. Ein Kreis, der den Raum verlassen würde, wird an den Wänden beschnitten und wird zum D: die Quelle läuft einen Teil des Umlaufs geradlinig an der Wand entlang statt im Bogen hindurch, bleibt dabei aber immer in Bewegung.",
   "objectTest.feature": "Objekt-Injektion",
-  "help.objectTestFeature": "Fügt der Objektliste eine Testquelle hinzu. Sie verhält sich wie jedes andere Objekt — auswählbar, mit Pegel, im Raum gezeichnet — nur erfindet Studio sie, statt dass der Stream sie mitbringt. Zum Platzieren auswählen und von dort ein Testsignal abspielen."
+  "help.objectTestFeature": "Fügt der Objektliste eine Testquelle hinzu. Sie verhält sich wie jedes andere Objekt — auswählbar, mit Pegel, im Raum gezeichnet — nur erfindet Studio sie, statt dass der Stream sie mitbringt. Zum Platzieren auswählen und von dort ein Testsignal abspielen.",
+  "objectTest.snap": "Am Raster einrasten",
+  "objectTest.snapNoGrid": "Kein kartesisches Raster: das Backend ist nicht darauf vorberechnet.",
+  "help.objectTestSnap": "Setzt die Quelle auf das kartesische Abtastraster des Render-Backends. Bei abgeschalteter Positionsinterpolation greift die Suche auf die nächste Zelle zu, alles innerhalb einer Zelle klingt also gleich — das Einrasten setzt die Quelle auf den Knoten, auf den sie ohnehin gerundet würde. Nur beim Platzieren: eine Umlaufbahn bewegt sich weiter stufenlos."
 }
