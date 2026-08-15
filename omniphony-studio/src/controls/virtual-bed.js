@@ -15,7 +15,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { OBJECT_TEST_SOURCE_ID } from './object-test.js';
+import { OBJECT_TEST_SOURCE_ID } from '../object-test-id.js';
 import { app, sourceDirectSpeakerIndices, sourceMeshes, sourceNames } from '../state.js';
 import { t } from '../i18n.js';
 import { updateSource, removeSource } from '../sources.js';

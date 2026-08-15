@@ -767,6 +767,9 @@ impl SpatialRenderer {
                 sample_length,
             );
             let object_test_position = object_test_block.as_ref().map(|b| b.position);
+            let object_test_level = object_test_block
+                .as_ref()
+                .map(|b| (b.peak_dbfs, b.rms_dbfs));
             let mut cascade_diag = None;
             if cascade_active && self.cascade.is_some() {
                 // Cascaded mode: the MAIN speaker stage renders the app layout
@@ -1003,6 +1006,7 @@ impl SpatialRenderer {
                         object_band_gains: diag.object_band_gains,
                         object_band_sq: diag.object_band_sq,
                         object_test_position,
+                        object_test_level,
                         crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
                     }
                 }
@@ -1013,6 +1017,7 @@ impl SpatialRenderer {
                     object_band_gains: Vec::new(),
                     object_band_sq: Vec::new(),
                     object_test_position,
+                    object_test_level,
                     crossover_time_ms: 0.0,
                 },
             });
@@ -1097,6 +1102,7 @@ impl SpatialRenderer {
             frames,
         );
         let object_test_position = block.as_ref().map(|b| b.position);
+        let object_test_level = block.as_ref().map(|b| (b.peak_dbfs, b.rms_dbfs));
         let object_test_active = self.speaker_stage.inject_object_test(
             live.object_test,
             block.as_ref(),
@@ -1186,6 +1192,7 @@ impl SpatialRenderer {
             object_band_gains: diag.object_band_gains,
             object_band_sq: diag.object_band_sq,
             object_test_position,
+            object_test_level,
             crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
         })
     }

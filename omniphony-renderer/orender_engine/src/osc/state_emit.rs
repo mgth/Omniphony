@@ -84,6 +84,7 @@ impl OscSender {
         // per-interval readout of what the render just did, wanted at the same
         // rate and by the same clients, and already gated by that subscription.
         object_test_position: Option<[f32; 3]>,
+        object_test_level: Option<(f32, f32)>,
         decode_time_ms: Option<f32>,
         crossover_time_ms: Option<f32>,
         render_time_ms: Option<f32>,
@@ -287,9 +288,19 @@ impl OscSender {
             }
         }
         if let Some([x, y, z]) = object_test_position {
+            // Position and level in one message: they describe the same source
+            // over the same interval, and a client that has one and not the
+            // other can only draw something half true.
+            let (peak, rms) = object_test_level.unwrap_or((-100.0, -100.0));
             messages.push(OscPacket::Message(OscMessage {
                 addr: "/omniphony/state/object_test/position".to_string(),
-                args: vec![OscType::Float(x), OscType::Float(y), OscType::Float(z)],
+                args: vec![
+                    OscType::Float(x),
+                    OscType::Float(y),
+                    OscType::Float(z),
+                    OscType::Float(peak),
+                    OscType::Float(rms),
+                ],
             }));
         }
         messages.push(OscPacket::Message(OscMessage {

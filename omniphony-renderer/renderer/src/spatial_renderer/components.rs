@@ -56,6 +56,10 @@ pub struct RenderedFrame {
     /// source on it, and an interface animating its own copy would drift away
     /// from what is actually being heard.
     pub object_test_position: Option<[f32; 3]>,
+    /// Peak and RMS of the object test's own signal, dBFS. Reported for the
+    /// same reason as the position: it is a source Studio invented, so the
+    /// renderer is the only party that can meter it.
+    pub object_test_level: Option<(f32, f32)>,
     pub crossover_time_ms: f32,
 }
 

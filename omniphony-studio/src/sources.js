@@ -48,6 +48,7 @@ import {
   normalizedOmniphonyToScenePosition
 } from './coordinates.js';
 import { scene } from './scene/setup.js';
+import { OBJECT_TEST_SOURCE_ID } from './object-test-id.js';
 import {
   sourceMaterial,
   sourceGeometry,
@@ -124,6 +125,10 @@ export function getObjectDisplayName(id) {
 // short position `code` (e.g. FL, Ls, L·C, L). Keeps the long technical name off
 // the vertical strip so list rows don't grow tall.
 export function objectBadge(id) {
+  // The injected source's name is a sentence ("Test object"), which the list's
+  // vertical strip cannot carry — it is sized for codes like FL or TBR. Give it
+  // one. Not translated, like every other code in that strip.
+  if (String(id) === OBJECT_TEST_SOURCE_ID) return { type: '', code: 'INJ' };
   const name = getObjectDisplayName(id);
   // Bed→height synth objects: PAD "Ambience_FL", copy_up "Height_Ls_synth",
   // DirAC diffuse "Diffuse_TFL".

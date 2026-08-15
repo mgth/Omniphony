@@ -94,7 +94,7 @@ function applyBatchedEvent(event, payload) {
       updateSource(payload.id, payload.position);
       break;
     case 'objectTest:position':
-      setObjectTestReportedPosition([payload.x, payload.y, payload.z]);
+      setObjectTestReportedPosition([payload.x, payload.y, payload.z], payload);
       break;
     case 'source:meter':
       updateSourceLevel(payload.id, payload.meter);
@@ -173,7 +173,7 @@ export function setupTauriBridge() {
   // phase, so this is the only source of truth for it — Studio draws the path
   // but cannot know the angle.
   listen('objectTest:position', ({ payload }) => {
-    setObjectTestReportedPosition([payload.x, payload.y, payload.z]);
+    setObjectTestReportedPosition([payload.x, payload.y, payload.z], payload);
   });
 
   listen('source:update', ({ payload }) => {

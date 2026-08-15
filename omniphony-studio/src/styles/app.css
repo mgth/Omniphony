@@ -3137,3 +3137,23 @@ body:not(.output-binaural) .speakers-header-binaural {
   position: relative;
   background: transparent;
 }
+
+/* The injection editor holds three projections, four sliders and a handful of
+   selectors — more than the pinned slot at the bottom of the overlay can show
+   at once. It scrolls inside itself rather than growing: the overlay's extents
+   have to stay put, because anything that moves them moves the 3D viewport
+   with them. */
+#objectTestEditSection {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 46vh;
+}
+
+#objectTestBody {
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  /* Room for the scrollbar so it never lands on top of a slider's right end. */
+  padding-right: 0.25rem;
+}

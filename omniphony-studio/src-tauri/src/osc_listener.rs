@@ -2592,13 +2592,16 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
-            OscEvent::StateObjectTestPosition { x, y, z } => {
+            OscEvent::StateObjectTestPosition { x, y, z, peak_dbfs, rms_dbfs } => {
                 // Straight through: this is the renderer telling the scene where
                 // the test source actually is, and nothing here needs to keep it.
                 (
                     Some((
                         "objectTest:position",
-                        serde_json::json!({ "x": x, "y": y, "z": z }),
+                        serde_json::json!({
+                            "x": x, "y": y, "z": z,
+                            "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs
+                        }),
                     )),
                     removed_ids,
                 )

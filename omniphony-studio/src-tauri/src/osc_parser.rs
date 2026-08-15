@@ -306,7 +306,7 @@ pub enum OscEvent {
     /// Where the object test's source is right now, orbit and clamp applied.
     /// Published by the renderer because it owns the orbit phase — an interface
     /// animating its own copy would drift from what is being heard.
-    StateObjectTestPosition { x: f64, y: f64, z: f64 },
+    StateObjectTestPosition { x: f64, y: f64, z: f64, peak_dbfs: f64, rms_dbfs: f64 },
     #[serde(rename = "state:crossover_time_ms")]
     StateCrossoverTimeMs { value: f64 },
     #[serde(rename = "state:write_time_ms")]
@@ -757,6 +757,10 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 x: to_number(args.first().copied()?)?,
                 y: to_number(args.get(1).copied()?)?,
                 z: to_number(args.get(2).copied()?)?,
+                // Silence if a sender omits them, rather than dropping the
+                // position: where the source is matters even unmetered.
+                peak_dbfs: args.get(3).copied().and_then(to_number).unwrap_or(-100.0),
+                rms_dbfs: args.get(4).copied().and_then(to_number).unwrap_or(-100.0),
             })
         }
         (4, "realtime") => match parts[3] {

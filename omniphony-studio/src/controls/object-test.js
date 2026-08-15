@@ -25,18 +25,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
 import { t, onLocaleChange, i18nState } from '../i18n.js';
 import { setIdleFeedRequest } from './test-idle-feed.js';
-import { updateSource, removeSource, setSelectedSource } from '../sources.js';
+import { updateSource, removeSource, setSelectedSource, updateSourceLevel } from '../sources.js';
+import { OBJECT_TEST_SOURCE_ID } from '../object-test-id.js';
 
-/**
- * The injected object's id in the source registry.
- *
- * Deliberately not a number. The renderer's objects are numbered, the stale
- * purge in `tauri-bridge` only sweeps integer ids, and the objects list sorts
- * non-numeric ids last — so a name keeps this one out of the renderer's
- * numbering, safe from the sweep, and at the end of the list where an invented
- * source belongs.
- */
-export const OBJECT_TEST_SOURCE_ID = 'injection';
+export { OBJECT_TEST_SOURCE_ID };
+
 
 const LEVEL_KEY = 'objectTest.levelDb.v1';
 const FEATURE_KEY = 'objectTest.feature.v1';
@@ -110,6 +103,8 @@ const FACES = [
 
 /** Set from storage at setup, applied once the scene can take it. */
 let bootFeatureOn = false;
+/** Muted from the object list's M/S buttons. Distinct from not playing. */
+let testMuted = false;
 
 /** Current source position, ADM Cartesian. Front-centre at ear level. */
 let position = [0, 1, 0];
@@ -134,11 +129,41 @@ let featureOn = false;
  */
 let reportedPosition = null;
 
-/** The renderer reported the source's live position. */
-export function setObjectTestReportedPosition(p) {
+/**
+ * The renderer reported the source's live position and level.
+ *
+ * The level goes through the same `updateSourceLevel` every other object's
+ * meter uses, so the row's gauge, its decay and its peak hold are the shared
+ * ones. Studio could not compute this itself: the level control is a target
+ * the generator is scaled towards and clamped at, so what is produced is a
+ * little under it — a meter fed from the request would be a label.
+ */
+export function setObjectTestReportedPosition(p, meter) {
   if (!Array.isArray(p) || p.length !== 3 || !p.every(Number.isFinite)) return;
   reportedPosition = p;
   pushSource();
+  if (featureOn && meter) {
+    updateSourceLevel(OBJECT_TEST_SOURCE_ID, {
+      peakDbfs: Number(meter.peakDbfs ?? -100),
+      rmsDbfs: Number(meter.rmsDbfs ?? -100),
+    });
+  }
+}
+
+/**
+ * Mute the injected source.
+ *
+ * Routed here rather than to `control_object_mute`, which addresses objects by
+ * *number* — this one has a name, so that command would send NaN and the M
+ * button would do nothing at all, which is what it did. Muting simply stops
+ * sending the signal while remembering that it was playing, so unmuting
+ * resumes rather than requiring the play switch again.
+ */
+export function setObjectTestMuted(muted) {
+  const next = Boolean(muted);
+  if (next === testMuted) return;
+  testMuted = next;
+  send();
 }
 
 /**
@@ -211,7 +236,9 @@ function roomRatio() {
 /** Push the current state to the renderer. */
 function send() {
   invoke('control_object_test', {
-    on: enabled,
+    // Muted counts as off to the renderer: there is no separate mute for a
+    // source it does not otherwise know about.
+    on: enabled && !testMuted,
     x: position[0],
     y: position[1],
     z: position[2],
@@ -369,6 +396,7 @@ function orbitPath(samples = 96) {
 export function stopObjectTest({ force = false } = {}) {
   if (!enabled && !force) return;
   enabled = false;
+  testMuted = false;
   reportedPosition = null;
   send();
   renderObjectTestUI();

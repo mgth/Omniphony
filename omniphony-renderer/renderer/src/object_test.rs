@@ -25,6 +25,14 @@ const MAX_SECONDS: u64 = 120;
 /// binaural — where both run — the source would be in two places at once.
 pub struct ObjectTestBlock<'a> {
     pub pcm: &'a [f32],
+    /// Peak and RMS of this block, in dBFS.
+    ///
+    /// Measured here rather than inferred from the level control, because the
+    /// level is a *target*: the generator is scaled towards it and clamped at
+    /// it, so what is actually produced is a little under. A meter that showed
+    /// the request instead of the result would be a label, not a meter.
+    pub peak_dbfs: f32,
+    pub rms_dbfs: f32,
     /// Where the source is for this block: the placed position with the orbit
     /// applied and the room clamp enforced.
     pub position: [f32; 3],
@@ -157,10 +165,18 @@ impl ObjectTestSource {
         let ceiling = test.level.abs();
         self.block.clear();
         self.block.reserve(frames);
+        let mut peak = 0.0f32;
+        let mut sum_sq = 0.0f64;
         for _ in 0..frames {
             let raw = self.noise.next_sample();
-            self.block.push((raw * gain).clamp(-ceiling, ceiling));
+            let s = (raw * gain).clamp(-ceiling, ceiling);
+            peak = peak.max(s.abs());
+            sum_sq += (s as f64) * (s as f64);
+            self.block.push(s);
         }
+        let rms = (sum_sq / frames.max(1) as f64).sqrt() as f32;
+        // -100 dBFS stands for silence, the same floor the object meters use.
+        let db = |v: f32| if v > 1e-9 { 20.0 * v.log10() } else { -100.0 };
 
         // Advance the orbit by this block's worth of turn, and sample it at the
         // block's midpoint. Per block rather than per sample because the
@@ -192,6 +208,8 @@ impl ObjectTestSource {
         self.elapsed_samples += frames as u64;
         Some(ObjectTestBlock {
             pcm: &self.block,
+            peak_dbfs: db(peak),
+            rms_dbfs: db(rms),
             position,
         })
     }
