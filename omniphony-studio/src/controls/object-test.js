@@ -746,7 +746,8 @@ function buildFaces() {
   builtRatioKey = key;
   host.textContent = '';
 
-  const { sheet, rects, mitre } = sheetLayout();
+  const layout = sheetLayout();
+  const { sheet, rects, mitre } = layout;
   // A source against a wall sits exactly on a box edge, where half the marker
   // would fall outside the sheet and be clipped — precisely the positions
   // (hard left, ceiling, back wall) this tool exists to try.
@@ -780,13 +781,22 @@ function buildFaces() {
       class: 'object-test-face-box'
     }));
 
-    // The room's midlines, so "dead centre" is visible without measuring.
+    // The room's axes through the ORIGIN, not through the middle of the
+    // rectangle. Those were the same thing while the faces mapped ADM linearly
+    // onto a symmetric box; they stopped being the same the moment the faces
+    // took the room's true extents. A room that reaches twice as far forward as
+    // back has its origin a third of the way up the plan view, and drawing the
+    // cross at the halfway mark puts it where the listener is not.
+    //
+    // Projected with the same function as the marker, so the two cannot drift:
+    // wherever the cross meets, placing the source at 0, 0, 0 lands on it.
+    const origin = faceToSheet(face, rect, [0, 0, 0], layout.extent);
     group.appendChild(svgEl('line', {
-      x1: rect.x + rect.w / 2, y1: rect.y, x2: rect.x + rect.w / 2, y2: rect.y + rect.h,
+      x1: origin.cx, y1: rect.y, x2: origin.cx, y2: rect.y + rect.h,
       class: 'object-test-face-axis'
     }));
     group.appendChild(svgEl('line', {
-      x1: rect.x, y1: rect.y + rect.h / 2, x2: rect.x + rect.w, y2: rect.y + rect.h / 2,
+      x1: rect.x, y1: origin.cy, x2: rect.x + rect.w, y2: origin.cy,
       class: 'object-test-face-axis'
     }));
 
@@ -846,7 +856,9 @@ function buildFaces() {
     svg.appendChild(group);
   }
 
-  const layout = { sheet, rects, mitre, gutter: sheetLayout().gutter };
+  // `layout` already carries gutter and extent — it used to be rebuilt here
+  // from a second sheetLayout() call, which was one chance for the two to
+  // disagree about a room that had changed in between.
   for (const slider of SLIDERS) {
     svg.appendChild(buildSlider(slider, layout));
   }
