@@ -41,23 +41,29 @@ const DEFAULT_LEVEL_DB = -8;
 
 /**
  * The three projections, laid out as an orthographic multiview: front centre,
- * side to its left, floor above it — third-angle projection.
+ * side to its left, floor BELOW it — first-angle projection, the ISO
+ * convention.
  *
  * Each face maps two ADM axes onto its rectangle. The directions are not free
  * choices: they are what makes the arrangement a projection rather than three
  * unrelated pictures. Unfold the room box with the front wall held still, and
  * the shared edges decide the orientations —
  *
- * - the floor folds UP from the front wall, so the edge it shares with the
- *   front view (its bottom edge) is the FRONT of the room. Depth therefore runs
- *   downward: back at the top, front at the bottom, against the front view.
+ * - the floor folds DOWN from the front wall, so the edge it shares with the
+ *   front view (its top edge) is the FRONT of the room. Depth therefore runs
+ *   downward *away* from the front view: front at the top, back at the bottom.
  * - the left wall folds out to the LEFT, so the edge it shares with the front
- *   view (its right edge) is again the front of the room. Depth runs rightward:
- *   back at the left, front at the right.
+ *   view (its right edge) is again the front of the room. Depth runs leftward
+ *   away from it: front at the right, back at the left.
  *
- * Both faces then measure depth *away from the front view*, which is why a
- * point's distance from the floor view's bottom edge equals its distance from
- * the side view's right edge — the relationship the 45° mitre line draws.
+ * Both faces measure depth away from the front view, which is why a point's
+ * distance from the floor view's top edge equals its distance from the side
+ * view's right edge — the relationship the 45° mitre line draws.
+ *
+ * Third angle would put the floor view above with the front of the room at its
+ * bottom edge. That is equally consistent, and it is what this drew first, but
+ * a plan of a room with its front at the bottom reads backwards to anyone who
+ * has ever looked at a floor plan: on a map, forward is up.
  */
 const FACES = [
   {
@@ -65,8 +71,8 @@ const FACES = [
     labelKey: 'objectTest.facePlan',
     /** Horizontal axis: ADM x, left to right. */
     h: { axis: 0, invert: false },
-    /** Vertical axis: ADM y, back at the top and front at the bottom. */
-    v: { axis: 1, invert: false },
+    /** Vertical axis: ADM y, front at the top and back at the bottom. */
+    v: { axis: 1, invert: true },
     // Depth is the only direction a reader cannot guess — left/right and
     // floor/ceiling speak for themselves — and it is the one the projection
     // decides rather than intuition. So it is the only one labelled.
@@ -185,8 +191,9 @@ const MARKER_R = 2.4;
  * Lay the three views out as a CAD sheet and return every rectangle in one
  * shared coordinate system.
  *
- *        ·          floor          the empty corner carries the 45° mitre
+ *       ·  ·  ·  ·  ·  ·  ·  ·      a lane for the horizontal sliders
  *       side        front
+ *        ·          floor           the empty corner carries the 45° mitre
  *
  * The whole point is the single scale factor `s`: one unit of room is the same
  * number of sheet units in all three views, so the side view's depth is
@@ -194,9 +201,9 @@ const MARKER_R = 2.4;
  * tall next to its own plan. Three separately-fitted SVGs cannot do this —
  * each would be scaled to its own box — which is why this builds one sheet.
  *
- * Column widths are (depth, width) and row heights are (depth, height), so the
- * empty top-left cell is depth × depth: exactly square, which is what lets the
- * mitre run at a true 45°.
+ * Column widths are (depth, width) and the lower row is depth tall, so the
+ * empty bottom-left cell is depth × depth: exactly square, which is what lets
+ * the mitre run at a true 45°.
  */
 function sheetLayout() {
   const r = roomRatio();
@@ -205,20 +212,23 @@ function sheetLayout() {
   const H = r.height;
   const g = GUTTER * Math.max(W, D, H);
   const rawW = D + g + W;
-  const rawH = D + g + H;
+  // A gutter above the elevations as well, so the horizontal sliders have a
+  // lane of their own instead of hanging off the top edge.
+  const rawH = g + H + g + D;
   // Normalise the larger sheet dimension to 100 so stroke widths, marker size
   // and type size read the same whatever the room's proportions.
   const s = 100 / Math.max(rawW, rawH);
   const col2 = (D + g) * s;
-  const row2 = (D + g) * s;
+  const row1 = g * s;
+  const row2 = (g + H + g) * s;
   return {
     sheet: { w: rawW * s, h: rawH * s },
-    mitre: { x: 0, y: 0, w: D * s, h: D * s },
+    mitre: { x: 0, y: row2, w: D * s, h: D * s },
     gutter: g * s,
     rects: {
-      floor: { x: col2, y: 0, w: W * s, h: D * s },
-      side: { x: 0, y: row2, w: D * s, h: H * s },
-      front: { x: col2, y: row2, w: W * s, h: H * s }
+      side: { x: 0, y: row1, w: D * s, h: H * s },
+      front: { x: col2, y: row1, w: W * s, h: H * s },
+      floor: { x: col2, y: row2, w: W * s, h: D * s }
     }
   };
 }
@@ -226,18 +236,22 @@ function sheetLayout() {
 /**
  * The single-axis sliders, one per gutter.
  *
- *        ·      [y]   floor          [y] left of the floor view
- *       [y]     [x]                  [x] above the front view
- *       side    [z]   front          [z] left of the front view
+ *       [y]        [x]              [x] above the front view
+ *       side       front            [z] left of the front view
+ *        ·    [y]  floor            [y] above the side view, left of the floor
  *
  * Each lies in the gutter beside the view whose axis it drives, running
  * parallel to that axis *in that view* — so a slider and the marker it moves
  * always travel the same direction, and the control inherits the projection's
- * orientation instead of asserting its own.
+ * orientation instead of asserting its own. Nothing here names a direction:
+ * the travel is read off the face's axis, so re-orienting a view carries its
+ * slider with it.
  *
- * Depth gets two, because two views show it: one above the side view, one left
- * of the floor view. They need no synchronising code — both read and write the
- * same coordinate, so they cannot disagree.
+ * Depth gets two, because two views show it. They run visibly opposite ways —
+ * the one beside the floor view has front at the top, the one above the side
+ * view has front at the right — because each matches its own neighbour, which
+ * is the rule that matters. They need no synchronising code: both read and
+ * write the same coordinate, so they cannot disagree.
  */
 const SLIDERS = [
   { id: 'x', face: 'front', use: 'h', lane: 'above', labelKey: 'objectTest.sliderX' },
@@ -344,9 +358,11 @@ function buildFaces() {
     + 'cursor:crosshair;touch-action:none;user-select:none';
 
   // The mitre: the 45° line that carries depth between the floor view and the
-  // side view. It is not decoration — it is the statement that the distance
-  // from the floor view's front edge and from the side view's front edge are
-  // the same distance, which is what makes these two views one drawing.
+  // side view. It is not decoration — it is the statement that a point's
+  // distance from the floor view's front edge (its top) and from the side
+  // view's front edge (its right) are the same distance, which is what makes
+  // these two views one drawing. The anti-diagonal serves both the first- and
+  // third-angle arrangements; only which corner the cell sits in changes.
   svg.appendChild(svgEl('line', {
     x1: mitre.x, y1: mitre.y + mitre.h, x2: mitre.x + mitre.w, y2: mitre.y,
     class: 'object-test-mitre'
@@ -377,21 +393,33 @@ function buildFaces() {
     caption.textContent = t(face.labelKey);
     group.appendChild(caption);
 
-    // Depth ends. Both views measure depth away from the front view, so "front"
-    // always lands on the edge nearest it: the bottom of the floor view, the
-    // right of the side view.
-    if (face.depthEnds === 'v') {
-      const back = svgEl('text', { x: rect.x + rect.w - 1, y: rect.y + 3.4, class: 'object-test-end-label', 'text-anchor': 'end' });
-      back.textContent = t('objectTest.axisBack');
-      const front = svgEl('text', { x: rect.x + rect.w - 1, y: rect.y + rect.h - 1.6, class: 'object-test-end-label', 'text-anchor': 'end' });
-      front.textContent = t('objectTest.axisFront');
-      group.append(back, front);
-    } else if (face.depthEnds === 'h') {
-      const back = svgEl('text', { x: rect.x + 1, y: rect.y + 3.4, class: 'object-test-end-label' });
-      back.textContent = t('objectTest.axisBack');
-      const front = svgEl('text', { x: rect.x + rect.w - 1, y: rect.y + 3.4, class: 'object-test-end-label', 'text-anchor': 'end' });
-      front.textContent = t('objectTest.axisFront');
-      group.append(back, front);
+    // Depth ends. Which end is which is read off the axis rather than written
+    // down: an inverted axis puts +1 (front) at the start of its travel. Doing
+    // it this way means flipping a view's direction cannot leave the labels
+    // behind describing the old one.
+    if (face.depthEnds) {
+      const axis = face[face.depthEnds];
+      // The label at the start of the axis's travel — top for a vertical axis,
+      // left for a horizontal one.
+      const startKey = axis.invert ? 'objectTest.axisFront' : 'objectTest.axisBack';
+      const endKey = axis.invert ? 'objectTest.axisBack' : 'objectTest.axisFront';
+      const ends = face.depthEnds === 'v'
+        // Vertical: both labels on the right, clear of the markers.
+        ? [
+          { key: startKey, x: rect.x + rect.w - 1, y: rect.y + 3.4, anchor: 'end' },
+          { key: endKey, x: rect.x + rect.w - 1, y: rect.y + rect.h - 1.6, anchor: 'end' }
+        ]
+        : [
+          { key: startKey, x: rect.x + 1, y: rect.y + 3.4, anchor: 'start' },
+          { key: endKey, x: rect.x + rect.w - 1, y: rect.y + 3.4, anchor: 'end' }
+        ];
+      for (const e of ends) {
+        const node = svgEl('text', {
+          x: e.x, y: e.y, class: 'object-test-end-label', 'text-anchor': e.anchor
+        });
+        node.textContent = t(e.key);
+        group.appendChild(node);
+      }
     }
 
     const marker = svgEl('circle', { r: MARKER_R, class: 'object-test-marker' });
