@@ -585,24 +585,28 @@
            selected in the list, exactly as the channel editor is for a bed
            channel: one slot, one selection, mutually exclusive. -->
       <div class="info-section" id="objectTestEditSection" style="display:none">
-        <!-- Transport at the top, not a switch buried in the controls: starting
-             and stopping the signal is the one thing done over and over while
-             placing a source, and it is the only control here that makes a
-             sound happen. -->
-        <div class="object-test-head">
-          <div class="info-title" style="margin-bottom:0" data-i18n="section.objectTest" data-help-i18n="help.objectTest">Object injection</div>
-          <button id="objectTestPlayBtn" type="button" class="transport-btn" aria-pressed="false">
-            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
-              <path class="tp-play" d="M8.2 5.4 19 12 8.2 18.6z" />
-              <g class="tp-pause">
-                <rect x="7.4" y="5.4" width="3.6" height="13.2" rx="1.1" />
-                <rect x="13" y="5.4" width="3.6" height="13.2" rx="1.1" />
-              </g>
-            </svg>
-          </button>
-        </div>
+        <div class="info-title" data-i18n="section.objectTest" data-help-i18n="help.objectTest">Object injection</div>
         <div id="objectTestBody" class="editor-body">
           <div class="option-status-note" style="font-size:10px;opacity:0.8" data-i18n="objectTest.hint">Click or drag on a face to place the source.</div>
+          <!-- Transport near the top, on a row of its own: starting and stopping
+               the signal is the one thing done over and over while placing a
+               source, and the only control here that makes a sound happen.
+               Deliberately NOT in the title row — a lone glyph in that corner is
+               where every other section keeps its expand/collapse chevron, and
+               a play triangle there reads as one. Button left, label beside it:
+               that is a transport, and it cannot be mistaken for anything else. -->
+          <div class="object-test-transport">
+            <button id="objectTestPlayBtn" type="button" class="transport-btn" aria-pressed="false">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+                <path class="tp-play" d="M8.2 5.4 19 12 8.2 18.6z" />
+                <g class="tp-pause">
+                  <rect x="7.4" y="5.4" width="3.6" height="13.2" rx="1.1" />
+                  <rect x="13" y="5.4" width="3.6" height="13.2" rx="1.1" />
+                </g>
+              </svg>
+            </button>
+            <span id="objectTestPlayLabel" class="transport-label" aria-hidden="true">Play the test signal</span>
+          </div>
           <!-- Three orthogonal projections of the room box. Each face sets the
                two coordinates it shows and leaves the third alone, so the marker
                on the other two faces moves with it. Aspect ratios follow the

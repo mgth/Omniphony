@@ -2906,14 +2906,28 @@ body:not(.output-binaural) .speakers-header-binaural {
 }
 
 /* Object-injection transport. The one control in the panel that makes a sound
-   happen, so it sits with the title rather than in the list of parameters. */
-.object-test-head {
+   happen, so it sits at the top rather than in the list of parameters — but on
+   its own row, left-aligned with its label. In the title row it would have been
+   a lone glyph in the corner every other section reserves for its collapse
+   chevron. */
+.object-test-transport {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
-  margin-bottom: 0.35rem;
+  margin: 0.15rem 0 0.1rem;
   min-width: 0;
+}
+
+.transport-label {
+  font-size: 12px;
+  color: rgba(223, 232, 243, 0.72);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.object-test-transport:has(.transport-btn[aria-pressed='true']) .transport-label {
+  color: #7af0c0;
 }
 
 .transport-btn {
@@ -2921,8 +2935,8 @@ body:not(.output-binaural) .speakers-header-binaural {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.22);

@@ -1261,6 +1261,10 @@ export function renderObjectTestUI() {
     const label = t(enabled ? 'objectTest.stop' : 'objectTest.play');
     play.title = label;
     play.setAttribute('aria-label', label);
+    const text = el('objectTestPlayLabel');
+    // The visible label is the same words, marked aria-hidden: the button
+    // already carries them, and announcing them twice is noise.
+    if (text) text.textContent = label;
   }
   const box = el('objectTestLevelBox');
   if (box) box.textContent = `${levelDb()} dBFS`;
