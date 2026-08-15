@@ -878,5 +878,8 @@
   "help.objectTestEnable": "マークした位置からピンクノイズを再生します。再生中にソースを動かすと、信号を再スタートせずに滑らかに移動します。",
   "help.objectTestLevel": "テスト信号のピークレベル（dBFS）。レンダラーがこのピークで制限するため、0 dBFS はフルスケールでも単独ではクリップしません。ピンクノイズの平均レベルはこれより約 13 dB 下になります。",
   "help.objectTestIsolation": "テスト中に番組音声が行う動作: ミュートしてテストだけを聴くか、下で鳴らしたままにするか。",
-  "objectTest.markerLabel": "テストオブジェクト"
+  "objectTest.markerLabel": "テストオブジェクト",
+  "objectTest.sliderX": "左 / 右",
+  "objectTest.sliderY": "後 / 前",
+  "objectTest.sliderZ": "床 / 天井"
 }

@@ -3007,6 +3007,48 @@ body:not(.output-binaural) .speakers-header-binaural {
   font-family: inherit;
 }
 
+/* Single-axis sliders living in the CAD sheet's gutters. Drawn in the SVG
+   rather than overlaid as range inputs: the sheet scales with its viewBox, so
+   an overlay would need its geometry recomputed on every resize and would
+   drift the moment the max-height letterboxes it. */
+.object-test-slider-hit {
+  fill: transparent;
+}
+
+.object-test-slider-track {
+  stroke: rgba(217, 236, 255, 0.28);
+  stroke-width: 0.7;
+  stroke-linecap: round;
+}
+
+.object-test-slider-tick {
+  stroke: rgba(217, 236, 255, 0.35);
+  stroke-width: 0.6;
+}
+
+.object-test-slider-thumb {
+  fill: #5cff9a;
+  stroke: rgba(10, 11, 16, 0.8);
+  stroke-width: 0.5;
+}
+
+.object-test-slider {
+  cursor: pointer;
+  outline: none;
+}
+
+.object-test-slider:hover .object-test-slider-track,
+.object-test-slider:focus-visible .object-test-slider-track {
+  stroke: rgba(217, 236, 255, 0.55);
+}
+
+/* Keyboard focus has to be visible on an SVG group, which gets no default
+   focus ring once `outline` is cleared. */
+.object-test-slider:focus-visible .object-test-slider-thumb {
+  stroke: #d9ecff;
+  stroke-width: 0.9;
+}
+
 .object-test-marker {
   fill: #5cff9a;
   stroke: rgba(0, 0, 0, 0.55);

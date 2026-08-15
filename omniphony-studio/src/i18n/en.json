@@ -878,5 +878,8 @@
   "help.objectTestEnable": "Play pink noise from the marked position. Moving the source while it plays slides it without restarting the signal.",
   "help.objectTestLevel": "Test signal peak level in dBFS. The renderer bounds the test to this peak, so 0 dBFS is full scale and cannot clip on its own; the pink noise averages about 13 dB below it.",
   "help.objectTestIsolation": "What the programme does during the test: mute it so only the test is heard, or leave it playing underneath.",
-  "objectTest.markerLabel": "Test object"
+  "objectTest.markerLabel": "Test object",
+  "objectTest.sliderX": "Left / right",
+  "objectTest.sliderY": "Back / front",
+  "objectTest.sliderZ": "Floor / ceiling"
 }

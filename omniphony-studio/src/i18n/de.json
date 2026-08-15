@@ -878,5 +878,8 @@
   "help.objectTestEnable": "Gibt rosa Rauschen von der markierten Position wieder. Wird die Quelle während der Wiedergabe bewegt, gleitet sie, ohne dass das Signal neu startet.",
   "help.objectTestLevel": "Spitzenpegel des Testsignals in dBFS. Der Renderer begrenzt den Test auf diesen Spitzenwert, daher ist 0 dBFS Vollaussteuerung und kann für sich allein nicht clippen; das rosa Rauschen liegt im Mittel etwa 13 dB darunter.",
   "help.objectTestIsolation": "Was das Programm während des Tests macht: stummschalten, sodass nur der Test zu hören ist, oder darunter weiterlaufen lassen.",
-  "objectTest.markerLabel": "Testobjekt"
+  "objectTest.markerLabel": "Testobjekt",
+  "objectTest.sliderX": "Links / rechts",
+  "objectTest.sliderY": "Hinten / vorne",
+  "objectTest.sliderZ": "Boden / Decke"
 }
