@@ -901,5 +901,18 @@
   "objectTest.snapNoGrid": "No Cartesian grid: the backend is not precomputed on one.",
   "help.objectTestSnap": "Place the source on the render backend's Cartesian sampling grid. With position interpolation off the lookup is nearest-cell, so everything inside one cell renders identically — snapping puts the source on the node it would be rounded to anyway, turning \"somewhere near here\" into \"this cell\". Placement only: an orbit keeps moving continuously.",
   "objectTest.admView": "ADM view (square)",
-  "help.objectTestAdmView": "Draw the three faces in ADM coordinates — a unit cube, so every face is square and the origin is at the centre of each — instead of in the room. The room view shows where a source is, with the real extents and the depth warp, matching the 3D scene. The ADM view shows the space the renderer works in, where the axes are symmetric, the sampling grid is evenly spaced and a circle is a circle."
+  "help.objectTestAdmView": "Draw the three faces in ADM coordinates — a unit cube, so every face is square and the origin is at the centre of each — instead of in the room. The room view shows where a source is, with the real extents and the depth warp, matching the 3D scene. The ADM view shows the space the renderer works in, where the axes are symmetric, the sampling grid is evenly spaced and a circle is a circle.",
+  "objectTest.signal": "Test signal",
+  "objectTest.signalPink": "Pink noise",
+  "objectTest.signalBursts": "Noise bursts",
+  "objectTest.signalLow": "Low band (time cues)",
+  "objectTest.signalHigh": "High band (level cues)",
+  "objectTest.signalBand": "8 kHz band (elevation)",
+  "objectTest.signalTone": "Tone (500 Hz)",
+  "objectTest.signalClicks": "Clicks",
+  "objectTest.signalClip": "Audio file",
+  "objectTest.clipChoose": "Choose…",
+  "objectTest.clipNone": "No file chosen",
+  "objectTest.clipTruncated": "truncated",
+  "help.objectTestSignal": "Which stimulus is placed at the source. Continuous pink noise excites everything and makes colouration obvious, but the ear localises onsets, so a steady stream gives it none and small positional errors hide inside a fuzzy image. Bursts restore those onsets and sharpen the image to a point. The low band carries interaural time differences and almost nothing else, the high band carries level and spectral cues — run separately they say which cue is failing. The 8 kHz band is where elevation lives. A tone localises poorly and meters level superbly: any ripple as the source moves is a panning artefact. Clicks expose comb filtering between speakers summing a phantom. All of them are matched in loudness, so switching changes what you judge and not how loud it is."
 }

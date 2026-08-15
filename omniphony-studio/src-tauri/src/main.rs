@@ -236,6 +236,7 @@ fn main() {
             control_speaker_test,
             control_object_test,
             control_object_test_rotation,
+            control_object_test_clip,
             control_speaker_test_idle_feed,
             control_master_gain,
             control_loudness,

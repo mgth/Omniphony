@@ -901,5 +901,18 @@
   "objectTest.snapNoGrid": "Kein kartesisches Raster: das Backend ist nicht darauf vorberechnet.",
   "help.objectTestSnap": "Setzt die Quelle auf das kartesische Abtastraster des Render-Backends. Bei abgeschalteter Positionsinterpolation greift die Suche auf die nächste Zelle zu, alles innerhalb einer Zelle klingt also gleich — das Einrasten setzt die Quelle auf den Knoten, auf den sie ohnehin gerundet würde. Nur beim Platzieren: eine Umlaufbahn bewegt sich weiter stufenlos.",
   "objectTest.admView": "ADM-Ansicht (quadratisch)",
-  "help.objectTestAdmView": "Zeichnet die drei Flächen in ADM-Koordinaten — ein Einheitswürfel, also ist jede Fläche quadratisch und der Ursprung liegt jeweils in der Mitte — statt im Raum. Die Raumansicht zeigt, wo eine Quelle ist, mit den echten Ausdehnungen und der Tiefenverzerrung, passend zur 3D-Ansicht. Die ADM-Ansicht zeigt den Raum, in dem der Renderer arbeitet: symmetrische Achsen, gleichmäßiges Abtastraster, und ein Kreis ist dort ein Kreis."
+  "help.objectTestAdmView": "Zeichnet die drei Flächen in ADM-Koordinaten — ein Einheitswürfel, also ist jede Fläche quadratisch und der Ursprung liegt jeweils in der Mitte — statt im Raum. Die Raumansicht zeigt, wo eine Quelle ist, mit den echten Ausdehnungen und der Tiefenverzerrung, passend zur 3D-Ansicht. Die ADM-Ansicht zeigt den Raum, in dem der Renderer arbeitet: symmetrische Achsen, gleichmäßiges Abtastraster, und ein Kreis ist dort ein Kreis.",
+  "objectTest.signal": "Testsignal",
+  "objectTest.signalPink": "Rosa Rauschen",
+  "objectTest.signalBursts": "Rauschimpulse",
+  "objectTest.signalLow": "Tiefband (Zeitmerkmale)",
+  "objectTest.signalHigh": "Hochband (Pegelmerkmale)",
+  "objectTest.signalBand": "8-kHz-Band (Elevation)",
+  "objectTest.signalTone": "Ton (500 Hz)",
+  "objectTest.signalClicks": "Klicks",
+  "objectTest.signalClip": "Audiodatei",
+  "objectTest.clipChoose": "Auswählen…",
+  "objectTest.clipNone": "Keine Datei gewählt",
+  "objectTest.clipTruncated": "gekürzt",
+  "help.objectTestSignal": "Welcher Reiz an der Quelle liegt. Kontinuierliches rosa Rauschen regt alles an und macht Verfärbungen hörbar, aber das Ohr lokalisiert Einsätze — ein stetiger Strom liefert keine, und ein kleiner Positionsfehler verschwindet in einem unscharfen Bild. Impulse bringen die Einsätze zurück und ziehen das Bild auf einen Punkt zusammen. Das Tiefband trägt interaurale Zeitdifferenzen und sonst kaum etwas, das Hochband Pegel- und Spektralmerkmale — getrennt gehört sagen sie, welches Merkmal versagt. Im 8-kHz-Band wohnt die Elevation. Ein Ton lokalisiert schlecht und misst Pegel hervorragend: jede Welligkeit bei bewegter Quelle ist ein Panning-Artefakt. Klicks zeigen Kammfilterung zwischen Lautsprechern, die ein Phantom summieren. Alle sind lautheitsangeglichen: Umschalten ändert, was man beurteilt, nicht wie laut es ist."
 }

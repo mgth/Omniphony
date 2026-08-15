@@ -901,5 +901,18 @@
   "objectTest.snapNoGrid": "Pas de grille cartésienne : le backend n'est pas précalculé dessus.",
   "help.objectTestSnap": "Place la source sur la grille d'échantillonnage cartésienne du backend de rendu. Avec l'interpolation de position désactivée, la lecture se fait à la cellule la plus proche : tout ce qui est dans une cellule rend à l'identique. L'aimantation pose donc la source sur le nœud auquel elle serait arrondie de toute façon, ce qui transforme « quelque part par là » en « cette cellule ». Placement seulement : une orbite continue de se déplacer sans à-coups.",
   "objectTest.admView": "Vue ADM (carrée)",
-  "help.objectTestAdmView": "Dessine les trois faces en coordonnées ADM — un cube unité, donc chaque face est carrée et l'origine est au centre de chacune — au lieu de la pièce. La vue pièce montre où la source se trouve, avec les étendues réelles et la déformation de profondeur, en accord avec la vue 3D. La vue ADM montre l'espace dans lequel travaille le renderer : axes symétriques, grille d'échantillonnage régulière, et un cercle y est un cercle."
+  "help.objectTestAdmView": "Dessine les trois faces en coordonnées ADM — un cube unité, donc chaque face est carrée et l'origine est au centre de chacune — au lieu de la pièce. La vue pièce montre où la source se trouve, avec les étendues réelles et la déformation de profondeur, en accord avec la vue 3D. La vue ADM montre l'espace dans lequel travaille le renderer : axes symétriques, grille d'échantillonnage régulière, et un cercle y est un cercle.",
+  "objectTest.signal": "Signal de test",
+  "objectTest.signalPink": "Bruit rose",
+  "objectTest.signalBursts": "Salves de bruit",
+  "objectTest.signalLow": "Bande grave (indices temporels)",
+  "objectTest.signalHigh": "Bande aiguë (indices d'intensité)",
+  "objectTest.signalBand": "Bande 8 kHz (élévation)",
+  "objectTest.signalTone": "Sinus (500 Hz)",
+  "objectTest.signalClicks": "Clics",
+  "objectTest.signalClip": "Fichier audio",
+  "objectTest.clipChoose": "Choisir…",
+  "objectTest.clipNone": "Aucun fichier choisi",
+  "objectTest.clipTruncated": "tronqué",
+  "help.objectTestSignal": "Le stimulus placé à la source. Le bruit rose continu excite tout et rend la coloration évidente, mais l'oreille localise les attaques : un flux continu ne lui en donne aucune, et une petite erreur de position se cache dans une image floue. Les salves rendent ces attaques et resserrent l'image sur un point. La bande grave porte les différences interaurales de temps et presque rien d'autre, la bande aiguë porte l'intensité et les indices spectraux — séparées, elles disent quel indice est en défaut. La bande 8 kHz est celle de l'élévation. Un sinus localise mal et mesure le niveau à merveille : la moindre ondulation quand la source bouge est un artefact de panoramique. Les clics révèlent le filtrage en peigne entre enceintes qui somment un fantôme. Tous sont calés à la même sonie : changer de signal change ce qu'on juge, pas le volume."
 }

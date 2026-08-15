@@ -330,6 +330,11 @@ pub enum OscEvent {
     StateRenderBridgeError { value: String },
     #[serde(rename = "state:input_pipe")]
     StateInputPipe { value: String },
+    /// JSON describing the object test's clip, or its refusal. Passed straight
+    /// through: the shape belongs to the renderer, and re-modelling it here
+    /// would be one more place to update when a field is added.
+    #[serde(rename = "state:object_test:clip")]
+    StateObjectTestClip { value: String },
     #[serde(rename = "state:osc:metering")]
     StateOscMetering { enabled: bool },
     #[serde(rename = "state:log_level")]
@@ -946,6 +951,9 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (4, "render") if parts[3] == "bridge_error" => Some(OscEvent::StateRenderBridgeError {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
+        (4, "object_test") if parts[3] == "clip" => Some(OscEvent::StateObjectTestClip {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (3, "input_pipe") => {

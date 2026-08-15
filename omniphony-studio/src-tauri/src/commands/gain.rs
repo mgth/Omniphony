@@ -135,6 +135,7 @@ pub fn control_object_test(
     level: f32,
     size: f32,
     isolation: String,
+    signal: String,
 ) {
     send_control(
         &state.osc_tx,
@@ -150,6 +151,7 @@ pub fn control_object_test(
                 rosc::OscType::Float(level.clamp(0.0, 1.0)),
                 rosc::OscType::Float(size.clamp(0.0, 1.0)),
                 rosc::OscType::String(isolation),
+                rosc::OscType::String(signal),
             ],
         },
     );
@@ -180,6 +182,23 @@ pub fn control_object_test_rotation(
                 rosc::OscType::Float(azimuth),
                 rosc::OscType::Float(elevation),
             ],
+        },
+    );
+}
+
+/// Choose (or clear, with an empty path) the WAV file the `clip` signal plays.
+///
+/// Its own command for the same reason the orbit has one: the placement message
+/// fires on every pointer move, and a file path is a long argument to restate.
+/// The renderer answers on `/omniphony/state/object_test/clip`, including when
+/// it refuses the file.
+#[tauri::command]
+pub fn control_object_test_clip(state: State<SharedState>, path: String) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/object_test/clip".to_string(),
+            value: path,
         },
     );
 }

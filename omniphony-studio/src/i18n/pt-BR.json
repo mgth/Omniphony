@@ -901,5 +901,18 @@
   "objectTest.snapNoGrid": "Sem grade cartesiana: o backend não está pré-calculado em uma.",
   "help.objectTestSnap": "Coloca a fonte na grade de amostragem cartesiana do backend de renderização. Com a interpolação de posição desligada, a consulta usa a célula mais próxima, então tudo dentro de uma célula soa igual: o encaixe põe a fonte no nó para o qual ela seria arredondada de qualquer forma. Apenas no posicionamento: uma órbita continua se movendo continuamente.",
   "objectTest.admView": "Vista ADM (quadrada)",
-  "help.objectTestAdmView": "Desenha as três faces em coordenadas ADM — um cubo unitário, então cada face é quadrada e a origem fica no centro de cada uma — em vez de na sala. A vista de sala mostra onde a fonte está, com as extensões reais e a deformação de profundidade, coincidindo com a vista 3D. A vista ADM mostra o espaço em que o renderizador trabalha: eixos simétricos, grade de amostragem regular, e ali um círculo é um círculo."
+  "help.objectTestAdmView": "Desenha as três faces em coordenadas ADM — um cubo unitário, então cada face é quadrada e a origem fica no centro de cada uma — em vez de na sala. A vista de sala mostra onde a fonte está, com as extensões reais e a deformação de profundidade, coincidindo com a vista 3D. A vista ADM mostra o espaço em que o renderizador trabalha: eixos simétricos, grade de amostragem regular, e ali um círculo é um círculo.",
+  "objectTest.signal": "Sinal de teste",
+  "objectTest.signalPink": "Ruído rosa",
+  "objectTest.signalBursts": "Rajadas de ruído",
+  "objectTest.signalLow": "Banda grave (pistas temporais)",
+  "objectTest.signalHigh": "Banda aguda (pistas de nível)",
+  "objectTest.signalBand": "Banda de 8 kHz (elevação)",
+  "objectTest.signalTone": "Tom (500 Hz)",
+  "objectTest.signalClicks": "Cliques",
+  "objectTest.signalClip": "Arquivo de áudio",
+  "objectTest.clipChoose": "Escolher…",
+  "objectTest.clipNone": "Nenhum arquivo escolhido",
+  "objectTest.clipTruncated": "truncado",
+  "help.objectTestSignal": "Qual estímulo fica na fonte. O ruído rosa contínuo excita tudo e deixa a coloração evidente, mas o ouvido localiza ataques: um fluxo contínuo não oferece nenhum, e um pequeno erro de posição se esconde numa imagem difusa. As rajadas devolvem esses ataques e concentram a imagem num ponto. A banda grave carrega as diferenças interaurais de tempo e pouco mais; a aguda, o nível e as pistas espectrais — separadas, dizem qual pista está falhando. A banda de 8 kHz é onde mora a elevação. Um tom localiza mal e mede nível muito bem: qualquer ondulação enquanto a fonte se move é um artefato de panorâmica. Cliques revelam a filtragem em pente entre alto-falantes que somam um fantasma. Todos estão pareados em volume: trocar de sinal muda o que se julga, não o quão alto está."
 }

@@ -22,7 +22,7 @@ import {
   usesNumericSpatialPlaceholders
 } from './state.js';
 
-import { setObjectTestReportedPosition } from './controls/object-test.js';
+import { setObjectTestReportedPosition, setObjectTestClipState } from './controls/object-test.js';
 import { updateSource, updateSourceLevel, updateSourceGains, updateSourceBandGains, updateSourceSize, updateSourceTag, removeSource } from './sources.js';
 import { syncVirtualBedObjects } from './controls/virtual-bed.js';
 import {
@@ -456,6 +456,19 @@ export function setupTauriBridge() {
   listen('render:abi', ({ payload }) => {
     app.renderAbi = String(payload?.value ?? '').trim() || null;
     updateAboutRendererVersion();
+  });
+
+  listen('state:object_test_clip', ({ payload }) => {
+    // The renderer answers every clip request here, refusals included. Parsed
+    // rather than displayed raw: a bad path should read as a message, not as
+    // JSON.
+    let state = null;
+    try {
+      state = JSON.parse(String(payload?.value ?? '{}'));
+    } catch {
+      state = null;
+    }
+    setObjectTestClipState(state);
   });
 
   listen('render:bridge_error', ({ payload }) => {

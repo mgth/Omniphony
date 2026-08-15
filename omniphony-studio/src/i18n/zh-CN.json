@@ -901,5 +901,18 @@
   "objectTest.snapNoGrid": "没有直角网格：后端未在网格上预计算。",
   "help.objectTestSnap": "将声源放到渲染后端的直角采样网格上。位置插值关闭时查表取最近的单元格，因此同一单元格内的结果完全相同——吸附把声源放到它本就会被取整到的节点上，把“大概在这儿”变成“这个单元格”。仅作用于放置：环绕运动仍保持连续。",
   "objectTest.admView": "ADM 视图（正方形）",
-  "help.objectTestAdmView": "以 ADM 坐标（单位立方体）绘制三个面，而非房间：每个面都是正方形，原点位于各面中心。房间视图显示声源实际所在，带有真实尺度与深度形变，与 3D 视图一致；ADM 视图显示渲染器工作的空间——坐标轴对称、采样网格等距，圆就是圆。"
+  "help.objectTestAdmView": "以 ADM 坐标（单位立方体）绘制三个面，而非房间：每个面都是正方形，原点位于各面中心。房间视图显示声源实际所在，带有真实尺度与深度形变，与 3D 视图一致；ADM 视图显示渲染器工作的空间——坐标轴对称、采样网格等距，圆就是圆。",
+  "objectTest.signal": "测试信号",
+  "objectTest.signalPink": "粉红噪声",
+  "objectTest.signalBursts": "噪声脉冲串",
+  "objectTest.signalLow": "低频带（时间线索）",
+  "objectTest.signalHigh": "高频带（强度线索）",
+  "objectTest.signalBand": "8 kHz 频带（仰角）",
+  "objectTest.signalTone": "纯音（500 Hz）",
+  "objectTest.signalClicks": "咔哒声",
+  "objectTest.signalClip": "音频文件",
+  "objectTest.clipChoose": "选择…",
+  "objectTest.clipNone": "未选择文件",
+  "objectTest.clipTruncated": "已截断",
+  "help.objectTestSignal": "放在声源处的刺激信号。连续粉红噪声激励全频段、最易暴露音色染色，但人耳靠“起始”定位：连续声没有起始，声像因此发散，几度的位置误差就藏在其中。脉冲串把起始还回来，把声像收成一个点。低频带几乎只携带双耳时间差，高频带携带强度与频谱线索——分开听就知道是哪一类线索出了问题。8 kHz 频带是仰角所在。纯音定位很差、测电平极好：声源移动时的任何起伏都是声像平移的伪影。咔哒声能暴露合成幻象时扬声器之间的梳状滤波。所有信号的响度已对齐，切换只改变你在判断什么，而不改变音量。"
 }

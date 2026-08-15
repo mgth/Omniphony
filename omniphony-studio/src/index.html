@@ -609,6 +609,27 @@
             <span data-i18n="objectTest.enable" data-help-i18n="help.objectTestEnable" data-help-anchor=".switch-row">Play test signal</span>
             <input id="objectTestEnableToggle" type="checkbox" />
           </label>
+          <!-- Which stimulus. Continuous noise judges timbre; gated noise judges
+               precision, because the ear localises onsets; a band says which cue
+               is carrying the direction; a tone turns the ear into a level meter
+               along a trajectory. -->
+          <div id="objectTestSignalRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+            <span style="font-size:12px" data-i18n="objectTest.signal" data-help-i18n="help.objectTestSignal">Test signal</span>
+            <select id="objectTestSignalSelect">
+              <option value="pink" data-i18n="objectTest.signalPink">Pink noise</option>
+              <option value="bursts" data-i18n="objectTest.signalBursts">Noise bursts</option>
+              <option value="low" data-i18n="objectTest.signalLow">Low band (time cues)</option>
+              <option value="high" data-i18n="objectTest.signalHigh">High band (level cues)</option>
+              <option value="band" data-i18n="objectTest.signalBand">8 kHz band (elevation)</option>
+              <option value="tone" data-i18n="objectTest.signalTone">Tone (500 Hz)</option>
+              <option value="clicks" data-i18n="objectTest.signalClicks">Clicks</option>
+              <option value="clip" data-i18n="objectTest.signalClip">Audio file</option>
+            </select>
+          </div>
+          <div id="objectTestClipRow" style="display:none;align-items:center;justify-content:space-between;gap:0.5rem">
+            <span id="objectTestClipName" class="option-status-note" style="font-size:10px;opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" data-i18n="objectTest.clipNone">No file chosen</span>
+            <button id="objectTestClipBtn" type="button" class="ui-btn ui-btn-compact" style="white-space:nowrap;user-select:none" data-i18n="objectTest.clipChoose">Choose…</button>
+          </div>
           <div class="editor-row gain-row">
             <label for="objectTestLevelSlider" data-i18n="objectTest.level" data-help-i18n="help.objectTestLevel">Test level</label>
             <!-- Peak dBFS, same contract as the speaker test: the renderer bounds

@@ -901,5 +901,18 @@
   "objectTest.snapNoGrid": "Nessuna griglia cartesiana: il backend non è precalcolato su una.",
   "help.objectTestSnap": "Colloca la sorgente sulla griglia di campionamento cartesiana del backend di rendering. Con l'interpolazione di posizione disattivata la lettura usa la cella più vicina, quindi tutto ciò che sta in una cella suona identico: l'aggancio mette la sorgente sul nodo a cui verrebbe comunque arrotondata. Solo in posizionamento: un'orbita continua a muoversi con continuità.",
   "objectTest.admView": "Vista ADM (quadrata)",
-  "help.objectTestAdmView": "Disegna le tre facce in coordinate ADM — un cubo unitario, quindi ogni faccia è quadrata e l'origine sta al centro di ciascuna — invece che nella stanza. La vista stanza mostra dov'è la sorgente, con le estensioni reali e la deformazione di profondità, in accordo con la vista 3D. La vista ADM mostra lo spazio in cui lavora il renderer: assi simmetrici, griglia di campionamento regolare, e lì un cerchio è un cerchio."
+  "help.objectTestAdmView": "Disegna le tre facce in coordinate ADM — un cubo unitario, quindi ogni faccia è quadrata e l'origine sta al centro di ciascuna — invece che nella stanza. La vista stanza mostra dov'è la sorgente, con le estensioni reali e la deformazione di profondità, in accordo con la vista 3D. La vista ADM mostra lo spazio in cui lavora il renderer: assi simmetrici, griglia di campionamento regolare, e lì un cerchio è un cerchio.",
+  "objectTest.signal": "Segnale di prova",
+  "objectTest.signalPink": "Rumore rosa",
+  "objectTest.signalBursts": "Raffiche di rumore",
+  "objectTest.signalLow": "Banda bassa (indizi temporali)",
+  "objectTest.signalHigh": "Banda alta (indizi di livello)",
+  "objectTest.signalBand": "Banda 8 kHz (elevazione)",
+  "objectTest.signalTone": "Tono (500 Hz)",
+  "objectTest.signalClicks": "Clic",
+  "objectTest.signalClip": "File audio",
+  "objectTest.clipChoose": "Scegli…",
+  "objectTest.clipNone": "Nessun file scelto",
+  "objectTest.clipTruncated": "troncato",
+  "help.objectTestSignal": "Quale stimolo viene messo alla sorgente. Il rumore rosa continuo eccita tutto e rende evidente la colorazione, ma l'orecchio localizza gli attacchi: un flusso continuo non gliene offre e un piccolo errore di posizione si nasconde in un'immagine sfocata. Le raffiche restituiscono quegli attacchi e stringono l'immagine su un punto. La banda bassa porta le differenze interaurali di tempo e poco altro, quella alta il livello e gli indizi spettrali: separate dicono quale indizio non funziona. La banda 8 kHz è dove vive l'elevazione. Un tono localizza male e misura il livello benissimo: ogni ondulazione mentre la sorgente si muove è un artefatto di panning. I clic svelano il filtraggio a pettine fra diffusori che sommano un fantasma. Sono tutti pareggiati in volume: cambiare segnale cambia cosa si giudica, non quanto è forte."
 }

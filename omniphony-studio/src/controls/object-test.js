@@ -22,6 +22,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { app } from '../state.js';
 import {
   normalizedOmniphonyToScenePosition,
@@ -40,6 +41,7 @@ const FEATURE_KEY = 'objectTest.feature.v1';
 const SNAP_KEY = 'objectTest.snap.v1';
 const ADM_VIEW_KEY = 'objectTest.admView.v1';
 const ISOLATION_KEY = 'objectTest.isolation.v1';
+const SIGNAL_KEY = 'objectTest.signal.v1';
 const POSITION_KEY = 'objectTest.position.v1';
 /**
  * Bumped to v2 when the size became a radius instead of a diameter: the same
@@ -242,6 +244,21 @@ function isolation() {
   return load(ISOLATION_KEY, 'test_only');
 }
 
+function signal() {
+  return load(SIGNAL_KEY, 'pink');
+}
+
+/**
+ * What the renderer says about the loaded clip: `{name, seconds, …}`, or
+ * `{error}` when it refused the file, or null when there is none.
+ *
+ * Held here rather than in `app` because nothing else has any use for it, and
+ * it is answered by the renderer rather than chosen by the UI — the file might
+ * be unreadable, at the wrong rate, or longer than the cap, and only the
+ * renderer knows.
+ */
+let clipState = null;
+
 function clamp1(v) {
   return Math.min(1, Math.max(-1, v));
 }
@@ -306,6 +323,7 @@ function send() {
     level: levelLinear(),
     size: 0,
     isolation: isolation(),
+    signal: signal(),
   }).catch(() => { /* renderer gone */ });
 }
 
@@ -1243,6 +1261,25 @@ export function renderObjectTestUI() {
   if (slider && document.activeElement !== slider) slider.value = String(levelDb());
   const iso = el('objectTestIsolationSelect');
   if (iso) iso.value = isolation();
+  const sig = el('objectTestSignalSelect');
+  if (sig) sig.value = signal();
+  const clipRow = el('objectTestClipRow');
+  if (clipRow) clipRow.style.display = signal() === 'clip' ? 'flex' : 'none';
+  const clipName = el('objectTestClipName');
+  if (clipName) {
+    if (clipState?.error) {
+      clipName.textContent = clipState.error;
+      clipName.style.color = 'var(--danger, #ff8080)';
+    } else if (clipState?.name) {
+      const secs = Number(clipState.seconds) || 0;
+      clipName.textContent = `${clipState.name} · ${secs.toFixed(1)} s`
+        + (clipState.truncated ? ` · ${t('objectTest.clipTruncated')}` : '');
+      clipName.style.color = '';
+    } else {
+      clipName.textContent = t('objectTest.clipNone');
+      clipName.style.color = '';
+    }
+  }
   renderRotationUI();
   renderCoords();
 }
@@ -1259,6 +1296,18 @@ export function renderObjectTestUI() {
  * outlive the switch that invented it — least of all in a list where every
  * other entry came from the stream.
  */
+/**
+ * The renderer's answer to a clip request — success, refusal, or cleared.
+ *
+ * A refusal is shown rather than swallowed: the file is read on the renderer,
+ * which may be on another machine, so "nothing happened" would otherwise be the
+ * only feedback for a path the UI cannot check itself.
+ */
+export function setObjectTestClipState(state) {
+  clipState = state && Object.keys(state).length ? state : null;
+  renderObjectTestUI();
+}
+
 export function setObjectTestFeatureOn(on) {
   const next = Boolean(on);
   if (next === featureOn) return;
@@ -1363,6 +1412,36 @@ export function setupObjectTestListeners() {
     iso.addEventListener('change', () => {
       save(ISOLATION_KEY, iso.value);
       if (enabled) send();
+    });
+  }
+
+  const sig = el('objectTestSignalSelect');
+  if (sig) {
+    sig.addEventListener('change', () => {
+      save(SIGNAL_KEY, sig.value);
+      renderObjectTestUI();
+      // Changing the stimulus restarts it, deliberately — so this is sent even
+      // mid-test, and the renderer starts the new signal from its beginning.
+      if (enabled) send();
+    });
+  }
+
+  const clipBtn = el('objectTestClipBtn');
+  if (clipBtn) {
+    clipBtn.addEventListener('click', async () => {
+      let picked = null;
+      try {
+        picked = await openFileDialog({
+          multiple: false,
+          filters: [{ name: 'WAV', extensions: ['wav'] }],
+          title: t('objectTest.clipChoose'),
+        });
+      } catch {
+        return; // dialog unavailable (browser preview) — nothing to report
+      }
+      if (!picked) return;
+      const path = Array.isArray(picked) ? picked[0] : picked;
+      await invoke('control_object_test_clip', { path }).catch(() => {});
     });
   }
 
