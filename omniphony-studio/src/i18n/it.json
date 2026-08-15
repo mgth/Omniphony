@@ -894,5 +894,7 @@
   "help.objectTestPeriod": "Secondi per un giro completo. Lento per seguire da vicino il panning, veloce per sentire il cerchio come una traiettoria.",
   "objectTest.radius": "Raggio",
   "objectTest.radiusOff": "spento",
-  "help.objectTestRadius": "Raggio del cerchio, in unità di stanza. Zero ferma la rotazione. La traccia è marcata alle distanze proprie della stanza: dal centro, √2 raggiunge uno spigolo verticale e √3 un angolo; i loro doppi sono la stessa portata dalla parete opposta. Il valore si aggancia a una tacca quando le si avvicina. Un cerchio che uscirebbe dalla stanza viene tagliato alle pareti e diventa una D: la sorgente percorre la parete in linea retta per una parte del giro invece di attraversarla in arco, ma non si ferma mai."
+  "help.objectTestRadius": "Raggio del cerchio, in unità di stanza. Zero ferma la rotazione. La traccia è marcata alle distanze proprie della stanza: dal centro, √2 raggiunge uno spigolo verticale e √3 un angolo; i loro doppi sono la stessa portata dalla parete opposta. Il valore si aggancia a una tacca quando le si avvicina. Un cerchio che uscirebbe dalla stanza viene tagliato alle pareti e diventa una D: la sorgente percorre la parete in linea retta per una parte del giro invece di attraversarla in arco, ma non si ferma mai.",
+  "objectTest.feature": "Iniezione di oggetto",
+  "help.objectTestFeature": "Aggiunge una sorgente di test all'elenco degli oggetti. Si comporta come qualsiasi altro oggetto — selezionabile, con misuratore, disegnata nella stanza — ma la inventa Studio anziché portarla il flusso. Selezionala per posizionarla e riprodurre un segnale di test da dove l'hai messa."
 }

@@ -5,7 +5,6 @@
 import { app } from './state.js';
 import { t } from './i18n.js';
 import { emitOverlayLayoutChanged } from './ui/layout/overlay-layout-state.js';
-import { onObjectTestPanelToggled } from './controls/object-test.js';
 
 // ---------------------------------------------------------------------------
 // DOM refs (queried once at module load)
@@ -40,10 +39,6 @@ function getTwoDSourcesPanelRootEl() { return document.getElementById('twoDSourc
 function getTwoDSourcesBodyEl() { return document.getElementById('twoDSourcesBody'); }
 function getTwoDSourcesSummaryEl() { return document.getElementById('twoDSourcesSummary'); }
 function getTwoDSourcesToggleBtnEl() { return document.getElementById('twoDSourcesToggleBtn'); }
-function getObjectTestPanelRootEl() { return document.getElementById('objectTestPanelRoot'); }
-function getObjectTestBodyEl() { return document.getElementById('objectTestBody'); }
-function getObjectTestSummaryEl() { return document.getElementById('objectTestSummary'); }
-function getObjectTestToggleBtnEl() { return document.getElementById('objectTestToggleBtn'); }
 function getAudioOutputSectionContentEl() { return document.getElementById('audioOutputSectionContent'); }
 function getAudioOutputSummaryEl() { return document.getElementById('audioOutputSummary'); }
 function getAudioOutputSectionToggleBtnEl() { return document.getElementById('audioOutputSectionToggleBtn'); }
@@ -266,30 +261,6 @@ export function setTwoDSourcesSectionOpen(open) {
     toggleBtnEl.textContent = app.twoDSourcesSectionOpen ? '▾' : '▸';
   }
   emitOverlayLayoutChanged('twoD-sources-toggle');
-}
-
-export function setObjectTestSectionOpen(open) {
-  const rootEl = getObjectTestPanelRootEl();
-  const bodyEl = getObjectTestBodyEl();
-  const summaryEl = getObjectTestSummaryEl();
-  const toggleBtnEl = getObjectTestToggleBtnEl();
-  app.objectTestSectionOpen = Boolean(open);
-  if (rootEl) {
-    rootEl.classList.toggle('section-collapsed', !app.objectTestSectionOpen);
-  }
-  if (bodyEl) {
-    bodyEl.style.display = app.objectTestSectionOpen ? 'grid' : 'none';
-  }
-  if (summaryEl) {
-    summaryEl.style.display = app.objectTestSectionOpen ? 'none' : 'block';
-  }
-  if (toggleBtnEl) {
-    toggleBtnEl.textContent = app.objectTestSectionOpen ? '▾' : '▸';
-  }
-  // The panel owns the faces and the idle-feed request, and must stop the test
-  // when it closes: noise from a panel the user cannot see is a support ticket.
-  onObjectTestPanelToggled(app.objectTestSectionOpen);
-  emitOverlayLayoutChanged('object-test-toggle');
 }
 
 export function setAudioOutputSectionOpen(open) {

@@ -117,6 +117,7 @@ import {
   arcLabelAngles
 } from './scene/gizmos.js';
 
+import { renderObjectTestEditor } from './controls/object-test.js';
 import { renderChannelEditor, canonicalChannelName, canonicalChannelOrder, channelPlacement } from './controls/virtual-bed.js';
 import { t, tf } from './i18n.js';
 import { pushLog } from './log.js';
@@ -546,6 +547,9 @@ export function updateObjectControlsUI() {
     updateSpeakerBandBars(entry, Number(id));
   });
   renderChannelEditor();
+  // Shares the pinned slot with the channel editor, so it decides at the same
+  // moment: one of them takes it, or neither.
+  renderObjectTestEditor();
 }
 
 export function updateObjectDominantSpeakerUI(id) {

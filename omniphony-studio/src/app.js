@@ -36,7 +36,6 @@ import {
   updateSelectedObjectFaceShadows
 } from './speakers.js';
 import { decayTrails } from './trails.js';
-import { tickObjectTestMarker } from './scene/object-test-marker.js';
 import { decayMeters } from './speakers.js';
 
 // ── Controls ────────────────────────────────────────────────────────────────
@@ -64,6 +63,7 @@ import { initMpvOverlay } from './mpvOverlay.js';
 import { initSceneEffectsBar } from './controls/scene-effects-bar.js';
 import { setupTauriBridge } from './tauri-bridge.js';
 import { setupUIListeners } from './setup-listeners.js';
+import { objectTestBoot } from './controls/object-test.js';
 import { setupPointerListeners } from './picking.js';
 import { setupNumericWheelEditing } from './input.js';
 import { flushUI, flushCallbacks } from './flush.js';
@@ -266,6 +266,10 @@ setupVisualRecovery();
 // Reconnect to mpv overlay if the user had it enabled in a previous session.
 initMpvOverlay();
 
+// Object injection: apply the remembered switch now that the scene and the
+// source registry exist. It creates a source, so it cannot run from setup.
+objectTestBoot();
+
 // Floating quick-toggle bar over the 3D view (mirrors the display checkboxes).
 // After setupUIListeners() so the dispatched `change` reaches their handlers.
 initSceneEffectsBar();
@@ -338,9 +342,6 @@ function animate() {
   updateSelectedObjectFaceShadows();
   const now = performance.now();
   decayTrails(now);
-  // The test source is not in the trail registry, so it expires its own wake
-  // and billboards its own outline here.
-  tickObjectTestMarker(now);
   decayMeters(now);
   refreshObjectEnergyVolume(now);
   refreshSpeakerSoloVolume(now);

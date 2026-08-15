@@ -25,14 +25,21 @@ import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
 import { t, onLocaleChange, i18nState } from '../i18n.js';
 import { setIdleFeedRequest } from './test-idle-feed.js';
-import {
-  updateObjectTestMarker,
-  refreshObjectTestMarkerProjection,
-  relabelObjectTestMarker,
-  clearObjectTestTrail
-} from '../scene/object-test-marker.js';
+import { updateSource, removeSource, setSelectedSource } from '../sources.js';
+
+/**
+ * The injected object's id in the source registry.
+ *
+ * Deliberately not a number. The renderer's objects are numbered, the stale
+ * purge in `tauri-bridge` only sweeps integer ids, and the objects list sorts
+ * non-numeric ids last — so a name keeps this one out of the renderer's
+ * numbering, safe from the sweep, and at the end of the list where an invented
+ * source belongs.
+ */
+export const OBJECT_TEST_SOURCE_ID = 'injection';
 
 const LEVEL_KEY = 'objectTest.levelDb.v1';
+const FEATURE_KEY = 'objectTest.feature.v1';
 const ISOLATION_KEY = 'objectTest.isolation.v1';
 const POSITION_KEY = 'objectTest.position.v1';
 /**
@@ -101,6 +108,9 @@ const FACES = [
   },
 ];
 
+/** Set from storage at setup, applied once the scene can take it. */
+let bootFeatureOn = false;
+
 /** Current source position, ADM Cartesian. Front-centre at ear level. */
 let position = [0, 1, 0];
 /**
@@ -112,18 +122,15 @@ let enabled = false;
 /** Guards against redrawing faces when only the marker moved. */
 let builtRatioKey = null;
 /**
- * Whether the panel is open. The 3D marker follows this rather than `enabled`:
- * the source is worth seeing in the room while you are placing it, not only
- * once it is making noise.
+ * Whether the injected object exists at all. Separate from `enabled`, which is
+ * whether it is making noise: the object is worth having in the room — visible,
+ * selectable, placeable — before anything is heard.
  */
-let panelOpen = false;
+let featureOn = false;
 
 /**
  * Where the renderer says the source actually is, or null when it has not said.
- *
- * Only the renderer knows: it owns the orbit phase. The 2D faces deliberately
- * keep showing the *placed* position instead — those markers are the handle you
- * drag, and a handle that runs away from the pointer is not a handle.
+ * Only the renderer knows: it owns the orbit phase.
  */
 let reportedPosition = null;
 
@@ -131,20 +138,32 @@ let reportedPosition = null;
 export function setObjectTestReportedPosition(p) {
   if (!Array.isArray(p) || p.length !== 3 || !p.every(Number.isFinite)) return;
   reportedPosition = p;
-  syncMarker();
+  pushSource();
 }
 
-/** Mirror the current state onto the 3D scene marker. */
-function syncMarker() {
-  updateObjectTestMarker({
-    // The scene shows where the source *is*; the faces show where it was put.
-    // While a test runs those differ by the orbit, and the 3D view is the one
-    // that can afford to move.
-    position,
-    reported: enabled ? reportedPosition : null,
-    visible: panelOpen || enabled,
-    playing: enabled,
-    orbit: orbitPath(128),
+/**
+ * Publish the injected object into the source registry, so everything that
+ * draws, lists, meters and selects an object handles this one too.
+ *
+ * Nothing here draws anything. That is the point of making it a real source:
+ * the sphere, the outline, the trail, the label, the list row and the level
+ * meter are the ones every other object gets, and they follow the user's
+ * display settings without this module knowing they exist.
+ *
+ * The scene shows where the source *is* — the renderer's reported position
+ * while it plays, the placed one otherwise. The 2D faces keep showing the
+ * placed position regardless: those markers are the handle you drag, and a
+ * handle that runs away from the pointer is not a handle.
+ */
+function pushSource() {
+  if (!featureOn) return;
+  const at = enabled && reportedPosition ? reportedPosition : position;
+  updateSource(OBJECT_TEST_SOURCE_ID, {
+    x: at[0],
+    y: at[1],
+    z: at[2],
+    coordMode: 'cartesian',
+    name: t('objectTest.markerLabel'),
   });
 }
 
@@ -353,7 +372,7 @@ export function stopObjectTest({ force = false } = {}) {
   reportedPosition = null;
   send();
   renderObjectTestUI();
-  syncMarker();
+  pushSource();
 }
 
 // ── Face drawing ─────────────────────────────────────────────────────────────
@@ -839,7 +858,7 @@ function setPosition(next) {
   if (!changed) return;
   save(POSITION_KEY, JSON.stringify(position));
   updateMarkers();
-  syncMarker();
+  pushSource();
   renderCoords();
   // While running, every move goes straight out: the renderer ramps to it, so
   // this is a slide rather than a restart, and holding back would only add lag.
@@ -885,11 +904,13 @@ function applyRotation() {
   save(ROTATION_KEY, JSON.stringify(rotation));
   renderRotationUI();
   updateMarkers();
-  syncMarker();
+  pushSource();
   sendRotation();
 }
 
 export function renderObjectTestUI() {
+  const feature = el('objectTestFeatureToggle');
+  if (feature) feature.checked = featureOn;
   const toggle = el('objectTestEnableToggle');
   if (toggle) toggle.checked = enabled;
   const box = el('objectTestLevelBox');
@@ -903,42 +924,67 @@ export function renderObjectTestUI() {
 }
 
 /**
- * Called when the panel opens or closes, and when the room proportions change.
- * Opening arms the idle feed so the chain is warm before the switch is flipped;
- * closing stops the test, because a panel the user cannot see must not be
- * leaving noise in the room.
+ * Turn object injection on or off.
+ *
+ * On: the object joins the source registry, so it appears at the end of the
+ * objects list and can be selected like any other; the idle feed is armed so a
+ * test started from silence is heard at once; and it is selected, since making
+ * something appear that the user then has to hunt for is a poor trade.
+ *
+ * Off: the test stops and the object is removed. An invented source must not
+ * outlive the switch that invented it — least of all in a list where every
+ * other entry came from the stream.
  */
-export function onObjectTestPanelToggled(open) {
-  panelOpen = Boolean(open);
-  setIdleFeedRequest('object-test', panelOpen);
-  if (panelOpen) {
-    buildFaces();
-    renderObjectTestUI();
+export function setObjectTestFeatureOn(on) {
+  const next = Boolean(on);
+  if (next === featureOn) return;
+  featureOn = next;
+  save(FEATURE_KEY, featureOn ? '1' : '0');
+  setIdleFeedRequest('object-test', featureOn);
+  if (featureOn) {
+    pushSource();
     // The renderer starts with no orbit; a restored one has to be stated.
     sendRotation();
+    setSelectedSource(OBJECT_TEST_SOURCE_ID);
   } else {
-    if (enabled) {
-      // stopObjectTest() re-syncs the marker, which then hides with the panel.
-      stopObjectTest();
-    }
-    // Drop the wake with the panel: reopening should start from a clean room,
-    // not from the path of a session the user has already left behind.
-    clearObjectTestTrail();
+    if (enabled) stopObjectTest();
+    reportedPosition = null;
+    removeSource(OBJECT_TEST_SOURCE_ID);
+    if (app.selectedSourceId === OBJECT_TEST_SOURCE_ID) setSelectedSource(null);
   }
-  syncMarker();
+  renderObjectTestUI();
+  renderObjectTestEditor();
+}
+
+export function isObjectTestFeatureOn() {
+  return featureOn;
+}
+
+/**
+ * Show the injection editor exactly when its object is the selected one.
+ *
+ * It shares the pinned slot with the channel editor, so the two must not both
+ * claim it: this one takes it when the injected object is selected, and the
+ * channel editor already stands down for any id it does not recognise as a bed
+ * channel — which this id is not.
+ */
+export function renderObjectTestEditor() {
+  const section = el('objectTestEditSection');
+  if (!section) return;
+  const showing = featureOn && app.selectedSourceId === OBJECT_TEST_SOURCE_ID;
+  section.style.display = showing ? '' : 'none';
+  if (showing) {
+    buildFaces();
+    renderObjectTestUI();
+  }
 }
 
 /** Room proportions changed: the faces' aspect ratios are now wrong. */
 export function onRoomRatioChanged() {
-  // The ADM position is unchanged, but where it lands in the room is not — so
-  // the 3D marker re-projects whether or not the panel is open.
-  refreshObjectTestMarkerProjection();
-  if (!app.objectTestSectionOpen) {
-    builtRatioKey = null; // rebuild lazily on next open
-    return;
-  }
+  // The faces are drawn at the room's proportions, so they are stale; the
+  // object itself re-projects on its own, being an ordinary source now.
   builtRatioKey = null;
-  buildFaces();
+  if (el('objectTestEditSection')?.style.display !== 'none') buildFaces();
 }
 
 export function setupObjectTestListeners() {
@@ -968,9 +1014,14 @@ export function setupObjectTestListeners() {
       enabled = toggle.checked;
       send();
       renderObjectTestUI();
-      syncMarker();
+      pushSource();
     });
   }
+
+  // Restore the switch, but do not act on it here: the source registry and the
+  // 3D scene are not ready this early in boot. `objectTestBoot()` does it once
+  // they are.
+  bootFeatureOn = load(FEATURE_KEY, '0') === '1';
 
   const slider = el('objectTestLevelSlider');
   if (slider) {
@@ -987,6 +1038,11 @@ export function setupObjectTestListeners() {
       save(ISOLATION_KEY, iso.value);
       if (enabled) send();
     });
+  }
+
+  const feature = el('objectTestFeatureToggle');
+  if (feature) {
+    feature.addEventListener('change', () => setObjectTestFeatureOn(feature.checked));
   }
 
   const axisSel = el('objectTestRotationAxis');
@@ -1021,19 +1077,26 @@ export function setupObjectTestListeners() {
     });
   }
 
-  // The scene label is drawn into a canvas texture, so it does not follow
-  // `data-i18n` like the panel's markup does and has to be redrawn by hand.
+  // The faces' captions are built in JS, so they do not follow `data-i18n`;
+  // neither does the object's name in the list, which is pushed as source data.
   onLocaleChange(() => {
-    relabelObjectTestMarker();
-    // The faces' end captions ("left → right") are built in JS too.
-    if (panelOpen) {
-      builtRatioKey = null;
-      buildFaces();
-    }
+    builtRatioKey = null;
+    if (featureOn) pushSource();
+    renderObjectTestEditor();
   });
 
   // Closing the window must not leave a source droning in the room.
   window.addEventListener('beforeunload', () => stopObjectTest({ force: true }));
 
   renderObjectTestUI();
+}
+
+/**
+ * Apply the remembered switch state, once the scene and the source registry
+ * exist. Called from the boot sequence rather than from `setup`, which runs
+ * before either is ready.
+ */
+export function objectTestBoot() {
+  if (bootFeatureOn) setObjectTestFeatureOn(true);
+  renderObjectTestEditor();
 }

@@ -187,97 +187,6 @@
           </div>
         </div>
       </div>
-      <!-- Object injection: place a test source by clicking the room's three
-           faces and hear where the renderer puts it. Its own collapsible
-           section rather than a tab beside the speaker editor, because it is not
-           about a speaker: the speaker tabs disable themselves when no speaker
-           is selected, and object placement must work regardless. -->
-      <div id="objectTestPanelRoot" class="info-section section-collapsed">
-        <div class="panel-header">
-          <div class="panel-header-main">
-            <div class="panel-title-wrap">
-              <div class="info-title panel-title" data-i18n="section.objectTest" data-help-i18n="help.objectTest">Object injection</div>
-              <div id="objectTestSummary" class="panel-summary" style="display:block;flex:0 1 auto">—</div>
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:0.35rem">
-            <button id="objectTestToggleBtn" type="button" class="panel-toggle-btn" data-i18n-title="section.objectTest" title="Object injection">▸</button>
-          </div>
-        </div>
-        <div id="objectTestBody" style="display:none;gap:0.35rem;padding:0.1rem 0.1rem 0.2rem">
-          <div class="option-status-note" style="font-size:10px;opacity:0.8" data-i18n="objectTest.hint">Click or drag on a face to place the source.</div>
-          <!-- Three orthogonal projections of the room box. Each face sets the
-               two coordinates it shows and leaves the third alone, so the marker
-               on the other two faces moves with it. Aspect ratios follow the
-               live room proportions. The SVGs are sized by the panel width and
-               capped in height, so expanding this section scrolls inside the
-               overlay instead of resizing it (and the 3D viewport with it). -->
-          <div id="objectTestFaces" style="display:flex;flex-direction:column;gap:0.4rem"></div>
-          <div id="objectTestCoords" class="option-status-note" style="font-size:10px;opacity:0.85;font-variant-numeric:tabular-nums"></div>
-          <label id="objectTestEnableRow" class="switch-row" style="font-size:13px;cursor:pointer">
-            <span data-i18n="objectTest.enable" data-help-i18n="help.objectTestEnable" data-help-anchor=".switch-row">Play test signal</span>
-            <input id="objectTestEnableToggle" type="checkbox" />
-          </label>
-          <div class="editor-row gain-row">
-            <label for="objectTestLevelSlider" data-i18n="objectTest.level" data-help-i18n="help.objectTestLevel">Test level</label>
-            <!-- Peak dBFS, same contract as the speaker test: the renderer bounds
-                 the test to this peak, so max=0 is full scale and still cannot
-                 clip on its own. -->
-            <input id="objectTestLevelSlider" class="gain-slider" type="range" min="-60" max="0" step="1" value="-8" />
-            <div id="objectTestLevelBox" class="gain-box">-8 dBFS</div>
-          </div>
-          <!-- Orbit. The renderer advances the phase, so these set the shape of
-               the motion and never its instantaneous angle. -->
-          <div id="objectTestRotationRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
-            <span style="font-size:12px" data-i18n="objectTest.rotationAxis" data-help-i18n="help.objectTestRotation">Rotation axis</span>
-            <select id="objectTestRotationAxis">
-              <option value="z" data-i18n="objectTest.axisZ">Horizontal (about Z)</option>
-              <option value="x" data-i18n="objectTest.axisX">About X</option>
-              <option value="y" data-i18n="objectTest.axisY">About Y</option>
-              <option value="free" data-i18n="objectTest.axisFree">Free axis</option>
-            </select>
-          </div>
-          <div class="editor-row gain-row">
-            <label for="objectTestRadiusSlider" data-i18n="objectTest.radius" data-help-i18n="help.objectTestRadius">Radius</label>
-            <!-- 0 stops the orbit, which is why there is no separate switch. The
-                 track is marked at the room's own distances — see
-                 .object-test-radius-slider in the stylesheet. -->
-            <span class="object-test-radius-wrap"><span class="object-test-radius-ticks" aria-hidden="true"></span><input id="objectTestRadiusSlider" class="gain-slider object-test-radius-slider" type="range" min="0" max="4" step="0.01" value="0" /></span>
-            <div id="objectTestRadiusBox" class="gain-box">off</div>
-          </div>
-          <div class="editor-row gain-row">
-            <label for="objectTestPeriodSlider" data-i18n="objectTest.period" data-help-i18n="help.objectTestPeriod">Turn time</label>
-            <!-- Position along a log scale, not seconds: a period is chosen by
-                 ratio, so equal travel should buy equal ratio. See
-                 sliderToPeriod() in controls/object-test.js. -->
-            <input id="objectTestPeriodSlider" class="gain-slider" type="range" min="0" max="1000" step="1" value="508" />
-            <div id="objectTestPeriodBox" class="gain-box">4.0 s</div>
-          </div>
-          <!-- Only meaningful for the free axis, so hidden until it is chosen. -->
-          <div id="objectTestFreeAxisRows" style="display:none;flex-direction:column;gap:0.35rem">
-            <div class="editor-row gain-row">
-              <label for="objectTestAzimuthSlider" data-i18n="objectTest.axisAzimuth">Axis azimuth</label>
-              <input id="objectTestAzimuthSlider" class="gain-slider" type="range" min="-180" max="180" step="1" value="0" />
-              <div id="objectTestAzimuthBox" class="gain-box">0°</div>
-            </div>
-            <div class="editor-row gain-row">
-              <label for="objectTestElevationSlider" data-i18n="objectTest.axisElevation">Axis elevation</label>
-              <input id="objectTestElevationSlider" class="gain-slider" type="range" min="-90" max="90" step="1" value="0" />
-              <div id="objectTestElevationBox" class="gain-box">0°</div>
-            </div>
-          </div>
-          <div id="objectTestIsolationRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
-            <span style="font-size:12px" data-i18n="objectTest.isolation" data-help-i18n="help.objectTestIsolation">Programme</span>
-            <select id="objectTestIsolationSelect">
-              <option value="test_only" data-i18n="objectTest.isolationTestOnly">Test only</option>
-              <option value="with_programme" data-i18n="objectTest.isolationWithProgramme">With programme</option>
-            </select>
-          </div>
-          <div id="objectTestActions" style="display:flex;justify-content:flex-end;margin-top:0.25rem">
-            <button id="objectTestCentreBtn" type="button" class="ui-btn ui-btn-compact" style="white-space:nowrap;user-select:none" data-i18n="objectTest.centre">Centre the source</button>
-          </div>
-        </div>
-      </div>
       <div id="roomGeometryPanelRoot" class="info-section section-collapsed">
       <div class="panel-header">
         <div class="panel-header-main">
@@ -660,9 +569,96 @@
             <option value="200">200 Hz</option>
           </select>
         </div>
+        <!-- Object injection: a source Studio invents, listed with the real
+             ones. The switch creates it; playing it is a separate control in
+             its editor, so a position can be aimed in silence. -->
+        <label id="objectTestFeatureRow" class="switch-row" style="font-size:13px;cursor:pointer;margin-bottom:0.35rem">
+          <span data-i18n="objectTest.feature" data-help-i18n="help.objectTestFeature" data-help-anchor=".switch-row">Object injection</span>
+          <input id="objectTestFeatureToggle" type="checkbox" />
+        </label>
         <div id="objectsList" class="info-list">No objects.</div>
       </div>
       </div>
+      </div>
+      <!-- Object-injection editor, pinned below the left-overlay scroll in the
+           same slot as the channel editor. Shown when the injected object is
+           selected in the list, exactly as the channel editor is for a bed
+           channel: one slot, one selection, mutually exclusive. -->
+      <div class="info-section" id="objectTestEditSection" style="display:none">
+        <div class="info-title" data-i18n="section.objectTest" data-help-i18n="help.objectTest">Object injection</div>
+        <div id="objectTestBody" class="editor-body">
+          <div class="option-status-note" style="font-size:10px;opacity:0.8" data-i18n="objectTest.hint">Click or drag on a face to place the source.</div>
+          <!-- Three orthogonal projections of the room box. Each face sets the
+               two coordinates it shows and leaves the third alone, so the marker
+               on the other two faces moves with it. Aspect ratios follow the
+               live room proportions. The SVGs are sized by the panel width and
+               capped in height, so expanding this section scrolls inside the
+               overlay instead of resizing it (and the 3D viewport with it). -->
+          <div id="objectTestFaces" style="display:flex;flex-direction:column;gap:0.4rem"></div>
+          <div id="objectTestCoords" class="option-status-note" style="font-size:10px;opacity:0.85;font-variant-numeric:tabular-nums"></div>
+          <label id="objectTestEnableRow" class="switch-row" style="font-size:13px;cursor:pointer">
+            <span data-i18n="objectTest.enable" data-help-i18n="help.objectTestEnable" data-help-anchor=".switch-row">Play test signal</span>
+            <input id="objectTestEnableToggle" type="checkbox" />
+          </label>
+          <div class="editor-row gain-row">
+            <label for="objectTestLevelSlider" data-i18n="objectTest.level" data-help-i18n="help.objectTestLevel">Test level</label>
+            <!-- Peak dBFS, same contract as the speaker test: the renderer bounds
+                 the test to this peak, so max=0 is full scale and still cannot
+                 clip on its own. -->
+            <input id="objectTestLevelSlider" class="gain-slider" type="range" min="-60" max="0" step="1" value="-8" />
+            <div id="objectTestLevelBox" class="gain-box">-8 dBFS</div>
+          </div>
+          <!-- Orbit. The renderer advances the phase, so these set the shape of
+               the motion and never its instantaneous angle. -->
+          <div id="objectTestRotationRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+            <span style="font-size:12px" data-i18n="objectTest.rotationAxis" data-help-i18n="help.objectTestRotation">Rotation axis</span>
+            <select id="objectTestRotationAxis">
+              <option value="z" data-i18n="objectTest.axisZ">Horizontal (about Z)</option>
+              <option value="x" data-i18n="objectTest.axisX">About X</option>
+              <option value="y" data-i18n="objectTest.axisY">About Y</option>
+              <option value="free" data-i18n="objectTest.axisFree">Free axis</option>
+            </select>
+          </div>
+          <div class="editor-row gain-row">
+            <label for="objectTestRadiusSlider" data-i18n="objectTest.radius" data-help-i18n="help.objectTestRadius">Radius</label>
+            <!-- 0 stops the orbit, which is why there is no separate switch. The
+                 track is marked at the room's own distances — see
+                 .object-test-radius-slider in the stylesheet. -->
+            <span class="object-test-radius-wrap"><span class="object-test-radius-ticks" aria-hidden="true"></span><input id="objectTestRadiusSlider" class="gain-slider object-test-radius-slider" type="range" min="0" max="4" step="0.01" value="0" /></span>
+            <div id="objectTestRadiusBox" class="gain-box">off</div>
+          </div>
+          <div class="editor-row gain-row">
+            <label for="objectTestPeriodSlider" data-i18n="objectTest.period" data-help-i18n="help.objectTestPeriod">Turn time</label>
+            <!-- Position along a log scale, not seconds: a period is chosen by
+                 ratio, so equal travel should buy equal ratio. See
+                 sliderToPeriod() in controls/object-test.js. -->
+            <input id="objectTestPeriodSlider" class="gain-slider" type="range" min="0" max="1000" step="1" value="508" />
+            <div id="objectTestPeriodBox" class="gain-box">4.0 s</div>
+          </div>
+          <!-- Only meaningful for the free axis, so hidden until it is chosen. -->
+          <div id="objectTestFreeAxisRows" style="display:none;flex-direction:column;gap:0.35rem">
+            <div class="editor-row gain-row">
+              <label for="objectTestAzimuthSlider" data-i18n="objectTest.axisAzimuth">Axis azimuth</label>
+              <input id="objectTestAzimuthSlider" class="gain-slider" type="range" min="-180" max="180" step="1" value="0" />
+              <div id="objectTestAzimuthBox" class="gain-box">0°</div>
+            </div>
+            <div class="editor-row gain-row">
+              <label for="objectTestElevationSlider" data-i18n="objectTest.axisElevation">Axis elevation</label>
+              <input id="objectTestElevationSlider" class="gain-slider" type="range" min="-90" max="90" step="1" value="0" />
+              <div id="objectTestElevationBox" class="gain-box">0°</div>
+            </div>
+          </div>
+          <div id="objectTestIsolationRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+            <span style="font-size:12px" data-i18n="objectTest.isolation" data-help-i18n="help.objectTestIsolation">Programme</span>
+            <select id="objectTestIsolationSelect">
+              <option value="test_only" data-i18n="objectTest.isolationTestOnly">Test only</option>
+              <option value="with_programme" data-i18n="objectTest.isolationWithProgramme">With programme</option>
+            </select>
+          </div>
+          <div id="objectTestActions" style="display:flex;justify-content:flex-end;margin-top:0.25rem">
+            <button id="objectTestCentreBtn" type="button" class="ui-btn ui-btn-compact" style="white-space:nowrap;user-select:none" data-i18n="objectTest.centre">Centre the source</button>
+          </div>
+        </div>
       </div>
       <!-- Channel editor pinned below the left-overlay scroll, like the speaker
            editor: the panels above keep scrolling while this stays visible. -->

@@ -15,6 +15,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { OBJECT_TEST_SOURCE_ID } from './object-test.js';
 import { app, sourceDirectSpeakerIndices, sourceMeshes, sourceNames } from '../state.js';
 import { t } from '../i18n.js';
 import { updateSource, removeSource } from '../sources.js';
@@ -427,6 +428,11 @@ function streamActive() {
 // active; the engine re-sends them when rendering resumes.
 function removeLiveObjects() {
   for (const id of [...sourceMeshes.keys()]) {
+    // The injected test source is neither live nor a bed channel: Studio
+    // invented it and only its own switch may remove it. Without this the
+    // at-rest sweep would delete it the moment the stream stopped — which is
+    // exactly when the injection is most likely to be in use.
+    if (String(id) === OBJECT_TEST_SOURCE_ID) continue;
     if (!syntheticIds.has(String(id))) {
       removeSource(id);
     }
