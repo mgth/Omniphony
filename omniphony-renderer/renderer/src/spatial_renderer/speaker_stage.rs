@@ -801,11 +801,6 @@ impl SpeakerRenderStage {
         Ok(())
     }
 
-    /// Output stage: per-speaker gains (live gain/mute × `total_gain`), delay
-    /// lines, and peak detection over the interleaved buffer. Returns
-    /// `(peak_sample, peak_speaker_idx)`; the caller owns clip reporting and
-    /// auto-gain (a virtual stage must never fold reductions into the shared
-    /// master gain).
     /// Longest a test may run without the client refreshing it. A client that
     /// dies mid-test must not leave a speaker making noise indefinitely.
     const TEST_MAX_SECONDS: u64 = 120;
@@ -1089,6 +1084,11 @@ impl SpeakerRenderStage {
         true
     }
 
+    /// Output stage: per-speaker gains (live gain/mute × `total_gain`), delay
+    /// lines, and peak detection over the interleaved buffer. Returns
+    /// `(peak_sample, peak_speaker_idx)`; the caller owns clip reporting and
+    /// auto-gain (a virtual stage must never fold reductions into the shared
+    /// master gain).
     pub(super) fn finalize_output(
         &mut self,
         speaker_params: &[crate::live_params::SpeakerLiveParams],
