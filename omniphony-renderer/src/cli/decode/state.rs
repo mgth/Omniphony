@@ -150,6 +150,13 @@ impl Default for SpatialState {
 
 pub struct OutputState {
     pub audio_writer: Option<AudioWriter>,
+    /// Channel count [`Self::audio_writer`] was built for.
+    ///
+    /// The sink is created once, from the width the renderer emitted at the
+    /// time; the output mode can change afterwards (a headphone toggle swaps a
+    /// speaker array for a stereo pair). Remembering what was built is what lets
+    /// the caller notice the two have parted company and rebuild.
+    pub audio_writer_channels: Option<usize>,
     pub bootstrap_frames_seen: u32,
     pub bootstrap_started_at: Option<Instant>,
     pub render_buf: Vec<f32>,
@@ -170,6 +177,7 @@ impl Default for OutputState {
     fn default() -> Self {
         Self {
             audio_writer: None,
+            audio_writer_channels: None,
             bootstrap_frames_seen: 0,
             bootstrap_started_at: None,
             render_buf: Vec::new(),
@@ -191,6 +199,7 @@ impl Default for OutputState {
 impl OutputState {
     pub fn invalidate_writer(&mut self) -> Option<AudioWriter> {
         self.output_init_failed = false;
+        self.audio_writer_channels = None;
         self.audio_writer.take()
     }
 

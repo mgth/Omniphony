@@ -291,8 +291,24 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let num_speakers = renderer.num_speakers();
 
                     let meter_snapshot = if has_metering_clients {
+                        // Which accumulators the frame belongs in depends on what
+                        // was rendered, not on the layout: a binaural frame is a
+                        // stereo pair and metering it as `num_speakers` speakers
+                        // strides through it wrongly and leaves the ear gauges
+                        // dead. Same policy as the engine host.
+                        let virtual_bus = renderer.virtual_bus();
+                        let binaural = renderer.output_is_binaural();
                         self.telemetry.audio_meter.as_mut().and_then(|m| {
-                            m.process_speakers(&rendered.samples, num_speakers);
+                            match (virtual_bus, binaural) {
+                                (Some((bus, n_bus)), _) => {
+                                    m.process_speakers(bus, n_bus);
+                                    m.process_ears(&rendered.samples);
+                                }
+                                (None, true) => m.process_ears(&rendered.samples),
+                                (None, false) => {
+                                    m.process_speakers(&rendered.samples, rendered.n_channels)
+                                }
+                            }
                             m.poll()
                         })
                     } else {
@@ -477,8 +493,24 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let num_speakers = renderer.num_speakers();
 
                     let meter_snapshot = if has_metering_clients {
+                        // Which accumulators the frame belongs in depends on what
+                        // was rendered, not on the layout: a binaural frame is a
+                        // stereo pair and metering it as `num_speakers` speakers
+                        // strides through it wrongly and leaves the ear gauges
+                        // dead. Same policy as the engine host.
+                        let virtual_bus = renderer.virtual_bus();
+                        let binaural = renderer.output_is_binaural();
                         self.telemetry.audio_meter.as_mut().and_then(|m| {
-                            m.process_speakers(&rendered.samples, num_speakers);
+                            match (virtual_bus, binaural) {
+                                (Some((bus, n_bus)), _) => {
+                                    m.process_speakers(bus, n_bus);
+                                    m.process_ears(&rendered.samples);
+                                }
+                                (None, true) => m.process_ears(&rendered.samples),
+                                (None, false) => {
+                                    m.process_speakers(&rendered.samples, rendered.n_channels)
+                                }
+                            }
                             m.poll()
                         })
                     } else {
