@@ -225,13 +225,17 @@ export function getObjectTrailColor(id) {
   return getObjectBaseColor(id).offsetHSL(0, 0.04, 0.08);
 }
 
-function getObjectDisplayMode() {
+// Exported so the object-injection test source can be styled from the same
+// place as real objects rather than from a copy of these rules: it is meant to
+// look like an object, so it must follow the object display mode and sphere
+// size the user picked, and keep following them if these change.
+export function getObjectDisplayMode() {
   return app.objectDisplayMode === 'transparent-sphere' || app.objectDisplayMode === 'diffuse-sphere'
     ? app.objectDisplayMode
     : 'circle';
 }
 
-function getObjectSphereSizeScale() {
+export function getObjectSphereSizeScale() {
   return Math.max(0.03, Math.min(0.2, Number(app.objectSphereSize) || SOURCE_BASE_RADIUS)) / SOURCE_BASE_RADIUS;
 }
 

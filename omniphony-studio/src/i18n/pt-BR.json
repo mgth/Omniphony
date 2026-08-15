@@ -881,5 +881,6 @@
   "help.objectTest": "Posiciona uma fonte de teste na sala e permite ouvir onde o renderizador a coloca. Cada face define as duas coordenadas que mostra e deixa a terceira intacta, então o marcador se move nas outras duas. O sinal é panoramizado pelo backend de renderização ativo, de modo que o que você ouve inclui o modo fora do casco, o modelo de distância e o espalhamento configurados.",
   "help.objectTestEnable": "Reproduz ruído rosa a partir da posição marcada. Mover a fonte durante a reprodução a desliza sem reiniciar o sinal.",
   "help.objectTestLevel": "Nível de pico do sinal de teste em dBFS. O renderizador limita o teste a esse pico, então 0 dBFS é escala plena e não pode clipar sozinho; o ruído rosa fica em média cerca de 13 dB abaixo.",
-  "help.objectTestIsolation": "O que o programa faz durante o teste: silenciá-lo para ouvir apenas o teste, ou deixá-lo tocando por baixo."
+  "help.objectTestIsolation": "O que o programa faz durante o teste: silenciá-lo para ouvir apenas o teste, ou deixá-lo tocando por baixo.",
+  "objectTest.markerLabel": "Objeto de teste"
 }

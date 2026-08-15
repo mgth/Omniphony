@@ -36,6 +36,7 @@ import {
   updateSelectedObjectFaceShadows
 } from './speakers.js';
 import { decayTrails } from './trails.js';
+import { tickObjectTestMarker } from './scene/object-test-marker.js';
 import { decayMeters } from './speakers.js';
 
 // ── Controls ────────────────────────────────────────────────────────────────
@@ -337,6 +338,9 @@ function animate() {
   updateSelectedObjectFaceShadows();
   const now = performance.now();
   decayTrails(now);
+  // The test source is not in the trail registry, so it expires its own wake
+  // and billboards its own outline here.
+  tickObjectTestMarker(now);
   decayMeters(now);
   refreshObjectEnergyVolume(now);
   refreshSpeakerSoloVolume(now);

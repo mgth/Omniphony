@@ -881,5 +881,6 @@
   "help.objectTest": "Place une source de test dans la pièce et fait entendre où le renderer la situe. Chaque face règle les deux coordonnées qu'elle montre et laisse la troisième inchangée : le repère bouge donc sur les deux autres. Le signal est panné par le backend de rendu actif : ce que vous entendez intègre le mode hors-coque, le modèle de distance et l'étalement configurés.",
   "help.objectTestEnable": "Joue un bruit rose depuis la position marquée. Déplacer la source pendant la lecture la fait glisser sans redémarrer le signal.",
   "help.objectTestLevel": "Niveau de crête du signal de test en dBFS. Le renderer borne le test à cette crête : 0 dBFS correspond à la pleine échelle sans saturer de lui-même ; le bruit rose se situe en moyenne environ 13 dB en dessous.",
-  "help.objectTestIsolation": "Ce que fait le programme pendant le test : le couper pour n'entendre que le test, ou le laisser jouer en dessous."
+  "help.objectTestIsolation": "Ce que fait le programme pendant le test : le couper pour n'entendre que le test, ou le laisser jouer en dessous.",
+  "objectTest.markerLabel": "Objet de test"
 }

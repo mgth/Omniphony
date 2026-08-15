@@ -9,6 +9,7 @@ import { syncCrossoverBandSelects } from '../scene/speaker-band-select.js';
 import { setupBandCursor } from '../controls/band-cursor.js';
 import { acquireGainTable, releaseGainTable, refreshGaintableSubscription } from '../scene/speaker-gaintable.js';
 import { refreshObjectEnergyVolume } from '../scene/object-energy-volume.js';
+import { replaceObjectTestTrailRenderable } from '../scene/object-test-marker.js';
 import { clampVolumeGamma, colormapIndex } from '../scene/object-energy-shared.js';
 import {
   onOverlayState,
@@ -254,6 +255,9 @@ export function setupTrailsAndDisplayListeners() {
     trailModeSelectEl.value = app.trailRenderMode;
     trailModeSelectEl.addEventListener('change', () => {
       app.trailRenderMode = trailModeSelectEl.value === 'line' ? 'line' : 'diffuse';
+      // The test source keeps its own trail outside the registry below, so it
+      // needs the same swap or it would keep drawing in the old mode.
+      replaceObjectTestTrailRenderable();
       sourceTrails.forEach((trail, id) => {
         const wasVisible = trail.line.visible;
         scene.remove(trail.line);

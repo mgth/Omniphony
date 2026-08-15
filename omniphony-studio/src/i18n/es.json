@@ -881,5 +881,6 @@
   "help.objectTest": "Sitúa una fuente de prueba en la sala y permite oír dónde la coloca el renderizador. Cada cara ajusta las dos coordenadas que muestra y deja intacta la tercera, así que el marcador se mueve en las otras dos. La señal la panea el backend de renderizado activo, de modo que lo que oyes incluye el modo fuera de envolvente, el modelo de distancia y la dispersión configurados.",
   "help.objectTestEnable": "Reproduce ruido rosa desde la posición marcada. Mover la fuente mientras suena la desliza sin reiniciar la señal.",
   "help.objectTestLevel": "Nivel de pico de la señal de prueba en dBFS. El renderizador limita la prueba a este pico, así que 0 dBFS es plena escala y no puede recortar por sí sola; el ruido rosa promedia unos 13 dB por debajo.",
-  "help.objectTestIsolation": "Qué hace el programa durante la prueba: silenciarlo para oír solo la prueba, o dejarlo sonando por debajo."
+  "help.objectTestIsolation": "Qué hace el programa durante la prueba: silenciarlo para oír solo la prueba, o dejarlo sonando por debajo.",
+  "objectTest.markerLabel": "Objeto de prueba"
 }

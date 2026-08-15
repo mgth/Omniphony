@@ -23,8 +23,14 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
-import { t } from '../i18n.js';
+import { t, onLocaleChange } from '../i18n.js';
 import { setIdleFeedRequest } from './test-idle-feed.js';
+import {
+  updateObjectTestMarker,
+  refreshObjectTestMarkerProjection,
+  relabelObjectTestMarker,
+  clearObjectTestTrail
+} from '../scene/object-test-marker.js';
 
 const LEVEL_KEY = 'objectTest.levelDb.v1';
 const ISOLATION_KEY = 'objectTest.isolation.v1';
@@ -79,6 +85,17 @@ let position = [0, 1, 0];
 let enabled = false;
 /** Guards against redrawing faces when only the marker moved. */
 let builtRatioKey = null;
+/**
+ * Whether the panel is open. The 3D marker follows this rather than `enabled`:
+ * the source is worth seeing in the room while you are placing it, not only
+ * once it is making noise.
+ */
+let panelOpen = false;
+
+/** Mirror the current state onto the 3D scene marker. */
+function syncMarker() {
+  updateObjectTestMarker({ position, visible: panelOpen || enabled, playing: enabled });
+}
 
 function el(id) { return document.getElementById(id); }
 
@@ -139,6 +156,7 @@ export function stopObjectTest({ force = false } = {}) {
   enabled = false;
   send();
   renderObjectTestUI();
+  syncMarker();
 }
 
 // ── Face drawing ─────────────────────────────────────────────────────────────
@@ -295,6 +313,7 @@ function setPosition(next) {
   if (!changed) return;
   save(POSITION_KEY, JSON.stringify(position));
   updateMarkers();
+  syncMarker();
   renderCoords();
   // While running, every move goes straight out: the renderer ramps to it, so
   // this is a slide rather than a restart, and holding back would only add lag.
@@ -330,17 +349,28 @@ export function renderObjectTestUI() {
  * leaving noise in the room.
  */
 export function onObjectTestPanelToggled(open) {
-  setIdleFeedRequest('object-test', Boolean(open));
-  if (open) {
+  panelOpen = Boolean(open);
+  setIdleFeedRequest('object-test', panelOpen);
+  if (panelOpen) {
     buildFaces();
     renderObjectTestUI();
-  } else if (enabled) {
-    stopObjectTest();
+  } else {
+    if (enabled) {
+      // stopObjectTest() re-syncs the marker, which then hides with the panel.
+      stopObjectTest();
+    }
+    // Drop the wake with the panel: reopening should start from a clean room,
+    // not from the path of a session the user has already left behind.
+    clearObjectTestTrail();
   }
+  syncMarker();
 }
 
 /** Room proportions changed: the faces' aspect ratios are now wrong. */
 export function onRoomRatioChanged() {
+  // The ADM position is unchanged, but where it lands in the room is not — so
+  // the 3D marker re-projects whether or not the panel is open.
+  refreshObjectTestMarkerProjection();
   if (!app.objectTestSectionOpen) {
     builtRatioKey = null; // rebuild lazily on next open
     return;
@@ -364,6 +394,7 @@ export function setupObjectTestListeners() {
       enabled = toggle.checked;
       send();
       renderObjectTestUI();
+      syncMarker();
     });
   }
 
@@ -391,6 +422,17 @@ export function setupObjectTestListeners() {
       setPosition([0, 1, 0]);
     });
   }
+
+  // The scene label is drawn into a canvas texture, so it does not follow
+  // `data-i18n` like the panel's markup does and has to be redrawn by hand.
+  onLocaleChange(() => {
+    relabelObjectTestMarker();
+    // The faces' end captions ("left → right") are built in JS too.
+    if (panelOpen) {
+      builtRatioKey = null;
+      buildFaces();
+    }
+  });
 
   // Closing the window must not leave a source droning in the room.
   window.addEventListener('beforeunload', () => stopObjectTest({ force: true }));

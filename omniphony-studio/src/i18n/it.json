@@ -881,5 +881,6 @@
   "help.objectTest": "Posiziona una sorgente di test nella stanza e fa sentire dove il renderer la colloca. Ogni faccia imposta le due coordinate che mostra e lascia intatta la terza, quindi il marcatore si sposta sulle altre due. Il segnale è pannato dal backend di rendering attivo, perciò ciò che senti include la modalità fuori guscio, il modello di distanza e la dispersione configurati.",
   "help.objectTestEnable": "Riproduce rumore rosa dalla posizione marcata. Spostare la sorgente durante la riproduzione la fa scivolare senza riavviare il segnale.",
   "help.objectTestLevel": "Livello di picco del segnale di test in dBFS. Il renderer limita il test a questo picco, quindi 0 dBFS è fondo scala e non può clippare da solo; il rumore rosa si colloca in media circa 13 dB sotto.",
-  "help.objectTestIsolation": "Cosa fa il programma durante il test: silenziarlo per sentire solo il test, o lasciarlo suonare sotto."
+  "help.objectTestIsolation": "Cosa fa il programma durante il test: silenziarlo per sentire solo il test, o lasciarlo suonare sotto.",
+  "objectTest.markerLabel": "Oggetto di test"
 }
