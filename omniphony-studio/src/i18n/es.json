@@ -878,5 +878,8 @@
   "help.objectTestEnable": "Reproduce ruido rosa desde la posición marcada. Mover la fuente mientras suena la desliza sin reiniciar la señal.",
   "help.objectTestLevel": "Nivel de pico de la señal de prueba en dBFS. El renderizador limita la prueba a este pico, así que 0 dBFS es plena escala y no puede recortar por sí sola; el ruido rosa promedia unos 13 dB por debajo.",
   "help.objectTestIsolation": "Qué hace el programa durante la prueba: silenciarlo para oír solo la prueba, o dejarlo sonando por debajo.",
-  "objectTest.markerLabel": "Objeto de prueba"
+  "objectTest.markerLabel": "Objeto de prueba",
+  "objectTest.sliderX": "Izquierda / derecha",
+  "objectTest.sliderY": "Detrás / delante",
+  "objectTest.sliderZ": "Suelo / techo"
 }
