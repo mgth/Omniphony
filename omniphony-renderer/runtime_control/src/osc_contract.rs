@@ -21,7 +21,9 @@
 //! * **Hybrid backend** — `/omniphony/control/hybrid/{external_backend,
 //!   internal_backend,metric,curve,curve_smoothing}`.
 //! * **Distance diffuse** — `/omniphony/control/distance_diffuse/{enabled,
-//!   threshold,curve,metric}`.
+//!   threshold,curve,metric,mirror_axes}`. `mirror_axes` takes the axes to
+//!   negate as a string (`xy` — the default half-turn about the vertical axis —
+//!   `y`, `xyz`, `none`, …).
 //! * **Render-evaluation tables** —
 //!   `/omniphony/control/render_evaluation/cartesian/{x_size,y_size,z_size,
 //!   z_neg_size}` and `/omniphony/control/render_evaluation/polar/{azimuth_
@@ -151,11 +153,36 @@ pub const CONTROL_OUTPUT_CHANNEL_MAPPING: &str = "/omniphony/control/output_chan
 /// `SpeakerLayout` (one entry per channel label, `spatialize` = virtual/direct);
 /// an empty string resets to the built-in canonical poses (LFE direct).
 pub const CONTROL_VIRTUAL_BED: &str = "/omniphony/control/virtual_bed";
+/// How finely an object must turn before its HRIR is rebuilt: `exact`
+/// (default, bit-identical output), `fine`, `balanced` or `coarse`. Coarser
+/// lattices skip more HRIR interpolation — and the crossfade that goes with it
+/// — at a measurable cost in fidelity. Persisted to config.
+pub const CONTROL_BINAURAL_HRIR_UPDATE_LATTICE: &str =
+    "/omniphony/control/binaural/hrir_update_lattice";
 /// Generic setter for any declared live option (`renderer::options`):
 /// args `[key (string), value]`. The per-option addresses listed above
 /// (`synthetic_objects`, `object_generator`, `phantom_extract`,
 /// `surround_placement`, `output_channel_mapping`) are legacy aliases of this.
 pub const CONTROL_OPTION: &str = "/omniphony/control/option";
+/// Named config profiles (docs/config-profiles.md). `switch`/`create`/`delete`
+/// take `[name (string)]`; `rename` takes `[old (string), new (string)]`.
+/// Every mutation saves the config and re-broadcasts [`STATE_PROFILES`].
+pub const CONTROL_PROFILE_SWITCH: &str = "/omniphony/control/profile/switch";
+pub const CONTROL_PROFILE_CREATE: &str = "/omniphony/control/profile/create";
+pub const CONTROL_PROFILE_DELETE: &str = "/omniphony/control/profile/delete";
+pub const CONTROL_PROFILE_RENAME: &str = "/omniphony/control/profile/rename";
+/// Overlay display preferences as JSON, republished whenever they change —
+/// including when an mpv keybind flips one through the FFI toggles. The overlay
+/// is a process-global singleton with two writers, so a client must read this
+/// rather than trust its own mirror.
+/// What the object test's clip is, after a [`CONTROL_OBJECT_TEST_CLIP`] request.
+///
+/// Args: `[json: String]` — `{"name","path","seconds","sourceRate","channels",
+/// "truncated"}` when one is loaded, `{"error":"…"}` when the file was refused,
+/// and `{}` when it was cleared.
+pub const STATE_OBJECT_TEST_CLIP: &str = "/omniphony/state/object_test/clip";
+
+pub const STATE_OVERLAY: &str = "/omniphony/state/overlay";
 pub const CONTROL_OVERLAY_LABELS: &str = "/omniphony/control/overlay/labels";
 pub const CONTROL_OVERLAY_OBJECTS: &str = "/omniphony/control/overlay/objects";
 pub const CONTROL_OVERLAY_TAG: &str = "/omniphony/control/overlay/tag";
@@ -165,6 +192,101 @@ pub const CONTROL_RAMP_MODE: &str = "/omniphony/control/ramp_mode";
 pub const CONTROL_REALTIME_MASTER_GAIN: &str = "/omniphony/control/realtime/master_gain";
 pub const CONTROL_REALTIME_SPEAKER_GAIN: &str = "/omniphony/control/realtime/speaker_gain";
 pub const CONTROL_RELOAD_CONFIG: &str = "/omniphony/control/reload_config";
+/// Start or stop the per-speaker test signal (band-limited pink noise).
+///
+/// Args: `[speaker_idx: Int, level: Float, isolation: String]`. A negative
+/// index stops any running test — the trigger policy (hold, fixed burst,
+/// toggle) is the client's, so the renderer only ever hears "start this" or
+/// "stop". Transient: never persisted, and cleared on a fresh start.
+///
+/// `level` is **peak** amplitude, clamped to `[0, 1]`: the renderer bounds the
+/// injected signal to that peak, so `1.0` is full scale and no accepted level
+/// can make the test clip by itself. It is not an RMS figure — pink noise
+/// would peak a crest factor (~13 dB) above one. See
+/// [`renderer::live_params::SpeakerTest`].
+pub const CONTROL_SPEAKER_TEST: &str = "/omniphony/control/speaker_test";
+
+/// Start, move or stop the object test signal: pink noise placed at a position
+/// in the room and panned there by the active render backend.
+///
+/// Args: `[on: Int, x: Float, y: Float, z: Float, level: Float, size: Float,
+/// isolation: String]`. `on = 0` stops; everything after it is then ignored.
+/// Position is ADM Cartesian, each axis clamped to `[-1, 1]`: x left/right,
+/// y back/front, z floor/ceiling. `size` is an isotropic extent in `[0, 1]`,
+/// `0` being a point source. `level` is peak amplitude with the same meaning as
+/// on [`CONTROL_SPEAKER_TEST`].
+///
+/// **Re-sending with a new position is how the object moves, and must be
+/// cheap.** The renderer keeps position out of the signal's identity and ramps
+/// the gains instead, so a stream of these messages — one per pointer move
+/// while dragging — slides the source continuously without ever restarting the
+/// noise. Changing `level` or `isolation` does restart it, deliberately.
+///
+/// What is heard is what the renderer would do with a real object there: the
+/// gains come from whichever backend is live, so the out-of-hull mode, distance
+/// model and spread settings all apply. In `output_mode: binaural` it renders
+/// through the HRIR path as an object rather than falling silent.
+///
+/// Transient like the speaker test: never persisted, cleared on a fresh start,
+/// and subject to the same safety cap.
+pub const CONTROL_OBJECT_TEST: &str = "/omniphony/control/object_test";
+
+/// Set the orbit applied to the object test's placed position.
+///
+/// Args: `[axis: String, radius: Float, period_s: Float, azimuth: Float,
+/// elevation: Float]`. `axis` is `x`, `y`, `z` or `free`; the two angles are
+/// read only for `free` and describe the axis direction in the usual ADM
+/// convention. `radius` is in ADM units and `0` stops the orbit, so there is no
+/// separate on/off. `period_s` is seconds per revolution.
+///
+/// A radius rather than a diameter because that is what the room's geometry is
+/// stated in: √2 from the centre reaches a vertical edge, √3 a corner.
+///
+/// **Separate from [`CONTROL_OBJECT_TEST`] on purpose.** That message is
+/// re-sent on every pointer move while dragging; folding the orbit into it
+/// would mean re-stating these five arguments hundreds of times a second, or
+/// losing the orbit the first time a client forgot them.
+///
+/// The renderer advances the phase itself, on the block clock. A client
+/// stepping the angle over OSC would hand the smoothness of the motion — the
+/// very thing this test exists to judge — to its own UI thread's worst moment.
+///
+/// The circle is clamped per axis to the room, which changes its shape rather
+/// than its motion: it becomes a D, running along the wall for part of the turn
+/// instead of arcing through it. The alternative silently shrinks the radius
+/// that was asked for. Transient like the rest of the test.
+pub const CONTROL_OBJECT_TEST_ROTATION: &str = "/omniphony/control/object_test/rotation";
+
+/// Choose (or clear) the WAV file [`ObjectTestSignal::Clip`] plays.
+///
+/// Args: `[path: String]`. An empty path clears the clip. The file is read,
+/// downmixed to mono, resampled to the render rate and peak-normalised **once,
+/// here on the control thread** — the render path then only walks an array, so
+/// choosing a file cannot cause a dropout.
+///
+/// Separate from [`CONTROL_OBJECT_TEST`] for the same reason the orbit is: that
+/// message is re-sent on every pointer move while dragging, and a path is a
+/// long argument to restate hundreds of times a second.
+///
+/// The result comes back on [`STATE_OBJECT_TEST_CLIP`], including the failure
+/// case — a file that cannot be read exactly is refused rather than guessed at,
+/// since the point of the feature is to hear a *known* signal.
+///
+/// [`ObjectTestSignal::Clip`]: renderer::live_params::ObjectTestSignal::Clip
+pub const CONTROL_OBJECT_TEST_CLIP: &str = "/omniphony/control/object_test/clip";
+
+/// Arm/disarm the test idle feed.
+///
+/// Args: `[on: Int]` (non-zero arms). While armed, the decode loop fabricates
+/// silence input frames whenever no real input is flowing, so the output chain
+/// is already warm when a test starts and the noise is heard immediately
+/// instead of after the writer/latency-controller settling time. Serves the
+/// speaker test and the object test alike — the address keeps its original name
+/// for compatibility, but the feed is not specific to either.
+/// The arm expires after a keepalive window; clients re-send it periodically
+/// while their test pane is open, so a dead client cannot leave the feed
+/// running forever. Transient: never persisted, cleared on a fresh start.
+pub const CONTROL_SPEAKER_TEST_IDLE_FEED: &str = "/omniphony/control/speaker_test/idle_feed";
 pub const CONTROL_RENDER_BACKEND: &str = "/omniphony/control/render_backend";
 pub const CONTROL_RENDER_BACKEND_RESTORE: &str = "/omniphony/control/render_backend/restore";
 pub const CONTROL_RENDER_BRIDGE_PATH: &str = "/omniphony/control/render/bridge_path";
@@ -236,6 +358,9 @@ pub const STATE_MONITORING: &str = "/omniphony/state/monitoring";
 /// Schema of the declared live options (`renderer::options` registry rows),
 /// as a JSON string. Same pattern as `/state/object_generators` / `/state/phantom`.
 pub const STATE_OPTIONS_SCHEMA: &str = "/omniphony/state/options_schema";
+/// Named config profiles view as JSON: `{"active": "...", "names": ["..."]}`.
+/// Broadcast in the state snapshot and after every profile mutation.
+pub const STATE_PROFILES: &str = "/omniphony/state/profiles";
 pub const STATE_OSC_DIAG: &str = "/omniphony/state/osc/diag";
 pub const STATE_OSC_METERING: &str = "/omniphony/state/osc/metering";
 pub const STATE_REALTIME_MASTER_GAIN: &str = "/omniphony/state/realtime/master_gain";
@@ -266,6 +391,7 @@ pub const STATE_RENDER_EVALUATION_POSITION_INTERPOLATION: &str =
     "/omniphony/state/render_evaluation/position_interpolation";
 pub const STATE_RENDER_TIME_MS: &str = "/omniphony/state/render_time_ms";
 pub const STATE_RENDER_VERSION: &str = "/omniphony/state/render/version";
+pub const STATE_RENDER_EXECUTABLE: &str = "/omniphony/state/render/executable";
 pub const STATE_RESAMPLE_RATIO: &str = "/omniphony/state/resample_ratio";
 pub const STATE_SHUTDOWN: &str = "/omniphony/state/shutdown";
 pub const STATE_SNAPSHOT_COMPLETE: &str = "/omniphony/state/snapshot_complete";
@@ -279,6 +405,7 @@ pub const STATE_WRITE_TIME_MS: &str = "/omniphony/state/write_time_ms";
 
 pub const ALL_CONTROL: &[&str] = &[
     CONTROL_ADAPTIVE_RESAMPLING,
+    CONTROL_BINAURAL_HRIR_UPDATE_LATTICE,
     CONTROL_ADAPTIVE_RESAMPLING_ENABLE_FAR_MODE,
     CONTROL_ADAPTIVE_RESAMPLING_FAR_MODE_RETURN_FADE_IN_MS,
     CONTROL_ADAPTIVE_RESAMPLING_FORCE_SILENCE_IN_FAR_MODE,
@@ -310,6 +437,10 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_OBJECT_GENERATOR,
     CONTROL_OBJECT_GENERATOR_PARAM,
     CONTROL_OPTION,
+    CONTROL_PROFILE_SWITCH,
+    CONTROL_PROFILE_CREATE,
+    CONTROL_PROFILE_DELETE,
+    CONTROL_PROFILE_RENAME,
     CONTROL_PHANTOM_EXTRACT,
     CONTROL_PHANTOM_EXTRACT_PARAM,
     CONTROL_SURROUND_PLACEMENT,
@@ -366,9 +497,14 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_REALTIME_MASTER_GAIN,
     CONTROL_REALTIME_SPEAKER_GAIN,
     CONTROL_RELOAD_CONFIG,
+    CONTROL_SPEAKER_TEST,
+    CONTROL_SPEAKER_TEST_IDLE_FEED,
     CONTROL_RENDER_BACKEND,
     CONTROL_RENDER_BACKEND_RESTORE,
     CONTROL_RENDER_BRIDGE_PATH,
+    CONTROL_OBJECT_TEST,
+    CONTROL_OBJECT_TEST_CLIP,
+    CONTROL_OBJECT_TEST_ROTATION,
     CONTROL_RENDER_EVALUATION_MODE,
     CONTROL_RENDER_EVALUATION_MODE_FROM_FILE,
     CONTROL_RENDER_EVALUATION_POSITION_INTERPOLATION,
@@ -397,6 +533,8 @@ pub const ALL_STATE: &[&str] = &[
     STATE_BACKEND_FILE_LIST,
     STATE_CAPABILITIES,
     STATE_CLIP,
+    STATE_OBJECT_TEST_CLIP,
+    STATE_OVERLAY,
     STATE_CONFIG_SAVED,
     STATE_CONFIG_SAVE_ERROR,
     STATE_CROSSOVER_TIME_MS,
@@ -423,6 +561,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_LOUDNESS,
     STATE_MONITORING,
     STATE_OPTIONS_SCHEMA,
+    STATE_PROFILES,
     STATE_OSC_DIAG,
     STATE_OSC_METERING,
     STATE_REALTIME_MASTER_GAIN,
@@ -444,6 +583,7 @@ pub const ALL_STATE: &[&str] = &[
     STATE_RENDER_EVALUATION_POSITION_INTERPOLATION,
     STATE_RENDER_TIME_MS,
     STATE_RENDER_VERSION,
+    STATE_RENDER_EXECUTABLE,
     STATE_RESAMPLE_RATIO,
     STATE_SHUTDOWN,
     STATE_SNAPSHOT_COMPLETE,

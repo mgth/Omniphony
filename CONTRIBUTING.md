@@ -147,6 +147,24 @@ truth; `ALL_CONTROL` / `ALL_STATE` are the exhaustive lists).
 - **Branch names**: use generic, descriptive names (e.g. `fix/spdif-parser`,
   `feat/my-backend`).
 
+## DSP validation
+
+Changes to the render path, the crossover, the VBAP panner or the binaural
+stage are covered by a golden/null test and a set of acceptance measurements.
+They run as part of `cargo test --workspace`, so a behaviour change shows up as
+a failing null test rather than as a surprise in a listening session.
+
+If your change *intentionally* alters the rendered output, regenerate the
+goldens and **quote the printed residual in your pull request**:
+
+```sh
+cd omniphony-renderer
+OMNIPHONY_BLESS_GOLDENS=1 cargo test -p renderer -- --nocapture
+```
+
+See [`omniphony-renderer/dsp_fixtures/README.md`](omniphony-renderer/dsp_fixtures/README.md)
+for the full contract, the wide matrix, and how deferred thresholds are tracked.
+
 ## Pull requests
 
 - Target `main`.

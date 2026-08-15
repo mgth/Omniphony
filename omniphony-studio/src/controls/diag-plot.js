@@ -313,7 +313,7 @@ function buildWindowSelector() {
   lbl.style.fontSize = '10px';
   wrap.appendChild(lbl);
   const sel = document.createElement('select');
-  sel.style.cssText = 'font-size:10px;background:rgba(255,255,255,0.06);color:#d9ecff;border:1px solid rgba(255,255,255,0.15);border-radius:4px;padding:0.1rem 0.25rem;';
+  sel.className = 'micro-select';
   for (const ms of WINDOW_OPTIONS_MS) {
     const opt = document.createElement('option');
     opt.value = String(ms);
@@ -347,7 +347,7 @@ function buildDiagRateSelector() {
   wrap.appendChild(lbl);
   const sel = document.createElement('select');
   sel.title = 'Diag publish rate (Hz) — independent from the audio meter rate. Higher = more plot resolution, more network/CPU.';
-  sel.style.cssText = 'font-size:10px;background:rgba(255,255,255,0.06);color:#d9ecff;border:1px solid rgba(255,255,255,0.15);border-radius:4px;padding:0.1rem 0.25rem;';
+  sel.className = 'micro-select';
   for (const hz of DIAG_RATE_OPTIONS_HZ) {
     const opt = document.createElement('option');
     opt.value = String(hz);

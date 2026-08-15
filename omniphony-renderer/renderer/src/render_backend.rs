@@ -101,6 +101,9 @@ pub struct RenderRequest {
     pub use_distance_diffuse: bool,
     pub distance_diffuse_threshold: f32,
     pub distance_diffuse_curve: f32,
+    /// ADM axes negated to build the diffuse mirror image. See
+    /// [`crate::spatial_vbap::MirrorAxes`].
+    pub diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes,
     pub distance_model: DistanceModel,
 }
 
@@ -1935,7 +1938,7 @@ mod size_interval_tests {
     /// default spread range is [0, 1], so a non-zero `event_size` widens the pan.
     fn make_model() -> Box<dyn GainModel> {
         let positions = [[-30.0, 0.0], [30.0, 0.0], [-110.0, 0.0], [110.0, 0.0]];
-        let panner = VbapPanner::new(&positions, 5, 5, 0.0)
+        let panner = VbapPanner::new(&positions, 5, 5, 0.0, Default::default())
             .expect("panner")
             .with_negative_z(true);
         Box::new(VbapBackend::new(panner, VbapSpreadParams::default()))
@@ -1951,6 +1954,7 @@ mod size_interval_tests {
                 room_ratio_lower: 1.0,
                 room_ratio_center_blend: 0.0,
                 use_distance_diffuse: false,
+                diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
                 distance_diffuse_threshold: 1.0,
                 distance_diffuse_curve: 1.0,
                 distance_model: DistanceModel::None,
@@ -1997,6 +2001,42 @@ mod size_interval_tests {
         for (x, y) in a.iter().zip(b.iter()) {
             assert!((x - y).abs() < eps, "{x} vs {y}");
         }
+    }
+
+    /// A bridge that advertises `allow_negative_z` does not imply the cartesian
+    /// grid has negative-z cells (`z_neg_size` defaults to 0). Below-horizon
+    /// requests against such a table must clamp onto the `z = 0` plane — finite
+    /// gains, identical to the same position at `z = 0` — never an
+    /// out-of-bounds lookup or an extrapolation. The realtime path has no grid
+    /// and reaches the panner's out-of-hull handling directly.
+    #[test]
+    fn cartesian_without_neg_cells_clamps_below_horizon_requests() {
+        let table = engine(EffectiveEvaluationMode::PrecomputedCartesian, 0, [0.0; 3]);
+        for (below, at_plane) in [
+            ([0.3, 0.1, -0.4], [0.3, 0.1, 0.0]),
+            ([-0.6, 0.2, -1.0], [-0.6, 0.2, 0.0]),
+            ([0.0, 0.0, -1.0], [0.0, 0.0, 0.0]),
+        ] {
+            let below_gains = table.compute_gains(&request(below, [0.0; 3])).gains;
+            let plane_gains = table.compute_gains(&request(at_plane, [0.0; 3])).gains;
+            for g in below_gains.iter() {
+                assert!(g.is_finite(), "non-finite gain for {below:?}");
+            }
+            assert_close(&below_gains, &plane_gains, 1e-6);
+        }
+
+        let realtime = engine(EffectiveEvaluationMode::Realtime, 0, [0.0; 3]);
+        let gains = realtime
+            .compute_gains(&request([0.3, 0.1, -0.4], [0.0; 3]))
+            .gains;
+        let energy: f32 = gains.iter().map(|g| g * g).sum::<f32>().sqrt();
+        for g in gains.iter() {
+            assert!(g.is_finite(), "non-finite realtime gain below the horizon");
+        }
+        assert!(
+            energy > 0.5,
+            "below-horizon realtime request should render at level, got rms {energy}"
+        );
     }
 
     /// At the sampled endpoints (size 0 and size 1) the interval engine reproduces

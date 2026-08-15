@@ -197,6 +197,34 @@ pub struct HrirSet {
     grid: Vec<HrirPair>,
 }
 
+/// A direction snapped to the HRIR update lattice — see
+/// [`HrirSet::quantize_direction`]. Equality is the whole point: two directions
+/// with the same key interpolate to the same kernel, bit for bit.
+///
+/// The angles are held as their bit patterns so the type can derive `Eq`, and
+/// because bitwise identity is exactly the property the render path needs —
+/// `f32` equality would additionally have to reason about `NaN` and `-0.0`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DirectionKey {
+    az_bits: u32,
+    el_bits: u32,
+}
+
+impl DirectionKey {
+    fn new(az_deg: f32, el_deg: f32) -> Self {
+        Self {
+            az_bits: az_deg.to_bits(),
+            el_bits: el_deg.to_bits(),
+        }
+    }
+    fn az_deg(self) -> f32 {
+        f32::from_bits(self.az_bits)
+    }
+    fn el_deg(self) -> f32 {
+        f32::from_bits(self.el_bits)
+    }
+}
+
 impl HrirSet {
     const AZ_STEP_DEG: f32 = 10.0;
     const EL_STEP_DEG: f32 = 10.0;
@@ -277,6 +305,56 @@ impl HrirSet {
         &self.grid[el_idx * self.az_count + az_idx]
     }
 
+    /// Snap a direction onto the HRIR *update lattice*.
+    ///
+    /// [`at`](Self::at) is the single most expensive per-block operation in the
+    /// binaural path — a bilinear blend of four 1 KB pairs gathered from a
+    /// ~700 KB table — and its result then has to be compared against the
+    /// convolvers' current kernels to find out whether anything moved at all.
+    /// Both costs are wasted whenever an object barely turned.
+    ///
+    /// The grid is measured every [`AZ_STEP_DEG`](Self::AZ_STEP_DEG) /
+    /// [`EL_STEP_DEG`](Self::EL_STEP_DEG) — 10° — but `fa`/`fe` below are
+    /// continuous, so today a 0.01° move yields a numerically different kernel
+    /// and arms a full crossfade. That is precision the measurements do not
+    /// contain: below the lattice we are only interpolating measurement noise.
+    ///
+    /// The key carries the very angles [`at_key`](Self::at_key) will feed to
+    /// [`at`](Self::at), so "same key ⇒ same kernel" holds by construction
+    /// rather than by argument — and `subdiv = None`
+    /// ([`HrirUpdateLattice::Exact`](crate::live_params::HrirUpdateLattice::Exact))
+    /// degenerates to an exact-direction cache that skips only when nothing
+    /// moved at all, which is bit-identical to never skipping.
+    pub fn quantize_direction(
+        &self,
+        az_deg: f32,
+        el_deg: f32,
+        subdiv: Option<i32>,
+    ) -> DirectionKey {
+        self.key_at(az_deg, el_deg, subdiv)
+    }
+
+    fn key_at(&self, az_deg: f32, el_deg: f32, subdiv: Option<i32>) -> DirectionKey {
+        let az = az_deg.rem_euclid(360.0);
+        // Elevation is clamped here, exactly as `at` clamps it, so two
+        // directions past the pole share one key instead of missing the skip.
+        let el = el_deg.clamp(self.el_min_deg, self.el_max_deg);
+        let Some(subdiv) = subdiv else {
+            return DirectionKey::new(az, el);
+        };
+        let step_az = Self::AZ_STEP_DEG / subdiv as f32;
+        let step_el = Self::EL_STEP_DEG / subdiv as f32;
+        DirectionKey::new(
+            ((az / step_az).round() * step_az).rem_euclid(360.0),
+            (el / step_el).round() * step_el,
+        )
+    }
+
+    /// The interpolated pair for a key from [`quantize_direction`](Self::quantize_direction).
+    pub fn at_key(&self, key: DirectionKey, out: &mut HrirPair) {
+        self.at(key.az_deg(), key.el_deg(), out);
+    }
+
     /// Bilinearly-interpolated HRIR pair for an arbitrary direction.
     /// `az_deg`: 0 = front, positive = right. `el_deg`: 0 = horizontal.
     pub fn at(&self, az_deg: f32, el_deg: f32, out: &mut HrirPair) {
@@ -318,6 +396,98 @@ mod tests {
 
     fn energy(h: &[f32; HRIR_LEN]) -> f32 {
         h.iter().map(|&x| x * x).sum()
+    }
+
+    /// The contract the render path relies on to skip work: same key ⇒ the
+    /// *identical* kernel, bit for bit. If this ever weakens to "almost the
+    /// same", the skip silently freezes a stale kernel instead of updating it.
+    #[test]
+    fn same_key_yields_a_bit_identical_kernel() {
+        let set = HrirSet::synthetic(48_000);
+        let mut a = HrirPair::zeroed();
+        let mut b = HrirPair::zeroed();
+        // Two directions a hair apart — well inside one lattice step (0.31°).
+        let k1 = set.key_at(31.700, 12.400, Some(32));
+        let k2 = set.key_at(31.705, 12.402, Some(32));
+        assert_eq!(k1, k2, "directions within a lattice step must share a key");
+        set.at_key(k1, &mut a);
+        set.at_key(k2, &mut b);
+        assert_eq!(a.left, b.left);
+        assert_eq!(a.right, b.right);
+    }
+
+    /// Without a lattice the cache must be exact: it may only skip when the
+    /// direction did not move at all. That is what makes `DIR_SUBDIV = None`
+    /// bit-identical to never skipping.
+    #[test]
+    fn the_exact_lattice_only_matches_an_unmoved_direction() {
+        let set = HrirSet::synthetic(48_000);
+        let base = set.key_at(31.7, 12.4, None);
+        assert_eq!(base, set.key_at(31.7, 12.4, None), "same direction");
+        assert_ne!(base, set.key_at(31.700_01, 12.4, None), "a hair of azimuth");
+        assert_ne!(
+            base,
+            set.key_at(31.7, 12.400_01, None),
+            "a hair of elevation"
+        );
+    }
+
+    /// The lattice must still *track* — a move of a few degrees has to produce
+    /// a new key at any setting, or objects would freeze at their first
+    /// direction.
+    #[test]
+    fn a_real_move_changes_the_key() {
+        let set = HrirSet::synthetic(48_000);
+        for subdiv in [None, Some(512), Some(32)] {
+            let base = set.key_at(31.7, 12.4, subdiv);
+            assert_ne!(base, set.key_at(33.0, 12.4, subdiv), "azimuth {subdiv:?}");
+            assert_ne!(base, set.key_at(31.7, 14.0, subdiv), "elevation {subdiv:?}");
+        }
+    }
+
+    /// Azimuth wraps: 0° and 360° are the same direction, so they must not
+    /// produce two keys (which would cost a pointless kernel rebuild per lap).
+    #[test]
+    fn azimuth_wraps_to_a_single_key() {
+        let set = HrirSet::synthetic(48_000);
+        assert_eq!(
+            set.key_at(0.0, 0.0, Some(32)),
+            set.key_at(360.0, 0.0, Some(32))
+        );
+        assert_eq!(
+            set.key_at(-90.0, 0.0, Some(32)),
+            set.key_at(270.0, 0.0, Some(32))
+        );
+    }
+
+    /// Elevation clamps exactly where `at` clamps it, so directions past the
+    /// pole collapse onto one key instead of missing the skip.
+    #[test]
+    fn elevation_past_the_pole_shares_one_key() {
+        let set = HrirSet::synthetic(48_000);
+        assert_eq!(
+            set.key_at(10.0, 95.0, Some(32)),
+            set.key_at(10.0, 120.0, Some(32))
+        );
+    }
+
+    /// Snapping must stay within half a lattice step of the true direction —
+    /// the bound that makes the approximation defensible against a 10° grid.
+    #[test]
+    fn snapping_error_stays_under_half_a_lattice_step() {
+        let set = HrirSet::synthetic(48_000);
+        for subdiv in [512, 128, 32] {
+            let step = HrirSet::AZ_STEP_DEG / subdiv as f32;
+            for &az in &[0.0f32, 7.3, 91.6, 179.9, 271.4, 359.8] {
+                let snapped = set.key_at(az, 0.0, Some(subdiv)).az_deg();
+                let raw = (snapped - az.rem_euclid(360.0)).abs();
+                let err = raw.min(360.0 - raw);
+                assert!(
+                    err <= step / 2.0 + 1e-4,
+                    "subdiv {subdiv}, az {az}: snapped to {snapped}, error {err}"
+                );
+            }
+        }
     }
 
     /// cos(el)-weighted mean per-ear grid energy — the shared reference level

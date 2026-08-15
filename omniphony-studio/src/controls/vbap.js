@@ -214,6 +214,53 @@ function formatEvaluationModeLabel(mode) {
   }
 }
 
+// How long a control waits for the engine to acknowledge a recompute before
+// declaring it unreachable. Generous: a large cartesian table on a slow machine
+// can take seconds to even report that it started.
+const RECOMPUTE_ACK_TIMEOUT_MS = 8000;
+
+let recomputeAckWatchdog = null;
+
+/**
+ * Mark a recompute as pending after sending a control to the engine.
+ *
+ * The "computing" state is optimistic — set locally the moment we send, and
+ * only the engine's own `vbap:recomputing` broadcast clears it. So a control
+ * the engine does not understand (an older build, or a renderer left running by
+ * another environment that happens to hold the port) pins the status on
+ * "computing" forever, with no error and nothing to retry. Arming a watchdog on
+ * every optimistic transition turns that silence into a message.
+ *
+ * Use this instead of assigning `app.vbapRecomputing` directly.
+ */
+export function markRecomputePending() {
+  app.vbapRecomputing = true;
+  app.recomputeError = null;
+  clearRecomputeAckWatchdog();
+  recomputeAckWatchdog = setTimeout(() => {
+    recomputeAckWatchdog = null;
+    // A late acknowledgement may have landed while the timer sat queued.
+    if (app.vbapRecomputing !== true) return;
+    app.vbapRecomputing = false;
+    app.recomputeError = t('vbap.status.noAck');
+    renderVbapStatus();
+  }, RECOMPUTE_ACK_TIMEOUT_MS);
+  renderVbapStatus();
+}
+
+/**
+ * Disarm the watchdog: the engine answered, so it is alive and understood us.
+ *
+ * Any `vbap:recomputing` broadcast counts, including the one announcing that
+ * the recompute started. A recompute that starts and never finishes is a
+ * different failure, and leaving that one on "computing" is at least truthful.
+ */
+export function clearRecomputeAckWatchdog() {
+  if (recomputeAckWatchdog === null) return;
+  clearTimeout(recomputeAckWatchdog);
+  recomputeAckWatchdog = null;
+}
+
 export function renderVbapStatus() {
   const vbapStatusEl = getVbapStatusEl();
   if (!vbapStatusEl) return;

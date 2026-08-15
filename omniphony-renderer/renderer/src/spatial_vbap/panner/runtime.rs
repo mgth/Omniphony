@@ -9,11 +9,17 @@ impl VbapPanner {
     /// but the panner no longer precomputes any grid — gains are computed directly
     /// from the triangulation. `_spread` is unused (the initial-spread table is
     /// gone); all precomputation now lives in the evaluation layer.
+    ///
+    /// `mode` selects the out-of-hull rendering strategy; it is baked at
+    /// construction because `VirtualPoles` shapes the triangulation itself.
+    /// The SAF backend (feature `saf_vbap`) ignores it and keeps its own
+    /// out-of-hull behaviour.
     pub fn new(
         speaker_dirs_deg: &[[f32; 2]],
         az_res_deg: i32,
         el_res_deg: i32,
         _spread: f32,
+        mode: crate::spatial_vbap::OutOfHullMode,
     ) -> Result<Self, String> {
         let n_speakers = speaker_dirs_deg.len();
         if n_speakers < 3 {
@@ -28,7 +34,8 @@ impl VbapPanner {
 
         #[cfg(not(feature = "saf_vbap"))]
         {
-            let source = native_backend::NativeVbapLayout::from_speaker_dirs(speaker_dirs_deg)?;
+            let source =
+                native_backend::NativeVbapLayout::from_speaker_dirs(speaker_dirs_deg, mode)?;
             Ok(VbapPanner {
                 n_triangles: source.n_faces,
                 n_speakers,
@@ -38,6 +45,7 @@ impl VbapPanner {
         }
         #[cfg(feature = "saf_vbap")]
         {
+            let _ = mode; // SAF keeps its own out-of-hull behaviour
             let layout = saf_backend::SpartaVbapLayout::from_speaker_dirs(speaker_dirs_deg)?;
             Ok(VbapPanner {
                 n_triangles: layout.n_faces as usize,

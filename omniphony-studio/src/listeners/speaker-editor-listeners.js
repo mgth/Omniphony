@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { t } from '../i18n.js';
 import { app, isSpeakerLayoutFrozen, speakerBaseGains, speakerDelays } from '../state.js';
 import { normalizedToMeters, metersToSceneUnits, metersPerUnit } from '../coordinates.js';
-import { syncSpeakerHeatmapBandSelect } from '../scene/speaker-band-select.js';
+import { syncCrossoverBandSelects } from '../scene/speaker-band-select.js';
 import {
   renderSpeakerEditor, renderSpeakersList, requestAddSpeaker, requestMoveSpeaker, requestRemoveSpeaker,
   applySpeakerCartesianEdit, applySpeakerPolarEdit, applySpeakerSceneCartesianEdit,
@@ -336,7 +336,7 @@ export function setupSpeakerEditorListeners() {
         { [field]: Number.isFinite(freq) && freq > 0 ? freq : null },
         { apply: true }
       );
-      syncSpeakerHeatmapBandSelect();
+      syncCrossoverBandSelects();
       renderSpeakerEditor();
       // Refresh the speaker list so its per-speaker filter icon reflects the new
       // low/high cutoff immediately.

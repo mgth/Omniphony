@@ -303,6 +303,129 @@ impl OutputMode {
     }
 }
 
+/// How the binaural stage sources its HRTF inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BinauralMode {
+    /// One HRIR pair per input object — best localisation, cost grows with the
+    /// object count.
+    #[default]
+    Direct,
+    /// Objects are first panned (VBAP) onto a fixed virtual speaker layout,
+    /// then each virtual speaker is binauralised as a static source. The
+    /// convolution cost is bound by the layout size, independent of the object
+    /// count — the embedded/low-power path (issue #220).
+    Cascaded,
+}
+
+impl BinauralMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Cascaded => "cascaded",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "direct" | "object" | "objects" => Some(Self::Direct),
+            "cascaded" | "cascade" | "virtual_speakers" | "virtual-speakers" => {
+                Some(Self::Cascaded)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// How finely an object has to turn before its HRIR is rebuilt.
+///
+/// Interpolating a fresh HRIR pair is the most expensive per-block operation of
+/// the binaural stage, and it is repeated for a move of a hundredth of a degree
+/// — precision the measured grid (10° steps) does not contain. Snapping
+/// directions onto a coarser lattice lets an object that barely turned keep its
+/// kernel, which also leaves no crossfade armed and so halves that block's tap
+/// loop.
+///
+/// This is a **quality/cost trade, not a free optimisation**: every setting
+/// other than [`Exact`](Self::Exact) changes the rendered output. Measured on
+/// the `drifting` bench at 16 objects, against the binaural golden:
+///
+/// | setting    | lattice | peak residual | direct/16 |
+/// |------------|---------|---------------|-----------|
+/// | `exact`    | —       | bit-exact     | 49.3 µs   |
+/// | `fine`     | 0.020°  | −53.3 dBFS    | 47.5 µs   |
+/// | `balanced` | 0.078°  | −43.9 dBFS    | 35.1 µs   |
+/// | `coarse`   | 0.313°  | −30.9 dBFS    | 20.8 µs   |
+///
+/// `exact` is the default: it still skips the rebuild whenever nothing moved
+/// (static objects, and every virtual speaker of the cascaded mode), which
+/// costs nothing in fidelity. The coarser rungs are worth their residual only
+/// once judged by ear, which has not been done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HrirUpdateLattice {
+    /// Rebuild whenever the direction changes at all. Bit-identical output.
+    #[default]
+    Exact,
+    /// 1/512 of a measured cell.
+    Fine,
+    /// 1/128 of a measured cell.
+    Balanced,
+    /// 1/32 of a measured cell — the cheapest, and the one that makes object
+    /// motion nearly free on constrained hardware.
+    Coarse,
+}
+
+impl HrirUpdateLattice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Fine => "fine",
+            Self::Balanced => "balanced",
+            Self::Coarse => "coarse",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "exact" | "off" | "none" => Some(Self::Exact),
+            "fine" => Some(Self::Fine),
+            "balanced" | "medium" => Some(Self::Balanced),
+            "coarse" => Some(Self::Coarse),
+            _ => None,
+        }
+    }
+
+    /// Sub-steps per measured grid cell, or `None` for exact matching.
+    pub fn subdiv(self) -> Option<i32> {
+        match self {
+            Self::Exact => None,
+            Self::Fine => Some(512),
+            Self::Balanced => Some(128),
+            Self::Coarse => Some(32),
+        }
+    }
+}
+
+/// Live-tunable parameters for one headphone ear channel of the binaural
+/// output. Dedicated storage: the ears used to ride the first two per-speaker
+/// slots, which collides now that the cascaded mode applies the per-speaker
+/// params to the virtual speakers of the (shared) app layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EarLiveParams {
+    /// Linear gain override (default 1.0 = unity).
+    pub gain: f32,
+    /// Mute flag — independent of `gain`; unmuting restores the stored value.
+    pub muted: bool,
+}
+
+impl Default for EarLiveParams {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            muted: false,
+        }
+    }
+}
+
 /// Early-reflection (shoebox) settings for the binaural stage. World-fixed
 /// room, listener at the centre; six first-order image sources per channel.
 /// The direct/reflected ratio falling with distance is the main
@@ -370,6 +493,12 @@ impl Default for BinauralReverb {
 pub struct BinauralLiveParams {
     /// Selected output path. `SpeakerArray` keeps the classic VBAP renderer.
     pub output_mode: OutputMode,
+    /// How the binaural stage is fed: per-object HRTF (`Direct`), or the full
+    /// speaker pipeline rendered on the app's speaker layout as a virtual
+    /// room, then binauralised (`Cascaded`).
+    pub mode: BinauralMode,
+    /// Headphone L/R output gain/mute (dedicated — see [`EarLiveParams`]).
+    pub ears: [EarLiveParams; 2],
     /// Metres represented by one ADM unit; scales physical distance for the
     /// 1/d gain and ITD/ILD without altering object directions.
     pub unit_scale_m: f32,
@@ -383,6 +512,8 @@ pub struct BinauralLiveParams {
     pub tracking: crate::binaural::HeadTracking,
     /// HRIR data set to convolve with (synthetic / embedded KEMAR / SOFA).
     pub hrir_source: crate::binaural::HrirSource,
+    /// How finely a direction must change before its HRIR is rebuilt.
+    pub hrir_update_lattice: HrirUpdateLattice,
     /// Shoebox early-reflection settings (externalization).
     pub reflections: BinauralReflections,
     /// Late-reverb tail settings (distance / externalization).
@@ -396,11 +527,14 @@ impl Default for BinauralLiveParams {
     fn default() -> Self {
         Self {
             output_mode: OutputMode::default(),
+            mode: BinauralMode::default(),
+            ears: [EarLiveParams::default(); 2],
             unit_scale_m: 1.0,
             head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
             head_pose: crate::binaural::HeadPose::identity(),
             tracking: crate::binaural::HeadTracking::default(),
             hrir_source: crate::binaural::HrirSource::default(),
+            hrir_update_lattice: HrirUpdateLattice::default(),
             reflections: BinauralReflections::default(),
             reverb: BinauralReverb::default(),
             air_absorption: true,
@@ -440,6 +574,344 @@ impl Default for SpeakerLiveParams {
             delay_ms: 0.0,
         }
     }
+}
+
+/// What the rest of the output does while a speaker test runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TestIsolation {
+    /// Programme muted; only the test is heard. The default, because the point
+    /// of the test is to hear one speaker on its own.
+    #[default]
+    TestOnly,
+    /// Test summed on top of whatever is playing.
+    WithProgramme,
+    /// Programme muted AND every other speaker silenced, so nothing but the
+    /// speaker under test produces sound — including any bleed from a bed
+    /// channel routed elsewhere.
+    TestOnlySoloSpeaker,
+}
+
+impl TestIsolation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TestOnly => "test_only",
+            Self::WithProgramme => "with_programme",
+            Self::TestOnlySoloSpeaker => "test_only_solo",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "test_only" | "solo" => Some(Self::TestOnly),
+            "with_programme" | "with_program" | "mix" => Some(Self::WithProgramme),
+            "test_only_solo" | "exclusive" => Some(Self::TestOnlySoloSpeaker),
+            _ => None,
+        }
+    }
+}
+
+/// Which waveform an object test is made of.
+///
+/// One control, several stimuli, because they answer different questions:
+/// continuous noise judges timbre, gated noise judges precision, a band judges
+/// which cue is carrying the direction, a tone judges gain along a path. See
+/// [`crate::object_test::signal`] for what each one exposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObjectTestSignal {
+    /// Continuous pink noise — the default, and the best broadband reference.
+    #[default]
+    PinkNoise,
+    /// The same noise in short gated bursts, for onsets.
+    PinkBursts,
+    /// Pink noise below ~1.5 kHz: interaural time cues, essentially alone.
+    PinkLow,
+    /// Pink noise above ~3 kHz: level and spectral cues.
+    PinkHigh,
+    /// A third-octave around 8 kHz: the elevation band.
+    PinkBand,
+    /// A 500 Hz sine — a poor localiser and an excellent level meter.
+    Tone,
+    /// An impulse train, for comb filtering and pre-echo.
+    Clicks,
+    /// A WAV file chosen by the client, looped.
+    Clip,
+}
+
+impl ObjectTestSignal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PinkNoise => "pink",
+            Self::PinkBursts => "bursts",
+            Self::PinkLow => "low",
+            Self::PinkHigh => "high",
+            Self::PinkBand => "band",
+            Self::Tone => "tone",
+            Self::Clicks => "clicks",
+            Self::Clip => "clip",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "pink" | "pink_noise" | "noise" => Some(Self::PinkNoise),
+            "bursts" | "pink_bursts" | "burst" => Some(Self::PinkBursts),
+            "low" | "pink_low" | "lf" => Some(Self::PinkLow),
+            "high" | "pink_high" | "hf" => Some(Self::PinkHigh),
+            "band" | "pink_band" | "elevation" => Some(Self::PinkBand),
+            "tone" | "sine" => Some(Self::Tone),
+            "clicks" | "click" | "impulse" => Some(Self::Clicks),
+            "clip" | "file" | "wav" => Some(Self::Clip),
+            _ => None,
+        }
+    }
+}
+
+/// A running per-speaker test signal.
+///
+/// Deliberately carries no timing: how long a test lasts is a UI policy (hold,
+/// fixed burst, toggle), so Studio owns the clock and simply clears this when
+/// the test should stop. The renderer keeps only a safety cap, so a client that
+/// dies mid-test cannot leave noise playing forever.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpeakerTest {
+    /// Index into the layout of the speaker under test.
+    pub speaker_idx: usize,
+    /// Peak amplitude of the test signal, linear. The renderer guarantees the
+    /// injected contribution never exceeds `±level`, so `1.0` is exactly full
+    /// scale and anything below it cannot clip on its own.
+    ///
+    /// Peak, not RMS: the number exists to answer "will this clip", and only a
+    /// peak figure does. Treating it as RMS against the unit-RMS pink-noise
+    /// generator is what made a -6 dBFS test render peaks near +6 dBFS.
+    pub level: f32,
+    pub isolation: TestIsolation,
+}
+
+/// A running object test signal: pink noise placed at a position in the room
+/// and panned there by the active render backend.
+///
+/// The complement to [`SpeakerTest`]. A speaker test asks "what does this
+/// speaker do"; an object test asks "where does the renderer put a source I
+/// place here" — so it deliberately goes through the live backend's gain query
+/// rather than writing into one channel, and hears whatever out-of-hull mode,
+/// distance model and spread are currently configured.
+///
+/// Like [`SpeakerTest`] it carries no timing: the trigger policy is Studio's,
+/// and the renderer keeps only a safety cap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObjectTest {
+    /// Where the source sits, in ADM Cartesian coordinates.
+    /// x ∈ [-1, 1] left/right · y ∈ [-1, 1] back/front · z ∈ [-1, 1] floor/ceiling.
+    ///
+    /// Changing this must NOT restart the signal — moving a source is the whole
+    /// point of the tool, and a restart on every drag would click. The renderer
+    /// keeps position out of the generator's identity and ramps the gains
+    /// instead, so the noise runs continuously while the object moves.
+    pub position: [f32; 3],
+    /// Object spatial extent per axis (w, d, h), each in [0, 1].
+    /// `[0, 0, 0]` is a point source, which is what a placement test wants by
+    /// default — it makes the backend's positioning audible with nothing
+    /// smeared across it.
+    pub size: [f32; 3],
+    /// Peak amplitude, linear — same contract as [`SpeakerTest::level`]: the
+    /// injected contribution never exceeds `±level`, so `1.0` is full scale.
+    ///
+    /// The bound survives panning because a backend's gains are power-normalised
+    /// (`Σ g² = 1`, so every `g ≤ 1`): clamping the mono noise to `±level`
+    /// before it is panned bounds every speaker's share of it too.
+    pub level: f32,
+    /// What the programme does during the test. `TestOnlySoloSpeaker` has no
+    /// meaning here — an object has no one speaker to solo — and is treated as
+    /// [`TestIsolation::TestOnly`].
+    pub isolation: TestIsolation,
+    /// Which waveform to place there.
+    ///
+    /// Changing it *does* restart the signal, unlike moving the source: it is a
+    /// deliberate "try that again with something else", and the ear expects the
+    /// new stimulus to start at its beginning.
+    pub signal: ObjectTestSignal,
+}
+
+/// The axis an object test orbits around.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum RotationAxis {
+    /// Left/right axis: the circle stands in the back-front / floor-ceiling plane.
+    X,
+    /// Back/front axis: the circle stands in the floor-ceiling / left-right plane.
+    Y,
+    /// Floor/ceiling axis: a horizontal circle. The default, and the one a
+    /// listener reads most easily — the classic "around the room" sweep.
+    #[default]
+    Z,
+    /// An arbitrary axis, given as a direction in the usual ADM angles.
+    Free {
+        azimuth_deg: f32,
+        elevation_deg: f32,
+    },
+}
+
+impl RotationAxis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::X => "x",
+            Self::Y => "y",
+            Self::Z => "z",
+            Self::Free { .. } => "free",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "x" => Some(Self::X),
+            "y" => Some(Self::Y),
+            "z" => Some(Self::Z),
+            "free" => Some(Self::Free {
+                azimuth_deg: 0.0,
+                elevation_deg: 0.0,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The axis, plus two unit vectors spanning the plane the object circles in.
+    ///
+    /// Returned together because they have to agree: `(u, v, axis)` is
+    /// right-handed, so a rising phase always turns the same way about the axis
+    /// whichever variant this is.
+    pub fn frame(self) -> ([f32; 3], [f32; 3], [f32; 3]) {
+        match self {
+            // For the canonical axes the plane vectors are picked so the circle
+            // starts where a reader expects: about Z (a horizontal circle),
+            // phase 0 is out to the right and the source turns towards the front.
+            Self::X => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+            Self::Y => ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+            Self::Z => ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            Self::Free {
+                azimuth_deg,
+                elevation_deg,
+            } => {
+                let az = azimuth_deg.to_radians();
+                let el = elevation_deg.to_radians();
+                let axis = [el.cos() * az.sin(), el.cos() * az.cos(), el.sin()];
+                // Any pair perpendicular to the axis will do. Seeding from
+                // whichever world axis is *least* aligned with it keeps the
+                // cross product well away from zero — which is exactly what a
+                // fixed seed would hit when the user points the axis at it.
+                let seed = if axis[2].abs() < 0.9 {
+                    [0.0, 0.0, 1.0]
+                } else {
+                    [1.0, 0.0, 0.0]
+                };
+                let u = normalize(cross(seed, axis));
+                let v = normalize(cross(axis, u));
+                (axis, u, v)
+            }
+        }
+    }
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n < 1e-6 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [v[0] / n, v[1] / n, v[2] / n]
+    }
+}
+
+/// An orbit applied to the object test's placed position.
+///
+/// Advanced by the renderer rather than driven by the client, deliberately. The
+/// point of this test is to judge how smoothly the panning moves, and a client
+/// stepping it over OSC would hand that judgement to the UI thread's worst
+/// moment: one long layout or a throttled timer and the orbit stutters, which a
+/// listener would blame on the renderer. Advancing it on the block clock makes
+/// the motion a property of the signal instead of of the window manager.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObjectTestRotation {
+    pub axis: RotationAxis,
+    /// Radius of the circle in ADM units. `0` means no rotation, which is why
+    /// this needs no separate on/off flag.
+    ///
+    /// A radius rather than a diameter because that is the number the geometry
+    /// is stated in: the distance from the centre to a room corner is √3, to a
+    /// vertical edge √2, and those are the sizes worth reaching for.
+    pub radius: f32,
+    /// Seconds per revolution.
+    pub period_s: f32,
+}
+
+impl Default for ObjectTestRotation {
+    fn default() -> Self {
+        Self {
+            axis: RotationAxis::Z,
+            radius: 0.0,
+            period_s: 4.0,
+        }
+    }
+}
+
+impl ObjectTestRotation {
+    /// Whether this actually moves anything.
+    pub fn is_active(&self) -> bool {
+        self.radius > 0.0 && self.period_s > 0.0
+    }
+
+    /// Where the source sits `phase_turns` into the orbit, given its placed
+    /// position.
+    ///
+    /// Clamped per axis to the room — the literal reading of "keep it inside
+    /// the room", and the one that keeps the requested radius honest.
+    ///
+    /// The cost is a change of shape, not of motion. Clamping acts on each axis
+    /// separately, so a circle centred near a wall keeps sweeping the axes that
+    /// still fit: it becomes a D, running straight along the wall for that part
+    /// of the turn instead of arcing through it. Measured on a circle of radius
+    /// 1 centred at x = 0.9, 47% of the turn runs along the wall and the source
+    /// never once stops. The alternative — shrinking the radius until the circle
+    /// fits — would quietly hand back a smaller circle than the one asked for.
+    pub fn position_at(&self, base: [f32; 3], phase_turns: f32) -> [f32; 3] {
+        if !self.is_active() {
+            return base;
+        }
+        let (_, u, v) = self.axis.frame();
+        let (s, c) = (phase_turns * std::f32::consts::TAU).sin_cos();
+        let r = self.radius;
+        let mut out = [0.0f32; 3];
+        for i in 0..3 {
+            out[i] = (base[i] + r * (u[i] * c + v[i] * s)).clamp(-1.0, 1.0);
+        }
+        out
+    }
+}
+
+/// Per-speaker live params seeded from a layout: only the configured delays
+/// (gains/mutes are runtime-only and start at defaults). Shared by renderer
+/// construction and the live profile switch so the two cannot drift.
+pub fn speaker_live_from_layout(
+    layout: &crate::speaker_layout::SpeakerLayout,
+) -> std::collections::HashMap<usize, SpeakerLiveParams> {
+    let mut speakers = std::collections::HashMap::new();
+    for (idx, spk) in layout.speakers.iter().enumerate() {
+        if spk.delay_ms != 0.0 {
+            speakers.insert(
+                idx,
+                SpeakerLiveParams {
+                    delay_ms: spk.delay_ms.max(0.0),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+    speakers
 }
 
 #[derive(Clone, Copy)]
@@ -603,6 +1075,45 @@ pub struct LiveParams {
     /// Absent entries use `SpeakerLiveParams::default()` (gain=1.0, muted=false, delay=0 ms).
     pub speakers: HashMap<usize, SpeakerLiveParams>,
 
+    /// Speaker test signal, `None` when no test is running. Transient by
+    /// design: never persisted to the config, and cleared on a fresh start, so
+    /// a saved session can never come up making noise.
+    pub speaker_test: Option<SpeakerTest>,
+
+    /// Object test signal, `None` when no test is running. Transient exactly
+    /// like [`Self::speaker_test`], and independent of it: the two can run at
+    /// once, which is the direct way to compare a rendered position against the
+    /// speaker it should be favouring.
+    pub object_test: Option<ObjectTest>,
+
+    /// Orbit applied to the object test's placed position. Kept beside
+    /// `object_test` rather than inside it because the two change on completely
+    /// different clocks: the position is re-sent on every pointer move while
+    /// dragging, and folding the orbit into that message would mean re-stating
+    /// it hundreds of times a second — or losing it once. Transient like the
+    /// test itself. A diameter of 0 means no rotation.
+    pub object_test_rotation: ObjectTestRotation,
+
+    /// The clip [`ObjectTestSignal::Clip`] plays, once a client has chosen one.
+    ///
+    /// Beside `object_test` rather than inside it for two reasons: it would make
+    /// that `Copy` struct own a heap allocation the render path copies every
+    /// frame, and the file is chosen once while the test message is re-sent on
+    /// every pointer move. Behind an `Arc` so swapping clips never blocks the
+    /// render thread on a deallocation.
+    pub object_test_clip: Option<std::sync::Arc<crate::object_test::ObjectTestClip>>,
+
+    /// Idle-feed arm generation for the speaker-test pane: 0 = off, and every
+    /// arm message bumps it, so the decode loop can refresh its keepalive
+    /// deadline on each re-arm even though the armed state itself does not
+    /// change. While armed (and while either test runs), the decode loop
+    /// fabricates silence input frames when no real input is flowing, keeping
+    /// the whole output chain warm so a test is audible immediately. Serves the
+    /// speaker test and the object test alike — the address keeps its original
+    /// name, but the feed is not specific to either. Transient like
+    /// `speaker_test`: never persisted, cleared on a fresh start.
+    pub speaker_test_idle_feed_gen: u64,
+
     /// Room proportions `[width, length, height]` used to scale ADM coordinates
     /// before VBAP panning.  Updated live via `/omniphony/control/room_ratio`.
     pub room_ratio: [f32; 3],
@@ -625,10 +1136,10 @@ pub struct LiveParams {
     /// to compute and broadcast the applied gain.
     pub dialogue_level: Option<i8>,
 
-    /// Enable distance-based antipodal diffuse blending.
+    /// Enable distance-based mirrored diffuse blending.
     ///
-    /// When active, each object's VBAP gains are blended with the gains of the
-    /// antipodal point `(-x, -y, z)` (same elevation, opposite horizontal direction).
+    /// When active, each object's VBAP gains are blended with the gains of a
+    /// mirror image of its position, selected by `distance_diffuse_mirror_axes`.
     /// The mix is controlled by the ADM distance (pre-room_ratio):
     ///   - dist = 0  →  50 % direct + 50 % mirror  (iso-energy weights: √0.5 each)
     ///   - dist ≥ `distance_diffuse_threshold`  →  100 % direct
@@ -640,6 +1151,12 @@ pub struct LiveParams {
     /// Curve exponent applied to the normalised distance before computing the
     /// blend weight.  1.0 = linear, < 1 = fast-near, > 1 = slow-near.  Default: 1.0.
     pub distance_diffuse_curve: f32,
+
+    /// ADM axes negated to build the diffuse mirror image.  Default `xy`, the
+    /// half-turn about the vertical axis the stage has always used; `y` alone
+    /// mirrors front/back, `xyz` inverts through the origin.  Updated live via
+    /// `/omniphony/control/distance_diffuse/mirror_axes`.
+    pub distance_diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes,
 
     /// Runtime tuning parameters for the hybrid backend.
     pub hybrid: HybridLiveParams,
@@ -781,6 +1298,7 @@ fn evaluation_build_config_from_live(
             use_distance_diffuse: live.use_distance_diffuse,
             distance_diffuse_threshold: live.distance_diffuse_threshold,
             distance_diffuse_curve: live.distance_diffuse_curve,
+            diffuse_mirror_axes: live.distance_diffuse_mirror_axes,
             distance_model: live.distance_model,
         },
         position_interpolation: live.evaluation.position_interpolation,
@@ -911,12 +1429,22 @@ pub struct RendererControl {
 
     /// `true` while a VBAP recompute is running in the background.
     pub recomputing: AtomicBool,
+    /// A rebuild request arrived while `recomputing` was already true; the
+    /// finishing recompute re-triggers once so the request is not dropped
+    /// (a profile switch or layout edit during a running rebuild must still
+    /// take effect).
+    pub recompute_pending: AtomicBool,
 
     /// `true` when live params have been changed via OSC since the last save.
     /// Reset to `false` by a successful `/omniphony/control/save_config`.
     pub config_dirty: AtomicBool,
 
     /// Bumped whenever per-object live params change.
+    /// Render sample rate, published so control-thread work that has to produce
+    /// samples — loading a test clip, which is resampled once on the way in —
+    /// can target the rate the render path actually runs at.
+    pub sample_rate: std::sync::atomic::AtomicU32,
+
     pub object_params_generation: std::sync::atomic::AtomicU64,
 
     /// Bumped whenever per-speaker live params change.
@@ -1020,6 +1548,28 @@ pub struct RendererControl {
     /// Current fixed-channel/synthesized-object applicability state supplied by
     /// the engine on declaration/topology/option changes (never per sample).
     fixed_channel_processing: RwLock<String>,
+
+    /// Named config profiles as seen by clients: active name + full name list
+    /// (see docs/config-profiles.md). Seeded from the config at boot and
+    /// updated by the OSC profile operations; read by the state snapshot.
+    /// Control-plane only, never touched on the audio path.
+    profiles_info: Mutex<ProfilesInfo>,
+}
+
+/// Client-visible view of the named config profiles (active + names).
+#[derive(Debug, Clone)]
+pub struct ProfilesInfo {
+    pub active: String,
+    pub names: Vec<String>,
+}
+
+impl Default for ProfilesInfo {
+    fn default() -> Self {
+        Self {
+            active: crate::config::DEFAULT_PROFILE.to_string(),
+            names: vec![crate::config::DEFAULT_PROFILE.to_string()],
+        }
+    }
 }
 
 impl RendererControl {
@@ -1041,6 +1591,7 @@ impl RendererControl {
             editable_layout: Mutex::new(editable_layout),
             backend_rebuild_params: RwLock::new(backend_rebuild_params),
             recomputing: AtomicBool::new(false),
+            recompute_pending: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
@@ -1056,6 +1607,8 @@ impl RendererControl {
             bridge_path: Mutex::new(None),
             bridge_supported_drc_modes: Mutex::new(Vec::new()),
             requested_ramp_mode: Mutex::new(RampMode::Frame),
+            // Seeded by the renderer at construction; 48 kHz until then.
+            sample_rate: std::sync::atomic::AtomicU32::new(48_000),
             // Seeded from config (or a host default) after construction.
             meter_rate_hz_bits: Arc::new(std::sync::atomic::AtomicU32::new(50.0_f32.to_bits())),
             diag_rate_hz_bits: Arc::new(std::sync::atomic::AtomicU32::new(50.0_f32.to_bits())),
@@ -1068,7 +1621,27 @@ impl RendererControl {
                 r#"{"stream":"idle","labels":[],"phantom":"no_stream","height":"no_stream"}"#
                     .to_string(),
             ),
+            profiles_info: Mutex::new(ProfilesInfo::default()),
         })
+    }
+
+    /// Set the client-visible profiles view (boot seed and OSC profile ops).
+    pub fn set_profiles_info(&self, info: ProfilesInfo) {
+        *self.profiles_info.lock() = info;
+    }
+
+    /// Drop every host-set backend parameter. The live profile switch calls
+    /// this before replaying the incoming profile's `backend_params`: the
+    /// replay only inserts, so without the clear the outgoing profile's keys
+    /// would survive the switch and be committed into the incoming profile by
+    /// the next save.
+    pub fn clear_backend_params(&self) {
+        self.backend_params.write().clear();
+    }
+
+    /// Current client-visible profiles view (active name + name list).
+    pub fn profiles_info(&self) -> ProfilesInfo {
+        self.profiles_info.lock().clone()
     }
 
     /// Register an additional render backend. Call at startup, before audio runs;
@@ -1496,11 +2069,15 @@ impl RendererControl {
                 },
             )
             .collect();
+        // Speaker positions ride along for the centroid-jump derived field —
+        // already in the same normalised [-1, 1] cube as the grid.
+        let speaker_positions = layout.speakers.iter().map(|s| [s.x, s.y, s.z]).collect();
         Ok(crate::band_gaintable::BandGaintableFull {
             x_positions,
             y_positions,
             z_positions,
             speaker_count,
+            speaker_positions,
             bands: band_fields,
         })
     }

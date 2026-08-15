@@ -207,7 +207,13 @@ export class EnergyVolume {
    * returns the scalar energy at an Omniphony-normalised position (x=width,
    * y=depth, z=height), each in [-1, 1].
    */
-  update({ resolution, opacity, mix, gammaAccumulate, gammaMip, colormap, customStops, smooth, sampleEnergy, sampleColor }) {
+  /**
+   * `maxLevel` pins the level→alpha normalisation instead of dividing by the
+   * field's own maximum (the default, which makes a field self-scaling). Pass
+   * it when the level already carries an ABSOLUTE meaning — e.g. a dB deviation
+   * mapped to [0,1] — otherwise a 2 dB spread would render like a 20 dB one.
+   */
+  update({ resolution, opacity, mix, gammaAccumulate, gammaMip, colormap, customStops, smooth, sampleEnergy, sampleColor, maxLevel }) {
     const n = Math.max(8, Math.min(64, Math.round(Number(resolution) || 24)));
     this.ensureTexture(n);
 
@@ -295,7 +301,9 @@ export class EnergyVolume {
     } else {
       u.uCustomStopCount.value = 0;
     }
-    u.uInvMax.value = maxEnergy > 0 ? 1 / maxEnergy : 0;
+    const pinnedMax = Number(maxLevel);
+    const effectiveMax = Number.isFinite(pinnedMax) && pinnedMax > 0 ? pinnedMax : maxEnergy;
+    u.uInvMax.value = effectiveMax > 0 ? 1 / effectiveMax : 0;
     u.uOpacity.value = Math.max(0.05, Math.min(1.0, Number(opacity) || 0.55));
     u.uGammaAccumulate.value = gammaAccumulate;
     u.uGammaMip.value = gammaMip;

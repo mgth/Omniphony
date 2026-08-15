@@ -22,6 +22,7 @@ import {
   usesNumericSpatialPlaceholders
 } from './state.js';
 
+import { setObjectTestReportedPosition, setObjectTestClipState } from './controls/object-test.js';
 import { updateSource, updateSourceLevel, updateSourceGains, updateSourceBandGains, updateSourceSize, updateSourceTag, removeSource } from './sources.js';
 import { syncVirtualBedObjects } from './controls/virtual-bed.js';
 import {
@@ -56,10 +57,13 @@ import {
   updateVbapCartesian,
   updateVbapPolar,
   updateVbapPositionInterpolation,
+  clearRecomputeAckWatchdog,
   renderVbapStatus
 } from './controls/vbap.js';
 import { invoke } from '@tauri-apps/api/core';
 import { setSpeakerGainTable } from './scene/speaker-gaintable.js';
+import { updateHeadphoneMeter } from './controls/headphone-meter.js';
+import { applyOverlayState } from './mpvOverlay.js';
 import { updateAudioFormatDisplay, rebuildObjectGeneratorControls, rebuildPhantomControls } from './controls/audio.js';
 import { reflectBoundOptions } from './options-binder.js';
 import { updateInputControlUI } from './controls/input.js';
@@ -78,7 +82,7 @@ import { t } from './i18n.js';
 import { applyInitState } from './init.js';
 import { setHeadPoseQuat } from './scene/head-pose.js';
 import { setInputSectionOpen } from './modals.js';
-import { syncSpeakerHeatmapBandSelect } from './scene/speaker-band-select.js';
+import { syncCrossoverBandSelects } from './scene/speaker-band-select.js';
 
 // Apply one coalesced high-frequency event. The Rust side batches positions and
 // meters (one `app.emit` per object/speaker per frame grew WebView2 memory
@@ -88,6 +92,9 @@ function applyBatchedEvent(event, payload) {
   switch (event) {
     case 'source:update':
       updateSource(payload.id, payload.position);
+      break;
+    case 'objectTest:position':
+      setObjectTestReportedPosition([payload.x, payload.y, payload.z], payload);
       break;
     case 'source:meter':
       updateSourceLevel(payload.id, payload.meter);
@@ -100,6 +107,12 @@ function applyBatchedEvent(event, payload) {
       break;
     case 'speaker:meter':
       updateSpeakerLevel(Number(payload.id), payload.meter);
+      break;
+    case 'ear:meter':
+      updateHeadphoneMeter(Number(payload.id), {
+        peakDbfs: Number(payload.meter?.peakDbfs ?? -100),
+        rmsDbfs: Number(payload.meter?.rmsDbfs ?? -100)
+      });
       break;
     case 'master:meter':
       updateMasterLevel(payload.meter);
@@ -156,6 +169,13 @@ export function setupTauriBridge() {
   // Sources
   // -----------------------------------------------------------------------
 
+  // Where the object test's source actually is. The renderer advances the orbit
+  // phase, so this is the only source of truth for it — Studio draws the path
+  // but cannot know the angle.
+  listen('objectTest:position', ({ payload }) => {
+    setObjectTestReportedPosition([payload.x, payload.y, payload.z], payload);
+  });
+
   listen('source:update', ({ payload }) => {
     updateSource(payload.id, payload.position);
     // A live object arrived → the spatial stream is active. Mark it (a
@@ -201,6 +221,12 @@ export function setupTauriBridge() {
   // `speaker_gaintable:uptodate` (subscribe ack when our version already matches)
   // is intentionally not handled: it fires on every 5 s heartbeat and carries no
   // action for the client.
+
+  // The engine republishes the overlay display prefs whenever they change —
+  // including from an mpv keybind, which Studio has no other way of seeing.
+  listen('overlay:state', ({ payload }) => {
+    applyOverlayState(payload);
+  });
 
   listen('source:gains', ({ payload }) => {
     updateSourceGains(payload.id, payload.gains);
@@ -259,6 +285,13 @@ export function setupTauriBridge() {
 
   listen('speaker:meter', ({ payload }) => {
     updateSpeakerLevel(Number(payload.id), payload.meter);
+  });
+
+  listen('ear:meter', ({ payload }) => {
+    updateHeadphoneMeter(Number(payload.id), {
+      peakDbfs: Number(payload.meter?.peakDbfs ?? -100),
+      rmsDbfs: Number(payload.meter?.rmsDbfs ?? -100)
+    });
   });
 
   listen('master:meter', ({ payload }) => {
@@ -320,7 +353,7 @@ export function setupTauriBridge() {
     if (!speaker) return;
     const fl = payload.freq_low;
     speaker.freqLow = fl != null && fl > 0 ? fl : null;
-    syncSpeakerHeatmapBandSelect();
+    syncCrossoverBandSelects();
     if (app.selectedSpeakerIndex === index) renderSpeakerEditor();
   });
 
@@ -331,7 +364,7 @@ export function setupTauriBridge() {
     if (!speaker) return;
     const fh = payload.freq_high;
     speaker.freqHigh = fh != null && fh > 0 ? fh : null;
-    syncSpeakerHeatmapBandSelect();
+    syncCrossoverBandSelects();
     if (app.selectedSpeakerIndex === index) renderSpeakerEditor();
   });
 
@@ -414,9 +447,28 @@ export function setupTauriBridge() {
     updateAboutRendererVersion();
   });
 
+  listen('render:executable', ({ payload }) => {
+    app.renderExecutable = String(payload?.value ?? '').trim() || null;
+    updateAboutRendererVersion();
+    renderOscStatus();
+  });
+
   listen('render:abi', ({ payload }) => {
     app.renderAbi = String(payload?.value ?? '').trim() || null;
     updateAboutRendererVersion();
+  });
+
+  listen('state:object_test_clip', ({ payload }) => {
+    // The renderer answers every clip request here, refusals included. Parsed
+    // rather than displayed raw: a bad path should read as a message, not as
+    // JSON.
+    let state = null;
+    try {
+      state = JSON.parse(String(payload?.value ?? '{}'));
+    } catch {
+      state = null;
+    }
+    setObjectTestClipState(state);
   });
 
   listen('render:bridge_error', ({ payload }) => {
@@ -433,6 +485,9 @@ export function setupTauriBridge() {
   // -----------------------------------------------------------------------
 
   listen('vbap:recomputing', ({ payload }) => {
+    // The engine answered, so it is alive and understood the control that
+    // started this: stand the unreachable-engine watchdog down.
+    clearRecomputeAckWatchdog();
     app.vbapRecomputing = payload.enabled === true;
     if (app.vbapRecomputing) {
       app.recomputeError = null;

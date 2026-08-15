@@ -3,7 +3,7 @@ mod position;
 pub use position::PositionRampStrategy;
 
 use crate::render_backend::RenderRequest;
-use crate::spatial_vbap::DistanceModel;
+use crate::spatial_vbap::{DistanceModel, MirrorAxes};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RampRenderParams {
@@ -14,6 +14,7 @@ pub struct RampRenderParams {
     pub use_distance_diffuse: bool,
     pub distance_diffuse_threshold: f32,
     pub distance_diffuse_curve: f32,
+    pub diffuse_mirror_axes: MirrorAxes,
     pub distance_model: DistanceModel,
 }
 
@@ -34,6 +35,7 @@ impl RampRenderParams {
             use_distance_diffuse: self.use_distance_diffuse,
             distance_diffuse_threshold: self.distance_diffuse_threshold,
             distance_diffuse_curve: self.distance_diffuse_curve,
+            diffuse_mirror_axes: self.diffuse_mirror_axes,
             distance_model: self.distance_model,
         }
     }

@@ -23,3 +23,18 @@ pub fn build_fingerprint() -> String {
         env!("BUILD_TIMESTAMP"),
     )
 }
+
+/// Absolute path of the process serving this engine — the `orender` binary, or
+/// the host (mpv) when the engine is embedded through `liborender`.
+///
+/// Published alongside the build fingerprint because the fingerprint alone
+/// cannot separate two builds of the same commit living in different checkouts,
+/// which is exactly the case a client hits when it believes it is driving its
+/// own renderer but has silently attached to one another environment left
+/// running. Empty when the platform will not tell us.
+pub fn executable_path() -> String {
+    std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default()
+}

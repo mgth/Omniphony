@@ -214,7 +214,12 @@ pub fn build_renderer_state_json(
             "enabled": live.use_distance_diffuse,
             "threshold": live.distance_diffuse_threshold,
             "curve": live.distance_diffuse_curve,
-            "metric": live.distance_diffuse_metric.to_string()
+            "metric": live.distance_diffuse_metric.to_string(),
+            "mirrorAxes": {
+                "x": live.distance_diffuse_mirror_axes.x,
+                "y": live.distance_diffuse_mirror_axes.y,
+                "z": live.distance_diffuse_mirror_axes.z
+            }
         },
         "vbapCartesian": {
             "xSize": live.evaluation.cartesian.x_size,
@@ -233,6 +238,11 @@ pub fn build_renderer_state_json(
             .unwrap_or_else(|_| json!({})),
         "binaural": {
             "outputMode": live.binaural.output_mode.as_str(),
+            "mode": live.binaural.mode.as_str(),
+            "ears": live.binaural.ears.iter().map(|e| json!({
+                "gain": e.gain,
+                "muted": e.muted,
+            })).collect::<Vec<_>>(),
             "unitScaleM": live.binaural.unit_scale_m,
             "headRadiusM": live.binaural.head_radius_m,
             "reflections": {
@@ -380,6 +390,17 @@ pub fn build_speakers_state_json(
 /// core never references host-owned audio/input state directly; capabilities
 /// are passed in (`has_audio`/`has_input`) by the engine wrapper, derived from
 /// whether a `HostControlHandler` is attached.
+/// JSON payload of [`crate::osc_contract::STATE_PROFILES`]:
+/// `{"active": "...", "names": ["..."]}`.
+pub fn profiles_state_json(control: &RendererControl) -> String {
+    let info = control.profiles_info();
+    json!({
+        "active": info.active,
+        "names": info.names,
+    })
+    .to_string()
+}
+
 pub fn build_live_state_bundle(
     control: &Arc<RendererControl>,
     has_audio: bool,
@@ -421,6 +442,12 @@ pub fn build_live_state_bundle(
             // phantom param schemas, so clients can build controls from it.
             addr: crate::osc_contract::STATE_OPTIONS_SCHEMA.to_string(),
             args: vec![OscType::String(renderer::options::schema_json())],
+        }),
+        OscPacket::Message(OscMessage {
+            // Named config profiles (docs/config-profiles.md): active + list,
+            // so clients render the picker without reading the config file.
+            addr: crate::osc_contract::STATE_PROFILES.to_string(),
+            args: vec![OscType::String(profiles_state_json(control))],
         }),
         OscPacket::Message(OscMessage {
             addr: "/omniphony/state/renderer".to_string(),
@@ -576,6 +603,14 @@ pub fn build_live_state_bundle(
             // liborender-vs-orender version skew is visible at a glance.
             addr: "/omniphony/state/render/version".to_string(),
             args: vec![OscType::String(crate::build_fingerprint())],
+        }),
+        OscPacket::Message(OscMessage {
+            // Path of the process serving this engine. Two checkouts of the same
+            // commit share a fingerprint, so only the path tells a client whether
+            // the renderer answering on this port is the one it started or one
+            // left behind by another environment.
+            addr: "/omniphony/state/render/executable".to_string(),
+            args: vec![OscType::String(crate::executable_path())],
         }),
         OscPacket::Message(OscMessage {
             // C-ABI version ("major.minor") of the liborender shim hosting this

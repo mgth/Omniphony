@@ -1,0 +1,12 @@
+[package]
+name = "dsp_fixtures"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87.0"
+license = "GPL-3.0-or-later"
+description = "Deterministic scenes, goldens and signal analysis for Omniphony DSP validation. Dev-only: nothing in the shipped binaries depends on this."
+publish = false
+
+[dependencies]
+renderer = { path = "../renderer" }
+realfft = "3.5"

@@ -36,6 +36,10 @@ pub use osc::{ObjectMeta, OscSender};
 pub use renderer::config::{
     Config, RenderConfig, default_config_path, migrate_legacy_windows_config,
 };
+/// Per-environment runtime overrides (`OMNIPHONY_OSC_PORT`, `OMNIPHONY_CONFIG_DIR`,
+/// `OMNIPHONY_INPUT_PIPE`), re-exported so embedding hosts resolve the same
+/// workflow namespace defaults as the `orender` CLI.
+pub use renderer::runtime_env;
 pub use virtual_bed::{build_virtual_bed_events, build_virtual_bed_objects};
 
 /// Install the shared live-log logger used by the engine.

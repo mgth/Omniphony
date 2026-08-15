@@ -30,13 +30,16 @@ pub mod reflections;
 pub mod reverb;
 pub mod tracking;
 
+#[cfg(test)]
+mod validation;
+
 pub use head_pose::HeadPose;
 pub use tracking::{HeadTracking, HeadTrackingFormat};
 
 use crate::delay_line::DelayLine;
 use crate::live_params::{BinauralReflections, BinauralReverb};
 use convolver::EarConvolver;
-use hrir::{HRIR_LEN, HrirPair, HrirSet, ParametricPinnaHrir};
+use hrir::{DirectionKey, HRIR_LEN, HrirPair, HrirSet, ParametricPinnaHrir};
 use measured::MeasuredHrirData;
 use prtf::SpagnolPrtfHrir;
 use reflections::ReflectionBank;
@@ -198,6 +201,11 @@ struct ChannelDsp {
     /// Air-absorption smoothing coefficient for the current block
     /// (0 = bypass, →1 = heavy low-pass). Updated per block from distance.
     air_coeff: f32,
+    /// Lattice direction the loaded kernels were built from, tagged with the
+    /// HRIR grid generation they came out of — a live source switch replaces
+    /// the grid under us, and a key alone would then match across two
+    /// different datasets and freeze the stale kernels in place.
+    last_dir: Option<(u32, DirectionKey)>,
 }
 
 impl ChannelDsp {
@@ -211,8 +219,30 @@ impl ChannelDsp {
             refl: None,
             air_state: 0.0,
             air_coeff: 0.0,
+            last_dir: None,
         }
     }
+}
+
+/// A source rendered alongside the input channels, from its own mono block.
+///
+/// Exists for the object test, which has no input channel to ride on: it is a
+/// source the renderer invents, so it needs a way in that does not disturb the
+/// channel numbering everything else depends on. Giving it a slot past the end
+/// of the channels means it picks up the full spatialization path — HRIR, ITD,
+/// air absorption, early reflections, reverb send — rather than a simplified
+/// stand-in, which is the whole reason a *binaural* object test is worth having
+/// where a binaural speaker test is not.
+pub struct ExtraSource<'a> {
+    /// Mono samples. Normally `sample_length` of them, but **may be shorter**:
+    /// the object test's safety cap ends a run mid-block, and the block it
+    /// returns then stops where the cap did. Only the samples present are
+    /// rendered; the rest of the frame gets nothing from this source.
+    pub pcm: &'a [f32],
+    /// World (ADM) position, same convention as `chan_pos`.
+    pub position: [f64; 3],
+    /// Linear gain applied on top of the block.
+    pub gain: f32,
 }
 
 /// Per-frame live parameters for [`BinauralRenderer::render_frame`], grouped
@@ -224,26 +254,46 @@ pub struct BinauralFrameParams {
     pub reflections: BinauralReflections,
     pub reverb: BinauralReverb,
     pub air_absorption: bool,
+    /// How finely a direction must change before its HRIR is rebuilt.
+    pub hrir_update_lattice: crate::live_params::HrirUpdateLattice,
+}
+
+/// An HRIR grid together with the source it was built from.
+///
+/// The two travel as one allocation so that swapping a grid in also swaps the
+/// answer to "which source is actually live" — see
+/// [`BinauralRenderer::rebuild_pending`]. Keeping them in separate fields would
+/// let the pair disagree, which is exactly what this type exists to prevent.
+struct Grid {
+    source: HrirSource,
+    set: HrirSet,
 }
 
 /// Owns the per-channel binaural DSP state and the HRIR set; renders all input
 /// channels of a frame to interleaved stereo.
 pub struct BinauralRenderer {
     sample_rate: u32,
-    hrir: std::sync::Arc<HrirSet>,
+    hrir: std::sync::Arc<Grid>,
     /// HRIR source last *requested* (the active grid may briefly lag it while
     /// the worker builds — see [`Self::ensure_source`]).
     source: HrirSource,
     /// Finished grids from the rebuild worker, awaiting the audio-thread swap.
-    incoming: std::sync::Arc<arc_swap::ArcSwapOption<HrirSet>>,
+    incoming: std::sync::Arc<arc_swap::ArcSwapOption<Grid>>,
     /// Requests to the long-lived rebuild worker. Dropping the renderer drops
     /// the sender, which terminates the worker.
     rebuild_tx: std::sync::mpsc::Sender<HrirSource>,
     /// Per-input-channel DSP state, indexed directly by channel (sparse tail is
     /// fine; reset when the channel count shrinks).
     channels: Vec<Option<ChannelDsp>>,
+    /// DSP state for the extra source (the object test), kept apart from
+    /// `channels` on purpose: it is not a channel and the input width it would
+    /// otherwise be indexed past changes whenever playback starts or stops.
+    extra_dsp: Option<ChannelDsp>,
     /// Reusable HRIR scratch so `at()` writes in place (no per-channel alloc).
     hrir_scratch: HrirPair,
+    /// Bumped every time a rebuilt grid is swapped in, so the per-channel
+    /// direction cache cannot match across two different datasets.
+    hrir_generation: u32,
     /// Shared late-reverb tail; allocated lazily while enabled.
     fdn: Option<Fdn>,
     /// Mono reverb send bus, one sample per frame (reused).
@@ -253,7 +303,7 @@ pub struct BinauralRenderer {
 impl BinauralRenderer {
     pub fn new(sample_rate: u32) -> Self {
         let source = HrirSource::default();
-        let incoming: std::sync::Arc<arc_swap::ArcSwapOption<HrirSet>> =
+        let incoming: std::sync::Arc<arc_swap::ArcSwapOption<Grid>> =
             std::sync::Arc::new(arc_swap::ArcSwapOption::empty());
         // Long-lived rebuild worker: grid builds (allocations, provider
         // renders, SOFA file I/O) must never run on the audio thread. The
@@ -270,7 +320,7 @@ impl BinauralRenderer {
                             req = newer;
                         }
                         let set = Self::build_hrir(&req, sample_rate);
-                        slot.store(Some(std::sync::Arc::new(set)));
+                        slot.store(Some(std::sync::Arc::new(Grid { source: req, set })));
                     }
                 })
                 .expect("spawn binaural HRIR rebuild worker");
@@ -279,15 +329,20 @@ impl BinauralRenderer {
             sample_rate,
             // The initial (default) grid is built synchronously: `new` runs on
             // a control thread, and the renderer must be usable immediately.
-            hrir: std::sync::Arc::new(Self::build_hrir(&source, sample_rate)),
+            hrir: std::sync::Arc::new(Grid {
+                set: Self::build_hrir(&source, sample_rate),
+                source: source.clone(),
+            }),
             source,
             incoming,
             rebuild_tx,
             channels: Vec::new(),
+            extra_dsp: None,
             hrir_scratch: HrirPair {
                 left: [0.0; HRIR_LEN],
                 right: [0.0; HRIR_LEN],
             },
+            hrir_generation: 0,
             fdn: None,
             reverb_bus: Vec::new(),
         }
@@ -297,6 +352,17 @@ impl BinauralRenderer {
     #[cfg(test)]
     fn hrir_grid_id(&self) -> usize {
         std::sync::Arc::as_ptr(&self.hrir) as usize
+    }
+
+    /// Whether a requested source change has not been swapped in yet, i.e. the
+    /// grid being convolved is not the one last requested.
+    ///
+    /// [`Self::ensure_source`] hands a request to the rebuild worker and keeps
+    /// rendering with the previous grid until the result lands, so "requested"
+    /// and "live" are genuinely different questions. Anything that must
+    /// attribute its output to a specific HRIR set has to wait on this.
+    pub fn rebuild_pending(&self) -> bool {
+        self.source != self.hrir.source
     }
 
     fn build_hrir(source: &HrirSource, sample_rate: u32) -> HrirSet {
@@ -370,8 +436,11 @@ impl BinauralRenderer {
     /// here (issue #153). Frames keep rendering with the previous grid until
     /// the worker's result lands.
     pub fn ensure_source(&mut self, source: &HrirSource) {
-        if let Some(set) = self.incoming.swap(None) {
-            self.hrir = set;
+        if let Some(grid) = self.incoming.swap(None) {
+            self.hrir = grid;
+            // Invalidates every channel's cached lattice direction at once —
+            // the new grid answers differently for the same key.
+            self.hrir_generation = self.hrir_generation.wrapping_add(1);
         }
         if &self.source != source {
             self.source = source.clone();
@@ -390,6 +459,9 @@ impl BinauralRenderer {
     ///   to both ears equally, bypassing HRIR/ITD/air/reflections/reverb.
     ///   Missing entries read as `false`.
     /// - `out`: must be `sample_length * 2`, pre-zeroed.
+    /// - `extra`: an optional source that is not an input channel — the object
+    ///   test. Rendered exactly like a spatialized channel, from its own DSP
+    ///   slot past the end of the input channels.
     #[allow(clippy::too_many_arguments)]
     pub fn render_frame(
         &mut self,
@@ -400,6 +472,7 @@ impl BinauralRenderer {
         chan_pos: &[[f64; 3]],
         chan_gain: &[f32],
         chan_direct: &[bool],
+        extra: Option<ExtraSource<'_>>,
         out: &mut [f32],
     ) {
         let BinauralFrameParams {
@@ -409,13 +482,30 @@ impl BinauralRenderer {
             ref reflections,
             ref reverb,
             air_absorption,
+            hrir_update_lattice,
         } = *params;
         debug_assert_eq!(out.len(), sample_length * 2);
-        if input_channel_count == 0 || sample_length == 0 {
+        if sample_length == 0 || (input_channel_count == 0 && extra.is_none()) {
             return;
         }
+        // The extra source gets a DSP slot of its own — its convolvers, delay
+        // lines and reflection bank persist across blocks like any channel's,
+        // and that continuity is what lets it move without clicking.
+        //
+        // A *dedicated* slot, not one indexed past the input channels: the
+        // input width is not a constant. It is 2 while the idle feed fabricates
+        // silence and whatever the programme carries once one starts, so a slot
+        // at `input_channel_count` moves the moment playback begins or ends —
+        // landing on a fresh (silent, warming up) DSP, or on the state of a
+        // channel that used to live there.
+        let source_count = input_channel_count + usize::from(extra.is_some());
         if self.channels.len() < input_channel_count {
             self.channels.resize_with(input_channel_count, || None);
+        }
+        if extra.is_none() {
+            // Nothing to carry over: the next test starts clean rather than
+            // spliced onto the tail of a source that was somewhere else.
+            self.extra_dsp = None;
         }
 
         // Late-reverb bus: per-channel sends accumulate here; the shared FDN
@@ -430,12 +520,39 @@ impl BinauralRenderer {
             self.fdn = None;
         }
 
-        for c in 0..input_channel_count {
-            let gain = chan_gain.get(c).copied().unwrap_or(0.0);
+        for c in 0..source_count {
+            // Past the input channels sits the extra source (the object test).
+            // Its PCM is mono, hence the stride of 1 — that triple is the only
+            // thing that differs from a channel all the way down.
+            let extra_here = extra.as_ref().filter(|_| c >= input_channel_count);
+            let (src_pcm, src_stride, src_offset) = match extra_here {
+                Some(e) => (e.pcm, 1usize, 0usize),
+                None => (input_pcm, input_channel_count, c),
+            };
+            // How much of the frame this source actually has. Full length for a
+            // channel; for the extra source, however far its block got before
+            // the cap ended it (see `ExtraSource::pcm`). Reading `sample_length`
+            // regardless is an out-of-bounds panic on the render thread — which
+            // is how a binaural object test died at the two-minute mark.
+            let span = match extra_here {
+                Some(e) => sample_length.min(e.pcm.len()),
+                None => sample_length,
+            };
+            if span == 0 {
+                continue;
+            }
+            let gain = match extra_here {
+                Some(e) => e.gain,
+                None => chan_gain.get(c).copied().unwrap_or(0.0),
+            };
             if gain == 0.0 {
                 // Keep an existing reflection bank fading out so a muted
                 // channel does not freeze its taps at full gain.
-                if let Some(Some(dsp)) = self.channels.get_mut(c) {
+                let slot = match extra_here {
+                    Some(_) => self.extra_dsp.as_mut(),
+                    None => self.channels.get_mut(c).and_then(|s| s.as_mut()),
+                };
+                if let Some(dsp) = slot {
                     if let Some(bank) = dsp.refl.as_mut() {
                         bank.mute_targets();
                     }
@@ -449,15 +566,17 @@ impl BinauralRenderer {
             // overall (no +10 dB LFE convention), matching the speaker path's
             // untouched one-hot routing. Head rotation deliberately has no
             // effect, like real sub-bass.
-            if chan_direct.get(c).copied().unwrap_or(false) {
+            // The extra source is never "direct": it is an object by definition,
+            // and placing it is the entire point.
+            if extra_here.is_none() && chan_direct.get(c).copied().unwrap_or(false) {
                 if let Some(Some(dsp)) = self.channels.get_mut(c) {
                     // Drop a stale reflection bank if the channel just
                     // switched from the spatialized path (same policy as the
                     // reflections-disabled branch below).
                     dsp.refl = None;
                 }
-                for s in 0..sample_length {
-                    let v = input_pcm[s * input_channel_count + c]
+                for s in 0..span {
+                    let v = src_pcm[s * src_stride + src_offset]
                         * gain
                         * std::f32::consts::FRAC_1_SQRT_2;
                     let o = s * 2;
@@ -466,7 +585,10 @@ impl BinauralRenderer {
                 }
                 continue;
             }
-            let pos = chan_pos.get(c).copied().unwrap_or([0.0, 1.0, 0.0]);
+            let pos = match extra_here {
+                Some(e) => e.position,
+                None => chan_pos.get(c).copied().unwrap_or([0.0, 1.0, 0.0]),
+            };
 
             // World → head-relative direction, then spherical angles.
             let hp = head_pose.rotate(pos);
@@ -483,21 +605,42 @@ impl BinauralRenderer {
             let dist_norm = ((pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt()) as f32;
             let dist_m = (dist_norm * unit_scale_m).max(0.0);
 
-            // Per-frame HRIR + ITD update (continuous: delay/convolver state persists).
-            self.hrir.at(
-                az_rad.to_degrees(),
-                el_rad.to_degrees(),
-                &mut self.hrir_scratch,
-            );
+            // ITD stays continuous: it is the dominant lateralisation cue, and
+            // it is a closed-form formula feeding an interpolating delay line —
+            // cheap enough that quantizing it would buy nothing.
             let (itd_l, itd_r) = itd::ear_delays_seconds(az_rad, el_rad, head_radius_m);
 
-            let dsp = self.channels[c].get_or_insert_with(|| ChannelDsp::new(self.sample_rate));
-            // Kernel changes (moving object / head) crossfade over the block
-            // — capped at HRIR_LEN samples for large offline blocks — so the
-            // transfer function never jumps at a block boundary (issue #155).
-            let fade = sample_length.min(HRIR_LEN);
-            dsp.conv_l.set_coeffs_smooth(&self.hrir_scratch.left, fade);
-            dsp.conv_r.set_coeffs_smooth(&self.hrir_scratch.right, fade);
+            // The HRIR is the expensive one, so it updates on a lattice
+            // instead. The kernel is a pure function of this key, so an
+            // unchanged key means `at()` would rebuild the very kernels the
+            // convolvers already hold: skip the four-pair gather *and* the
+            // kernel compare rather than paying both to learn nothing moved.
+            // Skipping also leaves no crossfade armed, which halves the tap
+            // loop for the block (one dot product instead of two).
+            let dir = (
+                self.hrir_generation,
+                self.hrir.set.quantize_direction(
+                    az_rad.to_degrees(),
+                    el_rad.to_degrees(),
+                    hrir_update_lattice.subdiv(),
+                ),
+            );
+            let rate = self.sample_rate;
+            let dsp = match extra_here {
+                Some(_) => self.extra_dsp.get_or_insert_with(|| ChannelDsp::new(rate)),
+                None => self.channels[c].get_or_insert_with(|| ChannelDsp::new(rate)),
+            };
+            if dsp.last_dir != Some(dir) {
+                dsp.last_dir = Some(dir);
+                self.hrir.set.at_key(dir.1, &mut self.hrir_scratch);
+                // Kernel changes (moving object / head) crossfade over the
+                // block — capped at HRIR_LEN samples for large offline blocks
+                // — so the transfer function never jumps at a block boundary
+                // (issue #155).
+                let fade = sample_length.min(HRIR_LEN);
+                dsp.conv_l.set_coeffs_smooth(&self.hrir_scratch.left, fade);
+                dsp.conv_r.set_coeffs_smooth(&self.hrir_scratch.right, fade);
+            }
             dsp.delay_l.set_target_ms(itd_l * 1000.0, self.sample_rate);
             dsp.delay_r.set_target_ms(itd_r * 1000.0, self.sample_rate);
 
@@ -561,12 +704,12 @@ impl BinauralRenderer {
             }
 
             let air = dsp.air_coeff;
-            for s in 0..sample_length {
+            for s in 0..span {
                 // `raw` carries the object/metadata gain only; the direct path
                 // adds its distance gain, the reflection taps theirs. The air
                 // low-pass applies to the propagated wave, so it feeds the
                 // direct, the reflections and the reverb send alike.
-                let mut raw = input_pcm[s * input_channel_count + c] * gain;
+                let mut raw = src_pcm[s * src_stride + src_offset] * gain;
                 if air > 0.0 {
                     dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
                     raw = dsp.air_state;
@@ -618,6 +761,7 @@ mod tests {
                 ..Default::default()
             },
             air_absorption: false,
+            hrir_update_lattice: crate::live_params::HrirUpdateLattice::default(),
         }
     }
 
@@ -630,7 +774,17 @@ mod tests {
         let mut input = vec![0.0f32; n];
         input[0] = 1.0;
         let mut out = vec![0.0f32; n * 2];
-        r.render_frame(&input, 1, n, &dry_params(), &[pos], &[1.0], &[], &mut out);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &[pos],
+            &[1.0],
+            &[],
+            None,
+            &mut out,
+        );
         let mut el = 0.0f32;
         let mut er = 0.0f32;
         for s in 0..n {
@@ -646,6 +800,177 @@ mod tests {
         assert!(er > el, "L={el} R={er}");
     }
 
+    /// The extra source is spatialized like a real channel, not summed flat.
+    ///
+    /// This is what makes a *binaural* object test worth having where a binaural
+    /// speaker test is not: the object test has a direction, so it must get the
+    /// HRIR path. Asserted by placing it hard right with silent input channels —
+    /// if it were mixed centre (or bypassed), the ears would match.
+    #[test]
+    fn the_extra_source_is_spatialized() {
+        let mut r = BinauralRenderer::new(48_000);
+        let n = 512;
+        let input = vec![0.0f32; n]; // one silent input channel
+        let mut extra_pcm = vec![0.0f32; n];
+        extra_pcm[0] = 1.0;
+        let mut out = vec![0.0f32; n * 2];
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &[[0.0, 1.0, 0.0]],
+            &[0.0],
+            &[],
+            Some(ExtraSource {
+                pcm: &extra_pcm,
+                position: [1.0, 0.0, 0.0], // hard right
+                gain: 1.0,
+            }),
+            &mut out,
+        );
+        let (mut el, mut er) = (0.0f32, 0.0f32);
+        for s in 0..n {
+            el += out[s * 2] * out[s * 2];
+            er += out[s * 2 + 1] * out[s * 2 + 1];
+        }
+        assert!(el + er > 0.0, "the extra source produced no output at all");
+        assert!(
+            er > el,
+            "a hard-right extra source must favour the right ear (L={el} R={er}) \
+             — equal ears mean it bypassed the HRIR path"
+        );
+    }
+
+    /// The cap can end a test mid-block, and then the extra source's PCM is
+    /// shorter than the frame. Reported from use: binaural object injection
+    /// died after a couple of minutes with something in the log.
+    #[test]
+    fn a_short_extra_block_does_not_run_off_the_end() {
+        let mut r = BinauralRenderer::new(48_000);
+        let n = 512;
+        let input = vec![0.0f32; n];
+        let extra_pcm = vec![0.1f32; 200]; // the cap ran out 200 samples in
+        let mut out = vec![0.0f32; n * 2];
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &[[0.0, 1.0, 0.0]],
+            &[0.0],
+            &[],
+            Some(ExtraSource {
+                pcm: &extra_pcm,
+                position: [1.0, 0.0, 0.0],
+                gain: 1.0,
+            }),
+            &mut out,
+        );
+    }
+
+    /// The extra source keeps its own DSP state when the input width changes.
+    ///
+    /// The input width is not a constant: it is 2 while the idle feed fabricates
+    /// silence and whatever the programme carries once one starts. A DSP slot
+    /// indexed past the input channels therefore moves the moment playback
+    /// begins — onto a fresh convolver that has to warm up again, or onto the
+    /// state of some channel that used to sit there. Either way the source
+    /// stutters, in the middle of the one gesture the test exists to judge.
+    ///
+    /// Asserted on continuity: a steady input through a settled convolver gives
+    /// a steady output, so a drop right after the width change is the warm-up of
+    /// a slot that should not have been touched.
+    #[test]
+    fn the_extra_source_survives_a_change_of_input_width() {
+        let mut r = BinauralRenderer::new(48_000);
+        let n = 512;
+        let extra_pcm = vec![0.5f32; n];
+        let steady = |r: &mut BinauralRenderer, channels: usize| -> f32 {
+            let input = vec![0.0f32; n * channels];
+            let mut out = vec![0.0f32; n * 2];
+            r.render_frame(
+                &input,
+                channels,
+                n,
+                &dry_params(),
+                &vec![[0.0, 1.0, 0.0]; channels],
+                &vec![0.0; channels],
+                &vec![false; channels],
+                Some(ExtraSource {
+                    pcm: &extra_pcm,
+                    position: [1.0, 0.0, 0.0],
+                    gain: 1.0,
+                }),
+                &mut out,
+            );
+            // RMS of the first 32 samples: where a warm-up would show.
+            let head: f32 = out[..64].iter().map(|v| v * v).sum::<f32>() / 32.0;
+            head.sqrt()
+        };
+
+        // Settle at the idle-feed width.
+        for _ in 0..4 {
+            steady(&mut r, 2);
+        }
+        let before = steady(&mut r, 2);
+        // Playback starts: the programme is wider than the silence was.
+        let after = steady(&mut r, 12);
+        assert!(before > 0.0, "the extra source produced nothing to compare");
+        assert!(
+            (after - before).abs() < before * 0.05,
+            "the extra source dropped from {before} to {after} when the input \
+             width changed — its DSP slot moved with the channel count"
+        );
+    }
+
+    /// The extra source must not disturb the input channels' own rendering: it
+    /// takes a DSP slot past the end of them, so channel numbering is untouched.
+    #[test]
+    fn the_extra_source_leaves_the_channels_alone() {
+        let n = 512;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let pos = [[-1.0, 0.0, 0.0]];
+
+        let mut without = vec![0.0f32; n * 2];
+        BinauralRenderer::new(48_000).render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[1.0],
+            &[],
+            None,
+            &mut without,
+        );
+
+        let extra_pcm = vec![0.0f32; n]; // silent extra: must change nothing
+        let mut with = vec![0.0f32; n * 2];
+        BinauralRenderer::new(48_000).render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[1.0],
+            &[],
+            Some(ExtraSource {
+                pcm: &extra_pcm,
+                position: [1.0, 0.0, 0.0],
+                gain: 1.0,
+            }),
+            &mut with,
+        );
+
+        assert_eq!(
+            without, with,
+            "adding a silent extra source changed the channel rendering — the \
+             slot is not as separate as it looks"
+        );
+    }
+
     /// A source switch must not stall rendering: the frame right after the
     /// request still uses the old grid (and produces audio), and the new grid
     /// lands asynchronously within a bounded delay (issue #153).
@@ -658,7 +983,17 @@ mod tests {
         let pos = [[0.5, 1.0, 0.0]];
         let render = |r: &mut BinauralRenderer| -> f32 {
             let mut out = vec![0.0f32; n * 2];
-            r.render_frame(&input, 1, n, &dry_params(), &pos, &[1.0], &[], &mut out);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &dry_params(),
+                &pos,
+                &[1.0],
+                &[],
+                None,
+                &mut out,
+            );
             out.iter().map(|x| x * x).sum()
         };
 
@@ -709,7 +1044,17 @@ mod tests {
 
         let mut dry = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &dry_params(), &pos, &[1.0], &[], &mut dry);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[1.0],
+            &[],
+            None,
+            &mut dry,
+        );
 
         let wet_params = BinauralFrameParams {
             reflections: BinauralReflections {
@@ -721,7 +1066,7 @@ mod tests {
         };
         let mut wet = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], &mut wet);
+        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], None, &mut wet);
 
         assert!(tail(&dry) < 1e-9, "dry render must have no late energy");
         assert!(
@@ -742,7 +1087,17 @@ mod tests {
 
         let mut dry = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &dry_params(), &pos, &[1.0], &[], &mut dry);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[1.0],
+            &[],
+            None,
+            &mut dry,
+        );
         assert!(tail(&dry) < 1e-9, "dry render must have no tail");
 
         let wet_params = BinauralFrameParams {
@@ -756,7 +1111,7 @@ mod tests {
         };
         let mut wet = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], &mut wet);
+        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], None, &mut wet);
         assert!(tail(&wet) > 1e-7, "no reverb tail: {}", tail(&wet));
     }
 
@@ -783,6 +1138,7 @@ mod tests {
                 &[[0.0, dist, 0.0]],
                 &[1.0],
                 &[],
+                None,
                 &mut out,
             );
             // Direct path no longer applies a 1/d gain, so the broadband level is
@@ -830,6 +1186,7 @@ mod tests {
             &[[1.0, 0.0, 0.0]],
             &[0.0],
             &[],
+            None,
             &mut out,
         );
         assert!(out.iter().all(|&x| x == 0.0));

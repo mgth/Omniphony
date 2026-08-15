@@ -1,18 +1,50 @@
-// Headphone L/R channel rows for binaural mode — same rendering as the
-// speaker rows (same DOM classes, same meter pipeline), shown in place of
-// the speakers list. The two rows ride the first two speaker param slots:
-// meters come from /omniphony/meter/speaker/0|1 and M/S drive
-// speaker mute 0/1, which the renderer applies to the ears in binaural.
+// Headphone L/R channel rows for the binaural modes — same rendering as the
+// speaker rows (same DOM classes, same meter pipeline). The ears carry
+// DEDICATED engine params (they used to ride the first two per-speaker
+// slots, which now belong to the virtual FL/FR rows in cascaded mode):
+// meters come from /omniphony/meter/ear/0|1 and M/S drive the
+// control_ear_mute command, with solo composed client-side from the two
+// mutes.
 //
 // Position icon: a top-view headphone glyph with the active cup filled
 // (left cup for L, right for R). No crossover/filter glyph — there is no
 // per-ear crossover.
 
-import { toggleMute, toggleSolo, updateMeterUI, getSoloTarget } from '../mute-solo.js';
+import { invoke } from '@tauri-apps/api/core';
+import { updateMeterUI } from '../mute-solo.js';
 import { updateItemClasses } from '../flush.js';
-import { speakerMuted } from '../state.js';
 
 const entries = new Map(); // '0' | '1' → row entry
+// Engine-confirmed mute state per ear (reflected from the state broadcast).
+const earMuted = new Set();
+// Client-side solo: the ear whose S button is lit, or null. Solo is sugar
+// over the two mutes — engaging it mutes the other ear, releasing restores.
+let earSolo = null;
+
+function sendEarMute(id, muted) {
+  invoke('control_ear_mute', { ear: Number(id), muted }).catch((e) =>
+    console.error('[ears] control_ear_mute', e),
+  );
+}
+
+function toggleEarMute(id) {
+  // Manual mute edits drop the solo interpretation (same feel as the
+  // speaker rows): the buttons then just mirror the two raw mutes.
+  earSolo = null;
+  sendEarMute(id, !earMuted.has(id));
+}
+
+function toggleEarSolo(id) {
+  const other = id === '0' ? '1' : '0';
+  if (earSolo === id) {
+    earSolo = null;
+    sendEarMute(other, false);
+  } else {
+    earSolo = id;
+    sendEarMute(id, false);
+    sendEarMute(other, true);
+  }
+}
 
 function headphoneSvg(side) {
   const fillL = side === 'L' ? '#8cd6ff' : 'none';
@@ -67,7 +99,7 @@ function createChannelRow(side, id) {
   muteBtn.textContent = 'M';
   muteBtn.addEventListener('click', (e) => {
     e.preventDefault();
-    toggleMute('speaker', id);
+    toggleEarMute(id);
   });
   const soloBtn = document.createElement('button');
   soloBtn.type = 'button';
@@ -75,7 +107,7 @@ function createChannelRow(side, id) {
   soloBtn.textContent = 'S';
   soloBtn.addEventListener('click', (e) => {
     e.preventDefault();
-    toggleSolo('speaker', id);
+    toggleEarSolo(id);
   });
   controlsRow.append(muteBtn, soloBtn);
 
@@ -102,15 +134,33 @@ export function initHeadphoneChannels() {
 export function updateHeadphoneMeter(index, level) {
   const entry = entries.get(String(index));
   if (!entry) return;
-  updateMeterUI(entry, level, 'speaker', `hp${index}`);
+  updateMeterUI(entry, level, 'ear', `hp${index}`);
 }
 
 /** Mirror the mute/solo state onto the L/R buttons (same classes as rows). */
 export function updateHeadphoneControlsUI() {
-  const soloTarget = getSoloTarget('speaker');
   entries.forEach((entry, id) => {
-    entry.muteBtn.classList.toggle('active', speakerMuted.has(id));
-    entry.soloBtn.classList.toggle('active', soloTarget === id);
-    updateItemClasses(entry, speakerMuted.has(id), Boolean(soloTarget && soloTarget !== id));
+    const muted = earMuted.has(id);
+    entry.muteBtn.classList.toggle('active', muted);
+    entry.soloBtn.classList.toggle('active', earSolo === id);
+    updateItemClasses(entry, muted, Boolean(earSolo && earSolo !== id));
   });
+}
+
+/** Reflect the engine's ear params (from the state broadcast: b.ears). */
+export function applyEarState(ears) {
+  if (!Array.isArray(ears)) return;
+  ears.forEach((e, i) => {
+    const id = String(i);
+    if (e && typeof e.muted === 'boolean') {
+      if (e.muted) earMuted.add(id);
+      else earMuted.delete(id);
+    }
+  });
+  // A mute pattern that no longer matches the solo interpretation drops it.
+  if (earSolo !== null) {
+    const other = earSolo === '0' ? '1' : '0';
+    if (earMuted.has(earSolo) || !earMuted.has(other)) earSolo = null;
+  }
+  updateHeadphoneControlsUI();
 }

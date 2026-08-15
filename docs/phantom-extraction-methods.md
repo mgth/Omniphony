@@ -45,6 +45,39 @@ residual never drops below `1 − strength`).
   not compensated anywhere.
 - **Passes** and the **Relocalize** switches have no effect in this mode.
 
+### 3D inputs — the `heights` switch
+
+When the input already carries height channels (5.1.4, 7.1.4…), the broadband
+method — and the spectral method with **Extract heights** off — leave them
+untouched on the bypass delay. With **Extract heights** on (the default,
+spectral only), the tops join the same analysis in 3D:
+
+- Every positionable channel is encoded by its full **3D unit direction**
+  (bed on the floor plane, tops at the ceiling corners), adding an up-facing
+  dipole `U` to the virtual B-format. The per-bin DOA gains an **elevation**
+  and the directness uses the 3D intensity norm.
+- Four **high sector objects** (`DirectH_FR`, `DirectH_BR`, `DirectH_BL`,
+  `DirectH_FL` — 90° each, centred on the ceiling corners) extend the eight
+  floor sectors. A bin's direct part splits between the two rings by its
+  elevation, normalised by the **Height split** param (degrees; default 35°
+  ≈ the corner-top channel elevation, which then reads fully high); the
+  azimuth soft-assignment applies within each ring as before. Intensity
+  elevations are compressed (a 50/50 floor↔ceiling pan reads ≈ half the
+  geometric elevation), so Height split is the ear-tuning knob: **lower
+  values push extracted content toward the ceiling**. Live, no re-plan.
+- **Inter-plane phantoms come out for free**: content panned between a floor
+  channel and a top (say L↔Tfl) reads an intermediate elevation, so it lands
+  partly in `Direct_FL` and partly in `DirectH_FL` at the same azimuth — and
+  both sectors' dynamic positions (now energy-weighted **3D** means) sit at
+  the true intermediate height. No second pass, no extra latency.
+- Content mixed *within* the top plane (Tfl↔Tfr pans, top ambience) is
+  extracted intra-plane into the high ring the same way the bed is into the
+  floor ring; the residual tops keep playing at their channel positions.
+- Zenith-heavy content (a lone `Tc`) pulls its sector position toward the room
+  centre overhead instead of a wall.
+- Bed-only inputs are **bit-identical** to the planar analysis (the up dipole
+  is exactly zero), so the switch is a strict extension.
+
 ### How the per-band analysis works (walkthrough)
 
 The method never reasons about *channels* — it reconstructs the **sound
@@ -161,5 +194,7 @@ direct-removed residual bed:
 - **PAD** / **copy_up**: also operate on the residual; with strong extraction
   there is simply less correlated content left to hold down (PAD) or copy up.
 
-The stage only runs on bed-only content; streams that already carry objects are
-untouched.
+The stage only runs on channel-based content; streams that already carry
+objects are untouched. On 3D channel inputs the generators stay no-op (the
+content already has height), but the spectral extraction still applies — see
+the `heights` switch above.

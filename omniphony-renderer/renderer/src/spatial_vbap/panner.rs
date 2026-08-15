@@ -32,7 +32,7 @@
 //! ];
 //!
 //! // Create panner with 1° resolution and no spreading
-//! let panner = VbapPanner::new(&speakers, 1, 1, 0.0)?;
+//! let panner = VbapPanner::new(&speakers, 1, 1, 0.0, Default::default())?;
 //!
 //! // Get gains for object at azimuth=30°, elevation=15°
 //! let gains = panner.get_gains(30.0, 15.0);
@@ -218,3 +218,6 @@ mod runtime;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod native_validation;

@@ -14,6 +14,7 @@ mod dispatch;
 mod export;
 mod gaintable;
 mod metadata_emit;
+mod profiles;
 mod recompute;
 mod state_emit;
 mod transport;
@@ -363,6 +364,11 @@ pub struct OscSender {
     /// (port re-acquired) from one that failed because the port is still held, so
     /// it can re-arm standby instead of running portless (which strands Studio).
     listener_bound: bool,
+    /// Set by `resume` so the listener it starts adopts the live state the
+    /// departing host handed off in the sidecar. Only a resume takes over from
+    /// another instance; the first `start_listener` of a process follows the
+    /// engine's own startup load, which already consumed any sidecar.
+    adopt_live_on_listen: bool,
 }
 
 impl OscSender {
@@ -396,6 +402,7 @@ impl OscSender {
             standby_stop: Arc::new(AtomicBool::new(false)),
             standby_thread: Mutex::new(None),
             listener_bound: false,
+            adopt_live_on_listen: false,
         })
     }
 
@@ -458,6 +465,11 @@ impl OscSender {
         *LOCAL_RX_RELEASE.lock().unwrap() = Some(Arc::clone(&stop));
         log::info!("OSC listener ready on port {}", rx_port);
 
+        // Taken only once the bind above succeeded: a resume that could not
+        // re-acquire the port re-arms standby, and the next attempt must still
+        // adopt the handoff.
+        let adopt_live = std::mem::take(&mut self.adopt_live_on_listen);
+
         let handle = std::thread::Builder::new()
             .name("osc-listener".into())
             .spawn(move || {
@@ -474,6 +486,27 @@ impl OscSender {
                     host_handler.as_ref().map(|h| h.state_generation());
                 let mut last_live_state_generation =
                     control.as_ref().map(|c| c.live_state_generation());
+                // Overlay display prefs: the same generation-poll pattern. The
+                // mpv shim flips them through the FFI toggles, so a client that
+                // only ever hears its own OSC pushes would drift.
+                let mut last_overlay_generation: Option<u64> = None;
+
+                // Resuming from standby: take over the live state the departing
+                // host left in the sidecar. Deliberately *after* the generation
+                // snapshots above — the adoption bumps the live-state generation
+                // so the poll below sees it move and broadcasts the adopted
+                // values. Sampling the generation after the mutation instead
+                // would leave Studio showing the state we just replaced.
+                if adopt_live {
+                    if let Some(ref ctrl) = control {
+                        profiles::adopt_handoff_live_state(
+                            ctrl,
+                            &socket,
+                            &clients,
+                            &gaintable_cache,
+                        );
+                    }
+                }
 
                 let mut buf = [0u8; 4096];
                 loop {
@@ -488,6 +521,22 @@ impl OscSender {
                             if let Some(ref ctrl) = control {
                                 let state_bytes = build_live_state_bundle(ctrl, Some(host));
                                 send_raw_filtered(&socket, &clients, &state_bytes, |_| true);
+                            }
+                        }
+                    }
+                    {
+                        let generation = crate::overlay::state_generation();
+                        if last_overlay_generation != Some(generation) {
+                            last_overlay_generation = Some(generation);
+                            if let Ok(bytes) =
+                                rosc::encoder::encode(&OscPacket::Message(OscMessage {
+                                    addr: runtime_control::osc_contract::STATE_OVERLAY.to_string(),
+                                    args: vec![rosc::OscType::String(
+                                        crate::overlay::display_state_json(),
+                                    )],
+                                }))
+                            {
+                                send_raw_filtered(&socket, &clients, &bytes, |_| true);
                             }
                         }
                     }
@@ -740,6 +789,11 @@ impl OscSender {
         }
         self.standby_stop.store(false, Ordering::Relaxed);
         *RESUME_SOCKET.lock().unwrap() = None;
+        // The host that just handed the port back wrote its unsaved live state
+        // to the sidecar as it went; the listener we are about to start picks
+        // it up. Without this we would come back on our pre-yield state and
+        // silently discard everything done while the other host held the port.
+        self.adopt_live_on_listen = true;
         let rx_port = self.rx_port;
         self.start_listener(rx_port, true)
     }
@@ -994,6 +1048,63 @@ mod yield_tests {
         h.join().unwrap();
     }
 
+    fn test_sender() -> OscSender {
+        OscSender::new(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1)).unwrap()
+    }
+
+    /// A resume that re-acquires the port must arm the handoff adoption and then
+    /// consume the flag, so the listener adopts exactly once. `control` is unset
+    /// here, so the adoption itself no-ops — what is pinned is the arming.
+    #[test]
+    fn resume_arms_then_consumes_the_handoff_adoption() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sender = test_sender();
+        sender.rx_port = free_port();
+        assert!(
+            !sender.adopt_live_on_listen,
+            "nothing to adopt before a resume"
+        );
+
+        sender.resume().expect("re-acquires a free port");
+        assert!(sender.is_listening());
+        assert!(
+            !sender.adopt_live_on_listen,
+            "the started listener must consume the flag, so a later plain \
+             start_listener does not adopt a second time"
+        );
+
+        sender.listener_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = sender.listener_thread.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+        *LOCAL_RX_RELEASE.lock().unwrap() = None;
+    }
+
+    /// A resume that cannot re-acquire the port re-arms standby and tries again
+    /// later. The adoption flag must survive that failure — dropping it there
+    /// would strand the departing host's live state in a sidecar nobody reads.
+    #[test]
+    fn failed_resume_keeps_the_handoff_adoption_armed() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let port = free_port();
+        // A squatter that never answers the yield: bind_rx_socket exhausts its
+        // budget and start_listener returns without a listener.
+        let _squatter = UdpSocket::bind(("0.0.0.0", port)).unwrap();
+        *LOCAL_RX_RELEASE.lock().unwrap() = None;
+
+        let mut sender = test_sender();
+        sender.rx_port = port;
+        sender
+            .resume()
+            .expect("a busy port is not an error, just no listener");
+
+        assert!(!sender.is_listening(), "the port was held throughout");
+        assert!(
+            sender.adopt_live_on_listen,
+            "the adoption must stay armed for the retry that follows re-arming standby"
+        );
+    }
+
     /// A standby holder that replies to a `yield_port` with a dynamic resume
     /// port must have that port captured by the taker, which then delivers
     /// `resume` there as it releases the port.
@@ -1102,6 +1213,12 @@ mod yield_tests {
 
     #[test]
     fn bind_succeeds_on_free_port() {
+        // Take SERIAL like every other test in this module. `free_port` binds
+        // port 0, reads the assigned port and drops the socket, so the port is
+        // free-but-unclaimed until `bind_rx_socket` takes it. Without the lock
+        // a sibling test can win that window and this one fails with
+        // EADDRINUSE — observed as a flake in a repeated release run.
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let port = free_port();
         let socket = bind_rx_socket(port, true, Duration::from_millis(200)).expect("free port");
         assert_eq!(socket.local_addr().unwrap().port(), port);

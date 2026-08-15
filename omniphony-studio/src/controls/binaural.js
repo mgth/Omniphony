@@ -9,7 +9,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { initSofaBrowser, setActiveSofaPath } from './sofa-browser.js';
 import { setSpeakersGhosted } from '../speakers.js';
-import { initHeadphoneChannels } from './headphone-meter.js';
+import { applyEarState, initHeadphoneChannels } from './headphone-meter.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -21,6 +21,20 @@ let applying = false;
 
 function send(cmd, args) {
   invoke(cmd, args).catch((e) => console.error('[binaural]', cmd, e));
+}
+
+// Last output mode seen from the renderer state, so the editing tab only
+// auto-switches when the MODE actually changes (never on the ~10 Hz echo).
+let lastSeenOutputMode = null;
+
+// Select the Renderer or Binaural editing tab (pure UI — see the CSS block
+// "Renderer / Binaural editing tabs" in app.css).
+function setStudioTab(binauralTab) {
+  document.body.classList.toggle('studio-tab-binaural', binauralTab);
+  const tr = el('rendererTabRendererBtn');
+  const tb = el('rendererTabBinauralBtn');
+  if (tr) tr.classList.toggle('active', !binauralTab);
+  if (tb) tb.classList.toggle('active', binauralTab);
 }
 
 // Show the reflections / reverb parameter blocks only when their master switch
@@ -42,23 +56,47 @@ export function initBinauralPanel() {
   initSofaBrowser();
   initHeadphoneChannels();
 
-  // Output mode: segmented buttons in the renderer panel's Output block.
-  // The pressed state is NOT toggled optimistically — the renderer's state
-  // broadcast is the source of truth (applyBinauralState flips it).
-  const hpBtn = el('outputModeHeadphonesBtn');
-  if (hpBtn) {
-    hpBtn.addEventListener('click', () => {
+  // Output mode: one combo, three targets. The selection is NOT applied
+  // optimistically — the renderer's state broadcast is the source of truth
+  // (applyBinauralState sets the value back). "Headphones (virtual room)" is
+  // the cascaded mode: the speaker pipeline rendered on a virtual layout,
+  // then binauralised.
+  const outputSel = el('outputModeSelect');
+  if (outputSel) {
+    outputSel.addEventListener('change', (e) => {
       if (applying) return;
-      send('control_output_mode', { value: 'binaural' });
+      switch (e.target.value) {
+        case 'speaker':
+          send('control_output_mode', { value: 'speaker' });
+          break;
+        case 'binaural-direct':
+          send('control_output_mode', { value: 'binaural' });
+          send('control_binaural_mode', { value: 'direct' });
+          break;
+        case 'binaural-cascaded':
+          send('control_output_mode', { value: 'binaural' });
+          send('control_binaural_mode', { value: 'cascaded' });
+          break;
+        default:
+          break;
+      }
     });
   }
-  const spBtn = el('outputModeSpeakersBtn');
-  if (spBtn) {
-    spBtn.addEventListener('click', () => {
-      if (applying) return;
-      send('control_output_mode', { value: 'speaker' });
-    });
+
+  // Renderer / Binaural editing tabs: pure UI, decoupled from the output
+  // mode (the virtual-room cascade keeps the renderer options meaningful on
+  // headphones). applyBinauralState re-aims the tab when the MODE changes;
+  // clicking is always allowed.
+  const tabRenderer = el('rendererTabRendererBtn');
+  if (tabRenderer) {
+    tabRenderer.addEventListener('click', () => setStudioTab(false));
   }
+  const tabBinaural = el('rendererTabBinauralBtn');
+  if (tabBinaural) {
+    tabBinaural.addEventListener('click', () => setStudioTab(true));
+  }
+  // Reflect the initial tab (Renderer) on the buttons.
+  setStudioTab(document.body.classList.contains('studio-tab-binaural'));
 
   // The SOFA browser only makes sense for the 'sofa' source (KEMAR is
   // embedded, synthetic is analytic) — show the button accordingly.
@@ -320,16 +358,34 @@ export function applyBinauralState(b) {
 
     if (typeof b.outputMode === 'string') {
       const binaural = b.outputMode === 'binaural';
-      // Drives the per-mode visibility of the renderer blocks (see app.css:
-      // body.output-binaural hides the speaker-path subpanels, and the
-      // binaural panel is hidden without it).
+      // `output-binaural` now gates only the reality-bound pieces (speaker
+      // rows vs headphone meters, 3D ghosting); the editable parameter groups
+      // are free tabs (`studio-tab-binaural`, below).
       document.body.classList.toggle('output-binaural', binaural);
       setSpeakersGhosted(binaural);
-      const hp = el('outputModeHeadphonesBtn');
-      const sp = el('outputModeSpeakersBtn');
-      if (hp) hp.classList.toggle('active', binaural);
-      if (sp) sp.classList.toggle('active', !binaural);
+      const cascaded = b.mode === 'cascaded';
+      setVal(
+        'outputModeSelect',
+        binaural ? (cascaded ? 'binaural-cascaded' : 'binaural-direct') : 'speaker',
+      );
+      // Auto-aim the editing tab when the MODE changes (state echoes at
+      // ~10 Hz — only a real change may steal the user's tab choice).
+      const modeKey = `${b.outputMode}/${b.mode}`;
+      if (lastSeenOutputMode !== modeKey) {
+        lastSeenOutputMode = modeKey;
+        setStudioTab(binaural);
+      }
     }
+    if (typeof b.mode === 'string') {
+      // Cascaded ("virtual room") shows the per-speaker rows alongside the
+      // headphone rows in the Speakers section: the rows drive the virtual
+      // speakers of the app layout (see app.css gating).
+      document.body.classList.toggle(
+        'output-cascaded',
+        b.outputMode === 'binaural' && b.mode === 'cascaded',
+      );
+    }
+    applyEarState(b.ears);
     if (typeof b.hrirSource === 'string') {
       setVal('binauralHrirSource', b.hrirSource);
       const btn = el('sofaBrowseBtn');

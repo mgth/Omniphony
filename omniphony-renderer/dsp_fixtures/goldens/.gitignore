@@ -1,0 +1,2 @@
+# Failing renders are dumped here for inspection; never commit them.
+*.actual.f32

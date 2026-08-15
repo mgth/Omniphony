@@ -268,6 +268,7 @@ mod registry {
             ("synthetic_objects_enabled", RawOptionValue::Bool(true)),
             ("object_generator_id", RawOptionValue::Str("copy_up")),
             ("phantom_extract_mode", RawOptionValue::Str("spectral")),
+            ("hrir_update_lattice", RawOptionValue::Str("coarse")),
         ]
     }
 

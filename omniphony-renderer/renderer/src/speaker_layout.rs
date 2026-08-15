@@ -573,8 +573,9 @@ impl SpeakerLayout {
             "7.1" => Self::preset_7_1(),
             "7.1.4" => Self::preset_7_1_4(),
             "9.1.6" => Self::preset_9_1_6(),
+            "cascade-12" => Self::preset_cascade_12(),
             _ => anyhow::bail!(
-                "Unknown preset layout: '{}'. Available: stereo, 5.1, 7.1, 7.1.4, 9.1.6",
+                "Unknown preset layout: '{}'. Available: stereo, 5.1, 7.1, 7.1.4, 9.1.6, cascade-12",
                 name
             ),
         }
@@ -635,6 +636,33 @@ impl SpeakerLayout {
             Speaker::from_cartesian("TFR", 1.0, 1.0, 1.0, true, 0.0),
             Speaker::from_cartesian("TBL", -1.0, -1.0, 1.0, true, 0.0),
             Speaker::from_cartesian("TBR", 1.0, -1.0, 1.0, true, 0.0),
+        ])
+    }
+
+    /// Virtual layout for the cascaded binaural mode (issue #220): a closed 3D
+    /// shell of 12 spatialized speakers around the listener — 8 on the ear
+    /// plane (45° spacing, where most content lives) and 4 at 45° elevation.
+    /// The zenith is covered by the panner's virtual-pole downmix onto the
+    /// height ring. The LFE entry (`spatialize: false`) receives one-hot
+    /// LFE-routed channels exactly like a physical room; the binaural stage
+    /// then feeds it to both ears dry (its direct-channel policy).
+    pub fn preset_cascade_12() -> Result<Self> {
+        Self::from_speakers(vec![
+            // Ear-plane ring (8), 45° spacing.
+            Speaker::new("C", 0.0, 0.0),
+            Speaker::new_with_spatialize("LFE", 45.0, -10.0, false),
+            Speaker::new("FL", -45.0, 0.0),
+            Speaker::new("FR", 45.0, 0.0),
+            Speaker::new("SL", -90.0, 0.0),
+            Speaker::new("SR", 90.0, 0.0),
+            Speaker::new("BL", -135.0, 0.0),
+            Speaker::new("BR", 135.0, 0.0),
+            Speaker::new("B", 180.0, 0.0),
+            // Height ring (4) at 45° elevation.
+            Speaker::new("TFL", -45.0, 45.0),
+            Speaker::new("TFR", 45.0, 45.0),
+            Speaker::new("TBL", -135.0, 45.0),
+            Speaker::new("TBR", 135.0, 45.0),
         ])
     }
 

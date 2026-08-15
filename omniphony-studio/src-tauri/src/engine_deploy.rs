@@ -53,7 +53,9 @@ pub(crate) fn deploy(app: &tauri::App) {
         if !src.is_file() {
             continue;
         }
-        let Some(name) = src.file_name() else { continue };
+        let Some(name) = src.file_name() else {
+            continue;
+        };
         if let Err(e) = deploy_one(&src, &dest_dir.join(name)) {
             log::warn!("engine deploy: {src:?} -> {dest_dir:?}: {e}");
         }

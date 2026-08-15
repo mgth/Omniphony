@@ -24,178 +24,11 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use renderer::live_params::{LiveEvaluationMode, PreferredEvaluationMode, RampMode};
-use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
-use renderer::spatial_vbap::{DistanceModel, VbapTableMode};
-use renderer::speaker_layout::SpeakerLayout;
-
-/// Samples per access unit fed to `render_frame`. Measured from a real TrueHD
-/// Atmos stream through the engine (`ORENDER_PERF_LOG`): the bridge emits a
-/// constant 40-sample block at 48 kHz, so this matches the live per-call cost.
-const BLOCK_SAMPLES: usize = 40;
-const SAMPLE_RATE: u32 = 48_000;
-
-/// Build a renderer with defaults matching the live decode path for `preset`.
-/// `cartesian` selects the precomputed cartesian table/evaluator (vs polar).
-fn make_renderer(preset: &str, position_interpolation: bool, cartesian: bool) -> SpatialRenderer {
-    build_renderer(
-        SpeakerLayout::preset(preset).expect("known preset"),
-        position_interpolation,
-        cartesian,
-    )
-}
-
-/// A "mixed speaker sizes" layout: a few speakers are band-limited (finite
-/// `freq_low`), which makes `compute_bands` split rendering into several
-/// frequency bands. Every band shares the same VBAP grid, so the per-band table
-/// lookups localise the same cell — the case the crossover concept targets.
-fn crossover_layout() -> SpeakerLayout {
-    let mut layout = SpeakerLayout::preset("7.1.4").expect("known preset");
-    // Band-limit the first three speakers at distinct cutoffs → edges {80,200,500}
-    // → 4 bands; the remaining full-range speakers populate every band.
-    for (sp, cutoff) in layout.speakers.iter_mut().zip([80.0, 200.0, 500.0]) {
-        sp.freq_low = Some(cutoff);
-    }
-    layout
-}
-
-fn build_renderer(
-    layout: SpeakerLayout,
-    position_interpolation: bool,
-    cartesian: bool,
-) -> SpatialRenderer {
-    let (table_mode, preferred, initial) = if cartesian {
-        (
-            VbapTableMode::Cartesian {
-                x_size: 31,
-                y_size: 31,
-                z_size: 15,
-                z_neg_size: 15,
-            },
-            PreferredEvaluationMode::PrecomputedCartesian,
-            LiveEvaluationMode::PrecomputedCartesian,
-        )
-    } else {
-        (
-            VbapTableMode::Polar,
-            PreferredEvaluationMode::PrecomputedPolar,
-            LiveEvaluationMode::PrecomputedPolar,
-        )
-    };
-    SpatialRenderer::new(
-        layout,
-        SAMPLE_RATE,
-        1, // az_res_deg
-        1, // el_res_deg
-        0.0,
-        2.0,
-        table_mode,
-        false, // allow_negative_z
-        position_interpolation,
-        DistanceModel::Linear,
-        false,
-        1.0,
-        1.0,
-        0.0,
-        1.0,
-        false,           // log_object_positions
-        [1.0, 2.0, 0.5], // room_ratio
-        2.0,
-        0.5,
-        0.0,
-        0.0,   // master_gain_db
-        false, // auto_gain
-        false, // use_loudness
-        false, // distance_diffuse
-        1.0,
-        1.0,
-        preferred,
-        initial,
-        31,
-        31,
-        15,
-        15,
-    )
-    .expect("renderer build")
-}
-
-/// Deterministic pseudo-random in [-1, 1] from an integer seed (no rng dep).
-fn pseudo(seed: u64) -> f32 {
-    // splitmix64-ish, mapped to [-1, 1].
-    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    x ^= x >> 30;
-    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x ^= x >> 27;
-    ((x >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
-}
-
-/// Interleaved white-ish noise for `n_objects` channels × `BLOCK_SAMPLES`.
-fn make_pcm(n_objects: usize) -> Vec<f32> {
-    let mut pcm = vec![0.0f32; BLOCK_SAMPLES * n_objects];
-    for (i, s) in pcm.iter_mut().enumerate() {
-        *s = pseudo(i as u64) * 0.25;
-    }
-    pcm
-}
-
-/// One movement event per object, positions spread deterministically over the
-/// dome. `seed_round` rotates the positions so successive metadata frames
-/// actually change the target (and thus start a ramp).
-fn move_events(n_objects: usize, seed_round: u64) -> Vec<SpatialChannelEvent> {
-    (0..n_objects)
-        .map(|ch| {
-            let p = ch as u64 + seed_round.wrapping_mul(2_654_435_761);
-            SpatialChannelEvent {
-                channel_idx: ch,
-                is_bed: false,
-                gain_db: Some(0),
-                ramp_length: Some(BLOCK_SAMPLES as u32),
-                size: Some([0.0, 0.0, 0.0]),
-                position: Some([
-                    pseudo(p) as f64,
-                    pseudo(p ^ 0x1111) as f64,
-                    (pseudo(p ^ 0x2222).abs()) as f64,
-                ]),
-                sample_pos: Some(0),
-            }
-        })
-        .collect()
-}
-
-/// Build a renderer with `n_objects` already registered at initial positions,
-/// returns it plus a reusable PCM buffer. The first `render_frame` consumes the
-/// registration events so subsequent steady frames find populated channel state.
-///
-/// `ramp_mode` is forced explicitly (the constructor seeds `Sample`): the live
-/// mpv default is now `Frame`, so the primary sweeps use `Frame` and a dedicated
-/// group contrasts it against `Sample`.
-fn prepared(
-    preset: &str,
-    n_objects: usize,
-    ramp_mode: RampMode,
-    position_interpolation: bool,
-    cartesian: bool,
-) -> (SpatialRenderer, Vec<f32>) {
-    let mut r = make_renderer(preset, position_interpolation, cartesian);
-    {
-        let ctrl = r.renderer_control();
-        ctrl.set_requested_ramp_mode(ramp_mode);
-        ctrl.live.write().ramp_mode = ramp_mode;
-    }
-    let pcm = make_pcm(n_objects);
-    let init = move_events(n_objects, 0);
-    // Prime channel state + let the initial ramp settle so steady frames are
-    // representative of the common case (objects mostly static between blocks).
-    let mut buf = Vec::new();
-    for round in 0..4 {
-        let f = r
-            .render_frame(&pcm, n_objects, &init, buf, false)
-            .expect("prime render");
-        buf = f.samples;
-        let _ = round;
-    }
-    (r, pcm)
-}
+use dsp_fixtures::scene::{
+    build_renderer, crossover_layout, drift_events, make_pcm, move_events, prepared,
+    prepared_binaural, prepared_binaural_cascaded,
+};
+use renderer::live_params::RampMode;
 
 fn bench_steady(c: &mut Criterion) {
     let mut group = c.benchmark_group("render_steady");
@@ -522,6 +355,58 @@ fn bench_polar_crossover(c: &mut Criterion) {
     group.finish();
 }
 
+/// Direct per-object binaural vs the cascaded virtual-speaker stage
+/// (issue #220), across object counts.
+///
+/// `static` renders with no metadata events after priming — the steady state,
+/// where the direct path still convolves one HRIR pair per object while the
+/// cascade convolves its fixed virtual speakers whatever `n` is. `moving`
+/// re-arms a ramp every block, adding the per-block HRIR refresh (direct) vs
+/// the per-block virtual re-pan (cascaded) on top.
+///
+/// `drifting` is the one that reflects real content: `moving` redraws every
+/// position at random each block, which is not motion but teleportation, and
+/// it hides any benefit from direction coherence between blocks. Read
+/// `drifting` for the expected case and `moving` as the pathological bound.
+fn bench_binaural(c: &mut Criterion) {
+    for scenario in ["static", "moving", "drifting"] {
+        let mut group = c.benchmark_group(format!("render_binaural_{scenario}"));
+        for &n in &[1usize, 8, 16, 32, 64, 118] {
+            for (label, cascaded) in [("direct", false), ("cascaded", true)] {
+                let (mut r, pcm) = if cascaded {
+                    prepared_binaural_cascaded(n, RampMode::Frame)
+                } else {
+                    prepared_binaural(n, RampMode::Frame)
+                };
+                let mut buf = Vec::new();
+                let mut round = 1u64;
+                group.bench_function(BenchmarkId::new(label, n), |b| {
+                    b.iter(|| {
+                        let events = match scenario {
+                            "moving" => move_events(n, round),
+                            "drifting" => drift_events(n, round),
+                            _ => Vec::new(),
+                        };
+                        round = round.wrapping_add(1);
+                        let f = r
+                            .render_frame(
+                                black_box(&pcm),
+                                black_box(n),
+                                &events,
+                                std::mem::take(&mut buf),
+                                false,
+                            )
+                            .expect("render");
+                        buf = f.samples;
+                        black_box(&buf);
+                    });
+                });
+            }
+        }
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     bench_steady,
@@ -532,6 +417,7 @@ criterion_group!(
     bench_cartesian,
     bench_crossover,
     bench_polar,
-    bench_polar_crossover
+    bench_polar_crossover,
+    bench_binaural
 );
 criterion_main!(benches);

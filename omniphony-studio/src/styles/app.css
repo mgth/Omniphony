@@ -4,6 +4,10 @@
         --panel-open-max-height-large: min(52vh, 520px);
         --panel-width-left: min(440px, 92vw);
         --panel-width-right: min(440px, 92vw);
+        /* Select chevron, held in one place because several field classes set
+           the `background` shorthand — which resets background-image — and so
+           have to restore it explicitly. */
+        --select-chevron: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M1 1l4 4 4-4" stroke="%23d9ecff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>');
       }
 
       body {
@@ -22,6 +26,15 @@
       #omniphony-renderer-mount canvas {
         -webkit-user-drag: none;
         user-select: none;
+      }
+
+      /* Right-hand inset for every scrolling overlay container.
+         Measured, not guessed: with the previous value the right-most slider in
+         #overlayScroll sat 1px from the content edge, which is what made the
+         scrollbar look like it was covering the controls. Named once here so the
+         panels cannot drift apart again. */
+      :root {
+        --overlay-scroll-inset: 1.35rem;
       }
 
       #overlay {
@@ -153,6 +166,43 @@
         flex: 0 0 auto;
       }
 
+      /* Config-profile picker: fixed-height rows pinned above #overlayScroll.
+         They live inside the fixed-position overlay, so showing/hiding the
+         name-editor row never changes the 3D viewport geometry. */
+      #profileRow,
+      #profileNameRow {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        min-width: 0;
+      }
+
+      #profileNameRow input {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 0.75rem;
+        padding: 0.1rem 0.2rem;
+      }
+
+      /* WebKitGTK first-click reliability: no selectable text on the buttons,
+         and the inner glyph spans must never swallow the click. */
+      #profileRow button,
+      #profileNameRow button {
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
+      #profileRow button > span,
+      #profileNameRow button > span {
+        pointer-events: none;
+      }
+
+      #profileRow button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+
       #overlayScroll {
         flex: 1 1 auto;
         min-height: 0;
@@ -164,7 +214,7 @@
         scrollbar-gutter: stable both-edges;
         scrollbar-width: thin;
         box-sizing: border-box;
-        padding-right: 0.85rem;
+        padding-right: var(--overlay-scroll-inset);
       }
 
       #overlayScroll > *,
@@ -188,7 +238,7 @@
            clears the right-hand controls. */
         scrollbar-gutter: stable both-edges;
         scrollbar-width: thin;
-        padding-right: 1.15rem;
+        padding-right: var(--overlay-scroll-inset);
         max-height: 45vh;
         overflow-y: auto;
       }
@@ -203,7 +253,23 @@
         box-sizing: border-box;
         scrollbar-gutter: stable both-edges;
         scrollbar-width: thin;
-        padding-right: 1.15rem;
+        padding-right: var(--overlay-scroll-inset);
+        max-height: 45vh;
+        overflow-y: auto;
+      }
+
+      /* Object-injection editor: the third panel in the pinned slot, and it gets
+         exactly the treatment the other two get. It had its own arrangement —
+         scrolling on an inner body, no gutter, a 4px inset — which is precisely
+         how its scrollbar ended up sitting on the controls. */
+      #overlay > #objectTestEditSection {
+        flex: 0 0 auto;
+        width: 100%;
+        min-height: auto;
+        box-sizing: border-box;
+        scrollbar-gutter: stable both-edges;
+        scrollbar-width: thin;
+        padding-right: var(--overlay-scroll-inset);
         max-height: 45vh;
         overflow-y: auto;
       }
@@ -392,6 +458,28 @@
         cursor: pointer;
       }
 
+      /* Buttons sharing a row must agree on height. A label that wraps to two
+         lines grows its own button, and with the row on `align-items: center`
+         the others stayed at their one-line height — e.g. the layout row came
+         out 20 / 33.6 / 33.6 / 28.8px.
+
+         `align-self` fixes that from the button rather than the row: it
+         overrides the container's align-items, so none of the four affected
+         rows (three are anonymous divs carrying inline styles) has to change.
+         It is inert outside flex and grid, and it does not inflate anything on
+         its own — a row where no label wraps keeps the compact height, because
+         every button then measures the same. The inline-flex centring is what
+         keeps a one-line label vertically centred inside a stretched button
+         instead of riding at the top. */
+      .ui-btn,
+      .toggle-btn {
+        align-self: stretch;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+
       .ui-btn-primary {
         background: rgba(255,255,255,0.1);
         border-color: rgba(255,255,255,0.25);
@@ -504,9 +592,9 @@
         scrollbar-gutter: stable both-edges;
         scrollbar-width: thin;
         box-sizing: border-box;
-        /* Extra right inset so the scrollbar clears the per-section collapse/“i”
+        /* Right inset so the scrollbar clears the per-section collapse/“i”
            buttons that sit on the right of each section header. */
-        padding-right: 1.15rem;
+        padding-right: var(--overlay-scroll-inset);
       }
 
       #logOverlay {
@@ -598,13 +686,10 @@
       }
 
       .log-panel-level select {
+        /* Shell comes from the shared `select` rule; only the width is local.
+           It used to hand-roll a pill variant, which left no room for the
+           chevron and made this the one select with a different radius. */
         min-width: 6.8rem;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        color: #d9ecff;
-        border-radius: 999px;
-        padding: 0.2rem 0.55rem;
-        font-size: 12px;
       }
 
       .log-panel-filter {
@@ -854,6 +939,20 @@
         justify-content: space-between;
         gap: 0.5rem;
         margin-top: 0.25rem;
+      }
+
+      /* Status line under the "activate in mpv config" switch: says where the
+         file is, or why the toggle stood down (a hand-written `ad=` wins). */
+      .mpv-orender-note {
+        font-size: 12px;
+        line-height: 1.45;
+        margin: -0.1rem 0 0.35rem;
+        color: rgba(217, 236, 255, 0.62);
+        overflow-wrap: anywhere;
+      }
+
+      .mpv-orender-note.is-conflict {
+        color: #ffbf66;
       }
 
       .clip-indicator {
@@ -1381,8 +1480,14 @@
         gap: 0.18rem;
       }
 
-      #objectsList,
-      #speakersList {
+      /* #speakersList used to share this gutter, from when these lists scrolled
+         themselves. It no longer does: #speakersOverlayScroll is the scroll
+         container and already reserves the bar (its own padding, plus the width
+         a thin scrollbar takes out of layout). The leftover padding stopped the
+         speaker rows 9.6px short of the right edge while the headphone rows in
+         the very same container reached it, so the two gauge blocks failed to
+         line up in virtual-room mode, where both are shown. */
+      #objectsList {
         padding-right: 0.6rem;
         box-sizing: border-box;
       }
@@ -1651,6 +1756,92 @@
       .delay-input:focus {
         outline: none;
         border-color: rgba(255, 255, 255, 0.45);
+      }
+
+      /* Selects were left native: the platform default is a 13.3px font on an
+         opaque grey chrome with a platform chevron, which reads taller and
+         heavier than the 12px translucent text fields sitting next to it.
+         Give them the same shell as .delay-input and the OSC inputs, and draw
+         our own chevron so the control keeps one predictable height across
+         WebKitGTK, WebView2 and WKWebView instead of three different ones. */
+      select {
+        box-sizing: border-box;
+        appearance: none;
+        -webkit-appearance: none;
+        font-family: inherit;
+        font-size: 12px;
+        /* An explicit ratio, not `normal`: a select resolves `normal` taller
+           than an input does, so the two would not line up on the same row.
+           1.2 + the padding below lands the box on the inputs' 20px. */
+        line-height: 1.2;
+        color: #d9ecff;
+        background-color: rgba(255, 255, 255, 0.08);
+        /* Chevron drawn as a background image, so it never becomes a separate
+           hit target that could swallow the click that opens the popup. */
+        background-image: var(--select-chevron);
+        background-repeat: no-repeat;
+        background-position: right 0.45rem center;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 6px;
+        /* Right padding reserves the chevron lane so long option labels stop
+           before it instead of running underneath. */
+        padding: 0.125rem 1.35rem 0.125rem 0.4rem;
+        cursor: pointer;
+        /* Same WebKitGTK first-click guard as the buttons: a drag on the label
+           text must not start a text selection instead of opening the popup. */
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
+      select:hover:not(:disabled) {
+        background-color: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.32);
+      }
+
+      select:focus-visible {
+        outline: none;
+        border-color: rgba(255, 255, 255, 0.45);
+      }
+
+      select:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      /* The popup list is drawn by the platform, which does not inherit the
+         control's colours — without this it falls back to grey-on-grey. */
+      select option {
+        background-color: #12141c;
+        color: #d9ecff;
+      }
+
+      /* Compact variant: the renderer and input panels pair selects with
+         .delay-input text fields on the same row, at 11px. Those inputs come
+         out at 16.8px, so this trims the vertical padding to land there too —
+         the default padding above is tuned for the 12px/20px pairing. */
+      select.delay-input {
+        padding-top: 1px;
+        padding-bottom: 1px;
+        /* .delay-input sets the `background` shorthand, which wipes the chevron
+           set above — and since a class outranks the bare `select` selector,
+           these would end up with no dropdown affordance at all. */
+        background-image: var(--select-chevron);
+        background-repeat: no-repeat;
+        background-position: right 0.4rem center;
+        /* Same reason: .delay-input is a 52px right-aligned numeric field. A
+           select shows a word, and its width comes from the panel rules. */
+        text-align: left;
+      }
+
+      /* Densest variant: the diag-plot strip sets 10px selects beside 10px
+         labels inside a bordered pill, so the chevron lane tightens to match.
+         These used to carry an inline `background:` shorthand, which reset the
+         chevron image while `appearance: none` still removed the native one —
+         leaving a select with no affordance at all. */
+      select.micro-select {
+        font-size: 10px;
+        padding: 1px 1.05rem 1px 0.3rem;
+        background-position: right 0.32rem center;
       }
 
       .input-panel-shell {
@@ -2452,6 +2643,9 @@
 
       #overlayScroll::-webkit-scrollbar,
       #speakersOverlayScroll::-webkit-scrollbar,
+      #channelEditSection::-webkit-scrollbar,
+      #speakerEditSection::-webkit-scrollbar,
+      #objectTestEditSection::-webkit-scrollbar,
       .osc-config-form.open::-webkit-scrollbar,
       .room-geometry-form.open::-webkit-scrollbar,
       .telemetry-gauges-form.open::-webkit-scrollbar {
@@ -2460,6 +2654,9 @@
 
       #overlayScroll::-webkit-scrollbar-track,
       #speakersOverlayScroll::-webkit-scrollbar-track,
+      #channelEditSection::-webkit-scrollbar-track,
+      #speakerEditSection::-webkit-scrollbar-track,
+      #objectTestEditSection::-webkit-scrollbar-track,
       .osc-config-form.open::-webkit-scrollbar-track,
       .room-geometry-form.open::-webkit-scrollbar-track,
       .telemetry-gauges-form.open::-webkit-scrollbar-track {
@@ -2469,6 +2666,9 @@
 
       #overlayScroll::-webkit-scrollbar-thumb,
       #speakersOverlayScroll::-webkit-scrollbar-thumb,
+      #channelEditSection::-webkit-scrollbar-thumb,
+      #speakerEditSection::-webkit-scrollbar-thumb,
+      #objectTestEditSection::-webkit-scrollbar-thumb,
       .osc-config-form.open::-webkit-scrollbar-thumb,
       .room-geometry-form.open::-webkit-scrollbar-thumb,
       .telemetry-gauges-form.open::-webkit-scrollbar-thumb {
@@ -2512,41 +2712,142 @@ body.cap-embedded .osc-config-actions {
   display: none !important;
 }
 
-/* ── Output mode (Headphones / Speakers) — renderer panel ─────────────────── */
-/* Headphones: the speaker-path renderer blocks are inert — hide them. */
-body.output-binaural #evaluationSection,
-body.output-binaural #rampSection,
-body.output-binaural #backendParametersSection,
-body.output-binaural #distanceDiffuseSection,
-body.output-binaural #distanceModelSection {
+/* ── Renderer / Binaural editing tabs — renderer panel ────────────────────── */
+/* The two parameter groups are freely switchable tabs, DECOUPLED from the
+   output mode: the cascaded ("virtual room") mode renders the speaker
+   pipeline on a virtual layout, so the renderer options stay meaningful —
+   and editable — while listening on headphones. The active tab auto-follows
+   an output-mode change, but either tab can be opened at any time. */
+body.studio-tab-binaural #evaluationSection,
+body.studio-tab-binaural #rampSection,
+body.studio-tab-binaural #backendParametersSection,
+body.studio-tab-binaural #distanceDiffuseSection,
+body.studio-tab-binaural #distanceModelSection {
   display: none !important;
 }
-/* Speakers: the binaural blocks are inert — hide them. */
-body:not(.output-binaural) .binaural-subpanel {
+body:not(.studio-tab-binaural) .binaural-subpanel {
   display: none !important;
 }
-/* Segmented selector buttons. */
-.output-mode-btn {
+.renderer-tab-btn {
   opacity: 0.55;
+  flex: 1 1 0;
 }
-.output-mode-btn.active {
+.renderer-tab-btn.active {
   opacity: 1;
   border-color: rgba(86, 156, 255, 0.8);
   background: rgba(86, 156, 255, 0.18);
   color: #cfe4ff;
 }
+/* Speaker editor Edit / Test tabs. Same mechanism as the Renderer/Binaural
+   pair above: a body class selects the pane, the buttons only mirror it, so
+   nothing has to be re-rendered on a tab change. */
+body.speaker-tab-test #speakerEditTabEdit,
+body:not(.speaker-tab-test) #speakerEditTabTest {
+  display: none;
+}
+
 /* The mode is locked at player start only under the embedded (mpv) host. */
 body:not(.cap-embedded) .output-mode-mpv-note {
   display: none;
 }
-/* Speakers section: full control rows in speaker mode, read-only bed-anchor
-   directions in headphones mode (per-speaker gain/mute/delay are inert). */
-body.output-binaural #speakersList,
-body.output-binaural .speakers-layout-actions,
-body.output-binaural .speakers-title-speakers,
+/* Speakers section. Speaker mode: the per-speaker rows. Direct headphones:
+   only the ear rows (per-speaker params are inert). Virtual room (cascaded):
+   BOTH — the ear rows on top and the editable per-speaker rows, which drive
+   the virtual speakers of the app layout. */
+body.output-binaural:not(.output-cascaded) #speakersList,
+body.output-binaural:not(.output-cascaded) .speakers-header-speakers,
 body:not(.output-binaural) #hpChannelsList,
-body:not(.output-binaural) .speakers-title-binaural {
+body:not(.output-binaural) .speakers-header-binaural {
   display: none !important;
+}
+/* Two headers share one section in virtual-room mode: tuck the second one. */
+.speakers-header-speakers {
+  margin-top: 0.35rem;
+}
+
+/* Vertical crossover-band cursor: a fixed pill floating over the 3D view just
+   left of the right overlay — same visual language as #sceneEffectBar. One
+   coloured segment per band (highest on top, palette = bandColor()) plus the
+   "All bands" gradient cap. Fixed-positioned overlay: it never resizes or
+   reflows the renderer canvas. */
+#bandCursor {
+  position: fixed;
+  top: 50%;
+  right: calc(var(--panel-width-right) + 2.6rem);
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 7px;
+  background: rgba(18, 22, 28, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+#bandCursor[hidden] {
+  display: none;
+}
+
+.band-cursor-seg {
+  position: relative;
+  width: 14px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  background: var(--seg-color);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.band-cursor-seg:hover {
+  opacity: 0.85;
+  transform: scaleX(1.18);
+}
+
+.band-cursor-seg.selected {
+  opacity: 1;
+  border-color: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 10px 1px var(--seg-color);
+}
+
+/* The "All bands" cap: shorter, capsule-shaped, band-gradient background. */
+.band-cursor-all {
+  height: 16px;
+  border-radius: 8px;
+  margin-bottom: 3px;
+}
+
+/* Frequency-range chip, floating left of the segment. Shown on hover and kept
+   visible for the selected segment so the current band is always readable. */
+.band-cursor-seg::after {
+  content: attr(data-label);
+  position: absolute;
+  right: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(18, 22, 28, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #d9ecff;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.band-cursor-seg:hover::after,
+.band-cursor-seg.selected::after {
+  opacity: 1;
 }
 
 /* Quick visual-effect toggles: a pill sitting at the top of the bottom-center
@@ -2603,6 +2904,91 @@ body:not(.output-binaural) .speakers-title-binaural {
   background: rgba(82, 226, 162, 0.24);
   color: #aef5d8;
 }
+
+/* Object-injection transport: play/stop, and the signal it will play, on one
+   row at the top of the panel. Not in the title row — a lone glyph in that
+   corner is where every other section keeps its collapse chevron. */
+.object-test-transport {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.15rem 0 0.1rem;
+  min-width: 0;
+}
+
+.transport-label {
+  font-size: 12px;
+  color: rgba(223, 232, 243, 0.72);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+.transport-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(223, 232, 243, 0.72);
+  cursor: pointer;
+  /* WebKitGTK gives the click to a text selection otherwise, and the button
+     silently does nothing on the first press. */
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 0.13s ease, color 0.13s ease, border-color 0.13s ease,
+    box-shadow 0.13s ease;
+}
+
+.transport-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(223, 232, 243, 0.95);
+}
+
+.transport-btn:focus-visible {
+  outline: none;
+  border-color: rgba(82, 226, 162, 0.6);
+}
+
+.transport-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Playing: the accent green the scene bar uses for an active tool, plus a slow
+   ring so a running test is obvious from across the room — this is a signal
+   that can be left on by accident. */
+.transport-btn[aria-pressed='true'] {
+  background: rgba(82, 226, 162, 0.18);
+  border-color: rgba(82, 226, 162, 0.6);
+  color: #7af0c0;
+  animation: transport-pulse 2s ease-in-out infinite;
+}
+
+.transport-btn[aria-pressed='true']:hover {
+  background: rgba(82, 226, 162, 0.26);
+  color: #aef5d8;
+}
+
+@keyframes transport-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(82, 226, 162, 0.34); }
+  50% { box-shadow: 0 0 0 5px rgba(82, 226, 162, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transport-btn[aria-pressed='true'] { animation: none; }
+}
+
+.transport-btn svg { fill: currentColor; }
+.transport-btn .tp-pause { display: none; }
+.transport-btn[aria-pressed='true'] .tp-play { display: none; }
+.transport-btn[aria-pressed='true'] .tp-pause { display: inline; }
 
 /* Objects/Trails "nature" flyout. The slot only wraps the button + its popup so
    the absolutely-positioned menu anchors to the button without affecting the
@@ -2701,3 +3087,188 @@ body:not(.output-binaural) .speakers-title-binaural {
   border-color: rgba(82, 226, 162, 0.5);
   color: #aef5d8;
 }
+
+/* ── Object injection: the three room faces ─────────────────────────────────
+   The room box, its midlines and the source marker. Colours follow the panel
+   palette (#d9ecff text on a translucent white fill); the marker borrows the
+   accent green used elsewhere for "live" so a placed source reads at a glance
+   against the faint geometry. */
+.object-test-face-box {
+  fill: rgba(255, 255, 255, 0.05);
+  stroke: rgba(217, 236, 255, 0.35);
+  stroke-width: 1;
+}
+
+.object-test-face-axis {
+  stroke: rgba(217, 236, 255, 0.15);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.object-test-mitre {
+  stroke: rgba(217, 236, 255, 0.22);
+  stroke-width: 0.5;
+  stroke-dasharray: 2 2;
+}
+
+/* View names and the depth end-labels. Font sizes are in sheet units: the sheet
+   is normalised to 100 on its larger side, so these stay proportional to the
+   drawing however the room is shaped. */
+.object-test-face-caption {
+  fill: rgba(217, 236, 255, 0.75);
+  font-size: 3.4px;
+  font-family: inherit;
+}
+
+.object-test-end-label {
+  fill: rgba(217, 236, 255, 0.45);
+  font-size: 2.8px;
+  font-family: inherit;
+}
+
+/* Single-axis sliders living in the CAD sheet's gutters. Drawn in the SVG
+   rather than overlaid as range inputs: the sheet scales with its viewBox, so
+   an overlay would need its geometry recomputed on every resize and would
+   drift the moment the max-height letterboxes it. */
+.object-test-slider-hit {
+  fill: transparent;
+}
+
+.object-test-slider-track {
+  stroke: rgba(217, 236, 255, 0.28);
+  stroke-width: 0.7;
+  stroke-linecap: round;
+}
+
+.object-test-slider-tick {
+  stroke: rgba(217, 236, 255, 0.35);
+  stroke-width: 0.6;
+}
+
+.object-test-slider-thumb {
+  fill: #5cff9a;
+  stroke: rgba(10, 11, 16, 0.8);
+  stroke-width: 0.5;
+}
+
+.object-test-slider {
+  cursor: pointer;
+  outline: none;
+}
+
+.object-test-slider:hover .object-test-slider-track,
+.object-test-slider:focus-visible .object-test-slider-track {
+  stroke: rgba(217, 236, 255, 0.55);
+}
+
+/* Keyboard focus has to be visible on an SVG group, which gets no default
+   focus ring once `outline` is cleared. */
+.object-test-slider:focus-visible .object-test-slider-thumb {
+  stroke: #d9ecff;
+  stroke-width: 0.9;
+}
+
+.object-test-marker {
+  fill: #5cff9a;
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 1;
+  /* The marker is decoration over a click target: let pointer events through
+     so grabbing it does not swallow the drag the face is listening for. */
+  pointer-events: none;
+}
+
+/* WebKitGTK will start a text selection on a button's own label and swallow the
+   click that should have followed — invisible when previewing in Chrome, and a
+   button that needs two clicks in the real app. The rule is scoped the same way
+   the profile-row buttons scope it, and covers the switch label too, whose text
+   is the click target for the toggle beside it. */
+#objectTestPanelRoot button,
+#objectTestPanelRoot .switch-row,
+#objectTestPanelRoot .panel-title {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* The orbit path, drawn on each CAD face. Thin and unfilled: it is the shape
+   the source will travel, not a region, and the marker must stay readable on
+   top of it. */
+/* The orbit, projected onto a face. Thicker and brighter than it was: it is
+   the path the source will travel, it competes with the room box and the grid
+   ticks for attention, and at 0.6 it read as a smudge. Still unfilled — it is
+   a trajectory, not a region — and still under the marker. */
+.object-test-orbit {
+  fill: none;
+  stroke: rgba(92, 255, 154, 0.85);
+  stroke-width: 1.1;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+/* The snap grid: ticks on the face's edges rather than ruled lines across it.
+   Faint enough to stay out of the way of the trajectory, present enough to
+   count. */
+.object-test-grid {
+  fill: none;
+  stroke: rgba(217, 236, 255, 0.35);
+  stroke-width: 0.45;
+  pointer-events: none;
+}
+
+
+
+/* Radius slider: the room's own distances marked on the track. √2 from the
+   centre reaches a vertical edge, √3 a corner; the doubles are the same reach
+   from the far wall.
+
+   Drawn on a layer of its own behind the input rather than as the input's own
+   background. A range input keeps its native appearance here — every other
+   slider in the panel does — and a native track paints over anything set on
+   the element, so the marks would simply not show. Styling the track
+   pseudo-element instead would mean `appearance: none` and rebuilding the
+   slider's whole look for one control.
+
+   The marks sit at value/4 of the width, a hair off the thumb's centre at each
+   end since the thumb has width and the value does not. They are guides; the
+   snap in snapRadius() is what lands on them exactly. */
+.object-test-radius-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.object-test-radius-ticks {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 9px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  background-image: linear-gradient(
+    to right,
+      transparent calc(35.355% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(35.355% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(35.355% + 0.5px),
+      transparent calc(35.355% + 0.5px),
+      transparent calc(43.301% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(43.301% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(43.301% + 0.5px),
+      transparent calc(43.301% + 0.5px),
+      transparent calc(70.711% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(70.711% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(70.711% + 0.5px),
+      transparent calc(70.711% + 0.5px),
+      transparent calc(86.603% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(86.603% - 0.5px),
+      rgba(217, 236, 255, 0.5) calc(86.603% + 0.5px),
+      transparent calc(86.603% + 0.5px),
+      transparent 100%
+  );
+}
+
+.object-test-radius-slider {
+  position: relative;
+  background: transparent;
+}
+

@@ -35,8 +35,7 @@ pub fn save_live_config(
     save_live_config_to_path(control, host, &path, &path)?;
     control.mark_clean();
     // A deliberate save supersedes any pending live-handoff overlay.
-    let _ = std::fs::remove_file(renderer::config::live_sidecar_path(&path));
-    renderer::config::clear_live_overlay_cache();
+    renderer::config::discard_live_sidecar(&path);
 
     Ok(SaveLiveConfigResult {
         path,
@@ -55,8 +54,24 @@ pub fn save_live_config_to_path(
     base_path: &std::path::Path,
     out_path: &std::path::Path,
 ) -> Result<()> {
-    let live = control.live.read();
     let mut config = renderer::config::Config::load_or_default(base_path);
+    store_live_into_config(control, host, &mut config);
+    config.save(out_path)?;
+
+    Ok(())
+}
+
+/// Serialize the current live state into `config.render` (creating the render
+/// section if needed) without touching disk. The write half of
+/// [`save_live_config_to_path`], shared with the OSC profile operations, which
+/// commit the live state into the outgoing profile before switching
+/// (docs/config-profiles.md).
+pub fn store_live_into_config(
+    control: &Arc<RendererControl>,
+    host: Option<&dyn HostControlHandler>,
+    config: &mut renderer::config::Config,
+) {
+    let live = control.live.read();
     let render = config.render.get_or_insert_with(Default::default);
     let requested_bridge_path = control.bridge_path();
     render.bridge_path = requested_bridge_path;
@@ -202,6 +217,13 @@ pub fn save_live_config_to_path(
     } else {
         None
     };
+    let default_mirror_axes = renderer::spatial_vbap::MirrorAxes::default();
+    render.distance_diffuse_mirror_axes =
+        if live.distance_diffuse_mirror_axes != default_mirror_axes {
+            Some(live.distance_diffuse_mirror_axes.to_string())
+        } else {
+            None
+        };
     // Binaural (headphone) stage: persist the live selection so it survives a
     // restart — output mode, HRIR source (+ SOFA path), isotropic scale, and the
     // head-tracking OSC address/format.
@@ -225,6 +247,9 @@ pub fn save_live_config_to_path(
     };
     render.binaural = Some(renderer::config::BinauralConfig {
         output_mode: Some(live.binaural.output_mode.as_str().to_string()),
+        mode: Some(live.binaural.mode.as_str().to_string()),
+        ear_gains: Some([live.binaural.ears[0].gain, live.binaural.ears[1].gain]),
+        ear_mutes: Some([live.binaural.ears[0].muted, live.binaural.ears[1].muted]),
         unit_scale_m: Some(live.binaural.unit_scale_m),
         head_radius_m: Some(live.binaural.head_radius_m),
         hrir_source: Some(hrir_source),
@@ -257,8 +282,13 @@ pub fn save_live_config_to_path(
             extra: Default::default(),
         }),
         air_absorption: Some(live.binaural.air_absorption),
+        // Written just below through its descriptor, so the skip-if-default
+        // rule lives in one place — this wholesale rebuild of the section runs
+        // *after* `store_live_to_config` and would otherwise clobber it.
+        hrir_update_lattice: None,
         extra: Default::default(),
     });
+    renderer::config_fields::hrir_update_lattice::store(render, live.binaural.hrir_update_lattice);
     // barycenter / experimental_distance params now live in the generic param bag
     // (`render.backend_params`, written below), so drop the legacy dedicated keys
     // on save. Reading an old config still migrates them into the bag on load.
@@ -308,8 +338,4 @@ pub fn save_live_config_to_path(
     if let Some(h) = host {
         h.amend_saved_config(render);
     }
-
-    config.save(out_path)?;
-
-    Ok(())
 }

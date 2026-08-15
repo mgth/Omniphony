@@ -164,6 +164,10 @@ pub enum OscEvent {
         peak_dbfs: f64,
         #[serde(rename = "rmsDbfs")]
         rms_dbfs: f64,
+        /// Per-crossover-band RMS (extra args after peak/rms), band order
+        /// matching the band gain table. Empty when no crossover is active.
+        #[serde(rename = "bandRmsDbfs", skip_serializing_if = "Vec::is_empty")]
+        band_rms_dbfs: Vec<f64>,
     },
 
     #[serde(rename = "meter:object:gains")]
@@ -178,6 +182,15 @@ pub enum OscEvent {
 
     #[serde(rename = "meter:speaker")]
     MeterSpeaker {
+        id: String,
+        #[serde(rename = "peakDbfs")]
+        peak_dbfs: f64,
+        #[serde(rename = "rmsDbfs")]
+        rms_dbfs: f64,
+    },
+
+    #[serde(rename = "meter:ear")]
+    MeterEar {
         id: String,
         #[serde(rename = "peakDbfs")]
         peak_dbfs: f64,
@@ -223,6 +236,9 @@ pub enum OscEvent {
     StateHeadPose { w: f32, x: f32, y: f32, z: f32 },
     #[serde(rename = "state:clip")]
     StateClip { speaker: i32 },
+    /// Overlay display preferences (JSON), republished by the engine whenever
+    /// they change — including from an mpv keybind, which Studio cannot see.
+    StateOverlay { json: String },
     #[serde(rename = "state:audio")]
     StateAudio { value: String },
     #[serde(rename = "state:layout")]
@@ -235,6 +251,8 @@ pub enum OscEvent {
     StateLoudness { value: String },
     #[serde(rename = "state:monitoring")]
     StateMonitoring { value: String },
+    #[serde(rename = "state:profiles")]
+    StateProfiles { value: String },
     #[serde(rename = "state:session")]
     StateSession { value: String },
     #[serde(rename = "state:debug:speaker_gaintable:meta")]
@@ -285,6 +303,10 @@ pub enum OscEvent {
     StateDecodeTimeMs { value: f64 },
     #[serde(rename = "state:render_time_ms")]
     StateRenderTimeMs { value: f64 },
+    /// Where the object test's source is right now, orbit and clamp applied.
+    /// Published by the renderer because it owns the orbit phase — an interface
+    /// animating its own copy would drift from what is being heard.
+    StateObjectTestPosition { x: f64, y: f64, z: f64, peak_dbfs: f64, rms_dbfs: f64 },
     #[serde(rename = "state:crossover_time_ms")]
     StateCrossoverTimeMs { value: f64 },
     #[serde(rename = "state:write_time_ms")]
@@ -301,12 +323,18 @@ pub enum OscEvent {
     StateRenderConfigStatus { value: String },
     #[serde(rename = "state:render:version")]
     StateRenderVersion { value: String },
+    StateRenderExecutable { value: String },
     #[serde(rename = "state:render:abi")]
     StateRenderAbi { value: String },
     #[serde(rename = "state:render:bridge_error")]
     StateRenderBridgeError { value: String },
     #[serde(rename = "state:input_pipe")]
     StateInputPipe { value: String },
+    /// JSON describing the object test's clip, or its refusal. Passed straight
+    /// through: the shape belongs to the renderer, and re-modelling it here
+    /// would be one more place to update when a field is added.
+    #[serde(rename = "state:object_test:clip")]
+    StateObjectTestClip { value: String },
     #[serde(rename = "state:osc:metering")]
     StateOscMetering { enabled: bool },
     #[serde(rename = "state:log_level")]
@@ -692,6 +720,12 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
             y: to_number(args[2])? as f32,
             z: to_number(args[3])? as f32,
         }),
+        (3, "overlay") => Some(OscEvent::StateOverlay {
+            json: match raw_args.first() {
+                Some(OscType::String(v)) => v.clone(),
+                _ => return None,
+            },
+        }),
         (3, "clip") => Some(OscEvent::StateClip {
             speaker: match raw_args.first() {
                 Some(OscType::Int(v)) => *v,
@@ -720,6 +754,20 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (3, "monitoring") => Some(OscEvent::StateMonitoring {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
+        (3, "profiles") => Some(OscEvent::StateProfiles {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
+        (4, "object_test") if parts[3] == "position" => {
+            Some(OscEvent::StateObjectTestPosition {
+                x: to_number(args.first().copied()?)?,
+                y: to_number(args.get(1).copied()?)?,
+                z: to_number(args.get(2).copied()?)?,
+                // Silence if a sender omits them, rather than dropping the
+                // position: where the source is matters even unmetered.
+                peak_dbfs: args.get(3).copied().and_then(to_number).unwrap_or(-100.0),
+                rms_dbfs: args.get(4).copied().and_then(to_number).unwrap_or(-100.0),
+            })
+        }
         (4, "realtime") => match parts[3] {
             "master_gain" => Some(OscEvent::StateRealtimeMasterGain {
                 value: to_number(args.first().copied()?)?,
@@ -891,12 +939,21 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
         (4, "render") if parts[3] == "version" => Some(OscEvent::StateRenderVersion {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
+        // Path of the process serving the engine. Two checkouts of the same
+        // commit share a build fingerprint, so only this tells Studio whether
+        // the renderer answering is the one it would have launched.
+        (4, "render") if parts[3] == "executable" => Some(OscEvent::StateRenderExecutable {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
         // C-ABI version of the liborender shim hosting the engine
         // ("major.minor"); empty when the engine is linked as a Rust crate.
         (4, "render") if parts[3] == "abi" => Some(OscEvent::StateRenderAbi {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (4, "render") if parts[3] == "bridge_error" => Some(OscEvent::StateRenderBridgeError {
+            value: raw_args.first().and_then(unwrap_string)?,
+        }),
+        (4, "object_test") if parts[3] == "clip" => Some(OscEvent::StateObjectTestClip {
             value: raw_args.first().and_then(unwrap_string)?,
         }),
         (3, "input_pipe") => {
@@ -991,14 +1048,27 @@ fn parse_meter(parts: &[&str], args: &[f64]) -> Option<OscEvent> {
         let rms = clamp(to_number(args[1]).unwrap_or(-100.0), -100.0, 0.0);
         match kind {
             "object" => {
+                // Any args past (peak, rms) are per-crossover-band RMS values.
+                let band_rms_dbfs = args[2..]
+                    .iter()
+                    .map(|&v| clamp(to_number(v).unwrap_or(-100.0), -100.0, 0.0))
+                    .collect();
                 return Some(OscEvent::MeterObject {
+                    id,
+                    peak_dbfs: peak,
+                    rms_dbfs: rms,
+                    band_rms_dbfs,
+                })
+            }
+            "speaker" => {
+                return Some(OscEvent::MeterSpeaker {
                     id,
                     peak_dbfs: peak,
                     rms_dbfs: rms,
                 })
             }
-            "speaker" => {
-                return Some(OscEvent::MeterSpeaker {
+            "ear" => {
+                return Some(OscEvent::MeterEar {
                     id,
                     peak_dbfs: peak,
                     rms_dbfs: rms,
@@ -1058,6 +1128,45 @@ mod tests {
                 label: Some(label),
                 generation: Some(7),
             }) if id == "3" && label == "LFE"
+        ));
+    }
+
+    #[test]
+    fn object_meter_extra_args_are_per_band_rms() {
+        let parsed = parse_osc_message(
+            "/omniphony/meter/object/2",
+            &[
+                OscType::Float(-3.0),
+                OscType::Float(-9.0),
+                OscType::Float(-12.0),
+                OscType::Float(-40.0),
+            ],
+            CoordinateFormat::Cartesian,
+        );
+        assert!(matches!(
+            parsed,
+            Some(OscEvent::MeterObject {
+                id,
+                peak_dbfs,
+                rms_dbfs,
+                band_rms_dbfs,
+            }) if id == "2"
+                && peak_dbfs == -3.0
+                && rms_dbfs == -9.0
+                && band_rms_dbfs == vec![-12.0, -40.0]
+        ));
+    }
+
+    #[test]
+    fn object_meter_without_band_args_keeps_an_empty_band_list() {
+        let parsed = parse_osc_message(
+            "/omniphony/meter/object/2",
+            &[OscType::Float(-3.0), OscType::Float(-9.0)],
+            CoordinateFormat::Cartesian,
+        );
+        assert!(matches!(
+            parsed,
+            Some(OscEvent::MeterObject { band_rms_dbfs, .. }) if band_rms_dbfs.is_empty()
         ));
     }
 

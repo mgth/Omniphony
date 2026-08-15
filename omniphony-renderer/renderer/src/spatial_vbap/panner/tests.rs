@@ -18,7 +18,7 @@ fn test_vbap_panner_creation() {
     let layout = load_yaml_layout("7.1.4.yaml");
     let speakers = layout.spatializable_positions().0;
 
-    let panner = VbapPanner::new(&speakers, 5, 5, 0.0);
+    let panner = VbapPanner::new(&speakers, 5, 5, 0.0, Default::default());
     assert!(panner.is_ok());
 
     let panner = panner.unwrap();
@@ -32,7 +32,7 @@ fn test_vbap_gain_computation() {
     let layout = load_yaml_layout("7.1.4.yaml");
     let speakers = layout.spatializable_positions().0;
 
-    let panner = VbapPanner::new(&speakers, 5, 5, 0.0).unwrap();
+    let panner = VbapPanner::new(&speakers, 5, 5, 0.0, Default::default()).unwrap();
 
     // Test front center position (should activate L+R)
     let gains = panner.get_gains(0.0, 0.0);
@@ -52,12 +52,12 @@ fn test_vbap_gain_computation() {
 fn test_vbap_error_cases() {
     // Too few speakers
     let speakers = vec![[0.0, 0.0], [30.0, 0.0]];
-    assert!(VbapPanner::new(&speakers, 5, 5, 0.0).is_err());
+    assert!(VbapPanner::new(&speakers, 5, 5, 0.0, Default::default()).is_err());
 
     // Invalid resolution
     let speakers = vec![[0.0, 0.0], [-30.0, 0.0], [30.0, 0.0]];
-    assert!(VbapPanner::new(&speakers, 0, 5, 0.0).is_err());
-    assert!(VbapPanner::new(&speakers, 15, 5, 0.0).is_err());
+    assert!(VbapPanner::new(&speakers, 0, 5, 0.0, Default::default()).is_err());
+    assert!(VbapPanner::new(&speakers, 15, 5, 0.0, Default::default()).is_err());
 }
 
 #[test]

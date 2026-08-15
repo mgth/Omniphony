@@ -19,7 +19,7 @@ import { rebuildTrailGeometry } from '../trails.js';
 import { renderSpeakerEditor } from '../speakers.js';
 import { emitOverlayLayoutChanged } from '../ui/layout/overlay-layout-state.js';
 import { inDisplayPanel, inRoomGeometryPanel } from '../ui/panel-roots.js';
-import { syncSpeakerHeatmapBandSelect } from '../scene/speaker-band-select.js';
+import { syncCrossoverBandSelects } from '../scene/speaker-band-select.js';
 import { createSmallLabelSprite, setLabelSpriteText } from '../scene/labels.js';
 
 const TRAIL_PREFS_STORAGE_KEY = 'spatialviz.trail_prefs';
@@ -59,7 +59,6 @@ function getSpeakerSizeSliderEl() { return inDisplayPanel('speakerSizeSlider'); 
 function getSpeakerSizeValEl() { return inDisplayPanel('speakerSizeVal'); }
 function getSpeakerHeatmapVolumeToggleEl() { return inDisplayPanel('speakerHeatmapVolumeToggle'); }
 function getSpeakerHeatmapVolumeColormapEl() { return inDisplayPanel('speakerHeatmapVolumeColormap'); }
-function getSpeakerHeatmapBandSelectEl() { return inDisplayPanel('speakerHeatmapBandSelect'); }
 function getObjectEnergyHeatmapToggleEl() { return inDisplayPanel('objectEnergyHeatmapToggle'); }
 function getObjectEnergyColormapEl() { return inDisplayPanel('objectEnergyColormap'); }
 function getObjectEnergyVolumeMixSliderEl() { return inDisplayPanel('objectEnergyVolumeMixSlider'); }
@@ -112,8 +111,13 @@ export function persistEffectiveRenderPrefs() {
       speakerSize: app.speakerSize,
       speakerHeatmapVolumeEnabled: app.speakerHeatmapVolumeEnabled,
       speakerHeatmapVolumeColormap: app.speakerHeatmapVolumeColormap,
-      speakerHeatmapBandIndex: app.speakerHeatmapBandIndex,
-      speakerHeatmapAllBands: app.speakerHeatmapAllBands,
+      heatmapBandIndex: app.heatmapBandIndex,
+      heatmapAllBands: app.heatmapAllBands,
+      globalEnergyHeatmapEnabled: app.globalEnergyHeatmapEnabled,
+      globalEnergyHeatmapScaleDb: app.globalEnergyHeatmapScaleDb,
+      discontinuityHeatmapEnabled: app.discontinuityHeatmapEnabled,
+      discontinuityHeatmapMode: app.discontinuityHeatmapMode,
+      discontinuityHeatmapScale: app.discontinuityHeatmapScale,
       objectEnergyHeatmapEnabled: app.objectEnergyHeatmapEnabled,
       objectEnergyColormap: app.objectEnergyColormap,
       objectEnergyVolumeMix: app.objectEnergyVolumeMix,
@@ -175,7 +179,6 @@ export function applyEffectiveRenderPrefsToUi() {
   const speakerSizeSliderEl = getSpeakerSizeSliderEl();
   const speakerSizeValEl = getSpeakerSizeValEl();
   const speakerHeatmapVolumeToggleEl = getSpeakerHeatmapVolumeToggleEl();
-  const speakerHeatmapBandSelectEl = getSpeakerHeatmapBandSelectEl();
   if (effectiveRenderToggleEl) {
     effectiveRenderToggleEl.checked = app.effectiveRenderEnabled;
   }
@@ -223,12 +226,8 @@ export function applyEffectiveRenderPrefsToUi() {
   if (speakerHeatmapVolumeColormapEl) {
     speakerHeatmapVolumeColormapEl.value = app.speakerHeatmapVolumeColormap;
   }
-  syncSpeakerHeatmapBandSelect();
-  if (speakerHeatmapBandSelectEl) {
-    speakerHeatmapBandSelectEl.value = app.speakerHeatmapAllBands
-      ? 'all'
-      : String(app.speakerHeatmapBandIndex);
-  }
+  // Re-applies the shared band selection to the central selector too.
+  syncCrossoverBandSelects();
   const objectEnergyHeatmapToggleEl = getObjectEnergyHeatmapToggleEl();
   const objectEnergyColormapEl = getObjectEnergyColormapEl();
   const objectEnergyVolumeMixSliderEl = getObjectEnergyVolumeMixSliderEl();
@@ -367,12 +366,32 @@ export function loadEffectiveRenderPrefs() {
       if (OBJECT_ENERGY_COLORMAPS.includes(parsed?.speakerHeatmapVolumeColormap)) {
         app.speakerHeatmapVolumeColormap = parsed.speakerHeatmapVolumeColormap;
       }
-      const bandIndex = Number(parsed?.speakerHeatmapBandIndex);
+      // Shared band context; the old per-display keys are read as fallbacks so
+      // a pre-centralisation profile keeps its selection.
+      const bandIndex = Number(parsed?.heatmapBandIndex ?? parsed?.speakerHeatmapBandIndex);
       if (Number.isFinite(bandIndex)) {
-        app.speakerHeatmapBandIndex = Math.max(0, Math.round(bandIndex));
+        app.heatmapBandIndex = Math.max(0, Math.round(bandIndex));
       }
-      if (typeof parsed?.speakerHeatmapAllBands === 'boolean') {
-        app.speakerHeatmapAllBands = parsed.speakerHeatmapAllBands;
+      const allBands = parsed?.heatmapAllBands ?? parsed?.speakerHeatmapAllBands;
+      if (typeof allBands === 'boolean') {
+        app.heatmapAllBands = allBands;
+      }
+      if (typeof parsed?.globalEnergyHeatmapEnabled === 'boolean') {
+        app.globalEnergyHeatmapEnabled = parsed.globalEnergyHeatmapEnabled;
+      }
+      const globalScaleDb = Number(parsed?.globalEnergyHeatmapScaleDb);
+      if (Number.isFinite(globalScaleDb)) {
+        app.globalEnergyHeatmapScaleDb = Math.max(1, Math.min(40, Math.round(globalScaleDb)));
+      }
+      if (typeof parsed?.discontinuityHeatmapEnabled === 'boolean') {
+        app.discontinuityHeatmapEnabled = parsed.discontinuityHeatmapEnabled;
+      }
+      if (parsed?.discontinuityHeatmapMode === 'gain' || parsed?.discontinuityHeatmapMode === 'centroid') {
+        app.discontinuityHeatmapMode = parsed.discontinuityHeatmapMode;
+      }
+      const discontinuityScale = Number(parsed?.discontinuityHeatmapScale);
+      if (Number.isFinite(discontinuityScale) && discontinuityScale > 0) {
+        app.discontinuityHeatmapScale = Math.max(0.05, Math.min(2, discontinuityScale));
       }
       if (typeof parsed?.objectEnergyHeatmapEnabled === 'boolean') {
         app.objectEnergyHeatmapEnabled = parsed.objectEnergyHeatmapEnabled;

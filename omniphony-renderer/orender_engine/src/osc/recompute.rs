@@ -27,7 +27,13 @@ pub(crate) fn trigger_layout_recompute(
         .recomputing
         .load(std::sync::atomic::Ordering::Relaxed)
     {
-        log::warn!("OSC apply: VBAP recompute already in progress, ignoring");
+        // Don't drop the request: the running rebuild snapshotted the live
+        // state BEFORE this change (a profile switch or layout edit), so it
+        // won't cover it. Flag it and let the finishing recompute re-trigger.
+        control
+            .recompute_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        log::info!("OSC apply: recompute already in progress, queueing a follow-up rebuild");
         broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 1);
         return;
     }
@@ -160,21 +166,38 @@ pub(crate) fn trigger_layout_recompute(
                     let subscribers = clients_clone.gaintable_subscribers();
                     if !subscribers.is_empty() {
                         let ctx = RuntimeControlContext::new(Arc::clone(&control_clone));
-                        for (addr, client_version, speaker) in subscribers {
-                            let speaker = speaker.unwrap_or(0);
-                            if let Some((version, bytes)) =
-                                gaintable_cache_clone.bytes_for_speaker(&ctx, speaker)
-                            {
-                                if client_version != Some(version) {
-                                    for update in gaintable_chunk_broadcasts(&bytes, None) {
-                                        send_update_to_client(&socket_clone, addr, &update);
+                        for (addr, targets) in subscribers {
+                            // Every target the client holds, not just one: a
+                            // second display must not starve on a stale cache.
+                            for (target, client_version) in targets {
+                                if let Some((version, bytes)) =
+                                    gaintable_cache_clone.bytes_for_target(&ctx, target)
+                                {
+                                    if client_version != Some(version) {
+                                        for update in gaintable_chunk_broadcasts(&bytes, None) {
+                                            send_update_to_client(&socket_clone, addr, &update);
+                                        }
+                                        clients_clone.set_gaintable_version(addr, target, version);
                                     }
-                                    clients_clone.set_gaintable_version(addr, version);
                                 }
                             }
                         }
                     }
                     log::info!("Render backend recompute completed");
+                    // A rebuild request arrived while this one was running:
+                    // it saw pre-change state, so run once more from the
+                    // current live state (spawns a fresh recompute thread).
+                    if control_clone
+                        .recompute_pending
+                        .swap(false, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        trigger_layout_recompute(
+                            &control_clone,
+                            &socket_clone,
+                            &clients_clone,
+                            &gaintable_cache_clone,
+                        );
+                    }
                 }
                 Err(e) => {
                     let message = format!(
@@ -198,6 +221,21 @@ pub(crate) fn trigger_layout_recompute(
                         "/omniphony/state/speakers/recomputing",
                         0,
                     );
+                    // Same follow-up as the success path: a request queued
+                    // behind this failed rebuild still deserves its run (it
+                    // may be exactly the change that fixes the failure, e.g.
+                    // switching away from a broken profile).
+                    if control_clone
+                        .recompute_pending
+                        .swap(false, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        trigger_layout_recompute(
+                            &control_clone,
+                            &socket_clone,
+                            &clients_clone,
+                            &gaintable_cache_clone,
+                        );
+                    }
                 }
             }
         })

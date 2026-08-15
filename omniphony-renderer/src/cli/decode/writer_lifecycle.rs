@@ -69,6 +69,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                             self.runtime.output_file_format,
                         );
                         self.output.audio_writer = Some(writer);
+                        self.output.audio_writer_channels = Some(channel_count);
                         if let Some(control) = self.audio_control {
                             control.set_audio_error(None);
                         }
@@ -165,6 +166,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                             ic.install_output_pacer(handle);
                         }
                         self.output.audio_writer = Some(writer);
+                        self.output.audio_writer_channels = Some(channel_count);
                         self.output.bootstrap_frames_seen = 0;
                         self.output.bootstrap_started_at = None;
                         if let Some(control) = self.audio_control {
@@ -205,6 +207,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                 match self.build_audio_writer(output_backend, sample_rate, channel_count, None) {
                     Ok(writer) => {
                         self.output.audio_writer = Some(writer);
+                        self.output.audio_writer_channels = Some(channel_count);
                         if let Some(control) = self.audio_control {
                             control.set_audio_error(None);
                         }

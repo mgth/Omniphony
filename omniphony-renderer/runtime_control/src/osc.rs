@@ -790,6 +790,319 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == crate::osc_contract::CONTROL_SPEAKER_TEST {
+        // Start/stop the per-speaker test signal. A negative index stops: the
+        // client owns the trigger policy (hold, fixed burst, toggle), so the
+        // renderer only ever sees "play this" or "stop".
+        let idx = match msg.args.first() {
+            Some(OscType::Int(v)) => *v,
+            _ => {
+                log::warn!("OSC {addr}: expected [speaker_idx, level, isolation]");
+                return Some(effects);
+            }
+        };
+        let next = if idx < 0 {
+            None
+        } else {
+            let level = match msg.args.get(1) {
+                Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
+                _ => 0.1,
+            };
+            let isolation = parse_string_arg(msg.args.get(2))
+                .and_then(|v| renderer::live_params::TestIsolation::from_str(&v))
+                .unwrap_or_default();
+            Some(renderer::live_params::SpeakerTest {
+                speaker_idx: idx as usize,
+                level,
+                isolation,
+            })
+        };
+        let mut live = ctx.renderer.live.write();
+        if live.speaker_test != next {
+            live.speaker_test = next;
+            // Deliberately NOT mark_dirty: the test is transient and must never
+            // reach the config or a live-handoff sidecar.
+            effects.log_message = Some(match next {
+                Some(t) => format!(
+                    "OSC: speaker_test -> speaker {} at {:.3} ({})",
+                    t.speaker_idx,
+                    t.level,
+                    t.isolation.as_str()
+                ),
+                None => "OSC: speaker_test -> off".to_string(),
+            });
+        }
+        return Some(effects);
+    }
+
+    if addr == crate::osc_contract::CONTROL_OBJECT_TEST {
+        // Start/move/stop the object test. Studio sends one of these per pointer
+        // move while dragging, so the common case is a position update on an
+        // already-running test: keep it allocation-free and let the renderer
+        // ramp, rather than treating a move as a stop-then-start.
+        let Some(on) = parse_bool_arg(msg.args.first()) else {
+            log::warn!("OSC {addr}: expected [on, x, y, z, level, size, isolation]");
+            return Some(effects);
+        };
+        let next = if !on {
+            None
+        } else {
+            let axis = |i: usize| match msg.args.get(i) {
+                Some(OscType::Float(v)) => v.clamp(-1.0, 1.0),
+                _ => 0.0,
+            };
+            // Default y = 1.0 (front centre) rather than 0.0 if absent, matching
+            // the renderer's neutral object position.
+            let position = [
+                axis(1),
+                match msg.args.get(2) {
+                    Some(OscType::Float(v)) => v.clamp(-1.0, 1.0),
+                    _ => 1.0,
+                },
+                axis(3),
+            ];
+            let level = match msg.args.get(4) {
+                Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
+                _ => 0.1,
+            };
+            let size = match msg.args.get(5) {
+                Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
+                _ => 0.0,
+            };
+            let isolation = parse_string_arg(msg.args.get(6))
+                .and_then(|v| renderer::live_params::TestIsolation::from_str(&v))
+                .unwrap_or_default();
+            // Absent = pink noise, so a client that predates the signal
+            // selector keeps getting exactly what it used to.
+            let signal = parse_string_arg(msg.args.get(7))
+                .and_then(|v| renderer::live_params::ObjectTestSignal::from_str(&v))
+                .unwrap_or_default();
+            Some(renderer::live_params::ObjectTest {
+                position,
+                size: [size; 3],
+                level,
+                isolation,
+                signal,
+            })
+        };
+        let mut live = ctx.renderer.live.write();
+        if live.object_test != next {
+            let was_running = live.object_test.is_some();
+            let was_signal = live.object_test.map(|t| t.signal);
+            live.object_test = next;
+            // Deliberately NOT mark_dirty: transient like `speaker_test`, and it
+            // must never reach the config or a live-handoff sidecar.
+            //
+            // Log only the edges. A drag is a burst of position updates, and
+            // logging each one would bury the session log in noise about noise.
+            effects.log_message = match (was_running, next) {
+                (false, Some(t)) => Some(format!(
+                    "OSC: object_test -> on at [{:.2}, {:.2}, {:.2}] {:.3} ({}, {})",
+                    t.position[0],
+                    t.position[1],
+                    t.position[2],
+                    t.level,
+                    t.isolation.as_str(),
+                    t.signal.as_str()
+                )),
+                (true, None) => Some("OSC: object_test -> off".to_string()),
+                (true, Some(t)) => was_signal
+                    .filter(|prev| *prev != t.signal)
+                    .map(|_| format!("OSC: object_test signal -> {}", t.signal.as_str())),
+                _ => None,
+            };
+        }
+        return Some(effects);
+    }
+
+    if addr == crate::osc_contract::CONTROL_OBJECT_TEST_ROTATION {
+        let Some(axis_name) = parse_string_arg(msg.args.first()) else {
+            log::warn!("OSC {addr}: expected [axis, radius, period, azimuth, elevation]");
+            return Some(effects);
+        };
+        let float_at = |i: usize, fallback: f32| match msg.args.get(i) {
+            Some(OscType::Float(v)) => *v,
+            _ => fallback,
+        };
+        let axis = match renderer::live_params::RotationAxis::from_str(&axis_name) {
+            Some(renderer::live_params::RotationAxis::Free { .. }) => {
+                renderer::live_params::RotationAxis::Free {
+                    azimuth_deg: float_at(3, 0.0),
+                    elevation_deg: float_at(4, 0.0),
+                }
+            }
+            Some(other) => other,
+            None => {
+                log::warn!("OSC {addr}: unknown axis {axis_name:?}");
+                return Some(effects);
+            }
+        };
+        let next = renderer::live_params::ObjectTestRotation {
+            axis,
+            // 4 covers every distance worth reaching: √3 gets to a room corner
+            // from the centre, 2√3 gets there from the opposite one.
+            radius: float_at(1, 0.0).clamp(0.0, 4.0),
+            // Floored well above zero: a period approaching it is not a fast
+            // orbit, it is a discontinuity.
+            period_s: float_at(2, 4.0).clamp(0.05, 600.0),
+        };
+        let mut live = ctx.renderer.live.write();
+        if live.object_test_rotation != next {
+            let was_active = live.object_test_rotation.is_active();
+            live.object_test_rotation = next;
+            // Deliberately NOT mark_dirty: transient like the test itself.
+            // Log only the edges — a diameter slider drag is a burst.
+            effects.log_message = match (was_active, next.is_active()) {
+                (false, true) => Some(format!(
+                    "OSC: object_test rotation -> {} axis, radius {:.2}, {:.2} s/turn",
+                    next.axis.as_str(),
+                    next.radius,
+                    next.period_s
+                )),
+                (true, false) => Some("OSC: object_test rotation -> off".to_string()),
+                _ => None,
+            };
+        }
+        return Some(effects);
+    }
+
+    if addr == crate::osc_contract::CONTROL_OBJECT_TEST_CLIP {
+        // Choosing the file the `clip` signal plays. Everything expensive
+        // happens here, on the control thread: read, downmix, resample,
+        // normalise. The render path gets an array and an index.
+        let path = parse_string_arg(msg.args.first()).unwrap_or_default();
+        let path = path.trim().to_string();
+        let state = if path.is_empty() {
+            ctx.renderer.live.write().object_test_clip = None;
+            effects.log_message = Some("OSC: object_test clip -> cleared".to_string());
+            "{}".to_string()
+        } else {
+            let rate = ctx
+                .renderer
+                .sample_rate
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .max(1);
+            match renderer::object_test::clip::load(&path, rate) {
+                Ok(clip) => {
+                    let name = std::path::Path::new(&clip.path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| clip.path.clone());
+                    effects.log_message = Some(format!(
+                        "OSC: object_test clip -> {} ({:.1} s, {} Hz, {} ch{})",
+                        name,
+                        clip.duration_s(),
+                        clip.source_rate,
+                        clip.source_channels,
+                        if clip.truncated { ", truncated" } else { "" }
+                    ));
+                    let json = format!(
+                        "{{\"name\":{},\"path\":{},\"seconds\":{:.3},\"sourceRate\":{},\"channels\":{},\"truncated\":{}}}",
+                        serde_json::Value::from(name.as_str()),
+                        serde_json::Value::from(clip.path.as_str()),
+                        clip.duration_s(),
+                        clip.source_rate,
+                        clip.source_channels,
+                        clip.truncated
+                    );
+                    ctx.renderer.live.write().object_test_clip = Some(std::sync::Arc::new(clip));
+                    json
+                }
+                Err(e) => {
+                    // Left as it was on failure: dropping a working clip because
+                    // the next pick was unreadable would be a second surprise on
+                    // top of the first.
+                    effects.log_message = Some(format!("OSC: object_test clip refused: {e}"));
+                    format!("{{\"error\":{}}}", serde_json::Value::from(e.as_str()))
+                }
+            }
+        };
+        effects.broadcasts.push(BroadcastUpdate {
+            addr: crate::osc_contract::STATE_OBJECT_TEST_CLIP.to_string(),
+            value: BroadcastValue::String(state),
+        });
+        return Some(effects);
+    }
+
+    if addr == crate::osc_contract::CONTROL_SPEAKER_TEST_IDLE_FEED {
+        // Arm/disarm the idle feed that keeps the output chain warm while the
+        // client's test pane is open. Arming always bumps the generation (even
+        // when already armed) so the decode loop refreshes its keepalive
+        // deadline on every re-arm.
+        let Some(on) = parse_bool_arg(msg.args.first()) else {
+            log::warn!("OSC {addr}: expected [on]");
+            return Some(effects);
+        };
+        // Deliberately NOT mark_dirty: transient like speaker_test. Log only
+        // the arm/disarm edges, not the periodic re-arms.
+        let mut live = ctx.renderer.live.write();
+        if on {
+            if live.speaker_test_idle_feed_gen == 0 {
+                effects.log_message = Some("OSC: speaker_test idle feed -> armed".to_string());
+            }
+            live.speaker_test_idle_feed_gen =
+                live.speaker_test_idle_feed_gen.wrapping_add(1).max(1);
+        } else if live.speaker_test_idle_feed_gen != 0 {
+            live.speaker_test_idle_feed_gen = 0;
+            effects.log_message = Some("OSC: speaker_test idle feed -> off".to_string());
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/binaural_mode" {
+        // Switch the binaural stage between per-object HRTF ("direct") and the
+        // virtual-speaker cascade ("cascaded"). No topology recompute: the
+        // cascade stage builds its own virtual topology lazily on the render
+        // thread when first needed.
+        if let Some(mode) = parse_string_arg(msg.args.first())
+            .and_then(|v| renderer::live_params::BinauralMode::from_str(&v))
+        {
+            let mut live = ctx.renderer.live.write();
+            if live.binaural.mode != mode {
+                live.binaural.mode = mode;
+                effects.mark_dirty = true;
+                effects.log_message = Some(format!("OSC: binaural_mode -> {}", mode.as_str()));
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/binaural/ear_gain" {
+        // Headphone L/R output gain: [ear_idx (0|1), linear_gain]. Dedicated
+        // params — the ears no longer ride the first two per-speaker slots
+        // (those drive the virtual FL/FR in cascaded mode).
+        let idx = parse_nonnegative_u32_arg(msg.args.first());
+        let gain = parse_f32_arg(msg.args.get(1));
+        if let (Some(idx @ 0..=1), Some(gain)) = (idx, gain) {
+            if gain.is_finite() && (0.0..=4.0).contains(&gain) {
+                let mut live = ctx.renderer.live.write();
+                let ear = &mut live.binaural.ears[idx as usize];
+                if ear.gain != gain {
+                    ear.gain = gain;
+                    effects.mark_dirty = true;
+                    effects.log_message = Some(format!("OSC: binaural ear_gain {idx} -> {gain}"));
+                }
+            }
+        }
+        return Some(effects);
+    }
+
+    if addr == "/omniphony/control/binaural/ear_mute" {
+        // Headphone L/R mute: [ear_idx (0|1), 0|1].
+        let idx = parse_nonnegative_u32_arg(msg.args.first());
+        let mute = parse_bool_arg(msg.args.get(1));
+        if let (Some(idx @ 0..=1), Some(muted)) = (idx, mute) {
+            let mut live = ctx.renderer.live.write();
+            let ear = &mut live.binaural.ears[idx as usize];
+            if ear.muted != muted {
+                ear.muted = muted;
+                effects.mark_dirty = true;
+                effects.log_message = Some(format!("OSC: binaural ear_mute {idx} -> {muted}"));
+            }
+        }
+        return Some(effects);
+    }
+
     if addr == "/omniphony/control/head/orientation" {
         // Static head pose from Euler degrees [yaw, pitch, roll]. The live
         // head-tracking input (SensorsOSC) lands in M2; this lets Studio / tests
@@ -1139,12 +1452,35 @@ pub fn apply_simple_osc_control(
             _ => None,
         });
         if let (Some(key), Some(value)) = (key, value) {
-            let backend_id =
-                target.unwrap_or_else(|| ctx.renderer.live.read().backend_id().to_string());
+            let (backend_id, active, hybrid_legs) = {
+                let live = ctx.renderer.live.read();
+                (
+                    target.unwrap_or_else(|| live.backend_id().to_string()),
+                    live.backend_id().to_string(),
+                    (
+                        live.hybrid.external_backend_id.clone(),
+                        live.hybrid.internal_backend_id.clone(),
+                    ),
+                )
+            };
             ctx.renderer.set_backend_param(&backend_id, &key, value);
             effects.mark_dirty = true;
-            effects.trigger_layout_recompute = true;
-            effects.log_message = Some(format!("OSC: backend param {backend_id}.{key} updated"));
+            // Recompute only when the edited backend participates in the
+            // active topology (the selection itself, or a leg of an active
+            // hybrid). Params of an inactive backend are stored and persisted;
+            // they are read at the next rebuild that involves that backend.
+            let participates = backend_id == active
+                || (active == "hybrid"
+                    && (backend_id == hybrid_legs.0 || backend_id == hybrid_legs.1));
+            effects.trigger_layout_recompute = participates;
+            effects.log_message = Some(format!(
+                "OSC: backend param {backend_id}.{key} updated{}",
+                if participates {
+                    ""
+                } else {
+                    " (inactive backend, no rebuild)"
+                }
+            ));
         }
         return Some(effects);
     }
@@ -1641,6 +1977,16 @@ pub fn apply_simple_osc_control(
                 if let Some(OscType::String(metric)) = msg.args.first() {
                     if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
                         ctx.renderer.live.write().distance_diffuse_metric = metric;
+                        effects.mark_dirty = true;
+                        effects.trigger_layout_recompute = true;
+                    }
+                }
+                return Some(effects);
+            }
+            "mirror_axes" => {
+                if let Some(OscType::String(axes)) = msg.args.first() {
+                    if let Ok(axes) = axes.parse::<renderer::spatial_vbap::MirrorAxes>() {
+                        ctx.renderer.live.write().distance_diffuse_mirror_axes = axes;
                         effects.mark_dirty = true;
                         effects.trigger_layout_recompute = true;
                     }

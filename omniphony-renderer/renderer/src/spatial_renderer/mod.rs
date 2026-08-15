@@ -64,20 +64,22 @@
 //! )?;
 //! ```
 
-use crate::crossover::{BiquadState, LR4CrossoverBank};
 use crate::live_params::{RampMode, RendererControl};
 use crate::ramp_strategy::{
     PositionRampStrategy, RampContext, RampProgress, RampRenderParams, RampStrategy, RampTarget,
 };
-use crate::render_backend::MultiBandTable;
-use crate::spatial_vbap::{DistanceModel, Gains};
+
+use crate::spatial_vbap::DistanceModel;
 use anyhow::Result;
 use std::sync::Arc;
 
+mod cascade;
 mod components;
 mod construction;
-use components::{BandRenderer, ChannelState, evaluation_build_config, split_bands};
+mod speaker_stage;
+use components::{ChannelState, evaluation_build_config};
 pub use components::{RenderedFrame, SpatialChannelEvent};
+use speaker_stage::SpeakerRenderStage;
 
 /// Snapshot of `LiveParams` taken at the start of each render frame.
 ///
@@ -92,6 +94,12 @@ struct LiveSnapshot<'a> {
     auto_gain: bool,
     auto_gain_ceiling_db: f32,
     speaker_params: &'a [crate::live_params::SpeakerLiveParams],
+    /// Running speaker test, `None` in normal operation.
+    speaker_test: Option<crate::live_params::SpeakerTest>,
+    /// Running object test, `None` in normal operation.
+    object_test: Option<crate::live_params::ObjectTest>,
+    /// Orbit applied to it. Inert at diameter 0.
+    object_test_rotation: crate::live_params::ObjectTestRotation,
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -99,6 +107,7 @@ struct LiveSnapshot<'a> {
     use_distance_diffuse: bool,
     distance_diffuse_threshold: f32,
     distance_diffuse_curve: f32,
+    diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes,
 }
 
 /// Put the calling thread's FPU in flush-to-zero / denormals-are-zero mode,
@@ -167,9 +176,42 @@ pub enum ChannelRoute {
     Virtual,
 }
 
+/// Cross-fade covering a live output-mode change.
+///
+/// Switching between the binaural and speaker paths swaps two independent DSP
+/// chains mid-sample, which steps the waveform and clicks. The switch is
+/// therefore deferred: the old mode keeps rendering while it ramps to zero, the
+/// mode changes at the bottom, and the new one ramps back up. Both halves use
+/// the same length.
+struct OutputModeFade {
+    /// Samples left in the current ramp.
+    remaining: usize,
+    /// Ramp length, so a partial frame can compute its gain.
+    total: usize,
+    /// Ramping the outgoing mode down; otherwise ramping the incoming one up.
+    fading_out: bool,
+}
+
 pub struct SpatialRenderer {
     /// Number of output speakers (total, including non-spatialized like LFE)
     num_speakers: usize,
+
+    /// The mode actually being rendered, which lags the live one across a
+    /// cross-fade. Everything the host derives from the output — the channel
+    /// count, the metering route — follows this rather than the live flag, so a
+    /// pending switch never describes samples that have not been produced yet.
+    active_output_mode: crate::live_params::OutputMode,
+
+    /// In-flight output-mode cross-fade, `None` in steady state.
+    mode_fade: Option<OutputModeFade>,
+
+    /// Ramp length in samples for [`Self::mode_fade`], from the sample rate.
+    mode_fade_samples: usize,
+
+    /// Whether any frame has been emitted yet. Before the first one there is no
+    /// discontinuity to hide, so a mode change is adopted outright instead of
+    /// fading in from silence and clipping the opening block.
+    has_rendered_frame: bool,
 
     /// Spread resolution for multi-table VBAP (0.0 = single table)
     spread_resolution: f32,
@@ -185,7 +227,16 @@ pub struct SpatialRenderer {
     frame_counter: std::sync::atomic::AtomicU64,
 
     /// Per-channel state (movement detection + gain ramping)
-    channel_states: parking_lot::Mutex<std::collections::HashMap<usize, ChannelState>>,
+    /// Per-channel state, indexed by channel. A plain `Vec` owned by `&mut
+    /// self`: `render_frame` takes `&mut self`, so the audio path needs no
+    /// lock and no hashing. Grown only when the channel count rises, never
+    /// per block.
+    channel_states: Vec<ChannelState>,
+    /// Set by [`Self::reset_runtime_state`] from other threads and consumed by
+    /// `render_frame`. An atomic flag replaces the mutex that used to guard
+    /// `channel_states`: the reset is the only cross-thread access, and making
+    /// it a flag keeps the render path lock-free.
+    reset_requested: std::sync::atomic::AtomicBool,
 
     /// Sample rate for ramp time calculations
     sample_rate: u32,
@@ -208,8 +259,10 @@ pub struct SpatialRenderer {
     /// Shared live parameters + speaker layout + pending VBAP swap.
     control: Arc<RendererControl>,
 
-    /// Per-speaker gain scratch buffer — pre-allocated once, reused every frame.
-    speaker_gains_buf: Vec<f32>,
+    /// Per-layout speaker rendering state (band engines, crossover, delay
+    /// lines, per-layout scratch). Extracted so the cascaded binaural mode can
+    /// later run a second stage against a virtual layout.
+    speaker_stage: SpeakerRenderStage,
 
     /// Scratch snapshot of live per-object params, indexed by input channel.
     object_params_buf: Vec<crate::live_params::ObjectLiveParams>,
@@ -223,18 +276,6 @@ pub struct SpatialRenderer {
     /// Last integrated generation for per-speaker live params.
     speaker_params_generation_seen: u64,
 
-    /// Scratch routing gains for bed channels.
-    ///
-    /// Keep this as a reusable full speaker-domain buffer instead of collapsing beds
-    /// back to a hardcoded one-speaker fast path. Bed routing is expected to evolve
-    /// beyond strict 1:1 mapping so we can simulate missing or non-standard speakers
-    /// without changing the downstream mix model again.
-    bed_routing_gains_buf: Vec<f32>,
-
-    /// Per-speaker delay lines — one per speaker, fixed 100 ms capacity.
-    /// Owned exclusively by the render thread; no locking required.
-    delay_lines: Vec<crate::delay_line::DelayLine>,
-
     /// Optional contributor-provided ramp strategy override.
     ramp_strategy_override: Option<Arc<dyn RampStrategy>>,
 
@@ -242,6 +283,19 @@ pub struct SpatialRenderer {
     /// `LiveParams::binaural.output_mode == OutputMode::Binaural`; otherwise the
     /// classic VBAP path runs and this holds no live state.
     binaural: crate::binaural::BinauralRenderer,
+
+    /// Cascaded binaural geometry (`binaural.mode == Cascaded`): binaural
+    /// input positions/flags derived from the app layout + the virtual bus
+    /// scratch. Derived lazily the first frame the mode is active, re-derived
+    /// when the topology identity changes. `None` while unused.
+    cascade: Option<cascade::CascadeStage>,
+
+    /// Speaker width of the stage that ran the previous frame's mix pass.
+    /// `RampMode::Interp` caches layout-sized gains in the shared
+    /// `ChannelState`s; a width change (speaker↔cascade switch, cascade
+    /// layout change, main relayout) must clear them or stale entries would
+    /// index out of the new width. 0 until the first mix pass.
+    last_mix_num_speakers: usize,
 
     /// Scratch per-channel world positions for the binaural path (reused).
     binaural_pos_buf: Vec<[f64; 3]>,
@@ -254,63 +308,15 @@ pub struct SpatialRenderer {
     /// equally instead of being HRTF-spatialized.
     binaural_direct_buf: Vec<bool>,
 
-    /// Per-band VBAP engines.  Always has at least one entry (the "all speakers" band when
-    /// no crossover is configured).  Each engine returns full-size `Gains` (`num_speakers`).
-    render_bands: Vec<BandRenderer>,
-    /// Topology identity used to build the current crossover band engines.
-    render_bands_topology_identity: usize,
-
-    /// Crossover filter bank for splitting objects into frequency bands.
-    /// Unified multi-band cartesian table: when crossover is active and all
-    /// bands use a cartesian evaluator, the per-band tables are merged so a
-    /// lookup localises the cell once for every band. `None` → per-band path.
-    unified_table: Option<MultiBandTable>,
-    /// `None` when `render_bands` has exactly 1 entry (no crossover active).
-    crossover_filter_bank: Option<LR4CrossoverBank>,
-
-    /// Per-object filter states for the crossover bank, keyed by channel index.
-    crossover_filter_states: Vec<Option<Vec<BiquadState>>>,
-
-    /// Reusable per-band scratch used only when collecting crossover timing.
-    crossover_band_scratch: [Vec<f32>; 8],
-
-    /// Reusable per-object band-gain buffer. Taken via `mem::take` at the start
-    /// of each object's render and put back afterwards, so the per-object VBAP
-    /// gain vector is allocated once and reused across objects and frames
-    /// instead of a fresh `Vec` per object per frame.
-    band_gains_scratch: Vec<Gains>,
-
-    /// `RampMode::Interp` only: pooled destination band gains for the object
-    /// currently being rendered (one entry per render band). Reused each object.
-    interp_end_scratch: Vec<Gains>,
+    /// Signal source for the object test. Owned here rather than by the speaker
+    /// stage because both output paths draw from it: the speaker stage pans the
+    /// block, the binaural stage feeds it to an HRIR pair, and one generator is
+    /// what keeps the level contract and the restart behaviour identical
+    /// between them.
+    object_test_source: crate::object_test::ObjectTestSource,
 }
 
 impl SpatialRenderer {
-    /// Fill `out` with one full-size `Gains` per render band at `position`. Uses
-    /// the unified multi-band table (one cell localisation for all bands) when
-    /// available, else falls back to a per-band lookup. Free-standing (borrows
-    /// only the two fields it needs) so it composes with the other per-channel
-    /// mutable borrows held across the render arms.
-    fn fill_band_gains(
-        unified: &Option<MultiBandTable>,
-        render_bands: &[BandRenderer],
-        render_params: crate::ramp_strategy::RampRenderParams,
-        position: [f64; 3],
-        size: [f32; 3],
-        out: &mut Vec<Gains>,
-    ) {
-        out.clear();
-        if let Some(table) = unified {
-            table.sample_into(position.map(|v| v as f32), out);
-        } else {
-            out.extend(
-                render_bands
-                    .iter()
-                    .map(|b| b.compute_gains(render_params, position, size)),
-            );
-        }
-    }
-
     /// Whether auto-gain has lowered the master gain at least once this session.
     pub fn auto_gain_triggered(&self) -> bool {
         self.auto_gain_triggered
@@ -356,6 +362,19 @@ impl SpatialRenderer {
         Arc::clone(&self.control)
     }
 
+    /// `true` while a requested binaural HRIR source change has been handed to
+    /// the rebuild worker but not yet swapped into the render path.
+    ///
+    /// The swap is deliberately asynchronous so a source change never blocks
+    /// the audio thread (issue #153), which means frames rendered right after
+    /// the request still carry the *previous* HRIR set. Callers that need the
+    /// requested set to actually be in effect — offline renders, and any
+    /// measurement that attributes its result to a specific set — must drive
+    /// frames until this returns `false`.
+    pub fn binaural_rebuild_pending(&self) -> bool {
+        self.binaural.rebuild_pending()
+    }
+
     pub fn set_ramp_strategy(&mut self, strategy: Arc<dyn RampStrategy>) {
         self.ramp_strategy_override = Some(strategy);
         self.reset_runtime_state();
@@ -375,6 +394,7 @@ impl SpatialRenderer {
             use_distance_diffuse: live.use_distance_diffuse,
             distance_diffuse_threshold: live.distance_diffuse_threshold,
             distance_diffuse_curve: live.distance_diffuse_curve,
+            diffuse_mirror_axes: live.diffuse_mirror_axes,
             distance_model: self.distance_model,
         })
     }
@@ -382,8 +402,19 @@ impl SpatialRenderer {
     /// Clear cached per-channel spatial/ramp state after a decoder reset or
     /// stream restart so stale object positions cannot leak into subsequent
     /// rendering.
+    /// Borrow a channel's state, growing the backing `Vec` if the stream just
+    /// widened. Growth happens only when the channel count rises — never per
+    /// block — so the render path stays allocation-free in steady state.
+    fn state_mut(states: &mut Vec<ChannelState>, channel_idx: usize) -> &mut ChannelState {
+        if channel_idx >= states.len() {
+            states.resize_with(channel_idx + 1, ChannelState::default);
+        }
+        &mut states[channel_idx]
+    }
+
     pub fn reset_runtime_state(&self) {
-        self.channel_states.lock().clear();
+        self.reset_requested
+            .store(true, std::sync::atomic::Ordering::Release);
         self.first_render
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -393,18 +424,20 @@ impl SpatialRenderer {
     /// Called internally from `render_frame` when pending events are present.
     /// The `channel_idx` and `is_bed` fields of each event must already be
     /// resolved by the caller (see `SpatialChannelEvent`).
+    /// Takes `&mut Vec<ChannelState>` rather than `&mut self` so the caller can
+    /// split the borrow: `render_frame` holds an immutable snapshot of other
+    /// fields while this mutates channel state.
     fn update_metadata(
-        &self,
+        states: &mut Vec<ChannelState>,
+        log_object_positions: bool,
+        sample_rate: u32,
         events: &[SpatialChannelEvent],
         strategy: &dyn RampStrategy,
         ctx: &RampContext,
     ) -> Result<()> {
-        let mut channel_states = self.channel_states.lock();
-
         for event in events {
-            let state = channel_states
-                .entry(event.channel_idx)
-                .or_insert_with(ChannelState::default);
+            let state = Self::state_mut(states, event.channel_idx);
+            state.initialized = true;
 
             if let Some(gain) = event.gain_db {
                 state.gain_db = gain;
@@ -425,7 +458,7 @@ impl SpatialRenderer {
             if let Some(target_position) = event.position {
                 if state.ramp.target_position != target_position || size_changed {
                     let current_ramp_length = state.ramp.ramp_length;
-                    if self.log_object_positions {
+                    if log_object_positions {
                         let remaining_units = state.ramp.remaining_ramp_units.unwrap_or(0);
                         let sample_pos = event.sample_pos.unwrap_or(0);
                         if state.ramp.target_position != target_position {
@@ -435,7 +468,7 @@ impl SpatialRenderer {
                                 sample_pos,
                                 remaining_units,
                                 state.ramp.ramp_length,
-                                state.ramp.ramp_length as f32 / self.sample_rate as f32 * 1000.0
+                                state.ramp.ramp_length as f32 / sample_rate as f32 * 1000.0
                             );
                         }
                     }
@@ -512,14 +545,50 @@ impl SpatialRenderer {
         // point, rather than at thread creation.
         ensure_denormals_flushed();
 
+        // Consume a reset requested from another thread (decoder reset, stream
+        // restart). Clearing here rather than under a lock in
+        // `reset_runtime_state` is what keeps the render path lock-free; the
+        // capacity is retained so the regrowth costs no allocation.
+        if self
+            .reset_requested
+            .swap(false, std::sync::atomic::Ordering::Acquire)
+        {
+            self.channel_states.clear();
+        }
+
         // ── 0. Independent binaural (headphone) path ─────────────────────────
         // When headphone output is selected, bypass the entire VBAP / crossover /
         // speaker chain and emit a 2-channel frame. The branch is taken below,
         // after `update_metadata` has applied the pending events (new ramp
         // targets); the branch itself advances each object's position ramp for
         // the block. Flag it here.
+        let (requested_output_mode, cascade_active) = {
+            let g = self.control.live.read();
+            (
+                g.binaural.output_mode,
+                matches!(g.binaural.mode, crate::live_params::BinauralMode::Cascaded),
+            )
+        };
+        // A mode change does not take effect here: it arms a cross-fade and the
+        // OLD mode keeps rendering until the ramp reaches zero (see
+        // `apply_output_mode_fade`). Rendering the branch that is on its way out
+        // is the whole point — swapping chains mid-sample is what clicks.
+        if requested_output_mode != self.active_output_mode {
+            if !self.has_rendered_frame {
+                // Nothing emitted yet: there is no discontinuity to hide, and
+                // fading in here would just clip the opening block.
+                self.active_output_mode = requested_output_mode;
+            } else if self.mode_fade.is_none() {
+                self.mode_fade = Some(OutputModeFade {
+                    remaining: self.mode_fade_samples,
+                    total: self.mode_fade_samples,
+                    fading_out: true,
+                });
+            }
+        }
+        self.has_rendered_frame = true;
         let binaural_active = matches!(
-            self.control.live.read().binaural.output_mode,
+            self.active_output_mode,
             crate::live_params::OutputMode::Binaural
         );
 
@@ -527,7 +596,17 @@ impl SpatialRenderer {
         let topology_guard = self.control.active_topology();
         let topology = &*topology_guard;
         let topology_identity = std::sync::Arc::as_ptr(&topology_guard) as usize;
-        self.refresh_crossover_for_topology(topology_identity, &topology.speaker_layout)?;
+        self.speaker_stage.refresh_for_topology(
+            &self.control,
+            topology_identity,
+            &topology.speaker_layout,
+        )?;
+        // Cascaded binaural geometry: derived from the active topology, kept
+        // in sync only while the mode is active. Must run before the live
+        // snapshot below, which borrows `self` fields for the rest of the frame.
+        if binaural_active && cascade_active {
+            self.refresh_cascade_for_topology(topology, topology_identity);
+        }
 
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
         let live_position_interpolation;
@@ -593,6 +672,9 @@ impl SpatialRenderer {
                 auto_gain: g.auto_gain,
                 auto_gain_ceiling_db: g.auto_gain_ceiling_db,
                 speaker_params: &self.speaker_params_buf[..self.num_speakers],
+                speaker_test: g.speaker_test,
+                object_test: g.object_test,
+                object_test_rotation: g.object_test_rotation,
                 room_ratio: g.room_ratio,
                 room_ratio_rear: g.room_ratio_rear,
                 room_ratio_lower: g.room_ratio_lower,
@@ -600,22 +682,20 @@ impl SpatialRenderer {
                 use_distance_diffuse: g.use_distance_diffuse,
                 distance_diffuse_threshold: g.distance_diffuse_threshold,
                 distance_diffuse_curve: g.distance_diffuse_curve,
+                diffuse_mirror_axes: g.distance_diffuse_mirror_axes,
             }
         };
-        // Push the live read-time interpolation flag into the precomputed
-        // evaluators and the unified table. This flag only selects nearest-cell
-        // vs trilinear at lookup time; the table content is independent of it, so
-        // toggling it no longer rebuilds the table (the OSC handler dropped its
-        // `trigger_layout_recompute`). We sync the current value every frame —
-        // just a handful of relaxed atomic stores.
-        for band in &self.render_bands {
-            if let Some(engine) = band.engine() {
-                engine.set_position_interpolation(live_position_interpolation);
-            }
-        }
-        if let Some(table) = self.unified_table.as_ref() {
-            table.set_position_interpolation(live_position_interpolation);
-        }
+        self.speaker_stage
+            .sync_position_interpolation(live_position_interpolation);
+
+        // The clip is kept out of `LiveSnapshot` — that struct is copied around
+        // the render path and an `Arc` in it would be cloned on every hop. Taken
+        // only while a test is running, so an idle renderer pays nothing.
+        let object_test_clip = if live.object_test.is_some() {
+            self.control.live.read().object_test_clip.clone()
+        } else {
+            None
+        };
 
         let ramp_context = self.ramp_context(&live);
         let ramp_strategy_override = self.ramp_strategy_override.clone();
@@ -634,7 +714,14 @@ impl SpatialRenderer {
         };
 
         if !pending_events.is_empty() {
-            self.update_metadata(pending_events, ramp_strategy, &ramp_context)?;
+            Self::update_metadata(
+                &mut self.channel_states,
+                self.log_object_positions,
+                self.sample_rate,
+                pending_events,
+                ramp_strategy,
+                &ramp_context,
+            )?;
         }
 
         // Derive sample count from slice length and channel count.
@@ -655,105 +742,192 @@ impl SpatialRenderer {
         // ramp position) and gains, then render to interleaved stereo. Bypasses
         // the entire speaker/VBAP path below.
         if binaural_active {
-            self.binaural_pos_buf.clear();
-            self.binaural_pos_buf
-                .resize(input_channel_count, [0.0, 1.0, 0.0]);
-            self.binaural_gain_buf.clear();
-            self.binaural_gain_buf.resize(input_channel_count, 0.0);
-            self.binaural_direct_buf.clear();
-            self.binaural_direct_buf.resize(input_channel_count, false);
-            let num_routed = channel_routing.len();
-            {
-                let mut states = self.channel_states.lock();
-                for c in 0..input_channel_count {
-                    // Object-level mute as a 0/1 factor (per-object output gain was
-                    // removed; only mute remains live-tunable).
-                    let obj_gain = match self.object_params_buf.get(c) {
-                        Some(o) if o.muted => 0.0,
-                        _ => 1.0,
-                    };
-                    // Stream metadata gain, same semantics as the VBAP path:
-                    // silent (-128 = -inf dB) until the first metadata arrives.
-                    let gain_db = states.get(&c).map(|s| s.gain_db).unwrap_or(-128);
-                    let gain_linear = if gain_db == -128 {
-                        0.0
-                    } else {
-                        10.0_f32.powf(gain_db as f32 / 20.0)
-                    };
-                    // Slewed like the VBAP path (block-end value: the binaural
-                    // stage updates per block anyway).
-                    let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
-                    if let Some(state) = states.get_mut(&c) {
-                        let (start, step) =
-                            state.slew_gain(obj_gain * gain_linear, sample_length, ramp_samples);
-                        self.binaural_gain_buf[c] = start + step * sample_length as f32;
-                    } else {
-                        self.binaural_gain_buf[c] = 0.0;
-                    }
-                    // Same direct/virtual split as the VBAP path.
-                    let direct_label = match channel_routing.get(c) {
-                        Some(ChannelRoute::Direct(label)) if c < num_routed => Some(*label),
-                        _ => None,
-                    };
-                    if let Some(label) = direct_label {
-                        // Direct channel: place it at its resolved speaker's
-                        // direction. A channel routed to a non-spatialized
-                        // speaker (the LFE) keeps the direct-routing intent in
-                        // headphone mode too: fed to both ears equally, no
-                        // HRTF (issue #156).
-                        if let Some(&spk) = active_label_to_speaker.get(&label) {
-                            if let Some(s) = active_layout.speakers.get(spk) {
-                                self.binaural_pos_buf[c] = [s.x as f64, s.y as f64, s.z as f64];
-                                self.binaural_direct_buf[c] = !s.spatialize;
-                            }
-                        }
-                    } else if let Some(st) = states.get_mut(&c) {
-                        // Advance the position ramp for this block (Frame-mode
-                        // granularity: the binaural stage updates HRIR/ITD once
-                        // per block anyway). Nothing else advances ramps in
-                        // binaural mode — the VBAP mix loop that normally does
-                        // is bypassed — so without this every object stays at
-                        // the ramp default [0,0,0]: dead centre, and rotation-
-                        // invariant (the zero vector ignores the head pose).
-                        let progress = st.ramp.current_progress().unwrap_or(RampProgress {
-                            completed_units: 0,
-                            total_units: 0,
-                        });
-                        ramp_strategy.evaluate(&mut st.ramp, progress, &ramp_context);
-                        self.binaural_pos_buf[c] = st.ramp.output_position;
-                        st.ramp.commit_output_position();
-                        st.ramp.advance_ramp(sample_length as u64);
-                    }
-                }
-            }
-            let binaural_params = {
+            let (binaural_params, ears) = {
                 let g = self.control.live.read();
                 // Compare against the live source in place: no per-frame clone
                 // (the `Sofa` variant carries a heap path), and any rebuild is
                 // pushed to the worker inside `ensure_source`.
                 self.binaural.ensure_source(&g.binaural.hrir_source);
-                crate::binaural::BinauralFrameParams {
-                    head_pose: g.binaural.head_pose,
-                    unit_scale_m: g.binaural.unit_scale_m,
-                    head_radius_m: g.binaural.head_radius_m,
-                    reflections: g.binaural.reflections.clone(),
-                    reverb: g.binaural.reverb.clone(),
-                    air_absorption: g.binaural.air_absorption,
-                }
+                (
+                    crate::binaural::BinauralFrameParams {
+                        head_pose: g.binaural.head_pose,
+                        unit_scale_m: g.binaural.unit_scale_m,
+                        head_radius_m: g.binaural.head_radius_m,
+                        reflections: g.binaural.reflections.clone(),
+                        reverb: g.binaural.reverb.clone(),
+                        air_absorption: g.binaural.air_absorption,
+                        hrir_update_lattice: g.binaural.hrir_update_lattice,
+                    },
+                    g.binaural.ears,
+                )
             };
             let mut output = samples_buf;
             output.clear();
             output.resize(sample_length * 2, 0.0);
-            self.binaural.render_frame(
-                input_pcm,
-                input_channel_count,
+            // Pulled once per frame, before the two arms: the generator advances
+            // with the clock, so drawing it twice (or not at all) would break the
+            // signal's continuity. Which arm consumes it differs — cascaded mode
+            // pans it onto the virtual speakers, direct mode gives it its own
+            // HRIR pair — but both are the same block.
+            let object_test_block = self.object_test_source.next_block(
+                live.object_test,
+                live.object_test_rotation,
+                object_test_clip.as_deref(),
+                self.sample_rate,
                 sample_length,
-                &binaural_params,
-                &self.binaural_pos_buf,
-                &self.binaural_gain_buf,
-                &self.binaural_direct_buf,
-                &mut output,
             );
+            let object_test_position = object_test_block.as_ref().map(|b| b.position);
+            let object_test_level = object_test_block
+                .as_ref()
+                .map(|b| (b.peak_dbfs, b.rms_dbfs));
+            let mut cascade_diag = None;
+            if cascade_active && self.cascade.is_some() {
+                // Cascaded mode: the MAIN speaker stage renders the app layout
+                // as a virtual room, then the fixed virtual speakers are
+                // binauralised. Taken/put back so the free function can borrow
+                // the other renderer fields it needs.
+                let mut geometry = self.cascade.take().expect("checked is_some above");
+                cascade::reseed_interp_on_width_change(
+                    &mut self.channel_states,
+                    &mut self.last_mix_num_speakers,
+                    self.speaker_stage.num_speakers,
+                );
+                let is_first = self
+                    .first_render
+                    .swap(false, std::sync::atomic::Ordering::Relaxed);
+                let diag = cascade::render_cascade_frame(
+                    &mut geometry,
+                    &mut self.speaker_stage,
+                    &mut self.channel_states,
+                    &mut self.binaural,
+                    speaker_stage::SpeakerStageFrame {
+                        input_pcm,
+                        input_channel_count,
+                        sample_length,
+                        channel_routing: &channel_routing,
+                        label_to_speaker: active_label_to_speaker,
+                        layout: active_layout,
+                        object_params: live.object_params,
+                        ramp_mode: live.ramp_mode,
+                        ramp_strategy,
+                        ramp_context: &ramp_context,
+                        log_object_positions: self.log_object_positions,
+                        is_first,
+                        measure_breakdown,
+                    },
+                    live.speaker_params,
+                    &binaural_params,
+                    live.object_test,
+                    object_test_block.as_ref(),
+                    &mut output,
+                );
+                cascade_diag = Some(diag);
+                self.cascade = Some(geometry);
+            } else {
+                self.binaural_pos_buf.clear();
+                self.binaural_pos_buf
+                    .resize(input_channel_count, [0.0, 1.0, 0.0]);
+                self.binaural_gain_buf.clear();
+                self.binaural_gain_buf.resize(input_channel_count, 0.0);
+                self.binaural_direct_buf.clear();
+                self.binaural_direct_buf.resize(input_channel_count, false);
+                let num_routed = channel_routing.len();
+                {
+                    let states = &mut self.channel_states;
+                    for c in 0..input_channel_count {
+                        // Object-level mute as a 0/1 factor (per-object output gain was
+                        // removed; only mute remains live-tunable).
+                        let obj_gain = match self.object_params_buf.get(c) {
+                            Some(o) if o.muted => 0.0,
+                            _ => 1.0,
+                        };
+                        // Stream metadata gain, same semantics as the VBAP path:
+                        // silent (-128 = -inf dB) until the first metadata arrives.
+                        let gain_db = states
+                            .get(c)
+                            .filter(|s| s.initialized)
+                            .map(|s| s.gain_db)
+                            .unwrap_or(-128);
+                        let gain_linear = if gain_db == -128 {
+                            0.0
+                        } else {
+                            10.0_f32.powf(gain_db as f32 / 20.0)
+                        };
+                        // Slewed like the VBAP path (block-end value: the binaural
+                        // stage updates per block anyway).
+                        let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
+                        if let Some(state) = states.get_mut(c) {
+                            let (start, step) = state.slew_gain(
+                                obj_gain * gain_linear,
+                                sample_length,
+                                ramp_samples,
+                            );
+                            self.binaural_gain_buf[c] = start + step * sample_length as f32;
+                        } else {
+                            self.binaural_gain_buf[c] = 0.0;
+                        }
+                        // Same direct/virtual split as the VBAP path.
+                        let direct_label = match channel_routing.get(c) {
+                            Some(ChannelRoute::Direct(label)) if c < num_routed => Some(*label),
+                            _ => None,
+                        };
+                        if let Some(label) = direct_label {
+                            // Direct channel: place it at its resolved speaker's
+                            // direction. A channel routed to a non-spatialized
+                            // speaker (the LFE) keeps the direct-routing intent in
+                            // headphone mode too: fed to both ears equally, no
+                            // HRTF (issue #156).
+                            if let Some(&spk) = active_label_to_speaker.get(&label) {
+                                if let Some(s) = active_layout.speakers.get(spk) {
+                                    self.binaural_pos_buf[c] = [s.x as f64, s.y as f64, s.z as f64];
+                                    self.binaural_direct_buf[c] = !s.spatialize;
+                                }
+                            }
+                        } else if let Some(st) = states.get_mut(c) {
+                            // Advance the position ramp for this block (Frame-mode
+                            // granularity: the binaural stage updates HRIR/ITD once
+                            // per block anyway). Nothing else advances ramps in
+                            // binaural mode — the VBAP mix loop that normally does
+                            // is bypassed — so without this every object stays at
+                            // the ramp default [0,0,0]: dead centre, and rotation-
+                            // invariant (the zero vector ignores the head pose).
+                            let progress = st.ramp.current_progress().unwrap_or(RampProgress {
+                                completed_units: 0,
+                                total_units: 0,
+                            });
+                            ramp_strategy.evaluate(&mut st.ramp, progress, &ramp_context);
+                            self.binaural_pos_buf[c] = st.ramp.output_position;
+                            st.ramp.commit_output_position();
+                            st.ramp.advance_ramp(sample_length as u64);
+                        }
+                    }
+                }
+                // An object test in headphone mode renders as what it is — an
+                // object — through the full HRIR path, instead of being silent
+                // the way a speaker test necessarily is here (there is no
+                // speaker to excite). Level is already folded into the block,
+                // so the gain is unity.
+                let extra = object_test_block
+                    .as_ref()
+                    .map(|block| crate::binaural::ExtraSource {
+                        pcm: block.pcm,
+                        // The orbit position, so the HRIR follows the source round
+                        // the room exactly as the speaker path's gains do.
+                        position: block.position.map(|v| v as f64),
+                        gain: 1.0,
+                    });
+                self.binaural.render_frame(
+                    input_pcm,
+                    input_channel_count,
+                    sample_length,
+                    &binaural_params,
+                    &self.binaural_pos_buf,
+                    &self.binaural_gain_buf,
+                    &self.binaural_direct_buf,
+                    extra,
+                    &mut output,
+                );
+            }
             // Output gain parity with the speaker path: master gain × dialnorm
             // (auto-gain reductions are already folded into master_gain).
             let loudness = if live.use_loudness {
@@ -765,13 +939,12 @@ impl SpatialRenderer {
                 1.0
             };
             let total_gain = live.master_gain * loudness;
-            // Ear-channel mute/gain: Studio's headphone L/R rows reuse the
-            // first two speaker param slots (the same slots the L/R meters
-            // ride), so M/S on them works in binaural mode too.
+            // Ear-channel mute/gain: dedicated live params (the ears used to
+            // ride the first two per-speaker slots, which now belong to the
+            // virtual FL/FR rows in cascaded mode).
             let ear = |idx: usize| -> f32 {
-                live.speaker_params
-                    .get(idx)
-                    .map_or(1.0, |p| if p.muted { 0.0 } else { p.gain })
+                let e = ears[idx.min(1)];
+                if e.muted { 0.0 } else { e.gain }
             };
             let gain_l = total_gain * ear(0);
             let gain_r = total_gain * ear(1);
@@ -799,9 +972,7 @@ impl SpatialRenderer {
             // Clipping handling — same policy as the speaker path below:
             // detection always at 0 dBFS so the UI indicators work with
             // auto-gain off; the correction (when enabled) folds into the
-            // shared master gain, targeting the configured ceiling. The ear
-            // index reuses the first two speaker param slots, the same slots
-            // Studio's headphone L/R rows already ride for mute/gain.
+            // shared master gain, targeting the configured ceiling.
             if peak_sample > 1.0 {
                 self.control.note_clip(peak_ear);
                 if live.auto_gain {
@@ -828,11 +999,37 @@ impl SpatialRenderer {
                     );
                 }
             }
-            return Ok(RenderedFrame {
-                samples: output,
-                object_gains: Vec::new(),
-                object_band_gains: Vec::new(),
-                crossover_time_ms: 0.0,
+            self.apply_output_mode_fade(&mut output, 2);
+            // Cascaded mode returns the virtual mix diagnostics: they index
+            // the app layout, so the object meters stay valid on headphones.
+            return Ok(match cascade_diag {
+                Some(mut diag) => {
+                    diag.object_gains.sort_by_key(|(idx, _)| *idx);
+                    diag.object_band_gains.sort_by_key(|(idx, _)| *idx);
+                    diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
+                    RenderedFrame {
+                        samples: output,
+                        // Matches the `sample_length * 2` resize above: this
+                        // branch always emits a stereo ear pair.
+                        n_channels: 2,
+                        object_gains: diag.object_gains,
+                        object_band_gains: diag.object_band_gains,
+                        object_band_sq: diag.object_band_sq,
+                        object_test_position,
+                        object_test_level,
+                        crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
+                    }
+                }
+                None => RenderedFrame {
+                    samples: output,
+                    n_channels: 2,
+                    object_gains: Vec::new(),
+                    object_band_gains: Vec::new(),
+                    object_band_sq: Vec::new(),
+                    object_test_position,
+                    object_test_level,
+                    crossover_time_ms: 0.0,
+                },
             });
         }
 
@@ -842,519 +1039,33 @@ impl SpatialRenderer {
         output.clear();
         output.resize(required, 0.0);
 
-        // Per-object VBAP gains at the final sample — monitoring only (OSC meter
-        // bundle). Only collected when `measure_breakdown` is set; left empty (no
-        // allocation) on the plain render path (e.g. mpv without Studio open).
-        let mut object_gains_out: Vec<(usize, Gains)> = if measure_breakdown {
-            Vec::with_capacity(input_channel_count)
-        } else {
-            Vec::new()
-        };
-        let mut object_band_gains_out: Vec<(usize, Vec<Gains>)> = Vec::new();
-        let mut crossover_elapsed = std::time::Duration::ZERO;
-        let profile_crossover = measure_breakdown && self.crossover_filter_bank.is_some();
-
-        // Directly-routed channels always come FIRST in PCM data, then objects.
-        let num_routed = channel_routing.len();
-
         // Check if this is the first render for detailed logging
         let is_first = self
             .first_render
             .swap(false, std::sync::atomic::Ordering::Relaxed);
-        if is_first {
-            log::info!(
-                "VBAP render: {} total PCM channels, {} routed entries, {} trailing object channels",
-                input_channel_count,
-                num_routed,
-                input_channel_count.saturating_sub(num_routed),
-            );
-            log::info!("  Channel routing: {:?}", channel_routing);
-        }
-
-        // Hold channel metadata state lock once for the whole render pass.
-        // This avoids lock/unlock churn in the channel loop.
-        let mut channel_states = self.channel_states.lock();
-
-        // Process each channel
-        for input_channel_idx in 0..input_channel_count {
-            // Per-channel mute (applies to beds and objects), as a 0/1 factor.
-            let obj_gain = match live.object_params.get(input_channel_idx) {
-                Some(o) if o.muted => 0.0,
-                _ => 1.0,
-            };
-
-            // Get gain from cached metadata (common for ALL channels - beds and objects)
-            let state = channel_states.entry(input_channel_idx).or_default();
-            let gain_db = state.gain_db;
-
-            // Convert gain from dB to linear
-            let gain_linear = if gain_db == -128 {
-                0.0 // -inf dB
-            } else {
-                10.0_f32.powf(gain_db as f32 / 20.0)
-            };
-            // Slewed per-sample gain factor (includes the mute 0/1 factor):
-            // factor(s) = gain_start + gain_step * s.
-            let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
-            let (gain_start, gain_step) =
-                state.slew_gain(gain_linear * obj_gain, sample_length, ramp_samples);
-
-            // A channel is directly routed when its routing entry is
-            // `Direct` (channels beyond the routing table are trailing object
-            // channels; `Virtual` entries render through the object path from
-            // their metadata events).
-            let direct_label = match channel_routing.get(input_channel_idx) {
-                Some(ChannelRoute::Direct(label)) => Some(*label),
-                _ => None,
-            };
-            if let Some(label) = direct_label {
-                // DIRECT CHANNEL: one-hot route to the speaker its label
-                // resolves to in the active topology.
-                let speaker_idx = match active_label_to_speaker.get(&label) {
-                    Some(&idx) => idx,
-                    None => {
-                        // No matching speaker in this layout — skip the channel.
-                        if is_first {
-                            log::warn!(
-                                "  Direct ch{} ({label:?}) has no matching speaker in layout, skipping",
-                                input_channel_idx,
-                            );
-                        }
-                        continue;
-                    }
-                };
-
-                self.bed_routing_gains_buf.fill(0.0);
-                self.bed_routing_gains_buf[speaker_idx] = 1.0;
-
-                // Mix bed samples through the same per-speaker gain accumulation model
-                // used for objects, but with a one-hot routing table.
-                for sample_idx in 0..sample_length {
-                    let sample = input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                        * (gain_start + gain_step * sample_idx as f32);
-                    let out_base = sample_idx * self.num_speakers;
-                    for (speaker_idx, &gain) in self.bed_routing_gains_buf.iter().enumerate() {
-                        output[out_base + speaker_idx] += sample * gain;
-                    }
-                }
-
-                let mut gains = Gains::zeroed(self.num_speakers);
-                for (speaker_idx, &gain) in self.bed_routing_gains_buf.iter().enumerate() {
-                    gains.set(speaker_idx, gain);
-                }
-                object_gains_out.push((input_channel_idx, gains));
-
-                if is_first {
-                    let speaker_name = active_layout.speakers[speaker_idx].name.as_str();
-                    log::info!(
-                        "  Direct ch{} ({label:?}) → Speaker {} ({}) gain={}dB",
-                        input_channel_idx,
-                        speaker_idx,
-                        speaker_name,
-                        gain_db
-                    );
-                }
-            } else {
-                let state_mut = channel_states.get_mut(&input_channel_idx);
-                let state = match state_mut {
-                    // Skip if no metadata available
-                    Some(s) => s,
-                    None => {
-                        if self.log_object_positions {
-                            log::warn!(
-                                "Channel {} missing cached metadata, skipping",
-                                input_channel_idx
-                            );
-                        }
-                        continue;
-                    }
-                };
-
-                // ── Unified band rendering path ─────────────────────────────────────────
-                // Always iterate over `render_bands` (1 band = no crossover, N bands = LR4).
-                // Each band returns full-size Gains (zeroed for out-of-band speakers) so the
-                // inner mix loop is contiguous and SIMD-friendly.
-
-                // Lazily allocate per-object filter state only when crossover is active.
-                let obj_filter_states: Option<&mut Vec<BiquadState>> =
-                    if let Some(fb) = self.crossover_filter_bank.as_ref() {
-                        let state_count = fb.state_count();
-                        if self.crossover_filter_states.len() <= input_channel_idx {
-                            self.crossover_filter_states
-                                .resize_with(input_channel_idx + 1, || None);
-                        }
-                        let slot = &mut self.crossover_filter_states[input_channel_idx];
-                        if slot.is_none() {
-                            *slot = Some(vec![BiquadState::default(); state_count]);
-                        }
-                        slot.as_mut()
-                    } else {
-                        None
-                    };
-
-                let render_params = ramp_context.render_params();
-
-                // Reuse the per-object band-gain buffer (pooled in the renderer) so
-                // the hot render path does not allocate a fresh Vec per object per
-                // frame. Each arm fills `band_gains`; it is put back at the end.
-                let mut band_gains = std::mem::take(&mut self.band_gains_scratch);
-                band_gains.clear();
-                match live.ramp_mode {
-                    RampMode::Off => {
-                        state.ramp.remaining_ramp_units = None;
-                        state.ramp.start_position = state.ramp.target_position;
-                        state.ramp.current_position = state.ramp.target_position;
-                        state.ramp.start_size = state.ramp.target_size;
-                        state.ramp.current_size = state.ramp.target_size;
-                        state.ramp.output_position = state.ramp.target_position;
-
-                        let position = state.ramp.output_position;
-                        let size = state.ramp.current_size;
-                        Self::fill_band_gains(
-                            &self.unified_table,
-                            &self.render_bands,
-                            render_params,
-                            position,
-                            size,
-                            &mut band_gains,
-                        );
-
-                        let mut fst = obj_filter_states;
-                        if profile_crossover {
-                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
-                            let started_at = std::time::Instant::now();
-                            fb.process_block(
-                                sample_length,
-                                fst_slice,
-                                &mut self.crossover_band_scratch,
-                                |sample_idx| {
-                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * (gain_start + gain_step * sample_idx as f32)
-                                },
-                            );
-                            crossover_elapsed += started_at.elapsed();
-                            for sample_idx in 0..sample_length {
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = self.crossover_band_scratch[b][sample_idx];
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        } else {
-                            for sample_idx in 0..sample_length {
-                                let raw = input_pcm
-                                    [sample_idx * input_channel_count + input_channel_idx]
-                                    * (gain_start + gain_step * sample_idx as f32);
-                                let split = split_bands(
-                                    raw,
-                                    &self.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
-                                );
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = split.get(b);
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    RampMode::Frame => {
-                        let progress = state.ramp.current_progress().unwrap_or(RampProgress {
-                            completed_units: 0,
-                            total_units: 0,
-                        });
-                        ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
-                        let position = state.ramp.output_position;
-                        let size = state.ramp.current_size;
-                        Self::fill_band_gains(
-                            &self.unified_table,
-                            &self.render_bands,
-                            render_params,
-                            position,
-                            size,
-                            &mut band_gains,
-                        );
-
-                        let mut fst = obj_filter_states;
-                        if profile_crossover {
-                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
-                            let started_at = std::time::Instant::now();
-                            fb.process_block(
-                                sample_length,
-                                fst_slice,
-                                &mut self.crossover_band_scratch,
-                                |sample_idx| {
-                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * (gain_start + gain_step * sample_idx as f32)
-                                },
-                            );
-                            crossover_elapsed += started_at.elapsed();
-                            for sample_idx in 0..sample_length {
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = self.crossover_band_scratch[b][sample_idx];
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        } else {
-                            for sample_idx in 0..sample_length {
-                                let raw = input_pcm
-                                    [sample_idx * input_channel_count + input_channel_idx]
-                                    * (gain_start + gain_step * sample_idx as f32);
-                                let split = split_bands(
-                                    raw,
-                                    &self.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
-                                );
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = split.get(b);
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        }
-                        state.ramp.commit_output_position();
-                        state.ramp.advance_ramp(sample_length as u64);
-                    }
-                    RampMode::Sample => {
-                        let mut fst = obj_filter_states;
-                        // One Gains slot per band, reused each sample (and across
-                        // objects/frames via the pooled buffer).
-                        band_gains
-                            .resize(self.render_bands.len(), Gains::zeroed(self.num_speakers));
-                        if profile_crossover {
-                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
-                            let started_at = std::time::Instant::now();
-                            fb.process_block(
-                                sample_length,
-                                fst_slice,
-                                &mut self.crossover_band_scratch,
-                                |sample_idx| {
-                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * (gain_start + gain_step * sample_idx as f32)
-                                },
-                            );
-                            crossover_elapsed += started_at.elapsed();
-                            // See the non-crossover branch: only recompute the VBAP
-                            // gains when the position/size changes (skips redundant
-                            // per-sample work while the object is static).
-                            let mut last_pos = [f64::NAN; 3];
-                            let mut last_size = [f32::NAN; 3];
-                            for sample_idx in 0..sample_length {
-                                let progress =
-                                    state.ramp.current_progress().unwrap_or(RampProgress {
-                                        completed_units: 0,
-                                        total_units: 0,
-                                    });
-                                ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
-                                let position = state.ramp.output_position;
-                                let size = state.ramp.current_size;
-                                if position != last_pos || size != last_size {
-                                    Self::fill_band_gains(
-                                        &self.unified_table,
-                                        &self.render_bands,
-                                        render_params,
-                                        position,
-                                        size,
-                                        &mut band_gains,
-                                    );
-                                    last_pos = position;
-                                    last_size = size;
-                                }
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = self.crossover_band_scratch[b][sample_idx];
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                                state.ramp.commit_output_position();
-                                state.ramp.advance_ramp(1);
-                            }
-                        } else {
-                            // Recompute the per-band VBAP gains only when the
-                            // interpolated position/size actually changes. While the
-                            // object is not ramping (the common case — metadata is
-                            // sparse) `output_position` is constant across the block,
-                            // so this collapses 1 `compute_gains` call per band per
-                            // sample down to one per block while staying bit-identical.
-                            let mut last_pos = [f64::NAN; 3];
-                            let mut last_size = [f32::NAN; 3];
-                            for sample_idx in 0..sample_length {
-                                let progress =
-                                    state.ramp.current_progress().unwrap_or(RampProgress {
-                                        completed_units: 0,
-                                        total_units: 0,
-                                    });
-                                ramp_strategy.evaluate(&mut state.ramp, progress, &ramp_context);
-                                let position = state.ramp.output_position;
-                                let size = state.ramp.current_size;
-                                if position != last_pos || size != last_size {
-                                    Self::fill_band_gains(
-                                        &self.unified_table,
-                                        &self.render_bands,
-                                        render_params,
-                                        position,
-                                        size,
-                                        &mut band_gains,
-                                    );
-                                    last_pos = position;
-                                    last_size = size;
-                                }
-                                let raw = input_pcm
-                                    [sample_idx * input_channel_count + input_channel_idx]
-                                    * (gain_start + gain_step * sample_idx as f32);
-                                let split = split_bands(
-                                    raw,
-                                    &self.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
-                                );
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = split.get(b);
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                                state.ramp.commit_output_position();
-                                state.ramp.advance_ramp(1);
-                            }
-                        }
-                    }
-                    RampMode::Interp => {
-                        // Destination gains for this block: one VBAP evaluation per
-                        // band at the target position. The object's audible path is
-                        // then a per-sample linear interpolation from the previous
-                        // block's end gains to these — no per-sample VBAP.
-                        state.ramp.remaining_ramp_units = None;
-                        state.ramp.current_position = state.ramp.target_position;
-                        state.ramp.current_size = state.ramp.target_size;
-                        state.ramp.output_position = state.ramp.target_position;
-                        let position = state.ramp.target_position;
-                        let size = state.ramp.target_size;
-
-                        let mut end = std::mem::take(&mut self.interp_end_scratch);
-                        Self::fill_band_gains(
-                            &self.unified_table,
-                            &self.render_bands,
-                            render_params,
-                            position,
-                            size,
-                            &mut end,
-                        );
-                        self.interp_end_scratch = end;
-                        let n_bands = self.interp_end_scratch.len();
-
-                        // First block for this channel → start == end (no jump in).
-                        if state.interp_prev_gains.len() != n_bands {
-                            state.interp_prev_gains.clear();
-                            state
-                                .interp_prev_gains
-                                .extend_from_slice(&self.interp_end_scratch);
-                        }
-                        band_gains.resize(n_bands, Gains::zeroed(self.num_speakers));
-
-                        let mut fst = obj_filter_states;
-                        let inv_n = 1.0 / sample_length.max(1) as f32;
-                        if profile_crossover {
-                            let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
-                            let started_at = std::time::Instant::now();
-                            fb.process_block(
-                                sample_length,
-                                fst_slice,
-                                &mut self.crossover_band_scratch,
-                                |sample_idx| {
-                                    input_pcm[sample_idx * input_channel_count + input_channel_idx]
-                                        * (gain_start + gain_step * sample_idx as f32)
-                                },
-                            );
-                            crossover_elapsed += started_at.elapsed();
-                            for sample_idx in 0..sample_length {
-                                let f = (sample_idx as f32 + 1.0) * inv_n;
-                                for b in 0..n_bands {
-                                    let (s0, s1) =
-                                        (&state.interp_prev_gains[b], &self.interp_end_scratch[b]);
-                                    let slot = &mut band_gains[b];
-                                    for spk in 0..self.num_speakers {
-                                        slot[spk] = s0[spk] * (1.0 - f) + s1[spk] * f;
-                                    }
-                                }
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = self.crossover_band_scratch[b][sample_idx];
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        } else {
-                            for sample_idx in 0..sample_length {
-                                let f = (sample_idx as f32 + 1.0) * inv_n;
-                                for b in 0..n_bands {
-                                    let (s0, s1) =
-                                        (&state.interp_prev_gains[b], &self.interp_end_scratch[b]);
-                                    let slot = &mut band_gains[b];
-                                    for spk in 0..self.num_speakers {
-                                        slot[spk] = s0[spk] * (1.0 - f) + s1[spk] * f;
-                                    }
-                                }
-                                let raw = input_pcm
-                                    [sample_idx * input_channel_count + input_channel_idx]
-                                    * (gain_start + gain_step * sample_idx as f32);
-                                let split = split_bands(
-                                    raw,
-                                    &self.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
-                                );
-                                let out_base = sample_idx * self.num_speakers;
-                                for (b, gains) in band_gains.iter().enumerate() {
-                                    let s = split.get(b);
-                                    for (spk, &g) in gains.iter().enumerate() {
-                                        output[out_base + spk] += s * g;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Cache this block's destination as the next block's start.
-                        state.interp_prev_gains.clear();
-                        state
-                            .interp_prev_gains
-                            .extend_from_slice(&self.interp_end_scratch);
-                    }
-                };
-
-                // Monitoring outputs (OSC meter bundle): only built when requested.
-                // `band_gains` is already full-size — sum across bands for the
-                // per-object gains, and hand a copy of the band gains out.
-                if measure_breakdown {
-                    let mut summed = Gains::zeroed(self.num_speakers);
-                    for gains in &band_gains {
-                        for (i, &g) in gains.iter().enumerate() {
-                            summed[i] += g;
-                        }
-                    }
-                    object_band_gains_out.push((input_channel_idx, band_gains.clone()));
-                    object_gains_out.push((input_channel_idx, summed));
-                }
-
-                // Return the pooled buffer for the next object/frame.
-                self.band_gains_scratch = band_gains;
-            }
-        }
-        drop(channel_states);
+        cascade::reseed_interp_on_width_change(
+            &mut self.channel_states,
+            &mut self.last_mix_num_speakers,
+            self.speaker_stage.num_speakers,
+        );
+        let frame = speaker_stage::SpeakerStageFrame {
+            input_pcm,
+            input_channel_count,
+            sample_length,
+            channel_routing: &channel_routing,
+            label_to_speaker: active_label_to_speaker,
+            layout: active_layout,
+            object_params: live.object_params,
+            ramp_mode: live.ramp_mode,
+            ramp_strategy,
+            ramp_context: &ramp_context,
+            log_object_positions: self.log_object_positions,
+            is_first,
+            measure_breakdown,
+        };
+        let mut diag =
+            self.speaker_stage
+                .mix_channels(frame, &mut self.channel_states, &mut output);
 
         // topology_guard is an ArcSwap Guard (no lock held); drop it here to make the
         // intent explicit before the gain/auto-gain section.
@@ -1379,49 +1090,55 @@ impl SpatialRenderer {
         // clipping branch below), so it needs no separate factor here.
         let total_gain = live.master_gain * loudness;
 
-        // Pre-compute per-speaker total gains and update delay-line targets in a
-        // single pass over the speaker list — one HashMap lookup per speaker.
-        // Mute overrides gain to 0.0 without touching the stored gain value.
-        self.speaker_gains_buf
-            .iter_mut()
-            .enumerate()
-            .for_each(|(idx, g)| {
-                let sp = live.speaker_params.get(idx);
-                *g = if sp.is_some_and(|s| s.muted) {
-                    0.0
-                } else {
-                    total_gain * sp.map_or(1.0, |s| s.gain)
-                };
-            });
-        for (idx, dl) in self.delay_lines.iter_mut().enumerate() {
-            dl.set_target_ms(
-                live.speaker_params.get(idx).map_or(0.0, |s| s.delay_ms),
-                self.sample_rate,
-            );
-        }
-        let speaker_total_gains = &self.speaker_gains_buf;
+        // Both tests land before finalize, so they go through the same
+        // per-speaker gain, delay and mute as programme audio — the point is to
+        // hear what the speakers will actually do, not a bypassed signal.
+        //
+        // The object test goes first because its isolation is the broader
+        // statement (it silences the programme on every speaker, having no one
+        // speaker of its own). Running the speaker test afterwards lets its
+        // narrower isolation win on the speaker it targets, which is the
+        // sensible reading when a user deliberately starts both at once.
+        let frames = if self.speaker_stage.num_speakers > 0 {
+            output.len() / self.speaker_stage.num_speakers
+        } else {
+            0
+        };
+        // Disjoint field borrows: the source lends the block, the stage places it.
+        let block = self.object_test_source.next_block(
+            live.object_test,
+            live.object_test_rotation,
+            object_test_clip.as_deref(),
+            self.sample_rate,
+            frames,
+        );
+        let object_test_position = block.as_ref().map(|b| b.position);
+        let object_test_level = block.as_ref().map(|b| (b.peak_dbfs, b.rms_dbfs));
+        let object_test_active = self.speaker_stage.inject_object_test(
+            live.object_test,
+            block.as_ref(),
+            ramp_context.render_params(),
+            &mut output,
+        );
 
-        // Apply per-speaker gains and delay lines, and detect peak (tracking which
-        // speaker channel held the peak, for clip reporting).
-        let mut peak_sample: f32 = 0.0;
-        let mut peak_speaker_idx: usize = 0;
-        for sample_idx in 0..sample_length {
-            for speaker_idx in 0..self.num_speakers {
-                let s = &mut output[sample_idx * self.num_speakers + speaker_idx];
-                *s *= speaker_total_gains[speaker_idx];
-                *s = self.delay_lines[speaker_idx].process(*s);
-                let a = s.abs();
-                if a > peak_sample {
-                    peak_sample = a;
-                    peak_speaker_idx = speaker_idx;
-                }
-            }
-        }
+        let test_active = self.speaker_stage.inject_speaker_test(
+            live.speaker_test,
+            self.sample_rate,
+            &mut output,
+        ) || object_test_active;
+
+        let (peak_sample, peak_speaker_idx) =
+            self.speaker_stage
+                .finalize_output(live.speaker_params, total_gain, &mut output);
 
         // Clipping handling. Detection is always at 0 dBFS (peak > 1.0) and the
         // clip flag is raised (with the offending speaker) regardless of auto-gain
         // so the UI clip indicators work even when auto-gain is disabled.
-        if peak_sample > 1.0 {
+        //
+        // Suppressed while a test runs: a deliberately loud test signal would
+        // otherwise fold itself into the master gain and quietly rescale the
+        // very thing being judged by ear, leaving the mix attenuated afterwards.
+        if peak_sample > 1.0 && !test_active {
             self.control.note_clip(peak_speaker_idx);
 
             // Auto-gain: fold the required attenuation directly into the live
@@ -1470,17 +1187,104 @@ impl SpatialRenderer {
             }
         }
 
-        object_gains_out.sort_by_key(|(idx, _)| *idx);
-        object_band_gains_out.sort_by_key(|(idx, _)| *idx);
+        let speaker_channels = self.num_speakers;
+        self.apply_output_mode_fade(&mut output, speaker_channels);
+        diag.object_gains.sort_by_key(|(idx, _)| *idx);
+        diag.object_band_gains.sort_by_key(|(idx, _)| *idx);
+        diag.object_band_sq.sort_by_key(|(idx, _)| *idx);
         Ok(RenderedFrame {
             samples: output,
-            object_gains: object_gains_out,
-            object_band_gains: object_band_gains_out,
-            crossover_time_ms: crossover_elapsed.as_secs_f32() * 1000.0,
+            // Matches the `sample_length * self.num_speakers` resize above.
+            // Read from the field, not from output_channel_count(): that one
+            // re-reads the live output mode, which the OSC thread may have
+            // flipped since this branch was chosen.
+            n_channels: self.num_speakers,
+            object_gains: diag.object_gains,
+            object_band_gains: diag.object_band_gains,
+            object_band_sq: diag.object_band_sq,
+            object_test_position,
+            object_test_level,
+            crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
         })
     }
 
     /// Get the number of output speakers
+    /// Whether the binaural (headphone) output path is active — hosts use this
+    /// to route their metering (ears vs speakers) without guessing from the
+    /// channel count (a 2.0 speaker layout is also 2-channel).
+    pub fn output_is_binaural(&self) -> bool {
+        matches!(
+            self.control.live.read().binaural.output_mode,
+            crate::live_params::OutputMode::Binaural
+        )
+    }
+
+    /// The virtual-speaker bus of the last cascaded frame, when the cascaded
+    /// binaural mode rendered it: `(interleaved_samples, channel_count)` in
+    /// app-layout speaker order, post per-speaker params. The host meters
+    /// this so Studio's speaker gauges show the virtual room while the
+    /// stereo output feeds the ear meters. `None` outside cascaded mode.
+    pub fn virtual_bus(&self) -> Option<(&[f32], usize)> {
+        let active = {
+            let g = self.control.live.read();
+            matches!(
+                g.binaural.output_mode,
+                crate::live_params::OutputMode::Binaural
+            ) && matches!(g.binaural.mode, crate::live_params::BinauralMode::Cascaded)
+        };
+        if !active {
+            return None;
+        }
+        self.cascade
+            .as_ref()
+            .filter(|c| !c.bus.is_empty())
+            .map(|c| (c.bus.as_slice(), c.num_buses()))
+    }
+
+    /// Apply the in-flight output-mode cross-fade to an interleaved block, and
+    /// adopt the requested mode when the outgoing ramp bottoms out.
+    ///
+    /// No-op in steady state — the common case costs one `Option` check. The
+    /// ramp is linear and spans `mode_fade_samples`, which may be longer than
+    /// one block, so the gain is carried across frames by `remaining`.
+    fn apply_output_mode_fade(&mut self, output: &mut [f32], n_channels: usize) {
+        let Some(fade) = self.mode_fade.as_mut() else {
+            return;
+        };
+        if n_channels == 0 || fade.total == 0 {
+            self.mode_fade = None;
+            return;
+        }
+        let frames = output.len() / n_channels;
+        let total = fade.total as f32;
+        for f in 0..frames {
+            // `remaining` counts down through the ramp; a frame past the end
+            // holds the endpoint gain rather than overshooting.
+            let left = fade.remaining.saturating_sub(f) as f32;
+            let ramp = left / total; // 1 → 0 across the ramp
+            let gain = if fade.fading_out { ramp } else { 1.0 - ramp };
+            let base = f * n_channels;
+            for s in &mut output[base..base + n_channels] {
+                *s *= gain;
+            }
+        }
+        fade.remaining = fade.remaining.saturating_sub(frames);
+        if fade.remaining > 0 {
+            return;
+        }
+        if fade.fading_out {
+            // Bottom of the ramp: the block just faded to silence, so swapping
+            // chains here is inaudible. Re-read the request rather than caching
+            // it — the user may have flipped again mid-fade, and the newest
+            // intent is the right one to land on.
+            self.active_output_mode = self.control.live.read().binaural.output_mode;
+            fade.remaining = fade.total;
+            fade.fading_out = false;
+        } else {
+            self.mode_fade = None;
+        }
+    }
+
     pub fn num_speakers(&self) -> usize {
         self.num_speakers
     }
@@ -1489,7 +1293,11 @@ impl SpatialRenderer {
     /// (headphone) mode, otherwise the speaker count. Hosts must size their sink
     /// and `RenderedAudio` from this, not from [`num_speakers`](Self::num_speakers).
     pub fn output_channel_count(&self) -> usize {
-        match self.control.live.read().binaural.output_mode {
+        // The ACTIVE mode, not the live one: across a cross-fade the live flag
+        // already names the incoming mode while the samples are still the
+        // outgoing one's. Reporting the request would tell the host to resize
+        // its sink for audio that has not been rendered yet.
+        match self.active_output_mode {
             crate::live_params::OutputMode::Binaural => 2,
             crate::live_params::OutputMode::SpeakerArray => self.num_speakers,
         }
@@ -1519,3 +1327,9 @@ impl SpatialRenderer {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod golden_tests;
+
+#[cfg(all(test, feature = "perf-gate"))]
+mod perf_gate;

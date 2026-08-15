@@ -231,6 +231,24 @@ Accepted values are:
 - `frame`: one interpolation step per decoded audio frame
 - `sample`: one interpolation step per rendered sample
 
+### Named Config Profiles
+
+See `docs/config-profiles.md` for the schema and switching semantics.
+
+- `/omniphony/control/profile/switch s <name>` — commit the live state into
+  the outgoing profile, activate `<name>`, re-seed the live params and rebuild
+  the topology in the background.
+- `/omniphony/control/profile/create s <name>` — snapshot the current live
+  state into a new profile (no switch).
+- `/omniphony/control/profile/delete s <name>` — remove a profile; the active
+  profile is refused.
+- `/omniphony/control/profile/rename s <old> s <new>` — rename; follows the
+  active profile.
+
+Every mutation saves the config file and re-broadcasts
+`/omniphony/state/profiles s <json>` (`{"active": "...", "names": ["..."]}`),
+which is also part of the initial state bundle.
+
 ### Live Input Control for Studio
 
 The live-input surface is designed for staged editing from a controller such as

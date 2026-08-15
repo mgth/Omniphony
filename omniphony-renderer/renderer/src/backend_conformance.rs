@@ -55,6 +55,7 @@ pub fn neutral_request() -> RenderRequest {
         room_ratio_lower: 1.0,
         room_ratio_center_blend: 0.0,
         use_distance_diffuse: false,
+        diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
         distance_diffuse_threshold: 1.0,
         distance_diffuse_curve: 1.0,
         distance_model: DistanceModel::None,
@@ -433,7 +434,7 @@ mod tests {
     fn vbap_714() -> VbapBackend {
         let layout = SpeakerLayout::preset("7.1.4").expect("7.1.4 preset");
         let (dirs, _) = layout.spatializable_positions();
-        let panner = VbapPanner::new(&dirs, 1, 1, 0.0)
+        let panner = VbapPanner::new(&dirs, 1, 1, 0.0, Default::default())
             .expect("panner")
             .with_negative_z(true);
         VbapBackend::new(panner, crate::render_backend::VbapSpreadParams::default())

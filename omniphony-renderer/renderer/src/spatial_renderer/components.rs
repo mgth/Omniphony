@@ -18,6 +18,17 @@ use std::sync::Arc;
 pub struct RenderedFrame {
     /// Interleaved speaker audio: `[sample0_spk0, sample0_spk1, ..., sample1_spk0, ...]`.
     pub samples: Vec<f32>,
+    /// Channels interleaved in [`Self::samples`] — 2 for the binaural path,
+    /// the speaker count otherwise.
+    ///
+    /// Reported by the render itself rather than re-read from the live output
+    /// mode afterwards. The mode is flipped by the OSC thread, so a second read
+    /// can disagree with the branch that actually produced these samples: a
+    /// switch to speakers landing after a binaural render made the caller
+    /// publish "12 channels" for 2-channel data, and the host then copied
+    /// `n_frames * 12` floats out of a buffer holding a sixth of that — heap
+    /// read past the end, played as PCM.
+    pub n_channels: usize,
     /// VBAP gains at the final sample for each rendered object channel.
     /// `(channel_idx, gains)` — `gains[speaker_idx]` is the gain applied to that speaker.
     /// Ordered by `channel_idx`. Empty if no objects were spatialized this frame.
@@ -27,9 +38,28 @@ pub struct RenderedFrame {
     /// (`num_speakers`), indexed by global speaker index.
     /// Empty for non-crossover objects or when no crossover is active.
     pub object_band_gains: Vec<(usize, Vec<Gains>)>,
+    /// Per-band sum of squared band samples over this frame for crossover
+    /// objects: `(channel_idx, [band0_sum_sq, ...])`, band order matching
+    /// [`Self::object_band_gains`]. Measured post object-gain — the energy the
+    /// object actually contributes to the render, unlike the full-band input
+    /// meter which is pre-gain. Feeds the per-band object meters; empty when
+    /// metering is off or no crossover is active.
+    pub object_band_sq: Vec<(usize, Vec<f64>)>,
     /// Time spent in the crossover filter-bank stage during `render_frame`.
     ///
     /// This is a subset of the total render time.
+    /// Where the object test's source sits, once its orbit and the room clamp
+    /// are applied — `None` when no test is running.
+    ///
+    /// Reported because the renderer owns the orbit phase, so it is the only
+    /// party that knows this. Without it a client can draw the path but not the
+    /// source on it, and an interface animating its own copy would drift away
+    /// from what is actually being heard.
+    pub object_test_position: Option<[f32; 3]>,
+    /// Peak and RMS of the object test's own signal, dBFS. Reported for the
+    /// same reason as the position: it is a source Studio invented, so the
+    /// renderer is the only party that can meter it.
+    pub object_test_level: Option<(f32, f32)>,
     pub crossover_time_ms: f32,
 }
 
@@ -121,6 +151,16 @@ pub struct SpatialChannelEvent {
 /// Per-channel state for movement detection and gain ramping
 #[derive(Clone)]
 pub(super) struct ChannelState {
+    /// Has this channel ever received metadata?
+    ///
+    /// The state used to live in a `HashMap`, where *absence* carried this
+    /// meaning — a missing entry read as −128 dB (silent) while a
+    /// default-constructed one reads as 0 dB (unity). Moving to a
+    /// preallocated `Vec` makes every channel present, so the distinction
+    /// has to be explicit or every stream would start at unity instead of
+    /// silent.
+    pub(super) initialized: bool,
+
     /// Gain in dB
     pub(super) gain_db: i8,
 
@@ -169,6 +209,7 @@ impl ChannelState {
 impl Default for ChannelState {
     fn default() -> Self {
         Self {
+            initialized: false,
             gain_db: -128, // -inf dB (muted)
             slewed_gain: 0.0,
             ramp: ChannelRampState::default(),

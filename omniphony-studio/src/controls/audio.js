@@ -530,23 +530,28 @@ function isBinaryParam(spec) {
   return Number(spec.min) === 0 && Number(spec.max) === 1 && Number(spec.step) === 1;
 }
 
-// Params that only shape the BROADBAND plan: the engine deliberately ignores
-// their changes while spectral mode is active (see phantom_extract.rs sync —
+// Params that only shape one method's plan: the engine deliberately ignores
+// the other method's changes while it is active (see phantom_extract.rs sync —
 // no pointless re-prime). Keep them editable for offline configuration, but
 // visually identify that they do not affect the current mode.
 const PHANTOM_BROADBAND_ONLY = new Set(['passes', 'center', 'sides']);
+const PHANTOM_SPECTRAL_ONLY = new Set(['heights', 'height_split']);
 
 function phantomMethodIsSpectral() {
   return getLiveOption('phantom_extract_mode') === 'spectral';
 }
 
-// Reflect a param row's broadband-only gating on its container + control.
+// Reflect a param row's method-only gating on its container + control.
 function applyPhantomParamGate(container, control, key, spectral) {
-  const gated = spectral && PHANTOM_BROADBAND_ONLY.has(key);
+  const broadbandGated = spectral && PHANTOM_BROADBAND_ONLY.has(key);
+  const spectralGated = !spectral && PHANTOM_SPECTRAL_ONLY.has(key);
+  const gated = broadbandGated || spectralGated;
   control.disabled = false;
   container.style.opacity = gated ? '0.7' : '';
-  if (gated) {
+  if (broadbandGated) {
     container.title = t('twoDSources.phantomBroadbandOnly');
+  } else if (spectralGated) {
+    container.title = t('twoDSources.phantomSpectralOnly');
   } else {
     container.removeAttribute('title');
   }

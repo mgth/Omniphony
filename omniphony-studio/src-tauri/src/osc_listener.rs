@@ -168,6 +168,13 @@ struct MonitoringDomainState {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProfilesDomainState {
+    active: Option<String>,
+    names: Option<Vec<String>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LayoutDomainState {
     name: Option<String>,
     radius_m: Option<f64>,
@@ -670,6 +677,19 @@ fn apply_loudness_domain_state(s: &mut AppState, value: &str) -> bool {
     true
 }
 
+fn apply_profiles_domain_state(s: &mut AppState, value: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<ProfilesDomainState>(value) else {
+        return false;
+    };
+    if let Some(active) = parsed.active {
+        s.active_profile = Some(active);
+    }
+    if let Some(names) = parsed.names {
+        s.profile_names = names;
+    }
+    true
+}
+
 fn apply_monitoring_domain_state(s: &mut AppState, value: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<MonitoringDomainState>(value) else {
         return false;
@@ -1036,7 +1056,7 @@ fn osc_thread(
         // receive packet
         // Re-request missing gain-table chunks if the transfer has stalled. Cheap
         // to check every loop tick (≤50ms cadence via the recv timeout).
-        if let Some((version, missing)) = gaintable_check_nack(Instant::now()) {
+        for (version, missing) in gaintable_check_nack(Instant::now()) {
             send_gaintable_nack(&socket, &host, osc_rx_port, version, &missing);
         }
 
@@ -1384,22 +1404,32 @@ fn handle_packet(
 // metadata_len + payload_len + metadata JSON + zlib payload of f32 positions and
 // gains) and emit the whole table to JS once. Kept in a module static — the OSC
 // receive path is the only writer — to avoid threading a buffer through AppState.
+/// One in-flight chunked transfer.
 struct GainTableAsm {
-    version: u32,
     chunk_count: usize,
     chunks: std::collections::BTreeMap<u32, Vec<u8>>,
     /// Last time a chunk (or the meta) arrived; drives the stall → NACK timer.
     last_activity: Option<Instant>,
     nack_rounds: u8,
+    /// Arrival order, used to evict the oldest when over capacity.
+    started: Instant,
 }
 
-static GAINTABLE: Mutex<GainTableAsm> = Mutex::new(GainTableAsm {
-    version: 0,
-    chunk_count: 0,
-    chunks: std::collections::BTreeMap::new(),
-    last_activity: None,
-    nack_rounds: 0,
-});
+/// In-flight transfers, keyed by payload version.
+///
+/// A **map**, not a single slot: the renderer pushes one field per subscribed
+/// target, and rapid topology changes queue several transfers back to back. A
+/// single slot meant an arriving transfer wiped the one still streaming, whose
+/// remaining chunks were then dropped as foreign — the client never completed
+/// it and never asked again, so a display could sit on a stale field
+/// indefinitely. Keyed by version, concurrent transfers simply coexist.
+static GAINTABLE: Mutex<std::collections::BTreeMap<u32, GainTableAsm>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// Most transfers reassembled at once. Beyond this the oldest is dropped: it is
+/// either finished or hopeless, and an unbounded map is a memory leak on a
+/// client that keeps missing chunks.
+const GAINTABLE_MAX_INFLIGHT: usize = 6;
 
 // Reliability for the chunked UDP transfer: if the burst stalls (lost datagrams),
 // re-request just the missing chunk indices. The receive buffer already absorbs the
@@ -1414,45 +1444,81 @@ fn gaintable_on_meta(json: &str) {
     let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
     let version = v.get("version").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
     let chunk_count = v.get("chunk_count").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
-    if let Ok(mut g) = GAINTABLE.lock() {
-        g.version = version;
-        g.chunk_count = chunk_count;
-        g.chunks.clear();
-        g.last_activity = Some(Instant::now());
-        g.nack_rounds = 0;
+    if chunk_count == 0 {
+        return;
+    }
+    let now = Instant::now();
+    if let Ok(mut map) = GAINTABLE.lock() {
+        // A repeated meta for a version already in flight restarts *that*
+        // transfer only, leaving the others untouched.
+        map.insert(
+            version,
+            GainTableAsm {
+                chunk_count,
+                chunks: std::collections::BTreeMap::new(),
+                last_activity: Some(now),
+                nack_rounds: 0,
+                started: now,
+            },
+        );
+        while map.len() > GAINTABLE_MAX_INFLIGHT {
+            if let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, asm)| asm.started)
+                .map(|(version, _)| *version)
+            {
+                log::warn!("[osc] gaintable: dropping oldest in-flight transfer {oldest}");
+                map.remove(&oldest);
+            } else {
+                break;
+            }
+        }
     }
 }
 
-/// If the current transfer has stalled, return `(version, missing_indices)` to
-/// re-request (and arm the next round); give up after `GAINTABLE_MAX_NACK_ROUNDS`.
-fn gaintable_check_nack(now: Instant) -> Option<(u32, Vec<u32>)> {
-    let mut g = GAINTABLE.lock().ok()?;
-    if g.chunk_count == 0 {
-        return None; // no active transfer (idle or just completed)
+/// Every stalled transfer's `(version, missing_indices)` to re-request (arming
+/// their next round); a transfer is abandoned after `GAINTABLE_MAX_NACK_ROUNDS`.
+///
+/// All of them, not just one: with several transfers in flight, recovering only
+/// the first would leave the others to rot — the silent-staleness failure this
+/// map exists to prevent.
+fn gaintable_check_nack(now: Instant) -> Vec<(u32, Vec<u32>)> {
+    let Ok(mut map) = GAINTABLE.lock() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut abandoned = Vec::new();
+    for (version, asm) in map.iter_mut() {
+        let Some(last) = asm.last_activity else {
+            continue;
+        };
+        if now.duration_since(last) < GAINTABLE_NACK_TIMEOUT {
+            continue;
+        }
+        if asm.nack_rounds >= GAINTABLE_MAX_NACK_ROUNDS {
+            log::warn!(
+                "[osc] gaintable transfer {version} abandoned: {}/{} chunks after {} NACK rounds",
+                asm.chunks.len(),
+                asm.chunk_count,
+                asm.nack_rounds
+            );
+            abandoned.push(*version);
+            continue;
+        }
+        let missing: Vec<u32> = (0..asm.chunk_count as u32)
+            .filter(|i| !asm.chunks.contains_key(i))
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        asm.nack_rounds += 1;
+        asm.last_activity = Some(now);
+        out.push((*version, missing));
     }
-    let last = g.last_activity?;
-    if now.duration_since(last) < GAINTABLE_NACK_TIMEOUT {
-        return None;
+    for version in abandoned {
+        map.remove(&version);
     }
-    if g.nack_rounds >= GAINTABLE_MAX_NACK_ROUNDS {
-        log::warn!(
-            "[osc] gaintable transfer abandoned: {}/{} chunks after {} NACK rounds",
-            g.chunks.len(),
-            g.chunk_count,
-            g.nack_rounds
-        );
-        g.chunk_count = 0;
-        g.chunks.clear();
-        return None;
-    }
-    let total = g.chunk_count as u32;
-    let missing: Vec<u32> = (0..total).filter(|i| !g.chunks.contains_key(i)).collect();
-    if missing.is_empty() {
-        return None;
-    }
-    g.nack_rounds += 1;
-    g.last_activity = Some(now);
-    Some((g.version, missing))
+    out
 }
 
 fn send_gaintable_nack(
@@ -1484,21 +1550,20 @@ fn gaintable_on_chunk(bytes: &[u8]) -> Option<serde_json::Value> {
     let version = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
     let index = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
     let artifact = {
-        let mut g = GAINTABLE.lock().ok()?;
-        if g.chunk_count == 0 || version != g.version {
-            return None; // stale/foreign chunk (meta not seen, or newer in flight)
-        }
-        g.chunks.insert(index, bytes[8..].to_vec());
-        g.last_activity = Some(Instant::now());
-        if g.chunks.len() != g.chunk_count {
+        let mut map = GAINTABLE.lock().ok()?;
+        // Route the chunk to ITS transfer: another one being in flight is no
+        // longer a reason to drop it.
+        let asm = map.get_mut(&version)?;
+        asm.chunks.insert(index, bytes[8..].to_vec());
+        asm.last_activity = Some(Instant::now());
+        if asm.chunks.len() != asm.chunk_count {
             return None;
         }
         let mut artifact = Vec::new();
-        for c in g.chunks.values() {
+        for c in asm.chunks.values() {
             artifact.extend_from_slice(c);
         }
-        g.chunks.clear();
-        g.chunk_count = 0;
+        map.remove(&version);
         artifact
     };
     decode_evaluation_artifact(&artifact, version)
@@ -1559,10 +1624,11 @@ fn decode_band_gaintable(bytes: &[u8], version: u32) -> Option<serde_json::Value
     let ny = dim("y_count")?;
     let nz = dim("z_count")?;
     let nb = dim("band_count")?;
+    // Signed: -1 (GLOBAL_ENERGY_INDEX) marks the all-speaker energy field, and
+    // an unsigned read would silently fold it onto speaker 0.
     let speaker = metadata
         .get("speaker_index")
-        .and_then(|x| x.as_u64())
-        .map(|x| x as usize)
+        .and_then(|x| x.as_i64())
         .unwrap_or(0);
 
     // Band frequency edges → {lowHz, highHz|null}.
@@ -1694,6 +1760,7 @@ const BATCHED_EVENTS: &[&str] = &[
     "source:gains",
     "source:band_gains",
     "speaker:meter",
+    "ear:meter",
     "master:meter",
     "meter:drc_gain",
 ];
@@ -1938,6 +2005,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 id,
                 peak_dbfs,
                 rms_dbfs,
+                band_rms_dbfs,
             } => {
                 s.source_levels.insert(
                     id.clone(),
@@ -1946,12 +2014,19 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         rms_dbfs,
                     },
                 );
+                // `bandRmsDbfs` is emitted even when empty so the front-end can
+                // tell "no crossover any more" from "field absent" and drop a
+                // stale per-band level.
                 (
                     Some((
                         "source:meter",
                         serde_json::json!({
                             "id": id,
-                            "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                            "meter": {
+                                "peakDbfs": peak_dbfs,
+                                "rmsDbfs": rms_dbfs,
+                                "bandRmsDbfs": band_rms_dbfs,
+                            }
                         }),
                     )),
                     removed_ids,
@@ -2007,6 +2082,21 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+
+            OscEvent::MeterEar {
+                id,
+                peak_dbfs,
+                rms_dbfs,
+            } => (
+                Some((
+                    "ear:meter",
+                    serde_json::json!({
+                        "id": id,
+                        "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                    }),
+                )),
+                removed_ids,
+            ),
 
             OscEvent::MeterMaster {
                 peak_dbfs,
@@ -2195,6 +2285,12 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 Some(("clip:detected", serde_json::json!({ "speaker": speaker }))),
                 removed_ids,
             ),
+            OscEvent::StateOverlay { json } => (
+                serde_json::from_str::<serde_json::Value>(&json)
+                    .ok()
+                    .map(|v| ("overlay:state", v)),
+                removed_ids,
+            ),
             OscEvent::StateHeadPose { w, x, y, z } => (
                 // Fast path for the 3D head: no AppState mutation, just a
                 // coalesced event straight to the webview (latest pose wins).
@@ -2281,6 +2377,19 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateMonitoring { value } => {
                 if apply_monitoring_domain_state(&mut s, &value) {
+                    (
+                        Some((
+                            "state:snapshot_ready",
+                            serde_json::to_value(&*s).unwrap_or_else(|_| serde_json::json!({})),
+                        )),
+                        removed_ids,
+                    )
+                } else {
+                    (None, removed_ids)
+                }
+            }
+            OscEvent::StateProfiles { value } => {
+                if apply_profiles_domain_state(&mut s, &value) {
                     (
                         Some((
                             "state:snapshot_ready",
@@ -2483,6 +2592,20 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateObjectTestPosition { x, y, z, peak_dbfs, rms_dbfs } => {
+                // Straight through: this is the renderer telling the scene where
+                // the test source actually is, and nothing here needs to keep it.
+                (
+                    Some((
+                        "objectTest:position",
+                        serde_json::json!({
+                            "x": x, "y": y, "z": z,
+                            "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs
+                        }),
+                    )),
+                    removed_ids,
+                )
+            }
             OscEvent::StateRenderTimeMs { value } => {
                 s.render_time_ms = Some(value);
                 (
@@ -2566,6 +2689,20 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateRenderExecutable { value } => {
+                s.render_executable = if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value.clone())
+                };
+                (
+                    Some((
+                        "render:executable",
+                        serde_json::json!({ "value": value }),
+                    )),
+                    removed_ids,
+                )
+            }
             OscEvent::StateRenderAbi { value } => {
                 s.render_abi = if value.trim().is_empty() {
                     None
@@ -2588,6 +2725,13 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     removed_ids,
                 )
             }
+            OscEvent::StateObjectTestClip { value } => (
+                Some((
+                    "state:object_test_clip",
+                    serde_json::json!({ "value": value }),
+                )),
+                removed_ids,
+            ),
             OscEvent::StateInputPipe { value } => {
                 s.orender_input_pipe = if value.trim().is_empty() {
                     None

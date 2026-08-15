@@ -57,6 +57,7 @@ import { updateDistanceDiffuseUI } from './controls/distance-diffuse.js';
 import { setOscStatus } from './controls/osc.js';
 import { renderDrcUI } from './controls/drc.js';
 import { applyBinauralState } from './controls/binaural.js';
+import { applyProfilesState } from './controls/profiles.js';
 import { setHeadPoseTarget } from './scene/head-pose.js';
 import { updateLoudnessDisplay, updateDistanceModelUI } from './controls/master.js';
 import { updateRoomRatioDisplay, applyRoomRatio, applyRoomRatioToScene } from './controls/room-geometry.js';
@@ -90,6 +91,7 @@ export function applyProducerCapabilityVisibility() {
 }
 
 export function applyInitState(payload) {
+  applyProfilesState(payload);
   applyBinauralState(payload?.binaural);
   setHeadPoseTarget(payload?.binaural);
   app.producerCapabilities =
@@ -356,6 +358,14 @@ export function applyInitState(payload) {
       const metric = payload.distanceDiffuse.metric.trim().toLowerCase();
       if (['spherical', 'chebyshev'].includes(metric)) {
         app.distanceDiffuseState.metric = metric;
+      }
+    }
+    const mirrorAxes = payload.distanceDiffuse.mirrorAxes;
+    if (mirrorAxes && typeof mirrorAxes === 'object') {
+      for (const axis of ['x', 'y', 'z']) {
+        if (typeof mirrorAxes[axis] === 'boolean') {
+          app.distanceDiffuseState.mirrorAxes[axis] = mirrorAxes[axis];
+        }
       }
     }
   }
@@ -630,6 +640,9 @@ export function applyInitState(payload) {
   }
   if (typeof payload.renderConfigStatus === 'string') {
     app.renderConfigStatus = payload.renderConfigStatus.trim() || null;
+  }
+  if (typeof payload.renderExecutable === 'string') {
+    app.renderExecutable = payload.renderExecutable.trim() || null;
   }
   if (typeof payload.renderVersion === 'string') {
     app.renderVersion = payload.renderVersion.trim() || null;

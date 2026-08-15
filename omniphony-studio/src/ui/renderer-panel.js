@@ -9,8 +9,11 @@ export function rendererPanelMarkup() {
             <div class="panel-header-main">
             <div class="info-title panel-title" data-i18n="section.renderer">Renderer</div>
             <div style="display:flex;gap:0.25rem;flex:0 0 auto;margin-left:auto">
-              <button id="outputModeHeadphonesBtn" type="button" class="toggle-btn output-mode-btn">🎧 <span data-i18n="outputMode.headphones">Headphones</span></button>
-              <button id="outputModeSpeakersBtn" type="button" class="toggle-btn output-mode-btn">🔊 <span data-i18n="outputMode.speakers">Speakers</span></button>
+              <select id="outputModeSelect" class="form-select" style="width:auto;" data-i18n-title="outputMode.selectTitle" title="Output mode">
+                <option value="speaker" data-i18n="outputMode.speakers">Speakers</option>
+                <option value="binaural-direct" data-i18n="outputMode.headphones">Headphones</option>
+                <option value="binaural-cascaded" data-i18n="outputMode.headphonesVirtual">Headphones (virtual room)</option>
+              </select>
             </div>
             <div id="rendererPerfWrap" style="display:none;min-width:180px;flex:0 0 auto">
               <div style="display:grid;gap:0.18rem;min-width:180px">
@@ -51,6 +54,10 @@ export function rendererPanelMarkup() {
         <div id="rendererSectionContent" class="conditional-params">
           <div class="renderer-panel-stack" style="margin-top:0.25rem;display:grid;gap:0.35rem">
           <div class="output-mode-mpv-note" style="font-size:0.65rem;color:#8fa6bd;padding:0 0.1rem;" data-i18n="outputMode.mpvNote">mpv host: the output mode is applied at player start — restart playback after switching.</div>
+          <div id="rendererTabsBar" style="display:flex;gap:0.25rem;padding:0 0.1rem;">
+            <button id="rendererTabRendererBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="rendererTabs.renderer">Renderer</button>
+            <button id="rendererTabBinauralBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="rendererTabs.binaural">Binaural</button>
+          </div>
           <div class="info-section renderer-subpanel binaural-subpanel" id="binauralHrtfSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
             <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-help-i18n="help.binaural.hrtf">HRTF</div>
@@ -73,6 +80,15 @@ export function rendererPanelMarkup() {
                   <span id="binauralHeadRadiusVal">8.8</span>
                 </div>
                 <input id="binauralHeadRadius" type="range" min="5" max="15" step="0.1" value="8.75" style="width:100%;" />
+              </div>
+              <div class="binaural-help-row" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem;">
+                <span style="font-size:0.65rem;color:#888;" data-i18n="binaural.hrirUpdateLatticeLabel" data-help-i18n="help.hrirUpdateLattice" data-help-anchor=".binaural-help-row">HRIR update</span>
+                <select id="binauralHrirUpdateLattice" class="form-select" data-option="hrir_update_lattice" style="font-size:0.7rem;padding:0.1rem 0.2rem;width:auto;">
+                  <option value="exact" data-i18n="binaural.hrirLattice.exact">Exact</option>
+                  <option value="fine" data-i18n="binaural.hrirLattice.fine">Fine</option>
+                  <option value="balanced" data-i18n="binaural.hrirLattice.balanced">Balanced</option>
+                  <option value="coarse" data-i18n="binaural.hrirLattice.coarse">Coarse</option>
+                </select>
               </div>
               <div id="binauralPinnaControls" style="display:none;gap:0.3rem;">
                 <div class="binaural-help-row" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem;">
@@ -401,6 +417,22 @@ export function rendererPanelMarkup() {
                     <option value="spherical" data-i18n="distance.metric.spherical">Spherical</option>
                     <option value="chebyshev" data-i18n="distance.metric.chebyshev">Chebyshev</option>
                   </select>
+                </div>
+                <div class="control-row" style="margin-top:0.15rem;grid-template-columns:1fr auto;align-items:center">
+                  <label style="font-size:12px;white-space:nowrap;color:#ffffff" data-i18n="distance.mirrorAxes" data-help-i18n="help.distanceDiffuse.mirrorAxes">Mirror axes</label>
+                  <span id="distanceDiffuseSymmetry" style="font-size:11px;color:#8fa6bd" data-i18n="distance.symmetry.axisZ">Half-turn about Z</span>
+                </div>
+                <div class="switch-row" style="margin-top:0;font-size:0.7rem;color:#8fa6bd">
+                  <span data-i18n="distance.mirrorAxis.x">X — left / right</span>
+                  <input id="distanceDiffuseMirrorX" type="checkbox" checked />
+                </div>
+                <div class="switch-row" style="margin-top:0;font-size:0.7rem;color:#8fa6bd">
+                  <span data-i18n="distance.mirrorAxis.y">Y — front / back</span>
+                  <input id="distanceDiffuseMirrorY" type="checkbox" checked />
+                </div>
+                <div class="switch-row" style="margin-top:0;font-size:0.7rem;color:#8fa6bd">
+                  <span data-i18n="distance.mirrorAxis.z">Z — up / down</span>
+                  <input id="distanceDiffuseMirrorZ" type="checkbox" />
                 </div>
                 <div class="control-row" style="margin-top:0">
                   <label style="font-size:12px;white-space:nowrap"><span data-i18n="distance.threshold" data-help-i18n="help.distanceDiffuse.threshold">Threshold</span> <span id="distanceDiffuseThresholdVal">1.00</span></label>

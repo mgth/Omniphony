@@ -40,8 +40,14 @@ impl SpartaVbapLayout {
     /// stripped before returning.
     pub fn from_speaker_dirs(speaker_dirs_deg: &[[f32; 2]]) -> Result<Self, String> {
         let n_real = speaker_dirs_deg.len();
-        let (effective, _) = prepare_effective_speaker_dirs(speaker_dirs_deg, true, true)
-            .ok_or_else(|| "findLsTriplets failed".to_string())?;
+        // SAF keeps its own out-of-hull behaviour — always the default mode.
+        let (effective, _) = prepare_effective_speaker_dirs(
+            speaker_dirs_deg,
+            true,
+            true,
+            crate::spatial_vbap::OutOfHullMode::default(),
+        )
+        .ok_or_else(|| "findLsTriplets failed".to_string())?;
 
         let n_eff = effective.len();
         let mut ls_dirs: Vec<f32> = Vec::with_capacity(n_eff * 2);

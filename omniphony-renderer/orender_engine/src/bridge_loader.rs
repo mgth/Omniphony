@@ -106,7 +106,8 @@ pub fn resolve_bridge_path(explicit: Option<&Path>) -> Result<PathBuf> {
 ///
 /// 1. `explicit` set → must resolve to a file, else error.
 /// 2. else `config` (`render.bridge_path`) set → must resolve to a file, else error.
-/// 3. else → [`find_bridge_next_to_exe`].
+/// 3. else → [`find_bridge_next_to_exe`], which scans the host executable's
+///    directory, then `$ORENDER_BRIDGE_DIR`, then the system plugin directory.
 pub fn resolve_bridge(explicit: Option<&Path>, config: Option<&Path>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         if let Some(found) = resolve_requested(path) {
@@ -135,7 +136,7 @@ pub fn resolve_bridge(explicit: Option<&Path>, config: Option<&Path>) -> Result<
     }
     find_bridge_next_to_exe().context(
         "no decoder bridge requested (no explicit path, no render.bridge_path) and \
-         none found next to the host binary",
+         none found by auto-discovery",
     )
 }
 
@@ -188,23 +189,84 @@ fn searched_locations_hint(path: &Path) -> String {
     }
 }
 
-/// Look for a `*_bridge.{so,dll,dylib}` next to the current executable.
-/// Used as a fallback both by [`resolve_bridge_path`] and by
+/// System-wide plugin directory, searched last. Distro packages install the
+/// bridge to a fixed libdir that is nowhere near the host binary (`/usr/bin/mpv`
+/// vs `/usr/lib/orender/`), so without this a packaged install finds nothing and
+/// every user has to set `render.bridge_path` by hand. Packagers whose libdir
+/// differs (lib64, multiarch) override it at build time:
+///
+/// ```sh
+/// ORENDER_BRIDGE_DIR=/usr/lib64/orender cargo build --release
+/// ```
+const SYSTEM_BRIDGE_DIR: Option<&str> = option_env!("ORENDER_BRIDGE_DIR");
+
+#[cfg(unix)]
+const SYSTEM_BRIDGE_DIR_DEFAULT: Option<&str> = Some("/usr/lib/orender");
+#[cfg(not(unix))]
+const SYSTEM_BRIDGE_DIR_DEFAULT: Option<&str> = None;
+
+/// Directories auto-discovery scans, in priority order:
+///
+/// 1. next to the host executable — the "drop the bundle in one folder" install,
+///    and the dev/portable layout. Kept first so a build tree always wins over
+///    anything installed system-wide.
+/// 2. `$ORENDER_BRIDGE_DIR` at runtime — lets a test or an unpackaged install
+///    point somewhere else without touching the config.
+/// 3. the system plugin directory (see [`SYSTEM_BRIDGE_DIR`]).
+///
+/// This mirrors the candidate chain the liborender loader already uses on the
+/// host side; the bridge was the one half that only ever looked next to the exe.
+fn auto_discovery_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.to_path_buf());
+        }
+    }
+    if let Some(dir) = std::env::var_os("ORENDER_BRIDGE_DIR") {
+        dirs.push(PathBuf::from(dir));
+    }
+    if let Some(dir) = SYSTEM_BRIDGE_DIR.or(SYSTEM_BRIDGE_DIR_DEFAULT) {
+        dirs.push(PathBuf::from(dir));
+    }
+    dirs.dedup();
+    dirs
+}
+
+/// Look for a `*_bridge.{so,dll,dylib}` in the auto-discovery directories.
+/// Used as a fallback both by [`resolve_bridge`] and by
 /// [`crate::engine::Engine::from_paths`] when no explicit / config-provided
 /// path exists or the one provided no longer points at a real file.
 pub fn find_bridge_next_to_exe() -> Result<PathBuf> {
-    let exe = std::env::current_exe().context("Cannot determine executable path")?;
-    let dir = exe.parent().context("Executable has no parent directory")?;
-    let mut matches = find_bridge_candidates(dir)?;
-    matches.sort();
-    matches.into_iter().next().ok_or_else(|| {
-        anyhow::anyhow!(
-            "No bridge plugin found.\n\
-             Searched in: {}\n\
-             Expected one file matching: *_bridge.so / *_bridge.dll / *_bridge.dylib",
-            dir.display()
-        )
-    })
+    find_bridge_in_dirs(&auto_discovery_dirs())
+}
+
+/// First `*_bridge.*` found scanning `dirs` in order. Split out from
+/// [`find_bridge_next_to_exe`] so the priority rules are testable without
+/// touching the process environment or the test binary's own directory.
+fn find_bridge_in_dirs(dirs: &[PathBuf]) -> Result<PathBuf> {
+    for dir in dirs {
+        // A missing or unreadable directory is not an error here: the list is
+        // speculative by nature (the system dir is absent on a portable install,
+        // and vice versa). Only an empty *search* is worth reporting.
+        let Ok(mut matches) = find_bridge_candidates(dir) else {
+            continue;
+        };
+        matches.sort();
+        if let Some(found) = matches.into_iter().next() {
+            return Ok(found);
+        }
+    }
+    let searched = dirs
+        .iter()
+        .map(|d| d.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n  ");
+    bail!(
+        "No bridge plugin found.\n\
+         Searched in:\n  {searched}\n\
+         Expected one file matching: *_bridge.so / *_bridge.dll / *_bridge.dylib"
+    )
 }
 
 fn find_bridge_candidates(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -313,5 +375,77 @@ mod tests {
         let got = resolve_bridge(Some(Path::new(&name)), None);
         fs::remove_file(&full).ok();
         assert_eq!(got.unwrap(), full);
+    }
+
+    // A scratch directory holding one bridge-looking file.
+    fn dir_with_bridge(tag: &str, name: &str) -> PathBuf {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "orender_{tag}_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(name), b"x").unwrap();
+        dir
+    }
+
+    /// The packaged layout: the plugin sits in a fixed libdir, nowhere near the
+    /// host binary. Auto-discovery must still find it, otherwise every distro
+    /// user has to set `render.bridge_path` by hand.
+    #[test]
+    fn discovery_finds_a_plugin_in_a_later_directory() {
+        let sys = dir_with_bridge("sysdir", "libharletty_bridge.so");
+        let empty = std::env::temp_dir().join("orender_definitely_absent_dir");
+        let got = find_bridge_in_dirs(&[empty, sys.clone()]);
+        let found = got.unwrap();
+        fs::remove_dir_all(&sys).ok();
+        assert_eq!(found, sys.join("libharletty_bridge.so"));
+    }
+
+    /// Earlier directories win: a build tree or a portable bundle must never be
+    /// shadowed by something installed system-wide.
+    #[test]
+    fn earlier_directories_win() {
+        let near = dir_with_bridge("exedir", "libharletty_bridge.so");
+        let sys = dir_with_bridge("sysdir", "libharletty_bridge.so");
+        let got = find_bridge_in_dirs(&[near.clone(), sys.clone()]);
+        let found = got.unwrap();
+        fs::remove_dir_all(&near).ok();
+        fs::remove_dir_all(&sys).ok();
+        assert_eq!(found.parent().unwrap(), near);
+    }
+
+    /// A directory in the chain that does not exist is skipped, not fatal: the
+    /// system dir is absent on a portable install and vice versa.
+    #[test]
+    fn missing_directories_are_skipped_and_listed() {
+        let missing = PathBuf::from("/nonexistent/orender/plugins");
+        let err = find_bridge_in_dirs(&[missing]).unwrap_err().to_string();
+        assert!(err.contains("No bridge plugin found"), "unexpected: {err}");
+        assert!(
+            err.contains("/nonexistent/orender/plugins"),
+            "the error must name what was searched: {err}"
+        );
+    }
+
+    /// The chain itself: exe dir first, then the runtime override, then the
+    /// system dir. Ordering is the whole contract, so it is pinned here.
+    #[test]
+    fn auto_discovery_chain_is_ordered() {
+        let dirs = auto_discovery_dirs();
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert_eq!(dirs.first(), Some(&exe_dir), "exe dir must come first");
+        if let Some(sys) = SYSTEM_BRIDGE_DIR.or(SYSTEM_BRIDGE_DIR_DEFAULT) {
+            assert_eq!(
+                dirs.last(),
+                Some(&PathBuf::from(sys)),
+                "the system plugin dir must be the last resort"
+            );
+        }
     }
 }

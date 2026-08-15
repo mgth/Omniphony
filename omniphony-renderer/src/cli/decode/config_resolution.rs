@@ -79,6 +79,9 @@ pub(super) fn apply_render_cfg_overrides(
     if let Some(m) = args.distance_diffuse_metric {
         render.distance_diffuse_metric = Some(m.as_config_str().to_string());
     }
+    if let Some(axes) = args.distance_diffuse_mirror_axes.as_deref() {
+        render.distance_diffuse_mirror_axes = Some(axes.to_string());
+    }
     if let Some(mode) = args.size_to_spread_mode {
         render.size_to_spread_mode = Some(mode.into());
     }
@@ -468,10 +471,12 @@ pub(super) fn merge_render_config(
 pub(super) fn effective_to_config(
     args: &RenderArgs,
     cli: &Cli,
-    existing_render_cfg: Option<&renderer::config::RenderConfig>,
+    existing: Option<&renderer::config::Config>,
 ) -> Result<renderer::config::Config> {
     use renderer::config::{Config, GlobalConfig};
     use renderer::speaker_layout::SpeakerLayout;
+
+    let existing_render_cfg = existing.and_then(|c| c.render.as_ref());
 
     let global = GlobalConfig {
         loglevel: if cli.loglevel != LogLevel::default() {
@@ -634,10 +639,15 @@ pub(super) fn effective_to_config(
         Some(global)
     };
 
+    // Preserve everything the CLI does not model at the top level: named
+    // profiles (docs/config-profiles.md — wiping them here would destroy
+    // every non-active profile on `--save-config`) and unknown keys.
     Ok(Config {
         global: global_opt,
         render: Some(render),
-        extra: Default::default(),
+        active_profile: existing.and_then(|c| c.active_profile.clone()),
+        profiles: existing.map(|c| c.profiles.clone()).unwrap_or_default(),
+        extra: existing.map(|c| c.extra.clone()).unwrap_or_default(),
     })
 }
 
@@ -682,6 +692,10 @@ mod tests {
             render_backend: Some("barycenter".to_string()),
             ..Default::default()
         };
+        let existing = renderer::config::Config {
+            render: Some(existing),
+            ..Default::default()
+        };
 
         let out = effective_to_config(&args, &cli, Some(&existing)).expect("build config");
         let render = out.render.expect("render section present");
@@ -700,6 +714,42 @@ mod tests {
         assert_eq!(render.experimental_distance_min_active_speakers, Some(3));
         assert_eq!(render.distance_model_metric.as_deref(), Some("chebyshev"));
         assert_eq!(render.render_backend.as_deref(), Some("barycenter"));
+    }
+
+    /// `--save-config` must not destroy the named config profiles: they are
+    /// typed top-level keys (not `extra`), so the rebuilt Config has to carry
+    /// them over explicitly (docs/config-profiles.md).
+    #[test]
+    fn save_config_preserves_named_profiles() {
+        let (cli, args) = default_render_invocation();
+
+        let mut existing = renderer::config::Config {
+            render: Some(renderer::config::RenderConfig::default()),
+            active_profile: Some("headphones".to_string()),
+            ..Default::default()
+        };
+        existing.profiles.insert(
+            "headphones".to_string(),
+            renderer::config::RenderConfig::default(),
+        );
+        existing.profiles.insert(
+            "night".to_string(),
+            renderer::config::RenderConfig {
+                render_backend: Some("barycenter".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let out = effective_to_config(&args, &cli, Some(&existing)).expect("build config");
+        assert_eq!(out.active_profile.as_deref(), Some("headphones"));
+        assert_eq!(
+            out.profiles.keys().cloned().collect::<Vec<_>>(),
+            vec!["headphones".to_string(), "night".to_string()]
+        );
+        assert_eq!(
+            out.profiles["night"].render_backend.as_deref(),
+            Some("barycenter")
+        );
     }
 
     /// A CLI value still wins and is persisted (skip-if-default via the

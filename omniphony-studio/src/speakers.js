@@ -94,11 +94,16 @@ import {
   sourceNeutralEmissive,
   sourceDefaultEmissive
 } from './scene/materials.js';
-import { updateHeadphoneMeter, updateHeadphoneControlsUI } from './controls/headphone-meter.js';
+import { updateHeadphoneControlsUI } from './controls/headphone-meter.js';
 
 import { createLabelSprite, setLabelSpriteText, updateSpeakerLabelsFromSelection } from './scene/labels.js';
-import { createSpeakerBandBar, updateSpeakerBandBar, bandColor } from './scene/speaker-band-bars.js';
-import { syncSpeakerHeatmapBandSelect } from './scene/speaker-band-select.js';
+import {
+  createSpeakerBandBar,
+  updateSpeakerBandBar,
+  bandColor,
+  speakerBandIndex
+} from './scene/speaker-band-bars.js';
+import { syncCrossoverBandSelects } from './scene/speaker-band-select.js';
 import { refreshGaintableSubscription } from './scene/speaker-gaintable.js';
 
 import {
@@ -112,12 +117,14 @@ import {
   arcLabelAngles
 } from './scene/gizmos.js';
 
+import { renderObjectTestEditor } from './controls/object-test.js';
 import { renderChannelEditor, canonicalChannelName, canonicalChannelOrder, channelPlacement } from './controls/virtual-bed.js';
 import { t, tf } from './i18n.js';
 import { pushLog } from './log.js';
 import { scheduleUIFlush } from './flush.js';
 import { updateItemClasses, updateSpeakerMeterUI, updateObjectMeterUI } from './flush.js';
 import { computeCrossoverBandLabels, computeCrossoverBandEdges } from './crossover-bands.js';
+import { onSpeakerSelectionChanged } from './controls/speaker-test.js';
 
 import {
   linearToDb,
@@ -540,6 +547,9 @@ export function updateObjectControlsUI() {
     updateSpeakerBandBars(entry, Number(id));
   });
   renderChannelEditor();
+  // Shares the pinned slot with the channel editor, so it decides at the same
+  // moment: one of them takes it, or neither.
+  renderObjectTestEditor();
 }
 
 export function updateObjectDominantSpeakerUI(id) {
@@ -556,7 +566,7 @@ export function updateObjectDominantSpeakerUI(id) {
 export function getObjectDominantSpeakerText(id) {
   const currentLayoutSpeakers = get_currentLayoutSpeakers();
   const key = String(id);
-  const selectedBandIndex = Math.max(0, Math.round(Number(app.speakerHeatmapBandIndex) || 0));
+  const selectedBandIndex = Math.max(0, Math.round(Number(app.heatmapBandIndex) || 0));
   const bandGains = sourceBandGains.get(key);
   const gains = Array.isArray(bandGains?.[selectedBandIndex]) && bandGains[selectedBandIndex].length > 0
     ? bandGains[selectedBandIndex]
@@ -972,7 +982,8 @@ export function updateSpeakerBandBars(entry, speakerIndex) {
     const bar = row.querySelector('.band-bar');
     const dbEl = row.querySelector('.band-db');
     if (labelEl) {
-      labelEl.textContent = labels?.[b] ?? (contributions.length === 1 ? 'Full band' : `Band ${b}`);
+      labelEl.textContent = labels?.[b]
+        ?? (contributions.length === 1 ? t('heatmap.bandFull') : tf('heatmap.bandIndex', { index: b }));
     }
     if (bar) {
       bar.style.setProperty('--level', `${Math.min(100, gain * 100).toFixed(1)}%`);
@@ -1037,9 +1048,34 @@ export function setSpeakerSpatializeLocal(index, spatialize) {
     mesh.userData.baseOpacity = baseOpacity;
     mesh.material.opacity = baseOpacity * ghostFactor();
   }
-  syncSpeakerHeatmapBandSelect();
+  syncCrossoverBandSelects();
   updateSpeakerColorsFromSelection();
   renderSpeakerEditor();
+}
+
+// Give the speaker cube the colour of its crossover band, so a multi-band
+// layout reads in the 3D view the same way the band gauges already do. Stored
+// as the mesh's base colour rather than written to the material directly:
+// updateSpeakerColorsFromSelection() blends from it towards the hot colour and
+// overrides it entirely on selection, so writing the material here would be
+// undone on the next meter tick.
+//
+// With a single band bandColor() returns the full-band blue, which is exactly
+// speakerMaterial's own default — so a layout with no crossover split keeps
+// looking as it did, without needing a branch here.
+//
+// The colour object is reused: this runs for every speaker on every crossover
+// edit, and the palette lookup is a string, so re-parsing into a fresh
+// THREE.Color each time would churn for nothing.
+function applySpeakerBandBaseColor(mesh, speaker, edges) {
+  if (!mesh) return;
+  const bandCount = Array.isArray(edges) ? edges.length - 1 : 1;
+  const style = bandColor(speakerBandIndex(speaker, edges), bandCount);
+  if (mesh.userData.baseColor) {
+    mesh.userData.baseColor.setStyle(style);
+  } else {
+    mesh.userData.baseColor = new THREE.Color().setStyle(style);
+  }
 }
 
 export function updateSpeakerVisualsFromState(index) {
@@ -1145,6 +1181,10 @@ export function applySpeakerPolarEdit(index, az, el, r, sendOsc = true) {
 // ---------------------------------------------------------------------------
 
 export function renderSpeakerEditor() {
+  // Hands a selection change to the test controls: in toggle mode the running
+  // test follows the new speaker, otherwise it stops. Also refreshes the
+  // button's label/enabled state.
+  onSpeakerSelectionChanged();
   const speakerEditSectionEl = getSpeakerEditSectionEl();
   const speakerEditBodyEl = getSpeakerEditBodyEl();
   const speakerAddBtnEl = getSpeakerAddBtnEl();
@@ -1564,6 +1604,10 @@ export function renderSpeakersList() {
     if (bandBar) {
       updateSpeakerBandBar(bandBar, speaker, bandEdges);
     }
+    // Same dependency as the gauge, so the cube follows the same edits. A
+    // cutoff change reaches us here: bindSpeakerFrequencyInput re-renders this
+    // list precisely so the crossover readouts refresh.
+    applySpeakerBandBaseColor(speakerMeshes[index], speaker, bandEdges);
     speakersListEl.appendChild(entry.root);
   });
   speakerItems.forEach((entry, id) => {
@@ -1572,6 +1616,9 @@ export function renderSpeakersList() {
       speakerItems.delete(id);
     }
   });
+  // Push the base colours just set onto the materials; on its own
+  // applySpeakerBandBaseColor only records them.
+  updateSpeakerColorsFromSelection();
   updateSectionProportions();
 }
 
@@ -2232,7 +2279,7 @@ export function renderLayout(key) {
   set_currentLayoutKey(key);
   const newSpeakers = Array.isArray(layout.speakers) ? layout.speakers : [];
   set_currentLayoutSpeakers(newSpeakers);
-  syncSpeakerHeatmapBandSelect();
+  syncCrossoverBandSelects();
   sceneState.metersPerUnit = Math.max(0.01, Number(layout.radius_m) || 1.0);
   speakerDelays.clear();
   newSpeakers.forEach((speaker, index) => {
@@ -2336,6 +2383,9 @@ export function renderLayout(key) {
     scene.add(bandBar);
     speakerBandBars.push(bandBar);
 
+    // Seed the cube's band colour; the updateSpeakerColorsFromSelection() after
+    // this loop is what writes it to the materials.
+    applySpeakerBandBaseColor(mesh, speaker, bandEdges);
     applySpeakerLevel(mesh, speakerLevels.get(String(index)));
   });
 
@@ -2362,9 +2412,6 @@ export function updateSpeakerLevel(index, meter) {
   const mesh = speakerMeshes[index];
   if (mesh) {
     applySpeakerLevel(mesh, speakerLevels.get(key));
-  }
-  if (index === 0 || index === 1) {
-    updateHeadphoneMeter(index, speakerLevels.get(key));
   }
   updateSpeakerMeterUI(key);
   dirty.masterMeter = true;
@@ -2466,7 +2513,7 @@ function patchCurrentLayout(key) {
   const nextSpeakers = Array.isArray(layout.speakers) ? layout.speakers : [];
   set_currentLayoutKey(key);
   set_currentLayoutSpeakers(nextSpeakers);
-  syncSpeakerHeatmapBandSelect();
+  syncCrossoverBandSelects();
   sceneState.metersPerUnit = Math.max(0.01, Number(layout.radius_m) || 1.0);
   speakerDelays.clear();
   nextSpeakers.forEach((speaker, index) => {

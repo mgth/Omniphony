@@ -2,7 +2,7 @@
  * Config saved indicator.
  */
 
-import { app, dirty } from '../state.js';
+import { app, dirty, isEmbeddedProducer } from '../state.js';
 import { scheduleUIFlush, flushCallbacks } from '../flush.js';
 import { inAudioPanel, inSaveFooter } from '../ui/panel-roots.js';
 import { t } from '../i18n.js';
@@ -92,11 +92,43 @@ export function updateAboutRendererVersion() {
   const text = version && abi ? `${version} · ABI ${abi}` : version;
   if (text) {
     el.textContent = text;
-    el.title = text;
+    el.title = withExecutablePath(text);
   } else {
     el.textContent = '—';
     el.removeAttribute('title');
   }
+}
+
+// Two checkouts of the same commit report the same fingerprint, so the path is
+// the only thing telling them apart. It goes on the tooltip rather than the
+// line, which is already long.
+function withExecutablePath(text) {
+  const executable = typeof app.renderExecutable === 'string' ? app.renderExecutable.trim() : '';
+  return executable ? `${text}\n${executable}` : text;
+}
+
+/**
+ * True when the connected renderer is not the binary this Studio would launch.
+ *
+ * Studio sends its controls to whatever answers on the OSC port, and a renderer
+ * left running by another environment answers just as readily as its own. The
+ * connection then looks healthy while every control the other build does not
+ * implement is silently dropped. `null` while either path is still unknown, so
+ * the check cannot cry wolf before the first snapshot lands.
+ *
+ * An embedded producer is exempt. liborender hosted by mpv is never the binary
+ * Studio would launch, so the path comparison flags every single mpv session —
+ * and it asks the wrong question there: a different path is the expected
+ * topology, not a symptom. The premise does not hold either, because the
+ * capability handshake (`variant`/`host`, `realtime`) already tells Studio what
+ * this producer implements, so controls are gated rather than silently dropped.
+ */
+export function rendererIsForeign() {
+  if (isEmbeddedProducer()) return false;
+  const running = typeof app.renderExecutable === 'string' ? app.renderExecutable.trim() : '';
+  const expected = typeof app.expectedOrenderPath === 'string' ? app.expectedOrenderPath.trim() : '';
+  if (!running || !expected) return null;
+  return running !== expected;
 }
 
 // Wire render function into the flush callback registry.

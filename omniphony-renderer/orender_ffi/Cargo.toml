@@ -1,6 +1,6 @@
 [package]
 name = "orender_ffi"
-version = "0.4.3"
+version = "0.5.0"
 # Edition 2021 (not 2024) so cbindgen sees plain #[no_mangle] and unsafe fn
 # bodies stay implicitly unsafe — simpler for a thin C ABI shim.
 edition = "2021"

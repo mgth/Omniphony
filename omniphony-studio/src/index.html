@@ -46,6 +46,21 @@
           <div class="app-brand-subtitle" data-i18n="app.subtitle">Spatial Control</div>
         </div>
       </div>
+      <!-- Config-profile picker: fixed-height row pinned above the accordion
+           scroll. The overlay is position:fixed over the canvas, so this row
+           never changes the 3D viewport geometry. -->
+      <div id="profileRow">
+        <select id="profileSelect" class="form-select" style="flex:1 1 auto;min-width:0" data-i18n-title="profiles.selectTitle" title="Config profile"></select>
+        <button id="profileCreateBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.create" title="New profile"><span>+</span></button>
+        <button id="profileRenameBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.rename" title="Rename profile"><span>✎</span></button>
+        <button id="profileDeleteBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.delete" title="Delete profile"><span>✕</span></button>
+      </div>
+      <!-- Inline name editor for profile create/rename (shown on demand). -->
+      <div id="profileNameRow" style="display:none">
+        <input id="profileNameInput" type="text" spellcheck="false" data-i18n-placeholder="profiles.namePlaceholder" placeholder="Profile name" />
+        <button id="profileNameOkBtn" type="button" class="panel-toggle-btn" data-i18n-title="profiles.confirmName" title="Confirm"><span>✓</span></button>
+        <button id="profileNameCancelBtn" type="button" class="panel-toggle-btn" data-i18n-title="common.cancel" title="Cancel"><span>✕</span></button>
+      </div>
       <div id="overlayScroll">
       <div id="updatePanelRoot">
         <label class="switch-row" style="font-size:13px;cursor:pointer">
@@ -71,6 +86,10 @@
         <div data-i18n="status.bridgeErrorTitle" style="margin-bottom:0.25rem">Decoder bridge not found — spatial audio disabled</div>
         <div id="bridgeErrorDetail" style="font-weight:500;font-size:12px;opacity:0.95;word-break:break-word;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"></div>
       </div>
+      <div id="foreignRendererBanner" style="display:none;margin-top:0.4rem;padding:0.6rem 0.7rem;font-size:14px;line-height:1.5;font-weight:700;color:#1a1200;background:rgba(245,158,11,0.92);border:1px solid #ffd27f;border-radius:7px">
+        <div data-i18n="status.foreignRendererTitle" style="margin-bottom:0.25rem">Connected to a renderer this Studio did not start</div>
+        <div id="foreignRendererDetail" style="font-weight:500;font-size:12px;opacity:0.95;word-break:break-word;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"></div>
+      </div>
       <div class="osc-config-form" id="oscConfigForm">
         <div class="osc-config-row">
           <label for="oscHostInput" data-i18n="osc.host" data-help-i18n="help.osc.host">Host</label>
@@ -92,6 +111,11 @@
           <span data-i18n="osc.keepRendererAlive" data-help-i18n="help.osc.keepRendererAlive" data-help-anchor=".switch-row">Keep renderer alive on quit</span>
           <input id="keepRendererAliveToggle" type="checkbox" />
         </label>
+        <label class="switch-row" style="font-size:13px;cursor:pointer">
+          <span data-i18n="osc.mpvOrender" data-help-i18n="help.osc.mpvOrender" data-help-anchor=".switch-row">Activate in mpv config</span>
+          <input id="mpvOrenderToggle" type="checkbox" />
+        </label>
+        <div id="mpvOrenderNote" class="mpv-orender-note" style="display:none"></div>
         <div class="osc-config-actions">
           <button id="oscConfigApplyBtn" class="ui-btn ui-btn-success" data-i18n="osc.connect">Connect</button>
           <button id="oscServiceBtn" type="button" class="ui-btn">Install service</button>
@@ -359,6 +383,13 @@
                 </div>
               </div>
               <div id="heatmapsSectionContent" class="conditional-params open">
+                <!-- The shared band context sits at the head of the block: it
+                     drives EVERY heatmap below, so it must not read as one
+                     panel's setting. -->
+                <div class="control-row" style="margin-top:0.15rem;margin-left:1rem;grid-template-columns:auto 1fr;gap:0.3rem">
+                  <label for="heatmapBandSelect" style="font-size:12px;white-space:nowrap" data-i18n="heatmap.crossoverBand" data-help-i18n="help.heatmap.crossoverBand">Crossover band</label>
+                  <select id="heatmapBandSelect" style="flex:1;min-width:0"></select>
+                </div>
                 <div style="margin-top:0.15rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
                   <div style="font-size:12px;font-weight:600;opacity:0.85" data-i18n="heatmap.speakers">Speakers</div>
                   <div class="inline-toggle" style="margin-top:0">
@@ -376,9 +407,34 @@
                     </select>
                   </div>
                   <div id="speakerGradientEditor" class="gradient-editor" style="display:none;margin-top:0.1rem"></div>
+                </div>
+                <div style="margin-top:0.3rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                  <div style="font-size:12px;font-weight:600;opacity:0.85" data-i18n="heatmap.global">Total energy</div>
+                  <div class="inline-toggle" style="margin-top:0">
+                    <div data-i18n="heatmap.globalEnergy" data-help-i18n="help.heatmap.globalEnergy">Energy deviation</div>
+                    <input id="globalEnergyHeatmapToggle" type="checkbox" />
+                  </div>
                   <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
-                    <label for="speakerHeatmapBandSelect" style="font-size:12px;white-space:nowrap" data-help-i18n="help.heatmap.crossoverBand">Crossover band</label>
-                    <select id="speakerHeatmapBandSelect" style="flex:1;min-width:0"></select>
+                    <label for="globalEnergyHeatmapScale" style="font-size:12px;white-space:nowrap" data-i18n="heatmap.globalEnergy.scale" data-help-i18n="help.heatmap.globalEnergyScale">Scale (±dB)</label>
+                    <input id="globalEnergyHeatmapScale" class="delay-input" type="number" min="1" max="40" step="1" value="6" style="flex:1;min-width:0" />
+                  </div>
+                </div>
+                <div style="margin-top:0.3rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+                  <div style="font-size:12px;font-weight:600;opacity:0.85" data-i18n="heatmap.discontinuity">Usage breaks</div>
+                  <div class="inline-toggle" style="margin-top:0">
+                    <div data-i18n="heatmap.discontinuity.toggle" data-help-i18n="help.heatmap.discontinuity">Discontinuity</div>
+                    <input id="discontinuityHeatmapToggle" type="checkbox" />
+                  </div>
+                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label for="discontinuityHeatmapMode" style="font-size:12px;white-space:nowrap" data-i18n="heatmap.discontinuity.mode" data-help-i18n="help.heatmap.discontinuityMode">Metric</label>
+                    <select id="discontinuityHeatmapMode" style="flex:1;min-width:0">
+                      <option value="gain" selected data-i18n="heatmap.discontinuity.modeGain">Speaker configuration</option>
+                      <option value="centroid" data-i18n="heatmap.discontinuity.modeCentroid">Energy centroid</option>
+                    </select>
+                  </div>
+                  <div class="control-row" style="margin-top:0;grid-template-columns:auto 1fr;gap:0.3rem">
+                    <label for="discontinuityHeatmapScale" style="font-size:12px;white-space:nowrap" data-i18n="heatmap.discontinuity.scale" data-help-i18n="help.heatmap.discontinuityScale">Full scale</label>
+                    <input id="discontinuityHeatmapScale" class="delay-input" type="number" min="0.05" max="2" step="0.05" value="0.5" style="flex:1;min-width:0" />
                   </div>
                 </div>
                 <div style="margin-top:0.3rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
@@ -462,7 +518,7 @@
           <div style="margin-top:0.25rem;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03);display:grid;gap:0.35rem">
             <div class="inline-toggle" id="drcControlRow" style="margin-top:0; display:none;">
               <div data-i18n="input.drc" data-help-i18n="help.drc.mode">DRC</div>
-              <select id="drcModeSelect" class="form-select" style="font-size:0.75rem; padding:0.1rem 0.2rem; width:auto; min-width:80px;"></select>
+              <select id="drcModeSelect" class="form-select" style="width:auto; min-width:80px;"></select>
             </div>
             <div id="drcWeightRow" style="display:none;">
               <div style="font-size: 0.65rem; color: #888; margin-bottom: 0.15rem; display: flex; justify-content: space-between;">
@@ -504,7 +560,7 @@
           <select
             id="oscMeteringRateSelect"
             title="Audio meter publish rate (Hz) — drives the level meters only. Diag publication has its own rate in the diag plot controls."
-            style="font-size:11px;background:rgba(255,255,255,0.06);color:#d9ecff;border:1px solid rgba(255,255,255,0.18);border-radius:4px;padding:0.1rem 0.25rem;margin-left:auto"
+            style="margin-left:auto"
           >
             <option value="10">10 Hz</option>
             <option value="20">20 Hz</option>
@@ -513,9 +569,135 @@
             <option value="200">200 Hz</option>
           </select>
         </div>
+        <!-- Object injection: a source Studio invents, listed with the real
+             ones. The switch creates it; playing it is a separate control in
+             its editor, so a position can be aimed in silence. -->
+        <label id="objectTestFeatureRow" class="switch-row" style="font-size:13px;cursor:pointer;margin-bottom:0.35rem">
+          <span data-i18n="objectTest.feature" data-help-i18n="help.objectTestFeature" data-help-anchor=".switch-row">Object injection</span>
+          <input id="objectTestFeatureToggle" type="checkbox" />
+        </label>
         <div id="objectsList" class="info-list">No objects.</div>
       </div>
       </div>
+      </div>
+      <!-- Object-injection editor, pinned below the left-overlay scroll in the
+           same slot as the channel editor. Shown when the injected object is
+           selected in the list, exactly as the channel editor is for a bed
+           channel: one slot, one selection, mutually exclusive. -->
+      <div class="info-section" id="objectTestEditSection" style="display:none">
+        <div class="info-title" data-i18n="section.objectTest" data-help-i18n="help.objectTest">Object injection</div>
+        <div id="objectTestBody" class="editor-body">
+          <!-- Transport near the top, on a row of its own: starting and stopping
+               the signal is the one thing done over and over while placing a
+               source, and the only control here that makes a sound happen.
+               Deliberately NOT in the title row — a lone glyph in that corner is
+               where every other section keeps its expand/collapse chevron, and
+               a play triangle there reads as one. Button left, with the signal
+               it will play beside it: that is a transport, and it cannot be
+               mistaken for anything else. -->
+          <div class="object-test-transport">
+            <button id="objectTestPlayBtn" type="button" class="transport-btn" aria-pressed="false">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+                <path class="tp-play" d="M8.2 5.4 19 12 8.2 18.6z" />
+                <g class="tp-pause">
+                  <rect x="7.4" y="5.4" width="3.6" height="13.2" rx="1.1" />
+                  <rect x="13" y="5.4" width="3.6" height="13.2" rx="1.1" />
+                </g>
+              </svg>
+            </button>
+            <span class="transport-label" data-i18n="objectTest.signal" data-help-i18n="help.objectTestSignal" data-help-anchor=".object-test-transport">Test signal</span>
+            <select id="objectTestSignalSelect" style="flex:1;min-width:0">
+              <option value="pink" data-i18n="objectTest.signalPink">Pink noise</option>
+              <option value="bursts" data-i18n="objectTest.signalBursts">Noise bursts</option>
+              <option value="low" data-i18n="objectTest.signalLow">Low band (time cues)</option>
+              <option value="high" data-i18n="objectTest.signalHigh">High band (level cues)</option>
+              <option value="band" data-i18n="objectTest.signalBand">8 kHz band (elevation)</option>
+              <option value="tone" data-i18n="objectTest.signalTone">Tone (500 Hz)</option>
+              <option value="clicks" data-i18n="objectTest.signalClicks">Clicks</option>
+              <option value="clip" data-i18n="objectTest.signalClip">Audio file</option>
+            </select>
+          </div>
+          <div id="objectTestClipRow" style="display:none;align-items:center;justify-content:space-between;gap:0.5rem">
+            <span id="objectTestClipName" class="option-status-note" style="font-size:10px;opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" data-i18n="objectTest.clipNone">No file chosen</span>
+            <button id="objectTestClipBtn" type="button" class="ui-btn ui-btn-compact" style="white-space:nowrap;user-select:none" data-i18n="objectTest.clipChoose">Choose…</button>
+          </div>
+          <!-- Three orthogonal projections of the room box. Each face sets the
+               two coordinates it shows and leaves the third alone, so the marker
+               on the other two faces moves with it. Aspect ratios follow the
+               live room proportions. The SVGs are sized by the panel width and
+               capped in height, so expanding this section scrolls inside the
+               overlay instead of resizing it (and the 3D viewport with it). -->
+          <label id="objectTestAdmViewRow" class="switch-row" style="font-size:12px;cursor:pointer">
+            <span data-i18n="objectTest.admView" data-help-i18n="help.objectTestAdmView" data-help-anchor=".switch-row">ADM view (square)</span>
+            <input id="objectTestAdmViewToggle" type="checkbox" />
+          </label>
+          <div class="option-status-note" style="font-size:10px;opacity:0.8" data-i18n="objectTest.hint">Click or drag on a face to place the source.</div>
+          <div id="objectTestFaces" style="display:flex;flex-direction:column;gap:0.4rem"></div>
+          <div id="objectTestCoords" class="option-status-note" style="font-size:10px;opacity:0.85;font-variant-numeric:tabular-nums"></div>
+          <label id="objectTestSnapRow" class="switch-row" style="font-size:13px;cursor:pointer">
+            <span data-i18n="objectTest.snap" data-help-i18n="help.objectTestSnap" data-help-anchor=".switch-row">Snap to grid</span>
+            <input id="objectTestSnapToggle" type="checkbox" />
+          </label>
+          <div id="objectTestSnapNote" class="option-status-note" style="font-size:10px;opacity:0.75;display:none"></div>
+          <div class="editor-row gain-row">
+            <label for="objectTestLevelSlider" data-i18n="objectTest.level" data-help-i18n="help.objectTestLevel">Test level</label>
+            <!-- Peak dBFS, same contract as the speaker test: the renderer bounds
+                 the test to this peak, so max=0 is full scale and still cannot
+                 clip on its own. -->
+            <input id="objectTestLevelSlider" class="gain-slider" type="range" min="-60" max="0" step="1" value="-8" />
+            <div id="objectTestLevelBox" class="gain-box">-8 dBFS</div>
+          </div>
+          <!-- Orbit. The renderer advances the phase, so these set the shape of
+               the motion and never its instantaneous angle. -->
+          <div id="objectTestRotationRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+            <span style="font-size:12px" data-i18n="objectTest.rotationAxis" data-help-i18n="help.objectTestRotation">Rotation axis</span>
+            <select id="objectTestRotationAxis">
+              <option value="z" data-i18n="objectTest.axisZ">Horizontal (about Z)</option>
+              <option value="x" data-i18n="objectTest.axisX">About X</option>
+              <option value="y" data-i18n="objectTest.axisY">About Y</option>
+              <option value="free" data-i18n="objectTest.axisFree">Free axis</option>
+            </select>
+          </div>
+          <div class="editor-row gain-row">
+            <label for="objectTestRadiusSlider" data-i18n="objectTest.radius" data-help-i18n="help.objectTestRadius">Radius</label>
+            <!-- 0 stops the orbit, which is why there is no separate switch. The
+                 track is marked at the room's own distances — see
+                 .object-test-radius-slider in the stylesheet. -->
+            <span class="object-test-radius-wrap"><span class="object-test-radius-ticks" aria-hidden="true"></span><input id="objectTestRadiusSlider" class="gain-slider object-test-radius-slider" type="range" min="0" max="4" step="0.01" value="0" /></span>
+            <div id="objectTestRadiusBox" class="gain-box">off</div>
+          </div>
+          <div class="editor-row gain-row">
+            <label for="objectTestPeriodSlider" data-i18n="objectTest.period" data-help-i18n="help.objectTestPeriod">Turn time</label>
+            <!-- Position along a log scale, not seconds: a period is chosen by
+                 ratio, so equal travel should buy equal ratio. See
+                 sliderToPeriod() in controls/object-test.js. -->
+            <input id="objectTestPeriodSlider" class="gain-slider" type="range" min="0" max="1000" step="1" value="508" />
+            <div id="objectTestPeriodBox" class="gain-box">4.0 s</div>
+          </div>
+          <!-- Only meaningful for the free axis, so hidden until it is chosen. -->
+          <div id="objectTestFreeAxisRows" style="display:none;flex-direction:column;gap:0.35rem">
+            <div class="editor-row gain-row">
+              <label for="objectTestAzimuthSlider" data-i18n="objectTest.axisAzimuth">Axis azimuth</label>
+              <input id="objectTestAzimuthSlider" class="gain-slider" type="range" min="-180" max="180" step="1" value="0" />
+              <div id="objectTestAzimuthBox" class="gain-box">0°</div>
+            </div>
+            <div class="editor-row gain-row">
+              <label for="objectTestElevationSlider" data-i18n="objectTest.axisElevation">Axis elevation</label>
+              <input id="objectTestElevationSlider" class="gain-slider" type="range" min="-90" max="90" step="1" value="0" />
+              <div id="objectTestElevationBox" class="gain-box">0°</div>
+            </div>
+          </div>
+          <div id="objectTestIsolationRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+            <span style="font-size:12px" data-i18n="objectTest.isolation" data-help-i18n="help.objectTestIsolation">Programme</span>
+            <select id="objectTestIsolationSelect">
+              <option value="test_only" data-i18n="objectTest.isolationTestOnly">Test only</option>
+              <option value="with_programme" data-i18n="objectTest.isolationWithProgramme">With programme</option>
+            </select>
+          </div>
+          <div id="objectTestActions" style="display:flex;justify-content:flex-end;margin-top:0.25rem">
+            <button id="objectTestCentreBtn" type="button" class="ui-btn ui-btn-compact" style="white-space:nowrap;user-select:none" data-i18n="objectTest.centre">Centre the source</button>
+          </div>
+        </div>
       </div>
       <!-- Channel editor pinned below the left-overlay scroll, like the speaker
            editor: the panels above keep scrolling while this stays visible. -->
@@ -592,10 +774,18 @@
       <div id="audioPanelMount"></div>
       <div id="rendererPanelMount"></div>
       <div class="info-section" id="speakersSection">
-        <div class="panel-header">
+        <!-- Two stacked gauge groups, each with its own header. Speaker mode
+             shows only the Speakers group; direct headphones only the
+             Headphones group; the virtual-room mode shows both. -->
+        <div class="panel-header speakers-header-binaural">
+          <div class="panel-header-main">
+          <div class="info-title panel-title speakers-title-binaural">Headphones</div>
+          </div>
+        </div>
+        <div id="hpChannelsList" class="info-list"></div>
+        <div class="panel-header speakers-header-speakers">
           <div class="panel-header-main">
           <div class="info-title panel-title speakers-title-speakers" data-i18n="section.speakers">Speakers</div>
-          <div class="info-title panel-title speakers-title-binaural">Headphones</div>
           </div>
           <div class="speakers-layout-actions" style="display:flex;align-items:center;gap:0.35rem">
             <button id="presetsBtn" class="ui-btn ui-btn-primary" data-i18n="config.presets" data-i18n-title="config.presetsHint">Presets</button>
@@ -605,12 +795,17 @@
           </div>
         </div>
         <div id="speakersList" class="info-list">No speakers.</div>
-        <div id="hpChannelsList" class="info-list"></div>
       </div>
       </div>
       <!-- Speaker editor pinned below the scroll so it stays visible while editing. -->
       <div class="info-section" id="speakerEditSection" style="display:none">
         <div class="info-title" id="speakerEditTitle" data-i18n="section.speakerEditor">Speaker Editor</div>
+        <!-- Edit / Test tabs. Same shape as the Renderer/Binaural pair: a body
+             class drives visibility, the buttons only mirror it. -->
+        <div id="speakerTabsBar" style="display:flex;gap:0.25rem;padding:0 0.1rem;margin-bottom:0.3rem">
+          <button id="speakerTabEditBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="speakerTabs.edit">Edit</button>
+          <button id="speakerTabTestBtn" type="button" class="toggle-btn renderer-tab-btn" data-i18n="speakerTabs.test">Test</button>
+        </div>
         <div class="editor-row" style="margin-bottom:0.35rem">
           <label data-i18n="speaker.layout" data-help-i18n="help.speaker.layout">Layout</label>
           <div style="display:flex;gap:0.3rem;justify-content:flex-end">
@@ -620,6 +815,7 @@
           </div>
         </div>
         <div id="speakerEditBody" class="editor-body" style="display:none">
+          <div id="speakerEditTabEdit">
           <div class="editor-meta">
             <div><strong data-i18n="common.name">Name:</strong></div>
             <input id="speakerEditNameInput" class="name-input" type="text" value="" />
@@ -703,9 +899,52 @@
             <label for="speakerEditFreqHighInput" data-help-i18n="help.speaker.freqHigh">Freq. max (Hz)</label>
             <input id="speakerEditFreqHighInput" class="delay-input" type="number" min="0" step="10" placeholder="full range" />
           </div>
+          </div>
+          <div id="speakerEditTabTest">
+          <!-- Speaker test: pink noise limited to the bands this speaker
+               reproduces, through its own gain and delay. Trigger, isolation
+               and level are global settings rather than per-speaker ones, so
+               they sit beside the button instead of repeating for every
+               speaker. -->
+          <div class="editor-row">
+            <label for="speakerTestBtn" data-i18n="speaker.test" data-help-i18n="help.speaker.test">Test</label>
+            <div style="display:flex;gap:0.3rem;justify-content:flex-end;flex:1 1 auto;min-width:0">
+              <button id="speakerTestBtn" type="button" class="toggle-btn" data-i18n="speaker.testPlay">Pink noise</button>
+            </div>
+          </div>
+          <div class="editor-row">
+            <label for="speakerTestModeSelect" data-i18n="speaker.testMode" data-help-i18n="help.speaker.testMode">Test trigger</label>
+            <select id="speakerTestModeSelect" style="width:auto;min-width:7rem">
+              <option value="toggle" data-i18n="speaker.testMode.toggle">Toggle</option>
+              <option value="burst" data-i18n="speaker.testMode.burst">2 s burst</option>
+              <option value="hold" data-i18n="speaker.testMode.hold">Hold</option>
+            </select>
+          </div>
+          <div class="editor-row">
+            <label for="speakerTestIsolationSelect" data-i18n="speaker.testIsolation" data-help-i18n="help.speaker.testIsolation">Test isolation</label>
+            <select id="speakerTestIsolationSelect" style="width:auto;min-width:7rem">
+              <option value="test_only" data-i18n="speaker.testIsolation.testOnly">Test only</option>
+              <option value="with_programme" data-i18n="speaker.testIsolation.withProgramme">Test + programme</option>
+              <option value="test_only_solo" data-i18n="speaker.testIsolation.solo">Test only, others muted</option>
+            </select>
+          </div>
+          <div class="editor-row gain-row">
+            <label for="speakerTestLevelSlider" data-i18n="speaker.testLevel" data-help-i18n="help.speaker.testLevel">Test level</label>
+            <!-- Peak dBFS: the renderer bounds the test to this peak, so max=0
+                 is full scale and still cannot clip on its own. -->
+            <input id="speakerTestLevelSlider" class="gain-slider" type="range" min="-60" max="0" step="1" value="-8" />
+            <div id="speakerTestLevelBox" class="gain-box">-8 dBFS</div>
+          </div>
+          </div>
         </div>
       </div>
     </div>
+
+    <!-- Vertical crossover-band cursor over the 3D view: one coloured segment
+         per band (highest on top) + "All bands". Mirrors and drives the central
+         #heatmapBandSelect (wired in controls/band-cursor.js); hidden for
+         single-band layouts. -->
+    <div id="bandCursor" role="toolbar" hidden></div>
 
     <div id="saveFooterRoot" class="save-footer">
       <!-- Quick visual-effect toggles, sharing the bottom-center cluster with

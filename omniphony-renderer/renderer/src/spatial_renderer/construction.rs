@@ -7,15 +7,14 @@
 //! These are `&mut self`/associated methods that do not hold the live or
 //! channel-state guards, so unlike `render_frame` they extract cleanly.
 
-use super::{BandRenderer, SpatialRenderer, evaluation_build_config};
-use crate::crossover::{FreqBand, LR4CrossoverBank, compute_bands};
+use super::{SpatialRenderer, evaluation_build_config};
 use crate::live_params::{
     CartesianEvaluationParams, EvaluationLiveParams, LiveEvaluationMode, LiveParams,
     PolarEvaluationParams, PreferredEvaluationMode, RampMode, RenderTopology, RendererControl,
 };
 use crate::render_backend::{
-    DegenerateVbapBackend, EffectiveEvaluationMode, GainModel, MultiBandTable, RenderRequest,
-    VbapBackend, build_prepared_render_engine,
+    DegenerateVbapBackend, EffectiveEvaluationMode, GainModel, RenderRequest, VbapBackend,
+    build_prepared_render_engine,
 };
 use crate::spatial_vbap::{DistanceModel, VbapPanner, VbapTableMode};
 use crate::speaker_layout::SpeakerLayout;
@@ -105,51 +104,56 @@ impl SpatialRenderer {
         // loudly rather than failing the whole engine (which would leave the host
         // with no audio at all). The warning surfaces on stderr and in Studio's log
         // panel.
-        let (model, vbap_triangles): (Box<dyn GainModel>, usize) =
-            match VbapPanner::new(&spatializable_positions, az_res_deg, el_res_deg, 0.0) {
-                Ok(panner) => {
-                    let panner = panner.with_negative_z(allow_negative_z);
-                    let triangles = panner.num_triangles();
-                    (
-                        Box::new(VbapBackend::new(
-                            panner,
-                            crate::render_backend::VbapSpreadParams {
-                                spread_min,
-                                spread_max,
-                                spread_from_distance,
-                                spread_distance_range,
-                                spread_distance_curve,
-                                size_to_spread_mode: Default::default(),
-                            },
-                        )),
-                        triangles,
-                    )
-                }
-                Err(e) => {
-                    let names: Vec<&str> = speaker_layout
-                        .speakers
-                        .iter()
-                        .filter(|s| s.spatialize)
-                        .map(|s| s.name.as_str())
-                        .collect();
-                    log::warn!(
-                        "VBAP triangulation failed for {} spatializable speaker(s) {:?}: {}. \
+        let (model, vbap_triangles): (Box<dyn GainModel>, usize) = match VbapPanner::new(
+            &spatializable_positions,
+            az_res_deg,
+            el_res_deg,
+            0.0,
+            Default::default(),
+        ) {
+            Ok(panner) => {
+                let panner = panner.with_negative_z(allow_negative_z);
+                let triangles = panner.num_triangles();
+                (
+                    Box::new(VbapBackend::new(
+                        panner,
+                        crate::render_backend::VbapSpreadParams {
+                            spread_min,
+                            spread_max,
+                            spread_from_distance,
+                            spread_distance_range,
+                            spread_distance_curve,
+                            size_to_spread_mode: Default::default(),
+                        },
+                    )),
+                    triangles,
+                )
+            }
+            Err(e) => {
+                let names: Vec<&str> = speaker_layout
+                    .speakers
+                    .iter()
+                    .filter(|s| s.spatialize)
+                    .map(|s| s.name.as_str())
+                    .collect();
+                log::warn!(
+                    "VBAP triangulation failed for {} spatializable speaker(s) {:?}: {}. \
                          Falling back to degenerate directional pan (no triangulation) — audio \
                          continues, but this layout cannot use full VBAP. Check the speaker \
                          geometry (collinear/coplanar speakers, or one placed at the listener).",
-                        num_vbap_speakers,
-                        names,
-                        e
-                    );
-                    (
-                        Box::new(DegenerateVbapBackend::with_omni(
-                            spatializable_positions.clone(),
-                            crate::backend_registry::collect_omni_mask(&speaker_layout),
-                        )),
-                        0,
-                    )
-                }
-            };
+                    num_vbap_speakers,
+                    names,
+                    e
+                );
+                (
+                    Box::new(DegenerateVbapBackend::with_omni(
+                        spatializable_positions.clone(),
+                        crate::backend_registry::collect_omni_mask(&speaker_layout),
+                    )),
+                    0,
+                )
+            }
+        };
         let topology = RenderTopology::new(
             Arc::new(build_prepared_render_engine(
                 model,
@@ -168,6 +172,7 @@ impl SpatialRenderer {
                         room_ratio_lower,
                         room_ratio_center_blend,
                         use_distance_diffuse: distance_diffuse,
+                        diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
                         distance_diffuse_threshold,
                         distance_diffuse_curve,
                         distance_model,
@@ -352,21 +357,17 @@ impl SpatialRenderer {
         );
         log::info!("Label to speaker mapping (by name): {:?}", label_to_speaker);
 
-        let mut speaker_live = std::collections::HashMap::new();
-        for (idx, spk) in speaker_layout.speakers.iter().enumerate() {
-            if spk.delay_ms != 0.0 {
-                speaker_live.insert(
-                    idx,
-                    crate::live_params::SpeakerLiveParams {
-                        delay_ms: spk.delay_ms.max(0.0),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
+        let speaker_live = crate::live_params::speaker_live_from_layout(speaker_layout);
 
         LiveParams {
             master_gain,
+            // Never restored from config: a session must not come up making
+            // noise because a test was running when it was last saved.
+            speaker_test: None,
+            object_test: None,
+            object_test_clip: None,
+            object_test_rotation: Default::default(),
+            speaker_test_idle_feed_gen: 0,
             objects: std::collections::HashMap::new(),
             spread_min,
             spread_max,
@@ -408,6 +409,7 @@ impl SpatialRenderer {
             room_ratio_center_blend,
             dialogue_level: None,
             use_distance_diffuse: distance_diffuse,
+            distance_diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
             distance_diffuse_threshold,
             distance_diffuse_curve,
             drc_mode: "Off".to_string(),
@@ -442,111 +444,6 @@ impl SpatialRenderer {
         }
     }
 
-    /// Build crossover band engines from a speaker layout.
-    ///
-    /// Returns `(render_bands, Some(filter_bank))` when the layout defines finite crossover
-    /// edges on at least one speaker (producing ≥ 2 bands), or `(single_band, None)` when
-    /// no crossover is needed. `render_bands` always has at least one entry.
-    #[allow(clippy::too_many_arguments)]
-    fn build_crossover(
-        control: &Arc<RendererControl>,
-        layout: &crate::speaker_layout::SpeakerLayout,
-        num_speakers: usize,
-        sample_rate: u32,
-        prev_bands: &[BandRenderer],
-    ) -> Result<(Vec<BandRenderer>, Option<LR4CrossoverBank>)> {
-        // For each new band, reuse the matching previous band (same speaker subset)
-        // so an evaluation-only refresh can keep its triangulated gain model.
-        let make_renderer = |b: &FreqBand| {
-            let prev = prev_bands
-                .iter()
-                .find(|p| p.speaker_indices == b.speaker_indices);
-            BandRenderer::from_band(b, layout, num_speakers, control, prev)
-        };
-
-        let bands = compute_bands(layout);
-        if bands.len() <= 1 {
-            let render_bands = bands
-                .iter()
-                .map(make_renderer)
-                .collect::<Result<Vec<_>>>()?;
-            return Ok((render_bands, None));
-        }
-
-        let cutoffs: Vec<f32> = bands
-            .windows(2)
-            .map(|w| w[0].high_hz)
-            .filter(|f| f.is_finite())
-            .collect();
-
-        let filter_bank = LR4CrossoverBank::new(&cutoffs, sample_rate);
-        let render_bands = bands
-            .iter()
-            .map(make_renderer)
-            .collect::<Result<Vec<_>>>()?;
-
-        log::info!(
-            "Crossover enabled: {} bands, cutoffs = {:?} Hz",
-            bands.len(),
-            cutoffs
-        );
-
-        Ok((render_bands, Some(filter_bank)))
-    }
-
-    /// Merge the per-band cartesian tables into a single multi-band table so a
-    /// lookup localises the cell once for all bands. Returns `None` (→ per-band
-    /// path) unless there are several bands all backed by a cartesian evaluator.
-    fn build_unified_table(
-        render_bands: &[BandRenderer],
-        num_speakers: usize,
-    ) -> Option<MultiBandTable> {
-        if render_bands.len() <= 1 {
-            return None;
-        }
-        // Every band shares the active evaluation mode, so they are all cartesian
-        // or all polar. Try cartesian first; if any band has no cartesian view,
-        // fall through to the polar path. A band without an engine (< 3 speakers)
-        // has no precomputed table → no unified table (per-band path).
-        let mut cartesian = Vec::with_capacity(render_bands.len());
-        let mut all_cartesian = true;
-        for band in render_bands {
-            let engine = band.engine()?;
-            match engine.cartesian_parts() {
-                Some(parts) => cartesian.push((parts, band.speaker_indices.as_slice())),
-                None => {
-                    all_cartesian = false;
-                    break;
-                }
-            }
-        }
-        if all_cartesian {
-            let table = MultiBandTable::build_cartesian(&cartesian, num_speakers);
-            if table.is_some() {
-                log::info!(
-                    "Crossover: unified cartesian table built for {} bands",
-                    render_bands.len()
-                );
-            }
-            return table;
-        }
-        drop(cartesian);
-
-        let mut polar = Vec::with_capacity(render_bands.len());
-        for band in render_bands {
-            let engine = band.engine()?;
-            polar.push((engine.polar_parts()?, band.speaker_indices.as_slice()));
-        }
-        let table = MultiBandTable::build_polar(&polar, num_speakers);
-        if table.is_some() {
-            log::info!(
-                "Crossover: unified polar table built for {} bands",
-                render_bands.len()
-            );
-        }
-        table
-    }
-
     /// Assemble the `SpatialRenderer` struct from fully resolved components.
     ///
     /// Called by both `new` and `from_vbap` after each constructor has built its
@@ -562,29 +459,48 @@ impl SpatialRenderer {
     ) -> Result<Self> {
         let active_topology = control.active_topology();
         let topology_identity = std::sync::Arc::as_ptr(&active_topology) as usize;
-        let (render_bands, crossover_filter_bank) = Self::build_crossover(
+        let speaker_stage = super::SpeakerRenderStage::new(
             &control,
             &active_topology.speaker_layout,
+            topology_identity,
             num_speakers,
             sample_rate,
-            &[],
         )?;
-        let unified_table = Self::build_unified_table(&render_bands, num_speakers);
+
+        // Read before the struct literal: the guard's temporary would otherwise
+        // outlive the borrow and block moving `control` into the struct below.
+        // Start already settled on the configured mode — the cross-fade is for
+        // *changes*, and fading in at startup would clip the opening.
+        // Publish the rate for control-thread consumers (clip loading).
+        control
+            .sample_rate
+            .store(sample_rate, std::sync::atomic::Ordering::Relaxed);
+
+        let initial_output_mode = control.live.read().binaural.output_mode;
 
         Ok(Self {
             num_speakers,
+            active_output_mode: initial_output_mode,
+            mode_fade: None,
+            has_rendered_frame: false,
+            // 5 ms: long enough to bury the step between two DSP chains, short
+            // enough that the switch still feels immediate.
+            mode_fade_samples: ((sample_rate as f32) * 0.005).round().max(1.0) as usize,
             spread_resolution,
             channel_routing: arc_swap::ArcSwap::new(std::sync::Arc::new(Vec::new())),
             first_render: std::sync::atomic::AtomicBool::new(true),
             frame_counter: std::sync::atomic::AtomicU64::new(0),
-            channel_states: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            // Preallocated so a first block never allocates. Grows only if a
+            // stream carries more channels than this.
+            channel_states: Vec::with_capacity(64),
+            reset_requested: std::sync::atomic::AtomicBool::new(false),
             sample_rate,
             distance_model,
             log_object_positions,
             loudness_gain: std::sync::atomic::AtomicU32::new(1.0_f32.to_bits()),
             auto_gain_triggered: std::sync::atomic::AtomicBool::new(false),
             control,
-            speaker_gains_buf: vec![0.0f32; num_speakers],
+            speaker_stage,
             object_params_buf: Vec::new(),
             speaker_params_buf: vec![
                 crate::live_params::SpeakerLiveParams::default();
@@ -592,54 +508,14 @@ impl SpatialRenderer {
             ],
             object_params_generation_seen: 0,
             speaker_params_generation_seen: 0,
-            bed_routing_gains_buf: vec![0.0f32; num_speakers],
-            delay_lines: {
-                let max_delay = (0.1 * sample_rate as f32) as usize; // 100 ms
-                (0..num_speakers)
-                    .map(|_| crate::delay_line::DelayLine::new(max_delay))
-                    .collect()
-            },
             ramp_strategy_override: None,
             binaural: crate::binaural::BinauralRenderer::new(sample_rate),
+            cascade: None,
+            last_mix_num_speakers: 0,
             binaural_pos_buf: Vec::new(),
             binaural_gain_buf: Vec::new(),
             binaural_direct_buf: Vec::new(),
-            render_bands,
-            unified_table,
-            render_bands_topology_identity: topology_identity,
-            crossover_filter_bank,
-            crossover_filter_states: Vec::new(),
-            crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
-            band_gains_scratch: Vec::new(),
-            interp_end_scratch: Vec::new(),
+            object_test_source: Default::default(),
         })
-    }
-
-    pub(super) fn refresh_crossover_for_topology(
-        &mut self,
-        topology_identity: usize,
-        active_layout: &crate::speaker_layout::SpeakerLayout,
-    ) -> Result<()> {
-        if self.render_bands_topology_identity == topology_identity {
-            return Ok(());
-        }
-
-        // Pass the current bands so an evaluation-only recompute (unchanged geometry
-        // generation) reuses each band's triangulated gain model and rebuilds only
-        // the evaluation wrapper, instead of re-triangulating every band.
-        let (render_bands, crossover_filter_bank) = Self::build_crossover(
-            &self.control,
-            active_layout,
-            self.num_speakers,
-            self.sample_rate,
-            &self.render_bands,
-        )?;
-        self.unified_table = Self::build_unified_table(&render_bands, self.num_speakers);
-        self.render_bands = render_bands;
-        self.crossover_filter_bank = crossover_filter_bank;
-        self.crossover_filter_states.clear();
-        self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
-        self.render_bands_topology_identity = topology_identity;
-        Ok(())
     }
 }

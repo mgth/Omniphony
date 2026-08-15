@@ -497,11 +497,37 @@ impl DecodeHandler {
             let bed_indices = self.spatial.bed_indices.as_ref().unwrap_or(&empty_vec);
             ChannelCountCalculator::calculate_conformed_channel_count(channel_count, bed_indices)
         } else if let Some(ref renderer) = self.spatial_renderer {
-            // When VBAP is active, output channel count is the number of speakers
-            renderer.num_speakers()
+            // What the renderer EMITS, which is the speaker count only while it
+            // is rendering speakers: headphone mode emits a stereo pair from a
+            // wholly separate path. Sizing the sink from `num_speakers()`
+            // instead built a twelve-channel PipeWire stream and then fed it
+            // stereo frames, so the device consumed six frames' worth of
+            // channels per frame — heard as chopped noise, and the reason a
+            // binaural object test was unlistenable.
+            renderer.output_channel_count()
         } else {
             channel_count
         };
+
+        // A live headphone toggle changes that width under a writer that has
+        // already been built for the old one. Retire it here so the block below
+        // builds a new one; the alternative is the same mismatch, arrived at
+        // from the other direction.
+        if self
+            .output
+            .audio_writer_channels
+            .is_some_and(|built| built != effective_channel_count)
+        {
+            log::info!(
+                "Output width changed ({} → {} channels): rebuilding the audio writer",
+                self.output.audio_writer_channels.unwrap_or(0),
+                effective_channel_count,
+            );
+            if let Some(mut writer) = self.output.invalidate_writer() {
+                let _ = writer.flush();
+            }
+            self.output.reset_realtime_output_tracking();
+        }
 
         OutputRuntimeCoordinator::new(
             &mut self.output,
@@ -612,6 +638,7 @@ impl DecodeHandler {
                 None,
             )?,
         );
+        self.output.audio_writer_channels = Some(effective_channel_count);
         self.reset_spatial_state_for_segment();
         Ok(())
     }

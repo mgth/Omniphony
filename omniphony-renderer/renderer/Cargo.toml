@@ -29,13 +29,24 @@ bindgen = "0.70"
 
 [dev-dependencies]
 criterion = "0.5"
+dsp_fixtures = { path = "../dsp_fixtures" }
 
 [[bench]]
 name = "render_frame"
 harness = false
 
 [features]
+# Worst-case block-time gate. Opt-in and run alone: a timing measurement must
+# not share the machine with the rest of the suite running in parallel, or its
+# high percentile picks up scheduler contention rather than renderer cost.
+#   cargo test --release -p renderer --features perf-gate -- --test-threads=1
+perf-gate = []
 saf_vbap = []
 # Enables loading external SOFA HRTF files for the binaural stage (adds a SOFA
 # reader dependency). Off by default — the embedded SAF KEMAR set is always available.
 sofa = ["dep:sofar"]
+# Opt-in wide DSP validation matrix. Off by default so the PR gate stays
+# inside its CI time budget; #[ignore] is reserved for tracked deferrals.
+# Gates only `#[cfg(feature = "wide-matrix")]` test code in this crate — it
+# forwards to nothing, so it cannot affect a release build.
+wide-matrix = []

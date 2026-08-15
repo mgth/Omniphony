@@ -151,7 +151,16 @@ export const app = {
   vbapCartesianFaceGridEnabled: false,
 
   // Distance diffuse
-  distanceDiffuseState: { enabled: null, threshold: null, curve: null, metric: 'spherical' },
+  distanceDiffuseState: {
+    enabled: null,
+    threshold: null,
+    curve: null,
+    metric: 'spherical',
+    // Axes negated to build the diffuse mirror. `xy` — a half-turn about the
+    // vertical axis — is what the stage has always done and stays the renderer
+    // default; the engine snapshot overwrites this at connect.
+    mirrorAxes: { x: true, y: true, z: false },
+  },
   distanceModel: 'none',
   distanceModelMetric: 'spherical',
 
@@ -306,6 +315,11 @@ export const app = {
   // Build fingerprint of the connected renderer (git-describe + build time).
   // Lets About expose a liborender-vs-orender version skew.
   renderVersion: null,
+  // Path of the renderer answering on the OSC port, and the path this
+  // Studio would launch. They differ when we attached to a renderer left
+  // running by another environment — see rendererIsForeign().
+  renderExecutable: null,
+  expectedOrenderPath: null,
   // C-ABI version ("major.minor") of the liborender shim hosting the engine.
   // Null when the engine is linked as a Rust crate (the CLI — no C ABI).
   renderAbi: null,
@@ -454,12 +468,29 @@ export const app = {
   // Own gradient for the speaker heatmap volume (differentiated from the object
   // field). Colour gradient: 'heatmap' | 'blueWhite' | 'whiteRed' | 'red'.
   speakerHeatmapVolumeColormap: 'heatmap',
-  // Crossover band selected for effective-render / dominant-speaker readout, and
-  // for the per-speaker heatmap volume (single band). `speakerHeatmapAllBands`
-  // overrides it for the heatmap with the level-weighted, frequency-coloured
-  // "all bands" composite (effective-render still uses the numeric index).
-  speakerHeatmapBandIndex: 0,
-  speakerHeatmapAllBands: false,
+  // THE crossover-band context, shared by every heatmap and by the
+  // effective-render / dominant-speaker readouts — overlaying heatmaps of
+  // different bands only reads as confusion, so there is one selection.
+  // `heatmapAllBands` switches each display to its own all-bands composite
+  // (the readouts still use the numeric index).
+  heatmapBandIndex: 0,
+  heatmapAllBands: false,
+  // Global energy heatmap: total energy over ALL speakers per grid cell, drawn
+  // as a deviation from unit energy (see scene/global-energy-volume.js).
+  // Transparent at 0 dB, red above, blue below. Shares the gain-table transport
+  // with the per-speaker heatmap and takes over its subscription while on.
+  globalEnergyHeatmapEnabled: false,
+  // Saturation of the diverging dB scale: ±this many dB maps to full opacity.
+  globalEnergyHeatmapScaleDb: 6,
+  // Discontinuity heatmap: breaks in speaker usage between neighbouring grid
+  // cells (see scene/discontinuity-volume.js). 'gain' compares the normalised
+  // per-speaker gain vectors (pure configuration change, level stripped);
+  // 'centroid' the room distance the gain²-weighted speaker centroid jumps.
+  discontinuityHeatmapEnabled: false,
+  discontinuityHeatmapMode: 'gain',
+  // Jump value that saturates the colour. Both metrics top out around 2
+  // (disjoint speaker sets read √2; a wall-to-wall centroid jump reads 2).
+  discontinuityHeatmapScale: 0.5,
   // Object energy field (client-side theoretical field, ray-marched 3D volume).
   objectEnergyHeatmapEnabled: false,
   // Colour gradient: 'heatmap' | 'blueWhite' | 'whiteRed' | 'red'.
@@ -508,6 +539,7 @@ export const app = {
   // per-speaker heatmap volume (which renders the selected speaker's gain field
   // from the local table as gain² — see speaker-solo-volume.js).
   lastSpeakerSoloVolumeAt: 0,
+  lastGlobalEnergyVolumeAt: 0,
   speakerSize: 0.08,
   effectiveRenderEnabled: false,
   // Display-only master switch: when false, objects + their labels + trails are

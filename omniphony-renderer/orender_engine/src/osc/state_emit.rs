@@ -79,6 +79,12 @@ impl OscSender {
         snapshot: &renderer::metering::MeterSnapshot,
         object_gains: &[(usize, renderer::spatial_vbap::Gains)],
         object_band_gains: &[(usize, Vec<renderer::spatial_vbap::Gains>)],
+        // Where the object test's source is, orbit and room clamp applied.
+        // Rides the meter bundle because it is the same kind of thing: a
+        // per-interval readout of what the render just did, wanted at the same
+        // rate and by the same clients, and already gated by that subscription.
+        object_test_position: Option<[f32; 3]>,
+        object_test_level: Option<(f32, f32)>,
         decode_time_ms: Option<f32>,
         crossover_time_ms: Option<f32>,
         render_time_ms: Option<f32>,
@@ -234,10 +240,21 @@ impl OscSender {
             }));
         }
 
+        // Per-crossover-band RMS rides the object message as EXTRA args after
+        // (peak, rms) — an older client reads the first two and ignores the rest.
+        let band_levels_by_id: std::collections::HashMap<u32, &Vec<f32>> = snapshot
+            .object_band_levels
+            .iter()
+            .map(|(id, bands)| (*id, bands))
+            .collect();
         for &(id, peak, rms) in &snapshot.object_levels {
+            let mut args = vec![OscType::Float(peak), OscType::Float(rms)];
+            if let Some(bands) = band_levels_by_id.get(&id) {
+                args.extend(bands.iter().map(|&db| OscType::Float(db)));
+            }
             messages.push(OscPacket::Message(OscMessage {
                 addr: format!("/omniphony/meter/object/{}", id),
-                args: vec![OscType::Float(peak), OscType::Float(rms)],
+                args,
             }));
             if let Some(gains) = gains_by_id.get(id as usize).and_then(|entry| *entry) {
                 messages.push(OscPacket::Message(OscMessage {
@@ -258,6 +275,32 @@ impl OscSender {
             messages.push(OscPacket::Message(OscMessage {
                 addr: format!("/omniphony/meter/speaker/{}", idx),
                 args: vec![OscType::Float(peak), OscType::Float(rms)],
+            }));
+        }
+        // Headphone L/R meters (binaural modes only): dedicated addresses —
+        // in cascaded mode the speaker meters above carry the virtual buses.
+        if let Some(ears) = snapshot.ear_levels {
+            for (idx, &(peak, rms)) in ears.iter().enumerate() {
+                messages.push(OscPacket::Message(OscMessage {
+                    addr: format!("/omniphony/meter/ear/{}", idx),
+                    args: vec![OscType::Float(peak), OscType::Float(rms)],
+                }));
+            }
+        }
+        if let Some([x, y, z]) = object_test_position {
+            // Position and level in one message: they describe the same source
+            // over the same interval, and a client that has one and not the
+            // other can only draw something half true.
+            let (peak, rms) = object_test_level.unwrap_or((-100.0, -100.0));
+            messages.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/state/object_test/position".to_string(),
+                args: vec![
+                    OscType::Float(x),
+                    OscType::Float(y),
+                    OscType::Float(z),
+                    OscType::Float(peak),
+                    OscType::Float(rms),
+                ],
             }));
         }
         messages.push(OscPacket::Message(OscMessage {

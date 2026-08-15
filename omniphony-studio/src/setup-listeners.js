@@ -21,6 +21,8 @@ import { setupRendererPanelListeners } from './listeners/renderer-panel-listener
 import { setupModalAndToggleListeners } from './listeners/modal-and-toggle-listeners.js';
 import { setupRoomGeometryListeners } from './listeners/room-geometry-listeners.js';
 import { setupSpeakerEditorListeners } from './listeners/speaker-editor-listeners.js';
+import { setupSpeakerTestListeners } from './controls/speaker-test.js';
+import { setupObjectTestListeners } from './controls/object-test.js';
 import { setupChannelEditorListeners } from './listeners/channel-editor-listeners.js';
 import { setupLayoutListeners } from './listeners/layout-listeners.js';
 import { setupTrailsAndDisplayListeners } from './listeners/trails-and-display-listeners.js';
@@ -32,6 +34,8 @@ export function setupUIListeners() {
   setupModalAndToggleListeners();
   setupRoomGeometryListeners();
   setupSpeakerEditorListeners();
+  setupSpeakerTestListeners();
+  setupObjectTestListeners();
   setupChannelEditorListeners();
   setupLayoutListeners();
   setupTrailsAndDisplayListeners();

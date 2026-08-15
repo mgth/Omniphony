@@ -6,6 +6,8 @@
  * getBaseGain, toggleMute, toggleSolo.
  */
 
+import { OBJECT_TEST_SOURCE_ID } from './object-test-id.js';
+import { setObjectTestMuted } from './controls/object-test.js';
 import { invoke } from '@tauri-apps/api/core';
 import { formatNumber } from './coordinates.js';
 import {
@@ -186,6 +188,13 @@ export function areAllOthersMuted(group, id) {
 // ---------------------------------------------------------------------------
 
 export function sendObjectMute(id, muted) {
+  // The injected test source is addressed by name, and this command takes a
+  // number — `Number('injection')` is NaN, which is why its M and S buttons
+  // did nothing. It owns its own muting instead.
+  if (String(id) === OBJECT_TEST_SOURCE_ID) {
+    setObjectTestMuted(muted);
+    return;
+  }
   invoke('control_object_mute', { id: Number(id), muted: muted ? 1 : 0 });
 }
 

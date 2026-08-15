@@ -48,6 +48,7 @@ import {
   normalizedOmniphonyToScenePosition
 } from './coordinates.js';
 import { scene } from './scene/setup.js';
+import { OBJECT_TEST_SOURCE_ID } from './object-test-id.js';
 import {
   sourceMaterial,
   sourceGeometry,
@@ -80,6 +81,7 @@ import {
   sendObjectMute
 } from './mute-solo.js';
 import { formatNumber } from './coordinates.js';
+import { t, tf } from './i18n.js';
 import { computeCrossoverBandLabels } from './crossover-bands.js';
 
 // ---------------------------------------------------------------------------
@@ -123,6 +125,10 @@ export function getObjectDisplayName(id) {
 // short position `code` (e.g. FL, Ls, L·C, L). Keeps the long technical name off
 // the vertical strip so list rows don't grow tall.
 export function objectBadge(id) {
+  // The injected source's name is a sentence ("Test object"), which the list's
+  // vertical strip cannot carry — it is sized for codes like FL or TBR. Give it
+  // one. Not translated, like every other code in that strip.
+  if (String(id) === OBJECT_TEST_SOURCE_ID) return { type: '', code: 'INJ' };
   const name = getObjectDisplayName(id);
   // Bed→height synth objects: PAD "Ambience_FL", copy_up "Height_Ls_synth",
   // DirAC diffuse "Diffuse_TFL".
@@ -137,6 +143,12 @@ export function objectBadge(id) {
   m = name.match(/^Phantom_([^_]+)_(.+)$/i);
   if (m) return { type: 'phantom', code: `${m[1]}·${m[2]}` };
   m = name.match(/^Phantom_([^_]+)$/i);
+  if (m) return { type: 'phantom', code: m[1] };
+  // Spectral extraction sectors: high ring "DirectH_FL" (marked ↑ to keep the
+  // code distinct from the floor ring's), floor ring "Direct_FL".
+  m = name.match(/^DirectH_(.+)$/i);
+  if (m) return { type: 'phantom', code: `${m[1]}↑` };
+  m = name.match(/^Direct_(.+)$/i);
   if (m) return { type: 'phantom', code: m[1] };
   // Default: strip a single technical prefix word, as before.
   const u = name.indexOf('_');
@@ -218,13 +230,17 @@ export function getObjectTrailColor(id) {
   return getObjectBaseColor(id).offsetHSL(0, 0.04, 0.08);
 }
 
-function getObjectDisplayMode() {
+// Exported so the object-injection test source can be styled from the same
+// place as real objects rather than from a copy of these rules: it is meant to
+// look like an object, so it must follow the object display mode and sphere
+// size the user picked, and keep following them if these change.
+export function getObjectDisplayMode() {
   return app.objectDisplayMode === 'transparent-sphere' || app.objectDisplayMode === 'diffuse-sphere'
     ? app.objectDisplayMode
     : 'circle';
 }
 
-function getObjectSphereSizeScale() {
+export function getObjectSphereSizeScale() {
   return Math.max(0.03, Math.min(0.2, Number(app.objectSphereSize) || SOURCE_BASE_RADIUS)) / SOURCE_BASE_RADIUS;
 }
 
@@ -361,7 +377,7 @@ export function createSourceDiffuseHalo() {
 
 export function computeEffectiveRenderPosition(id) {
   const key = String(id);
-  const selectedBandIndex = Math.max(0, Math.round(Number(app.speakerHeatmapBandIndex) || 0));
+  const selectedBandIndex = Math.max(0, Math.round(Number(app.heatmapBandIndex) || 0));
   const bandGains = sourceBandGains.get(key);
   const gains = Array.isArray(bandGains?.[selectedBandIndex]) && bandGains[selectedBandIndex].length > 0
     ? bandGains[selectedBandIndex]
@@ -702,7 +718,8 @@ function updateObjectBandBars(entry, id) {
     const bar = row.querySelector('.band-bar');
     const dbEl = row.querySelector('.band-db');
     if (labelEl) {
-      labelEl.textContent = labels?.[b] ?? (contributions.length === 1 ? 'Full band' : `Band ${b}`);
+      labelEl.textContent = labels?.[b]
+        ?? (contributions.length === 1 ? t('heatmap.bandFull') : tf('heatmap.bandIndex', { index: b }));
     }
     if (bar) {
       bar.style.setProperty('--level', `${Math.min(100, gain * 100).toFixed(1)}%`);
@@ -887,7 +904,12 @@ export function updateSpeakerColorsFromSelection() {
 
   speakerMeshes.forEach((mesh, index) => {
     const mix = gainToMix(gains?.[index]);
-    mesh.material.color.copy(speakerBaseColor).lerp(speakerHotColor, mix);
+    // Per-speaker base colour when the layout has a crossover split (set by
+    // applySpeakerBandBaseColor, so the cube matches its band gauge); the
+    // shared blue otherwise, which is also what a single-band layout resolves
+    // to. Hot blending and the selection override still apply on top.
+    const base = mesh.userData.baseColor ?? speakerBaseColor;
+    mesh.material.color.copy(base).lerp(speakerHotColor, mix);
     if (app.selectedSpeakerIndex !== null && index === app.selectedSpeakerIndex) {
       mesh.material.color.copy(speakerSelectedColor);
     }
@@ -1171,9 +1193,15 @@ export function decayTrails(nowMs) {
 
 export function updateSourceLevel(id, meter) {
   const key = String(id);
+  // Per-crossover-band RMS (post object-gain). An empty/absent array means no
+  // crossover is active — store null so consumers fall back to the full band.
+  const bandRms = Array.isArray(meter?.bandRmsDbfs) && meter.bandRmsDbfs.length > 0
+    ? meter.bandRmsDbfs.map(Number)
+    : null;
   sourceLevels.set(key, {
     peakDbfs: Number(meter?.peakDbfs ?? -100),
-    rmsDbfs: Number(meter?.rmsDbfs ?? -100)
+    rmsDbfs: Number(meter?.rmsDbfs ?? -100),
+    bandRmsDbfs: bandRms
   });
   sourceLevelLastSeen.set(key, performance.now());
   const mesh = sourceMeshes.get(id);

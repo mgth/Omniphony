@@ -18,7 +18,12 @@
 //! arrival and directness, routed to eight azimuth sector objects — simultaneous
 //! sources at different positions and frequencies are extracted independently.
 //! Adds one FFT frame (1024 samples ≈ 21 ms at 48 kHz) of latency to the whole
-//! bed. The `passes`/`center`/`sides` params apply to the broadband method only.
+//! bed. The `passes`/`center`/`sides` params apply to the broadband method
+//! only; `heights` (spectral only) opts the input's height channels into a 3D
+//! analysis — up dipole, per-bin elevation, and a 4-sector high ring — so 3D
+//! inputs get intra-plane *and* inter-plane extraction in the same pass (see
+//! [`crate::phantom_spectral`]). The broadband method always leaves height
+//! channels untouched.
 //!
 //! Like the object generators it runs in the realtime audio thread: all setup is
 //! in [`PhantomExtractStage::sync`]; the per-frame DSP in
@@ -52,7 +57,7 @@ const PHANTOM_GAIN_DB: i8 = 0;
 const PHANTOM_SIZE: [f32; 3] = [0.3, 0.3, 0.3];
 
 /// Live-tunable params this stage declares (the schema the UI builds sliders from).
-pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 5] = [
+pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 7] = [
     ObjectGenParamSpec {
         key: "strength",
         label: "Extraction",
@@ -107,6 +112,33 @@ pub const PHANTOM_PARAM_SPECS: [ObjectGenParamSpec; 5] = [
         step: 1.0,
         default: 0.0,
         unit: "",
+    },
+    // Binary mode (spectral only): include the input's height channels in the
+    // 3D analysis (up dipole + high sector ring) instead of passing them
+    // through untouched. No-op for bed-only inputs.
+    ObjectGenParamSpec {
+        key: "heights",
+        label: "Extract heights",
+        i18n_key: "twoDSources.phantomHeights",
+        min: 0.0,
+        max: 1.0,
+        step: 1.0,
+        default: 1.0,
+        unit: "",
+    },
+    // Spectral only: reference elevation (degrees) of the floor↔high ring
+    // split — the elevation that reads as "fully high". Lower values push
+    // content toward the ceiling. Default ≈ the corner-top channel elevation
+    // (atan(1/√2)). Applies live, no re-plan.
+    ObjectGenParamSpec {
+        key: "height_split",
+        label: "Height split",
+        i18n_key: "twoDSources.phantomHeightSplit",
+        min: 15.0,
+        max: 75.0,
+        step: 1.0,
+        default: 35.0,
+        unit: "°",
     },
 ];
 
@@ -606,6 +638,7 @@ struct PlanSig {
     center: bool,
     sides: bool,
     spectral: bool,
+    heights: bool,
     /// `RendererControl::options_epoch` at plan time. Bumped whenever a
     /// `REPLAN`-flagged registry option actually changes value (e.g. the
     /// Side/Back surround placement, which moves the planned arc/sector
@@ -643,6 +676,12 @@ pub struct PhantomExtractStage {
     center_relocalize: bool,
     /// Relocalize each 7.1 surround (single object) instead of the side arcs.
     sides_relocalize: bool,
+    /// Spectral only: include the input's height channels in the 3D analysis.
+    heights: bool,
+    /// Spectral only: reference elevation (radians) of the floor↔high ring
+    /// split (`height_split`, declared in degrees). Forwarded live to the
+    /// extractor — not part of the plan signature.
+    el_top: f32,
     method: ExtractMethod,
     alpha: f32,
 }
@@ -665,6 +704,8 @@ impl PhantomExtractStage {
             lift: 0.0,
             center_relocalize: false,
             sides_relocalize: false,
+            heights: true,
+            el_top: 35.0_f32.to_radians(),
             method: ExtractMethod::Broadband,
             alpha: 0.0,
         }
@@ -691,8 +732,9 @@ impl PhantomExtractStage {
     /// `REPLAN`-flagged registry option re-plans through it.
     pub fn sync(&mut self, enabled: bool, ctx: &PrepareCtx, options_epoch: u64) -> usize {
         let spectral = self.method == ExtractMethod::Spectral;
-        // `passes`/`center`/`sides` only shape the broadband plan; ignore their
-        // changes while the spectral method is active (no pointless re-prime).
+        // `passes`/`center`/`sides` only shape the broadband plan and `heights`
+        // only the spectral one; ignore the changes that don't affect the
+        // active method (no pointless re-prime).
         let changed = self.sig.enabled != enabled
             || self.sig.rate != ctx.sample_rate
             || self.sig.spectral != spectral
@@ -701,6 +743,7 @@ impl PhantomExtractStage {
                 && (self.sig.passes != self.passes
                     || self.sig.center != self.center_relocalize
                     || self.sig.sides != self.sides_relocalize))
+            || (spectral && self.sig.heights != self.heights)
             || self.sig.labels.as_slice() != ctx.input_labels;
         if changed {
             self.sig.enabled = enabled;
@@ -708,6 +751,7 @@ impl PhantomExtractStage {
             self.sig.passes = self.passes;
             self.sig.center = self.center_relocalize;
             self.sig.sides = self.sides_relocalize;
+            self.sig.heights = self.heights;
             self.sig.spectral = spectral;
             self.sig.options_epoch = options_epoch;
             self.sig.labels.clear();
@@ -729,6 +773,13 @@ impl PhantomExtractStage {
             "lift" => self.lift = value.clamp(0.0, 1.0),
             "center" => self.center_relocalize = value >= 0.5,
             "sides" => self.sides_relocalize = value >= 0.5,
+            "heights" => self.heights = value >= 0.5,
+            "height_split" => {
+                self.el_top = value.clamp(15.0, 75.0).to_radians();
+                if let Some(ext) = self.spectral.as_mut() {
+                    ext.set_el_top(self.el_top);
+                }
+            }
             _ => {}
         }
     }
@@ -748,7 +799,8 @@ impl PhantomExtractStage {
             return;
         }
         if self.method == ExtractMethod::Spectral {
-            if let Some(ext) = SpectralExtractor::prepare(ctx) {
+            if let Some(mut ext) = SpectralExtractor::prepare(ctx, self.heights) {
+                ext.set_el_top(self.el_top);
                 self.specs = ext.specs(self.lift as f64);
                 self.spectral = Some(ext);
             }
@@ -1082,7 +1134,18 @@ mod tests {
             .iter()
             .map(|entry| entry["key"].as_str().expect("parameter key"))
             .collect();
-        assert_eq!(keys, ["strength", "passes", "lift", "center", "sides"]);
+        assert_eq!(
+            keys,
+            [
+                "strength",
+                "passes",
+                "lift",
+                "center",
+                "sides",
+                "heights",
+                "height_split"
+            ]
+        );
         assert!(!keys.contains(&"method"));
     }
 

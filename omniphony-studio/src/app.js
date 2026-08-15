@@ -26,6 +26,8 @@ import { updateHeadPose } from './scene/head-pose.js';
 import './scene/axes.js';
 import { refreshObjectEnergyVolume } from './scene/object-energy-volume.js';
 import { refreshSpeakerSoloVolume } from './scene/speaker-solo-volume.js';
+import { refreshGlobalEnergyVolume } from './scene/global-energy-volume.js';
+import { refreshDiscontinuityVolume } from './scene/discontinuity-volume.js';
 
 // ── Domain modules (imported for side-effects & to register into state) ─────
 import {
@@ -61,6 +63,7 @@ import { initMpvOverlay } from './mpvOverlay.js';
 import { initSceneEffectsBar } from './controls/scene-effects-bar.js';
 import { setupTauriBridge } from './tauri-bridge.js';
 import { setupUIListeners } from './setup-listeners.js';
+import { objectTestBoot } from './controls/object-test.js';
 import { setupPointerListeners } from './picking.js';
 import { setupNumericWheelEditing } from './input.js';
 import { flushUI, flushCallbacks } from './flush.js';
@@ -84,6 +87,7 @@ import { renderLatencyDisplay, renderLatencyMeterUI, renderRenderTimeUI, renderR
 import { renderAudioFormatDisplay, applyAudioSampleRateNow } from './controls/audio.js';
 import { bindDrcListeners, renderDrcUI } from './controls/drc.js';
 import { initBinauralPanel } from './controls/binaural.js';
+import { initProfilesPanel } from './controls/profiles.js';
 import { initUpdateCheck, maybeCheck } from './controls/updates.js';
 import {
   updateObjectContributionUI,
@@ -237,6 +241,7 @@ loadTrailPrefs();
 loadEffectiveRenderPrefs();
 bindDrcListeners();
 initBinauralPanel();
+initProfilesPanel();
 refreshRoomGeometryInputState();
 setRoomGeometryExpanded(false);
 setTelemetryGaugesOpen(false);
@@ -260,6 +265,10 @@ setupVisualRecovery();
 
 // Reconnect to mpv overlay if the user had it enabled in a previous session.
 initMpvOverlay();
+
+// Object injection: apply the remembered switch now that the scene and the
+// source registry exist. It creates a source, so it cannot run from setup.
+objectTestBoot();
 
 // Floating quick-toggle bar over the 3D view (mirrors the display checkboxes).
 // After setupUIListeners() so the dispatched `change` reaches their handlers.
@@ -309,6 +318,18 @@ invoke('get_about_info')
     console.error('[get_about_info]', e);
   });
 
+// Which orender binary this Studio would launch. Compared against the path the
+// connected renderer reports so a foreign one is called out instead of silently
+// swallowing controls it does not implement.
+invoke('expected_orender_path')
+  .then((path) => {
+    app.expectedOrenderPath = typeof path === 'string' ? path.trim() || null : null;
+    renderOscStatus();
+  })
+  .catch((e) => {
+    console.error('[expected_orender_path]', e);
+  });
+
 // ── Animation loop ──────────────────────────────────────────────────────────
 let animationFrameId = 0;
 
@@ -324,6 +345,8 @@ function animate() {
   decayMeters(now);
   refreshObjectEnergyVolume(now);
   refreshSpeakerSoloVolume(now);
+  refreshGlobalEnergyVolume(now);
+  refreshDiscontinuityVolume(now);
   enforceObjectsVisibilityIfHidden();
 
   sourceOutlines.forEach((outline) => {

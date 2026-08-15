@@ -2,6 +2,7 @@ mod bootstrap;
 mod config_resolution;
 pub mod decoder_thread;
 pub mod handler;
+mod idle_feed;
 mod live_input;
 pub mod output;
 mod output_runtime_sync;

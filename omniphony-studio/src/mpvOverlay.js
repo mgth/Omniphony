@@ -6,6 +6,12 @@
  * This module only owns the enable toggle, which travels to the renderer as OSC
  * control. orender owns and persists the overlay display prefs (enable / labels
  * / trails), so there is nothing to store on the Studio side.
+ *
+ * The overlay is a process-global singleton in the engine with TWO writers:
+ * Studio over OSC, and mpv through the FFI toggles bound to keybinds. Studio
+ * therefore must not treat its own last write as the truth — `applyOverlayState`
+ * adopts what the engine republishes (`/omniphony/state/overlay`), so pressing
+ * the mpv keybind moves the Studio switch instead of silently diverging from it.
  */
 
 import { invoke } from '@tauri-apps/api/core';
@@ -13,9 +19,57 @@ import { app } from './state.js';
 import { pushLog } from './log.js';
 import { colormapIndex } from './scene/object-energy-shared.js';
 
+// Last state the ENGINE reported. Written only by `applyOverlayState`; a local
+// toggle updates it optimistically and is corrected by the next broadcast.
 const overlay = {
   enabled: true
 };
+
+/** Callbacks invoked after the engine's state lands, so the UI can re-render. */
+const stateListeners = new Set();
+
+/** Register a UI refresher for engine-driven overlay changes. */
+export function onOverlayState(fn) {
+  stateListeners.add(fn);
+  return () => stateListeners.delete(fn);
+}
+
+/**
+ * Adopt the overlay state published by the engine.
+ *
+ * This is the authoritative direction: whatever flipped the value — a Studio
+ * switch, an mpv keybind, or the prefs restored at orender startup — Studio
+ * ends up showing what is actually drawn.
+ */
+export function applyOverlayState(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  if (typeof payload.enabled === 'boolean') overlay.enabled = payload.enabled;
+  if (typeof payload.objectsVisible === 'boolean') app.objectsVisible = payload.objectsVisible;
+  if (typeof payload.labelsEnabled === 'boolean') app.objectLabelsEnabled = payload.labelsEnabled;
+  if (typeof payload.heatmapEnabled === 'boolean') {
+    app.objectEnergyHeatmapEnabled = payload.heatmapEnabled;
+  }
+  if (Number.isFinite(Number(payload.heatmapBands))) {
+    app.objectEnergyHeatmapBandCount = Math.max(1, Math.min(12, Math.round(Number(payload.heatmapBands))));
+  }
+  if (typeof payload.trailsEnabled === 'boolean') app.trailsEnabled = payload.trailsEnabled;
+  if (Number.isFinite(Number(payload.trailTtlMs))) {
+    app.trailPointTtlMs = Math.max(500, Math.round(Number(payload.trailTtlMs)));
+  }
+  if (payload.trailMode === 'diffuse' || payload.trailMode === 'line') {
+    app.trailRenderMode = payload.trailMode;
+  }
+  if (Number.isFinite(Number(payload.trailTeleportThreshold))) {
+    app.trailTeleportThreshold = Number(payload.trailTeleportThreshold);
+  }
+  for (const fn of stateListeners) {
+    try {
+      fn(payload);
+    } catch (e) {
+      pushLog('warn', `overlay state listener failed: ${e}`);
+    }
+  }
+}
 
 // ── public API ──────────────────────────────────────────────────────────
 
@@ -50,6 +104,7 @@ export async function pushMpvOverlayTrailPrefs(enabled, ttlMs, mode, teleportThr
   }
 }
 
+/** The engine's last reported overlay state (not a write-only local guess). */
 export function getMpvOverlayStatus() {
   return { enabled: overlay.enabled };
 }

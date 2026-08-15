@@ -230,6 +230,10 @@ pub struct VbapTopologyBuildPlan {
     pub diffuse: bool,
     pub diffuse_thr: f32,
     pub diffuse_curve: f32,
+    /// Out-of-hull rendering mode, baked into the panner at build (it shapes
+    /// the triangulation in `VirtualPoles`). Sourced from the live options;
+    /// a change rebuilds the topology (`OptionFlags::REBUILD`).
+    pub out_of_hull_mode: crate::spatial_vbap::OutOfHullMode,
 }
 
 impl VbapTopologyBuildPlan {
@@ -245,6 +249,7 @@ impl VbapTopologyBuildPlan {
             self.azimuth_resolution,
             self.elevation_resolution,
             0.0,
+            self.out_of_hull_mode,
         ) {
             Ok(panner) => panner.with_negative_z(self.allow_negative_z),
             // Degenerate geometry (collinear/coplanar, or a speaker at the
@@ -500,6 +505,7 @@ fn build_vbap_build_plan(
     live: &LiveParams,
     rebuild_params: BackendRebuildParams,
     spread: crate::render_backend::VbapSpreadParams,
+    out_of_hull_mode: crate::spatial_vbap::OutOfHullMode,
 ) -> Option<BackendBuildPlan> {
     let rebuild = rebuild_params.vbap?;
     let positions = layout
@@ -574,7 +580,50 @@ fn build_vbap_build_plan(
         diffuse: live.use_distance_diffuse,
         diffuse_thr: live.distance_diffuse_threshold,
         diffuse_curve: live.distance_diffuse_curve,
+        out_of_hull_mode,
     }))
+}
+
+/// Out-of-hull rendering mode, read from the param bag under `backend_id`
+/// (same generic path as every other backend param — persisted in
+/// `render.backend_params`, set over `/omniphony/control/backend/param`, read
+/// at build time only). Missing/invalid keys fall back to the schema defaults.
+fn vbap_out_of_hull_mode(
+    ctx: &BackendBuildCtx<'_>,
+    backend_id: &str,
+) -> crate::spatial_vbap::OutOfHullMode {
+    use crate::backend_params::ParamValue;
+    parse_out_of_hull_mode(
+        ctx.backend_param(backend_id, "out_of_hull_mode")
+            .and_then(ParamValue::as_str),
+        ctx.backend_param(backend_id, "fold_blend_power")
+            .and_then(ParamValue::as_f32),
+    )
+}
+
+/// Resolve the raw bag values into the DSP-facing mode. Unknown mode spellings
+/// and non-finite powers fall back to the schema defaults; the power is
+/// clamped to the schema bounds like every numeric bag param.
+fn parse_out_of_hull_mode(
+    mode: Option<&str>,
+    power: Option<f32>,
+) -> crate::spatial_vbap::OutOfHullMode {
+    use crate::spatial_vbap::OutOfHullMode;
+    match mode
+        .unwrap_or("virtual_poles")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "blend" | "fold" => OutOfHullMode::Blend {
+            power: power
+                .filter(|p| p.is_finite())
+                .unwrap_or(OutOfHullMode::DEFAULT_BLEND_POWER)
+                .clamp(1.0, 64.0),
+        },
+        "fade" | "original" | "legacy" => OutOfHullMode::Fade,
+        _ => OutOfHullMode::VirtualPoles,
+    }
 }
 
 /// VBAP spread tuning, read from the param bag under `backend_id`, with each
@@ -685,6 +734,7 @@ fn build_inner_backend_plan(
             ctx.live,
             ctx.backend_rebuild_params?,
             vbap_spread_params(ctx, backend_id),
+            vbap_out_of_hull_mode(ctx, backend_id),
         ),
         _ => None,
     }
@@ -990,6 +1040,33 @@ impl BackendFactory for VbapFactory {
                      evaluation.",
                 ),
             },
+            ParamSpec {
+                key: "out_of_hull_mode",
+                label: "Out-of-hull mode",
+                kind: ParamKind::Enum {
+                    options: vec![
+                        enum_option("virtual_poles", "Virtual poles (BS.2127)"),
+                        enum_option("blend", "Face blend"),
+                        enum_option("fade", "Original (fade out)"),
+                    ],
+                },
+                default: ParamValue::Text("virtual_poles".to_string()),
+                requires: None,
+                help: Some(
+                    "How directions outside the speaker hull (overhead on layouts without \
+                     heights, or below the listener) are rendered. Virtual poles (the \
+                     default) follows ITU-R BS.2127: pole energy spreads evenly over the \
+                     nearest speaker ring, at full level. Face blend also plays at full \
+                     level but keeps the image as localised as the layout allows. Original \
+                     is the historical behaviour: level fades with the fold angle, down to \
+                     silence at an uncovered pole. A change rebuilds the topology.",
+                ),
+            },
+            ParamSpec::float("fold_blend_power", "Blend sharpness", 1.0, 64.0, 1.0, 12.0).help(
+                "Sharpness of the face blend (score exponent). Higher values snap to the \
+                 closest boundary face for a tighter image; lower values blend more speakers \
+                 near the poles. Only used in Face blend mode.",
+            ),
         ]
     }
     fn build_plan(&self, ctx: &BackendBuildCtx<'_>) -> Option<BackendBuildPlan> {
@@ -1178,7 +1255,59 @@ mod tests {
         BackendCapabilities, CartesianEvaluationConfig, PolarEvaluationConfig, RenderRequest,
         RenderResponse,
     };
-    use crate::spatial_vbap::{DistanceMetric, DistanceModel, Gains};
+    use crate::spatial_vbap::{DistanceMetric, DistanceModel, Gains, OutOfHullMode};
+
+    #[test]
+    fn out_of_hull_bag_values_resolve_with_schema_defaults() {
+        // Absent keys → the schema default (BS.2127 virtual poles).
+        assert_eq!(
+            parse_out_of_hull_mode(None, None),
+            OutOfHullMode::VirtualPoles
+        );
+        // Canonical and alias spellings select the pole downmix.
+        for spelling in ["virtual_poles", "poles", "bs2127", " Virtual_Poles "] {
+            assert_eq!(
+                parse_out_of_hull_mode(Some(spelling), None),
+                OutOfHullMode::VirtualPoles,
+                "{spelling}"
+            );
+        }
+        // The legacy fade and its aliases.
+        for spelling in ["fade", "original", "legacy"] {
+            assert_eq!(
+                parse_out_of_hull_mode(Some(spelling), None),
+                OutOfHullMode::Fade,
+                "{spelling}"
+            );
+        }
+        // Power follows the bag in blend mode, clamped to the schema bounds;
+        // an absent power uses the historical constant.
+        assert_eq!(
+            parse_out_of_hull_mode(Some("blend"), None),
+            OutOfHullMode::Blend {
+                power: OutOfHullMode::DEFAULT_BLEND_POWER
+            }
+        );
+        assert_eq!(
+            parse_out_of_hull_mode(Some("blend"), Some(24.0)),
+            OutOfHullMode::Blend { power: 24.0 }
+        );
+        assert_eq!(
+            parse_out_of_hull_mode(Some("blend"), Some(1000.0)),
+            OutOfHullMode::Blend { power: 64.0 }
+        );
+        assert_eq!(
+            parse_out_of_hull_mode(Some("blend"), Some(f32::NAN)),
+            OutOfHullMode::Blend {
+                power: OutOfHullMode::DEFAULT_BLEND_POWER
+            }
+        );
+        // Junk falls back to the default mode rather than poisoning the build.
+        assert_eq!(
+            parse_out_of_hull_mode(Some("nonsense"), Some(3.0)),
+            OutOfHullMode::VirtualPoles
+        );
+    }
 
     const TEST_SPEAKERS: usize = 4;
 
@@ -1207,6 +1336,7 @@ mod tests {
                 room_ratio_lower: 1.0,
                 room_ratio_center_blend: 0.5,
                 use_distance_diffuse: false,
+                diffuse_mirror_axes: crate::spatial_vbap::MirrorAxes::default(),
                 distance_diffuse_threshold: 1.0,
                 distance_diffuse_curve: 1.0,
                 distance_model: DistanceModel::default(),

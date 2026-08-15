@@ -18,6 +18,20 @@
 //! bed and the sector objects stay mutually aligned at a fixed latency of one
 //! FFT frame (1024 samples ≈ 21 ms at 48 kHz).
 //!
+//! **3D inputs (`heights`).** When the input carries height channels and the
+//! `heights` param is on, they join the analysis instead of riding the bypass
+//! delay: every positionable channel is encoded by its full 3D direction
+//! (adding an up dipole U to the virtual B-format), the per-bin DOA gains an
+//! elevation, and four *high* sector objects (90° each, centred on the room
+//! corners at the ceiling) extend the eight floor sectors. A bin's direct part
+//! is split between the two rings by its elevation — normalised so a pure
+//! corner-top channel reads 1 — so content panned between the planes lands
+//! partly in each ring at the same azimuth, and the dynamic per-sector
+//! positions (now energy-weighted 3D means) track the true height in between:
+//! inter-plane phantoms image at intermediate elevation with no extra pass or
+//! latency. Bed-only inputs are bit-identical to the planar analysis (the up
+//! dipole is exactly zero).
+//!
 //! Model limits (shared with the DirAC object generator, which uses the same
 //! virtual B-format): the diffuseness estimate is exact only for
 //! direction-balanced content. Independent channels whose direction vectors do
@@ -37,7 +51,7 @@ use realfft::num_complex::Complex;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 
 use crate::object_gen::{
-    PrepareCtx, SynthObjectSpec, channel_top_position, flush_denorm, input_has_back, one_pole_coeff,
+    PrepareCtx, SynthObjectSpec, channel_3d_position, flush_denorm, input_has_back, one_pole_coeff,
 };
 use crate::stft::{DelayLine, OlaFifo, sine_window};
 
@@ -57,9 +71,18 @@ const SPEC_FLOOR: f32 = 1.0e-12;
 /// Largest input block the output FIFOs are sized for (same as the DirAC
 /// generator's bound).
 const SPEC_MAX_BLOCK: usize = 4096;
-/// Number of fixed azimuth sectors (45° each, centred on the compass
+/// Number of fixed floor azimuth sectors (45° each, centred on the compass
 /// directions starting at front). Fixed count = stable renderer channel slots.
-const SPEC_SECTORS: usize = 8;
+const SPEC_AZ_SECTORS: usize = 8;
+/// Number of high sectors (90° each, centred on the room corners), planned
+/// only when the input carries height channels and `heights` is on.
+const SPEC_HIGH_SECTORS: usize = 4;
+/// Sector array capacity: floor ring + high ring.
+const SPEC_MAX_SECTORS: usize = SPEC_AZ_SECTORS + SPEC_HIGH_SECTORS;
+/// Elevation of a corner top channel (`atan(1/√2)`) — the normalisation for
+/// the floor↔high ring split and the dynamic z, so a pure corner-top signal
+/// reads exactly 1 (fully high, z at the ceiling).
+const SPEC_EL_TOP: f32 = 0.615_479_7;
 /// Clamp on the per-bin power-matching gain (guards the W≈0 phase-cancellation
 /// corner, where the extraction depth is ~0 anyway).
 const SPEC_NORM_CLAMP: f32 = 4.0;
@@ -73,8 +96,9 @@ const SPEC_GAIN_DB: i8 = 0;
 /// large diffuse objects).
 const SPEC_SIZE: [f32; 3] = [0.3, 0.3, 0.3];
 
-/// Sector display names, in azimuth order from front, clockwise (+90° = right).
-const SECTOR_NAMES: [&str; SPEC_SECTORS] = [
+/// Floor sector display names, in azimuth order from front, clockwise
+/// (+90° = right).
+const SECTOR_NAMES: [&str; SPEC_AZ_SECTORS] = [
     "Direct_F",
     "Direct_FR",
     "Direct_R",
@@ -85,6 +109,11 @@ const SECTOR_NAMES: [&str; SPEC_SECTORS] = [
     "Direct_FL",
 ];
 
+/// High sector display names, clockwise from the front-right corner (matching
+/// their centre azimuths 45° + k·90°).
+const HIGH_SECTOR_NAMES: [&str; SPEC_HIGH_SECTORS] =
+    ["DirectH_FR", "DirectH_BR", "DirectH_BL", "DirectH_FL"];
+
 /// Project an azimuth onto the room-square perimeter (the bed channel
 /// convention: corners at |x| = |y| = 1) with a fixed height.
 fn sector_position(az: f32, lift: f64) -> [f64; 3] {
@@ -93,15 +122,35 @@ fn sector_position(az: f32, lift: f64) -> [f64; 3] {
     [(s / m) as f64, (c / m) as f64, lift]
 }
 
+/// 3D sector position from an azimuth and a normalised elevation
+/// `nz ∈ [0, 1]` (`el / el_top`, clamped): the horizontal square-perimeter
+/// point, pulled toward the room centre above the reference elevation (so
+/// zenith-heavy content — e.g. a lone `Tc` — localises overhead, not at a
+/// wall), at `z = lift + (1 − lift)·nz`.
+fn sector_position_3d(az: f32, el: f32, el_top: f32, lift: f64) -> [f64; 3] {
+    let nz = (el / el_top.max(1.0e-3)).clamp(0.0, 1.0);
+    // Above the reference elevation the direction leaves the wall for the
+    // ceiling: scale the horizontal point by cot(el)/cot(el_top).
+    let shrink = if el > el_top {
+        (el_top.tan() / el.tan().max(1.0e-6)).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let p = sector_position(az, 0.0);
+    let z = lift + (1.0 - lift) * nz as f64;
+    [p[0] * shrink as f64, p[1] * shrink as f64, z]
+}
+
 /// Frequency-domain phantom extractor state. Owned by
 /// [`crate::phantom_extract::PhantomExtractStage`] when the `method` param
 /// selects the per-band method.
 pub(crate) struct SpectralExtractor {
-    /// `(input channel index, cos(az) = front, sin(az) = right)` per
-    /// positionable bed channel — the virtual B-format encode weights. NOTE the
-    /// engine azimuth convention is `az = atan2(x, y)` with x = right,
-    /// y = front (0 = front, +90° = right).
-    enc: Vec<(usize, f32, f32)>,
+    /// `(input channel index, front, right, up)` per positionable channel —
+    /// the components of its unit direction vector, i.e. the virtual B-format
+    /// encode weights (up is 0 for every bed channel). NOTE the engine azimuth
+    /// convention is `az = atan2(x, y)` with x = right, y = front (0 = front,
+    /// +90° = right).
+    enc: Vec<(usize, f32, f32, f32)>,
     /// Channels that bypass the STFT (LFE, unpositioned): delayed to stay
     /// aligned with the transformed ones.
     other: Vec<(usize, DelayLine)>,
@@ -125,25 +174,37 @@ pub(crate) struct SpectralExtractor {
     spec_w: Vec<Complex<f32>>,
     spec_f: Vec<Complex<f32>>,
     spec_r: Vec<Complex<f32>>,
+    spec_u: Vec<Complex<f32>>,
     /// Per-sector object spectra, rebuilt every hop.
     spec_sec: Vec<Vec<Complex<f32>>>,
-    /// Per-bin smoothed active intensity (front/right) and energy → ψ + DOA.
+    /// Per-bin smoothed active intensity (front/right/up) and energy → ψ + DOA.
     i_front: Vec<f32>,
     i_right: Vec<f32>,
+    i_up: Vec<f32>,
     e: Vec<f32>,
     /// Residual synthesis per positionable channel / per sector object.
     ch_ola: Vec<OlaFifo>,
     obj_ola: Vec<OlaFifo>,
-    /// Smoothed per-sector energy + direction sums → dynamic object positions.
-    sec_e: [f32; SPEC_SECTORS],
-    sec_sx: [f32; SPEC_SECTORS],
-    sec_cy: [f32; SPEC_SECTORS],
+    /// Planned sector count: the 8-sector floor ring, plus the 4-sector high
+    /// ring when the input carries height channels (and `heights` is on).
+    sectors: usize,
+    /// Smoothed per-sector energy + 3D direction sums → dynamic object
+    /// positions (energy-weighted mean unit vector).
+    sec_e: [f32; SPEC_MAX_SECTORS],
+    sec_sx: [f32; SPEC_MAX_SECTORS],
+    sec_cy: [f32; SPEC_MAX_SECTORS],
+    sec_uz: [f32; SPEC_MAX_SECTORS],
     /// Per-hop accumulators for the above (reset every frame).
-    hop_e: [f32; SPEC_SECTORS],
-    hop_sx: [f32; SPEC_SECTORS],
-    hop_cy: [f32; SPEC_SECTORS],
+    hop_e: [f32; SPEC_MAX_SECTORS],
+    hop_sx: [f32; SPEC_MAX_SECTORS],
+    hop_cy: [f32; SPEC_MAX_SECTORS],
+    hop_uz: [f32; SPEC_MAX_SECTORS],
     /// Sector centre azimuths (position fallback when a sector is silent).
-    centers: [f32; SPEC_SECTORS],
+    centers: [f32; SPEC_MAX_SECTORS],
+    /// Reference elevation (rad) for the floor↔high ring split, the dynamic z
+    /// and the zenith pull-in — the live `height_split` param (default: the
+    /// corner-top elevation [`SPEC_EL_TOP`]). Lower = content reads higher.
+    el_top: f32,
     /// Per-hop one-pole coefficient.
     alpha: f32,
     /// Test hook: force `1 − ψ ≡ 1` to verify extraction/reconstruction gain
@@ -155,21 +216,27 @@ pub(crate) struct SpectralExtractor {
 impl SpectralExtractor {
     /// Build the extractor for the current input, or `None` when fewer than
     /// two positionable channels are present (no direction to estimate).
-    pub(crate) fn prepare(ctx: &PrepareCtx) -> Option<Self> {
+    /// `heights` opts the input's height channels into the analysis (3D DOA +
+    /// high sector ring); off, they ride the bypass delay untouched.
+    pub(crate) fn prepare(ctx: &PrepareCtx, heights: bool) -> Option<Self> {
         let use_7_1 = input_has_back(ctx.input_labels);
         let mut enc = Vec::new();
         let mut other = Vec::new();
+        let mut has_top = false;
         for (idx, &label) in ctx.input_labels.iter().enumerate() {
-            match channel_top_position(label, use_7_1, ctx.surround_placement) {
+            let pos = channel_3d_position(label, use_7_1, ctx.surround_placement)
+                .filter(|p| heights || p[2] <= 0.0);
+            match pos {
                 Some(pos) => {
-                    let (x, y) = (pos[0] as f32, pos[1] as f32);
-                    let r = (x * x + y * y).sqrt();
-                    let (ca, sa) = if r > 1.0e-6 {
-                        (y / r, x / r)
+                    let (x, y, z) = (pos[0] as f32, pos[1] as f32, pos[2] as f32);
+                    let r = (x * x + y * y + z * z).sqrt();
+                    let (ca, sa, ua) = if r > 1.0e-6 {
+                        (y / r, x / r, z / r)
                     } else {
-                        (0.0, 0.0)
+                        (0.0, 0.0, 0.0)
                     };
-                    enc.push((idx, ca, sa));
+                    has_top |= z > 0.0;
+                    enc.push((idx, ca, sa, ua));
                 }
                 None => other.push((idx, DelayLine::new(SPEC_FFT_SIZE))),
             }
@@ -177,6 +244,11 @@ impl SpectralExtractor {
         if enc.len() < 2 {
             return None;
         }
+        let sectors = if has_top {
+            SPEC_MAX_SECTORS
+        } else {
+            SPEC_AZ_SECTORS
+        };
 
         let mut planner = RealFftPlanner::<f32>::new();
         let fft_fwd = planner.plan_fft_forward(SPEC_FFT_SIZE);
@@ -186,9 +258,13 @@ impl SpectralExtractor {
         let nb = n / 2 + 1;
         let c_count = enc.len();
 
-        let mut centers = [0.0f32; SPEC_SECTORS];
-        for (k, az) in centers.iter_mut().enumerate() {
+        let mut centers = [0.0f32; SPEC_MAX_SECTORS];
+        for (k, az) in centers.iter_mut().enumerate().take(SPEC_AZ_SECTORS) {
             *az = k as f32 * std::f32::consts::FRAC_PI_4;
+        }
+        for (k, az) in centers.iter_mut().enumerate().skip(SPEC_AZ_SECTORS) {
+            *az = std::f32::consts::FRAC_PI_4
+                + (k - SPEC_AZ_SECTORS) as f32 * std::f32::consts::FRAC_PI_2;
         }
 
         Some(Self {
@@ -206,23 +282,29 @@ impl SpectralExtractor {
             spec_w: fft_fwd.make_output_vec(),
             spec_f: fft_fwd.make_output_vec(),
             spec_r: fft_fwd.make_output_vec(),
-            spec_sec: vec![fft_fwd.make_output_vec(); SPEC_SECTORS],
+            spec_u: fft_fwd.make_output_vec(),
+            spec_sec: vec![fft_fwd.make_output_vec(); sectors],
             i_front: vec![0.0; nb],
             i_right: vec![0.0; nb],
+            i_up: vec![0.0; nb],
             e: vec![0.0; nb],
             ch_ola: (0..c_count)
                 .map(|_| OlaFifo::new(n, SPEC_HOP, SPEC_MAX_BLOCK))
                 .collect(),
-            obj_ola: (0..SPEC_SECTORS)
+            obj_ola: (0..sectors)
                 .map(|_| OlaFifo::new(n, SPEC_HOP, SPEC_MAX_BLOCK))
                 .collect(),
-            sec_e: [0.0; SPEC_SECTORS],
-            sec_sx: [0.0; SPEC_SECTORS],
-            sec_cy: [0.0; SPEC_SECTORS],
-            hop_e: [0.0; SPEC_SECTORS],
-            hop_sx: [0.0; SPEC_SECTORS],
-            hop_cy: [0.0; SPEC_SECTORS],
+            sectors,
+            sec_e: [0.0; SPEC_MAX_SECTORS],
+            sec_sx: [0.0; SPEC_MAX_SECTORS],
+            sec_cy: [0.0; SPEC_MAX_SECTORS],
+            sec_uz: [0.0; SPEC_MAX_SECTORS],
+            hop_e: [0.0; SPEC_MAX_SECTORS],
+            hop_sx: [0.0; SPEC_MAX_SECTORS],
+            hop_cy: [0.0; SPEC_MAX_SECTORS],
+            hop_uz: [0.0; SPEC_MAX_SECTORS],
             centers,
+            el_top: SPEC_EL_TOP,
             // The smoothers step once per hop, not per sample.
             alpha: one_pole_coeff(SPEC_STAT_TC_MS, fs / SPEC_HOP as f32),
             fft_fwd,
@@ -232,14 +314,29 @@ impl SpectralExtractor {
         })
     }
 
-    /// The eight sector objects, at their static sector-centre positions.
+    /// Set the reference elevation (radians) for the floor↔high ring split —
+    /// the live `height_split` param. Applies immediately, no DSP-state reset.
+    pub(crate) fn set_el_top(&mut self, el_top: f32) {
+        self.el_top = el_top.clamp(0.05, 1.5);
+    }
+
+    /// The planned sector objects (floor ring + optional high ring), at their
+    /// static sector-centre positions.
     pub(crate) fn specs(&self, lift: f64) -> Vec<SynthObjectSpec> {
-        SECTOR_NAMES
+        let names = SECTOR_NAMES
             .iter()
+            .chain(HIGH_SECTOR_NAMES.iter())
+            .take(self.sectors);
+        names
             .zip(self.centers.iter())
-            .map(|(name, &az)| SynthObjectSpec {
+            .enumerate()
+            .map(|(k, (name, &az))| SynthObjectSpec {
                 name: name.to_string(),
-                position: sector_position(az, lift),
+                position: if k < SPEC_AZ_SECTORS {
+                    sector_position(az, lift)
+                } else {
+                    sector_position_3d(az, self.el_top, self.el_top, lift)
+                },
                 gain_db: SPEC_GAIN_DB,
                 size: SPEC_SIZE,
             })
@@ -247,15 +344,22 @@ impl SpectralExtractor {
     }
 
     /// Refresh the dynamic sector positions from the smoothed energy-weighted
-    /// mean DOA; a silent sector parks at its centre. Cheap, called per frame.
+    /// mean 3D DOA; a silent sector parks at its centre (floor ring on the
+    /// perimeter at the lift height, high ring at its ceiling corner). Cheap,
+    /// called per frame.
     pub(crate) fn refresh_positions(&self, lift: f64, specs: &mut [SynthObjectSpec]) {
-        for (k, spec) in specs.iter_mut().enumerate().take(SPEC_SECTORS) {
-            let az = if self.sec_e[k] > SPEC_POS_FLOOR {
-                self.sec_sx[k].atan2(self.sec_cy[k])
+        for (k, spec) in specs.iter_mut().enumerate().take(self.sectors) {
+            let (az, el) = if self.sec_e[k] > SPEC_POS_FLOOR {
+                let az = self.sec_sx[k].atan2(self.sec_cy[k]);
+                let hor =
+                    (self.sec_sx[k] * self.sec_sx[k] + self.sec_cy[k] * self.sec_cy[k]).sqrt();
+                (az, self.sec_uz[k].atan2(hor))
+            } else if k < SPEC_AZ_SECTORS {
+                (self.centers[k], 0.0)
             } else {
-                self.centers[k]
+                (self.centers[k], self.el_top)
             };
-            spec.position = sector_position(az, lift);
+            spec.position = sector_position_3d(az, el, self.el_top, lift);
         }
     }
 
@@ -272,7 +376,7 @@ impl SpectralExtractor {
     ) {
         for s in 0..n {
             let base = s * c;
-            for (k, &(ch, _, _)) in self.enc.iter().enumerate() {
+            for (k, &(ch, _, _, _)) in self.enc.iter().enumerate() {
                 self.frames[k][self.widx] = if ch < c { bed[base + ch] } else { 0.0 };
             }
             for (ch, dl) in self.other.iter_mut() {
@@ -292,7 +396,7 @@ impl SpectralExtractor {
                     bed[base + ch] = ola.pop();
                 }
             }
-            for (j, buf) in planar.iter_mut().enumerate().take(SPEC_SECTORS) {
+            for (j, buf) in planar.iter_mut().enumerate().take(self.sectors) {
                 buf[s] = self.obj_ola[j].pop();
             }
         }
@@ -325,15 +429,18 @@ impl SpectralExtractor {
             let mut w = Complex::new(0.0f32, 0.0);
             let mut f = Complex::new(0.0f32, 0.0);
             let mut r = Complex::new(0.0f32, 0.0);
-            for (k, &(_, ca, sa)) in self.enc.iter().enumerate() {
+            let mut u = Complex::new(0.0f32, 0.0);
+            for (k, &(_, ca, sa, ua)) in self.enc.iter().enumerate() {
                 let x = self.spec_ch[k][b];
                 w += x;
                 f += x * ca;
                 r += x * sa;
+                u += x * ua;
             }
             self.spec_w[b] = w;
             self.spec_f[b] = f;
             self.spec_r[b] = r;
+            self.spec_u[b] = u;
             e_sum += w.norm_sqr();
         }
         let reg = SPEC_REG * (e_sum / nb.max(1) as f32) + SPEC_FLOOR;
@@ -343,9 +450,10 @@ impl SpectralExtractor {
                 *v = Complex::new(0.0, 0.0);
             }
         }
-        self.hop_e = [0.0; SPEC_SECTORS];
-        self.hop_sx = [0.0; SPEC_SECTORS];
-        self.hop_cy = [0.0; SPEC_SECTORS];
+        self.hop_e = [0.0; SPEC_MAX_SECTORS];
+        self.hop_sx = [0.0; SPEC_MAX_SECTORS];
+        self.hop_cy = [0.0; SPEC_MAX_SECTORS];
+        self.hop_uz = [0.0; SPEC_MAX_SECTORS];
 
         let alpha = self.alpha;
         #[cfg(test)]
@@ -355,25 +463,30 @@ impl SpectralExtractor {
 
         // DC and Nyquist are excluded: they carry no direction and must stay
         // purely real for the inverse real FFT — they simply remain in the bed.
+        let high = self.sectors > SPEC_AZ_SECTORS;
         for b in 1..nb.saturating_sub(1) {
             let w = self.spec_w[b];
             let f = self.spec_f[b];
             let r = self.spec_r[b];
-            // Active intensity components Re(conj(W)·F), Re(conj(W)·R) and
-            // pressure energy |W|², smoothed per bin (ψ and the DOA are ratios
-            // of expectations).
+            let u = self.spec_u[b];
+            // Active intensity components Re(conj(W)·F), Re(conj(W)·R),
+            // Re(conj(W)·U) and pressure energy |W|², smoothed per bin (ψ and
+            // the DOA are ratios of expectations).
             let i_f = w.re * f.re + w.im * f.im;
             let i_r = w.re * r.re + w.im * r.im;
+            let i_u = w.re * u.re + w.im * u.im;
             let ew = w.norm_sqr();
             self.i_front[b] = flush_denorm(self.i_front[b] + alpha * (i_f - self.i_front[b]));
             self.i_right[b] = flush_denorm(self.i_right[b] + alpha * (i_r - self.i_right[b]));
+            self.i_up[b] = flush_denorm(self.i_up[b] + alpha * (i_u - self.i_up[b]));
             self.e[b] = flush_denorm(self.e[b] + alpha * (ew - self.e[b]));
 
-            // Directness = 1 − ψ = ‖I‖ / E. `d ≤ strength` doubles as the
+            // Directness = 1 − ψ = ‖I‖ / E (3D norm; the up component is
+            // exactly zero for bed-only inputs). `d ≤ strength` doubles as the
             // over-subtraction floor: the residual gain never drops below
             // 1 − strength.
-            let imag =
-                (self.i_front[b] * self.i_front[b] + self.i_right[b] * self.i_right[b]).sqrt();
+            let hor2 = self.i_front[b] * self.i_front[b] + self.i_right[b] * self.i_right[b];
+            let imag = (hor2 + self.i_up[b] * self.i_up[b]).sqrt();
             let direct = if force {
                 1.0
             } else {
@@ -384,15 +497,23 @@ impl SpectralExtractor {
                 continue;
             }
 
-            // DOA from the smoothed intensity, softly assigned to the two
-            // adjacent sectors (constant-sum linear weights: no energy pumping,
-            // no hard switching between sectors).
+            // DOA from the smoothed intensity. The elevation splits the bin
+            // between the floor and high rings (constant-sum, normalised so a
+            // pure corner-top channel is fully high); the azimuth is softly
+            // assigned to the two adjacent sectors of each ring (constant-sum
+            // linear weights: no energy pumping, no hard switching).
             let az = self.i_right[b].atan2(self.i_front[b]);
-            let t = az * (4.0 / std::f32::consts::PI); // 45° sectors
+            let el = self.i_up[b].atan2(hor2.sqrt());
+            let wh = if high {
+                (el / self.el_top.max(1.0e-3)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let t = az * (4.0 / std::f32::consts::PI); // 45° floor sectors
             let tf = t.floor();
             let frac = t - tf;
-            let k0 = (tf as i32).rem_euclid(SPEC_SECTORS as i32) as usize;
-            let k1 = (k0 + 1) % SPEC_SECTORS;
+            let k0 = (tf as i32).rem_euclid(SPEC_AZ_SECTORS as i32) as usize;
+            let k1 = (k0 + 1) % SPEC_AZ_SECTORS;
 
             // Power-match the extracted object to what leaves the bed: the
             // virtual W amplitude-sums correlated channels, so rescale to the
@@ -404,31 +525,59 @@ impl SpectralExtractor {
             }
             let norm = (ch_pow / (ew + SPEC_FLOOR)).sqrt().min(SPEC_NORM_CLAMP);
             let ext = w * (d * norm);
-            self.spec_sec[k0][b] += ext * (1.0 - frac);
-            self.spec_sec[k1][b] += ext * frac;
+            let wl = 1.0 - wh;
+            self.spec_sec[k0][b] += ext * (wl * (1.0 - frac));
+            self.spec_sec[k1][b] += ext * (wl * frac);
 
             let res = 1.0 - d;
             for k in 0..self.enc.len() {
                 self.spec_ch[k][b] = self.spec_ch[k][b] * res;
             }
 
-            // Position statistics (instantaneous, smoothed per sector below).
+            // Position statistics: the energy-weighted unit DOA vector
+            // (instantaneous, smoothed per sector below).
             let (saz, caz) = az.sin_cos();
+            let (sel, cel) = el.sin_cos();
             let p = d * ew;
-            self.hop_e[k0] += (1.0 - frac) * p;
-            self.hop_sx[k0] += (1.0 - frac) * p * saz;
-            self.hop_cy[k0] += (1.0 - frac) * p * caz;
-            self.hop_e[k1] += frac * p;
-            self.hop_sx[k1] += frac * p * saz;
-            self.hop_cy[k1] += frac * p * caz;
+            let (vx, vy, vz) = (cel * saz, cel * caz, sel);
+            self.hop_e[k0] += wl * (1.0 - frac) * p;
+            self.hop_sx[k0] += wl * (1.0 - frac) * p * vx;
+            self.hop_cy[k0] += wl * (1.0 - frac) * p * vy;
+            self.hop_uz[k0] += wl * (1.0 - frac) * p * vz;
+            self.hop_e[k1] += wl * frac * p;
+            self.hop_sx[k1] += wl * frac * p * vx;
+            self.hop_cy[k1] += wl * frac * p * vy;
+            self.hop_uz[k1] += wl * frac * p * vz;
+
+            if wh > 0.0 {
+                // High ring: 90° sectors centred on the corners (45° + k·90°).
+                let th = (az - std::f32::consts::FRAC_PI_4) * (2.0 / std::f32::consts::PI);
+                let thf = th.floor();
+                let hfrac = th - thf;
+                let h0 =
+                    SPEC_AZ_SECTORS + (thf as i32).rem_euclid(SPEC_HIGH_SECTORS as i32) as usize;
+                let h1 = SPEC_AZ_SECTORS + (h0 - SPEC_AZ_SECTORS + 1) % SPEC_HIGH_SECTORS;
+                self.spec_sec[h0][b] += ext * (wh * (1.0 - hfrac));
+                self.spec_sec[h1][b] += ext * (wh * hfrac);
+                self.hop_e[h0] += wh * (1.0 - hfrac) * p;
+                self.hop_sx[h0] += wh * (1.0 - hfrac) * p * vx;
+                self.hop_cy[h0] += wh * (1.0 - hfrac) * p * vy;
+                self.hop_uz[h0] += wh * (1.0 - hfrac) * p * vz;
+                self.hop_e[h1] += wh * hfrac * p;
+                self.hop_sx[h1] += wh * hfrac * p * vx;
+                self.hop_cy[h1] += wh * hfrac * p * vy;
+                self.hop_uz[h1] += wh * hfrac * p * vz;
+            }
         }
 
-        for k in 0..SPEC_SECTORS {
+        for k in 0..self.sectors {
             self.sec_e[k] = flush_denorm(self.sec_e[k] + alpha * (self.hop_e[k] - self.sec_e[k]));
             self.sec_sx[k] =
                 flush_denorm(self.sec_sx[k] + alpha * (self.hop_sx[k] - self.sec_sx[k]));
             self.sec_cy[k] =
                 flush_denorm(self.sec_cy[k] + alpha * (self.hop_cy[k] - self.sec_cy[k]));
+            self.sec_uz[k] =
+                flush_denorm(self.sec_uz[k] + alpha * (self.hop_uz[k] - self.sec_uz[k]));
         }
 
         // WOLA scale: only the unnormalised-iFFT factor — the sine·sine window
@@ -445,7 +594,7 @@ impl SpectralExtractor {
         // Sector objects: skip the inverse FFT for sectors this frame left
         // silent (typical content lands in 2–4 sectors) — their output is the
         // draining OLA tail.
-        for k in 0..SPEC_SECTORS {
+        for k in 0..self.sectors {
             if self.hop_e[k] > SPEC_SILENT {
                 let _ = self.fft_inv.process_with_scratch(
                     &mut self.spec_sec[k],
@@ -484,6 +633,19 @@ mod tests {
         RChannelLabel::Rs,
         RChannelLabel::Lb,
         RChannelLabel::Rb,
+    ];
+
+    const LABELS_5_1_4: [RChannelLabel; 10] = [
+        RChannelLabel::L,
+        RChannelLabel::R,
+        RChannelLabel::C,
+        RChannelLabel::LFE,
+        RChannelLabel::Ls,
+        RChannelLabel::Rs,
+        RChannelLabel::Tfl,
+        RChannelLabel::Tfr,
+        RChannelLabel::Tbl,
+        RChannelLabel::Tbr,
     ];
 
     fn dummy_layout() -> SpeakerLayout {
@@ -536,14 +698,14 @@ mod tests {
     }
 
     fn make_planar(n: usize) -> Vec<Vec<f32>> {
-        (0..SPEC_SECTORS).map(|_| vec![0.0; n]).collect()
+        (0..SPEC_MAX_SECTORS).map(|_| vec![0.0; n]).collect()
     }
 
     #[test]
     fn plans_eight_sector_objects() {
         let layout = dummy_layout();
         for labels in [&LABELS_5_1[..], &LABELS_7_1[..]] {
-            let ext = SpectralExtractor::prepare(&ctx(labels, &layout)).expect("prepare");
+            let ext = SpectralExtractor::prepare(&ctx(labels, &layout), true).expect("prepare");
             let specs = ext.specs(0.0);
             assert_eq!(specs.len(), 8);
             assert_eq!(specs[0].name, "Direct_F");
@@ -555,16 +717,231 @@ mod tests {
     }
 
     #[test]
+    fn plans_high_ring_for_3d_input() {
+        let layout = dummy_layout();
+        let ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+        let specs = ext.specs(0.0);
+        assert_eq!(specs.len(), SPEC_MAX_SECTORS);
+        assert_eq!(specs[8].name, "DirectH_FR");
+        assert_eq!(specs[11].name, "DirectH_FL");
+        // High sectors park at their ceiling corners.
+        for spec in &specs[SPEC_AZ_SECTORS..] {
+            assert!(
+                spec.position[0].abs() > 0.9
+                    && spec.position[1].abs() > 0.9
+                    && spec.position[2] > 0.9,
+                "high sector at a ceiling corner, got {:?}",
+                spec.position
+            );
+        }
+        // With `heights` off the tops are bypassed: floor ring only.
+        let ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), false).expect("prepare");
+        assert_eq!(ext.specs(0.0).len(), SPEC_AZ_SECTORS);
+    }
+
+    #[test]
+    fn heights_off_passes_tops_through() {
+        let layout = dummy_layout();
+        let mut ext =
+            SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), false).expect("prepare");
+        let c = 10usize;
+        let n = 24_000usize;
+        let s = sine(700.0);
+        let mut bed = vec![0.0f32; c * n];
+        for i in 0..n {
+            bed[i * c + 6] = 0.5 * s(i); // Tfl only
+        }
+        let input = bed.clone();
+        let mut planar = make_planar(n);
+        ext.process(&mut bed, c, n, 1.0, &mut planar);
+        // The top rides the exact bypass delay; every object stays silent.
+        for smp in SPEC_FFT_SIZE..n {
+            let got = bed[smp * c + 6];
+            let want = input[(smp - SPEC_FFT_SIZE) * c + 6];
+            assert!((got - want).abs() < 1.0e-7, "sample {smp}: {got} vs {want}");
+        }
+        assert!(planar.iter().flatten().all(|x| x.abs() < 1.0e-9));
+    }
+
+    #[test]
+    fn top_pair_lands_in_high_ring() {
+        // A source panned across the two front tops (Tfl+Tfr equal): mean DOA
+        // is front at 45° elevation — above the corner-channel elevation, so it
+        // must be extracted entirely into the high ring (split between the two
+        // front-high sectors that straddle the front azimuth), emptying the
+        // top channels and leaving the floor ring silent.
+        let layout = dummy_layout();
+        let mut ext =
+            SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+        let c = 10usize;
+        let n = 24_000usize;
+        let s = sine(700.0);
+        let mut bed = vec![0.0f32; c * n];
+        for i in 0..n {
+            let v = 0.5 * s(i);
+            bed[i * c + 6] = v; // Tfl
+            bed[i * c + 7] = v; // Tfr
+        }
+        let in_t = tone_energy(&channel_tail(&bed, c, 6, n / 2, n), 700.0);
+        let mut planar = make_planar(n);
+        ext.process(&mut bed, c, n, 1.0, &mut planar);
+        let tail = n / 2..n;
+        let high_front = tone_energy(&planar[8][tail.clone()], 700.0)
+            + tone_energy(&planar[11][tail.clone()], 700.0);
+        let floor_all: f32 = (0..SPEC_AZ_SECTORS)
+            .map(|k| tone_energy(&planar[k][tail.clone()], 700.0))
+            .sum();
+        let t_res = tone_energy(&channel_tail(&bed, c, 6, n / 2, n), 700.0);
+        assert!(
+            high_front > 0.15 * in_t,
+            "front-high sectors should carry the pair ({high_front} vs {in_t})"
+        );
+        assert!(
+            floor_all < 0.05 * in_t,
+            "floor ring must stay silent ({floor_all} vs {in_t})"
+        );
+        assert!(
+            t_res < 0.1 * in_t,
+            "Tfl should be largely emptied ({t_res} vs {in_t})"
+        );
+    }
+
+    #[test]
+    fn vertical_phantom_splits_between_rings() {
+        // THE inter-plane case: a source panned between L (floor) and Tfl
+        // (ceiling). Its DOA elevation is half the corner-channel elevation, so
+        // the extraction must split between Direct_FL and DirectH_FL at the
+        // same azimuth — and both sectors' dynamic positions must sit at an
+        // intermediate height, so the pair images between the planes.
+        let layout = dummy_layout();
+        let mut ext =
+            SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+        let c = 10usize;
+        let n = 24_000usize;
+        let s = sine(700.0);
+        let mut bed = vec![0.0f32; c * n];
+        for i in 0..n {
+            let v = 0.5 * s(i);
+            bed[i * c] = v; // L
+            bed[i * c + 6] = v; // Tfl
+        }
+        let in_l = tone_energy(&channel_tail(&bed, c, 0, n / 2, n), 700.0);
+        let mut planar = make_planar(n);
+        ext.process(&mut bed, c, n, 1.0, &mut planar);
+        let tail = n / 2..n;
+        let fl = tone_energy(&planar[7][tail.clone()], 700.0); // Direct_FL
+        let hfl = tone_energy(&planar[11][tail.clone()], 700.0); // DirectH_FL
+        let l_res = tone_energy(&channel_tail(&bed, c, 0, n / 2, n), 700.0);
+        let t_res = tone_energy(&channel_tail(&bed, c, 6, n / 2, n), 700.0);
+        assert!(
+            fl > 0.1 * in_l && hfl > 0.1 * in_l,
+            "both rings should share the vertical phantom (floor {fl}, high {hfl}, in {in_l})"
+        );
+        assert!(
+            l_res < 0.1 * in_l && t_res < 0.1 * in_l,
+            "L and Tfl should be largely emptied ({l_res}/{t_res} vs {in_l})"
+        );
+        let mut specs = ext.specs(0.0);
+        ext.refresh_positions(0.0, &mut specs);
+        for k in [7usize, 11] {
+            let pos = specs[k].position;
+            assert!(
+                pos[0] < -0.4 && pos[1] > 0.4,
+                "sector {k} should localize front-left, got {pos:?}"
+            );
+            assert!(
+                pos[2] > 0.25 && pos[2] < 0.75,
+                "sector {k} should sit between the planes, got z {}",
+                pos[2]
+            );
+        }
+    }
+
+    #[test]
+    fn height_split_shifts_the_ring_balance() {
+        // The vertical L↔Tfl phantom reads ≈17.6° of elevation. With the split
+        // reference well below that it must land (almost) fully in the high
+        // ring; well above, (almost) fully in the floor ring.
+        let layout = dummy_layout();
+        for (el_top_deg, expect_high) in [(16.0f32, true), (70.0, false)] {
+            let mut ext =
+                SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+            ext.set_el_top(el_top_deg.to_radians());
+            let c = 10usize;
+            let n = 24_000usize;
+            let s = sine(700.0);
+            let mut bed = vec![0.0f32; c * n];
+            for i in 0..n {
+                let v = 0.5 * s(i);
+                bed[i * c] = v; // L
+                bed[i * c + 6] = v; // Tfl
+            }
+            let mut planar = make_planar(n);
+            ext.process(&mut bed, c, n, 1.0, &mut planar);
+            let tail = n / 2..n;
+            let fl = tone_energy(&planar[7][tail.clone()], 700.0); // Direct_FL
+            let hfl = tone_energy(&planar[11][tail.clone()], 700.0); // DirectH_FL
+            if expect_high {
+                assert!(
+                    hfl > 4.0 * fl,
+                    "split at {el_top_deg}°: high ring should dominate ({hfl} vs {fl})"
+                );
+            } else {
+                assert!(
+                    fl > 4.0 * hfl,
+                    "split at {el_top_deg}°: floor ring should dominate ({fl} vs {hfl})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_bounded_and_silence_decays_3d() {
+        let layout = dummy_layout();
+        for strength in [0.0f32, 0.5, 1.0] {
+            let mut ext =
+                SpectralExtractor::prepare(&ctx(&LABELS_5_1_4, &layout), true).expect("prepare");
+            let c = 10usize;
+            let n = 12_000usize;
+            let s = sine(440.0);
+            let mut state = 42u32;
+            let mut bed = vec![0.0f32; c * n];
+            for i in 0..n / 2 {
+                bed[i * c] = 0.5 * s(i);
+                bed[i * c + 6] = 0.4 * xorshift(&mut state);
+            }
+            let mut planar = make_planar(n);
+            ext.process(&mut bed, c, n, strength, &mut planar);
+            assert!(bed.iter().all(|x| x.is_finite()));
+            assert!(planar.iter().flatten().all(|x| x.is_finite()));
+            for smp in n - 1000..n {
+                for ch in 0..c {
+                    assert!(
+                        bed[smp * c + ch].abs() < 1.0e-6,
+                        "bed ch {ch} should decay to silence (strength {strength})"
+                    );
+                }
+            }
+            assert!(
+                planar
+                    .iter()
+                    .all(|buf| buf[n - 1000..].iter().all(|x| x.abs() < 1.0e-6)),
+                "objects should decay to silence (strength {strength})"
+            );
+        }
+    }
+
+    #[test]
     fn too_few_positionable_channels_is_none() {
         let layout = dummy_layout();
         let labels = [RChannelLabel::C, RChannelLabel::LFE];
-        assert!(SpectralExtractor::prepare(&ctx(&labels, &layout)).is_none());
+        assert!(SpectralExtractor::prepare(&ctx(&labels, &layout), true).is_none());
     }
 
     #[test]
     fn strength_zero_is_delayed_identity() {
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout)).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout), true).unwrap();
         let c = 6usize;
         let n = 8192usize;
         let mut state = 0x1234_5678u32;
@@ -594,7 +971,7 @@ mod tests {
     #[test]
     fn extracts_panned_source_per_band() {
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout)).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout), true).unwrap();
         let c = 6usize;
         let n = 24_000usize;
         let s = sine(700.0);
@@ -635,7 +1012,7 @@ mod tests {
         // Each must land in its own sector with its own band, and each bed
         // channel must be reduced only where its source lives.
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout)).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout), true).unwrap();
         let c = 6usize;
         let n = 24_000usize;
         let (s1, s2) = (sine(400.0), sine(3200.0));
@@ -691,7 +1068,7 @@ mod tests {
         // legitimately reads partly direct toward its mean direction; see the
         // module docs.
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_7_1, &layout)).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_7_1, &layout), true).unwrap();
         let c = 8usize;
         let n = 24_000usize;
         let mut states = [1u32, 99, 12345, 777_777, 0xdead_beef, 0x00c0_ffee];
@@ -733,7 +1110,7 @@ mod tests {
         // = 1), full strength must move the source to its sector object at
         // unity gain and empty the bed channel.
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout)).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_5_1, &layout), true).unwrap();
         ext.force_direct = true;
         let c = 6usize;
         let n = 24_000usize;
@@ -765,7 +1142,7 @@ mod tests {
     #[ignore = "perf probe — run explicitly in release"]
     fn perf_throughput_7_1() {
         let layout = dummy_layout();
-        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_7_1, &layout)).unwrap();
+        let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_7_1, &layout), true).unwrap();
         let c = 8usize;
         let block = 512usize;
         let seconds = 60usize;
@@ -793,7 +1170,7 @@ mod tests {
     fn finite_bounded_and_silence_decays() {
         let layout = dummy_layout();
         for strength in [0.0f32, 0.3, 0.7, 1.0] {
-            let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_7_1, &layout)).unwrap();
+            let mut ext = SpectralExtractor::prepare(&ctx(&LABELS_7_1, &layout), true).unwrap();
             let c = 8usize;
             let n = 12_000usize;
             let s = sine(440.0);

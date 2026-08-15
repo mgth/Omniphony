@@ -95,11 +95,16 @@ typedef struct OrenderConfig {
     // Disambiguates the bridge's raw transport (which carries no data-type
     // byte). NULL → the bridge sniffs the sync word.
     const char *codec;
-    // Enable the OSC live-control server. (Not yet wired in this build.)
+    // Force the OSC live-control server on (non-zero). 0 → follow the
+    // config's `render.osc`; when that is unset too, OSC defaults to on iff
+    // `OMNIPHONY_OSC_PORT` is set (a workflow-assigned control port implies
+    // the engine must be reachable there).
     int osc_enabled;
-    // Incoming OSC port (0 = auto).
+    // Incoming OSC port (0 → config `render.osc_rx_port`, else
+    // `OMNIPHONY_OSC_PORT`, else 9000).
     uint16_t osc_port_in;
-    // Outgoing/monitoring OSC port.
+    // Outgoing/monitoring OSC port (0 → config `render.osc_port`, else
+    // `OMNIPHONY_OSC_PORT`, else 9000).
     uint16_t osc_port_out;
     // OSC bind address (default "127.0.0.1").
     const char *osc_bind;

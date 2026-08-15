@@ -1,10 +1,11 @@
 use super::bootstrap::init_render_handler;
 use super::config_resolution::{effective_to_config, merge_render_config};
 use super::decoder_thread::{
-    DecodedAudioData, DecoderCommand, DecoderMessage, DecoderThreadConfig, PipeInputDiag,
-    spawn_decoder_thread,
+    DecodedAudioData, DecodedSource, DecoderCommand, DecoderMessage, DecoderThreadConfig,
+    PipeInputDiag, spawn_decoder_thread,
 };
 use super::handler::DecodeHandler;
+use super::idle_feed::{IdleFeedInputs, IdleFeeder};
 use super::live_input::{LiveBridgeRuntimeConfig, spawn_live_input_manager};
 use super::state::FrameHandlerContext;
 use crate::cli::command::{Cli, EvaluationModeArg, OutputBackend, RenderArgSources, RenderArgs};
@@ -40,6 +41,11 @@ struct PreparedDecodeRun {
     /// Receives per-packet emitted audio duration (microseconds) from the
     /// decoder thread; consumed by the pure pipe-bridge pacer drain thread.
     drain_rx: Option<mpsc::Receiver<u64>>,
+    /// Sender side of the pacer drain clock, kept so the speaker-test idle
+    /// feed can post tokens for its fabricated frames — in pure pipe-bridge
+    /// mode nothing else drains the output FIFO, so silence fed without a
+    /// matching token would fill the pacer and never reach the device.
+    drain_tx: mpsc::Sender<u64>,
     pipe_input_diag: PipeInputDiag,
     pacer_bridge_diag: PacerBridgeDiag,
     _shutdown: sys::ShutdownHandle,
@@ -175,8 +181,8 @@ fn maybe_save_effective_config(
         anyhow::anyhow!("Cannot determine config path; use --config to specify one")
     })?;
 
-    let existing_render_cfg = renderer::config::Config::load_or_default(&path).render;
-    let config = effective_to_config(args, cli, existing_render_cfg.as_ref())?;
+    let existing = renderer::config::Config::load_or_default(&path);
+    let config = effective_to_config(args, cli, Some(&existing))?;
     config.save(&path)?;
     log::info!("Config written to: {}", path.display());
     Ok(true)
@@ -269,7 +275,7 @@ fn prepare_render_run(args: &RenderArgs) -> Result<PreparedDecodeRun> {
         drain_pipe: !args.no_drain_pipe,
         tx: tx.clone(),
         cmd_rx,
-        drain_tx: Some(drain_tx),
+        drain_tx: Some(drain_tx.clone()),
         pipe_input_diag: Some(pipe_input_diag.clone()),
         bridge,
         shutdown_signal,
@@ -281,6 +287,7 @@ fn prepare_render_run(args: &RenderArgs) -> Result<PreparedDecodeRun> {
         cmd_tx,
         decode_thread,
         drain_rx: Some(drain_rx),
+        drain_tx,
         pipe_input_diag,
         pacer_bridge_diag,
         _shutdown: shutdown,
@@ -535,11 +542,86 @@ fn standby_idle_until_resume(handler: &mut DecodeHandler, mut drain: impl FnMut(
     }
 }
 
+/// While the speaker-test idle feed is armed and no real input flows,
+/// fabricate a chunk of decoded silence and push it through the exact same
+/// path a real frame takes (`handle_audio_message`), so the writer, the
+/// adaptive latency controller and the metering all see an ordinary stream.
+/// Rendering silence still runs `inject_speaker_test`, which is what makes a
+/// test audible — and immediate — with no programme playing.
+fn pump_idle_feed(
+    feeder: &mut IdleFeeder,
+    handler: &mut DecodeHandler,
+    ctx: &DecodeRunContext<'_>,
+    drain_tx: &mpsc::Sender<u64>,
+) -> Result<()> {
+    // No spatial renderer means no speaker test to keep warm.
+    let Some(renderer) = handler.spatial_renderer.as_ref() else {
+        return Ok(());
+    };
+    let (arm_gen, test_active) = {
+        let control = renderer.renderer_control();
+        let live = control.live.read();
+        // Either test keeps the feed alive: both are inaudible from idle if the
+        // output chain is cold, and the feed is not specific to either.
+        (
+            live.speaker_test_idle_feed_gen,
+            live.speaker_test.is_some() || live.object_test.is_some(),
+        )
+    };
+    // PipeWire live capture delivers silence frames on the graph clock all by
+    // itself when idle — that mode never needs (or wants) a second driver.
+    let input_self_feeding = handler
+        .input_control
+        .as_ref()
+        .map(|control| control.applied_snapshot().active_mode == audio_input::InputMode::Live)
+        .unwrap_or(false);
+    let inputs = IdleFeedInputs {
+        arm_gen,
+        test_active,
+        input_self_feeding,
+        sample_rate: handler.session.final_sample_rate,
+    };
+    let Some(chunk) = feeder.poll(std::time::Instant::now(), &inputs) else {
+        return Ok(());
+    };
+
+    let channel_count = 2u32;
+    let frame = bridge_api::RDecodedFrame {
+        sampling_frequency: chunk.sample_rate,
+        sample_count: chunk.sample_count,
+        channel_count,
+        pcm: vec![0i32; (chunk.sample_count * channel_count) as usize].into(),
+        channel_labels: vec![bridge_api::RChannelLabel::L, bridge_api::RChannelLabel::R].into(),
+        metadata: abi_stable::std_types::RVec::new(),
+        drc_gain: 1.0,
+        drc_ramp_duration: 0,
+        dialogue_level: abi_stable::std_types::ROption::RNone,
+        is_new_segment: false,
+    };
+    // Post the pacer drain token first, exactly like the decoder thread does
+    // for a real packet. Ignored (by the drain thread) outside pure
+    // pipe-bridge mode; a closed channel just means the run is winding down.
+    let emitted_us = chunk.sample_count as u64 * 1_000_000 / chunk.sample_rate.max(1) as u64;
+    let _ = drain_tx.send(emitted_us);
+    handle_audio_message(
+        handler,
+        DecodedAudioData {
+            source: DecodedSource::Bridge,
+            frame,
+            decode_time_ms: 0.0,
+            sent_at: std::time::Instant::now(),
+        },
+        ctx,
+    )
+}
+
 fn process_decoder_messages(
     rx: &mpsc::Receiver<Result<DecoderMessage>>,
     handler: &mut DecodeHandler,
     ctx: &DecodeRunContext<'_>,
+    drain_tx: &mpsc::Sender<u64>,
 ) -> Result<()> {
+    let mut idle_feeder = IdleFeeder::default();
     loop {
         if sys::shutdown::is_standby_requested() {
             run_standby_until_resume(rx, handler);
@@ -553,12 +635,21 @@ fn process_decoder_messages(
                     break;
                 }
                 handler.poll_runtime_state()?;
+                pump_idle_feed(&mut idle_feeder, handler, ctx, drain_tx)?;
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         match result {
-            Ok(DecoderMessage::AudioData(frame)) => handle_audio_message(handler, frame, ctx)?,
+            Ok(DecoderMessage::AudioData(frame)) => {
+                // Real input showing up (whatever its cadence) silences the
+                // idle feed; only frames the handler will actually accept
+                // count, so a stray producer can't starve the feed.
+                if handler.should_accept_source(frame.source) {
+                    idle_feeder.note_real_frame(std::time::Instant::now());
+                }
+                handle_audio_message(handler, frame, ctx)?
+            }
             Ok(DecoderMessage::FlushRequest(source)) => {
                 if handler.should_accept_source(source) {
                     handler.handle_decoder_flush_request();
@@ -635,7 +726,7 @@ fn run_render_message_phase(
     let run_ctx = DecodeRunContext { args };
 
     sys::notify_ready();
-    process_decoder_messages(&prepared.rx, handler, &run_ctx)
+    process_decoder_messages(&prepared.rx, handler, &run_ctx, &prepared.drain_tx)
 }
 
 fn finalize_render_run(

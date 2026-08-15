@@ -360,6 +360,9 @@ impl Engine {
             }
             None => (None, false),
         };
+        // Client-visible profiles view (active name + list), applied to the
+        // control below once it exists; see docs/config-profiles.md.
+        let profiles_info = loaded_cfg.as_ref().map(Config::profiles_info);
         let render_cfg = loaded_cfg.and_then(|c| c.render);
 
         let layout = if let Some(p) = speaker_layout_path {
@@ -451,49 +454,20 @@ impl Engine {
         }
 
         control.set_bridge_path(Some(resolved_bridge.clone()));
-        control.set_meter_rate_hz(
-            render_cfg
-                .as_ref()
-                .and_then(|c| c.meter_rate)
-                .unwrap_or(10.0),
-        );
-        control.set_diag_rate_hz(
-            render_cfg
-                .as_ref()
-                .and_then(|c| c.diag_rate)
-                .unwrap_or(10.0),
-        );
-
-        // Object-transition ramp mode. `SpatialRenderer::new` seeds the live
-        // params with `RampMode::Sample` (per-sample `compute_gains` — the most
-        // expensive path); the CLI overrides this from `render.ramp_mode` in
-        // config_resolution + bootstrap, but this embedded/mpv host never did,
-        // so it silently ran every render in per-sample mode. Mirror the CLI:
-        // honour `render.ramp_mode` (default "frame"). Both the requested-mode
-        // mutex and the live snapshot field must be set — the render loop reads
-        // the latter.
-        let ramp_mode = render_cfg
-            .as_ref()
-            .and_then(renderer::config_fields::ramp_mode::get)
-            .as_deref()
-            .and_then(renderer::live_params::RampMode::from_str)
-            .unwrap_or(renderer::live_params::RampMode::Frame);
-        control.set_requested_ramp_mode(ramp_mode);
-        control.live.write().ramp_mode = ramp_mode;
-
-        // Declared live options (surround_placement, output_channel_mapping,
-        // synthesized-object master/generators) plus
-        // their param bags and the virtual bed: seeded from config through the
-        // shared registry seed — the same call as the CLI bootstrap, so the
-        // embedded host cannot drift from it (FFI/CLI parity by construction).
-        if let Some(render) = render_cfg.as_ref() {
-            renderer::options::seed_live_from_config(&mut control.live.write(), render);
+        if let Some(info) = profiles_info {
+            control.set_profiles_info(info);
         }
 
-        // DRC: seed the live params from config and publish the bridge's
-        // supported modes (so studio shows the DRC control). The decode-side
-        // mode itself is pushed to the bridge lazily in `process` (see
-        // `sync_drc_mode`), mirroring the CLI's decoder thread.
+        // Monitoring cadences, ramp mode, declared live options and the DRC
+        // selection: seeded through the shared runtime seed — the same call
+        // the CLI-shaped bootstrap semantics expect and the one the live
+        // profile switch replays, so the embedded host cannot drift from
+        // either (FFI/CLI parity by construction; see docs/config-profiles.md).
+        crate::renderer_build::seed_runtime_state_from_render_config(&control, render_cfg.as_ref());
+
+        // Publish the bridge's supported DRC modes (so studio shows the DRC
+        // control). The decode-side mode itself is pushed to the bridge lazily
+        // in `process` (see `sync_drc_mode`), mirroring the CLI's decoder thread.
         let supported_drc: Vec<String> = bridge
             .bridge
             .supported_drc_modes()
@@ -501,18 +475,6 @@ impl Engine {
             .map(|m| m.as_str().to_string())
             .collect();
         control.set_bridge_supported_drc_modes(supported_drc);
-        {
-            let mut live = control.live.write();
-            live.drc_mode = render_cfg
-                .as_ref()
-                .and_then(|c| c.drc_mode.clone())
-                .unwrap_or_else(|| "Off".to_string());
-            live.drc_weight = render_cfg
-                .as_ref()
-                .and_then(|c| c.drc_weight)
-                .unwrap_or(1.0)
-                .clamp(0.0, 1.0);
-        }
 
         let engine = Self::new(bridge, renderer, sample_rate);
         log::info!(
@@ -1322,13 +1284,36 @@ impl Engine {
         self.pcm_f32_buf = pcm_f32;
         self.frame_events.clear();
 
-        let n_channels = self.renderer.output_channel_count() as u32;
+        // Take the geometry from the render that produced `rendered.samples`,
+        // never from a fresh output_channel_count(): that re-reads the live
+        // output mode, which the OSC listener flips on its own thread. A switch
+        // to speakers landing between render_frame() above and this line used to
+        // publish `n_channels = 12` alongside 2-channel binaural samples,
+        // breaking RenderedAudio's `samples.len() == n_frames * n_channels`
+        // contract. The FFI's capacity check passed (it measures the real
+        // buffer), so the host trusted the metadata and copied n_frames * 12
+        // floats out of a buffer holding a sixth of that — adjacent heap read
+        // past the end and played as PCM. Intermittent, and only on the way back
+        // to speakers, because that is the direction where the count grows.
+        let n_channels = rendered.n_channels as u32;
 
         if want_metering {
             let frame_duration_ms = sample_count as f32 / sample_rate as f32 * 1000.0;
             let drc_gain = self.drc_gain;
             if let Some(meter) = self.audio_meter.as_mut() {
-                meter.process_speakers(&rendered.samples, n_channels as usize);
+                // Binaural modes meter the stereo output on the dedicated ear
+                // accumulators; the cascaded mode additionally meters the
+                // virtual buses on the speaker accumulators, so Studio's
+                // speaker gauges show the virtual room.
+                if let Some((bus, n_bus)) = self.renderer.virtual_bus() {
+                    meter.process_speakers(bus, n_bus);
+                    meter.process_ears(&rendered.samples);
+                } else if self.renderer.output_is_binaural() {
+                    meter.process_ears(&rendered.samples);
+                } else {
+                    meter.process_speakers(&rendered.samples, n_channels as usize);
+                }
+                meter.process_object_bands(&rendered.object_band_sq);
                 if let Some(snapshot) = meter.poll() {
                     if overlay_active {
                         let levels: Vec<(u32, f64)> = snapshot
@@ -1345,6 +1330,8 @@ impl Engine {
                             &snapshot,
                             &rendered.object_gains,
                             &rendered.object_band_gains,
+                            rendered.object_test_position,
+                            rendered.object_test_level,
                             Some(decode_time_ms),
                             Some(rendered.crossover_time_ms),
                             Some(render_time_ms),
@@ -1368,6 +1355,15 @@ impl Engine {
             }
         }
 
+        // The FFI hands (n_frames, n_channels) to the host, which sizes its copy
+        // from them and trusts them — so a violation here is not a wrong number,
+        // it is the host reading past the end of this buffer. Cheap enough to
+        // state, and free in release.
+        debug_assert_eq!(
+            rendered.samples.len(),
+            sample_count * n_channels as usize,
+            "RenderedAudio contract: samples.len() must equal n_frames * n_channels"
+        );
         Ok(Some(RenderedAudio {
             samples: rendered.samples,
             n_channels,

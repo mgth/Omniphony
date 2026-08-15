@@ -210,6 +210,12 @@ struct Overlay {
     last_pull_ms: AtomicU64,
     start: Instant,
     state: Mutex<OverlayState>,
+    /// Bumped by every change to the *display* preferences (never by per-frame
+    /// scene data). The OSC layer polls it and republishes the state, which is
+    /// what keeps Studio's switches honest when mpv flips one by keybind: the
+    /// overlay is a process-global singleton with two writers, so neither side
+    /// may assume its own mirror is the truth.
+    generation: AtomicU64,
     /// Path to the dedicated overlay-prefs file (owned by orender, persisted in
     /// real time, separate from the savable config). `None` until set by the host.
     prefs_path: Mutex<Option<PathBuf>>,
@@ -224,6 +230,7 @@ fn overlay() -> &'static Overlay {
         last_pull_ms: AtomicU64::new(0),
         start: Instant::now(),
         state: Mutex::new(OverlayState::default()),
+        generation: AtomicU64::new(0),
         prefs_path: Mutex::new(None),
     })
 }
@@ -329,18 +336,45 @@ pub fn clear() {
     }
 }
 
+/// Monotonic counter over the display preferences. The OSC layer compares it
+/// per poll and rebroadcasts `/omniphony/state/overlay` when it moves.
+pub fn state_generation() -> u64 {
+    overlay().generation.load(Ordering::Relaxed)
+}
+
+fn bump_generation() {
+    overlay().generation.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Mutate the display state under the lock, then publish (and optionally
+/// persist) the change.
+///
+/// Every display mutator goes through this rather than locking directly, so a
+/// new control cannot be added that changes what is drawn without the change
+/// being announced — the omission that let Studio and an mpv keybind drift
+/// apart silently.
+fn with_display_state<T>(persist: bool, f: impl FnOnce(&mut OverlayState) -> T) -> Option<T> {
+    let out = {
+        let mut s = overlay().state.lock().ok()?;
+        f(&mut s)
+    };
+    bump_generation();
+    if persist {
+        save_prefs();
+    }
+    Some(out)
+}
+
 /// Master enable/disable (Studio toggle; also gates `is_active`).
 pub fn set_enabled(on: bool) {
     overlay().enabled.store(on, Ordering::Relaxed);
+    bump_generation();
     save_prefs();
 }
 
 /// Show/hide object labels (mirror of Studio's `objectLabelsEnabled`).
 pub fn set_labels_enabled(on: bool) {
-    if let Ok(mut s) = overlay().state.lock() {
-        s.labels_enabled = on;
-    }
-    save_prefs();
+    with_display_state(true, |s| s.labels_enabled = on);
 }
 
 /// Show/hide the objects (markers + labels + trails + depth lines). Display-only:
@@ -348,34 +382,26 @@ pub fn set_labels_enabled(on: bool) {
 /// heatmap alone. Transient (not persisted) — Studio owns the value and re-pushes
 /// it; orender defaults to showing objects.
 pub fn set_objects_visible(on: bool) {
-    if let Ok(mut s) = overlay().state.lock() {
-        s.objects_visible = on;
-    }
+    with_display_state(false, |s| s.objects_visible = on);
 }
 
 /// Enable/disable drawing the energy heatmap (mirrors Studio's "Object energy
 /// field" toggle). Transient — Studio owns the value and re-pushes it on connect.
 pub fn set_heatmap_enabled(on: bool) {
-    if let Ok(mut s) = overlay().state.lock() {
-        s.heatmap_enabled = on;
-    }
+    with_display_state(false, |s| s.heatmap_enabled = on);
 }
 
 /// Set the number of flattened depth planes in the energy heatmap (clamped to
 /// 1..=12, mirroring Studio's "Planes per axis" slider). Transient.
 pub fn set_heatmap_bands(count: usize) {
-    if let Ok(mut s) = overlay().state.lock() {
-        s.heatmap_bands = count.clamp(1, 12);
-    }
+    with_display_state(false, |s| s.heatmap_bands = count.clamp(1, 12));
 }
 
 /// Set the energy-heatmap colour gradient (mirrors Studio's gradient selector).
 /// Index follows `OBJECT_ENERGY_COLORMAPS`: 0 heatmap, 1 blue→white, 2 white→red,
 /// 3 red (alpha-only). Transient — Studio owns the value and re-pushes it.
 pub fn set_heatmap_colormap(idx: usize) {
-    if let Ok(mut s) = overlay().state.lock() {
-        s.heatmap_colormap = idx.min(4) as u8;
-    }
+    with_display_state(false, |s| s.heatmap_colormap = idx.min(4) as u8);
 }
 
 /// Set the custom-gradient stops `[pos, r, g, b]` (used when the colormap index is
@@ -383,14 +409,12 @@ pub fn set_heatmap_colormap(idx: usize) {
 /// Transient — Studio owns the value and re-pushes it on connect.
 pub fn set_heatmap_custom_stops(mut stops: Vec<[f32; 4]>) {
     stops.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
-    if let Ok(mut s) = overlay().state.lock() {
-        s.heatmap_custom_stops = stops;
-    }
+    with_display_state(false, |s| s.heatmap_custom_stops = stops);
 }
 
 /// Apply trail configuration (mirror of Studio's wire fields).
 pub fn set_trail_config(enabled: bool, ttl_ms: u32, diffuse: bool, teleport_threshold: f64) {
-    if let Ok(mut s) = overlay().state.lock() {
+    with_display_state(true, |s| {
         s.cfg.enabled = enabled;
         s.cfg.ttl_s = (ttl_ms as f64) / 1000.0;
         s.cfg.mode = if diffuse {
@@ -404,8 +428,7 @@ pub fn set_trail_config(enabled: bool, ttl_ms: u32, diffuse: bool, teleport_thre
         if !s.cfg.enabled {
             s.trails.clear();
         }
-    }
-    save_prefs();
+    });
 }
 
 // ── toggles (host keybinds: flip current state, return the new one) ──────────
@@ -422,80 +445,102 @@ pub fn toggle_enabled() -> bool {
     let o = overlay();
     let new = !o.enabled.load(Ordering::Relaxed);
     o.enabled.store(new, Ordering::Relaxed);
+    bump_generation();
     save_prefs();
     new
 }
 
 /// Flip object-label visibility and return the new state. Persisted.
 pub fn toggle_labels() -> bool {
-    let new = {
-        let Ok(mut s) = overlay().state.lock() else {
-            return false;
-        };
+    with_display_state(true, |s| {
         s.labels_enabled = !s.labels_enabled;
         s.labels_enabled
-    };
-    save_prefs();
-    new
+    })
+    .unwrap_or(false)
 }
 
 /// Flip object visibility (markers + labels + trails + depth lines) and return
 /// the new state. Transient (display-only), like [`set_objects_visible`].
 pub fn toggle_objects() -> bool {
-    let Ok(mut s) = overlay().state.lock() else {
-        return false;
-    };
-    s.objects_visible = !s.objects_visible;
-    s.objects_visible
+    with_display_state(false, |s| {
+        s.objects_visible = !s.objects_visible;
+        s.objects_visible
+    })
+    .unwrap_or(false)
 }
 
 /// Flip whether the trails are drawn and return the new state. Clears the trail
 /// buffers when disabling (so they don't reappear on re-enable). Persisted, like
 /// [`set_trail_config`].
 pub fn toggle_trails() -> bool {
-    let new = {
-        let Ok(mut s) = overlay().state.lock() else {
-            return false;
-        };
+    with_display_state(true, |s| {
         s.cfg.enabled = !s.cfg.enabled;
         if !s.cfg.enabled {
             s.trails.clear();
         }
         s.cfg.enabled
-    };
-    save_prefs();
-    new
+    })
+    .unwrap_or(false)
 }
 
 /// Flip the energy heatmap and return the new state. Transient, like
 /// [`set_heatmap_enabled`].
 pub fn toggle_heatmap() -> bool {
-    let Ok(mut s) = overlay().state.lock() else {
-        return false;
-    };
-    s.heatmap_enabled = !s.heatmap_enabled;
-    s.heatmap_enabled
+    with_display_state(false, |s| {
+        s.heatmap_enabled = !s.heatmap_enabled;
+        s.heatmap_enabled
+    })
+    .unwrap_or(false)
 }
 
 /// Advance the heatmap colour gradient to the next index (wraps 0..=4, mirroring
 /// `OBJECT_ENERGY_COLORMAPS`) and return the new index. Transient.
 pub fn cycle_heatmap_colormap() -> usize {
-    let Ok(mut s) = overlay().state.lock() else {
-        return 0;
-    };
-    s.heatmap_colormap = (s.heatmap_colormap + 1) % 5;
-    s.heatmap_colormap as usize
+    with_display_state(false, |s| {
+        s.heatmap_colormap = (s.heatmap_colormap + 1) % 5;
+        s.heatmap_colormap as usize
+    })
+    .unwrap_or(0)
 }
 
 /// Step the heatmap depth-plane count by `delta` (clamped to 1..=12) and return
 /// the new count. Transient, like [`set_heatmap_bands`].
 pub fn adjust_heatmap_bands(delta: i32) -> usize {
-    let Ok(mut s) = overlay().state.lock() else {
-        return FIELD_BANDS;
+    with_display_state(false, |s| {
+        let next = (s.heatmap_bands as i32 + delta).clamp(1, 12) as usize;
+        s.heatmap_bands = next;
+        next
+    })
+    .unwrap_or(FIELD_BANDS)
+}
+
+/// The display preferences as JSON, for `/omniphony/state/overlay`.
+///
+/// Only what a client mirrors in its UI — per-frame scene data (positions,
+/// levels, trails, labels) is excluded: it changes every frame and would turn
+/// the generation counter into a broadcast storm.
+pub fn display_state_json() -> String {
+    let o = overlay();
+    let enabled = o.enabled.load(Ordering::Relaxed);
+    let Ok(s) = o.state.lock() else {
+        return "{}".to_string();
     };
-    let next = (s.heatmap_bands as i32 + delta).clamp(1, 12) as usize;
-    s.heatmap_bands = next;
-    next
+    serde_json::json!({
+        "enabled": enabled,
+        "labelsEnabled": s.labels_enabled,
+        "objectsVisible": s.objects_visible,
+        "heatmapEnabled": s.heatmap_enabled,
+        "heatmapBands": s.heatmap_bands,
+        "heatmapColormap": s.heatmap_colormap,
+        "trailsEnabled": s.cfg.enabled,
+        "trailTtlMs": (s.cfg.ttl_s * 1000.0).round() as u32,
+        "trailMode": match s.cfg.mode {
+            TrailMode::Diffuse => "diffuse",
+            TrailMode::Line => "line",
+        },
+        "trailTeleportThreshold": s.cfg.teleport_sq.sqrt(),
+    })
+    .to_string()
 }
 
 // ── persistence (orender-owned, real-time, separate from the savable config) ─
@@ -543,6 +588,9 @@ pub fn load_prefs(path: &Path) {
             }
         }
     }
+    // Restored values are a state change like any other: publish them so a
+    // client connecting later sees what is actually drawn.
+    bump_generation();
 }
 
 /// Write the current overlay prefs to the prefs file (best-effort, no-op until
@@ -1778,5 +1826,63 @@ mod tests {
         assert!(is_active());
         set_enabled(false);
         assert!(!is_active());
+    }
+
+    /// Every display mutator must move the generation and be visible in the
+    /// published state — that is what keeps a client's switches honest when the
+    /// *other* writer (an mpv keybind through the FFI toggles) flips something.
+    #[test]
+    fn display_changes_bump_the_generation_and_reach_the_published_state() {
+        let _g = guard();
+        let json = |()| -> serde_json::Value {
+            serde_json::from_str(&display_state_json()).expect("published state is JSON")
+        };
+
+        // A keybind-style toggle, the case Studio cannot otherwise observe.
+        let before = state_generation();
+        let labels_now = toggle_labels();
+        assert!(
+            state_generation() > before,
+            "toggling labels must publish a change"
+        );
+        assert_eq!(json(())["labelsEnabled"], labels_now);
+
+        // A Studio-style setter on a transient (non-persisted) field.
+        let before = state_generation();
+        set_heatmap_bands(9);
+        assert!(state_generation() > before, "band count must publish");
+        assert_eq!(json(())["heatmapBands"], 9);
+
+        // The master enable lives in an atomic, not the state lock — easy to
+        // forget, so pin it too.
+        let before = state_generation();
+        set_enabled(false);
+        assert!(state_generation() > before, "master enable must publish");
+        assert_eq!(json(())["enabled"], false);
+
+        // Trail config travels as several fields; all of them must round-trip.
+        let before = state_generation();
+        set_trail_config(true, 2500, true, 0.75);
+        assert!(state_generation() > before, "trail config must publish");
+        let v = json(());
+        assert_eq!(v["trailsEnabled"], true);
+        assert_eq!(v["trailTtlMs"], 2500);
+        assert_eq!(v["trailMode"], "diffuse");
+        assert!((v["trailTeleportThreshold"].as_f64().unwrap() - 0.75).abs() < 1e-6);
+    }
+
+    /// Per-frame scene data must NOT bump the generation: it changes every
+    /// frame and would turn the state broadcast into a flood.
+    #[test]
+    fn scene_updates_do_not_publish() {
+        let _g = guard();
+        let before = state_generation();
+        update_positions(vec![(1, 0.1, 0.2, 0.3, "obj".to_string())]);
+        update_levels(&[(1, -12.0)]);
+        assert_eq!(
+            state_generation(),
+            before,
+            "positions/levels are per-frame data, not a display preference"
+        );
     }
 }

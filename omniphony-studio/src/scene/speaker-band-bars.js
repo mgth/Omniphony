@@ -45,7 +45,8 @@ export function bandColor(index, count) {
 // Index of the band a speaker belongs to within `edges` (= [0, ...cutoffs,
 // Infinity]). A band starts at the speaker's lower cutoff (freqLow, or 0 for a
 // full-/low-pass), which uniquely identifies the band in a crossover layout.
-function speakerBandIndex(speaker, edges) {
+// Exported so the speaker cubes can take the same band colour as this gauge.
+export function speakerBandIndex(speaker, edges) {
   if (!Array.isArray(edges) || edges.length < 2) return 0;
   const lo = Number(speaker?.freqLow) > 0 ? Number(speaker.freqLow) : 0;
   for (let i = 0; i < edges.length - 1; i += 1) {

@@ -8,6 +8,7 @@ mod engine_deploy;
 mod layouts;
 mod osc_listener;
 mod osc_parser;
+mod runtime_env;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI32;
@@ -29,8 +30,10 @@ use commands::engine::*;
 use commands::gain::*;
 use commands::input::*;
 use commands::layout_io::*;
+use commands::mpv_config::*;
 use commands::mpv_overlay::*;
 use commands::orender::*;
+use commands::profiles::*;
 use commands::render::*;
 use commands::resampling::*;
 use commands::sofa_browser::*;
@@ -137,10 +140,18 @@ fn main() {
             // path external consumers (the forked mpv) load it from.
             engine_deploy::deploy(app);
 
-            let config_dir = app
-                .path()
-                .app_config_dir()
-                .expect("could not resolve app config dir");
+            // `app_config_dir()` is keyed by the bundle identifier, so every
+            // checkout of the tree resolves the same directory and shares one
+            // osc_config.json — including the OSC port, which is what makes two
+            // environments collide. An environment that carved out its own
+            // runtime namespace pins a private directory instead.
+            let config_dir = runtime_env::config_dir()
+                .map(|dir| dir.join("studio"))
+                .unwrap_or_else(|| {
+                    app.path()
+                        .app_config_dir()
+                        .expect("could not resolve app config dir")
+                });
 
             let osc_cfg = load_config(&config_dir);
 
@@ -195,6 +206,7 @@ fn main() {
             get_state,
             get_osc_config,
             renderer_is_local,
+            expected_orender_path,
             get_about_info,
             save_osc_config,
             launch_orender,
@@ -221,6 +233,11 @@ fn main() {
             control_speaker_gain,
             control_object_mute,
             control_speaker_mute,
+            control_speaker_test,
+            control_object_test,
+            control_object_test_rotation,
+            control_object_test_clip,
+            control_speaker_test_idle_feed,
             control_master_gain,
             control_loudness,
             control_auto_gain,
@@ -252,6 +269,7 @@ fn main() {
             control_distance_model,
             control_distance_model_metric,
             control_distance_diffuse_metric,
+            control_distance_diffuse_mirror_axes,
             control_hybrid_external_backend,
             control_hybrid_internal_backend,
             control_hybrid_curve,
@@ -311,7 +329,14 @@ fn main() {
             control_object_generator_param,
             control_phantom_extract_param,
             control_virtual_bed,
+            control_profile_switch,
+            control_profile_create,
+            control_profile_delete,
+            control_profile_rename,
             control_output_mode,
+            control_binaural_mode,
+            control_ear_gain,
+            control_ear_mute,
             control_hrir_source,
             control_binaural_unit_scale,
             control_binaural_head_radius,
@@ -366,6 +391,8 @@ fn main() {
             auto_tune_snapshot_save,
             auto_tune_snapshot_take,
             auto_tune_snapshot_peek,
+            mpv_orender_status,
+            mpv_orender_set,
             mpv_overlay_set_trail_prefs,
             mpv_overlay_set_active,
             mpv_overlay_set_labels,

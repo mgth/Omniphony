@@ -5,11 +5,13 @@ import { rebuildTrailGeometry, createTrailRenderable } from '../trails.js';
 import { scene } from '../scene/setup.js';
 import { applySpeakerLevel, updateSourceDecorations, updateSourceSelectionStyles, applyObjectsVisibility } from '../sources.js';
 import { refreshOverlayLists, updateSpeakerVisualsFromState, refreshSpeakerOrientations } from '../speakers.js';
-import { syncSpeakerHeatmapBandSelect } from '../scene/speaker-band-select.js';
-import { acquireGainTable, releaseGainTable } from '../scene/speaker-gaintable.js';
+import { syncCrossoverBandSelects } from '../scene/speaker-band-select.js';
+import { setupBandCursor } from '../controls/band-cursor.js';
+import { acquireGainTable, releaseGainTable, refreshGaintableSubscription } from '../scene/speaker-gaintable.js';
 import { refreshObjectEnergyVolume } from '../scene/object-energy-volume.js';
 import { clampVolumeGamma, colormapIndex } from '../scene/object-energy-shared.js';
 import {
+  onOverlayState,
   getMpvOverlayStatus,
   setMpvOverlayEnabled,
   setMpvOverlayHeatmapEnabled,
@@ -20,6 +22,8 @@ import { registerGradientEditor, setGradientEditorOnChange } from '../scene/grad
 import { invoke } from '@tauri-apps/api/core';
 
 const GAINTABLE_CONSUMER_SOLO = 'speakerSoloVolume';
+const GAINTABLE_CONSUMER_GLOBAL = 'globalEnergyVolume';
+const GAINTABLE_CONSUMER_DISCONTINUITY = 'discontinuityVolume';
 
 export function setupTrailsAndDisplayListeners() {
   const trailToggleEl = document.getElementById('trailToggle');
@@ -45,7 +49,6 @@ export function setupTrailsAndDisplayListeners() {
   const localeSelectEl = document.getElementById('localeSelect');
   const speakerHeatmapVolumeToggleEl = document.getElementById('speakerHeatmapVolumeToggle');
   const speakerHeatmapVolumeColormapEl = document.getElementById('speakerHeatmapVolumeColormap');
-  const speakerHeatmapBandSelectEl = document.getElementById('speakerHeatmapBandSelect');
   const objectEnergyHeatmapToggleEl = document.getElementById('objectEnergyHeatmapToggle');
   const objectEnergyColormapEl = document.getElementById('objectEnergyColormap');
   const objectEnergyVolumeMixSliderEl = document.getElementById('objectEnergyVolumeMixSlider');
@@ -348,19 +351,126 @@ export function setupTrailsAndDisplayListeners() {
     });
   }
 
-  if (speakerHeatmapBandSelectEl) {
-    syncSpeakerHeatmapBandSelect();
-    speakerHeatmapBandSelectEl.addEventListener('change', () => {
-      const value = speakerHeatmapBandSelectEl.value;
-      if (value === 'all') {
-        app.speakerHeatmapAllBands = true; // heatmap composite; band index unchanged
+  const globalEnergyHeatmapToggleEl = document.getElementById('globalEnergyHeatmapToggle');
+  // The engine owns the overlay display prefs and republishes them on every
+  // change, including an mpv keybind Studio never sees. Re-render the switches
+  // from that state so the UI cannot claim something the overlay isn't doing.
+  onOverlayState(() => {
+    const trailEl = document.getElementById('trailToggle');
+    if (trailEl) trailEl.checked = app.trailsEnabled;
+    const showObjectsEl = document.getElementById('showObjectsToggle');
+    if (showObjectsEl) showObjectsEl.checked = app.objectsVisible !== false;
+    const labelsEl = document.getElementById('objectLabelsToggle');
+    if (labelsEl) labelsEl.checked = app.objectLabelsEnabled;
+    const heatmapEl = document.getElementById('objectEnergyHeatmapToggle');
+    if (heatmapEl) heatmapEl.checked = app.objectEnergyHeatmapEnabled;
+    const trailModeEl = document.getElementById('trailModeSelect');
+    if (trailModeEl) trailModeEl.value = app.trailRenderMode;
+    applyObjectsVisibility();
+    refreshObjectEnergyHeatmapNow();
+  });
+
+  if (globalEnergyHeatmapToggleEl) {
+    globalEnergyHeatmapToggleEl.checked = app.globalEnergyHeatmapEnabled;
+    // Honour a persisted-on state at startup, like the per-speaker heatmap.
+    if (app.globalEnergyHeatmapEnabled) acquireGainTable(GAINTABLE_CONSUMER_GLOBAL);
+    globalEnergyHeatmapToggleEl.addEventListener('change', () => {
+      app.globalEnergyHeatmapEnabled = globalEnergyHeatmapToggleEl.checked;
+      app.lastGlobalEnergyVolumeAt = 0; // rebuild on the next tick
+      if (app.globalEnergyHeatmapEnabled) {
+        acquireGainTable(GAINTABLE_CONSUMER_GLOBAL);
       } else {
-        app.speakerHeatmapAllBands = false;
-        const nextBandIndex = Number(value);
-        app.speakerHeatmapBandIndex = Math.max(0, Math.round(Number.isFinite(nextBandIndex) ? nextBandIndex : 0));
+        releaseGainTable(GAINTABLE_CONSUMER_GLOBAL);
       }
-      app.lastSpeakerSoloVolumeAt = 0; // rebuild the heatmap on the next tick
-      syncSpeakerHeatmapBandSelect();
+      // The subscription target changes with the toggle (one target per client),
+      // so re-subscribe even when another consumer keeps the table alive.
+      refreshGaintableSubscription();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  const globalEnergyHeatmapScaleEl = document.getElementById('globalEnergyHeatmapScale');
+  if (globalEnergyHeatmapScaleEl) {
+    globalEnergyHeatmapScaleEl.value = String(app.globalEnergyHeatmapScaleDb);
+    globalEnergyHeatmapScaleEl.addEventListener('change', () => {
+      const raw = Number(globalEnergyHeatmapScaleEl.value);
+      const next = Number.isFinite(raw) ? Math.max(1, Math.min(40, Math.round(raw))) : 6;
+      app.globalEnergyHeatmapScaleDb = next;
+      globalEnergyHeatmapScaleEl.value = String(next);
+      app.lastGlobalEnergyVolumeAt = 0;
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  const discontinuityHeatmapToggleEl = document.getElementById('discontinuityHeatmapToggle');
+  if (discontinuityHeatmapToggleEl) {
+    discontinuityHeatmapToggleEl.checked = app.discontinuityHeatmapEnabled;
+    // Honour a persisted-on state at startup, like the other heatmaps.
+    if (app.discontinuityHeatmapEnabled) acquireGainTable(GAINTABLE_CONSUMER_DISCONTINUITY);
+    discontinuityHeatmapToggleEl.addEventListener('change', () => {
+      app.discontinuityHeatmapEnabled = discontinuityHeatmapToggleEl.checked;
+      app.lastDiscontinuityVolumeAt = 0; // rebuild on the next tick
+      if (app.discontinuityHeatmapEnabled) {
+        acquireGainTable(GAINTABLE_CONSUMER_DISCONTINUITY);
+      } else {
+        releaseGainTable(GAINTABLE_CONSUMER_DISCONTINUITY);
+      }
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  const discontinuityHeatmapModeEl = document.getElementById('discontinuityHeatmapMode');
+  if (discontinuityHeatmapModeEl) {
+    discontinuityHeatmapModeEl.value = app.discontinuityHeatmapMode;
+    discontinuityHeatmapModeEl.addEventListener('change', () => {
+      app.discontinuityHeatmapMode = discontinuityHeatmapModeEl.value === 'centroid'
+        ? 'centroid'
+        : 'gain';
+      app.lastDiscontinuityVolumeAt = 0;
+      // The consumer's engine target follows the mode: re-subscribe so the
+      // newly-selected field is fetched (a cached one answers `uptodate`).
+      refreshGaintableSubscription();
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  const discontinuityHeatmapScaleEl = document.getElementById('discontinuityHeatmapScale');
+  if (discontinuityHeatmapScaleEl) {
+    discontinuityHeatmapScaleEl.value = String(app.discontinuityHeatmapScale);
+    discontinuityHeatmapScaleEl.addEventListener('change', () => {
+      const raw = Number(discontinuityHeatmapScaleEl.value);
+      const next = Number.isFinite(raw) && raw > 0
+        ? Math.max(0.05, Math.min(2, raw))
+        : 0.5;
+      app.discontinuityHeatmapScale = next;
+      discontinuityHeatmapScaleEl.value = String(next);
+      app.lastDiscontinuityVolumeAt = 0;
+      persistEffectiveRenderPrefs();
+    });
+  }
+
+  // The ONE crossover-band selector (Common parameters): every heatmap and
+  // the effective-render / dominant-speaker readouts follow it. The floating
+  // 3D-view cursor clicks through to this select's change event.
+  setupBandCursor();
+  const heatmapBandSelectEl = document.getElementById('heatmapBandSelect');
+  if (heatmapBandSelectEl) {
+    syncCrossoverBandSelects();
+    heatmapBandSelectEl.addEventListener('change', () => {
+      const value = heatmapBandSelectEl.value;
+      if (value === 'all') {
+        app.heatmapAllBands = true; // composites; the numeric index is kept
+      } else {
+        app.heatmapAllBands = false;
+        const nextBandIndex = Number(value);
+        app.heatmapBandIndex = Math.max(0, Math.round(Number.isFinite(nextBandIndex) ? nextBandIndex : 0));
+      }
+      // Every display renders from this band: rebuild them all on the next tick.
+      app.lastSpeakerSoloVolumeAt = 0;
+      app.lastGlobalEnergyVolumeAt = 0;
+      app.lastDiscontinuityVolumeAt = 0;
+      app.lastObjectEnergyHeatmapAt = 0;
+      syncCrossoverBandSelects();
       refreshOverlayLists();
       refreshEffectiveRenderVisibility();
       persistEffectiveRenderPrefs();

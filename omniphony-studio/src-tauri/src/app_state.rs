@@ -505,8 +505,16 @@ pub struct AppState {
     pub render_config_status: Option<String>,
     #[serde(rename = "renderVersion")]
     pub render_version: Option<String>,
+    #[serde(rename = "renderExecutable")]
+    pub render_executable: Option<String>,
     #[serde(rename = "renderAbi")]
     pub render_abi: Option<String>,
+    /// Named config profiles (`/omniphony/state/profiles`): the active profile
+    /// name and the full name list, mirrored verbatim from the renderer.
+    #[serde(rename = "activeProfile")]
+    pub active_profile: Option<String>,
+    #[serde(rename = "profileNames")]
+    pub profile_names: Vec<String>,
     #[serde(rename = "renderBridgeError")]
     pub render_bridge_error: Option<String>,
     #[serde(rename = "liveInput")]
@@ -777,7 +785,10 @@ impl Default for AppState {
             render_config_path: None,
             render_config_status: None,
             render_version: None,
+            render_executable: None,
             render_abi: None,
+            active_profile: None,
+            profile_names: Vec::new(),
             render_bridge_error: None,
             live_input: LiveInputState::default(),
             orender_input_pipe: None,
