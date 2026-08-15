@@ -234,7 +234,10 @@ impl ChannelDsp {
 /// stand-in, which is the whole reason a *binaural* object test is worth having
 /// where a binaural speaker test is not.
 pub struct ExtraSource<'a> {
-    /// Mono samples, `sample_length` of them.
+    /// Mono samples. Normally `sample_length` of them, but **may be shorter**:
+    /// the object test's safety cap ends a run mid-block, and the block it
+    /// returns then stops where the cap did. Only the samples present are
+    /// rendered; the rest of the frame gets nothing from this source.
     pub pcm: &'a [f32],
     /// World (ADM) position, same convention as `chan_pos`.
     pub position: [f64; 3],
@@ -282,6 +285,10 @@ pub struct BinauralRenderer {
     /// Per-input-channel DSP state, indexed directly by channel (sparse tail is
     /// fine; reset when the channel count shrinks).
     channels: Vec<Option<ChannelDsp>>,
+    /// DSP state for the extra source (the object test), kept apart from
+    /// `channels` on purpose: it is not a channel and the input width it would
+    /// otherwise be indexed past changes whenever playback starts or stops.
+    extra_dsp: Option<ChannelDsp>,
     /// Reusable HRIR scratch so `at()` writes in place (no per-channel alloc).
     hrir_scratch: HrirPair,
     /// Bumped every time a rebuilt grid is swapped in, so the per-channel
@@ -330,6 +337,7 @@ impl BinauralRenderer {
             incoming,
             rebuild_tx,
             channels: Vec::new(),
+            extra_dsp: None,
             hrir_scratch: HrirPair {
                 left: [0.0; HRIR_LEN],
                 right: [0.0; HRIR_LEN],
@@ -480,13 +488,24 @@ impl BinauralRenderer {
         if sample_length == 0 || (input_channel_count == 0 && extra.is_none()) {
             return;
         }
-        // The extra source gets a DSP slot of its own past the input channels,
-        // so its convolvers, delay lines and reflection bank persist across
-        // blocks like any channel's — that continuity is what lets it move
-        // without clicking.
+        // The extra source gets a DSP slot of its own — its convolvers, delay
+        // lines and reflection bank persist across blocks like any channel's,
+        // and that continuity is what lets it move without clicking.
+        //
+        // A *dedicated* slot, not one indexed past the input channels: the
+        // input width is not a constant. It is 2 while the idle feed fabricates
+        // silence and whatever the programme carries once one starts, so a slot
+        // at `input_channel_count` moves the moment playback begins or ends —
+        // landing on a fresh (silent, warming up) DSP, or on the state of a
+        // channel that used to live there.
         let source_count = input_channel_count + usize::from(extra.is_some());
-        if self.channels.len() < source_count {
-            self.channels.resize_with(source_count, || None);
+        if self.channels.len() < input_channel_count {
+            self.channels.resize_with(input_channel_count, || None);
+        }
+        if extra.is_none() {
+            // Nothing to carry over: the next test starts clean rather than
+            // spliced onto the tail of a source that was somewhere else.
+            self.extra_dsp = None;
         }
 
         // Late-reverb bus: per-channel sends accumulate here; the shared FDN
@@ -510,6 +529,18 @@ impl BinauralRenderer {
                 Some(e) => (e.pcm, 1usize, 0usize),
                 None => (input_pcm, input_channel_count, c),
             };
+            // How much of the frame this source actually has. Full length for a
+            // channel; for the extra source, however far its block got before
+            // the cap ended it (see `ExtraSource::pcm`). Reading `sample_length`
+            // regardless is an out-of-bounds panic on the render thread — which
+            // is how a binaural object test died at the two-minute mark.
+            let span = match extra_here {
+                Some(e) => sample_length.min(e.pcm.len()),
+                None => sample_length,
+            };
+            if span == 0 {
+                continue;
+            }
             let gain = match extra_here {
                 Some(e) => e.gain,
                 None => chan_gain.get(c).copied().unwrap_or(0.0),
@@ -517,7 +548,11 @@ impl BinauralRenderer {
             if gain == 0.0 {
                 // Keep an existing reflection bank fading out so a muted
                 // channel does not freeze its taps at full gain.
-                if let Some(Some(dsp)) = self.channels.get_mut(c) {
+                let slot = match extra_here {
+                    Some(_) => self.extra_dsp.as_mut(),
+                    None => self.channels.get_mut(c).and_then(|s| s.as_mut()),
+                };
+                if let Some(dsp) = slot {
                     if let Some(bank) = dsp.refl.as_mut() {
                         bank.mute_targets();
                     }
@@ -540,7 +575,7 @@ impl BinauralRenderer {
                     // reflections-disabled branch below).
                     dsp.refl = None;
                 }
-                for s in 0..sample_length {
+                for s in 0..span {
                     let v = src_pcm[s * src_stride + src_offset]
                         * gain
                         * std::f32::consts::FRAC_1_SQRT_2;
@@ -590,7 +625,11 @@ impl BinauralRenderer {
                     hrir_update_lattice.subdiv(),
                 ),
             );
-            let dsp = self.channels[c].get_or_insert_with(|| ChannelDsp::new(self.sample_rate));
+            let rate = self.sample_rate;
+            let dsp = match extra_here {
+                Some(_) => self.extra_dsp.get_or_insert_with(|| ChannelDsp::new(rate)),
+                None => self.channels[c].get_or_insert_with(|| ChannelDsp::new(rate)),
+            };
             if dsp.last_dir != Some(dir) {
                 dsp.last_dir = Some(dir);
                 self.hrir.set.at_key(dir.1, &mut self.hrir_scratch);
@@ -665,7 +704,7 @@ impl BinauralRenderer {
             }
 
             let air = dsp.air_coeff;
-            for s in 0..sample_length {
+            for s in 0..span {
                 // `raw` carries the object/metadata gain only; the direct path
                 // adds its distance gain, the reflection taps theirs. The air
                 // low-pass applies to the propagated wave, so it feeds the
@@ -800,6 +839,88 @@ mod tests {
             er > el,
             "a hard-right extra source must favour the right ear (L={el} R={er}) \
              — equal ears mean it bypassed the HRIR path"
+        );
+    }
+
+    /// The cap can end a test mid-block, and then the extra source's PCM is
+    /// shorter than the frame. Reported from use: binaural object injection
+    /// died after a couple of minutes with something in the log.
+    #[test]
+    fn a_short_extra_block_does_not_run_off_the_end() {
+        let mut r = BinauralRenderer::new(48_000);
+        let n = 512;
+        let input = vec![0.0f32; n];
+        let extra_pcm = vec![0.1f32; 200]; // the cap ran out 200 samples in
+        let mut out = vec![0.0f32; n * 2];
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &[[0.0, 1.0, 0.0]],
+            &[0.0],
+            &[],
+            Some(ExtraSource {
+                pcm: &extra_pcm,
+                position: [1.0, 0.0, 0.0],
+                gain: 1.0,
+            }),
+            &mut out,
+        );
+    }
+
+    /// The extra source keeps its own DSP state when the input width changes.
+    ///
+    /// The input width is not a constant: it is 2 while the idle feed fabricates
+    /// silence and whatever the programme carries once one starts. A DSP slot
+    /// indexed past the input channels therefore moves the moment playback
+    /// begins — onto a fresh convolver that has to warm up again, or onto the
+    /// state of some channel that used to sit there. Either way the source
+    /// stutters, in the middle of the one gesture the test exists to judge.
+    ///
+    /// Asserted on continuity: a steady input through a settled convolver gives
+    /// a steady output, so a drop right after the width change is the warm-up of
+    /// a slot that should not have been touched.
+    #[test]
+    fn the_extra_source_survives_a_change_of_input_width() {
+        let mut r = BinauralRenderer::new(48_000);
+        let n = 512;
+        let extra_pcm = vec![0.5f32; n];
+        let steady = |r: &mut BinauralRenderer, channels: usize| -> f32 {
+            let input = vec![0.0f32; n * channels];
+            let mut out = vec![0.0f32; n * 2];
+            r.render_frame(
+                &input,
+                channels,
+                n,
+                &dry_params(),
+                &vec![[0.0, 1.0, 0.0]; channels],
+                &vec![0.0; channels],
+                &vec![false; channels],
+                Some(ExtraSource {
+                    pcm: &extra_pcm,
+                    position: [1.0, 0.0, 0.0],
+                    gain: 1.0,
+                }),
+                &mut out,
+            );
+            // RMS of the first 32 samples: where a warm-up would show.
+            let head: f32 = out[..64].iter().map(|v| v * v).sum::<f32>() / 32.0;
+            head.sqrt()
+        };
+
+        // Settle at the idle-feed width.
+        for _ in 0..4 {
+            steady(&mut r, 2);
+        }
+        let before = steady(&mut r, 2);
+        // Playback starts: the programme is wider than the silence was.
+        let after = steady(&mut r, 12);
+        assert!(before > 0.0, "the extra source produced nothing to compare");
+        assert!(
+            (after - before).abs() < before * 0.05,
+            "the extra source dropped from {before} to {after} when the input \
+             width changed — its DSP slot moved with the channel count"
         );
     }
 
