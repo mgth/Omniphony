@@ -858,7 +858,7 @@
   "help.speaker.test": "Play pink noise on this speaker, limited to the frequency bands it actually reproduces, through its own gain and delay. Use it to identify a speaker and check its crossover assignment by ear.",
   "help.speaker.testMode": "How the test button behaves: Toggle starts and stops on click (and stops itself after a minute), 2 s burst plays a fixed burst, Hold plays while the button is held.",
   "help.speaker.testIsolation": "What the rest of the output does during a test: mute the programme on this speaker only, leave it playing, or silence every other speaker as well.",
-  "help.speaker.testLevel": "Test signal level in dBFS. Pink noise has a high crest factor, so -20 dBFS peaks around -8 dBFS.",
+  "help.speaker.testLevel": "Test signal peak level in dBFS. The renderer bounds the test to this peak, so 0 dBFS is full scale and cannot clip on its own; the pink noise averages about 13 dB below it.",
   "speakerTabs.edit": "Edit",
   "speakerTabs.test": "Test"
 }

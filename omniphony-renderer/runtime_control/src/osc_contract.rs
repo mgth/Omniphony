@@ -191,6 +191,12 @@ pub const CONTROL_RELOAD_CONFIG: &str = "/omniphony/control/reload_config";
 /// index stops any running test — the trigger policy (hold, fixed burst,
 /// toggle) is the client's, so the renderer only ever hears "start this" or
 /// "stop". Transient: never persisted, and cleared on a fresh start.
+///
+/// `level` is **peak** amplitude, clamped to `[0, 1]`: the renderer bounds the
+/// injected signal to that peak, so `1.0` is full scale and no accepted level
+/// can make the test clip by itself. It is not an RMS figure — pink noise
+/// would peak a crest factor (~13 dB) above one. See
+/// [`renderer::live_params::SpeakerTest`].
 pub const CONTROL_SPEAKER_TEST: &str = "/omniphony/control/speaker_test";
 /// Arm/disarm the speaker-test idle feed.
 ///

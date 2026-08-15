@@ -15,7 +15,13 @@ import { t } from '../i18n.js';
 
 const MODE_KEY = 'speakerTest.mode.v1';
 const ISOLATION_KEY = 'speakerTest.isolation.v1';
-const LEVEL_KEY = 'speakerTest.levelDb.v1';
+/**
+ * Bumped to v2 when the level became peak-referenced instead of RMS-referenced:
+ * the same stored number now means a signal ~13 dB quieter, so reusing v1 would
+ * silently drop every existing user's test level. Dropping the old key re-seeds
+ * the new default, which is the same loudness they had before.
+ */
+const LEVEL_KEY = 'speakerTest.levelDb.v2';
 
 const BURST_MS = 2000;
 /** Toggle mode cannot run forever: an unattended test is a room full of noise. */
@@ -28,7 +34,12 @@ const TOGGLE_SAFETY_MS = 60_000;
  */
 const IDLE_FEED_REARM_MS = 120_000;
 
-const DEFAULT_LEVEL_DB = -20;
+/**
+ * Peak dBFS. -8 rather than a rounder number because it reproduces the loudness
+ * of the old -20 dBFS default: that figure set the RMS, and pink noise peaked a
+ * crest factor (~13 dB) above it. Same signal, honest number.
+ */
+const DEFAULT_LEVEL_DB = -8;
 
 let stopTimer = null;
 /** Speaker index currently under test, or null. */
@@ -50,12 +61,17 @@ function save(key, value) {
   try { localStorage.setItem(key, String(value)); } catch (_) { /* ignore */ }
 }
 
+/**
+ * Test level in **peak** dBFS. 0 is full scale and is allowed: the renderer
+ * bounds the test to this peak, so the top of the slider is the loudest signal
+ * that still cannot clip, rather than a value that must be kept clear of.
+ */
 function levelDb() {
   const n = Number(load(LEVEL_KEY, DEFAULT_LEVEL_DB));
-  return Number.isFinite(n) ? Math.min(-6, Math.max(-60, n)) : DEFAULT_LEVEL_DB;
+  return Number.isFinite(n) ? Math.min(0, Math.max(-60, n)) : DEFAULT_LEVEL_DB;
 }
 
-/** dBFS → linear amplitude against the renderer's unit-RMS generator. */
+/** Peak dBFS → peak linear amplitude, which is what the renderer clamps to. */
 function levelLinear() {
   return 10 ** (levelDb() / 20);
 }

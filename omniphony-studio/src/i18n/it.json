@@ -858,7 +858,7 @@
   "help.speaker.test": "Riproduce rumore rosa su questo diffusore, limitato alle bande di frequenza che riproduce realmente, attraverso il suo guadagno e ritardo. Serve a identificare un diffusore e a verificarne a orecchio l'assegnazione del crossover.",
   "help.speaker.testMode": "Comportamento del pulsante: Alterna avvia e ferma al clic (e si ferma da solo dopo un minuto), Raffica riproduce una durata fissa, Tieni premuto riproduce finché il pulsante è premuto.",
   "help.speaker.testIsolation": "Cosa fa il resto dell'uscita durante un test: silenziare il programma solo su questo diffusore, lasciarlo suonare, oppure silenziare anche tutti gli altri diffusori.",
-  "help.speaker.testLevel": "Livello del segnale di test in dBFS. Il rumore rosa ha un fattore di cresta elevato: -20 dBFS raggiunge picchi di circa -8 dBFS.",
+  "help.speaker.testLevel": "Livello di picco del segnale di test in dBFS. Il renderer limita il test a questo picco, quindi 0 dBFS è fondo scala e non satura da solo; il rumore rosa è in media circa 13 dB più basso.",
   "speakerTabs.edit": "Modifica",
   "speakerTabs.test": "Test"
 }

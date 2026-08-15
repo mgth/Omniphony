@@ -20,11 +20,11 @@
 /// filter holds -3 dB/octave from a few Hz to beyond 20 kHz with three state
 /// variables and three multiply-adds per sample.
 ///
-/// Output is normalised to unit RMS so a caller can treat its level control as
-/// dBFS directly. Measured, not derived: the raw filter sums to ~1.717 RMS for
-/// white in [-1, 1), with a crest factor around 4.2 — so a test at -20 dBFS
-/// peaks near -8 dBFS, which is the headroom to keep in mind when choosing a
-/// level.
+/// Output is normalised to unit RMS. Measured, not derived: the raw filter sums
+/// to ~1.717 RMS for white in [-1, 1).
+///
+/// Unit RMS is the generator's internal normalisation, *not* the level contract
+/// a caller gets — see [`PinkNoise::CREST`] for what a test level means.
 const PINK_RAW_RMS: f32 = 1.717_1;
 
 #[derive(Debug, Clone)]
@@ -41,6 +41,27 @@ impl Default for PinkNoise {
 }
 
 impl PinkNoise {
+    /// Nominal peak-to-RMS ratio, used to turn a *peak*-referenced level into a
+    /// generator gain: a caller wanting peak `L` scales by `L / CREST`.
+    ///
+    /// A test level is peak-referenced rather than RMS-referenced because the
+    /// number is there to answer "will this clip", and only a peak figure
+    /// answers that. Applying an RMS level directly to this unit-RMS generator
+    /// is what made -6 dBFS render peaks near +6 dBFS.
+    ///
+    /// 4.5 is a *nominal* crest, not a bound — pink noise is Gaussian-ish, so
+    /// its peak has no ceiling and grows with run length. Measured over five
+    /// seeds, the worst peak was 4.10 after 1 s of 48 kHz, 4.91 after 100 s and
+    /// 5.96 after 2.8 h. That is precisely why the caller must also clamp:
+    /// scaling by CREST puts the *typical* peak on target, and the clamp makes
+    /// the ceiling exact.
+    ///
+    /// 4.5 is the knee of that trade-off. Measured over 480 M samples, |s|
+    /// exceeds it once per 768 k samples — a lone sample every ~16 s at 48 kHz,
+    /// inaudible — while a tighter 3.5 would engage 12×/s and audibly dull the
+    /// noise, and a looser 5.5 would cost 2 dB of level for nothing.
+    pub const CREST: f32 = 4.5;
+
     pub fn new(seed: u32) -> Self {
         Self {
             poles: [0.0; 3],
@@ -174,11 +195,41 @@ mod tests {
             "pink noise must be normalised to unit RMS for the dBFS level to \
              mean anything, got {rms:.3}"
         );
-        // Crest factor of this filter is about 4.2; allow headroom for a long
-        // run without letting a runaway state pass.
+        // The peak of a Gaussian-ish signal grows with run length and has no
+        // ceiling, so this only catches a runaway state, not the crest — see
+        // `crest_is_exceeded_rarely_enough_to_clamp_inaudibly` for that.
         assert!(
             peak < 8.0,
             "pink noise peak {peak} is implausible for a unit-RMS signal"
+        );
+    }
+
+    /// `CREST` is a nominal peak, and the caller clamps to it — so what makes
+    /// the clamp inaudible is how *rarely* it engages. Pin that rate.
+    ///
+    /// This is the assumption the whole level contract rests on: scaling by
+    /// CREST puts the typical peak on target and the clamp makes the ceiling
+    /// exact, which is only honest if the clamp catches a lone sample now and
+    /// then rather than shaving the signal continuously. Measured over 480 M
+    /// samples the rate is 1.3e-6 (a sample every ~16 s at 48 kHz); the bound
+    /// here is two orders looser so a short run cannot fail on noise, while a
+    /// regression that lowered CREST into limiting territory still trips it.
+    #[test]
+    fn crest_is_exceeded_rarely_enough_to_clamp_inaudibly() {
+        let mut noise = PinkNoise::default();
+        let n = 10_000_000;
+        let mut over = 0u64;
+        for _ in 0..n {
+            if noise.next_sample().abs() > PinkNoise::CREST {
+                over += 1;
+            }
+        }
+        let rate = over as f64 / n as f64;
+        assert!(
+            rate < 1e-4,
+            "the clamp at CREST={} engages on {rate:.2e} of samples — that is \
+             limiting, not peak-bounding",
+            PinkNoise::CREST
         );
     }
 

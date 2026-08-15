@@ -804,8 +804,10 @@
           </div>
           <div class="editor-row gain-row">
             <label for="speakerTestLevelSlider" data-i18n="speaker.testLevel" data-help-i18n="help.speaker.testLevel">Test level</label>
-            <input id="speakerTestLevelSlider" class="gain-slider" type="range" min="-60" max="-6" step="1" value="-20" />
-            <div id="speakerTestLevelBox" class="gain-box">-20 dBFS</div>
+            <!-- Peak dBFS: the renderer bounds the test to this peak, so max=0
+                 is full scale and still cannot clip on its own. -->
+            <input id="speakerTestLevelSlider" class="gain-slider" type="range" min="-60" max="0" step="1" value="-8" />
+            <div id="speakerTestLevelBox" class="gain-box">-8 dBFS</div>
           </div>
           </div>
         </div>

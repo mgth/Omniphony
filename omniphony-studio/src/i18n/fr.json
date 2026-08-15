@@ -858,7 +858,7 @@
   "help.speaker.test": "Joue un bruit rose sur cette enceinte, limité aux bandes qu'elle reproduit réellement, à travers son gain et son délai. Sert à identifier une enceinte et à vérifier son affectation de crossover à l'oreille.",
   "help.speaker.testMode": "Comportement du bouton : Bascule démarre et arrête au clic (et se coupe seul après une minute), Salve joue une durée fixe, Maintien joue tant que le bouton est pressé.",
   "help.speaker.testIsolation": "Ce que fait le reste de la sortie pendant un test : couper le programme sur cette enceinte seulement, le laisser jouer, ou faire taire toutes les autres enceintes.",
-  "help.speaker.testLevel": "Niveau du signal de test en dBFS. Le bruit rose a un facteur de crête élevé : -20 dBFS crête vers -8 dBFS.",
+  "help.speaker.testLevel": "Niveau de crête du signal de test en dBFS. Le renderer borne le test à cette crête : 0 dBFS correspond donc à la pleine échelle sans saturer de lui-même ; le bruit rose se situe en moyenne à environ 13 dB en dessous.",
   "speakerTabs.edit": "Édition",
   "speakerTabs.test": "Test"
 }

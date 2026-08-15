@@ -858,7 +858,7 @@
   "help.speaker.test": "Spielt rosa Rauschen auf diesem Lautsprecher ab, begrenzt auf die Frequenzbänder, die er tatsächlich wiedergibt, über seine eigene Verstärkung und Verzögerung. Dient zum Identifizieren eines Lautsprechers und zum Prüfen seiner Frequenzweichen-Zuordnung nach Gehör.",
   "help.speaker.testMode": "Verhalten der Testtaste: Umschalten startet und stoppt per Klick (und stoppt nach einer Minute von selbst), 2-s-Stoß spielt eine feste Dauer, Halten spielt, solange die Taste gedrückt wird.",
   "help.speaker.testIsolation": "Was der Rest der Ausgabe während eines Tests tut: nur auf diesem Lautsprecher stummschalten, weiterlaufen lassen, oder alle anderen Lautsprecher ebenfalls stummschalten.",
-  "help.speaker.testLevel": "Pegel des Testsignals in dBFS. Rosa Rauschen hat einen hohen Crest-Faktor: -20 dBFS erreicht Spitzen um -8 dBFS.",
+  "help.speaker.testLevel": "Spitzenpegel des Testsignals in dBFS. Der Renderer begrenzt den Test auf diese Spitze, daher ist 0 dBFS Vollaussteuerung und übersteuert nicht von selbst; das rosa Rauschen liegt im Mittel etwa 13 dB darunter.",
   "speakerTabs.edit": "Bearbeiten",
   "speakerTabs.test": "Test"
 }

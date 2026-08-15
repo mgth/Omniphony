@@ -620,8 +620,13 @@ impl TestIsolation {
 pub struct SpeakerTest {
     /// Index into the layout of the speaker under test.
     pub speaker_idx: usize,
-    /// Linear amplitude, applied to a unit-RMS generator — so the panel's dBFS
-    /// value converts directly.
+    /// Peak amplitude of the test signal, linear. The renderer guarantees the
+    /// injected contribution never exceeds `±level`, so `1.0` is exactly full
+    /// scale and anything below it cannot clip on its own.
+    ///
+    /// Peak, not RMS: the number exists to answer "will this clip", and only a
+    /// peak figure does. Treating it as RMS against the unit-RMS pink-noise
+    /// generator is what made a -6 dBFS test render peaks near +6 dBFS.
     pub level: f32,
     pub isolation: TestIsolation,
 }

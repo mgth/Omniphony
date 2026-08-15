@@ -146,6 +146,38 @@ contract address. See `omniphony-renderer/BINAURAL.md`.
 | `/control/layout/radius_m` | f | Layout radius (m). |
 | `/control/layout/export` | s (optional name) | Export the current layout. |
 
+### Speaker test signal
+
+| Address | Args | Meaning |
+|---|---|---|
+| `/control/speaker_test` | idx int, level f `[0,1]`, isolation s | Play band-limited pink noise on one speaker; negative idx stops. |
+| `/control/speaker_test/idle_feed` | int bool | Keep the output chain warm so a test is heard immediately. |
+
+`isolation` is one of `test_only` (mute the programme on that speaker only),
+`with_programme`, or `test_only_solo` (mute every other speaker).
+
+**`level` is a peak, not an RMS.** The engine bounds the injected signal to
+`±level`, so `1.0` is exactly full scale and no accepted level can make the test
+clip on its own; Studio's slider reads the same figure in peak dBFS. Pink noise
+has a crest factor around 13 dB, so the signal *sounds* about that much quieter
+than the number suggests — a test at 0 dBFS peak averages near -13 dBFS.
+
+Two limits of that bound are deliberate. It covers the test's own contribution,
+so `with_programme` can still clip against a loud mix. And the level is
+referenced at the injection point, which sits before per-speaker and master gain
+— the test is scaled by those exactly like programme audio, because the point is
+to hear what the speaker will really do.
+
+Reading the level as RMS is the bug this contract exists to prevent: applied
+directly to the unit-RMS generator, a -6 dBFS test measured peaks near
++6 dBFS on a 7.1.4 render, and nothing reported it because a running test
+suppresses peak tracking so it cannot drive the auto-gain.
+
+The trigger policy (hold, fixed burst, toggle) belongs to the client; the engine
+only ever hears "start this" or "stop", and keeps a safety cap so a client that
+dies mid-test cannot leave a speaker making noise. Both addresses are transient:
+never persisted, cleared on a fresh start.
+
 ### Overlay (Studio 3D / mpv overlay)
 
 `/control/overlay/{enabled,labels,objects,trails,tag,heatmap_enabled,

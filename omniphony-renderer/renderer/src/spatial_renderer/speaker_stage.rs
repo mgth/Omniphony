@@ -805,6 +805,24 @@ impl SpeakerRenderStage {
     /// are summed. A full-range speaker sums all of them and hears the whole
     /// signal; a sub hears only its own.
     ///
+    /// `test.level` is a **peak** target, not an RMS one: the contribution
+    /// written here never exceeds `±level`, so a level ≤ 1.0 cannot clip. That
+    /// takes two parts, because pink noise has no peak ceiling of its own —
+    /// scaling by `1 / PinkNoise::CREST` puts the typical peak on target, and
+    /// the clamp makes the ceiling exact for the rare sample beyond it (about
+    /// one every 16 s; see [`crate::speaker_test::PinkNoise::CREST`]).
+    ///
+    /// The clamp lands *after* the band sum rather than on the raw generator
+    /// output because the LR4 bank reconstructs to an allpass: it preserves RMS
+    /// but shifts phase, so the summed peak can exceed the peak of the sample
+    /// that fed it. Only a bound on what is actually written is a real bound.
+    ///
+    /// Two limits of that guarantee, both deliberate: the bound is on the test's
+    /// own contribution, so `WithProgramme` can still clip against a loud mix
+    /// (it is a `+=` onto programme audio); and the level is referenced at the
+    /// injection point, so the per-speaker and master gain applied afterwards by
+    /// `finalize_output` scale it like any other signal.
+    ///
     /// Returns true while a test is running, so the caller can skip peak
     /// tracking — a loud test must not drive the auto-gain and quietly rescale
     /// the very thing being judged.
@@ -868,6 +886,12 @@ impl SpeakerRenderStage {
             }
         }
 
+        // Peak-referenced level: scale the unit-RMS generator so its typical
+        // peak lands on `test.level`, then clamp to make that a hard ceiling.
+        // Hoisted out of the loops — one divide per block, not per sample.
+        let gain = test.level / crate::speaker_test::PinkNoise::CREST;
+        let ceiling = test.level.abs();
+
         // Sum only the bands this speaker covers. Without a crossover there is
         // one band covering everything, so this degenerates to unfiltered noise.
         match self.crossover_filter_bank.as_ref() {
@@ -884,13 +908,15 @@ impl SpeakerRenderStage {
                             acc += bands.get(b);
                         }
                     }
-                    output[f * self.num_speakers + test.speaker_idx] += acc * test.level;
+                    output[f * self.num_speakers + test.speaker_idx] +=
+                        (acc * gain).clamp(-ceiling, ceiling);
                 }
             }
             None => {
                 for f in 0..frames {
                     let raw = self.test_noise.next_sample();
-                    output[f * self.num_speakers + test.speaker_idx] += raw * test.level;
+                    output[f * self.num_speakers + test.speaker_idx] +=
+                        (raw * gain).clamp(-ceiling, ceiling);
                 }
             }
         }

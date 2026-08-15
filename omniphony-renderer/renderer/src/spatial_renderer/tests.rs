@@ -2198,6 +2198,53 @@ fn speaker_test_is_limited_to_the_speakers_bands() {
     );
 }
 
+/// A test at full scale must not put a single sample past full scale.
+///
+/// This is the regression guard for the bug that shipped in the original test
+/// signal: the level was applied straight to a unit-RMS generator, so it set the
+/// *RMS* and the peaks landed a crest factor above it — a -6 dBFS test measured
+/// peaks up to +5.9 dBFS on a live 7.1.4 render, which clips on real hardware.
+/// Nothing caught it, because a running test deliberately suppresses peak
+/// tracking so it cannot drive the auto-gain.
+///
+/// Asserted at level 1.0 (full scale) rather than a comfortable level so the
+/// margin under test is zero: at any lower level a bug of this size could hide.
+/// Every speaker is checked, sub through tweeter, because the clamp sits after
+/// the band sum and each speaker sums a different set of bands.
+#[test]
+fn a_full_scale_test_signal_never_exceeds_full_scale() {
+    let frames = 8192;
+    let pcm = vec![0.0f32; frames];
+
+    for idx in 0..3 {
+        let mut r = crossover_renderer();
+        r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
+            speaker_idx: idx,
+            level: 1.0,
+            isolation: crate::live_params::TestIsolation::TestOnly,
+        });
+
+        let mut peak = 0.0f32;
+        let mut heard = 0.0f32;
+        // Several blocks: the generator carries state across them, and a long
+        // run is exactly where the crest of pink noise grows.
+        for _ in 0..8 {
+            let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+            for s in &out.samples {
+                peak = peak.max(s.abs());
+                heard += s.abs();
+            }
+        }
+
+        assert!(heard > 0.0, "speaker {idx} produced no test signal");
+        assert!(
+            peak <= 1.0,
+            "speaker {idx}: a full-scale test peaked at {peak} — anything above \
+             1.0 clips on a real device"
+        );
+    }
+}
+
 /// Clearing the test must stop it, and must not leave the speaker attenuated or
 /// the programme suppressed.
 #[test]
