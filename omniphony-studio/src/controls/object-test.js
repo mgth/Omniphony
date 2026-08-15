@@ -1471,6 +1471,12 @@ export function setupObjectTestListeners() {
       // Turning it on pulls the source onto the grid at once, rather than
       // waiting for the next drag to reveal what it does.
       if (snapOn) setPosition(position.slice());
+      // The ticks are drawn by `updateMarkers`, and nothing above reliably
+      // reaches it: `setPosition` returns early when the source was already on
+      // a node, and turning snapping *off* moves nothing at all. So the grid
+      // appeared only once something else redrew the sheet, and never went
+      // away by itself.
+      updateMarkers();
       renderObjectTestUI();
     });
   }
