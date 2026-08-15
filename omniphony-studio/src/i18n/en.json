@@ -868,14 +868,12 @@
   "objectTest.faceSide": "Side wall",
   "objectTest.axisFront": "front",
   "objectTest.axisBack": "back",
-  "objectTest.enable": "Play test signal",
   "objectTest.level": "Test level",
   "objectTest.isolation": "Programme",
   "objectTest.isolationTestOnly": "Test only",
   "objectTest.isolationWithProgramme": "With programme",
   "objectTest.centre": "Centre the source",
-  "help.objectTest": "Place a test source in the room and hear where the renderer puts it. Each face sets the two coordinates it shows and leaves the third alone, so the marker moves on the other two. The signal is panned by the active render backend, so what you hear includes the out-of-hull mode, distance model and spread currently configured.",
-  "help.objectTestEnable": "Play pink noise from the marked position. Moving the source while it plays slides it without restarting the signal.",
+  "help.objectTest": "Place a test source in the room and hear where the renderer puts it. Each face sets the two coordinates it shows and leaves the third alone, so the marker moves on the other two. The signal is panned by the active render backend, so what you hear includes the out-of-hull mode, distance model and spread currently configured. The transport at the top starts and stops it: moving the source while it plays slides it without restarting the signal.",
   "help.objectTestLevel": "Test signal peak level in dBFS. The renderer bounds the test to this peak, so 0 dBFS is full scale and cannot clip on its own; the pink noise averages about 13 dB below it.",
   "help.objectTestIsolation": "What the programme does during the test: mute it so only the test is heard, or leave it playing underneath.",
   "objectTest.markerLabel": "Test object",
@@ -914,5 +912,7 @@
   "objectTest.clipChoose": "Choose…",
   "objectTest.clipNone": "No file chosen",
   "objectTest.clipTruncated": "truncated",
-  "help.objectTestSignal": "Which stimulus is placed at the source. Continuous pink noise excites everything and makes colouration obvious, but the ear localises onsets, so a steady stream gives it none and small positional errors hide inside a fuzzy image. Bursts restore those onsets and sharpen the image to a point. The low band carries interaural time differences and almost nothing else, the high band carries level and spectral cues — run separately they say which cue is failing. The 8 kHz band is where elevation lives. A tone localises poorly and meters level superbly: any ripple as the source moves is a panning artefact. Clicks expose comb filtering between speakers summing a phantom. All of them are matched in loudness, so switching changes what you judge and not how loud it is."
+  "help.objectTestSignal": "Which stimulus is placed at the source. Continuous pink noise excites everything and makes colouration obvious, but the ear localises onsets, so a steady stream gives it none and small positional errors hide inside a fuzzy image. Bursts restore those onsets and sharpen the image to a point. The low band carries interaural time differences and almost nothing else, the high band carries level and spectral cues — run separately they say which cue is failing. The 8 kHz band is where elevation lives. A tone localises poorly and meters level superbly: any ripple as the source moves is a panning artefact. Clicks expose comb filtering between speakers summing a phantom. All of them are matched in loudness, so switching changes what you judge and not how loud it is.",
+  "objectTest.play": "Play the test signal",
+  "objectTest.stop": "Stop the test signal"
 }

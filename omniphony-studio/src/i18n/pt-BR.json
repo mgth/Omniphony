@@ -868,14 +868,12 @@
   "objectTest.faceSide": "Parede lateral",
   "objectTest.axisFront": "frente",
   "objectTest.axisBack": "trás",
-  "objectTest.enable": "Reproduzir sinal de teste",
   "objectTest.level": "Nível de teste",
   "objectTest.isolation": "Programa",
   "objectTest.isolationTestOnly": "Somente teste",
   "objectTest.isolationWithProgramme": "Com o programa",
   "objectTest.centre": "Centralizar a fonte",
-  "help.objectTest": "Posiciona uma fonte de teste na sala e permite ouvir onde o renderizador a coloca. Cada face define as duas coordenadas que mostra e deixa a terceira intacta, então o marcador se move nas outras duas. O sinal é panoramizado pelo backend de renderização ativo, de modo que o que você ouve inclui o modo fora do casco, o modelo de distância e o espalhamento configurados.",
-  "help.objectTestEnable": "Reproduz ruído rosa a partir da posição marcada. Mover a fonte durante a reprodução a desliza sem reiniciar o sinal.",
+  "help.objectTest": "Posiciona uma fonte de teste na sala e permite ouvir onde o renderizador a coloca. Cada face define as duas coordenadas que mostra e deixa a terceira intacta, então o marcador se move nas outras duas. O sinal é panoramizado pelo backend de renderização ativo, de modo que o que você ouve inclui o modo fora do casco, o modelo de distância e o espalhamento configurados. O transporte no topo inicia e para: mover a fonte enquanto ela toca a desliza sem reiniciar o sinal.",
   "help.objectTestLevel": "Nível de pico do sinal de teste em dBFS. O renderizador limita o teste a esse pico, então 0 dBFS é escala plena e não pode clipar sozinho; o ruído rosa fica em média cerca de 13 dB abaixo.",
   "help.objectTestIsolation": "O que o programa faz durante o teste: silenciá-lo para ouvir apenas o teste, ou deixá-lo tocando por baixo.",
   "objectTest.markerLabel": "Objeto de teste",
@@ -914,5 +912,7 @@
   "objectTest.clipChoose": "Escolher…",
   "objectTest.clipNone": "Nenhum arquivo escolhido",
   "objectTest.clipTruncated": "truncado",
-  "help.objectTestSignal": "Qual estímulo fica na fonte. O ruído rosa contínuo excita tudo e deixa a coloração evidente, mas o ouvido localiza ataques: um fluxo contínuo não oferece nenhum, e um pequeno erro de posição se esconde numa imagem difusa. As rajadas devolvem esses ataques e concentram a imagem num ponto. A banda grave carrega as diferenças interaurais de tempo e pouco mais; a aguda, o nível e as pistas espectrais — separadas, dizem qual pista está falhando. A banda de 8 kHz é onde mora a elevação. Um tom localiza mal e mede nível muito bem: qualquer ondulação enquanto a fonte se move é um artefato de panorâmica. Cliques revelam a filtragem em pente entre alto-falantes que somam um fantasma. Todos estão pareados em volume: trocar de sinal muda o que se julga, não o quão alto está."
+  "help.objectTestSignal": "Qual estímulo fica na fonte. O ruído rosa contínuo excita tudo e deixa a coloração evidente, mas o ouvido localiza ataques: um fluxo contínuo não oferece nenhum, e um pequeno erro de posição se esconde numa imagem difusa. As rajadas devolvem esses ataques e concentram a imagem num ponto. A banda grave carrega as diferenças interaurais de tempo e pouco mais; a aguda, o nível e as pistas espectrais — separadas, dizem qual pista está falhando. A banda de 8 kHz é onde mora a elevação. Um tom localiza mal e mede nível muito bem: qualquer ondulação enquanto a fonte se move é um artefato de panorâmica. Cliques revelam a filtragem em pente entre alto-falantes que somam um fantasma. Todos estão pareados em volume: trocar de sinal muda o que se julga, não o quão alto está.",
+  "objectTest.play": "Reproduzir o sinal de teste",
+  "objectTest.stop": "Parar o sinal de teste"
 }

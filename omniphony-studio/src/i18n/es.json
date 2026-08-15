@@ -868,14 +868,12 @@
   "objectTest.faceSide": "Pared lateral",
   "objectTest.axisFront": "delante",
   "objectTest.axisBack": "detrás",
-  "objectTest.enable": "Reproducir señal de prueba",
   "objectTest.level": "Nivel de prueba",
   "objectTest.isolation": "Programa",
   "objectTest.isolationTestOnly": "Solo la prueba",
   "objectTest.isolationWithProgramme": "Con el programa",
   "objectTest.centre": "Centrar la fuente",
-  "help.objectTest": "Sitúa una fuente de prueba en la sala y permite oír dónde la coloca el renderizador. Cada cara ajusta las dos coordenadas que muestra y deja intacta la tercera, así que el marcador se mueve en las otras dos. La señal la panea el backend de renderizado activo, de modo que lo que oyes incluye el modo fuera de envolvente, el modelo de distancia y la dispersión configurados.",
-  "help.objectTestEnable": "Reproduce ruido rosa desde la posición marcada. Mover la fuente mientras suena la desliza sin reiniciar la señal.",
+  "help.objectTest": "Sitúa una fuente de prueba en la sala y permite oír dónde la coloca el renderizador. Cada cara ajusta las dos coordenadas que muestra y deja intacta la tercera, así que el marcador se mueve en las otras dos. La señal la panea el backend de renderizado activo, de modo que lo que oyes incluye el modo fuera de envolvente, el modelo de distancia y la dispersión configurados. El transporte de arriba lo inicia y lo detiene: mover la fuente mientras suena la desliza sin reiniciar la señal.",
   "help.objectTestLevel": "Nivel de pico de la señal de prueba en dBFS. El renderizador limita la prueba a este pico, así que 0 dBFS es plena escala y no puede recortar por sí sola; el ruido rosa promedia unos 13 dB por debajo.",
   "help.objectTestIsolation": "Qué hace el programa durante la prueba: silenciarlo para oír solo la prueba, o dejarlo sonando por debajo.",
   "objectTest.markerLabel": "Objeto de prueba",
@@ -914,5 +912,7 @@
   "objectTest.clipChoose": "Elegir…",
   "objectTest.clipNone": "Ningún archivo elegido",
   "objectTest.clipTruncated": "truncado",
-  "help.objectTestSignal": "Qué estímulo se coloca en la fuente. El ruido rosa continuo excita todo y hace evidente la coloración, pero el oído localiza los ataques: un flujo continuo no le da ninguno y un pequeño error de posición se esconde en una imagen difusa. Las ráfagas devuelven esos ataques y concentran la imagen en un punto. La banda grave lleva las diferencias interaurales de tiempo y poco más; la aguda, el nivel y las claves espectrales: por separado dicen qué clave falla. La banda de 8 kHz es donde vive la elevación. Un tono localiza mal y mide el nivel de maravilla: cualquier ondulación al mover la fuente es un artefacto de paneo. Los clics revelan el filtrado en peine entre altavoces que suman un fantasma. Todos están igualados en sonoridad: cambiar de señal cambia lo que se juzga, no el volumen."
+  "help.objectTestSignal": "Qué estímulo se coloca en la fuente. El ruido rosa continuo excita todo y hace evidente la coloración, pero el oído localiza los ataques: un flujo continuo no le da ninguno y un pequeño error de posición se esconde en una imagen difusa. Las ráfagas devuelven esos ataques y concentran la imagen en un punto. La banda grave lleva las diferencias interaurales de tiempo y poco más; la aguda, el nivel y las claves espectrales: por separado dicen qué clave falla. La banda de 8 kHz es donde vive la elevación. Un tono localiza mal y mide el nivel de maravilla: cualquier ondulación al mover la fuente es un artefacto de paneo. Los clics revelan el filtrado en peine entre altavoces que suman un fantasma. Todos están igualados en sonoridad: cambiar de señal cambia lo que se juzga, no el volumen.",
+  "objectTest.play": "Reproducir la señal de prueba",
+  "objectTest.stop": "Detener la señal de prueba"
 }

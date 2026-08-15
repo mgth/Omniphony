@@ -868,14 +868,12 @@
   "objectTest.faceSide": "Mur latéral",
   "objectTest.axisFront": "avant",
   "objectTest.axisBack": "arrière",
-  "objectTest.enable": "Jouer le signal de test",
   "objectTest.level": "Niveau de test",
   "objectTest.isolation": "Programme",
   "objectTest.isolationTestOnly": "Test seul",
   "objectTest.isolationWithProgramme": "Avec le programme",
   "objectTest.centre": "Centrer la source",
-  "help.objectTest": "Place une source de test dans la pièce et fait entendre où le renderer la situe. Chaque face règle les deux coordonnées qu'elle montre et laisse la troisième inchangée : le repère bouge donc sur les deux autres. Le signal est panné par le backend de rendu actif : ce que vous entendez intègre le mode hors-coque, le modèle de distance et l'étalement configurés.",
-  "help.objectTestEnable": "Joue un bruit rose depuis la position marquée. Déplacer la source pendant la lecture la fait glisser sans redémarrer le signal.",
+  "help.objectTest": "Place une source de test dans la pièce et fait entendre où le renderer la situe. Chaque face règle les deux coordonnées qu'elle montre et laisse la troisième inchangée : le repère bouge donc sur les deux autres. Le signal est panné par le backend de rendu actif : ce que vous entendez intègre le mode hors-coque, le modèle de distance et l'étalement configurés. Le transport en haut le démarre et l'arrête : déplacer la source pendant qu'elle joue la fait glisser sans redémarrer le signal.",
   "help.objectTestLevel": "Niveau de crête du signal de test en dBFS. Le renderer borne le test à cette crête : 0 dBFS correspond à la pleine échelle sans saturer de lui-même ; le bruit rose se situe en moyenne environ 13 dB en dessous.",
   "help.objectTestIsolation": "Ce que fait le programme pendant le test : le couper pour n'entendre que le test, ou le laisser jouer en dessous.",
   "objectTest.markerLabel": "Objet de test",
@@ -914,5 +912,7 @@
   "objectTest.clipChoose": "Choisir…",
   "objectTest.clipNone": "Aucun fichier choisi",
   "objectTest.clipTruncated": "tronqué",
-  "help.objectTestSignal": "Le stimulus placé à la source. Le bruit rose continu excite tout et rend la coloration évidente, mais l'oreille localise les attaques : un flux continu ne lui en donne aucune, et une petite erreur de position se cache dans une image floue. Les salves rendent ces attaques et resserrent l'image sur un point. La bande grave porte les différences interaurales de temps et presque rien d'autre, la bande aiguë porte l'intensité et les indices spectraux — séparées, elles disent quel indice est en défaut. La bande 8 kHz est celle de l'élévation. Un sinus localise mal et mesure le niveau à merveille : la moindre ondulation quand la source bouge est un artefact de panoramique. Les clics révèlent le filtrage en peigne entre enceintes qui somment un fantôme. Tous sont calés à la même sonie : changer de signal change ce qu'on juge, pas le volume."
+  "help.objectTestSignal": "Le stimulus placé à la source. Le bruit rose continu excite tout et rend la coloration évidente, mais l'oreille localise les attaques : un flux continu ne lui en donne aucune, et une petite erreur de position se cache dans une image floue. Les salves rendent ces attaques et resserrent l'image sur un point. La bande grave porte les différences interaurales de temps et presque rien d'autre, la bande aiguë porte l'intensité et les indices spectraux — séparées, elles disent quel indice est en défaut. La bande 8 kHz est celle de l'élévation. Un sinus localise mal et mesure le niveau à merveille : la moindre ondulation quand la source bouge est un artefact de panoramique. Les clics révèlent le filtrage en peigne entre enceintes qui somment un fantôme. Tous sont calés à la même sonie : changer de signal change ce qu'on juge, pas le volume.",
+  "objectTest.play": "Jouer le signal de test",
+  "objectTest.stop": "Arrêter le signal de test"
 }

@@ -585,7 +585,22 @@
            selected in the list, exactly as the channel editor is for a bed
            channel: one slot, one selection, mutually exclusive. -->
       <div class="info-section" id="objectTestEditSection" style="display:none">
-        <div class="info-title" data-i18n="section.objectTest" data-help-i18n="help.objectTest">Object injection</div>
+        <!-- Transport at the top, not a switch buried in the controls: starting
+             and stopping the signal is the one thing done over and over while
+             placing a source, and it is the only control here that makes a
+             sound happen. -->
+        <div class="object-test-head">
+          <div class="info-title" style="margin-bottom:0" data-i18n="section.objectTest" data-help-i18n="help.objectTest">Object injection</div>
+          <button id="objectTestPlayBtn" type="button" class="transport-btn" aria-pressed="false">
+            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+              <path class="tp-play" d="M8.2 5.4 19 12 8.2 18.6z" />
+              <g class="tp-pause">
+                <rect x="7.4" y="5.4" width="3.6" height="13.2" rx="1.1" />
+                <rect x="13" y="5.4" width="3.6" height="13.2" rx="1.1" />
+              </g>
+            </svg>
+          </button>
+        </div>
         <div id="objectTestBody" class="editor-body">
           <div class="option-status-note" style="font-size:10px;opacity:0.8" data-i18n="objectTest.hint">Click or drag on a face to place the source.</div>
           <!-- Three orthogonal projections of the room box. Each face sets the
@@ -605,10 +620,6 @@
             <input id="objectTestSnapToggle" type="checkbox" />
           </label>
           <div id="objectTestSnapNote" class="option-status-note" style="font-size:10px;opacity:0.75;display:none"></div>
-          <label id="objectTestEnableRow" class="switch-row" style="font-size:13px;cursor:pointer">
-            <span data-i18n="objectTest.enable" data-help-i18n="help.objectTestEnable" data-help-anchor=".switch-row">Play test signal</span>
-            <input id="objectTestEnableToggle" type="checkbox" />
-          </label>
           <!-- Which stimulus. Continuous noise judges timbre; gated noise judges
                precision, because the ear localises onsets; a band says which cue
                is carrying the direction; a tone turns the ear into a level meter

@@ -868,14 +868,12 @@
   "objectTest.faceSide": "Parete laterale",
   "objectTest.axisFront": "davanti",
   "objectTest.axisBack": "dietro",
-  "objectTest.enable": "Riproduci segnale di test",
   "objectTest.level": "Livello di test",
   "objectTest.isolation": "Programma",
   "objectTest.isolationTestOnly": "Solo test",
   "objectTest.isolationWithProgramme": "Con il programma",
   "objectTest.centre": "Centra la sorgente",
-  "help.objectTest": "Posiziona una sorgente di test nella stanza e fa sentire dove il renderer la colloca. Ogni faccia imposta le due coordinate che mostra e lascia intatta la terza, quindi il marcatore si sposta sulle altre due. Il segnale è pannato dal backend di rendering attivo, perciò ciò che senti include la modalità fuori guscio, il modello di distanza e la dispersione configurati.",
-  "help.objectTestEnable": "Riproduce rumore rosa dalla posizione marcata. Spostare la sorgente durante la riproduzione la fa scivolare senza riavviare il segnale.",
+  "help.objectTest": "Posiziona una sorgente di test nella stanza e fa sentire dove il renderer la colloca. Ogni faccia imposta le due coordinate che mostra e lascia intatta la terza, quindi il marcatore si sposta sulle altre due. Il segnale è pannato dal backend di rendering attivo, perciò ciò che senti include la modalità fuori guscio, il modello di distanza e la dispersione configurati. Il transport in alto lo avvia e lo ferma: spostare la sorgente mentre suona la fa scorrere senza far ripartire il segnale.",
   "help.objectTestLevel": "Livello di picco del segnale di test in dBFS. Il renderer limita il test a questo picco, quindi 0 dBFS è fondo scala e non può clippare da solo; il rumore rosa si colloca in media circa 13 dB sotto.",
   "help.objectTestIsolation": "Cosa fa il programma durante il test: silenziarlo per sentire solo il test, o lasciarlo suonare sotto.",
   "objectTest.markerLabel": "Oggetto di test",
@@ -914,5 +912,7 @@
   "objectTest.clipChoose": "Scegli…",
   "objectTest.clipNone": "Nessun file scelto",
   "objectTest.clipTruncated": "troncato",
-  "help.objectTestSignal": "Quale stimolo viene messo alla sorgente. Il rumore rosa continuo eccita tutto e rende evidente la colorazione, ma l'orecchio localizza gli attacchi: un flusso continuo non gliene offre e un piccolo errore di posizione si nasconde in un'immagine sfocata. Le raffiche restituiscono quegli attacchi e stringono l'immagine su un punto. La banda bassa porta le differenze interaurali di tempo e poco altro, quella alta il livello e gli indizi spettrali: separate dicono quale indizio non funziona. La banda 8 kHz è dove vive l'elevazione. Un tono localizza male e misura il livello benissimo: ogni ondulazione mentre la sorgente si muove è un artefatto di panning. I clic svelano il filtraggio a pettine fra diffusori che sommano un fantasma. Sono tutti pareggiati in volume: cambiare segnale cambia cosa si giudica, non quanto è forte."
+  "help.objectTestSignal": "Quale stimolo viene messo alla sorgente. Il rumore rosa continuo eccita tutto e rende evidente la colorazione, ma l'orecchio localizza gli attacchi: un flusso continuo non gliene offre e un piccolo errore di posizione si nasconde in un'immagine sfocata. Le raffiche restituiscono quegli attacchi e stringono l'immagine su un punto. La banda bassa porta le differenze interaurali di tempo e poco altro, quella alta il livello e gli indizi spettrali: separate dicono quale indizio non funziona. La banda 8 kHz è dove vive l'elevazione. Un tono localizza male e misura il livello benissimo: ogni ondulazione mentre la sorgente si muove è un artefatto di panning. I clic svelano il filtraggio a pettine fra diffusori che sommano un fantasma. Sono tutti pareggiati in volume: cambiare segnale cambia cosa si giudica, non quanto è forte.",
+  "objectTest.play": "Riprodurre il segnale di prova",
+  "objectTest.stop": "Fermare il segnale di prova"
 }

@@ -2905,6 +2905,82 @@ body:not(.output-binaural) .speakers-header-binaural {
   color: #aef5d8;
 }
 
+/* Object-injection transport. The one control in the panel that makes a sound
+   happen, so it sits with the title rather than in the list of parameters. */
+.object-test-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  min-width: 0;
+}
+
+.transport-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(223, 232, 243, 0.72);
+  cursor: pointer;
+  /* WebKitGTK gives the click to a text selection otherwise, and the button
+     silently does nothing on the first press. */
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 0.13s ease, color 0.13s ease, border-color 0.13s ease,
+    box-shadow 0.13s ease;
+}
+
+.transport-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(223, 232, 243, 0.95);
+}
+
+.transport-btn:focus-visible {
+  outline: none;
+  border-color: rgba(82, 226, 162, 0.6);
+}
+
+.transport-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Playing: the accent green the scene bar uses for an active tool, plus a slow
+   ring so a running test is obvious from across the room — this is a signal
+   that can be left on by accident. */
+.transport-btn[aria-pressed='true'] {
+  background: rgba(82, 226, 162, 0.18);
+  border-color: rgba(82, 226, 162, 0.6);
+  color: #7af0c0;
+  animation: transport-pulse 2s ease-in-out infinite;
+}
+
+.transport-btn[aria-pressed='true']:hover {
+  background: rgba(82, 226, 162, 0.26);
+  color: #aef5d8;
+}
+
+@keyframes transport-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(82, 226, 162, 0.34); }
+  50% { box-shadow: 0 0 0 5px rgba(82, 226, 162, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transport-btn[aria-pressed='true'] { animation: none; }
+}
+
+.transport-btn svg { fill: currentColor; }
+.transport-btn .tp-pause { display: none; }
+.transport-btn[aria-pressed='true'] .tp-play { display: none; }
+.transport-btn[aria-pressed='true'] .tp-pause { display: inline; }
+
 /* Objects/Trails "nature" flyout. The slot only wraps the button + its popup so
    the absolutely-positioned menu anchors to the button without affecting the
    bar layout or the renderer canvas geometry. */

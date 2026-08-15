@@ -868,14 +868,12 @@
   "objectTest.faceSide": "Seitenwand",
   "objectTest.axisFront": "vorne",
   "objectTest.axisBack": "hinten",
-  "objectTest.enable": "Testsignal wiedergeben",
   "objectTest.level": "Testpegel",
   "objectTest.isolation": "Programm",
   "objectTest.isolationTestOnly": "Nur Test",
   "objectTest.isolationWithProgramme": "Mit Programm",
   "objectTest.centre": "Quelle zentrieren",
-  "help.objectTest": "Platziert eine Testquelle im Raum und macht hörbar, wohin der Renderer sie setzt. Jede Fläche stellt die beiden Koordinaten ein, die sie zeigt, und lässt die dritte unberührt – die Markierung bewegt sich also auf den beiden anderen. Das Signal wird vom aktiven Render-Backend gepannt, also wirken der Außerhalb-der-Hülle-Modus, das Distanzmodell und die eingestellte Streuung mit.",
-  "help.objectTestEnable": "Gibt rosa Rauschen von der markierten Position wieder. Wird die Quelle während der Wiedergabe bewegt, gleitet sie, ohne dass das Signal neu startet.",
+  "help.objectTest": "Platziert eine Testquelle im Raum und macht hörbar, wohin der Renderer sie setzt. Jede Fläche stellt die beiden Koordinaten ein, die sie zeigt, und lässt die dritte unberührt – die Markierung bewegt sich also auf den beiden anderen. Das Signal wird vom aktiven Render-Backend gepannt, also wirken der Außerhalb-der-Hülle-Modus, das Distanzmodell und die eingestellte Streuung mit. Der Transport oben startet und stoppt es: Die Quelle während der Wiedergabe zu bewegen lässt sie gleiten, ohne das Signal neu zu starten.",
   "help.objectTestLevel": "Spitzenpegel des Testsignals in dBFS. Der Renderer begrenzt den Test auf diesen Spitzenwert, daher ist 0 dBFS Vollaussteuerung und kann für sich allein nicht clippen; das rosa Rauschen liegt im Mittel etwa 13 dB darunter.",
   "help.objectTestIsolation": "Was das Programm während des Tests macht: stummschalten, sodass nur der Test zu hören ist, oder darunter weiterlaufen lassen.",
   "objectTest.markerLabel": "Testobjekt",
@@ -914,5 +912,7 @@
   "objectTest.clipChoose": "Auswählen…",
   "objectTest.clipNone": "Keine Datei gewählt",
   "objectTest.clipTruncated": "gekürzt",
-  "help.objectTestSignal": "Welcher Reiz an der Quelle liegt. Kontinuierliches rosa Rauschen regt alles an und macht Verfärbungen hörbar, aber das Ohr lokalisiert Einsätze — ein stetiger Strom liefert keine, und ein kleiner Positionsfehler verschwindet in einem unscharfen Bild. Impulse bringen die Einsätze zurück und ziehen das Bild auf einen Punkt zusammen. Das Tiefband trägt interaurale Zeitdifferenzen und sonst kaum etwas, das Hochband Pegel- und Spektralmerkmale — getrennt gehört sagen sie, welches Merkmal versagt. Im 8-kHz-Band wohnt die Elevation. Ein Ton lokalisiert schlecht und misst Pegel hervorragend: jede Welligkeit bei bewegter Quelle ist ein Panning-Artefakt. Klicks zeigen Kammfilterung zwischen Lautsprechern, die ein Phantom summieren. Alle sind lautheitsangeglichen: Umschalten ändert, was man beurteilt, nicht wie laut es ist."
+  "help.objectTestSignal": "Welcher Reiz an der Quelle liegt. Kontinuierliches rosa Rauschen regt alles an und macht Verfärbungen hörbar, aber das Ohr lokalisiert Einsätze — ein stetiger Strom liefert keine, und ein kleiner Positionsfehler verschwindet in einem unscharfen Bild. Impulse bringen die Einsätze zurück und ziehen das Bild auf einen Punkt zusammen. Das Tiefband trägt interaurale Zeitdifferenzen und sonst kaum etwas, das Hochband Pegel- und Spektralmerkmale — getrennt gehört sagen sie, welches Merkmal versagt. Im 8-kHz-Band wohnt die Elevation. Ein Ton lokalisiert schlecht und misst Pegel hervorragend: jede Welligkeit bei bewegter Quelle ist ein Panning-Artefakt. Klicks zeigen Kammfilterung zwischen Lautsprechern, die ein Phantom summieren. Alle sind lautheitsangeglichen: Umschalten ändert, was man beurteilt, nicht wie laut es ist.",
+  "objectTest.play": "Testsignal wiedergeben",
+  "objectTest.stop": "Testsignal stoppen"
 }
