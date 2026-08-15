@@ -1203,7 +1203,14 @@ export function setupObjectTestListeners() {
   if (centre) {
     centre.addEventListener('click', (event) => {
       event.preventDefault();
-      setPosition([0, 1, 0]);
+      // The room's origin, not the front-centre the source starts at. This is
+      // the listener's own position: the one place with no direction at all,
+      // which is exactly what makes it worth being able to reach in one click
+      // — it is the reference every other placement is heard against.
+      //
+      // It is also an exact grid node whenever the interval counts are even,
+      // which the OAMD-derived default of 62 is, so snapping leaves it alone.
+      setPosition([0, 0, 0]);
     });
   }
 
