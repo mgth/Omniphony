@@ -23,6 +23,10 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
+import {
+  normalizedOmniphonyToScenePosition,
+  scenePositionToNormalizedOmniphony
+} from '../coordinates.js';
 import { t, onLocaleChange, i18nState } from '../i18n.js';
 import { setIdleFeedRequest } from './test-idle-feed.js';
 import { updateSource, removeSource, setSelectedSource, updateSourceLevel } from '../sources.js';
@@ -76,10 +80,9 @@ const FACES = [
   {
     id: 'floor',
     labelKey: 'objectTest.facePlan',
-    /** Horizontal axis: ADM x, left to right. */
-    h: { axis: 0, invert: false },
-    /** Vertical axis: ADM y, front at the top and back at the bottom. */
-    v: { axis: 1, invert: true },
+    /** Horizontal: the room's width. Vertical: its depth, front at the top. */
+    h: { axis: 'lateral', invert: false },
+    v: { axis: 'depth', invert: true },
     // Depth is the only direction a reader cannot guess — left/right and
     // floor/ceiling speak for themselves — and it is the one the projection
     // decides rather than intuition. So it is the only one labelled.
@@ -88,19 +91,20 @@ const FACES = [
   {
     id: 'front',
     labelKey: 'objectTest.faceFront',
-    h: { axis: 0, invert: false },
-    /** ADM z, ceiling at the top. */
-    v: { axis: 2, invert: true },
+    h: { axis: 'lateral', invert: false },
+    /** Height, ceiling at the top. */
+    v: { axis: 'height', invert: true },
   },
   {
     id: 'side',
     labelKey: 'objectTest.faceSide',
-    /** ADM y, back at the left and front at the right, against the front view. */
-    h: { axis: 1, invert: false },
-    v: { axis: 2, invert: true },
+    /** Depth, back at the left and front at the right, against the front view. */
+    h: { axis: 'depth', invert: false },
+    v: { axis: 'height', invert: true },
     depthEnds: 'h',
   },
 ];
+
 
 /** Set from storage at setup, applied once the scene can take it. */
 let bootFeatureOn = false;
@@ -229,11 +233,36 @@ function clamp1(v) {
   return Math.min(1, Math.max(-1, v));
 }
 
-/** Room proportions, defaulting to a cube if the renderer has not said yet. */
-function roomRatio() {
+/**
+ * The room's extent along each scene axis, as half-spans.
+ *
+ * A room is not a cube and is not symmetric: it usually reaches further in
+ * front than behind and further up than down. Those are separate ratios
+ * (`length`/`rear`, `height`/`lower`), and the depth axis is warped on top of
+ * that by `centerBlend`. Drawing the faces from `width`/`length`/`height`
+ * alone — as this did — draws a room nobody configured, and puts the marker
+ * somewhere the 3D view does not.
+ */
+function roomExtent() {
   const r = app.roomRatio || {};
   const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
-  return { width: num(r.width, 1), length: num(r.length, 1), height: num(r.height, 1) };
+  return {
+    lateral: { min: -num(r.width, 1), max: num(r.width, 1) },
+    depth: { min: -num(r.rear, 1), max: num(r.length, 1) },
+    height: { min: -num(r.lower, 0.5), max: num(r.height, 1) },
+  };
+}
+
+/** ADM → the room space the 3D scene draws in: {depth, height, lateral}. */
+function admToRoom(pos) {
+  const s = normalizedOmniphonyToScenePosition({ x: pos[0], y: pos[1], z: pos[2] });
+  return { depth: s.x, height: s.y, lateral: s.z };
+}
+
+/** Room space → ADM, the exact inverse of `admToRoom`. */
+function roomToAdm(room) {
+  const p = scenePositionToNormalizedOmniphony({ x: room.depth, y: room.height, z: room.lateral });
+  return [clamp1(p.x), clamp1(p.y), clamp1(p.z)];
 }
 
 /** Push the current state to the renderer. */
@@ -312,9 +341,19 @@ function nearest(nodes, v) {
   return best;
 }
 
+/**
+ * True while a gesture is deliberately ignoring the grid.
+ *
+ * Snapping is a help until the moment you want the position *between* two
+ * nodes — to hear whether the cell boundary is where you think it is, say. A
+ * switch to flip and flip back for one drag is worse than the drag itself, so
+ * holding Alt suspends it for that gesture, the way every drawing tool does.
+ */
+let snapBypass = false;
+
 /** Pull a position onto the grid, or return it untouched when there is none. */
 function snapToGrid(p) {
-  if (!snapOn) return p;
+  if (!snapOn || snapBypass) return p;
   const axes = gridAxes();
   if (!axes) return p;
   return [nearest(axes[0], p[0]), nearest(axes[1], p[1]), nearest(axes[2], p[2])];
@@ -506,10 +545,12 @@ const MARKER_R = 2.4;
  * the mitre run at a true 45°.
  */
 function sheetLayout() {
-  const r = roomRatio();
-  const W = r.width;
-  const D = r.length;
-  const H = r.height;
+  const e = roomExtent();
+  // True spans, not half-spans doubled: the room reaches further one way than
+  // the other on both depth and height, and the sheet has to show that.
+  const W = e.lateral.max - e.lateral.min;
+  const D = e.depth.max - e.depth.min;
+  const H = e.height.max - e.height.min;
   const g = GUTTER * Math.max(W, D, H);
   const rawW = D + g + W;
   const rawH = H + g + D;
@@ -521,8 +562,11 @@ function sheetLayout() {
   const row2 = (H + g) * s;
   return {
     sheet: { w: rawW * s, h: rawH * s },
+    // The mitre cell is square on the depth span, so the 45° still carries
+    // depth between the two views that show it.
     mitre: { x: 0, y: row2, w: D * s, h: D * s },
     gutter: g * s,
+    extent: e,
     rects: {
       side: { x: 0, y: row1, w: D * s, h: H * s },
       front: { x: col2, y: row1, w: W * s, h: H * s },
@@ -577,60 +621,102 @@ function sliderTrack(slider, layout) {
     : { x1: rect.x - half, y1: rect.y, x2: rect.x - half, y2: rect.y + rect.h, horizontal: false };
 }
 
-/** The ADM axis a slider drives, and whether its travel is inverted. */
+/** The room axis a slider drives, and whether its travel is inverted. */
 function sliderAxis(slider) {
   const face = FACES.find((f) => f.id === slider.face);
   return face[slider.use];
 }
 
+/** Which ADM component a room axis corresponds to. */
+const ADM_OF_ROOM_AXIS = { lateral: 0, depth: 1, height: 2 };
+
 /** Current value of a slider's coordinate → a point on its track. */
 function sliderThumb(slider, layout) {
   const track = sliderTrack(slider, layout);
   const axis = sliderAxis(slider);
-  const v = position[axis.axis] * (axis.invert ? -1 : 1);
-  const t = (v + 1) / 2;
+  const room = admToRoom(position);
+  const { min, max } = layout.extent[axis.axis];
+  let t = (room[axis.axis] - min) / Math.max(1e-9, max - min);
+  if (axis.invert) t = 1 - t;
+  t = Math.min(1, Math.max(0, t));
   return {
     cx: track.x1 + (track.x2 - track.x1) * t,
     cy: track.y1 + (track.y2 - track.y1) * t
   };
 }
 
-/** A point on (or near) a slider's track → the coordinate it means. */
+/**
+ * A point on (or near) a slider's track → the room-space value it means.
+ *
+ * In room space, like the faces: a slider lying alongside a view has to travel
+ * with the marker on it, and the marker follows the room's warp.
+ */
 function sliderValueAt(slider, layout, px, py) {
   const track = sliderTrack(slider, layout);
-  const t = track.horizontal
-    ? (px - track.x1) / (track.x2 - track.x1)
-    : (py - track.y1) / (track.y2 - track.y1);
+  let t = track.horizontal
+    ? (px - track.x1) / Math.max(1e-9, track.x2 - track.x1)
+    : (py - track.y1) / Math.max(1e-9, track.y2 - track.y1);
+  t = Math.min(1, Math.max(0, t));
   const axis = sliderAxis(slider);
-  return clamp1((Math.min(1, Math.max(0, t)) * 2 - 1) * (axis.invert ? -1 : 1));
+  if (axis.invert) t = 1 - t;
+  const { min, max } = layout.extent[axis.axis];
+  return min + t * (max - min);
 }
 
-/** Write one coordinate, leaving the other two exactly as they were. */
-function setAxisValue(slider, value) {
+/** Write one room-space coordinate, leaving the other two as they were. */
+function setAxisValue(slider, roomValue) {
   const axis = sliderAxis(slider);
+  const room = admToRoom(position);
+  room[axis.axis] = roomValue;
+  setPosition(roomToAdm(room));
+}
+
+/** Nudge one ADM coordinate, for the keyboard — where a step in the room's
+ *  warped space would grow and shrink as the source moved. */
+function nudgeAxis(slider, delta, absolute = null) {
+  const axis = sliderAxis(slider);
+  const idx = ADM_OF_ROOM_AXIS[axis.axis];
   const next = position.slice();
-  next[axis.axis] = value;
+  next[idx] = clamp1(absolute !== null ? absolute : next[idx] + delta);
   setPosition(next);
 }
 
-/** ADM position → a point inside `rect`, for one face. */
-function faceToSheet(face, rect, pos) {
-  const hv = pos[face.h.axis] * (face.h.invert ? -1 : 1);
-  const vv = pos[face.v.axis] * (face.v.invert ? -1 : 1);
+/**
+ * ADM position → a point inside `rect`, for one face.
+ *
+ * Goes through room space rather than mapping ADM linearly onto the rectangle.
+ * The room's depth is warped (`centerBlend`) and its halves are unequal, so a
+ * source at ADM y = 0.5 is not half way to the front wall. Projecting the same
+ * way the 3D scene does is what makes the two views agree — before this, a
+ * marker on a face and the object in the room were in different places.
+ */
+function faceToSheet(face, rect, pos, extent) {
+  const room = admToRoom(pos);
+  const along = (axis, value, size, invert) => {
+    const { min, max } = extent[axis];
+    const t = (value - min) / Math.max(1e-9, max - min);
+    return (invert ? 1 - t : t) * size;
+  };
   return {
-    cx: rect.x + ((hv + 1) / 2) * rect.w,
-    cy: rect.y + ((vv + 1) / 2) * rect.h
+    cx: rect.x + along(face.h.axis, room[face.h.axis], rect.w, face.h.invert),
+    cy: rect.y + along(face.v.axis, room[face.v.axis], rect.h, face.v.invert)
   };
 }
 
 /** A point inside `rect` → the two ADM axes that face drives. */
-function sheetToFace(face, rect, px, py) {
-  const hv = clamp1(((px - rect.x) / rect.w) * 2 - 1);
-  const vv = clamp1(((py - rect.y) / rect.h) * 2 - 1);
-  const next = position.slice();
-  next[face.h.axis] = hv * (face.h.invert ? -1 : 1);
-  next[face.v.axis] = vv * (face.v.invert ? -1 : 1);
-  return next;
+function sheetToFace(face, rect, px, py, extent) {
+  // Start from where the source is, so the axis this face does not carry is
+  // preserved exactly rather than round-tripped through the warp.
+  const room = admToRoom(position);
+  const back = (axis, px0, size, invert) => {
+    const { min, max } = extent[axis];
+    let t = Math.min(1, Math.max(0, px0 / Math.max(1e-9, size)));
+    if (invert) t = 1 - t;
+    return min + t * (max - min);
+  };
+  room[face.h.axis] = back(face.h.axis, px - rect.x, rect.w, face.h.invert);
+  room[face.v.axis] = back(face.v.axis, py - rect.y, rect.h, face.v.invert);
+  return roomToAdm(room);
 }
 
 function svgEl(name, attrs) {
@@ -643,8 +729,19 @@ function svgEl(name, attrs) {
 function buildFaces() {
   const host = el('objectTestFaces');
   if (!host) return;
-  const r = roomRatio();
-  const key = `${r.width}:${r.length}:${r.height}:${i18nState.locale}`;
+  // Every ratio the drawing depends on belongs in the key. It used to hold
+  // three of the six, which was harmless while the faces were symmetric boxes
+  // and silently wrong the moment they started following the real room: a
+  // change to `rear`, `lower` or the depth warp would have left the sheet
+  // drawn for the previous shape.
+  const e = roomExtent();
+  const key = [
+    e.lateral.min, e.lateral.max,
+    e.depth.min, e.depth.max,
+    e.height.min, e.height.max,
+    app.roomRatio?.centerBlend,
+    i18nState.locale,
+  ].join(':');
   if (builtRatioKey === key && host.childElementCount) return;
   builtRatioKey = key;
   host.textContent = '';
@@ -728,6 +825,14 @@ function buildFaces() {
       }
     }
 
+    // The grid the snap lands on, drawn under everything else. Without it the
+    // snap is erratic rather than helpful: the room's depth is warped, so the
+    // nodes are not evenly spaced on screen and a drag appears to stick at
+    // irregular intervals for no visible reason. Shown only while snapping.
+    const grid = svgEl('path', { class: 'object-test-grid', d: '' });
+    grid.dataset.role = 'grid';
+    group.appendChild(grid);
+
     // The orbit's shadow on this face. Drawn before the marker so the marker,
     // which is the thing you are placing, stays on top of it.
     const orbit = svgEl('polyline', { class: 'object-test-orbit', points: '' });
@@ -807,20 +912,19 @@ function buildSlider(slider, layout) {
 /** Arrow keys nudge, page keys step, home/end jump to the walls. */
 function attachSliderKeys(group, slider) {
   group.addEventListener('keydown', (event) => {
-    const axis = sliderAxis(slider);
-    const current = position[axis.axis];
-    let next = null;
+    let delta = null;
+    let absolute = null;
     switch (event.key) {
-      case 'ArrowRight': case 'ArrowUp': next = current + 0.02; break;
-      case 'ArrowLeft': case 'ArrowDown': next = current - 0.02; break;
-      case 'PageUp': next = current + 0.1; break;
-      case 'PageDown': next = current - 0.1; break;
-      case 'Home': next = -1; break;
-      case 'End': next = 1; break;
+      case 'ArrowRight': case 'ArrowUp': delta = 0.02; break;
+      case 'ArrowLeft': case 'ArrowDown': delta = -0.02; break;
+      case 'PageUp': delta = 0.1; break;
+      case 'PageDown': delta = -0.1; break;
+      case 'Home': absolute = -1; break;
+      case 'End': absolute = 1; break;
       default: return;
     }
     event.preventDefault();
-    setAxisValue(slider, clamp1(next));
+    nudgeAxis(slider, delta ?? 0, absolute);
   });
 }
 
@@ -879,10 +983,15 @@ function attachSheetDrag(svg) {
       setAxisValue(active.slider, sliderValueAt(active.slider, sheetLayout(), p.x, p.y));
       return;
     }
-    setPosition(sheetToFace(active.face, active.rect, p.x, p.y));
+    setPosition(sheetToFace(active.face, active.rect, p.x, p.y, sheetLayout().extent));
   };
 
+  // Track Alt for the whole gesture, including if it is pressed or released
+  // mid-drag: the pointer events carry it, so the state cannot go stale.
+  const readBypass = (event) => { snapBypass = Boolean(event.altKey); };
+
   svg.addEventListener('pointerdown', (event) => {
+    readBypass(event);
     const p = pointInSheet(svg, event);
     if (!p) return;
     // Sliders win over the views: their grab areas sit in the gutters, but a
@@ -898,9 +1007,10 @@ function attachSheetDrag(svg) {
     active = hit;
     try { svg.setPointerCapture(event.pointerId); } catch (_) { /* ignore */ }
     apply(event);
-    const move = (ev) => apply(ev);
+    const move = (ev) => { readBypass(ev); apply(ev); };
     const up = () => {
       active = null;
+      snapBypass = false;
       svg.removeEventListener('pointermove', move);
       svg.removeEventListener('pointerup', up);
       svg.removeEventListener('pointercancel', up);
@@ -911,29 +1021,82 @@ function attachSheetDrag(svg) {
   });
 }
 
+/**
+ * The snap grid, projected onto one face.
+ *
+ * Nodes, not lines: at 63 intervals a ruled grid on a 100-unit face is a grey
+ * wash. Ticks along each edge say where the nodes are without covering the
+ * drawing, and they thin out automatically — if the nodes would fall closer
+ * than a stroke apart, only every nth is drawn, so the marks stay countable
+ * instead of merging.
+ */
+function gridPathFor(face, rect, layout, axes) {
+  const ticks = [];
+  const TICK = 1.6;
+  const MIN_GAP = 1.2;
+
+  const edge = (which) => {
+    const axisName = face[which].axis;
+    const admIdx = ADM_OF_ROOM_AXIS[axisName];
+    const nodes = axes[admIdx];
+    if (!nodes || nodes.length < 2) return;
+    const size = which === 'h' ? rect.w : rect.h;
+    // Project every node, then decide how many to skip from the tightest gap.
+    const pts = nodes.map((n) => {
+      const probe = position.slice();
+      probe[admIdx] = n;
+      const p = faceToSheet(face, rect, probe, layout.extent);
+      return which === 'h' ? p.cx : p.cy;
+    }).sort((a, b) => a - b);
+    let tightest = Infinity;
+    for (let i = 1; i < pts.length; i += 1) tightest = Math.min(tightest, pts[i] - pts[i - 1]);
+    const step = Math.max(1, Math.ceil(MIN_GAP / Math.max(1e-6, tightest)));
+    for (let i = 0; i < pts.length; i += step) {
+      const v = pts[i];
+      if (which === 'h') {
+        ticks.push(`M${v.toFixed(2)},${rect.y}v${TICK}`);
+        ticks.push(`M${v.toFixed(2)},${(rect.y + rect.h).toFixed(2)}v${-TICK}`);
+      } else {
+        ticks.push(`M${rect.x},${v.toFixed(2)}h${TICK}`);
+        ticks.push(`M${(rect.x + rect.w).toFixed(2)},${v.toFixed(2)}h${-TICK}`);
+      }
+    }
+    void size;
+  };
+  edge('h');
+  edge('v');
+  return ticks.join(' ');
+}
+
 /** Redraw every marker and slider thumb from the current position. */
 function updateMarkers() {
   const host = el('objectTestFaces');
   if (!host) return;
   const layout = sheetLayout();
   const path = orbitPath();
+  const gridNodes = snapOn ? gridAxes() : null;
   for (const face of FACES) {
     const group = host.querySelector(`g[data-face-id="${face.id}"]`);
     const marker = group?.querySelector('[data-role="marker"]');
     if (!marker) continue;
     const rect = layout.rects[face.id];
-    const { cx, cy } = faceToSheet(face, rect, position);
+    const { cx, cy } = faceToSheet(face, rect, position, layout.extent);
     marker.setAttribute('cx', String(cx));
     marker.setAttribute('cy', String(cy));
 
     // A circle in 3D projects to an ellipse on a face — or, once the clamp
     // bites, to something with flats on it. Sampling the same function the
     // renderer uses draws whichever it really is, instead of assuming a shape.
+    const grid = group.querySelector('[data-role="grid"]');
+    if (grid) {
+      grid.setAttribute('d', gridNodes ? gridPathFor(face, rect, layout, gridNodes) : '');
+    }
+
     const orbit = group.querySelector('[data-role="orbit"]');
     if (orbit) {
       orbit.setAttribute('points', path
         ? path.map((p) => {
-          const q = faceToSheet(face, rect, p);
+          const q = faceToSheet(face, rect, p, layout.extent);
           return `${q.cx.toFixed(2)},${q.cy.toFixed(2)}`;
         }).join(' ')
         : '');
@@ -946,7 +1109,7 @@ function updateMarkers() {
     const { cx, cy } = sliderThumb(slider, layout);
     thumb.setAttribute('cx', String(cx));
     thumb.setAttribute('cy', String(cy));
-    group.setAttribute('aria-valuenow', position[sliderAxis(slider).axis].toFixed(2));
+    group.setAttribute('aria-valuenow', position[ADM_OF_ROOM_AXIS[sliderAxis(slider).axis]].toFixed(2));
   }
 }
 

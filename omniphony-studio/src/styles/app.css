@@ -3107,11 +3107,26 @@ body:not(.output-binaural) .speakers-header-binaural {
 /* The orbit path, drawn on each CAD face. Thin and unfilled: it is the shape
    the source will travel, not a region, and the marker must stay readable on
    top of it. */
+/* The orbit, projected onto a face. Thicker and brighter than it was: it is
+   the path the source will travel, it competes with the room box and the grid
+   ticks for attention, and at 0.6 it read as a smudge. Still unfilled — it is
+   a trajectory, not a region — and still under the marker. */
 .object-test-orbit {
   fill: none;
-  stroke: rgba(92, 255, 154, 0.55);
-  stroke-width: 0.6;
+  stroke: rgba(92, 255, 154, 0.85);
+  stroke-width: 1.1;
   stroke-linejoin: round;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+/* The snap grid: ticks on the face's edges rather than ruled lines across it.
+   Faint enough to stay out of the way of the trajectory, present enough to
+   count. */
+.object-test-grid {
+  fill: none;
+  stroke: rgba(217, 236, 255, 0.35);
+  stroke-width: 0.45;
   pointer-events: none;
 }
 
