@@ -96,6 +96,8 @@ struct LiveSnapshot<'a> {
     speaker_params: &'a [crate::live_params::SpeakerLiveParams],
     /// Running speaker test, `None` in normal operation.
     speaker_test: Option<crate::live_params::SpeakerTest>,
+    /// Running object test, `None` in normal operation.
+    object_test: Option<crate::live_params::ObjectTest>,
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -303,6 +305,13 @@ pub struct SpatialRenderer {
     /// beds mapped to a `spatialize: false` speaker (the LFE) feed both ears
     /// equally instead of being HRTF-spatialized.
     binaural_direct_buf: Vec<bool>,
+
+    /// Signal source for the object test. Owned here rather than by the speaker
+    /// stage because both output paths draw from it: the speaker stage pans the
+    /// block, the binaural stage feeds it to an HRIR pair, and one generator is
+    /// what keeps the level contract and the restart behaviour identical
+    /// between them.
+    object_test_source: crate::object_test::ObjectTestSource,
 }
 
 impl SpatialRenderer {
@@ -662,6 +671,7 @@ impl SpatialRenderer {
                 auto_gain_ceiling_db: g.auto_gain_ceiling_db,
                 speaker_params: &self.speaker_params_buf[..self.num_speakers],
                 speaker_test: g.speaker_test,
+                object_test: g.object_test,
                 room_ratio: g.room_ratio,
                 room_ratio_rear: g.room_ratio_rear,
                 room_ratio_lower: g.room_ratio_lower,
@@ -742,6 +752,16 @@ impl SpatialRenderer {
             let mut output = samples_buf;
             output.clear();
             output.resize(sample_length * 2, 0.0);
+            // Pulled once per frame, before the two arms: the generator advances
+            // with the clock, so drawing it twice (or not at all) would break the
+            // signal's continuity. Which arm consumes it differs — cascaded mode
+            // pans it onto the virtual speakers, direct mode gives it its own
+            // HRIR pair — but both are the same block.
+            let object_test_noise = self.object_test_source.next_block(
+                live.object_test,
+                self.sample_rate,
+                sample_length,
+            );
             let mut cascade_diag = None;
             if cascade_active && self.cascade.is_some() {
                 // Cascaded mode: the MAIN speaker stage renders the app layout
@@ -779,6 +799,8 @@ impl SpatialRenderer {
                     },
                     live.speaker_params,
                     &binaural_params,
+                    live.object_test,
+                    object_test_noise,
                     &mut output,
                 );
                 cascade_diag = Some(diag);
@@ -862,6 +884,18 @@ impl SpatialRenderer {
                         }
                     }
                 }
+                // An object test in headphone mode renders as what it is — an
+                // object — through the full HRIR path, instead of being silent
+                // the way a speaker test necessarily is here (there is no
+                // speaker to excite). Level is already folded into the block,
+                // so the gain is unity.
+                let extra = live.object_test.zip(object_test_noise).map(|(test, pcm)| {
+                    crate::binaural::ExtraSource {
+                        pcm,
+                        position: test.position.map(|v| v as f64),
+                        gain: 1.0,
+                    }
+                });
                 self.binaural.render_frame(
                     input_pcm,
                     input_channel_count,
@@ -870,6 +904,7 @@ impl SpatialRenderer {
                     &self.binaural_pos_buf,
                     &self.binaural_gain_buf,
                     &self.binaural_direct_buf,
+                    extra,
                     &mut output,
                 );
             }
@@ -1031,14 +1066,36 @@ impl SpatialRenderer {
         // clipping branch below), so it needs no separate factor here.
         let total_gain = live.master_gain * loudness;
 
-        // Before finalize, so the test goes through the same per-speaker gain,
-        // delay and mute as programme audio — the point is to hear what the
-        // speaker will actually do, not a bypassed signal.
+        // Both tests land before finalize, so they go through the same
+        // per-speaker gain, delay and mute as programme audio — the point is to
+        // hear what the speakers will actually do, not a bypassed signal.
+        //
+        // The object test goes first because its isolation is the broader
+        // statement (it silences the programme on every speaker, having no one
+        // speaker of its own). Running the speaker test afterwards lets its
+        // narrower isolation win on the speaker it targets, which is the
+        // sensible reading when a user deliberately starts both at once.
+        let frames = if self.speaker_stage.num_speakers > 0 {
+            output.len() / self.speaker_stage.num_speakers
+        } else {
+            0
+        };
+        // Disjoint field borrows: the source lends the block, the stage places it.
+        let noise = self
+            .object_test_source
+            .next_block(live.object_test, self.sample_rate, frames);
+        let object_test_active = self.speaker_stage.inject_object_test(
+            live.object_test,
+            noise,
+            ramp_context.render_params(),
+            &mut output,
+        );
+
         let test_active = self.speaker_stage.inject_speaker_test(
             live.speaker_test,
             self.sample_rate,
             &mut output,
-        );
+        ) || object_test_active;
 
         let (peak_sample, peak_speaker_idx) =
             self.speaker_stage

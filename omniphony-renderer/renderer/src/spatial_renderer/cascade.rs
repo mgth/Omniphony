@@ -130,6 +130,8 @@ pub(super) fn render_cascade_frame(
     frame: SpeakerStageFrame<'_>,
     speaker_params: &[crate::live_params::SpeakerLiveParams],
     binaural_params: &crate::binaural::BinauralFrameParams,
+    object_test: Option<crate::live_params::ObjectTest>,
+    object_test_noise: Option<&[f32]>,
     output: &mut [f32],
 ) -> SpeakerStageDiagnostics {
     let total = cascade.num_buses();
@@ -138,7 +140,19 @@ pub(super) fn render_cascade_frame(
     cascade.bus.clear();
     cascade.bus.resize(sample_length * total, 0.0);
 
+    let render_params = frame.ramp_context.render_params();
     let diag = stage.mix_channels(frame, channel_states, &mut cascade.bus);
+    // The object test pans onto the virtual layout exactly where a real object
+    // would, and is then binauralised with it — so cascaded mode needs no
+    // separate binaural source, and hears the virtual room rather than bypassing
+    // it. Placed before `finalize_output` for the same reason as on the physical
+    // path: the per-speaker rows must apply to it too.
+    stage.inject_object_test(
+        object_test,
+        object_test_noise,
+        render_params,
+        &mut cascade.bus,
+    );
     // Per-speaker rows apply to the virtual speakers; unity total gain —
     // master gain applies once, on the final stereo. The returned peak is
     // ignored: clip handling watches the stereo output, and auto-gain must
@@ -156,6 +170,8 @@ pub(super) fn render_cascade_frame(
         &cascade.bin_pos,
         &cascade.bin_gain,
         &cascade.bin_direct,
+        // No extra source: the test is already on the buses above.
+        None,
         output,
     );
     diag

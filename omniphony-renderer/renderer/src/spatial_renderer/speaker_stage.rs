@@ -61,6 +61,21 @@ pub(super) struct SpeakerRenderStage {
     pub(super) test_elapsed_samples: u64,
     /// The test the elapsed count belongs to, to spot a restart.
     pub(super) test_identity: Option<(usize, u32)>,
+    /// Crossover states for the object test's own signal. Separate from both
+    /// `crossover_filter_states` and `test_filter_states` for the same reason
+    /// those are separate from each other: it is a third independent source, and
+    /// sharing filter memory would splice one signal's tail into another.
+    pub(super) object_test_filter_states: Vec<BiquadState>,
+    /// Previous block's destination gains for the object test, per band — the
+    /// start point of this block's interpolation. Exactly the role
+    /// `ChannelState::interp_prev_gains` plays for a real object; the test has
+    /// no `ChannelState` of its own, so it keeps its own copy. Empty when no
+    /// test is running, which is also how a fresh start is detected.
+    pub(super) object_test_prev_gains: Vec<Gains>,
+    /// Destination gains for this block, per band.
+    pub(super) object_test_end_gains: Vec<Gains>,
+    /// Per-sample interpolated gains, per band.
+    pub(super) object_test_band_gains: Vec<Gains>,
     /// Reusable per-band scratch used only when collecting crossover timing.
     pub(super) crossover_band_scratch: [Vec<f32>; 8],
     /// Reusable per-object band-gain buffer (taken via `mem::take` per object).
@@ -734,6 +749,10 @@ impl SpeakerRenderStage {
             test_filter_states: Vec::new(),
             test_elapsed_samples: 0,
             test_identity: None,
+            object_test_filter_states: Vec::new(),
+            object_test_prev_gains: Vec::new(),
+            object_test_end_gains: Vec::new(),
+            object_test_band_gains: Vec::new(),
             crossover_band_scratch: std::array::from_fn(|_| Vec::new()),
             band_gains_scratch: Vec::new(),
             interp_end_scratch: Vec::new(),
@@ -922,6 +941,148 @@ impl SpeakerRenderStage {
         }
 
         self.test_elapsed_samples += frames as u64;
+        true
+    }
+
+    /// Pan the object test's signal into `output` using the active render
+    /// backend, so what is heard is what the renderer would do with a real
+    /// object at that position.
+    ///
+    /// `noise` is the already level-scaled, peak-bounded mono block from
+    /// [`crate::object_test::ObjectTestSource`]; `None` means no test is running
+    /// and the interpolation state is dropped so the next start does not ramp in
+    /// from a stale position. Returns true while a test is running, so the
+    /// caller can suppress peak tracking exactly as it does for a speaker test.
+    ///
+    /// Nothing here is panning logic. The gains come from the same
+    /// [`Self::fill_band_gains`] the object mix loop calls, which reaches the
+    /// live backend through the band renderers — so the out-of-hull mode, the
+    /// distance model and the spread settings currently configured all apply,
+    /// and a contributed backend works without knowing this feature exists. The
+    /// crossover split is the same too: each band is panned with that band's own
+    /// gains, because a real object is.
+    ///
+    /// Movement is smoothed by mirroring `RampMode::Interp`: one gain evaluation
+    /// per block at the requested position, then a per-sample linear blend from
+    /// the previous block's destination. That is deliberately the *existing*
+    /// ramp rather than a new one — it is the mechanism the renderer already
+    /// trusts to move an object without clicking, and it costs one evaluation
+    /// per block no matter how fast the user drags. The generator itself never
+    /// restarts on a move (see `ObjectTestSource::identity_of`), so the two
+    /// together give a continuous signal whose position slides.
+    pub(super) fn inject_object_test(
+        &mut self,
+        test: Option<crate::live_params::ObjectTest>,
+        noise: Option<&[f32]>,
+        render_params: crate::ramp_strategy::RampRenderParams,
+        output: &mut [f32],
+    ) -> bool {
+        let (Some(test), Some(noise)) = (test, noise) else {
+            // Drop the ramp start point: a test that starts later must begin at
+            // its own position, not slide there from wherever the last one
+            // ended.
+            self.object_test_prev_gains.clear();
+            return false;
+        };
+        if self.num_speakers == 0 || noise.is_empty() {
+            return false;
+        }
+        let frames = (output.len() / self.num_speakers).min(noise.len());
+        if frames == 0 {
+            return false;
+        }
+
+        // Isolation. An object has no single speaker to solo, so the two
+        // "test only" variants mean the same thing here: silence the programme
+        // everywhere, leaving only the panned test.
+        match test.isolation {
+            crate::live_params::TestIsolation::WithProgramme => {}
+            crate::live_params::TestIsolation::TestOnly
+            | crate::live_params::TestIsolation::TestOnlySoloSpeaker => {
+                for f in 0..frames {
+                    let base = f * self.num_speakers;
+                    output[base..base + self.num_speakers].fill(0.0);
+                }
+            }
+        }
+
+        // Destination gains for this block: one evaluation per band at the
+        // requested position, taken/put back so `fill_band_gains` can borrow the
+        // fields it needs alongside the scratch.
+        let mut end = std::mem::take(&mut self.object_test_end_gains);
+        Self::fill_band_gains(
+            &self.unified_table,
+            &self.render_bands,
+            render_params,
+            test.position.map(|v| v as f64),
+            test.size,
+            &mut end,
+        );
+        self.object_test_end_gains = end;
+        let n_bands = self.object_test_end_gains.len();
+        if n_bands == 0 {
+            return false;
+        }
+
+        // First block of this test (or a layout width change) → start == end, so
+        // it begins at its position instead of sweeping in from silence.
+        if self.object_test_prev_gains.len() != n_bands
+            || self
+                .object_test_prev_gains
+                .first()
+                .is_some_and(|g| g.len() != self.num_speakers)
+        {
+            self.object_test_prev_gains.clear();
+            self.object_test_prev_gains
+                .extend_from_slice(&self.object_test_end_gains);
+        }
+        self.object_test_band_gains
+            .resize(n_bands, Gains::zeroed(self.num_speakers));
+
+        let inv_n = 1.0 / frames.max(1) as f32;
+        if self.object_test_filter_states.len()
+            != self
+                .crossover_filter_bank
+                .as_ref()
+                .map_or(0, |b| b.state_count())
+        {
+            self.object_test_filter_states = vec![
+                BiquadState::default();
+                self.crossover_filter_bank
+                    .as_ref()
+                    .map_or(0, |b| b.state_count())
+            ];
+        }
+
+        for sample_idx in 0..frames {
+            let f = (sample_idx as f32 + 1.0) * inv_n;
+            for b in 0..n_bands {
+                let (s0, s1) = (
+                    &self.object_test_prev_gains[b],
+                    &self.object_test_end_gains[b],
+                );
+                let slot = &mut self.object_test_band_gains[b];
+                for spk in 0..self.num_speakers {
+                    slot[spk] = s0[spk] * (1.0 - f) + s1[spk] * f;
+                }
+            }
+            let split = split_bands(
+                noise[sample_idx],
+                &self.crossover_filter_bank,
+                (!self.object_test_filter_states.is_empty())
+                    .then(|| self.object_test_filter_states.as_mut_slice()),
+            );
+            let out_base = sample_idx * self.num_speakers;
+            let out_frame = &mut output[out_base..out_base + self.num_speakers];
+            for (b, gains) in self.object_test_band_gains.iter().enumerate() {
+                accumulate_band(out_frame, gains, split.get(b));
+            }
+        }
+
+        // This block's destination is the next block's start.
+        self.object_test_prev_gains.clear();
+        self.object_test_prev_gains
+            .extend_from_slice(&self.object_test_end_gains);
         true
     }
 

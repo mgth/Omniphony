@@ -198,12 +198,40 @@ pub const CONTROL_RELOAD_CONFIG: &str = "/omniphony/control/reload_config";
 /// would peak a crest factor (~13 dB) above one. See
 /// [`renderer::live_params::SpeakerTest`].
 pub const CONTROL_SPEAKER_TEST: &str = "/omniphony/control/speaker_test";
-/// Arm/disarm the speaker-test idle feed.
+
+/// Start, move or stop the object test signal: pink noise placed at a position
+/// in the room and panned there by the active render backend.
+///
+/// Args: `[on: Int, x: Float, y: Float, z: Float, level: Float, size: Float,
+/// isolation: String]`. `on = 0` stops; everything after it is then ignored.
+/// Position is ADM Cartesian, each axis clamped to `[-1, 1]`: x left/right,
+/// y back/front, z floor/ceiling. `size` is an isotropic extent in `[0, 1]`,
+/// `0` being a point source. `level` is peak amplitude with the same meaning as
+/// on [`CONTROL_SPEAKER_TEST`].
+///
+/// **Re-sending with a new position is how the object moves, and must be
+/// cheap.** The renderer keeps position out of the signal's identity and ramps
+/// the gains instead, so a stream of these messages — one per pointer move
+/// while dragging — slides the source continuously without ever restarting the
+/// noise. Changing `level` or `isolation` does restart it, deliberately.
+///
+/// What is heard is what the renderer would do with a real object there: the
+/// gains come from whichever backend is live, so the out-of-hull mode, distance
+/// model and spread settings all apply. In `output_mode: binaural` it renders
+/// through the HRIR path as an object rather than falling silent.
+///
+/// Transient like the speaker test: never persisted, cleared on a fresh start,
+/// and subject to the same safety cap.
+pub const CONTROL_OBJECT_TEST: &str = "/omniphony/control/object_test";
+
+/// Arm/disarm the test idle feed.
 ///
 /// Args: `[on: Int]` (non-zero arms). While armed, the decode loop fabricates
 /// silence input frames whenever no real input is flowing, so the output chain
-/// is already warm when a speaker test starts and the noise is heard
-/// immediately instead of after the writer/latency-controller settling time.
+/// is already warm when a test starts and the noise is heard immediately
+/// instead of after the writer/latency-controller settling time. Serves the
+/// speaker test and the object test alike — the address keeps its original name
+/// for compatibility, but the feed is not specific to either.
 /// The arm expires after a keepalive window; clients re-send it periodically
 /// while their test pane is open, so a dead client cannot leave the feed
 /// running forever. Transient: never persisted, cleared on a fresh start.

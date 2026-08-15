@@ -151,7 +151,8 @@ contract address. See `omniphony-renderer/BINAURAL.md`.
 | Address | Args | Meaning |
 |---|---|---|
 | `/control/speaker_test` | idx int, level f `[0,1]`, isolation s | Play band-limited pink noise on one speaker; negative idx stops. |
-| `/control/speaker_test/idle_feed` | int bool | Keep the output chain warm so a test is heard immediately. |
+| `/control/object_test` | on int bool, x f, y f, z f `[-1,1]`, level f `[0,1]`, size f `[0,1]`, isolation s | Play pink noise as an object at a position, panned by the active backend; `on = 0` stops. |
+| `/control/speaker_test/idle_feed` | int bool | Keep the output chain warm so a test is heard immediately. Serves both tests. |
 
 `isolation` is one of `test_only` (mute the programme on that speaker only),
 `with_programme`, or `test_only_solo` (mute every other speaker).
@@ -175,8 +176,45 @@ suppresses peak tracking so it cannot drive the auto-gain.
 
 The trigger policy (hold, fixed burst, toggle) belongs to the client; the engine
 only ever hears "start this" or "stop", and keeps a safety cap so a client that
-dies mid-test cannot leave a speaker making noise. Both addresses are transient:
-never persisted, cleared on a fresh start.
+dies mid-test cannot leave a speaker making noise. All three addresses are
+transient: never persisted, cleared on a fresh start.
+
+#### The object test
+
+The complement to the speaker test. A speaker test asks *what does this speaker
+do*; an object test asks *where does the renderer put a source I place here*.
+So it is not written into a channel — it is **panned**, by asking whichever
+backend is live for the per-speaker gains at that ADM position and mixing
+`noise × gain[s]` into every speaker. What you hear is therefore what the
+renderer would do with a real object there, including the out-of-hull mode, the
+distance model and the spread currently configured. Nothing about it is
+VBAP-specific; a contributed backend works without knowing the feature exists.
+
+Position is ADM Cartesian — x left/right, y back/front, z floor/ceiling, each in
+`[-1, 1]` — and `size` is an isotropic extent, `0` being a point source.
+`level` carries exactly the same peak contract as above; the bound survives
+panning because backend gains are power-normalised (`Σ g² = 1`, so every
+`g ≤ 1`), and clamping the mono noise before it is panned bounds every speaker's
+share of it.
+
+**Re-sending with a new position is how the object moves, and it must not
+restart the signal.** The engine keeps position out of the generator's identity
+and ramps the gains instead — the same per-sample interpolation `RampMode::Interp`
+uses for a real object — so a stream of these messages, one per pointer move
+while dragging, slides the source continuously with no gap and no click. Level
+and isolation *do* restart it, deliberately: those are a "try that again", and
+the ear expects the clock to restart with them.
+
+`test_only` and `test_only_solo` mean the same thing here (silence the programme
+everywhere): an object has no single speaker to solo. When both tests run at
+once the speaker test's isolation wins on the speaker it targets, being the
+narrower statement.
+
+Unlike a speaker test, an object test works in `output_mode: binaural`: it is an
+object, so it renders through the HRIR path — direction, ITD, air absorption,
+early reflections and reverb send — from a source slot of its own past the input
+channels. In cascaded binaural it is panned onto the virtual layout and
+binauralised with it, so it hears the virtual room rather than bypassing it.
 
 ### Overlay (Studio 3D / mpv overlay)
 

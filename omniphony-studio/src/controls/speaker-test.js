@@ -12,6 +12,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
 import { t } from '../i18n.js';
+import { setIdleFeedRequest, releaseIdleFeed } from './test-idle-feed.js';
 
 const MODE_KEY = 'speakerTest.mode.v1';
 const ISOLATION_KEY = 'speakerTest.isolation.v1';
@@ -28,13 +29,6 @@ const BURST_MS = 2000;
 const TOGGLE_SAFETY_MS = 60_000;
 
 /**
- * The renderer expires an idle-feed arm after a keepalive window (10 min)
- * rather than trust a client to always say goodbye; re-arm well inside it.
- * The periodic re-send also re-covers a renderer restart mid-session.
- */
-const IDLE_FEED_REARM_MS = 120_000;
-
-/**
  * Peak dBFS. -8 rather than a rounder number because it reproduces the loudness
  * of the old -20 dBFS default: that figure set the RMS, and pink noise peaked a
  * crest factor (~13 dB) above it. Same signal, honest number.
@@ -44,9 +38,6 @@ const DEFAULT_LEVEL_DB = -8;
 let stopTimer = null;
 /** Speaker index currently under test, or null. */
 let running = null;
-
-let idleFeedTimer = null;
-let idleFeedArmed = false;
 
 function el(id) { return document.getElementById(id); }
 
@@ -91,31 +82,18 @@ function send(id) {
   }).catch(() => { /* renderer gone: the test is moot */ });
 }
 
-function sendIdleFeed(enable) {
-  invoke('control_speaker_test_idle_feed', { enable })
-    .catch(() => { /* renderer gone: nothing to keep warm */ });
-}
-
 /**
  * The idle feed keeps the renderer's input→output chain warm while the Test
  * pane is open, so a test makes sound immediately even with nothing playing.
- * Armed exactly while (Test pane visible AND a speaker is selected); re-sent
- * periodically because the renderer expires the arm on a keepalive rather
- * than trust a client to always say goodbye.
+ * Wanted exactly while (Test pane visible AND a speaker is selected).
+ *
+ * The request goes through the shared arbiter rather than straight to the wire:
+ * the object-injection panel wants the same feed, and whichever panel closed
+ * first would otherwise disarm it for the other.
  */
 function syncIdleFeed() {
   const hasSpeaker = app.selectedSpeakerIndex !== null && app.selectedSpeakerIndex !== undefined;
-  const want = document.body.classList.contains('speaker-tab-test') && hasSpeaker;
-  if (want === idleFeedArmed) return;
-  idleFeedArmed = want;
-  if (want) {
-    sendIdleFeed(true);
-    idleFeedTimer = setInterval(() => sendIdleFeed(true), IDLE_FEED_REARM_MS);
-  } else {
-    clearInterval(idleFeedTimer);
-    idleFeedTimer = null;
-    sendIdleFeed(false);
-  }
+  setIdleFeedRequest('speaker-test', document.body.classList.contains('speaker-tab-test') && hasSpeaker);
 }
 
 /**
@@ -264,7 +242,7 @@ export function setupSpeakerTestListeners() {
   // Whatever the trigger mode, closing the window must not leave noise playing.
   window.addEventListener('beforeunload', () => {
     stopSpeakerTest({ force: true });
-    if (idleFeedArmed) sendIdleFeed(false);
+    releaseIdleFeed();
   });
 }
 

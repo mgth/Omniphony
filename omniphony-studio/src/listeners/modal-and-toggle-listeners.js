@@ -10,7 +10,7 @@ import {
   setInputClockInfoModalOpen, setInputLfeInfoModalOpen,
   setDrcInfoModalOpen, setHeatmapInfoModalOpen,
   setTelemetryGaugesOpen,
-  setDisplaySectionOpen, setDrcSectionOpen, setTwoDSourcesSectionOpen, setAudioOutputSectionOpen, setInputSectionOpen, setRendererSectionOpen,
+  setDisplaySectionOpen, setDrcSectionOpen, setTwoDSourcesSectionOpen, setObjectTestSectionOpen, setAudioOutputSectionOpen, setInputSectionOpen, setRendererSectionOpen,
   setAutoGainSectionOpen
 } from '../modals.js';
 import { closeAutoTuneWizardOnEscape } from '../auto-tune/wizard-ui.js';
@@ -275,6 +275,14 @@ export function setupModalAndToggleListeners() {
   if (twoDSourcesToggleBtnEl) {
     twoDSourcesToggleBtnEl.addEventListener('click', () => {
       setTwoDSourcesSectionOpen(!app.twoDSourcesSectionOpen);
+    });
+  }
+
+  // Object injection: collapsed by default, and closing it stops the test.
+  const objectTestToggleBtnEl = document.getElementById('objectTestToggleBtn');
+  if (objectTestToggleBtnEl) {
+    objectTestToggleBtnEl.addEventListener('click', () => {
+      setObjectTestSectionOpen(!app.objectTestSectionOpen);
     });
   }
 

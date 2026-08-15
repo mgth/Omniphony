@@ -2968,3 +2968,41 @@ body:not(.output-binaural) .speakers-header-binaural {
   border-color: rgba(82, 226, 162, 0.5);
   color: #aef5d8;
 }
+
+/* ── Object injection: the three room faces ─────────────────────────────────
+   The room box, its midlines and the source marker. Colours follow the panel
+   palette (#d9ecff text on a translucent white fill); the marker borrows the
+   accent green used elsewhere for "live" so a placed source reads at a glance
+   against the faint geometry. */
+.object-test-face-box {
+  fill: rgba(255, 255, 255, 0.05);
+  stroke: rgba(217, 236, 255, 0.35);
+  stroke-width: 1;
+}
+
+.object-test-face-axis {
+  stroke: rgba(217, 236, 255, 0.15);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.object-test-marker {
+  fill: #5cff9a;
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 1;
+  /* The marker is decoration over a click target: let pointer events through
+     so grabbing it does not swallow the drag the face is listening for. */
+  pointer-events: none;
+}
+
+/* WebKitGTK will start a text selection on a button's own label and swallow the
+   click that should have followed — invisible when previewing in Chrome, and a
+   button that needs two clicks in the real app. The rule is scoped the same way
+   the profile-row buttons scope it, and covers the switch label too, whose text
+   is the click target for the toggle beside it. */
+#objectTestPanelRoot button,
+#objectTestPanelRoot .switch-row,
+#objectTestPanelRoot .panel-title {
+  -webkit-user-select: none;
+  user-select: none;
+}

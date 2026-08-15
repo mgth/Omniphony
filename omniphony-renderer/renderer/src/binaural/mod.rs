@@ -224,6 +224,24 @@ impl ChannelDsp {
     }
 }
 
+/// A source rendered alongside the input channels, from its own mono block.
+///
+/// Exists for the object test, which has no input channel to ride on: it is a
+/// source the renderer invents, so it needs a way in that does not disturb the
+/// channel numbering everything else depends on. Giving it a slot past the end
+/// of the channels means it picks up the full spatialization path — HRIR, ITD,
+/// air absorption, early reflections, reverb send — rather than a simplified
+/// stand-in, which is the whole reason a *binaural* object test is worth having
+/// where a binaural speaker test is not.
+pub struct ExtraSource<'a> {
+    /// Mono samples, `sample_length` of them.
+    pub pcm: &'a [f32],
+    /// World (ADM) position, same convention as `chan_pos`.
+    pub position: [f64; 3],
+    /// Linear gain applied on top of the block.
+    pub gain: f32,
+}
+
 /// Per-frame live parameters for [`BinauralRenderer::render_frame`], grouped
 /// so the call site stays readable as the stage grows.
 pub struct BinauralFrameParams {
@@ -433,6 +451,9 @@ impl BinauralRenderer {
     ///   to both ears equally, bypassing HRIR/ITD/air/reflections/reverb.
     ///   Missing entries read as `false`.
     /// - `out`: must be `sample_length * 2`, pre-zeroed.
+    /// - `extra`: an optional source that is not an input channel — the object
+    ///   test. Rendered exactly like a spatialized channel, from its own DSP
+    ///   slot past the end of the input channels.
     #[allow(clippy::too_many_arguments)]
     pub fn render_frame(
         &mut self,
@@ -443,6 +464,7 @@ impl BinauralRenderer {
         chan_pos: &[[f64; 3]],
         chan_gain: &[f32],
         chan_direct: &[bool],
+        extra: Option<ExtraSource<'_>>,
         out: &mut [f32],
     ) {
         let BinauralFrameParams {
@@ -455,11 +477,16 @@ impl BinauralRenderer {
             hrir_update_lattice,
         } = *params;
         debug_assert_eq!(out.len(), sample_length * 2);
-        if input_channel_count == 0 || sample_length == 0 {
+        if sample_length == 0 || (input_channel_count == 0 && extra.is_none()) {
             return;
         }
-        if self.channels.len() < input_channel_count {
-            self.channels.resize_with(input_channel_count, || None);
+        // The extra source gets a DSP slot of its own past the input channels,
+        // so its convolvers, delay lines and reflection bank persist across
+        // blocks like any channel's — that continuity is what lets it move
+        // without clicking.
+        let source_count = input_channel_count + usize::from(extra.is_some());
+        if self.channels.len() < source_count {
+            self.channels.resize_with(source_count, || None);
         }
 
         // Late-reverb bus: per-channel sends accumulate here; the shared FDN
@@ -474,8 +501,19 @@ impl BinauralRenderer {
             self.fdn = None;
         }
 
-        for c in 0..input_channel_count {
-            let gain = chan_gain.get(c).copied().unwrap_or(0.0);
+        for c in 0..source_count {
+            // Past the input channels sits the extra source (the object test).
+            // Its PCM is mono, hence the stride of 1 — that triple is the only
+            // thing that differs from a channel all the way down.
+            let extra_here = extra.as_ref().filter(|_| c >= input_channel_count);
+            let (src_pcm, src_stride, src_offset) = match extra_here {
+                Some(e) => (e.pcm, 1usize, 0usize),
+                None => (input_pcm, input_channel_count, c),
+            };
+            let gain = match extra_here {
+                Some(e) => e.gain,
+                None => chan_gain.get(c).copied().unwrap_or(0.0),
+            };
             if gain == 0.0 {
                 // Keep an existing reflection bank fading out so a muted
                 // channel does not freeze its taps at full gain.
@@ -493,7 +531,9 @@ impl BinauralRenderer {
             // overall (no +10 dB LFE convention), matching the speaker path's
             // untouched one-hot routing. Head rotation deliberately has no
             // effect, like real sub-bass.
-            if chan_direct.get(c).copied().unwrap_or(false) {
+            // The extra source is never "direct": it is an object by definition,
+            // and placing it is the entire point.
+            if extra_here.is_none() && chan_direct.get(c).copied().unwrap_or(false) {
                 if let Some(Some(dsp)) = self.channels.get_mut(c) {
                     // Drop a stale reflection bank if the channel just
                     // switched from the spatialized path (same policy as the
@@ -501,7 +541,7 @@ impl BinauralRenderer {
                     dsp.refl = None;
                 }
                 for s in 0..sample_length {
-                    let v = input_pcm[s * input_channel_count + c]
+                    let v = src_pcm[s * src_stride + src_offset]
                         * gain
                         * std::f32::consts::FRAC_1_SQRT_2;
                     let o = s * 2;
@@ -510,7 +550,10 @@ impl BinauralRenderer {
                 }
                 continue;
             }
-            let pos = chan_pos.get(c).copied().unwrap_or([0.0, 1.0, 0.0]);
+            let pos = match extra_here {
+                Some(e) => e.position,
+                None => chan_pos.get(c).copied().unwrap_or([0.0, 1.0, 0.0]),
+            };
 
             // World → head-relative direction, then spherical angles.
             let hp = head_pose.rotate(pos);
@@ -627,7 +670,7 @@ impl BinauralRenderer {
                 // adds its distance gain, the reflection taps theirs. The air
                 // low-pass applies to the propagated wave, so it feeds the
                 // direct, the reflections and the reverb send alike.
-                let mut raw = input_pcm[s * input_channel_count + c] * gain;
+                let mut raw = src_pcm[s * src_stride + src_offset] * gain;
                 if air > 0.0 {
                     dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
                     raw = dsp.air_state;
@@ -692,7 +735,17 @@ mod tests {
         let mut input = vec![0.0f32; n];
         input[0] = 1.0;
         let mut out = vec![0.0f32; n * 2];
-        r.render_frame(&input, 1, n, &dry_params(), &[pos], &[1.0], &[], &mut out);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &[pos],
+            &[1.0],
+            &[],
+            None,
+            &mut out,
+        );
         let mut el = 0.0f32;
         let mut er = 0.0f32;
         for s in 0..n {
@@ -708,6 +761,95 @@ mod tests {
         assert!(er > el, "L={el} R={er}");
     }
 
+    /// The extra source is spatialized like a real channel, not summed flat.
+    ///
+    /// This is what makes a *binaural* object test worth having where a binaural
+    /// speaker test is not: the object test has a direction, so it must get the
+    /// HRIR path. Asserted by placing it hard right with silent input channels —
+    /// if it were mixed centre (or bypassed), the ears would match.
+    #[test]
+    fn the_extra_source_is_spatialized() {
+        let mut r = BinauralRenderer::new(48_000);
+        let n = 512;
+        let input = vec![0.0f32; n]; // one silent input channel
+        let mut extra_pcm = vec![0.0f32; n];
+        extra_pcm[0] = 1.0;
+        let mut out = vec![0.0f32; n * 2];
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &[[0.0, 1.0, 0.0]],
+            &[0.0],
+            &[],
+            Some(ExtraSource {
+                pcm: &extra_pcm,
+                position: [1.0, 0.0, 0.0], // hard right
+                gain: 1.0,
+            }),
+            &mut out,
+        );
+        let (mut el, mut er) = (0.0f32, 0.0f32);
+        for s in 0..n {
+            el += out[s * 2] * out[s * 2];
+            er += out[s * 2 + 1] * out[s * 2 + 1];
+        }
+        assert!(el + er > 0.0, "the extra source produced no output at all");
+        assert!(
+            er > el,
+            "a hard-right extra source must favour the right ear (L={el} R={er}) \
+             — equal ears mean it bypassed the HRIR path"
+        );
+    }
+
+    /// The extra source must not disturb the input channels' own rendering: it
+    /// takes a DSP slot past the end of them, so channel numbering is untouched.
+    #[test]
+    fn the_extra_source_leaves_the_channels_alone() {
+        let n = 512;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let pos = [[-1.0, 0.0, 0.0]];
+
+        let mut without = vec![0.0f32; n * 2];
+        BinauralRenderer::new(48_000).render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[1.0],
+            &[],
+            None,
+            &mut without,
+        );
+
+        let extra_pcm = vec![0.0f32; n]; // silent extra: must change nothing
+        let mut with = vec![0.0f32; n * 2];
+        BinauralRenderer::new(48_000).render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[1.0],
+            &[],
+            Some(ExtraSource {
+                pcm: &extra_pcm,
+                position: [1.0, 0.0, 0.0],
+                gain: 1.0,
+            }),
+            &mut with,
+        );
+
+        assert_eq!(
+            without, with,
+            "adding a silent extra source changed the channel rendering — the \
+             slot is not as separate as it looks"
+        );
+    }
+
     /// A source switch must not stall rendering: the frame right after the
     /// request still uses the old grid (and produces audio), and the new grid
     /// lands asynchronously within a bounded delay (issue #153).
@@ -720,7 +862,17 @@ mod tests {
         let pos = [[0.5, 1.0, 0.0]];
         let render = |r: &mut BinauralRenderer| -> f32 {
             let mut out = vec![0.0f32; n * 2];
-            r.render_frame(&input, 1, n, &dry_params(), &pos, &[1.0], &[], &mut out);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &dry_params(),
+                &pos,
+                &[1.0],
+                &[],
+                None,
+                &mut out,
+            );
             out.iter().map(|x| x * x).sum()
         };
 
@@ -771,7 +923,17 @@ mod tests {
 
         let mut dry = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &dry_params(), &pos, &[1.0], &[], &mut dry);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[1.0],
+            &[],
+            None,
+            &mut dry,
+        );
 
         let wet_params = BinauralFrameParams {
             reflections: BinauralReflections {
@@ -783,7 +945,7 @@ mod tests {
         };
         let mut wet = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], &mut wet);
+        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], None, &mut wet);
 
         assert!(tail(&dry) < 1e-9, "dry render must have no late energy");
         assert!(
@@ -804,7 +966,17 @@ mod tests {
 
         let mut dry = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &dry_params(), &pos, &[1.0], &[], &mut dry);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[1.0],
+            &[],
+            None,
+            &mut dry,
+        );
         assert!(tail(&dry) < 1e-9, "dry render must have no tail");
 
         let wet_params = BinauralFrameParams {
@@ -818,7 +990,7 @@ mod tests {
         };
         let mut wet = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], &mut wet);
+        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], None, &mut wet);
         assert!(tail(&wet) > 1e-7, "no reverb tail: {}", tail(&wet));
     }
 
@@ -845,6 +1017,7 @@ mod tests {
                 &[[0.0, dist, 0.0]],
                 &[1.0],
                 &[],
+                None,
                 &mut out,
             );
             // Direct path no longer applies a 1/d gain, so the broadband level is
@@ -892,6 +1065,7 @@ mod tests {
             &[[1.0, 0.0, 0.0]],
             &[0.0],
             &[],
+            None,
             &mut out,
         );
         assert!(out.iter().all(|&x| x == 0.0));

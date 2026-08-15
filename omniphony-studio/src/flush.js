@@ -7,6 +7,7 @@
  */
 
 import { decomposePosition, formatPosition } from './coordinates.js';
+import { onRoomRatioChanged } from './controls/object-test.js';
 import {
   dirtyObjectMeters,
   dirtySpeakerMeters,
@@ -135,6 +136,9 @@ export function flushUI() {
 
   if (dirty.roomRatio) {
     flushCallbacks.renderRoomRatioDisplay?.();
+    // The object-injection faces are drawn at the room's proportions, so they
+    // are stale the moment those change.
+    onRoomRatioChanged();
     dirty.roomRatio = false;
   }
 

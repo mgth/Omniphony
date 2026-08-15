@@ -561,7 +561,12 @@ fn pump_idle_feed(
     let (arm_gen, test_active) = {
         let control = renderer.renderer_control();
         let live = control.live.read();
-        (live.speaker_test_idle_feed_gen, live.speaker_test.is_some())
+        // Either test keeps the feed alive: both are inaudible from idle if the
+        // output chain is cold, and the feed is not specific to either.
+        (
+            live.speaker_test_idle_feed_gen,
+            live.speaker_test.is_some() || live.object_test.is_some(),
+        )
     };
     // PipeWire live capture delivers silence frames on the graph clock all by
     // itself when idle — that mode never needs (or wants) a second driver.

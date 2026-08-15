@@ -234,6 +234,7 @@ fn main() {
             control_object_mute,
             control_speaker_mute,
             control_speaker_test,
+            control_object_test,
             control_speaker_test_idle_feed,
             control_master_gain,
             control_loudness,

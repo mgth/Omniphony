@@ -399,6 +399,8 @@ export const app = {
   displaySectionOpen: false,
   drcSectionOpen: false,
   twoDSourcesSectionOpen: false,
+  /** Object-injection panel expanded. Collapsed by default: it is a diagnostic. */
+  objectTestSectionOpen: false,
   autoGainSectionOpen: false,
 
   // Selection & drag

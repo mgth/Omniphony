@@ -835,6 +835,75 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == crate::osc_contract::CONTROL_OBJECT_TEST {
+        // Start/move/stop the object test. Studio sends one of these per pointer
+        // move while dragging, so the common case is a position update on an
+        // already-running test: keep it allocation-free and let the renderer
+        // ramp, rather than treating a move as a stop-then-start.
+        let Some(on) = parse_bool_arg(msg.args.first()) else {
+            log::warn!("OSC {addr}: expected [on, x, y, z, level, size, isolation]");
+            return Some(effects);
+        };
+        let next = if !on {
+            None
+        } else {
+            let axis = |i: usize| match msg.args.get(i) {
+                Some(OscType::Float(v)) => v.clamp(-1.0, 1.0),
+                _ => 0.0,
+            };
+            // Default y = 1.0 (front centre) rather than 0.0 if absent, matching
+            // the renderer's neutral object position.
+            let position = [
+                axis(1),
+                match msg.args.get(2) {
+                    Some(OscType::Float(v)) => v.clamp(-1.0, 1.0),
+                    _ => 1.0,
+                },
+                axis(3),
+            ];
+            let level = match msg.args.get(4) {
+                Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
+                _ => 0.1,
+            };
+            let size = match msg.args.get(5) {
+                Some(OscType::Float(v)) => v.clamp(0.0, 1.0),
+                _ => 0.0,
+            };
+            let isolation = parse_string_arg(msg.args.get(6))
+                .and_then(|v| renderer::live_params::TestIsolation::from_str(&v))
+                .unwrap_or_default();
+            Some(renderer::live_params::ObjectTest {
+                position,
+                size: [size; 3],
+                level,
+                isolation,
+            })
+        };
+        let mut live = ctx.renderer.live.write();
+        if live.object_test != next {
+            let was_running = live.object_test.is_some();
+            live.object_test = next;
+            // Deliberately NOT mark_dirty: transient like `speaker_test`, and it
+            // must never reach the config or a live-handoff sidecar.
+            //
+            // Log only the edges. A drag is a burst of position updates, and
+            // logging each one would bury the session log in noise about noise.
+            effects.log_message = match (was_running, next) {
+                (false, Some(t)) => Some(format!(
+                    "OSC: object_test -> on at [{:.2}, {:.2}, {:.2}] {:.3} ({})",
+                    t.position[0],
+                    t.position[1],
+                    t.position[2],
+                    t.level,
+                    t.isolation.as_str()
+                )),
+                (true, None) => Some("OSC: object_test -> off".to_string()),
+                _ => None,
+            };
+        }
+        return Some(effects);
+    }
+
     if addr == crate::osc_contract::CONTROL_SPEAKER_TEST_IDLE_FEED {
         // Arm/disarm the idle feed that keeps the output chain warm while the
         // client's test pane is open. Arming always bumps the generation (even

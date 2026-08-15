@@ -1,6 +1,6 @@
-//! Idle silence feed for the speaker test.
+//! Idle silence feed for the test signals (speaker test and object test).
 //!
-//! A speaker test only makes sound while the render loop runs, and the render
+//! A test only makes sound while the render loop runs, and the render
 //! loop only runs when decoded frames arrive. With no input stream nothing
 //! flows, so a test started from idle stayed silent (or, with the reverted
 //! render-pump approach, starved the adaptive latency controller by writing
@@ -38,7 +38,8 @@ const MAX_CHUNK: Duration = Duration::from_millis(250);
 pub struct IdleFeedInputs {
     /// `LiveParams::speaker_test_idle_feed_gen` (0 = disarmed).
     pub arm_gen: u64,
-    /// A speaker test is currently requested (`LiveParams::speaker_test`).
+    /// A test is currently requested (`LiveParams::speaker_test` or
+    /// `LiveParams::object_test`).
     pub test_active: bool,
     /// The applied input mode delivers frames continuously on its own when
     /// idle (PipeWire live capture) — feeding would double-drive the chain.

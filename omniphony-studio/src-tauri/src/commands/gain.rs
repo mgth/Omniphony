@@ -118,6 +118,43 @@ pub fn control_speaker_test_idle_feed(state: State<SharedState>, enable: bool) {
     );
 }
 
+/// Place (or stop) the object test signal.
+///
+/// Sent once per pointer move while the user drags the object across a face, so
+/// it stays a plain fire-and-forget message: the renderer ramps to the new
+/// position without restarting the noise, which is what makes dragging audible
+/// as movement rather than as a series of clicks.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn control_object_test(
+    state: State<SharedState>,
+    on: bool,
+    x: f32,
+    y: f32,
+    z: f32,
+    level: f32,
+    size: f32,
+    isolation: String,
+) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendArgs {
+            address: "/omniphony/control/object_test".to_string(),
+            args: vec![
+                rosc::OscType::Int(i32::from(on)),
+                // Clamped here as well as renderer-side, same reasoning as the
+                // speaker test: a stray UI value must not reach the audio path.
+                rosc::OscType::Float(x.clamp(-1.0, 1.0)),
+                rosc::OscType::Float(y.clamp(-1.0, 1.0)),
+                rosc::OscType::Float(z.clamp(-1.0, 1.0)),
+                rosc::OscType::Float(level.clamp(0.0, 1.0)),
+                rosc::OscType::Float(size.clamp(0.0, 1.0)),
+                rosc::OscType::String(isolation),
+            ],
+        },
+    );
+}
+
 #[tauri::command]
 pub fn control_speaker_test(state: State<SharedState>, id: i32, level: f32, isolation: String) {
     send_control(

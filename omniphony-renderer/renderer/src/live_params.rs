@@ -631,6 +631,45 @@ pub struct SpeakerTest {
     pub isolation: TestIsolation,
 }
 
+/// A running object test signal: pink noise placed at a position in the room
+/// and panned there by the active render backend.
+///
+/// The complement to [`SpeakerTest`]. A speaker test asks "what does this
+/// speaker do"; an object test asks "where does the renderer put a source I
+/// place here" — so it deliberately goes through the live backend's gain query
+/// rather than writing into one channel, and hears whatever out-of-hull mode,
+/// distance model and spread are currently configured.
+///
+/// Like [`SpeakerTest`] it carries no timing: the trigger policy is Studio's,
+/// and the renderer keeps only a safety cap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObjectTest {
+    /// Where the source sits, in ADM Cartesian coordinates.
+    /// x ∈ [-1, 1] left/right · y ∈ [-1, 1] back/front · z ∈ [-1, 1] floor/ceiling.
+    ///
+    /// Changing this must NOT restart the signal — moving a source is the whole
+    /// point of the tool, and a restart on every drag would click. The renderer
+    /// keeps position out of the generator's identity and ramps the gains
+    /// instead, so the noise runs continuously while the object moves.
+    pub position: [f32; 3],
+    /// Object spatial extent per axis (w, d, h), each in [0, 1].
+    /// `[0, 0, 0]` is a point source, which is what a placement test wants by
+    /// default — it makes the backend's positioning audible with nothing
+    /// smeared across it.
+    pub size: [f32; 3],
+    /// Peak amplitude, linear — same contract as [`SpeakerTest::level`]: the
+    /// injected contribution never exceeds `±level`, so `1.0` is full scale.
+    ///
+    /// The bound survives panning because a backend's gains are power-normalised
+    /// (`Σ g² = 1`, so every `g ≤ 1`): clamping the mono noise to `±level`
+    /// before it is panned bounds every speaker's share of it too.
+    pub level: f32,
+    /// What the programme does during the test. `TestOnlySoloSpeaker` has no
+    /// meaning here — an object has no one speaker to solo — and is treated as
+    /// [`TestIsolation::TestOnly`].
+    pub isolation: TestIsolation,
+}
+
 /// Per-speaker live params seeded from a layout: only the configured delays
 /// (gains/mutes are runtime-only and start at defaults). Shared by renderer
 /// construction and the live profile switch so the two cannot drift.
@@ -818,12 +857,20 @@ pub struct LiveParams {
     /// a saved session can never come up making noise.
     pub speaker_test: Option<SpeakerTest>,
 
+    /// Object test signal, `None` when no test is running. Transient exactly
+    /// like [`Self::speaker_test`], and independent of it: the two can run at
+    /// once, which is the direct way to compare a rendered position against the
+    /// speaker it should be favouring.
+    pub object_test: Option<ObjectTest>,
+
     /// Idle-feed arm generation for the speaker-test pane: 0 = off, and every
     /// arm message bumps it, so the decode loop can refresh its keepalive
     /// deadline on each re-arm even though the armed state itself does not
-    /// change. While armed (and while a test runs), the decode loop fabricates
-    /// silence input frames when no real input is flowing, keeping the whole
-    /// output chain warm so a test is audible immediately. Transient like
+    /// change. While armed (and while either test runs), the decode loop
+    /// fabricates silence input frames when no real input is flowing, keeping
+    /// the whole output chain warm so a test is audible immediately. Serves the
+    /// speaker test and the object test alike — the address keeps its original
+    /// name, but the feed is not specific to either. Transient like
     /// `speaker_test`: never persisted, cleared on a fresh start.
     pub speaker_test_idle_feed_gen: u64,
 
