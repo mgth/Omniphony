@@ -38,6 +38,7 @@ export { OBJECT_TEST_SOURCE_ID };
 const LEVEL_KEY = 'objectTest.levelDb.v1';
 const FEATURE_KEY = 'objectTest.feature.v1';
 const SNAP_KEY = 'objectTest.snap.v1';
+const ADM_VIEW_KEY = 'objectTest.admView.v1';
 const ISOLATION_KEY = 'objectTest.isolation.v1';
 const POSITION_KEY = 'objectTest.position.v1';
 /**
@@ -112,6 +113,18 @@ let bootFeatureOn = false;
 let testMuted = false;
 /** Snap placed positions to the renderer's Cartesian grid. */
 let snapOn = false;
+/**
+ * Draw the sheet in ADM space — three strictly square faces — instead of in the
+ * room.
+ *
+ * The two views answer different questions. The room view shows where a source
+ * *is*: it carries the asymmetric extents and the depth warp, so it matches the
+ * 3D scene and the room you actually sit in. The ADM view shows the coordinate
+ * space the renderer works in, where the axes are symmetric, the sampling grid
+ * is evenly spaced, and a circle is a circle — which is the view to use when
+ * you are reasoning about cells and coordinates rather than about the room.
+ */
+let admView = false;
 
 /** Current source position, ADM Cartesian. Front-centre at ear level. */
 let position = [0, 1, 0];
@@ -244,6 +257,15 @@ function clamp1(v) {
  * somewhere the 3D view does not.
  */
 function roomExtent() {
+  // ADM space is the unit cube by definition, so every face comes out square
+  // and the origin sits at the middle of each.
+  if (admView) {
+    return {
+      lateral: { min: -1, max: 1 },
+      depth: { min: -1, max: 1 },
+      height: { min: -1, max: 1 },
+    };
+  }
   const r = app.roomRatio || {};
   const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
   return {
@@ -253,14 +275,21 @@ function roomExtent() {
   };
 }
 
-/** ADM → the room space the 3D scene draws in: {depth, height, lateral}. */
+/**
+ * ADM → the space the sheet is drawn in: {depth, height, lateral}.
+ *
+ * In ADM view this is only the axis renaming — no warp, no room scaling — so
+ * the drawing is a plain orthographic view of the unit cube.
+ */
 function admToRoom(pos) {
+  if (admView) return { lateral: pos[0], depth: pos[1], height: pos[2] };
   const s = normalizedOmniphonyToScenePosition({ x: pos[0], y: pos[1], z: pos[2] });
   return { depth: s.x, height: s.y, lateral: s.z };
 }
 
-/** Room space → ADM, the exact inverse of `admToRoom`. */
+/** The exact inverse of `admToRoom`, in whichever view is current. */
 function roomToAdm(room) {
+  if (admView) return [clamp1(room.lateral), clamp1(room.depth), clamp1(room.height)];
   const p = scenePositionToNormalizedOmniphony({ x: room.depth, y: room.height, z: room.lateral });
   return [clamp1(p.x), clamp1(p.y), clamp1(p.z)];
 }
@@ -740,6 +769,7 @@ function buildFaces() {
     e.depth.min, e.depth.max,
     e.height.min, e.height.max,
     app.roomRatio?.centerBlend,
+    admView ? 'adm' : 'room',
     i18nState.locale,
   ].join(':');
   if (builtRatioKey === key && host.childElementCount) return;
@@ -1190,6 +1220,8 @@ function applyRotation() {
 export function renderObjectTestUI() {
   const feature = el('objectTestFeatureToggle');
   if (feature) feature.checked = featureOn;
+  const admToggle = el('objectTestAdmViewToggle');
+  if (admToggle) admToggle.checked = admView;
   const snap = el('objectTestSnapToggle');
   const axes = gridAxes();
   if (snap) {
@@ -1315,6 +1347,7 @@ export function setupObjectTestListeners() {
   // they are.
   bootFeatureOn = load(FEATURE_KEY, '0') === '1';
   snapOn = load(SNAP_KEY, '0') === '1';
+  admView = load(ADM_VIEW_KEY, '0') === '1';
 
   const slider = el('objectTestLevelSlider');
   if (slider) {
@@ -1336,6 +1369,19 @@ export function setupObjectTestListeners() {
   const feature = el('objectTestFeatureToggle');
   if (feature) {
     feature.addEventListener('change', () => setObjectTestFeatureOn(feature.checked));
+  }
+
+  const admToggle = el('objectTestAdmViewToggle');
+  if (admToggle) {
+    admToggle.addEventListener('change', () => {
+      admView = admToggle.checked;
+      save(ADM_VIEW_KEY, admView ? '1' : '0');
+      // The sheet's geometry changed, so it has to be rebuilt rather than
+      // redrawn: the face rectangles themselves are different sizes now.
+      builtRatioKey = null;
+      buildFaces();
+      renderObjectTestUI();
+    });
   }
 
   const snap = el('objectTestSnapToggle');

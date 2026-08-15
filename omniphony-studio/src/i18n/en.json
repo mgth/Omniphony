@@ -899,5 +899,7 @@
   "help.objectTestFeature": "Add a test source to the object list. It behaves like any other object — selectable, metered, drawn in the room — but Studio invents it rather than the stream carrying it. Select it to place it and to play a test signal from where you put it.",
   "objectTest.snap": "Snap to grid",
   "objectTest.snapNoGrid": "No Cartesian grid: the backend is not precomputed on one.",
-  "help.objectTestSnap": "Place the source on the render backend's Cartesian sampling grid. With position interpolation off the lookup is nearest-cell, so everything inside one cell renders identically — snapping puts the source on the node it would be rounded to anyway, turning \"somewhere near here\" into \"this cell\". Placement only: an orbit keeps moving continuously."
+  "help.objectTestSnap": "Place the source on the render backend's Cartesian sampling grid. With position interpolation off the lookup is nearest-cell, so everything inside one cell renders identically — snapping puts the source on the node it would be rounded to anyway, turning \"somewhere near here\" into \"this cell\". Placement only: an orbit keeps moving continuously.",
+  "objectTest.admView": "ADM view (square)",
+  "help.objectTestAdmView": "Draw the three faces in ADM coordinates — a unit cube, so every face is square and the origin is at the centre of each — instead of in the room. The room view shows where a source is, with the real extents and the depth warp, matching the 3D scene. The ADM view shows the space the renderer works in, where the axes are symmetric, the sampling grid is evenly spaced and a circle is a circle."
 }

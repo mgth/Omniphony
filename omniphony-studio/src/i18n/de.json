@@ -899,5 +899,7 @@
   "help.objectTestFeature": "Fügt der Objektliste eine Testquelle hinzu. Sie verhält sich wie jedes andere Objekt — auswählbar, mit Pegel, im Raum gezeichnet — nur erfindet Studio sie, statt dass der Stream sie mitbringt. Zum Platzieren auswählen und von dort ein Testsignal abspielen.",
   "objectTest.snap": "Am Raster einrasten",
   "objectTest.snapNoGrid": "Kein kartesisches Raster: das Backend ist nicht darauf vorberechnet.",
-  "help.objectTestSnap": "Setzt die Quelle auf das kartesische Abtastraster des Render-Backends. Bei abgeschalteter Positionsinterpolation greift die Suche auf die nächste Zelle zu, alles innerhalb einer Zelle klingt also gleich — das Einrasten setzt die Quelle auf den Knoten, auf den sie ohnehin gerundet würde. Nur beim Platzieren: eine Umlaufbahn bewegt sich weiter stufenlos."
+  "help.objectTestSnap": "Setzt die Quelle auf das kartesische Abtastraster des Render-Backends. Bei abgeschalteter Positionsinterpolation greift die Suche auf die nächste Zelle zu, alles innerhalb einer Zelle klingt also gleich — das Einrasten setzt die Quelle auf den Knoten, auf den sie ohnehin gerundet würde. Nur beim Platzieren: eine Umlaufbahn bewegt sich weiter stufenlos.",
+  "objectTest.admView": "ADM-Ansicht (quadratisch)",
+  "help.objectTestAdmView": "Zeichnet die drei Flächen in ADM-Koordinaten — ein Einheitswürfel, also ist jede Fläche quadratisch und der Ursprung liegt jeweils in der Mitte — statt im Raum. Die Raumansicht zeigt, wo eine Quelle ist, mit den echten Ausdehnungen und der Tiefenverzerrung, passend zur 3D-Ansicht. Die ADM-Ansicht zeigt den Raum, in dem der Renderer arbeitet: symmetrische Achsen, gleichmäßiges Abtastraster, und ein Kreis ist dort ein Kreis."
 }

@@ -899,5 +899,7 @@
   "help.objectTestFeature": "Aggiunge una sorgente di test all'elenco degli oggetti. Si comporta come qualsiasi altro oggetto — selezionabile, con misuratore, disegnata nella stanza — ma la inventa Studio anziché portarla il flusso. Selezionala per posizionarla e riprodurre un segnale di test da dove l'hai messa.",
   "objectTest.snap": "Aggancia alla griglia",
   "objectTest.snapNoGrid": "Nessuna griglia cartesiana: il backend non è precalcolato su una.",
-  "help.objectTestSnap": "Colloca la sorgente sulla griglia di campionamento cartesiana del backend di rendering. Con l'interpolazione di posizione disattivata la lettura usa la cella più vicina, quindi tutto ciò che sta in una cella suona identico: l'aggancio mette la sorgente sul nodo a cui verrebbe comunque arrotondata. Solo in posizionamento: un'orbita continua a muoversi con continuità."
+  "help.objectTestSnap": "Colloca la sorgente sulla griglia di campionamento cartesiana del backend di rendering. Con l'interpolazione di posizione disattivata la lettura usa la cella più vicina, quindi tutto ciò che sta in una cella suona identico: l'aggancio mette la sorgente sul nodo a cui verrebbe comunque arrotondata. Solo in posizionamento: un'orbita continua a muoversi con continuità.",
+  "objectTest.admView": "Vista ADM (quadrata)",
+  "help.objectTestAdmView": "Disegna le tre facce in coordinate ADM — un cubo unitario, quindi ogni faccia è quadrata e l'origine sta al centro di ciascuna — invece che nella stanza. La vista stanza mostra dov'è la sorgente, con le estensioni reali e la deformazione di profondità, in accordo con la vista 3D. La vista ADM mostra lo spazio in cui lavora il renderer: assi simmetrici, griglia di campionamento regolare, e lì un cerchio è un cerchio."
 }
