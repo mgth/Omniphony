@@ -2905,11 +2905,9 @@ body:not(.output-binaural) .speakers-header-binaural {
   color: #aef5d8;
 }
 
-/* Object-injection transport. The one control in the panel that makes a sound
-   happen, so it sits at the top rather than in the list of parameters — but on
-   its own row, left-aligned with its label. In the title row it would have been
-   a lone glyph in the corner every other section reserves for its collapse
-   chevron. */
+/* Object-injection transport: play/stop, and the signal it will play, on one
+   row at the top of the panel. Not in the title row — a lone glyph in that
+   corner is where every other section keeps its collapse chevron. */
 .object-test-transport {
   display: flex;
   align-items: center;
@@ -2926,9 +2924,6 @@ body:not(.output-binaural) .speakers-header-binaural {
   white-space: nowrap;
 }
 
-.object-test-transport:has(.transport-btn[aria-pressed='true']) .transport-label {
-  color: #7af0c0;
-}
 
 .transport-btn {
   display: inline-flex;

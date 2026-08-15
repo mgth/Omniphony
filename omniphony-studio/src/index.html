@@ -587,14 +587,14 @@
       <div class="info-section" id="objectTestEditSection" style="display:none">
         <div class="info-title" data-i18n="section.objectTest" data-help-i18n="help.objectTest">Object injection</div>
         <div id="objectTestBody" class="editor-body">
-          <div class="option-status-note" style="font-size:10px;opacity:0.8" data-i18n="objectTest.hint">Click or drag on a face to place the source.</div>
           <!-- Transport near the top, on a row of its own: starting and stopping
                the signal is the one thing done over and over while placing a
                source, and the only control here that makes a sound happen.
                Deliberately NOT in the title row — a lone glyph in that corner is
                where every other section keeps its expand/collapse chevron, and
-               a play triangle there reads as one. Button left, label beside it:
-               that is a transport, and it cannot be mistaken for anything else. -->
+               a play triangle there reads as one. Button left, with the signal
+               it will play beside it: that is a transport, and it cannot be
+               mistaken for anything else. -->
           <div class="object-test-transport">
             <button id="objectTestPlayBtn" type="button" class="transport-btn" aria-pressed="false">
               <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
@@ -605,32 +605,8 @@
                 </g>
               </svg>
             </button>
-            <span id="objectTestPlayLabel" class="transport-label" aria-hidden="true">Play the test signal</span>
-          </div>
-          <!-- Three orthogonal projections of the room box. Each face sets the
-               two coordinates it shows and leaves the third alone, so the marker
-               on the other two faces moves with it. Aspect ratios follow the
-               live room proportions. The SVGs are sized by the panel width and
-               capped in height, so expanding this section scrolls inside the
-               overlay instead of resizing it (and the 3D viewport with it). -->
-          <label id="objectTestAdmViewRow" class="switch-row" style="font-size:12px;cursor:pointer">
-            <span data-i18n="objectTest.admView" data-help-i18n="help.objectTestAdmView" data-help-anchor=".switch-row">ADM view (square)</span>
-            <input id="objectTestAdmViewToggle" type="checkbox" />
-          </label>
-          <div id="objectTestFaces" style="display:flex;flex-direction:column;gap:0.4rem"></div>
-          <div id="objectTestCoords" class="option-status-note" style="font-size:10px;opacity:0.85;font-variant-numeric:tabular-nums"></div>
-          <label id="objectTestSnapRow" class="switch-row" style="font-size:13px;cursor:pointer">
-            <span data-i18n="objectTest.snap" data-help-i18n="help.objectTestSnap" data-help-anchor=".switch-row">Snap to grid</span>
-            <input id="objectTestSnapToggle" type="checkbox" />
-          </label>
-          <div id="objectTestSnapNote" class="option-status-note" style="font-size:10px;opacity:0.75;display:none"></div>
-          <!-- Which stimulus. Continuous noise judges timbre; gated noise judges
-               precision, because the ear localises onsets; a band says which cue
-               is carrying the direction; a tone turns the ear into a level meter
-               along a trajectory. -->
-          <div id="objectTestSignalRow" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
-            <span style="font-size:12px" data-i18n="objectTest.signal" data-help-i18n="help.objectTestSignal">Test signal</span>
-            <select id="objectTestSignalSelect">
+            <span class="transport-label" data-i18n="objectTest.signal" data-help-i18n="help.objectTestSignal" data-help-anchor=".object-test-transport">Test signal</span>
+            <select id="objectTestSignalSelect" style="flex:1;min-width:0">
               <option value="pink" data-i18n="objectTest.signalPink">Pink noise</option>
               <option value="bursts" data-i18n="objectTest.signalBursts">Noise bursts</option>
               <option value="low" data-i18n="objectTest.signalLow">Low band (time cues)</option>
@@ -645,6 +621,24 @@
             <span id="objectTestClipName" class="option-status-note" style="font-size:10px;opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" data-i18n="objectTest.clipNone">No file chosen</span>
             <button id="objectTestClipBtn" type="button" class="ui-btn ui-btn-compact" style="white-space:nowrap;user-select:none" data-i18n="objectTest.clipChoose">Choose…</button>
           </div>
+          <!-- Three orthogonal projections of the room box. Each face sets the
+               two coordinates it shows and leaves the third alone, so the marker
+               on the other two faces moves with it. Aspect ratios follow the
+               live room proportions. The SVGs are sized by the panel width and
+               capped in height, so expanding this section scrolls inside the
+               overlay instead of resizing it (and the 3D viewport with it). -->
+          <label id="objectTestAdmViewRow" class="switch-row" style="font-size:12px;cursor:pointer">
+            <span data-i18n="objectTest.admView" data-help-i18n="help.objectTestAdmView" data-help-anchor=".switch-row">ADM view (square)</span>
+            <input id="objectTestAdmViewToggle" type="checkbox" />
+          </label>
+          <div class="option-status-note" style="font-size:10px;opacity:0.8" data-i18n="objectTest.hint">Click or drag on a face to place the source.</div>
+          <div id="objectTestFaces" style="display:flex;flex-direction:column;gap:0.4rem"></div>
+          <div id="objectTestCoords" class="option-status-note" style="font-size:10px;opacity:0.85;font-variant-numeric:tabular-nums"></div>
+          <label id="objectTestSnapRow" class="switch-row" style="font-size:13px;cursor:pointer">
+            <span data-i18n="objectTest.snap" data-help-i18n="help.objectTestSnap" data-help-anchor=".switch-row">Snap to grid</span>
+            <input id="objectTestSnapToggle" type="checkbox" />
+          </label>
+          <div id="objectTestSnapNote" class="option-status-note" style="font-size:10px;opacity:0.75;display:none"></div>
           <div class="editor-row gain-row">
             <label for="objectTestLevelSlider" data-i18n="objectTest.level" data-help-i18n="help.objectTestLevel">Test level</label>
             <!-- Peak dBFS, same contract as the speaker test: the renderer bounds
