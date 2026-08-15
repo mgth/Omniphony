@@ -1392,6 +1392,13 @@ export function setupObjectTestListeners() {
   if (play) {
     play.addEventListener('click', () => {
       enabled = !enabled;
+      // State the orbit on every start, not only when the panel first appeared.
+      // It is transient renderer state that Studio owns, and the renderer may
+      // not have existed when it was last sent — at boot the panel is restored
+      // before the connection is up, and a renderer restarted underneath an open
+      // Studio comes back with no orbit at all. The symptom was a source that
+      // sat still until the radius was nudged, which is what re-sent it.
+      if (enabled) sendRotation();
       send();
       renderObjectTestUI();
       pushSource();

@@ -63,9 +63,12 @@ pub struct ObjectTestSource {
     /// the period only ever affects where the source goes *next*, which is what
     /// a speed control is.
     ///
-    /// Reset only when the test itself restarts — deliberately NOT when the
+    /// Reset only when a test starts from idle. Deliberately NOT when the
     /// object is moved, so dragging the centre of a running orbit slides the
-    /// circle instead of snapping the source back to the start of its turn.
+    /// circle instead of snapping the source back to the start of its turn —
+    /// and deliberately not when the signal, level or isolation changes either,
+    /// so restarting the stimulus leaves the source where it was. The phase is
+    /// where the source *is*; nothing that is not a placement may move it.
     rotation_phase: f64,
     /// Reused block buffer. Sized once per block; capacity is retained across
     /// blocks, so steady state allocates nothing.
@@ -144,9 +147,16 @@ impl ObjectTestSource {
 
         let identity = Self::identity_of(&test);
         if self.identity != Some(identity) {
+            // The orbit phase is deliberately NOT reset here — only when the
+            // test starts from nothing (the idle branch above). Restarting the
+            // signal must not move the source, which is the mirror of the rule
+            // that moving the source must not restart the signal: swapping pink
+            // noise for bursts halfway round a turn used to teleport the source
+            // back to the start of its circle, and what a listener heard was the
+            // stimulus change *and* the position jump at once — the one
+            // comparison the control exists to make, ruined.
             self.identity = Some(identity);
             self.elapsed_samples = 0;
-            self.rotation_phase = 0.0;
             self.source.reset(sample_rate);
         }
 
@@ -693,6 +703,76 @@ mod tests {
             "the faster period covered {fast_travel} against {slow_travel}: the \
              speed did not actually change"
         );
+    }
+
+    /// Changing the signal must not move the source.
+    ///
+    /// Reported from use. Swapping the stimulus restarts it, deliberately — but
+    /// the orbit phase is where the source *is*, and it was being reset along
+    /// with everything else, so the source teleported back to the start of its
+    /// circle. Comparing two stimuli at one position is the whole point of the
+    /// control; a jump at the same instant makes that comparison worthless.
+    #[test]
+    fn changing_the_signal_does_not_move_the_source() {
+        use crate::live_params::ObjectTestSignal;
+        let rot = ObjectTestRotation {
+            axis: crate::live_params::RotationAxis::Z,
+            radius: 0.5,
+            period_s: 4.0,
+        };
+        let sample_rate = 48_000;
+        let block = 4800; // 100 ms, so a turn takes forty blocks
+        let with_signal = |signal| ObjectTest {
+            signal,
+            ..test_at([0.0, 0.0, 0.0], 0.5)
+        };
+
+        let mut src = ObjectTestSource::default();
+        // Run a while so the phase is somewhere awkward.
+        let mut last = [0.0f32; 3];
+        for _ in 0..13 {
+            last = src
+                .next_block(
+                    Some(with_signal(ObjectTestSignal::PinkNoise)),
+                    rot,
+                    None,
+                    sample_rate,
+                    block,
+                )
+                .unwrap()
+                .position;
+        }
+        let after = src
+            .next_block(
+                Some(with_signal(ObjectTestSignal::Tone)),
+                rot,
+                None,
+                sample_rate,
+                block,
+            )
+            .unwrap()
+            .position;
+        let step = ((after[0] - last[0]).powi(2) + (after[1] - last[1]).powi(2)).sqrt();
+        // One block at this rate is 1/40 turn: about 0.08 on a 0.5 radius.
+        assert!(
+            step < 0.12,
+            "changing the signal moved the source by {step} — it teleported"
+        );
+
+        // And the signal really did restart: the tone must be producing sound.
+        let peak = src
+            .next_block(
+                Some(with_signal(ObjectTestSignal::Tone)),
+                rot,
+                None,
+                sample_rate,
+                block,
+            )
+            .unwrap()
+            .pcm
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.0, "the new signal produced silence");
     }
 
     /// The safety cap must actually stop the signal, so a dead client cannot
