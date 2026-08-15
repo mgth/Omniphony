@@ -28,6 +28,15 @@
         user-select: none;
       }
 
+      /* Right-hand inset for every scrolling overlay container.
+         Measured, not guessed: with the previous value the right-most slider in
+         #overlayScroll sat 1px from the content edge, which is what made the
+         scrollbar look like it was covering the controls. Named once here so the
+         panels cannot drift apart again. */
+      :root {
+        --overlay-scroll-inset: 1.35rem;
+      }
+
       #overlay {
         position: fixed;
         top: 1rem;
@@ -205,7 +214,7 @@
         scrollbar-gutter: stable both-edges;
         scrollbar-width: thin;
         box-sizing: border-box;
-        padding-right: 0.85rem;
+        padding-right: var(--overlay-scroll-inset);
       }
 
       #overlayScroll > *,
@@ -229,7 +238,7 @@
            clears the right-hand controls. */
         scrollbar-gutter: stable both-edges;
         scrollbar-width: thin;
-        padding-right: 1.15rem;
+        padding-right: var(--overlay-scroll-inset);
         max-height: 45vh;
         overflow-y: auto;
       }
@@ -244,7 +253,23 @@
         box-sizing: border-box;
         scrollbar-gutter: stable both-edges;
         scrollbar-width: thin;
-        padding-right: 1.15rem;
+        padding-right: var(--overlay-scroll-inset);
+        max-height: 45vh;
+        overflow-y: auto;
+      }
+
+      /* Object-injection editor: the third panel in the pinned slot, and it gets
+         exactly the treatment the other two get. It had its own arrangement —
+         scrolling on an inner body, no gutter, a 4px inset — which is precisely
+         how its scrollbar ended up sitting on the controls. */
+      #overlay > #objectTestEditSection {
+        flex: 0 0 auto;
+        width: 100%;
+        min-height: auto;
+        box-sizing: border-box;
+        scrollbar-gutter: stable both-edges;
+        scrollbar-width: thin;
+        padding-right: var(--overlay-scroll-inset);
         max-height: 45vh;
         overflow-y: auto;
       }
@@ -567,9 +592,9 @@
         scrollbar-gutter: stable both-edges;
         scrollbar-width: thin;
         box-sizing: border-box;
-        /* Extra right inset so the scrollbar clears the per-section collapse/“i”
+        /* Right inset so the scrollbar clears the per-section collapse/“i”
            buttons that sit on the right of each section header. */
-        padding-right: 1.15rem;
+        padding-right: var(--overlay-scroll-inset);
       }
 
       #logOverlay {
@@ -2618,6 +2643,9 @@
 
       #overlayScroll::-webkit-scrollbar,
       #speakersOverlayScroll::-webkit-scrollbar,
+      #channelEditSection::-webkit-scrollbar,
+      #speakerEditSection::-webkit-scrollbar,
+      #objectTestEditSection::-webkit-scrollbar,
       .osc-config-form.open::-webkit-scrollbar,
       .room-geometry-form.open::-webkit-scrollbar,
       .telemetry-gauges-form.open::-webkit-scrollbar {
@@ -2626,6 +2654,9 @@
 
       #overlayScroll::-webkit-scrollbar-track,
       #speakersOverlayScroll::-webkit-scrollbar-track,
+      #channelEditSection::-webkit-scrollbar-track,
+      #speakerEditSection::-webkit-scrollbar-track,
+      #objectTestEditSection::-webkit-scrollbar-track,
       .osc-config-form.open::-webkit-scrollbar-track,
       .room-geometry-form.open::-webkit-scrollbar-track,
       .telemetry-gauges-form.open::-webkit-scrollbar-track {
@@ -2635,6 +2666,9 @@
 
       #overlayScroll::-webkit-scrollbar-thumb,
       #speakersOverlayScroll::-webkit-scrollbar-thumb,
+      #channelEditSection::-webkit-scrollbar-thumb,
+      #speakerEditSection::-webkit-scrollbar-thumb,
+      #objectTestEditSection::-webkit-scrollbar-thumb,
       .osc-config-form.open::-webkit-scrollbar-thumb,
       .room-geometry-form.open::-webkit-scrollbar-thumb,
       .telemetry-gauges-form.open::-webkit-scrollbar-thumb {
@@ -3138,22 +3172,3 @@ body:not(.output-binaural) .speakers-header-binaural {
   background: transparent;
 }
 
-/* The injection editor holds three projections, four sliders and a handful of
-   selectors — more than the pinned slot at the bottom of the overlay can show
-   at once. It scrolls inside itself rather than growing: the overlay's extents
-   have to stay put, because anything that moves them moves the 3D viewport
-   with them. */
-#objectTestEditSection {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  max-height: 46vh;
-}
-
-#objectTestBody {
-  overflow-y: auto;
-  overflow-x: hidden;
-  min-height: 0;
-  /* Room for the scrollbar so it never lands on top of a slider's right end. */
-  padding-right: 0.25rem;
-}
