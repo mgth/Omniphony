@@ -2986,6 +2986,27 @@ body:not(.output-binaural) .speakers-header-binaural {
   stroke-dasharray: 3 3;
 }
 
+.object-test-mitre {
+  stroke: rgba(217, 236, 255, 0.22);
+  stroke-width: 0.5;
+  stroke-dasharray: 2 2;
+}
+
+/* View names and the depth end-labels. Font sizes are in sheet units: the sheet
+   is normalised to 100 on its larger side, so these stay proportional to the
+   drawing however the room is shaped. */
+.object-test-face-caption {
+  fill: rgba(217, 236, 255, 0.75);
+  font-size: 3.4px;
+  font-family: inherit;
+}
+
+.object-test-end-label {
+  fill: rgba(217, 236, 255, 0.45);
+  font-size: 2.8px;
+  font-family: inherit;
+}
+
 .object-test-marker {
   fill: #5cff9a;
   stroke: rgba(0, 0, 0, 0.55);

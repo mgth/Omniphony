@@ -23,7 +23,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { app } from '../state.js';
-import { t, onLocaleChange } from '../i18n.js';
+import { t, onLocaleChange, i18nState } from '../i18n.js';
 import { setIdleFeedRequest } from './test-idle-feed.js';
 import {
   updateObjectTestMarker,
@@ -40,43 +40,52 @@ const POSITION_KEY = 'objectTest.position.v1';
 const DEFAULT_LEVEL_DB = -8;
 
 /**
- * Height of each face in CSS pixels. Fixed rather than derived from the room
- * proportions so that reconfiguring the room cannot change the panel's height:
- * the room box is fitted *inside* this box by the SVG's own aspect handling, and
- * the overlay's extents stay put. Panel growth that moves the 3D viewport is a
- * known way to break the scene view.
+ * The three projections, laid out as an orthographic multiview: front centre,
+ * side to its left, floor above it — third-angle projection.
+ *
+ * Each face maps two ADM axes onto its rectangle. The directions are not free
+ * choices: they are what makes the arrangement a projection rather than three
+ * unrelated pictures. Unfold the room box with the front wall held still, and
+ * the shared edges decide the orientations —
+ *
+ * - the floor folds UP from the front wall, so the edge it shares with the
+ *   front view (its bottom edge) is the FRONT of the room. Depth therefore runs
+ *   downward: back at the top, front at the bottom, against the front view.
+ * - the left wall folds out to the LEFT, so the edge it shares with the front
+ *   view (its right edge) is again the front of the room. Depth runs rightward:
+ *   back at the left, front at the right.
+ *
+ * Both faces then measure depth *away from the front view*, which is why a
+ * point's distance from the floor view's bottom edge equals its distance from
+ * the side view's right edge — the relationship the 45° mitre line draws.
  */
-const FACE_H = 86;
-
-/** The three projections. Each names the axes it drives and how they map. */
 const FACES = [
   {
-    id: 'plan',
+    id: 'floor',
     labelKey: 'objectTest.facePlan',
-    // Plan view from above: X across, Y up the picture with front at the top.
-    axes: { h: 0, v: 1 },
-    flipV: false,
-    ratio: (r) => [r.width, r.length],
-    endsKey: { hLeft: 'objectTest.axisLeft', hRight: 'objectTest.axisRight', vTop: 'objectTest.axisFront', vBottom: 'objectTest.axisBack' },
+    /** Horizontal axis: ADM x, left to right. */
+    h: { axis: 0, invert: false },
+    /** Vertical axis: ADM y, back at the top and front at the bottom. */
+    v: { axis: 1, invert: false },
+    // Depth is the only direction a reader cannot guess — left/right and
+    // floor/ceiling speak for themselves — and it is the one the projection
+    // decides rather than intuition. So it is the only one labelled.
+    depthEnds: 'v',
   },
   {
     id: 'front',
     labelKey: 'objectTest.faceFront',
-    // Front wall, seen from the listening position: X across, Z up.
-    axes: { h: 0, v: 2 },
-    flipV: false,
-    ratio: (r) => [r.width, r.height],
-    endsKey: { hLeft: 'objectTest.axisLeft', hRight: 'objectTest.axisRight', vTop: 'objectTest.axisCeiling', vBottom: 'objectTest.axisFloor' },
+    h: { axis: 0, invert: false },
+    /** ADM z, ceiling at the top. */
+    v: { axis: 2, invert: true },
   },
   {
     id: 'side',
     labelKey: 'objectTest.faceSide',
-    // Side wall: Y across with back at the left, Z up. Reading left-to-right as
-    // back-to-front matches how a room is drawn in section.
-    axes: { h: 1, v: 2 },
-    flipV: false,
-    ratio: (r) => [r.length, r.height],
-    endsKey: { hLeft: 'objectTest.axisBack', hRight: 'objectTest.axisFront', vTop: 'objectTest.axisCeiling', vBottom: 'objectTest.axisFloor' },
+    /** ADM y, back at the left and front at the right, against the front view. */
+    h: { axis: 1, invert: false },
+    v: { axis: 2, invert: true },
+    depthEnds: 'h',
   },
 ];
 
@@ -163,93 +172,167 @@ export function stopObjectTest({ force = false } = {}) {
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
+/** Gutter between views, as a fraction of the room's largest extent. */
+const GUTTER = 0.16;
+/** Marker radius, in sheet units (the sheet is normalised to 100). */
+const MARKER_R = 2.4;
+
 /**
- * Build the three faces. Each SVG's viewBox carries the room's proportions for
- * that projection, and `preserveAspectRatio` fits it inside a fixed-height box —
- * so the drawing matches the configured room while the panel's height does not
- * depend on it.
+ * Lay the three views out as a CAD sheet and return every rectangle in one
+ * shared coordinate system.
+ *
+ *        ·          floor          the empty corner carries the 45° mitre
+ *       side        front
+ *
+ * The whole point is the single scale factor `s`: one unit of room is the same
+ * number of sheet units in all three views, so the side view's depth is
+ * visibly the same length as the floor view's depth, and a tall room looks
+ * tall next to its own plan. Three separately-fitted SVGs cannot do this —
+ * each would be scaled to its own box — which is why this builds one sheet.
+ *
+ * Column widths are (depth, width) and row heights are (depth, height), so the
+ * empty top-left cell is depth × depth: exactly square, which is what lets the
+ * mitre run at a true 45°.
  */
+function sheetLayout() {
+  const r = roomRatio();
+  const W = r.width;
+  const D = r.length;
+  const H = r.height;
+  const g = GUTTER * Math.max(W, D, H);
+  const rawW = D + g + W;
+  const rawH = D + g + H;
+  // Normalise the larger sheet dimension to 100 so stroke widths, marker size
+  // and type size read the same whatever the room's proportions.
+  const s = 100 / Math.max(rawW, rawH);
+  const col2 = (D + g) * s;
+  const row2 = (D + g) * s;
+  return {
+    sheet: { w: rawW * s, h: rawH * s },
+    mitre: { x: 0, y: 0, w: D * s, h: D * s },
+    rects: {
+      floor: { x: col2, y: 0, w: W * s, h: D * s },
+      side: { x: 0, y: row2, w: D * s, h: H * s },
+      front: { x: col2, y: row2, w: W * s, h: H * s }
+    }
+  };
+}
+
+/** ADM position → a point inside `rect`, for one face. */
+function faceToSheet(face, rect, pos) {
+  const hv = pos[face.h.axis] * (face.h.invert ? -1 : 1);
+  const vv = pos[face.v.axis] * (face.v.invert ? -1 : 1);
+  return {
+    cx: rect.x + ((hv + 1) / 2) * rect.w,
+    cy: rect.y + ((vv + 1) / 2) * rect.h
+  };
+}
+
+/** A point inside `rect` → the two ADM axes that face drives. */
+function sheetToFace(face, rect, px, py) {
+  const hv = clamp1(((px - rect.x) / rect.w) * 2 - 1);
+  const vv = clamp1(((py - rect.y) / rect.h) * 2 - 1);
+  const next = position.slice();
+  next[face.h.axis] = hv * (face.h.invert ? -1 : 1);
+  next[face.v.axis] = vv * (face.v.invert ? -1 : 1);
+  return next;
+}
+
+function svgEl(name, attrs) {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+  return node;
+}
+
+/** Build the CAD sheet. Rebuilt only when the room proportions change. */
 function buildFaces() {
   const host = el('objectTestFaces');
   if (!host) return;
   const r = roomRatio();
-  const key = `${r.width}:${r.length}:${r.height}`;
+  const key = `${r.width}:${r.length}:${r.height}:${i18nState.locale}`;
   if (builtRatioKey === key && host.childElementCount) return;
   builtRatioKey = key;
   host.textContent = '';
 
+  const { sheet, rects, mitre } = sheetLayout();
+  // A source against a wall sits exactly on a box edge, where half the marker
+  // would fall outside the sheet and be clipped — precisely the positions
+  // (hard left, ceiling, back wall) this tool exists to try.
+  const pad = MARKER_R + 1;
+
+  const svg = svgEl('svg', {
+    viewBox: `${-pad} ${-pad} ${sheet.w + 2 * pad} ${sheet.h + 2 * pad}`,
+    preserveAspectRatio: 'xMidYMid meet'
+  });
+  // touch-action:none so a drag is not stolen by the panel's scroll.
+  svg.style.cssText = 'width:100%;height:auto;max-height:300px;display:block;'
+    + 'cursor:crosshair;touch-action:none;user-select:none';
+
+  // The mitre: the 45° line that carries depth between the floor view and the
+  // side view. It is not decoration — it is the statement that the distance
+  // from the floor view's front edge and from the side view's front edge are
+  // the same distance, which is what makes these two views one drawing.
+  svg.appendChild(svgEl('line', {
+    x1: mitre.x, y1: mitre.y + mitre.h, x2: mitre.x + mitre.w, y2: mitre.y,
+    class: 'object-test-mitre'
+  }));
+
   for (const face of FACES) {
-    const [rw, rh] = face.ratio(r);
-    // Scale the larger side to 100 user units so stroke widths read the same on
-    // every face whatever the room's proportions.
-    const s = 100 / Math.max(rw, rh);
-    const w = rw * s;
-    const h = rh * s;
-    // A source against a wall sits exactly on the box edge, where half the
-    // marker would fall outside the viewBox and be clipped — precisely the
-    // positions (hard left, ceiling, back wall) this tool exists to try. Pad the
-    // viewBox by the marker's radius so an extreme still reads as a full dot.
-    const mr = Math.max(3, s * 0.05);
-    const pad = mr + 1;
+    const rect = rects[face.id];
+    const group = svgEl('g', { 'data-face-id': face.id });
 
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'display:flex;flex-direction:column;gap:0.1rem';
+    group.appendChild(svgEl('rect', {
+      x: rect.x, y: rect.y, width: rect.w, height: rect.h,
+      class: 'object-test-face-box'
+    }));
 
-    const caption = document.createElement('div');
-    caption.style.cssText = 'font-size:10px;opacity:0.75;display:flex;justify-content:space-between';
-    const name = document.createElement('span');
-    name.setAttribute('data-i18n', face.labelKey);
-    name.textContent = t(face.labelKey);
-    const ends = document.createElement('span');
-    ends.style.cssText = 'opacity:0.7';
-    ends.textContent = `${t(face.endsKey.hLeft)} → ${t(face.endsKey.hRight)}`;
-    caption.append(name, ends);
+    // The room's midlines, so "dead centre" is visible without measuring.
+    group.appendChild(svgEl('line', {
+      x1: rect.x + rect.w / 2, y1: rect.y, x2: rect.x + rect.w / 2, y2: rect.y + rect.h,
+      class: 'object-test-face-axis'
+    }));
+    group.appendChild(svgEl('line', {
+      x1: rect.x, y1: rect.y + rect.h / 2, x2: rect.x + rect.w, y2: rect.y + rect.h / 2,
+      class: 'object-test-face-axis'
+    }));
 
-    const svg = document.createElementNS(SVG_NS, 'svg');
-    svg.setAttribute('viewBox', `${-pad} ${-pad} ${w + 2 * pad} ${h + 2 * pad}`);
-    // The room box's own extent, which the pointer maths and the marker both
-    // work in — the viewBox is only ever wider, by the padding above.
-    svg.dataset.boxW = String(w);
-    svg.dataset.boxH = String(h);
-    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-    // touch-action:none so a drag is not stolen by the panel's scroll.
-    svg.style.cssText = `width:100%;height:${FACE_H}px;display:block;cursor:crosshair;touch-action:none;user-select:none`;
-    svg.dataset.faceId = face.id;
+    const caption = svgEl('text', {
+      x: rect.x + 1, y: rect.y + rect.h - 1.6, class: 'object-test-face-caption'
+    });
+    caption.textContent = t(face.labelKey);
+    group.appendChild(caption);
 
-    const box = document.createElementNS(SVG_NS, 'rect');
-    box.setAttribute('x', '0');
-    box.setAttribute('y', '0');
-    box.setAttribute('width', String(w));
-    box.setAttribute('height', String(h));
-    box.setAttribute('class', 'object-test-face-box');
-    svg.appendChild(box);
-
-    // Centre cross-hairs: the room's midlines, so "dead centre" is visible.
-    for (const [x1, y1, x2, y2] of [[w / 2, 0, w / 2, h], [0, h / 2, w, h / 2]]) {
-      const line = document.createElementNS(SVG_NS, 'line');
-      line.setAttribute('x1', String(x1));
-      line.setAttribute('y1', String(y1));
-      line.setAttribute('x2', String(x2));
-      line.setAttribute('y2', String(y2));
-      line.setAttribute('class', 'object-test-face-axis');
-      svg.appendChild(line);
+    // Depth ends. Both views measure depth away from the front view, so "front"
+    // always lands on the edge nearest it: the bottom of the floor view, the
+    // right of the side view.
+    if (face.depthEnds === 'v') {
+      const back = svgEl('text', { x: rect.x + rect.w - 1, y: rect.y + 3.4, class: 'object-test-end-label', 'text-anchor': 'end' });
+      back.textContent = t('objectTest.axisBack');
+      const front = svgEl('text', { x: rect.x + rect.w - 1, y: rect.y + rect.h - 1.6, class: 'object-test-end-label', 'text-anchor': 'end' });
+      front.textContent = t('objectTest.axisFront');
+      group.append(back, front);
+    } else if (face.depthEnds === 'h') {
+      const back = svgEl('text', { x: rect.x + 1, y: rect.y + 3.4, class: 'object-test-end-label' });
+      back.textContent = t('objectTest.axisBack');
+      const front = svgEl('text', { x: rect.x + rect.w - 1, y: rect.y + 3.4, class: 'object-test-end-label', 'text-anchor': 'end' });
+      front.textContent = t('objectTest.axisFront');
+      group.append(back, front);
     }
 
-    const marker = document.createElementNS(SVG_NS, 'circle');
-    marker.setAttribute('r', String(mr));
-    marker.setAttribute('class', 'object-test-marker');
+    const marker = svgEl('circle', { r: MARKER_R, class: 'object-test-marker' });
     marker.dataset.role = 'marker';
-    svg.appendChild(marker);
+    group.appendChild(marker);
 
-    attachFaceDrag(svg, face, w, h);
-    wrap.append(caption, svg);
-    host.appendChild(wrap);
+    svg.appendChild(group);
   }
+
+  attachSheetDrag(svg);
+  host.appendChild(svg);
   updateMarkers();
 }
 
-/** Screen point → this SVG's user units, honouring the letterboxing. */
-function pointInSvg(svg, event) {
+/** Screen point → sheet units, honouring the letterboxing. */
+function pointInSheet(svg, event) {
   const ctm = svg.getScreenCTM();
   if (!ctm) return null;
   const pt = svg.createSVGPoint();
@@ -258,26 +341,42 @@ function pointInSvg(svg, event) {
   return pt.matrixTransform(ctm.inverse());
 }
 
-function attachFaceDrag(svg, face, w, h) {
+/** Which view contains this sheet point, if any. */
+function faceAt(px, py) {
+  const { rects } = sheetLayout();
+  for (const face of FACES) {
+    const rect = rects[face.id];
+    if (px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h) {
+      return { face, rect };
+    }
+  }
+  return null;
+}
+
+function attachSheetDrag(svg) {
+  // One listener for the whole sheet, but a drag stays locked to the view it
+  // started in: the views are adjacent, and a pointer that strays across a
+  // gutter mid-drag must not silently start driving a different pair of axes.
+  let active = null;
+
   const apply = (event) => {
-    const p = pointInSvg(svg, event);
-    if (!p) return;
-    // User units → [-1, 1] per axis. The vertical axis is inverted because SVG
-    // y grows downward while both of ours (front, ceiling) grow upward.
-    const hv = clamp1((p.x / w) * 2 - 1);
-    const vv = clamp1(1 - (p.y / h) * 2);
-    const next = position.slice();
-    next[face.axes.h] = hv;
-    next[face.axes.v] = face.flipV ? -vv : vv;
-    setPosition(next);
+    const p = pointInSheet(svg, event);
+    if (!p || !active) return;
+    setPosition(sheetToFace(active.face, active.rect, p.x, p.y));
   };
 
   svg.addEventListener('pointerdown', (event) => {
+    const p = pointInSheet(svg, event);
+    if (!p) return;
+    const hit = faceAt(p.x, p.y);
+    if (!hit) return; // a gutter or the mitre corner: not a placement
     event.preventDefault();
+    active = hit;
     try { svg.setPointerCapture(event.pointerId); } catch (_) { /* ignore */ }
     apply(event);
     const move = (ev) => apply(ev);
     const up = () => {
+      active = null;
       svg.removeEventListener('pointermove', move);
       svg.removeEventListener('pointerup', up);
       svg.removeEventListener('pointercancel', up);
@@ -292,16 +391,13 @@ function attachFaceDrag(svg, face, w, h) {
 function updateMarkers() {
   const host = el('objectTestFaces');
   if (!host) return;
-  for (const svg of host.querySelectorAll('svg[data-face-id]')) {
-    const face = FACES.find((f) => f.id === svg.dataset.faceId);
-    const marker = svg.querySelector('[data-role="marker"]');
-    if (!face || !marker) continue;
-    const w = Number(svg.dataset.boxW);
-    const h = Number(svg.dataset.boxH);
-    const hv = position[face.axes.h];
-    const vv = face.flipV ? -position[face.axes.v] : position[face.axes.v];
-    marker.setAttribute('cx', String(((hv + 1) / 2) * w));
-    marker.setAttribute('cy', String(((1 - vv) / 2) * h));
+  const { rects } = sheetLayout();
+  for (const face of FACES) {
+    const marker = host.querySelector(`g[data-face-id="${face.id}"] [data-role="marker"]`);
+    if (!marker) continue;
+    const { cx, cy } = faceToSheet(face, rects[face.id], position);
+    marker.setAttribute('cx', String(cx));
+    marker.setAttribute('cy', String(cy));
   }
 }
 
