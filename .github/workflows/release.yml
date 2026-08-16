@@ -156,6 +156,12 @@ jobs:
           # quarantine-cleared app launches instead of showing the "damaged"
           # dialog (#201). Replace with a real identity + notarization once
           # Apple signing secrets exist. Ignored on Linux/Windows.
+          #
+          # Signing every executable also applies tauri.conf.json's macOS
+          # options: hardenedRuntime is disabled there because it turns on
+          # library validation, which forbids the orender sidecar from
+          # dlopen'ing a bridge signed by another team (#260). Do not re-enable
+          # it without a real Developer ID — see Entitlements.plist.
           APPLE_SIGNING_IDENTITY: '-'
         with:
           projectPath: omniphony-studio
