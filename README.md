@@ -53,6 +53,27 @@ Omniphony is the engine; you can drive it three ways:
 
 [![mpv-omniphony — mpv playing a spatial mix, supervised by Omniphony Studio](https://github.com/mgth/mpv-omniphony/raw/main/mpv-omniphony-1200.png)](docs/mpv-omniphony.md)
 
+## Install on Arch
+
+The stack is packaged on the AUR — built from source, managed by pacman like
+everything else:
+
+```sh
+paru -S mpv-omniphony omniphony-studio
+```
+
+[`mpv-omniphony`](https://aur.archlinux.org/packages/mpv-omniphony) replaces the
+stock mpv (`provides mpv` + `libmpv`) and pulls in
+[`orender`](https://aur.archlinux.org/packages/orender) — the engine package with
+the CLI and `liborender.so`, installable on its own for a player-less setup.
+[`omniphony-studio`](https://aur.archlinux.org/packages/omniphony-studio) is the
+Studio app, running against that system engine rather than a bundled copy. Movie
+discs carrying a video enhancement layer want
+[`mpv-omniphony-fel`](https://aur.archlinux.org/packages/mpv-omniphony-fel)
+instead of the plain player package: same spatial decoder on an mpv master
+snapshot, plus Dolby Vision Profile 7 FEL reconstruction. Decoder bridges install
+the same way — search the AUR for the one your format needs.
+
 ## How it works
 
 `omniphony-renderer` loads a **format bridge** at runtime (a `.so` / `.dll`
