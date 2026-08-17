@@ -191,3 +191,40 @@ jobs:
       - name: Build renderer workspace (macOS arm64)
         working-directory: omniphony-renderer
         run: cargo build --workspace
+
+  build-windows:
+    # Windows x64 compile gate. On Windows cpal always pulls its ASIO backend
+    # (audio_output enables the feature per-target; the workspace `asio` feature
+    # is a legacy no-op alias), so this is the only job that exercises asio-sys:
+    # fetching the SDK, running bindgen over asio.h, compiling the SDK's C++ into
+    # libasio.a, and linking it. Until this job existed, that whole path was only
+    # ever built by the tag-triggered release.yml — a broken SDK setup surfaced at
+    # release time, not on the PR that caused it.
+    #
+    # Build-only: no Tauri bundle, and no vcpkg/SAF since saf_vbap is opt-in and
+    # the default VBAP backend is pure Rust. bindgen finds libclang on the runner
+    # image without any setup, which is why no LLVM step appears here.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            omniphony-renderer/target
+          key: windows-ci-cargo-${{ hashFiles('omniphony-renderer/**/Cargo.toml') }}
+          restore-keys: windows-ci-cargo-
+
+      - name: Setup ASIO SDK
+        uses: ./.github/actions/setup-asio-sdk
+
+      - name: Build renderer workspace (Windows x64)
+        working-directory: omniphony-renderer
+        run: cargo build --workspace

@@ -126,23 +126,11 @@ jobs:
             libpipewire-0.3-dev \
             pkg-config
 
-      # ASIO SDK (Steinberg) — required to compile cpal with ASIO on Windows.
-      # Taken under the GPLv3 half of the SDK's dual licence, matching this
-      # project's GPL-3.0-or-later. Public mirror, no credentials, pinned commit.
-      # See the same step in release.yml for the full rationale.
+      # Required to compile cpal with ASIO on Windows. Licensing rationale and
+      # the pinned SDK commit both live in the action.
       - name: Setup ASIO SDK (Windows)
         if: runner.os == 'Windows'
-        shell: bash
-        env:
-          # audiosdk/asio @ main — "inital commit of version 2.3.4" (2025-10-16)
-          ASIO_SDK_COMMIT: 496a0765b8bb9c26f764f22f9a9712a937177db2
-        run: |
-          curl -sSL --retry 3 -o "$RUNNER_TEMP/asio_sdk.tar.gz" \
-            "https://github.com/audiosdk/asio/archive/$ASIO_SDK_COMMIT.tar.gz"
-          tar -xzf "$RUNNER_TEMP/asio_sdk.tar.gz" -C "$RUNNER_TEMP"
-          SDK_DIR="$RUNNER_TEMP/asio-$ASIO_SDK_COMMIT"
-          ls "$SDK_DIR"
-          echo "CPAL_ASIO_DIR=$SDK_DIR" >> "$GITHUB_ENV"
+        uses: ./.github/actions/setup-asio-sdk
 
       # ── Build (no publish — we rename + publish ourselves below) ──────────
 
