@@ -34,17 +34,14 @@ runs:
       run: |
         set -euo pipefail
         SDK_DIR="$RUNNER_TEMP/asio-$ASIO_SDK_COMMIT"
-        curl -sSL --retry 3 -o "$RUNNER_TEMP/asio_sdk.tar.gz" \
-          "https://github.com/audiosdk/asio/archive/$ASIO_SDK_COMMIT.tar.gz"
-        # --force-local: RUNNER_TEMP is a Windows path, and the GNU tar shipped
-        # with Git Bash reads the "D:" in "D:\a\_temp/..." as a remote host in
-        # host:path syntax ("Cannot connect to D: resolve failed").
-        #
-        # Extracting only common/ and host/ keeps the logo artwork out; two of
-        # those filenames carry a non-ASCII character, and they are no use to
-        # the build either way.
-        tar --force-local -xzf "$RUNNER_TEMP/asio_sdk.tar.gz" -C "$RUNNER_TEMP" \
-          "asio-$ASIO_SDK_COMMIT/common" "asio-$ASIO_SDK_COMMIT/host"
+        # 7z, not tar: RUNNER_TEMP is a Windows path (D:\a\_temp) and the GNU
+        # tar in Git Bash mishandles it twice over — it reads a leading "D:" as
+        # the host part of host:path syntax, and it cannot open a backslash path
+        # as the -C directory even with --force-local. 7z takes Windows paths as
+        # they come, which is how this step worked before it used a tarball.
+        curl -sSL --retry 3 -o "$RUNNER_TEMP/asio_sdk.zip" \
+          "https://github.com/audiosdk/asio/archive/$ASIO_SDK_COMMIT.zip"
+        7z x "$RUNNER_TEMP/asio_sdk.zip" -o"$RUNNER_TEMP" > /dev/null
         # Fail here rather than inside bindgen with a less obvious message.
         for header in common/asio.h common/asiosys.h host/asiodrivers.h; do
           test -f "$SDK_DIR/$header" || { echo "missing $header in the SDK"; exit 1; }
