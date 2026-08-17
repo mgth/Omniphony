@@ -36,10 +36,14 @@ runs:
         SDK_DIR="$RUNNER_TEMP/asio-$ASIO_SDK_COMMIT"
         curl -sSL --retry 3 -o "$RUNNER_TEMP/asio_sdk.tar.gz" \
           "https://github.com/audiosdk/asio/archive/$ASIO_SDK_COMMIT.tar.gz"
-        # Extract only what asio-sys walks. The repository also ships logo
-        # artwork whose filenames contain a non-ASCII character, which Windows
-        # tar refuses to create — extracting the whole archive fails there.
-        tar -xzf "$RUNNER_TEMP/asio_sdk.tar.gz" -C "$RUNNER_TEMP" \
+        # --force-local: RUNNER_TEMP is a Windows path, and the GNU tar shipped
+        # with Git Bash reads the "D:" in "D:\a\_temp/..." as a remote host in
+        # host:path syntax ("Cannot connect to D: resolve failed").
+        #
+        # Extracting only common/ and host/ keeps the logo artwork out; two of
+        # those filenames carry a non-ASCII character, and they are no use to
+        # the build either way.
+        tar --force-local -xzf "$RUNNER_TEMP/asio_sdk.tar.gz" -C "$RUNNER_TEMP" \
           "asio-$ASIO_SDK_COMMIT/common" "asio-$ASIO_SDK_COMMIT/host"
         # Fail here rather than inside bindgen with a less obvious message.
         for header in common/asio.h common/asiosys.h host/asiodrivers.h; do
