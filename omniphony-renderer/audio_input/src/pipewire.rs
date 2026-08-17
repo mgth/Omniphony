@@ -18,6 +18,16 @@ const LIVE_BRIDGE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const PW_STREAM_ACCUMULATE_CALLBACKS: usize = 4;
 const PW_DRIVER_IDLE_TRIGGER_INTERVAL: Duration = Duration::from_millis(2);
 
+/// Which PipeWire client implementation carries the bridge input.
+///
+/// The choice follows the input clock mode: an upstream-clocked graph needs the
+/// raw `pw_client_node` client (no DRIVER flag), everything else uses `pw_stream`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipewireBridgeBackendKind {
+    PwClientNode,
+    PwStream,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PipewireBridgeStreamConfig {
     pub node_name: String,

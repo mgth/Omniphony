@@ -22,6 +22,19 @@ fn iec958_codec_for_channels(channels: u16) -> u32 {
     }
 }
 
+/// Copy a borrowed SPA pod into an owned byte buffer.
+///
+/// Callbacks receive pods that only live for the duration of the call, so a pod
+/// that must outlive the callback has to be cloned out first.
+pub fn clone_spa_pod_bytes(param: *const spa::sys::spa_pod) -> Option<Vec<u8>> {
+    if param.is_null() {
+        return None;
+    }
+    let pod = unsafe { &*param };
+    let total_size = std::mem::size_of::<spa::sys::spa_pod>() + pod.size as usize;
+    Some(unsafe { std::slice::from_raw_parts(param.cast::<u8>(), total_size) }.to_vec())
+}
+
 #[derive(Copy, Clone)]
 struct RawSpaPodKey(u32);
 
