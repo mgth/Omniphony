@@ -32,9 +32,17 @@ runs:
       env:
         ASIO_SDK_COMMIT: ${{ inputs.commit }}
       run: |
+        set -euo pipefail
+        SDK_DIR="$RUNNER_TEMP/asio-$ASIO_SDK_COMMIT"
         curl -sSL --retry 3 -o "$RUNNER_TEMP/asio_sdk.tar.gz" \
           "https://github.com/audiosdk/asio/archive/$ASIO_SDK_COMMIT.tar.gz"
-        tar -xzf "$RUNNER_TEMP/asio_sdk.tar.gz" -C "$RUNNER_TEMP"
-        SDK_DIR="$RUNNER_TEMP/asio-$ASIO_SDK_COMMIT"
-        ls "$SDK_DIR"
+        # Extract only what asio-sys walks. The repository also ships logo
+        # artwork whose filenames contain a non-ASCII character, which Windows
+        # tar refuses to create — extracting the whole archive fails there.
+        tar -xzf "$RUNNER_TEMP/asio_sdk.tar.gz" -C "$RUNNER_TEMP" \
+          "asio-$ASIO_SDK_COMMIT/common" "asio-$ASIO_SDK_COMMIT/host"
+        # Fail here rather than inside bindgen with a less obvious message.
+        for header in common/asio.h common/asiosys.h host/asiodrivers.h; do
+          test -f "$SDK_DIR/$header" || { echo "missing $header in the SDK"; exit 1; }
+        done
         echo "CPAL_ASIO_DIR=$SDK_DIR" >> "$GITHUB_ENV"
