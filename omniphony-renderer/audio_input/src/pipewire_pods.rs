@@ -28,6 +28,14 @@ const SPA_PARAM_BUFFERS_META_TYPE_RAW: u32 = 7;
 /// graph cycle can carry.
 const PW_QUANTUM_LIMIT_FRAMES: u32 = 8192;
 
+/// Rates the linear-PCM alternative accepts.
+///
+/// Offering only the encoded carrier's rate left desktop audio — which runs at
+/// 48 kHz — with nothing it could negotiate, and `resample.disable` means the
+/// node will not paper over the gap. The default stays first so a client with
+/// no preference lands on the renderer's own rate.
+const RAW_RATES_HZ: [u32; 4] = [48_000, 44_100, 96_000, 192_000];
+
 fn iec958_audio_position(channels: u16) -> &'static str {
     match channels {
         2 => IEC958_AUDIO_POSITION_PROP_2CH,
@@ -283,7 +291,7 @@ pub fn build_pipewire_bridge_raw_format_pod(
                 pw::spa::utils::ChoiceFlags::empty(),
                 pw::spa::utils::ChoiceEnum::Enum {
                     default: sample_rate_hz as i32,
-                    alternatives: vec![sample_rate_hz as i32],
+                    alternatives: RAW_RATES_HZ.iter().map(|rate| *rate as i32).collect(),
                 }
             )))
         ),

@@ -1,6 +1,8 @@
 use super::decoder_thread::DecoderMessage;
 #[cfg(target_os = "linux")]
 use super::decoder_thread::{DecodedAudioData, DecodedSource};
+#[cfg(target_os = "linux")]
+use super::output::I32_PCM_FULL_SCALE;
 use anyhow::Result;
 #[cfg(target_os = "linux")]
 use anyhow::anyhow;
@@ -876,7 +878,11 @@ fn build_live_input_frame(
     let mut pcm = Vec::with_capacity(frame_count * channel_count);
     for chunk in bytes.chunks_exact(4) {
         let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-        let scaled = (sample.clamp(-1.0, 1.0) * i32::MAX as f32).round() as i32;
+        // Unity is 2^23, the scale every decoded frame arrives in and the one
+        // `AudioSamples::to_f32` divides by. Scaling to `i32::MAX` instead put
+        // live PCM 256x above everything else in the renderer, which clipped
+        // into noise rather than playing loud.
+        let scaled = (sample.clamp(-1.0, 1.0) * I32_PCM_FULL_SCALE as f32).round() as i32;
         pcm.push(scaled);
     }
 
@@ -906,4 +912,41 @@ fn seven_one_channel_labels() -> Vec<RChannelLabel> {
         RChannelLabel::Lb,
         RChannelLabel::Rb,
     ]
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    fn interleaved_f32(samples: &[f32]) -> Vec<u8> {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    /// Live PCM has to arrive in the same integer domain as every decoded
+    /// frame — unity at 2^23, which is what both `AudioSamples::to_f32` and the
+    /// renderer's `fill_pcm_f32_drc` divide by. Scaling to `i32::MAX` instead
+    /// puts it 256x above the rest of the pipeline.
+    #[test]
+    fn live_pcm_uses_the_decoder_full_scale() {
+        let bytes = interleaved_f32(&[1.0, -1.0, 0.5, 0.0, 0.25, -0.25, 0.0, 0.0]);
+        let frame = build_live_input_frame(&bytes, 48_000, 8);
+
+        assert_eq!(frame.pcm[0], I32_PCM_FULL_SCALE);
+        assert_eq!(frame.pcm[1], -I32_PCM_FULL_SCALE);
+        assert_eq!(frame.pcm[2], I32_PCM_FULL_SCALE / 2);
+        assert_eq!(frame.pcm[4], I32_PCM_FULL_SCALE / 4);
+        assert_eq!(frame.sample_count, 1);
+        assert_eq!(frame.channel_count, 8);
+        assert_eq!(frame.sampling_frequency, 48_000);
+    }
+
+    /// Samples beyond full scale must clamp, not wrap into the opposite sign.
+    #[test]
+    fn live_pcm_clamps_out_of_range_samples() {
+        let bytes = interleaved_f32(&[4.0, -4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let frame = build_live_input_frame(&bytes, 48_000, 8);
+
+        assert_eq!(frame.pcm[0], I32_PCM_FULL_SCALE);
+        assert_eq!(frame.pcm[1], -I32_PCM_FULL_SCALE);
+    }
 }

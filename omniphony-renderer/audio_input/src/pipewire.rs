@@ -23,6 +23,9 @@ const PW_DRIVER_IDLE_TRIGGER_INTERVAL: Duration = Duration::from_millis(2);
 /// Channel count of the linear-PCM alternative. The renderer's live input map
 /// is a fixed 7.1 layout, so PCM is only offered in that shape.
 const RAW_FALLBACK_CHANNELS: u16 = 8;
+/// Rate the linear-PCM alternative prefers. The encoded carrier's rate is not a
+/// sensible default here: a PCM client is desktop audio, which runs at 48 kHz.
+const RAW_DEFAULT_RATE_HZ: u32 = 48_000;
 
 /// Which PipeWire client implementation carries the bridge input.
 ///
@@ -1056,12 +1059,12 @@ where
     // discoverable at all: clients that build their device list from
     // EnumFormat drop a sink that advertises encoded formats only.
     let raw_format_bytes = build_pipewire_bridge_raw_format_pod(
-        config.sample_rate_hz,
+        RAW_DEFAULT_RATE_HZ,
         RAW_FALLBACK_CHANNELS,
         spa::param::ParamType::EnumFormat,
     )?;
     let raw_buffers_bytes =
-        build_pipewire_bridge_raw_buffers_pod(RAW_FALLBACK_CHANNELS, config.sample_rate_hz)?;
+        build_pipewire_bridge_raw_buffers_pod(RAW_FALLBACK_CHANNELS, RAW_DEFAULT_RATE_HZ)?;
     let raw_format = Pod::from_bytes(&raw_format_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire raw format pod"))?;
     let raw_buffers = Pod::from_bytes(&raw_buffers_bytes)
