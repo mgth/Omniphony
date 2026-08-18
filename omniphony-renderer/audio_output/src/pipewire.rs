@@ -1362,6 +1362,15 @@ fn run_pipewire_loop(
     let samples_per_ms_f64 = samples_per_ms as f64;
     let mut adaptive_update_interval =
         adaptive_config_snapshot.update_interval_callbacks.max(1) as u64;
+    // The live config as this callback sees it.
+    //
+    // The config is pushed from the control thread and read from the realtime
+    // callback, which used to take the mutex — blocking — up to three times per
+    // callback, and could see a different value at each. It is a handful of
+    // scalars, so the callback keeps its own copy and refreshes it once, at
+    // entry, without blocking: on contention the previous copy stands until the
+    // next callback, a few milliseconds later.
+    let mut adaptive_cfg = adaptive_config_snapshot.clone();
 
     log::info!(
         "PipeWire buffer thresholds ({}ch): latency={}ms max={}ms quantum={}fr | \
@@ -1410,10 +1419,13 @@ fn run_pipewire_loop(
                 desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
                 current_adaptive_band.store(reset.adaptive_band, Ordering::Relaxed);
             }
-            let is_pi_paused = live_adaptive_config_for_callback
-                .try_lock()
-                .map(|cfg| cfg.paused)
-                .unwrap_or(false);
+            // The one config read of this callback. Everything downstream uses
+            // `adaptive_cfg`, so the whole callback also sees one consistent
+            // config rather than re-reading a value that can change under it.
+            if let Some(cfg) = live_adaptive_config_for_callback.try_lock() {
+                adaptive_cfg.clone_from(&cfg);
+            }
+            let is_pi_paused = adaptive_cfg.paused;
 
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 // Per-cycle frame count requested by PipeWire for THIS callback.
@@ -1553,7 +1565,6 @@ fn run_pipewire_loop(
                         (control_available_override as f64).to_bits(),
                         Ordering::Relaxed,
                     );
-                    let current_adaptive_cfg = live_adaptive_config_for_callback.lock().clone();
                     // Classical control_available calculation (ring + FIFO +
                     // pending - callback/2). The cumulative-flow override was
                     // tried during the 0.4 Hz investigation but caused
@@ -1603,8 +1614,8 @@ fn run_pipewire_loop(
                         channel_count as usize,
                         sample_rate,
                         f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
-                        current_adaptive_cfg.control_smoothing_cutoff_hz,
-                        current_adaptive_cfg.control_smoothing_order,
+                        adaptive_cfg.control_smoothing_cutoff_hz,
+                        adaptive_cfg.control_smoothing_order,
                         callback_dt_s,
                         LatencyMetricTargets {
                             measured_latency_ms_bits: &measured_latency_ms_out,
@@ -1626,7 +1637,7 @@ fn run_pipewire_loop(
                     // metrics (control_available, control_latency_ms).
                     let input_clock_us_now =
                         f64::from_bits(input_clock_us_for_callback.load(Ordering::Relaxed));
-                    let pre_bridge_requested = current_adaptive_cfg.use_pre_bridge_clock;
+                    let pre_bridge_requested = adaptive_cfg.use_pre_bridge_clock;
                     let pre_bridge_ready = pre_bridge_requested && input_clock_us_now > 0.0;
                     if pre_bridge_ready {
                         let input_clock_samples_eq = (input_clock_us_now / 1_000_000.0
@@ -1745,7 +1756,7 @@ fn run_pipewire_loop(
                     // raw control_available so the hysteresis bands act on the real
                     // buffer level. (The servo gets the smoothed value separately.)
                     let fallback_band = far_mode_band_from_latency(
-                        &current_adaptive_cfg,
+                        &adaptive_cfg,
                         metrics.control_available,
                         runtime_target_buffer_fill,
                         samples_per_ms,
@@ -1756,10 +1767,8 @@ fn run_pipewire_loop(
                             && !is_pi_paused
                             && runtime_state.low_recover_phase == LowRecoverPhase::Inactive
                         {
-                            // Refresh config from the live Arc (non-blocking; keep stale on contention).
-                            if let Some(cfg) = live_adaptive_config_for_callback.try_lock() {
-                                adaptive_update_interval = cfg.update_interval_callbacks.max(1) as u64;
-                            }
+                            adaptive_update_interval =
+                                adaptive_cfg.update_interval_callbacks.max(1) as u64;
                             if should_run_adaptive_servo(
                                 callback_count,
                                 adaptive_update_interval as u32,
@@ -1768,12 +1777,12 @@ fn run_pipewire_loop(
                             ) {
                                 let mut decision = run_adaptive_servo(
                                     &mut runtime_state,
-                                    &current_adaptive_cfg,
+                                    &adaptive_cfg,
                                     metrics,
                                     runtime_target_buffer_fill,
                                     resample_ratio,
                                     480,
-                                    current_adaptive_cfg.max_adjust.max(0.000_001),
+                                    adaptive_cfg.max_adjust.max(0.000_001),
                                     samples_per_ms,
                                     samples_per_ms_f64,
                                 );
@@ -1835,7 +1844,6 @@ fn run_pipewire_loop(
                         }
 
                         let audio_samples_needed = max_samples;
-                        let far_mode_cfg = live_adaptive_config_for_callback.lock().clone();
                         let low_recover_was_active =
                             runtime_state.low_recover_phase != LowRecoverPhase::Inactive;
                         // State machine on raw: its entry/exit/settle bands are
@@ -1843,7 +1851,7 @@ fn run_pipewire_loop(
                         // that drove a slow oscillation.
                         let far_decision = update_far_mode_state(
                             &mut runtime_state,
-                            &far_mode_cfg,
+                            &adaptive_cfg,
                             current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
                             metrics.control_available,
                             metrics.smoothed_control_available,
@@ -2085,10 +2093,9 @@ fn run_pipewire_loop(
                             && callback_count % adaptive_update_interval == 0
                             && runtime_state.low_recover_phase == LowRecoverPhase::Inactive
                         {
-                            // Refresh config from live Arc (non-blocking; keep stale on contention).
-                            let native_servo_cfg = live_adaptive_config_for_callback.lock().clone();
                             if adaptive_resampling_enabled {
-                                adaptive_update_interval = native_servo_cfg.update_interval_callbacks.max(1) as u64;
+                                adaptive_update_interval =
+                                    adaptive_cfg.update_interval_callbacks.max(1) as u64;
                             }
                             let drift = metrics.smoothed_control_available as i64
                                 - runtime_target_buffer_fill as i64;
@@ -2096,12 +2103,12 @@ fn run_pipewire_loop(
                             if adaptive_resampling_enabled {
                                 let decision = run_adaptive_servo(
                                     &mut runtime_state,
-                                    &native_servo_cfg,
+                                    &adaptive_cfg,
                                     metrics,
                                     runtime_target_buffer_fill,
                                     1.0,
                                     480,
-                                    native_servo_cfg.max_adjust.max(0.000_001),
+                                    adaptive_cfg.max_adjust.max(0.000_001),
                                     samples_per_ms,
                                     samples_per_ms_f64,
                                 );
@@ -2139,7 +2146,7 @@ fn run_pipewire_loop(
                                 }
                                 // Band classification on raw — see resampler path.
                                 let far_band = far_mode_band_from_latency(
-                                    &native_servo_cfg,
+                                    &adaptive_cfg,
                                     metrics.control_available,
                                     runtime_target_buffer_fill,
                                     samples_per_ms,
@@ -2180,11 +2187,10 @@ fn run_pipewire_loop(
                         let frames_to_read = available_frames.min(max_frames);
                         let samples_to_read = frames_to_read * ch;
 
-                        let far_mode_cfg2 = live_adaptive_config_for_callback.lock().clone();
                         // State machine on raw — see resampler path.
                         let far_decision: FarModeDecision = update_far_mode_state(
                             &mut runtime_state,
-                            &far_mode_cfg2,
+                            &adaptive_cfg,
                             current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
                             metrics.control_available,
                             metrics.smoothed_control_available,
