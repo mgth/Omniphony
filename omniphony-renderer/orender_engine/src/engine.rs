@@ -1102,21 +1102,7 @@ impl Engine {
                     surround_placement,
                 )
                 .unwrap_or_default();
-                for spec in self.stages.specs() {
-                    objects.push(ObjectMeta {
-                        name: spec.name.clone(),
-                        x: spec.position[0] as f32,
-                        y: spec.position[1] as f32,
-                        z: spec.position[2] as f32,
-                        coord_mode: "cartesian".to_string(),
-                        direct_speaker_index: None,
-                        gain: spec.gain_db as i32,
-                        priority: 0.0,
-                        size: spec.size,
-                        fixed: false,
-                        label: String::new(),
-                    });
-                }
+                objects.extend(self.stages.object_metas());
                 if !objects.is_empty() {
                     if want_osc {
                         if let Some(osc) = self.osc.as_mut() {

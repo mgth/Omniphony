@@ -649,7 +649,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                         .as_ref()
                         .is_some_and(|sender| sender.has_osc_clients())
                     {
-                        if let (Some(ref mut osc_sender), Some(objects)) = (
+                        // The synthesized objects ride the same frame as the
+                        // virtual bed: emitted here they appear in Studio's 3D
+                        // view, omitted they are rendered but never shown.
+                        let synthesized: Vec<_> =
+                            self.spatial.channel_objects.object_metas().collect();
+                        if let (Some(ref mut osc_sender), Some(mut objects)) = (
                             self.telemetry.osc_sender.as_mut(),
                             build_virtual_bed_objects(
                                 &labels,
@@ -662,6 +667,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                                 surround_placement,
                             ),
                         ) {
+                            objects.extend(synthesized);
                             let sample_pos = self
                                 .session
                                 .decoded_samples

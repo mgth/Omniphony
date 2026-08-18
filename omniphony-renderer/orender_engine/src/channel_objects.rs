@@ -22,6 +22,7 @@ use renderer::live_params::PhantomExtractMode;
 use renderer::spatial_renderer::SpatialChannelEvent;
 
 use crate::object_gen::{ObjectGenStage, ObjectGeneratorFactory, PrepareCtx, SynthObjectSpec};
+use crate::osc::ObjectMeta;
 use crate::phantom_extract::PhantomExtractStage;
 
 /// What the live options ask of the two stages this frame.
@@ -172,6 +173,29 @@ impl ChannelObjectStages {
                 position: Some(spec.position),
                 sample_pos: Some(0),
             })
+    }
+
+    /// The synthesized objects as OSC object metadata, for Studio's 3D view and
+    /// object list.
+    ///
+    /// Alongside [`events`](Self::events) because the two go together: a host
+    /// that emits the events renders the objects, and a host that skips these
+    /// renders them without ever showing them — audible but invisible, which
+    /// reads as the feature being broken.
+    pub fn object_metas(&self) -> impl Iterator<Item = ObjectMeta> + '_ {
+        self.specs().map(|spec| ObjectMeta {
+            name: spec.name.clone(),
+            x: spec.position[0] as f32,
+            y: spec.position[1] as f32,
+            z: spec.position[2] as f32,
+            coord_mode: "cartesian".to_string(),
+            direct_speaker_index: None,
+            gain: spec.gain_db as i32,
+            priority: 0.0,
+            size: spec.size,
+            fixed: false,
+            label: String::new(),
+        })
     }
 
     /// Run both stages over the bed and return the extended interleaved buffer
