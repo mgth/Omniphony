@@ -313,19 +313,21 @@ fn refresh_pw_stream_driver_timing(
         return;
     }
 
-    // For audio/raw, PipeWire reports interleaved samples in `pw_time.size`, so
-    // dividing by channels yields the transport-frame quantum. For encoded
-    // IEC958 streams, the callback payload is the authoritative transport domain:
-    // `pw_time.size` can reflect a doubled sample-domain quantum while each
-    // delivered chunk still contains the real transport frame count.
+    // `pw_time.size` is a frame count, not an interleaved sample count: a
+    // buffer measured here at `size = 2048` carries 2048 eight-channel frames.
+    // Dividing it by the channel count understates the quantum by that factor,
+    // and since the quantum sets the output-driven trigger rate, the sink then
+    // pulls eight times faster than real time — measured at 7.8x, in bursts of
+    // ~184 buffers a second where 187 triggers were scheduled.
+    //
+    // For encoded IEC958 streams the callback payload stays the authoritative
+    // transport domain: `pw_time.size` can reflect a doubled sample-domain
+    // quantum while each delivered chunk still holds the real frame count.
     let (transport_frames, transport_source) =
         if user_data.negotiated_iec958 && user_data.observed_transport_frames > 0 {
             (user_data.observed_transport_frames as u64, "observed_chunk")
         } else {
-            (
-                (time.size / user_data.channels.max(1) as u64).max(1),
-                "pw_time",
-            )
+            (time.size.max(1), "pw_time")
         };
     input_control
         .register_direct_trigger_quantum_frames(transport_frames.min(u32::MAX as u64) as u32);
