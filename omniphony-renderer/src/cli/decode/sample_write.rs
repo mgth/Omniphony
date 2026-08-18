@@ -1,3 +1,4 @@
+use super::decoder_thread::DecodedSource;
 use super::handler::{BedChannelMapper, ChannelCountCalculator};
 use super::output::AudioSamples;
 use super::state::{DecodeSessionState, OutputState, SpatialState, TelemetryState};
@@ -21,8 +22,17 @@ pub struct SampleWriteCoordinator<'a> {
 }
 
 impl<'a> SampleWriteCoordinator<'a> {
-    pub fn spatial_has_objects(&self) -> bool {
-        self.spatial.has_objects
+    /// Whether this frame carries objects, and so takes the object render path.
+    ///
+    /// Derived from the frame's source, not from `spatial.has_objects` alone:
+    /// that flag latches on the first frame carrying metadata and is only
+    /// cleared at a segment reset, so once an object stream has played, plain
+    /// channel content arriving afterwards would keep taking the object path.
+    /// The sink switches between encoded and linear PCM at will, so that
+    /// happens in one session. A live PCM frame is channel content by
+    /// construction — fixed labels, no metadata — whatever played before it.
+    pub fn frame_has_objects(&self, source: DecodedSource) -> bool {
+        self.spatial.has_objects && !matches!(source, DecodedSource::Live)
     }
 
     pub fn new(
@@ -47,7 +57,11 @@ impl<'a> SampleWriteCoordinator<'a> {
         &mut self,
         frame: &RDecodedFrame,
         decode_time_ms: f32,
+        source: DecodedSource,
     ) -> Result<()> {
+        // Resolved before the renderer is borrowed for the render itself, and
+        // kept for the whole frame so the branch cannot change under us.
+        let frame_has_objects = self.frame_has_objects(source);
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
         let frame_duration_ms =
@@ -243,7 +257,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                 };
                 self.output.drc_ramp_samples_remaining = frame.drc_ramp_duration;
 
-                if self.spatial.has_objects {
+                if frame_has_objects {
                     log::trace!(
                         "Using VBAP spatial rendering (metadata source: {})",
                         if frame.metadata.is_empty() {
@@ -457,6 +471,49 @@ impl<'a> SampleWriteCoordinator<'a> {
                         }
                     };
 
+                    // Synthesize objects from the bed, as the embedded engine
+                    // does: plan first so each object gets its channel event,
+                    // then extend the PCM below with its audio.
+                    let (master, phantom_mode, generator_id, options_epoch) = {
+                        let control = renderer.renderer_control();
+                        let live = control.live.read();
+                        (
+                            live.synthetic_objects_enabled,
+                            live.phantom_extract_mode,
+                            live.object_generator_id.clone(),
+                            control.options_epoch(),
+                        )
+                    };
+                    let stage_counts = {
+                        let ctx = orender_engine::object_gen::PrepareCtx {
+                            input_labels: &labels,
+                            output_layout: &output_layout,
+                            sample_rate: frame.sampling_frequency,
+                            surround_placement,
+                        };
+                        let selection = orender_engine::channel_objects::StageSelection {
+                            synthetic_objects_enabled: master,
+                            phantom_mode,
+                            generator_id: generator_id.as_str(),
+                        };
+                        self.spatial
+                            .channel_objects
+                            .sync(&ctx, &selection, options_epoch)
+                    };
+                    let mut virtual_events = virtual_events;
+                    if stage_counts.any() {
+                        {
+                            let control = renderer.renderer_control();
+                            let live = control.live.read();
+                            self.spatial.channel_objects.push_params(
+                                &live.phantom_params,
+                                &live.object_generator_params,
+                                frame.sampling_frequency,
+                            );
+                        }
+                        virtual_events.extend(self.spatial.channel_objects.events(channel_count));
+                    }
+
                     fill_pcm_f32_drc(
                         &mut pcm_f32_scratch,
                         &frame.pcm,
@@ -465,18 +522,28 @@ impl<'a> SampleWriteCoordinator<'a> {
                         self.output.drc_target_gain,
                         &mut self.output.drc_ramp_samples_remaining,
                     );
-                    let pcm_data_f32 = &pcm_f32_scratch;
+                    let (pcm_data_f32, render_channel_count) =
+                        self.spatial.channel_objects.process_and_extend(
+                            &mut pcm_f32_scratch,
+                            channel_count,
+                            sample_count,
+                            frame.sampling_frequency,
+                            stage_counts,
+                        );
 
                     let has_metering_clients = self
                         .telemetry
                         .osc_sender
                         .as_ref()
                         .is_some_and(|sender| sender.has_metering_clients());
+                    // Meter and render the extended width: the synthesized
+                    // object channels sit past the bed, and striding by the bed
+                    // width alone would walk through them wrongly.
                     if has_metering_clients {
                         if let Some(ref mut meter) = self.telemetry.audio_meter {
-                            meter.update_channel_count(channel_count);
-                            for chunk in pcm_data_f32.chunks_exact(channel_count) {
-                                meter.process_objects(chunk, channel_count);
+                            meter.update_channel_count(render_channel_count);
+                            for chunk in pcm_data_f32.chunks_exact(render_channel_count) {
+                                meter.process_objects(chunk, render_channel_count);
                             }
                         }
                     }
@@ -484,8 +551,8 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let donated_buf = std::mem::take(&mut self.output.render_buf);
                     let render_started_at = Instant::now();
                     let rendered = renderer.render_frame(
-                        &pcm_data_f32,
-                        channel_count,
+                        pcm_data_f32,
+                        render_channel_count,
                         &virtual_events,
                         donated_buf,
                         has_metering_clients,
@@ -582,7 +649,12 @@ impl<'a> SampleWriteCoordinator<'a> {
                         .as_ref()
                         .is_some_and(|sender| sender.has_osc_clients())
                     {
-                        if let (Some(ref mut osc_sender), Some(objects)) = (
+                        // The synthesized objects ride the same frame as the
+                        // virtual bed: emitted here they appear in Studio's 3D
+                        // view, omitted they are rendered but never shown.
+                        let synthesized: Vec<_> =
+                            self.spatial.channel_objects.object_metas().collect();
+                        if let (Some(ref mut osc_sender), Some(mut objects)) = (
                             self.telemetry.osc_sender.as_mut(),
                             build_virtual_bed_objects(
                                 &labels,
@@ -595,6 +667,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                                 surround_placement,
                             ),
                         ) {
+                            objects.extend(synthesized);
                             let sample_pos = self
                                 .session
                                 .decoded_samples

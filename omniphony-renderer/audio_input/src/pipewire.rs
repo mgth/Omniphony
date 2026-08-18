@@ -1,6 +1,9 @@
 use crate::pipewire_pods::{
-    IEC958_CODECS_PROP, build_pipewire_bridge_buffers_pod, build_pipewire_bridge_format_pod,
-    build_pipewire_bridge_stream_properties,
+    IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_CODECS_PROP, IEC958_DTS_CHANNELS,
+    IEC958_DTS_RATE_HZ, IEC958_DTSHD_CHANNELS, IEC958_DTSHD_RATE_HZ,
+    build_pipewire_bridge_buffers_pod, build_pipewire_bridge_codec_format_pod,
+    build_pipewire_bridge_format_pod, build_pipewire_bridge_raw_buffers_pod,
+    build_pipewire_bridge_raw_format_pod, build_pipewire_bridge_stream_properties,
 };
 use crate::{InputClockMode, InputControl};
 use anyhow::{Result, anyhow};
@@ -17,6 +20,24 @@ use std::time::{Duration, Instant};
 const LIVE_BRIDGE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const PW_STREAM_ACCUMULATE_CALLBACKS: usize = 4;
 const PW_DRIVER_IDLE_TRIGGER_INTERVAL: Duration = Duration::from_millis(2);
+/// Channel count of the linear-PCM alternative. The renderer's live input map
+/// is a fixed 7.1 layout, so PCM is only offered in that shape.
+const RAW_FALLBACK_CHANNELS: u16 = 8;
+/// Rate the linear-PCM alternative prefers. The encoded carrier's rate is not a
+/// sensible default here: a PCM client is desktop audio, which runs at 48 kHz.
+const RAW_DEFAULT_RATE_HZ: u32 = 48_000;
+/// IEC 61937 carries its bursts in a 16-bit container.
+const IEC958_BYTES_PER_SAMPLE: usize = std::mem::size_of::<u16>();
+
+/// Which PipeWire client implementation carries the bridge input.
+///
+/// The choice follows the input clock mode: an upstream-clocked graph needs the
+/// raw `pw_client_node` client (no DRIVER flag), everything else uses `pw_stream`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipewireBridgeBackendKind {
+    PwClientNode,
+    PwStream,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PipewireBridgeStreamConfig {
@@ -36,6 +57,11 @@ struct BridgeCaptureUserData {
     rate_hz: u32,
     channels: u32,
     negotiated_iec958: bool,
+    /// Width of one sample in the negotiated format. IEC 61937 rides a 16-bit
+    /// container, linear PCM here is `f32`, and every byte-to-frame conversion
+    /// on this path depends on which one is live — including the pacer drain,
+    /// which starves the output ring if it is told twice the frames arrived.
+    bytes_per_sample: usize,
     observed_transport_frames: u32,
     last_log_at: Instant,
     add_buffer_calls_since_log: usize,
@@ -287,19 +313,21 @@ fn refresh_pw_stream_driver_timing(
         return;
     }
 
-    // For audio/raw, PipeWire reports interleaved samples in `pw_time.size`, so
-    // dividing by channels yields the transport-frame quantum. For encoded
-    // IEC958 streams, the callback payload is the authoritative transport domain:
-    // `pw_time.size` can reflect a doubled sample-domain quantum while each
-    // delivered chunk still contains the real transport frame count.
+    // `pw_time.size` is a frame count, not an interleaved sample count: a
+    // buffer measured here at `size = 2048` carries 2048 eight-channel frames.
+    // Dividing it by the channel count understates the quantum by that factor,
+    // and since the quantum sets the output-driven trigger rate, the sink then
+    // pulls eight times faster than real time — measured at 7.8x, in bursts of
+    // ~184 buffers a second where 187 triggers were scheduled.
+    //
+    // For encoded IEC958 streams the callback payload stays the authoritative
+    // transport domain: `pw_time.size` can reflect a doubled sample-domain
+    // quantum while each delivered chunk still holds the real frame count.
     let (transport_frames, transport_source) =
         if user_data.negotiated_iec958 && user_data.observed_transport_frames > 0 {
             (user_data.observed_transport_frames as u64, "observed_chunk")
         } else {
-            (
-                (time.size / user_data.channels.max(1) as u64).max(1),
-                "pw_time",
-            )
+            (time.size.max(1), "pw_time")
         };
     input_control
         .register_direct_trigger_quantum_frames(transport_frames.min(u32::MAX as u64) as u32);
@@ -347,14 +375,23 @@ fn refresh_pw_stream_driver_timing(
     }
 }
 
-pub fn run_pipewire_bridge_input_stream<F>(
+/// Run the sink that carries the bridge input.
+///
+/// The node advertises both IEC 61937 and linear PCM, so the negotiated media
+/// subtype decides which consumer receives a buffer: `process_chunk` gets the
+/// encoded bursts to deframe, `process_pcm` gets interleaved `f32` frames.
+/// A client that never enables passthrough lands on the PCM path instead of
+/// silently feeding a deframer that will find no sync word.
+pub fn run_pipewire_bridge_input_stream<F, P>(
     input_control: Arc<InputControl>,
     config: PipewireBridgeStreamConfig,
     stop: Arc<AtomicBool>,
     process_chunk: F,
+    process_pcm: P,
 ) -> Result<()>
 where
     F: FnMut(&[u8]) -> (usize, usize) + 'static,
+    P: FnMut(&[u8], u32, u32) + 'static,
 {
     pw::init();
     let use_driver = bridge_stream_uses_driver(config.clock_mode);
@@ -393,18 +430,21 @@ where
 
     let stop_for_process = Arc::clone(&stop);
     let input_control_for_state = Arc::clone(&input_control);
+    let input_control_for_param = Arc::clone(&input_control);
     let config_for_state = config.clone();
     let input_control_for_process = Arc::clone(&input_control);
     let trigger_schedule = Rc::new(RefCell::new(PwDriverTriggerSchedule::default()));
     let trigger_schedule_for_state = Rc::clone(&trigger_schedule);
     let trigger_schedule_for_process = Rc::clone(&trigger_schedule);
     let process_chunk = RefCell::new(process_chunk);
+    let process_pcm = RefCell::new(process_pcm);
 
     let _listener = stream
         .add_local_listener_with_user_data(BridgeCaptureUserData {
             rate_hz: config.sample_rate_hz,
             channels: config.channels as u32,
             negotiated_iec958: false,
+            bytes_per_sample: IEC958_BYTES_PER_SAMPLE,
             observed_transport_frames: 0,
             last_log_at: Instant::now(),
             add_buffer_calls_since_log: 0,
@@ -510,6 +550,14 @@ where
             let is_iec958 =
                 media_subtype == pw::spa::param::format::MediaSubtype::Iec958;
             user_data.negotiated_iec958 = is_iec958;
+            // Byte-to-frame conversions below this point follow the negotiated
+            // format, not the encoded container: keeping the 16-bit width for a
+            // 32-bit PCM stream doubles every frame count derived from a chunk.
+            user_data.bytes_per_sample = if is_iec958 {
+                IEC958_BYTES_PER_SAMPLE
+            } else {
+                std::mem::size_of::<f32>()
+            };
             // `spa_format_audio_raw_parse` parses by property key (AudioRate /
             // AudioChannels), not by subtype — so it also extracts a usable
             // `rate` and `channels` from an IEC958 format pod. We need that
@@ -523,6 +571,15 @@ where
             if parsed {
                 if format.rate() != 0 {
                     user_data.rate_hz = format.rate();
+                    // The driver derives its trigger interval from this rate
+                    // (quantum_frames / rate). Codecs ride different carriers —
+                    // AC-3 at 48 kHz, TrueHD at the 4x one — so a rate captured
+                    // once at connect makes the interval wrong by that ratio
+                    // for every other codec, and the sink then drains the
+                    // client far too fast: "Audio device underrun detected".
+                    if use_driver {
+                        input_control_for_param.register_direct_trigger_target(user_data.rate_hz);
+                    }
                 }
                 if format.channels() != 0 {
                     user_data.channels = format.channels();
@@ -710,7 +767,7 @@ where
             let byte_len = data.chunk().size() as usize;
             if user_data.negotiated_iec958 && byte_len > 0 {
                 let bytes_per_transport_frame = chunk_stride.max(
-                    user_data.channels as usize * std::mem::size_of::<u16>(),
+                    user_data.channels as usize * user_data.bytes_per_sample,
                 );
                 let observed_transport_frames = (byte_len / bytes_per_transport_frame).max(1);
                 user_data.observed_transport_frames =
@@ -786,7 +843,7 @@ where
             {
                 user_data.callback_chunk_logs_remaining -= 1;
                 let transport_ms = byte_len as f64
-                    / (user_data.channels as f64 * std::mem::size_of::<u16>() as f64)
+                    / (user_data.channels as f64 * user_data.bytes_per_sample as f64)
                     / user_data.rate_hz as f64
                     * 1000.0;
                 log::debug!(
@@ -824,7 +881,7 @@ where
             // the subframe rate constant during compressed bursts).
             if user_data.channels > 0 && user_data.rate_hz > 0 {
                 let frames_this_chunk = byte_len as f64
-                    / (user_data.channels as f64 * std::mem::size_of::<u16>() as f64);
+                    / (user_data.channels as f64 * user_data.bytes_per_sample as f64);
                 let delta_us =
                     frames_this_chunk / user_data.rate_hz as f64 * 1_000_000.0;
                 user_data.input_clock_us_cumulative += delta_us;
@@ -843,8 +900,7 @@ where
                 if let Some(pacer) = input_control_for_process.output_pacer() {
                     if pacer.enabled.load(Ordering::Relaxed) {
                         let in_subframes = byte_len as u64
-                            / (user_data.channels as u64
-                                * std::mem::size_of::<u16>() as u64);
+                            / (user_data.channels as u64 * user_data.bytes_per_sample as u64);
                         let drain_samples = (in_subframes
                             .saturating_mul(pacer.out_sample_rate as u64)
                             .saturating_mul(pacer.out_channels as u64)
@@ -860,6 +916,61 @@ where
             user_data.buffers_since_log += 1;
             if has_spdif_sync {
                 user_data.sync_buffers_since_log += 1;
+            }
+            // Linear PCM was negotiated: hand the frames straight to the PCM
+            // consumer. Deframing does not apply, and the accumulation window
+            // below exists only to give the deframer whole bursts, so PCM must
+            // not go through it — buffering four callbacks would add latency
+            // for no benefit.
+            if !user_data.negotiated_iec958 {
+                process_pcm.borrow_mut()(chunk, user_data.channels, user_data.rate_hz);
+                // FIXME(pcm-clock): this path has no proper clock yet.
+                //
+                // Every other trigger on this node fires on an *absent* buffer,
+                // as an idle keepalive. Scheduling one here, after a buffer that
+                // did arrive, makes the node pull as fast as the interval allows
+                // and the input then arrives in bursts — measured at 0.005x then
+                // 7.7x real time in consecutive seconds, which is the chopping.
+                // Removing it is worse still: delivery collapses to 0.005x and
+                // stays there, so something has to keep the node scheduled.
+                // The encoded path gets away with the same heartbeat because its
+                // producer only ever has a burst ready at the source rate; a PCM
+                // client always has a full quantum queued, so the heartbeat
+                // drains it faster than real time. Read `delivered_ratio` in the
+                // stats line above: it must sit at 1.0, and today it does not.
+                if use_driver {
+                    schedule_pw_stream_driver_trigger(
+                        &trigger_schedule_for_process,
+                        current_pw_driver_trigger_interval(user_data),
+                        "pcm_frames",
+                    );
+                }
+                // The encoded path's periodic stats sit past this return, so
+                // without a line of its own the PCM path reports nothing at all
+                // — and a starving input is invisible precisely when it matters.
+                // `delivered_ratio` is the figure to read: 1.0 means the sink is
+                // pulling frames at exactly the rate the format declares.
+                let now = Instant::now();
+                if now.duration_since(user_data.last_log_at) >= LIVE_BRIDGE_LOG_INTERVAL {
+                    let elapsed = now.duration_since(user_data.last_log_at).as_secs_f64();
+                    let bytes_per_frame =
+                        (user_data.channels as usize * user_data.bytes_per_sample).max(1);
+                    let frames = user_data.bytes_since_log as f64 / bytes_per_frame as f64;
+                    let frames_per_s = frames / elapsed.max(f64::MIN_POSITIVE);
+                    log::debug!(
+                        "{} pcm ingest: buffers={} frames/s={:.0} delivered_ratio={:.3} rate={}Hz channels={}",
+                        log_prefix,
+                        user_data.buffers_since_log,
+                        frames_per_s,
+                        frames_per_s / user_data.rate_hz.max(1) as f64,
+                        user_data.rate_hz,
+                        user_data.channels
+                    );
+                    user_data.last_log_at = now;
+                    user_data.bytes_since_log = 0;
+                    user_data.buffers_since_log = 0;
+                }
+                return;
             }
             user_data.accumulate_buf.extend_from_slice(chunk);
             user_data.accumulate_count += 1;
@@ -965,13 +1076,81 @@ where
         .ok_or_else(|| anyhow!("Invalid PipeWire 2ch format pod"))?;
     let format_8ch = Pod::from_bytes(&format_8ch_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire 8ch format pod"))?;
+    // AC-3 and the DTS core ride their own 48 kHz carrier, so each needs a
+    // format of its own: the channel count cannot express them, and the two
+    // pods above are both on the 4x carrier. DTS-HD shares that 4x carrier but
+    // still needs stating, since the codec is not derivable from the channels.
+    let format_ac3_bytes = build_pipewire_bridge_codec_format_pod(
+        spa::sys::SPA_AUDIO_IEC958_CODEC_AC3,
+        IEC958_AC3_RATE_HZ,
+        IEC958_AC3_CHANNELS,
+        spa::param::ParamType::EnumFormat,
+    )?;
+    let buffers_ac3_bytes =
+        build_pipewire_bridge_buffers_pod(IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ)?;
+    let format_dtshd_bytes = build_pipewire_bridge_codec_format_pod(
+        spa::sys::SPA_AUDIO_IEC958_CODEC_DTSHD,
+        IEC958_DTSHD_RATE_HZ,
+        IEC958_DTSHD_CHANNELS,
+        spa::param::ParamType::EnumFormat,
+    )?;
+    let buffers_dtshd_bytes =
+        build_pipewire_bridge_buffers_pod(IEC958_DTSHD_CHANNELS, IEC958_DTSHD_RATE_HZ)?;
+    let format_dts_bytes = build_pipewire_bridge_codec_format_pod(
+        spa::sys::SPA_AUDIO_IEC958_CODEC_DTS,
+        IEC958_DTS_RATE_HZ,
+        IEC958_DTS_CHANNELS,
+        spa::param::ParamType::EnumFormat,
+    )?;
+    let buffers_dts_bytes =
+        build_pipewire_bridge_buffers_pod(IEC958_DTS_CHANNELS, IEC958_DTS_RATE_HZ)?;
     let buffers_2ch_bytes = build_pipewire_bridge_buffers_pod(2, config.sample_rate_hz)?;
     let buffers_8ch_bytes = build_pipewire_bridge_buffers_pod(8, config.sample_rate_hz)?;
     let buffers_2ch = Pod::from_bytes(&buffers_2ch_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire 2ch buffers pod"))?;
     let buffers_8ch = Pod::from_bytes(&buffers_8ch_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire 8ch buffers pod"))?;
-    let mut params = [format_2ch, buffers_2ch, format_8ch, buffers_8ch];
+    // Linear-PCM alternative, offered last so PipeWire keeps preferring the
+    // encoded formats for a passthrough client. It exists so the node is
+    // discoverable at all: clients that build their device list from
+    // EnumFormat drop a sink that advertises encoded formats only.
+    let raw_format_bytes = build_pipewire_bridge_raw_format_pod(
+        RAW_DEFAULT_RATE_HZ,
+        RAW_FALLBACK_CHANNELS,
+        spa::param::ParamType::EnumFormat,
+    )?;
+    let raw_buffers_bytes =
+        build_pipewire_bridge_raw_buffers_pod(RAW_FALLBACK_CHANNELS, RAW_DEFAULT_RATE_HZ)?;
+    let raw_format = Pod::from_bytes(&raw_format_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire raw format pod"))?;
+    let raw_buffers = Pod::from_bytes(&raw_buffers_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire raw buffers pod"))?;
+    let format_ac3 = Pod::from_bytes(&format_ac3_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire AC-3 format pod"))?;
+    let buffers_ac3 = Pod::from_bytes(&buffers_ac3_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire AC-3 buffers pod"))?;
+    let format_dtshd = Pod::from_bytes(&format_dtshd_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire DTS-HD format pod"))?;
+    let buffers_dtshd = Pod::from_bytes(&buffers_dtshd_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire DTS-HD buffers pod"))?;
+    let format_dts = Pod::from_bytes(&format_dts_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire DTS format pod"))?;
+    let buffers_dts = Pod::from_bytes(&buffers_dts_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire DTS buffers pod"))?;
+    let mut params = [
+        format_8ch,
+        buffers_8ch,
+        format_2ch,
+        buffers_2ch,
+        format_dtshd,
+        buffers_dtshd,
+        format_ac3,
+        buffers_ac3,
+        format_dts,
+        buffers_dts,
+        raw_format,
+        raw_buffers,
+    ];
 
     let mut stream_flags =
         pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS;

@@ -231,7 +231,10 @@ impl DecodeHandler {
             (active_mode, source),
             (InputMode::Bridge, DecodedSource::Bridge)
                 | (InputMode::Live, DecodedSource::Live)
-                | (InputMode::PipewireBridge, DecodedSource::Bridge)
+                // The PipeWire sink advertises PCM alongside IEC 61937, so this
+                // mode legitimately produces either source depending on what the
+                // client negotiated.
+                | (InputMode::PipewireBridge, DecodedSource::Bridge | DecodedSource::Live)
         )
     }
 
@@ -414,6 +417,14 @@ impl DecodeHandler {
             if let Some(ic) = self.input_control.as_ref() {
                 let rate_hz = ic.input_trigger_rate_hz();
                 let quantum_frames = ic.input_trigger_quantum_frames();
+                // Logged until wiring succeeds: this mode stays silent when a
+                // precondition is missing, and the quantum in particular is
+                // worth seeing — it sets the trigger rate, so a wrong one makes
+                // the sink pull at a multiple of real time.
+                log::debug!(
+                    "Direct trigger wiring attempt: rate={rate_hz}Hz quantum={quantum_frames}fr writer={}",
+                    self.output.audio_writer.is_some()
+                );
                 if rate_hz > 0 && quantum_frames > 0 {
                     if let Some(writer) = self.output.audio_writer.as_ref() {
                         writer.set_input_trigger_rate_hz(rate_hz);
@@ -576,10 +587,10 @@ impl DecodeHandler {
             self.input_control.as_deref(),
             self.spatial_renderer.as_mut(),
         );
-        if ctx.bed_conform && sample_write.spatial_has_objects() {
+        if ctx.bed_conform && sample_write.frame_has_objects(source) {
             sample_write.write_audio_samples_bed_conform(&frame, ctx.decode_time_ms)?;
         } else {
-            sample_write.write_audio_samples(&frame, ctx.decode_time_ms)?;
+            sample_write.write_audio_samples(&frame, ctx.decode_time_ms, source)?;
         }
 
         Ok(())

@@ -1,14 +1,13 @@
 use crate::InputControl;
 use crate::bridge::LiveBridgeIngestRuntime;
 use crate::pipewire::PipewireBridgeStreamConfig;
-use crate::pipewire_legacy::clone_spa_pod_bytes;
 use crate::pipewire_pods::{
     build_pipewire_bridge_buffers_pod, build_pipewire_bridge_enum_port_config_pod,
     build_pipewire_bridge_format_pod, build_pipewire_bridge_io_buffers_pod,
     build_pipewire_bridge_latency_pod, build_pipewire_bridge_meta_pod,
     build_pipewire_bridge_port_config_pod, build_pipewire_bridge_process_latency_pod,
     build_pipewire_bridge_props_pod, build_pipewire_bridge_stream_properties,
-    build_pipewire_bridge_tag_pod, spa_param_info,
+    build_pipewire_bridge_tag_pod, clone_spa_pod_bytes, spa_param_info,
 };
 use anyhow::{Result, anyhow};
 use pipewire as pw;
