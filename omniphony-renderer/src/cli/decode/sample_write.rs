@@ -7,9 +7,7 @@ use audio_input::InputControl;
 use bridge_api::RChannelLabel;
 use bridge_api::RDecodedFrame;
 use orender_engine::render::fill_pcm_f32_drc;
-use orender_engine::virtual_bed::{
-    ChannelRenderPlan, build_virtual_bed_objects, plan_channel_render,
-};
+use orender_engine::virtual_bed::{BedPlanKind, build_virtual_bed_objects};
 use std::time::Instant;
 
 pub struct SampleWriteCoordinator<'a> {
@@ -396,48 +394,23 @@ impl<'a> SampleWriteCoordinator<'a> {
                     self.output.pcm_f32_buf = pcm_f32_scratch;
                     return Ok(());
                 } else {
-                    let labels: Vec<RChannelLabel> = frame.channel_labels.iter().copied().collect();
-                    let (
-                        mode,
-                        virtual_bed_layout,
-                        surround_placement,
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                    ) = {
-                        let control = renderer.renderer_control();
-                        let live = control.live.read();
-                        (
-                            live.channel_render_mode,
-                            live.virtual_bed.clone(),
-                            live.surround_placement,
-                            live.room_ratio,
-                            live.room_ratio_rear,
-                            live.room_ratio_lower,
-                            live.room_ratio_center_blend,
-                        )
-                    };
-                    let output_layout = renderer.speaker_layout();
-                    let virtual_events = match plan_channel_render(
-                        mode,
-                        &labels,
-                        virtual_bed_layout.as_ref(),
-                        Some(&output_layout),
-                        room_ratio,
-                        room_ratio_rear,
-                        room_ratio_lower,
-                        room_ratio_center_blend,
-                        surround_placement,
-                    ) {
-                        ChannelRenderPlan::Events { events, routes } => {
+                    let labels: &[RChannelLabel] = &frame.channel_labels;
+                    // The plan depends only on the labels and a few live
+                    // params, so the planner reuses it until one of them
+                    // actually changes, instead of rebuilding a label→speaker
+                    // map and re-solving the depth warp on every frame.
+                    match self.spatial.bed_planner.plan(renderer, labels) {
+                        BedPlanKind::Events => {
                             // Spatial mode mixes per channel: direct channels
                             // route one-hot by label, virtual channels render
-                            // as VBAP objects. Reconfigure only on change.
-                            self.spatial.fixed_planner.apply_routes(renderer, routes);
-                            events
+                            // as VBAP objects. The routing is applied by the
+                            // planner, on change only.
+                            self.spatial.bed_events.clear();
+                            self.spatial
+                                .bed_events
+                                .extend_from_slice(self.spatial.bed_planner.events());
                         }
-                        ChannelRenderPlan::HostPassthrough => {
+                        BedPlanKind::HostPassthrough => {
                             // No spatialization: write the decoded channels
                             // straight to the sink (let the host/sink handle
                             // them), mirroring mpv falling back to ad_lavc.
@@ -452,7 +425,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             self.output.pcm_f32_buf = pcm_f32_scratch;
                             return Ok(());
                         }
-                        ChannelRenderPlan::Silence => {
+                        BedPlanKind::Silence => {
                             log::warn!(
                                 "No channel render mapping for labels {:?} - outputting silence",
                                 labels
@@ -484,10 +457,17 @@ impl<'a> SampleWriteCoordinator<'a> {
                             control.options_epoch(),
                         )
                     };
+                    // Borrowed from the live topology rather than
+                    // `speaker_layout()`, which hands back a deep copy of the
+                    // whole layout.
+                    let topology = renderer.renderer_control().active_topology();
+                    let output_layout = &topology.speaker_layout;
+                    let surround_placement =
+                        renderer.renderer_control().live.read().surround_placement;
                     let stage_counts = {
                         let ctx = orender_engine::object_gen::PrepareCtx {
-                            input_labels: &labels,
-                            output_layout: &output_layout,
+                            input_labels: labels,
+                            output_layout,
                             sample_rate: frame.sampling_frequency,
                             surround_placement,
                         };
@@ -500,7 +480,6 @@ impl<'a> SampleWriteCoordinator<'a> {
                             .channel_objects
                             .sync(&ctx, &selection, options_epoch)
                     };
-                    let mut virtual_events = virtual_events;
                     if stage_counts.any() {
                         {
                             let control = renderer.renderer_control();
@@ -511,7 +490,8 @@ impl<'a> SampleWriteCoordinator<'a> {
                                 frame.sampling_frequency,
                             );
                         }
-                        virtual_events.extend(self.spatial.channel_objects.events(channel_count));
+                        let events = self.spatial.channel_objects.events(channel_count);
+                        self.spatial.bed_events.extend(events);
                     }
 
                     fill_pcm_f32_drc(
@@ -553,7 +533,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let rendered = renderer.render_frame(
                         pcm_data_f32,
                         render_channel_count,
-                        &virtual_events,
+                        &self.spatial.bed_events,
                         donated_buf,
                         has_metering_clients,
                     )?;
@@ -654,12 +634,33 @@ impl<'a> SampleWriteCoordinator<'a> {
                         // view, omitted they are rendered but never shown.
                         let synthesized: Vec<_> =
                             self.spatial.channel_objects.object_metas().collect();
+                        // Only the display path needs the bed layout and the
+                        // room ratios, so they are read (and the layout copied)
+                        // here rather than on every frame — with no client
+                        // attached, never.
+                        let (
+                            virtual_bed_layout,
+                            room_ratio,
+                            room_ratio_rear,
+                            room_ratio_lower,
+                            room_ratio_center_blend,
+                        ) = {
+                            let control = renderer.renderer_control();
+                            let live = control.live.read();
+                            (
+                                live.virtual_bed.clone(),
+                                live.room_ratio,
+                                live.room_ratio_rear,
+                                live.room_ratio_lower,
+                                live.room_ratio_center_blend,
+                            )
+                        };
                         if let (Some(ref mut osc_sender), Some(mut objects)) = (
                             self.telemetry.osc_sender.as_mut(),
                             build_virtual_bed_objects(
-                                &labels,
+                                labels,
                                 virtual_bed_layout.as_ref(),
-                                Some(&renderer.speaker_layout()),
+                                Some(output_layout),
                                 room_ratio,
                                 room_ratio_rear,
                                 room_ratio_lower,

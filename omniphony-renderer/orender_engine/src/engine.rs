@@ -54,6 +54,9 @@ pub struct Engine {
     // ── per-stream spatial state ──
     /// Shared fixed-channel planner (routing + plan cache, both stream kinds).
     fixed_planner: virtual_bed::FixedChannelPlanner,
+    /// Bed-only planner: caches the channel mapping so a steady stream replans
+    /// only when the labels or the placement params actually change.
+    bed_planner: virtual_bed::BedChannelPlanner,
     /// Cached object↔channel declaration from the bridge (sparse emission),
     /// sorted by channel. See `docs/channel-object-contract.md`.
     object_channels: Vec<(u32, usize)>,
@@ -237,6 +240,7 @@ impl Engine {
             sample_rate,
             coordinate_format,
             fixed_planner: virtual_bed::FixedChannelPlanner::new(),
+            bed_planner: virtual_bed::BedChannelPlanner::new(),
             object_channels: Vec::new(),
             has_objects: false,
             loudness_applied: false,
@@ -621,6 +625,7 @@ impl Engine {
     fn reset_segment_state(&mut self) {
         self.has_objects = false;
         self.fixed_planner.reset();
+        self.bed_planner.reset();
         self.object_channels.clear();
         self.frame_events.clear();
         self.loudness_applied = false;
@@ -972,63 +977,26 @@ impl Engine {
         // live input device, so there is no input layout to bias the virtual
         // poses (`None`), exactly as in the CLI's file-decode path.
         if !self.has_objects {
-            let labels: Vec<RChannelLabel> = frame.channel_labels.iter().copied().collect();
-            let (
-                mode,
-                virtual_bed_layout,
-                surround_placement,
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-                object_generator_id,
-                synthetic_objects_enabled,
-                phantom_extract_mode,
-                options_epoch,
-            ) = {
-                let control = self.renderer.renderer_control();
-                let live = control.live.read();
-                (
-                    live.channel_render_mode,
-                    live.virtual_bed.clone(),
-                    live.surround_placement,
-                    live.room_ratio,
-                    live.room_ratio_rear,
-                    live.room_ratio_lower,
-                    live.room_ratio_center_blend,
-                    live.object_generator_id.clone(),
-                    live.synthetic_objects_enabled,
-                    live.phantom_extract_mode,
-                    control.options_epoch(),
-                )
-            };
-            let output_layout = self.renderer.speaker_layout();
+            let labels: &[RChannelLabel] = &frame.channel_labels;
 
-            match virtual_bed::plan_channel_render(
-                mode,
-                &labels,
-                virtual_bed_layout.as_ref(),
-                Some(&output_layout),
-                room_ratio,
-                room_ratio_rear,
-                room_ratio_lower,
-                room_ratio_center_blend,
-                surround_placement,
-            ) {
-                virtual_bed::ChannelRenderPlan::Events { events, routes } => {
+            // The plan depends only on the labels and a few live params, so the
+            // planner reuses it until one of them actually changes — a steady
+            // stream plans once instead of ~1200 times a second.
+            match self.bed_planner.plan(&self.renderer, labels) {
+                virtual_bed::BedPlanKind::Events => {
                     // Spatial mode mixes per channel: direct channels route
                     // one-hot by label, virtual channels render as VBAP
-                    // objects. Reconfigure only on change to avoid per-frame
-                    // churn.
-                    self.fixed_planner.apply_routes(&self.renderer, routes);
-                    self.frame_events = events;
+                    // objects. The routing is applied by the planner, on change
+                    // only, to avoid per-frame churn.
+                    self.frame_events.clear();
+                    self.frame_events
+                        .extend_from_slice(self.bed_planner.events());
                 }
                 // Host: the mpv decoder declines at the spatial probe and falls
                 // back to ad_lavc, so this only runs for the discarded probe
                 // frame. Silence: no mapping for these labels. Either way emit
                 // silence so the host still advances by the frame's sample count.
-                virtual_bed::ChannelRenderPlan::HostPassthrough
-                | virtual_bed::ChannelRenderPlan::Silence => {
+                virtual_bed::BedPlanKind::HostPassthrough | virtual_bed::BedPlanKind::Silence => {
                     self.frame_events.clear();
                     let n_channels = self.renderer.output_channel_count() as u32;
                     return Ok(Some(RenderedAudio {
@@ -1040,6 +1008,28 @@ impl Engine {
                 }
             }
 
+            // Borrowed from the live topology rather than `speaker_layout()`,
+            // which hands back a deep copy of the whole layout.
+            let topology = self.renderer.renderer_control().active_topology();
+            let output_layout = &topology.speaker_layout;
+            let (
+                surround_placement,
+                object_generator_id,
+                synthetic_objects_enabled,
+                phantom_extract_mode,
+                options_epoch,
+            ) = {
+                let control = self.renderer.renderer_control();
+                let live = control.live.read();
+                (
+                    live.surround_placement,
+                    live.object_generator_id.clone(),
+                    live.synthetic_objects_enabled,
+                    live.phantom_extract_mode,
+                    control.options_epoch(),
+                )
+            };
+
             // Bed→height object generator (2D upmix): plan synthesized height
             // objects for channel content on a height-capable layout. No-op
             // unless a generator is selected and the gating passes. The static
@@ -1047,8 +1037,8 @@ impl Engine {
             // audio for the new object channels is filled after the bed PCM is
             // built, below — they then ride the existing object/VBAP path.
             let ctx = object_gen::PrepareCtx {
-                input_labels: &labels,
-                output_layout: &output_layout,
+                input_labels: labels,
+                output_layout,
                 sample_rate,
                 surround_placement,
             };
@@ -1065,9 +1055,9 @@ impl Engine {
             synth_count = counts.synth;
             self.publish_fixed_processing_state(
                 false,
-                &labels,
+                labels,
                 options_epoch,
-                object_gen::layout_has_height(&output_layout),
+                object_gen::layout_has_height(output_layout),
                 phantom_count,
                 synth_count,
                 synthetic_objects_enabled,
@@ -1091,10 +1081,30 @@ impl Engine {
             // height objects as OSC objects and/or feed the in-process mpv
             // overlay, so they appear in Studio's 3D view and object list.
             if want_objects {
+                // Only the display path needs the bed layout and the room
+                // ratios, so they are read (and the layout copied) here rather
+                // than on every frame — with no client attached, never.
+                let (
+                    virtual_bed_layout,
+                    room_ratio,
+                    room_ratio_rear,
+                    room_ratio_lower,
+                    room_ratio_center_blend,
+                ) = {
+                    let control = self.renderer.renderer_control();
+                    let live = control.live.read();
+                    (
+                        live.virtual_bed.clone(),
+                        live.room_ratio,
+                        live.room_ratio_rear,
+                        live.room_ratio_lower,
+                        live.room_ratio_center_blend,
+                    )
+                };
                 let mut objects = virtual_bed::build_virtual_bed_objects(
-                    &labels,
+                    labels,
                     virtual_bed_layout.as_ref(),
-                    Some(&output_layout),
+                    Some(output_layout),
                     room_ratio,
                     room_ratio_rear,
                     room_ratio_lower,

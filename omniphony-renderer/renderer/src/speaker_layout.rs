@@ -86,7 +86,7 @@ pub fn legacy_bed_id(label: bridge_api::RChannelLabel) -> Option<usize> {
 }
 
 /// A single speaker in the layout
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Speaker {
     /// Speaker name (e.g., "FL", "FR", "C", "TFL")
     pub name: String,
@@ -397,7 +397,7 @@ impl Speaker {
 }
 
 /// Speaker layout configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SpeakerLayout {
     /// Physical metres-per-unit scale for UI distance/delay conversion.
     #[serde(default = "default_radius_m")]

@@ -79,9 +79,11 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         self.spatial.has_objects = false;
         self.spatial.bed_indices = None;
         self.spatial.fixed_planner.reset();
+        self.spatial.bed_planner.reset();
         self.spatial.object_channels.clear();
         self.spatial.object_names.clear();
         self.spatial.frame_events.clear();
+        self.spatial.bed_events.clear();
         if let Some(renderer) = self.spatial_renderer {
             renderer.reset_runtime_state();
         }

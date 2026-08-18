@@ -116,6 +116,14 @@ pub struct SpatialState {
     /// Shared fixed-channel planner (routing + plan cache), mirroring the
     /// embedded engine.
     pub fixed_planner: orender_engine::virtual_bed::FixedChannelPlanner,
+    /// Bed-only planner: caches the channel mapping so a steady stream replans
+    /// only when the labels or the placement params actually change.
+    pub bed_planner: orender_engine::virtual_bed::BedChannelPlanner,
+    /// Reusable event buffer for the bed-only path: the planner's events plus
+    /// the synthesized objects'. Separate from `frame_events`, which the object
+    /// path extends without clearing — sharing one buffer would leak a bed
+    /// frame's events into the next object frame.
+    pub bed_events: Vec<renderer::spatial_renderer::SpatialChannelEvent>,
     /// Phantom extraction + bed→height lift, the same stages the embedded
     /// engine drives. Channel content reaches this host too — everything played
     /// through the PipeWire sink does — so it needs them just as much.
@@ -139,6 +147,8 @@ impl Default for SpatialState {
             has_objects: false,
             bed_indices: None,
             fixed_planner: orender_engine::virtual_bed::FixedChannelPlanner::new(),
+            bed_planner: orender_engine::virtual_bed::BedChannelPlanner::new(),
+            bed_events: Vec::new(),
             channel_objects: orender_engine::channel_objects::ChannelObjectStages::new(),
             object_channels: Vec::new(),
             object_names: std::collections::HashMap::new(),
