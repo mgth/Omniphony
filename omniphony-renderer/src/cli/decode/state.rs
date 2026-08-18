@@ -116,6 +116,10 @@ pub struct SpatialState {
     /// Shared fixed-channel planner (routing + plan cache), mirroring the
     /// embedded engine.
     pub fixed_planner: orender_engine::virtual_bed::FixedChannelPlanner,
+    /// Phantom extraction + bed→height lift, the same stages the embedded
+    /// engine drives. Channel content reaches this host too — everything played
+    /// through the PipeWire sink does — so it needs them just as much.
+    pub channel_objects: orender_engine::channel_objects::ChannelObjectStages,
     /// Cached object↔channel declaration from the bridge (sparse emission),
     /// sorted by channel.
     pub object_channels: Vec<(u32, usize)>,
@@ -135,6 +139,7 @@ impl Default for SpatialState {
             has_objects: false,
             bed_indices: None,
             fixed_planner: orender_engine::virtual_bed::FixedChannelPlanner::new(),
+            channel_objects: orender_engine::channel_objects::ChannelObjectStages::new(),
             object_channels: Vec::new(),
             object_names: std::collections::HashMap::new(),
             au_index: 0,

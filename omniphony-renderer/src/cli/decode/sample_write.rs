@@ -457,6 +457,49 @@ impl<'a> SampleWriteCoordinator<'a> {
                         }
                     };
 
+                    // Synthesize objects from the bed, as the embedded engine
+                    // does: plan first so each object gets its channel event,
+                    // then extend the PCM below with its audio.
+                    let (master, phantom_mode, generator_id, options_epoch) = {
+                        let control = renderer.renderer_control();
+                        let live = control.live.read();
+                        (
+                            live.synthetic_objects_enabled,
+                            live.phantom_extract_mode,
+                            live.object_generator_id.clone(),
+                            control.options_epoch(),
+                        )
+                    };
+                    let stage_counts = {
+                        let ctx = orender_engine::object_gen::PrepareCtx {
+                            input_labels: &labels,
+                            output_layout: &output_layout,
+                            sample_rate: frame.sampling_frequency,
+                            surround_placement,
+                        };
+                        let selection = orender_engine::channel_objects::StageSelection {
+                            synthetic_objects_enabled: master,
+                            phantom_mode,
+                            generator_id: generator_id.as_str(),
+                        };
+                        self.spatial
+                            .channel_objects
+                            .sync(&ctx, &selection, options_epoch)
+                    };
+                    let mut virtual_events = virtual_events;
+                    if stage_counts.any() {
+                        {
+                            let control = renderer.renderer_control();
+                            let live = control.live.read();
+                            self.spatial.channel_objects.push_params(
+                                &live.phantom_params,
+                                &live.object_generator_params,
+                                frame.sampling_frequency,
+                            );
+                        }
+                        virtual_events.extend(self.spatial.channel_objects.events(channel_count));
+                    }
+
                     fill_pcm_f32_drc(
                         &mut pcm_f32_scratch,
                         &frame.pcm,
@@ -465,18 +508,28 @@ impl<'a> SampleWriteCoordinator<'a> {
                         self.output.drc_target_gain,
                         &mut self.output.drc_ramp_samples_remaining,
                     );
-                    let pcm_data_f32 = &pcm_f32_scratch;
+                    let (pcm_data_f32, render_channel_count) =
+                        self.spatial.channel_objects.process_and_extend(
+                            &mut pcm_f32_scratch,
+                            channel_count,
+                            sample_count,
+                            frame.sampling_frequency,
+                            stage_counts,
+                        );
 
                     let has_metering_clients = self
                         .telemetry
                         .osc_sender
                         .as_ref()
                         .is_some_and(|sender| sender.has_metering_clients());
+                    // Meter and render the extended width: the synthesized
+                    // object channels sit past the bed, and striding by the bed
+                    // width alone would walk through them wrongly.
                     if has_metering_clients {
                         if let Some(ref mut meter) = self.telemetry.audio_meter {
-                            meter.update_channel_count(channel_count);
-                            for chunk in pcm_data_f32.chunks_exact(channel_count) {
-                                meter.process_objects(chunk, channel_count);
+                            meter.update_channel_count(render_channel_count);
+                            for chunk in pcm_data_f32.chunks_exact(render_channel_count) {
+                                meter.process_objects(chunk, render_channel_count);
                             }
                         }
                     }
@@ -484,8 +537,8 @@ impl<'a> SampleWriteCoordinator<'a> {
                     let donated_buf = std::mem::take(&mut self.output.render_buf);
                     let render_started_at = Instant::now();
                     let rendered = renderer.render_frame(
-                        &pcm_data_f32,
-                        channel_count,
+                        pcm_data_f32,
+                        render_channel_count,
                         &virtual_events,
                         donated_buf,
                         has_metering_clients,

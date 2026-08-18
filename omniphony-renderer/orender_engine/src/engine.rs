@@ -1085,28 +1085,7 @@ impl Engine {
             }
             // Phantom objects first (channels [channel_count ..]), then the height
             // objects offset past them.
-            for (p, spec) in self.stages.phantom_specs().iter().enumerate() {
-                self.frame_events.push(SpatialChannelEvent {
-                    channel_idx: channel_count + p,
-                    is_bed: false,
-                    gain_db: Some(spec.gain_db),
-                    ramp_length: Some(0),
-                    size: Some(spec.size),
-                    position: Some(spec.position),
-                    sample_pos: Some(0),
-                });
-            }
-            for (k, spec) in self.stages.object_specs().iter().enumerate() {
-                self.frame_events.push(SpatialChannelEvent {
-                    channel_idx: channel_count + phantom_count + k,
-                    is_bed: false,
-                    gain_db: Some(spec.gain_db),
-                    ramp_length: Some(0),
-                    size: Some(spec.size),
-                    position: Some(spec.position),
-                    sample_pos: Some(0),
-                });
-            }
+            self.frame_events.extend(self.stages.events(channel_count));
 
             // Outgoing: broadcast the virtual-bed channel poses + any synthesized
             // height objects as OSC objects and/or feed the in-process mpv

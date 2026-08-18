@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 
 use renderer::live_params::PhantomExtractMode;
+use renderer::spatial_renderer::SpatialChannelEvent;
 
 use crate::object_gen::{ObjectGenStage, ObjectGeneratorFactory, PrepareCtx, SynthObjectSpec};
 use crate::phantom_extract::PhantomExtractStage;
@@ -151,6 +152,26 @@ impl ChannelObjectStages {
     /// phantom objects first, then the height objects.
     pub fn specs(&self) -> impl Iterator<Item = &SynthObjectSpec> {
         self.phantom_specs().iter().chain(self.object_specs())
+    }
+
+    /// The channel events these objects need, in the slots they occupy past the
+    /// bed — `channel_count` being the bed width before extension.
+    ///
+    /// The slot arithmetic lives here so the two hosts cannot disagree about
+    /// it: the order matches [`specs`](Self::specs), which matches the order
+    /// [`process_and_extend`](Self::process_and_extend) appends the audio in.
+    pub fn events(&self, channel_count: usize) -> impl Iterator<Item = SpatialChannelEvent> + '_ {
+        self.specs()
+            .enumerate()
+            .map(move |(index, spec)| SpatialChannelEvent {
+                channel_idx: channel_count + index,
+                is_bed: false,
+                gain_db: Some(spec.gain_db),
+                ramp_length: Some(0),
+                size: Some(spec.size),
+                position: Some(spec.position),
+                sample_pos: Some(0),
+            })
     }
 
     /// Run both stages over the bed and return the extended interleaved buffer
