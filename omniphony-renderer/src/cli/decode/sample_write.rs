@@ -1,3 +1,4 @@
+use super::decoder_thread::DecodedSource;
 use super::handler::{BedChannelMapper, ChannelCountCalculator};
 use super::output::AudioSamples;
 use super::state::{DecodeSessionState, OutputState, SpatialState, TelemetryState};
@@ -21,8 +22,17 @@ pub struct SampleWriteCoordinator<'a> {
 }
 
 impl<'a> SampleWriteCoordinator<'a> {
-    pub fn spatial_has_objects(&self) -> bool {
-        self.spatial.has_objects
+    /// Whether this frame carries objects, and so takes the object render path.
+    ///
+    /// Derived from the frame's source, not from `spatial.has_objects` alone:
+    /// that flag latches on the first frame carrying metadata and is only
+    /// cleared at a segment reset, so once an object stream has played, plain
+    /// channel content arriving afterwards would keep taking the object path.
+    /// The sink switches between encoded and linear PCM at will, so that
+    /// happens in one session. A live PCM frame is channel content by
+    /// construction — fixed labels, no metadata — whatever played before it.
+    pub fn frame_has_objects(&self, source: DecodedSource) -> bool {
+        self.spatial.has_objects && !matches!(source, DecodedSource::Live)
     }
 
     pub fn new(
@@ -47,7 +57,11 @@ impl<'a> SampleWriteCoordinator<'a> {
         &mut self,
         frame: &RDecodedFrame,
         decode_time_ms: f32,
+        source: DecodedSource,
     ) -> Result<()> {
+        // Resolved before the renderer is borrowed for the render itself, and
+        // kept for the whole frame so the branch cannot change under us.
+        let frame_has_objects = self.frame_has_objects(source);
         let channel_count = frame.channel_count as usize;
         let sample_count = frame.sample_count as usize;
         let frame_duration_ms =
@@ -243,7 +257,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                 };
                 self.output.drc_ramp_samples_remaining = frame.drc_ramp_duration;
 
-                if self.spatial.has_objects {
+                if frame_has_objects {
                     log::trace!(
                         "Using VBAP spatial rendering (metadata source: {})",
                         if frame.metadata.is_empty() {

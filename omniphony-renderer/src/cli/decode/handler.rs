@@ -587,10 +587,10 @@ impl DecodeHandler {
             self.input_control.as_deref(),
             self.spatial_renderer.as_mut(),
         );
-        if ctx.bed_conform && sample_write.spatial_has_objects() {
+        if ctx.bed_conform && sample_write.frame_has_objects(source) {
             sample_write.write_audio_samples_bed_conform(&frame, ctx.decode_time_ms)?;
         } else {
-            sample_write.write_audio_samples(&frame, ctx.decode_time_ms)?;
+            sample_write.write_audio_samples(&frame, ctx.decode_time_ms, source)?;
         }
 
         Ok(())
