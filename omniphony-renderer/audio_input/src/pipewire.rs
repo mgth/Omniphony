@@ -922,12 +922,51 @@ where
             // for no benefit.
             if !user_data.negotiated_iec958 {
                 process_pcm.borrow_mut()(chunk, user_data.channels, user_data.rate_hz);
+                // FIXME(pcm-clock): this path has no proper clock yet.
+                //
+                // Every other trigger on this node fires on an *absent* buffer,
+                // as an idle keepalive. Scheduling one here, after a buffer that
+                // did arrive, makes the node pull as fast as the interval allows
+                // and the input then arrives in bursts — measured at 0.005x then
+                // 7.7x real time in consecutive seconds, which is the chopping.
+                // Removing it is worse still: delivery collapses to 0.005x and
+                // stays there, so something has to keep the node scheduled.
+                // The encoded path gets away with the same heartbeat because its
+                // producer only ever has a burst ready at the source rate; a PCM
+                // client always has a full quantum queued, so the heartbeat
+                // drains it faster than real time. Read `delivered_ratio` in the
+                // stats line above: it must sit at 1.0, and today it does not.
                 if use_driver {
                     schedule_pw_stream_driver_trigger(
                         &trigger_schedule_for_process,
                         current_pw_driver_trigger_interval(user_data),
                         "pcm_frames",
                     );
+                }
+                // The encoded path's periodic stats sit past this return, so
+                // without a line of its own the PCM path reports nothing at all
+                // — and a starving input is invisible precisely when it matters.
+                // `delivered_ratio` is the figure to read: 1.0 means the sink is
+                // pulling frames at exactly the rate the format declares.
+                let now = Instant::now();
+                if now.duration_since(user_data.last_log_at) >= LIVE_BRIDGE_LOG_INTERVAL {
+                    let elapsed = now.duration_since(user_data.last_log_at).as_secs_f64();
+                    let bytes_per_frame =
+                        (user_data.channels as usize * user_data.bytes_per_sample).max(1);
+                    let frames = user_data.bytes_since_log as f64 / bytes_per_frame as f64;
+                    let frames_per_s = frames / elapsed.max(f64::MIN_POSITIVE);
+                    log::debug!(
+                        "{} pcm ingest: buffers={} frames/s={:.0} delivered_ratio={:.3} rate={}Hz channels={}",
+                        log_prefix,
+                        user_data.buffers_since_log,
+                        frames_per_s,
+                        frames_per_s / user_data.rate_hz.max(1) as f64,
+                        user_data.rate_hz,
+                        user_data.channels
+                    );
+                    user_data.last_log_at = now;
+                    user_data.bytes_since_log = 0;
+                    user_data.buffers_since_log = 0;
                 }
                 return;
             }
