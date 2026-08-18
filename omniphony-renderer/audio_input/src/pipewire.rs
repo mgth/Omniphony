@@ -1,6 +1,7 @@
 use crate::pipewire_pods::{
     IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_CODECS_PROP, IEC958_DTS_CHANNELS,
-    IEC958_DTS_RATE_HZ, build_pipewire_bridge_buffers_pod, build_pipewire_bridge_codec_format_pod,
+    IEC958_DTS_RATE_HZ, IEC958_DTSHD_CHANNELS, IEC958_DTSHD_RATE_HZ,
+    build_pipewire_bridge_buffers_pod, build_pipewire_bridge_codec_format_pod,
     build_pipewire_bridge_format_pod, build_pipewire_bridge_raw_buffers_pod,
     build_pipewire_bridge_raw_format_pod, build_pipewire_bridge_stream_properties,
 };
@@ -1028,6 +1029,14 @@ where
     )?;
     let buffers_ac3_bytes =
         build_pipewire_bridge_buffers_pod(IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ)?;
+    let format_dtshd_bytes = build_pipewire_bridge_codec_format_pod(
+        spa::sys::SPA_AUDIO_IEC958_CODEC_DTSHD,
+        IEC958_DTSHD_RATE_HZ,
+        IEC958_DTSHD_CHANNELS,
+        spa::param::ParamType::EnumFormat,
+    )?;
+    let buffers_dtshd_bytes =
+        build_pipewire_bridge_buffers_pod(IEC958_DTSHD_CHANNELS, IEC958_DTSHD_RATE_HZ)?;
     let format_dts_bytes = build_pipewire_bridge_codec_format_pod(
         spa::sys::SPA_AUDIO_IEC958_CODEC_DTS,
         IEC958_DTS_RATE_HZ,
@@ -1061,6 +1070,10 @@ where
         .ok_or_else(|| anyhow!("Invalid PipeWire AC-3 format pod"))?;
     let buffers_ac3 = Pod::from_bytes(&buffers_ac3_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire AC-3 buffers pod"))?;
+    let format_dtshd = Pod::from_bytes(&format_dtshd_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire DTS-HD format pod"))?;
+    let buffers_dtshd = Pod::from_bytes(&buffers_dtshd_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire DTS-HD buffers pod"))?;
     let format_dts = Pod::from_bytes(&format_dts_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire DTS format pod"))?;
     let buffers_dts = Pod::from_bytes(&buffers_dts_bytes)
@@ -1070,6 +1083,8 @@ where
         buffers_8ch,
         format_2ch,
         buffers_2ch,
+        format_dtshd,
+        buffers_dtshd,
         format_ac3,
         buffers_ac3,
         format_dts,

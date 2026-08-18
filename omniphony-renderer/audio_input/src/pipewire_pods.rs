@@ -3,7 +3,7 @@ use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::{object, property};
 
-pub(crate) const IEC958_CODECS_PROP: &str = "[ \"TRUEHD\", \"EAC3\", \"AC3\", \"DTS\" ]";
+pub(crate) const IEC958_CODECS_PROP: &str = "[ \"TRUEHD\", \"EAC3\", \"AC3\", \"DTS\", \"DTSHD\" ]";
 /// Carriers the sink accepts, beyond the two that share the configured rate.
 ///
 /// IEC 61937 gives each codec its own carrier: AC-3 and the DTS core sit on
@@ -15,15 +15,12 @@ pub const IEC958_AC3_RATE_HZ: u32 = 48_000;
 pub const IEC958_AC3_CHANNELS: u16 = 2;
 pub const IEC958_DTS_RATE_HZ: u32 = 48_000;
 pub const IEC958_DTS_CHANNELS: u16 = 2;
-// DTS-HD (burst type 0x11) is deliberately NOT advertised.
-//
-// Everything up to the bridge works: it rides the eight-channel 192 kHz
-// high-bitrate carrier — not the two-channel one its 48 kHz core uses — and
-// with that stated the deframer extracts its ~5.8 kB bursts cleanly, 699 of
-// them over a twelve-second sample. The bridge then produces no frame from
-// them, so advertising it would only cost the client its fallback: a player
-// offered DTS-HD selects it and plays silence, where the DTS core it would
-// otherwise pick decodes fine. Advertise it once the bridge decodes it.
+/// DTS-HD rides the high-bitrate carrier, eight channels wide like TrueHD's —
+/// not the two-channel one its 48 kHz core uses. Stated at two channels, the
+/// client sends HBR framing into a stereo format and the deframer finds no
+/// burst at all.
+pub const IEC958_DTSHD_RATE_HZ: u32 = 192_000;
+pub const IEC958_DTSHD_CHANNELS: u16 = 8;
 const IEC958_AUDIO_POSITION_PROP_8CH: &str = "[ FL FR C LFE SL SR RL RR ]";
 const IEC958_AUDIO_POSITION_PROP_2CH: &str = "[ FL FR ]";
 const SPA_PARAM_BUFFERS_META_TYPE_RAW: u32 = 7;
