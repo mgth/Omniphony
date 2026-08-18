@@ -3,13 +3,27 @@ use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::{object, property};
 
-pub(crate) const IEC958_CODECS_PROP: &str = "[ \"TRUEHD\", \"EAC3\", \"AC3\" ]";
-/// AC-3 rides a 48 kHz / 2-channel IEC 61937 carrier, where E-AC-3 and TrueHD
-/// use the 4x one. That is a property of the framing, not a setting: a node
-/// that pins a single rate can only ever serve the codecs sharing it, and every
-/// other one is refused with "no target node available".
+pub(crate) const IEC958_CODECS_PROP: &str = "[ \"TRUEHD\", \"EAC3\", \"AC3\", \"DTS\" ]";
+/// Carriers the sink accepts, beyond the two that share the configured rate.
+///
+/// IEC 61937 gives each codec its own carrier: AC-3 and the DTS core sit on
+/// 48 kHz, DTS-HD joins E-AC-3 and TrueHD on the 4x one. That is a property of
+/// the framing, not a setting — a node that pins a single rate can only serve
+/// the codecs sharing it, and refuses every other one with "no target node
+/// available".
 pub const IEC958_AC3_RATE_HZ: u32 = 48_000;
 pub const IEC958_AC3_CHANNELS: u16 = 2;
+pub const IEC958_DTS_RATE_HZ: u32 = 48_000;
+pub const IEC958_DTS_CHANNELS: u16 = 2;
+// DTS-HD (burst type 0x11) is deliberately NOT advertised.
+//
+// Everything up to the bridge works: it rides the eight-channel 192 kHz
+// high-bitrate carrier — not the two-channel one its 48 kHz core uses — and
+// with that stated the deframer extracts its ~5.8 kB bursts cleanly, 699 of
+// them over a twelve-second sample. The bridge then produces no frame from
+// them, so advertising it would only cost the client its fallback: a player
+// offered DTS-HD selects it and plays silence, where the DTS core it would
+// otherwise pick decodes fine. Advertise it once the bridge decodes it.
 const IEC958_AUDIO_POSITION_PROP_8CH: &str = "[ FL FR C LFE SL SR RL RR ]";
 const IEC958_AUDIO_POSITION_PROP_2CH: &str = "[ FL FR ]";
 const SPA_PARAM_BUFFERS_META_TYPE_RAW: u32 = 7;

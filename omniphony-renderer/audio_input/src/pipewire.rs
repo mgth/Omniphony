@@ -1,8 +1,8 @@
 use crate::pipewire_pods::{
-    IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_CODECS_PROP, build_pipewire_bridge_buffers_pod,
-    build_pipewire_bridge_codec_format_pod, build_pipewire_bridge_format_pod,
-    build_pipewire_bridge_raw_buffers_pod, build_pipewire_bridge_raw_format_pod,
-    build_pipewire_bridge_stream_properties,
+    IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_CODECS_PROP, IEC958_DTS_CHANNELS,
+    IEC958_DTS_RATE_HZ, build_pipewire_bridge_buffers_pod, build_pipewire_bridge_codec_format_pod,
+    build_pipewire_bridge_format_pod, build_pipewire_bridge_raw_buffers_pod,
+    build_pipewire_bridge_raw_format_pod, build_pipewire_bridge_stream_properties,
 };
 use crate::{InputClockMode, InputControl};
 use anyhow::{Result, anyhow};
@@ -1016,9 +1016,10 @@ where
         .ok_or_else(|| anyhow!("Invalid PipeWire 2ch format pod"))?;
     let format_8ch = Pod::from_bytes(&format_8ch_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire 8ch format pod"))?;
-    // AC-3 rides its own 48 kHz carrier, so it needs a format of its own: the
-    // channel count cannot express it, and the two pods above are both on the
-    // 4x carrier.
+    // AC-3 and the DTS core ride their own 48 kHz carrier, so each needs a
+    // format of its own: the channel count cannot express them, and the two
+    // pods above are both on the 4x carrier. DTS-HD shares that 4x carrier but
+    // still needs stating, since the codec is not derivable from the channels.
     let format_ac3_bytes = build_pipewire_bridge_codec_format_pod(
         spa::sys::SPA_AUDIO_IEC958_CODEC_AC3,
         IEC958_AC3_RATE_HZ,
@@ -1027,6 +1028,14 @@ where
     )?;
     let buffers_ac3_bytes =
         build_pipewire_bridge_buffers_pod(IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ)?;
+    let format_dts_bytes = build_pipewire_bridge_codec_format_pod(
+        spa::sys::SPA_AUDIO_IEC958_CODEC_DTS,
+        IEC958_DTS_RATE_HZ,
+        IEC958_DTS_CHANNELS,
+        spa::param::ParamType::EnumFormat,
+    )?;
+    let buffers_dts_bytes =
+        build_pipewire_bridge_buffers_pod(IEC958_DTS_CHANNELS, IEC958_DTS_RATE_HZ)?;
     let buffers_2ch_bytes = build_pipewire_bridge_buffers_pod(2, config.sample_rate_hz)?;
     let buffers_8ch_bytes = build_pipewire_bridge_buffers_pod(8, config.sample_rate_hz)?;
     let buffers_2ch = Pod::from_bytes(&buffers_2ch_bytes)
@@ -1052,6 +1061,10 @@ where
         .ok_or_else(|| anyhow!("Invalid PipeWire AC-3 format pod"))?;
     let buffers_ac3 = Pod::from_bytes(&buffers_ac3_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire AC-3 buffers pod"))?;
+    let format_dts = Pod::from_bytes(&format_dts_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire DTS format pod"))?;
+    let buffers_dts = Pod::from_bytes(&buffers_dts_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire DTS buffers pod"))?;
     let mut params = [
         format_8ch,
         buffers_8ch,
@@ -1059,6 +1072,8 @@ where
         buffers_2ch,
         format_ac3,
         buffers_ac3,
+        format_dts,
+        buffers_dts,
         raw_format,
         raw_buffers,
     ];
