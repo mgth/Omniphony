@@ -118,8 +118,11 @@ impl SpdifParser {
 
 fn payload_size_from_pd(data_type: u8, pd_raw: u16) -> (usize, &'static str) {
     match data_type {
-        // DTS type I/II/III (IEC 61937-5): the length code (Pd) is a bit count.
-        0x0B | 0x0C | 0x0D => (usize::from(pd_raw) / 8, "bits"),
+        // AC-3 (IEC 61937-3) and DTS type I/II/III (IEC 61937-5): the length
+        // code (Pd) is a bit count. Reading AC-3 as bytes makes the parser wait
+        // for eight times the burst it will ever receive, so the packet is
+        // never completed and the stream decodes to silence.
+        0x01 | 0x0B | 0x0C | 0x0D => (usize::from(pd_raw) / 8, "bits"),
         // E-AC3 (0x15), TrueHD/MAT (0x16) and DTS-HD type IV (0x11): byte count.
         _ => (usize::from(pd_raw), "bytes"),
     }
@@ -171,8 +174,9 @@ mod tests {
     #[test]
     fn resyncs_after_garbage() {
         let mut parser = SpdifParser::new();
+        // AC-3 burst: Pd = 0x0010 = 16 bits = the two payload bytes.
         let bytes = [
-            0x00, 0x11, 0x22, 0x72, 0xF8, 0x1F, 0x4E, 0x01, 0x00, 0x02, 0x00, 0xAB, 0xCD,
+            0x00, 0x11, 0x22, 0x72, 0xF8, 0x1F, 0x4E, 0x01, 0x00, 0x10, 0x00, 0xAB, 0xCD,
         ];
         parser.push_bytes(&bytes);
         assert_eq!(
@@ -180,6 +184,46 @@ mod tests {
             Some(Iec61937Packet {
                 data_type: 0x01,
                 payload: vec![0xAB, 0xCD],
+            })
+        );
+    }
+
+    /// AC-3 states Pd in bits, unlike E-AC-3 and TrueHD which state it in
+    /// bytes. Reading it as bytes makes the parser wait for eight times the
+    /// burst, so the packet never completes and the track plays silent.
+    #[test]
+    fn ac3_length_code_is_a_bit_count() {
+        let mut parser = SpdifParser::new();
+        let payload: Vec<u8> = (0..64u8).collect();
+        let pd_bits = (payload.len() * 8) as u16;
+        let mut bytes = vec![0x72, 0xF8, 0x1F, 0x4E, 0x01, 0x00];
+        bytes.extend_from_slice(&pd_bits.to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        parser.push_bytes(&bytes);
+        assert_eq!(
+            parser.get_next_packet(),
+            Some(Iec61937Packet {
+                data_type: 0x01,
+                payload,
+            })
+        );
+    }
+
+    /// The neighbouring byte-counted types must not be dragged along by the
+    /// AC-3 fix: E-AC-3 states Pd in bytes.
+    #[test]
+    fn eac3_length_code_stays_a_byte_count() {
+        let mut parser = SpdifParser::new();
+        let payload: Vec<u8> = (0..32u8).collect();
+        let mut bytes = vec![0x72, 0xF8, 0x1F, 0x4E, 0x15, 0x00];
+        bytes.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        parser.push_bytes(&bytes);
+        assert_eq!(
+            parser.get_next_packet(),
+            Some(Iec61937Packet {
+                data_type: 0x15,
+                payload,
             })
         );
     }

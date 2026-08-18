@@ -417,6 +417,7 @@ where
 
     let stop_for_process = Arc::clone(&stop);
     let input_control_for_state = Arc::clone(&input_control);
+    let input_control_for_param = Arc::clone(&input_control);
     let config_for_state = config.clone();
     let input_control_for_process = Arc::clone(&input_control);
     let trigger_schedule = Rc::new(RefCell::new(PwDriverTriggerSchedule::default()));
@@ -548,6 +549,15 @@ where
             if parsed {
                 if format.rate() != 0 {
                     user_data.rate_hz = format.rate();
+                    // The driver derives its trigger interval from this rate
+                    // (quantum_frames / rate). Codecs ride different carriers —
+                    // AC-3 at 48 kHz, TrueHD at the 4x one — so a rate captured
+                    // once at connect makes the interval wrong by that ratio
+                    // for every other codec, and the sink then drains the
+                    // client far too fast: "Audio device underrun detected".
+                    if use_driver {
+                        input_control_for_param.register_direct_trigger_target(user_data.rate_hz);
+                    }
                 }
                 if format.channels() != 0 {
                     user_data.channels = format.channels();
