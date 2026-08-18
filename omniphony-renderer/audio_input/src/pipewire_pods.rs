@@ -7,6 +7,9 @@ pub(crate) const IEC958_CODECS_PROP: &str = "[ \"TRUEHD\", \"EAC3\" ]";
 const IEC958_AUDIO_POSITION_PROP_8CH: &str = "[ FL FR C LFE SL SR RL RR ]";
 const IEC958_AUDIO_POSITION_PROP_2CH: &str = "[ FL FR ]";
 const SPA_PARAM_BUFFERS_META_TYPE_RAW: u32 = 7;
+/// PipeWire's default `clock.quantum-limit`: the largest number of frames a
+/// graph cycle can carry.
+const PW_QUANTUM_LIMIT_FRAMES: u32 = 8192;
 
 fn iec958_audio_position(channels: u16) -> &'static str {
     match channels {
@@ -125,9 +128,48 @@ pub fn build_pipewire_bridge_capture_stream_properties(
 }
 
 pub fn build_pipewire_bridge_buffers_pod(channels: u16, sample_rate_hz: u32) -> Result<Vec<u8>> {
-    let port_bytes_per_frame = (channels as usize) * std::mem::size_of::<u16>();
-    let nominal_frames = sample_rate_hz.div_ceil(100);
-    let nominal_size = (port_bytes_per_frame * nominal_frames as usize).max(1024);
+    build_buffers_pod(channels, sample_rate_hz, std::mem::size_of::<u16>(), 0)
+}
+
+/// Buffer pod matching the linear-PCM alternative, whose samples are four bytes
+/// wide instead of the two-byte IEC 61937 transport container.
+///
+/// Unlike an encoded burst, a PCM buffer carries a whole graph cycle, so it has
+/// to be sized for the largest quantum PipeWire may pick — not for the 10 ms
+/// window that suits the deframer. A buffer smaller than the negotiated quantum
+/// makes every cycle arrive oversized and get dropped.
+pub fn build_pipewire_bridge_raw_buffers_pod(
+    channels: u16,
+    sample_rate_hz: u32,
+) -> Result<Vec<u8>> {
+    build_buffers_pod(
+        channels,
+        sample_rate_hz,
+        std::mem::size_of::<f32>(),
+        PW_QUANTUM_LIMIT_FRAMES,
+    )
+}
+
+/// Byte size a buffer must have to hold one graph cycle.
+fn buffers_nominal_size(
+    channels: u16,
+    sample_rate_hz: u32,
+    bytes_per_sample: usize,
+    min_frames: u32,
+) -> usize {
+    let port_bytes_per_frame = (channels as usize) * bytes_per_sample;
+    let nominal_frames = sample_rate_hz.div_ceil(100).max(min_frames);
+    (port_bytes_per_frame * nominal_frames as usize).max(1024)
+}
+
+fn build_buffers_pod(
+    channels: u16,
+    sample_rate_hz: u32,
+    bytes_per_sample: usize,
+    min_frames: u32,
+) -> Result<Vec<u8>> {
+    let port_bytes_per_frame = (channels as usize) * bytes_per_sample;
+    let nominal_size = buffers_nominal_size(channels, sample_rate_hz, bytes_per_sample, min_frames);
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamBuffers,
         spa::param::ParamType::Buffers,
@@ -166,6 +208,85 @@ pub fn build_pipewire_bridge_format_pod(
         iec958_codec_for_channels(channels),
         param_type,
     )
+}
+
+/// Advertise a linear-PCM alternative next to the IEC 61937 formats.
+///
+/// A sink that only exposes an encoded format is skipped by every client that
+/// builds its device list from `SPA_PARAM_EnumFormat`: Kodi's PipeWire sink
+/// parses formats/rates/channels first and treats `iec958Codec` as an extra
+/// capability, and the PulseAudio compatibility layer never publishes the node
+/// at all. Hardware S/PDIF sinks advertise PCM *and* their codecs, so we match
+/// that shape — otherwise the node stays invisible to anything but a client
+/// that targets it by name.
+///
+/// Values are wrapped in `Choice` pods because that is what those clients
+/// expect to parse; a fixed scalar reads back as an empty capability set.
+pub fn build_pipewire_bridge_raw_format_pod(
+    sample_rate_hz: u32,
+    channels: u16,
+    param_type: spa::param::ParamType,
+) -> Result<Vec<u8>> {
+    let positions = raw_audio_positions(channels);
+    let obj = object! {
+        spa::utils::SpaTypes::ObjectParamFormat,
+        param_type,
+        property!(spa::param::format::FormatProperties::MediaType, Id, spa::param::format::MediaType::Audio),
+        property!(spa::param::format::FormatProperties::MediaSubtype, Id, spa::param::format::MediaSubtype::Raw),
+        property!(
+            spa::param::format::FormatProperties::AudioFormat,
+            Choice,
+            Enum,
+            Id,
+            spa::param::audio::AudioFormat::F32LE,
+            spa::param::audio::AudioFormat::F32LE
+        ),
+        property!(
+            spa::param::format::FormatProperties::AudioRate,
+            pw::spa::pod::Value::Choice(pw::spa::pod::ChoiceValue::Int(pw::spa::utils::Choice(
+                pw::spa::utils::ChoiceFlags::empty(),
+                pw::spa::utils::ChoiceEnum::Enum {
+                    default: sample_rate_hz as i32,
+                    alternatives: vec![sample_rate_hz as i32],
+                }
+            )))
+        ),
+        property!(spa::param::format::FormatProperties::AudioChannels, Int, channels as i32),
+        property!(
+            spa::param::format::FormatProperties::AudioPosition,
+            pw::spa::pod::Value::ValueArray(pw::spa::pod::ValueArray::Id(positions))
+        ),
+    };
+    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(obj),
+    )
+    .map_err(|e| anyhow!("Failed to serialize PipeWire bridge raw format pod: {e:?}"))?
+    .0
+    .into_inner();
+    Ok(values)
+}
+
+/// Channel positions matching [`iec958_audio_position`], in the order the
+/// renderer's fixed 7.1 input map expects them.
+fn raw_audio_positions(channels: u16) -> Vec<pw::spa::utils::Id> {
+    let raw: &[u32] = match channels {
+        2 => &[
+            spa::sys::SPA_AUDIO_CHANNEL_FL,
+            spa::sys::SPA_AUDIO_CHANNEL_FR,
+        ],
+        _ => &[
+            spa::sys::SPA_AUDIO_CHANNEL_FL,
+            spa::sys::SPA_AUDIO_CHANNEL_FR,
+            spa::sys::SPA_AUDIO_CHANNEL_FC,
+            spa::sys::SPA_AUDIO_CHANNEL_LFE,
+            spa::sys::SPA_AUDIO_CHANNEL_SL,
+            spa::sys::SPA_AUDIO_CHANNEL_SR,
+            spa::sys::SPA_AUDIO_CHANNEL_RL,
+            spa::sys::SPA_AUDIO_CHANNEL_RR,
+        ],
+    };
+    raw.iter().map(|id| pw::spa::utils::Id(*id)).collect()
 }
 
 fn build_format_pod(
@@ -377,5 +498,45 @@ pub fn spa_param_info(id: u32, flags: u32) -> spa::sys::spa_param_info {
         user: 0,
         seq: 0,
         padding: [0; 4],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A PCM buffer carries a whole graph cycle, so sizing it from the 10 ms
+    /// window that suits the deframer makes every cycle arrive oversized and
+    /// get dropped before it reaches the PCM consumer.
+    #[test]
+    fn raw_buffers_hold_a_full_quantum() {
+        let channels = 8u16;
+        let stride = channels as usize * std::mem::size_of::<f32>();
+        for rate in [48_000u32, 96_000, 192_000] {
+            let size = buffers_nominal_size(
+                channels,
+                rate,
+                std::mem::size_of::<f32>(),
+                PW_QUANTUM_LIMIT_FRAMES,
+            );
+            assert!(
+                size >= PW_QUANTUM_LIMIT_FRAMES as usize * stride,
+                "rate {rate}: buffer of {size} B cannot hold a {PW_QUANTUM_LIMIT_FRAMES}-frame quantum",
+            );
+        }
+    }
+
+    /// The encoded path keeps its 10 ms sizing: bursts are far smaller than a
+    /// quantum, and oversizing them would add latency to the deframer.
+    #[test]
+    fn encoded_buffers_track_the_transport_window() {
+        let size = buffers_nominal_size(2, 192_000, std::mem::size_of::<u16>(), 0);
+        assert_eq!(size, 2 * std::mem::size_of::<u16>() * 1_920);
+    }
+
+    #[test]
+    fn raw_positions_match_the_fixed_input_map() {
+        assert_eq!(raw_audio_positions(8).len(), 8);
+        assert_eq!(raw_audio_positions(2).len(), 2);
     }
 }

@@ -789,7 +789,7 @@ fn run_pipewire_bridge_capture_loop(
             )
         }
         PipewireBridgeBackendKind::PwStream => {
-            run_pipewire_bridge_pw_stream_backend(input_control, config, stop, ingest)
+            run_pipewire_bridge_pw_stream_backend(tx, input_control, config, stop, ingest)
         }
     }
 }
@@ -804,6 +804,7 @@ fn selected_pipewire_bridge_backend(clock_mode: InputClockMode) -> PipewireBridg
 
 #[cfg(target_os = "linux")]
 fn run_pipewire_bridge_pw_stream_backend(
+    tx: mpsc::SyncSender<Result<DecoderMessage>>,
     input_control: Arc<InputControl>,
     config: PipewireBridgeInputConfig,
     stop: Arc<AtomicBool>,
@@ -818,9 +819,33 @@ fn run_pipewire_bridge_pw_stream_backend(
         clock_mode: config.clock_mode,
     };
     let ingest = RefCell::new(ingest);
-    run_pipewire_bridge_input_stream(input_control, stream_config, stop, move |chunk| {
-        ingest.borrow_mut().process_chunk(chunk)
-    })
+    run_pipewire_bridge_input_stream(
+        input_control,
+        stream_config,
+        stop,
+        move |chunk| ingest.borrow_mut().process_chunk(chunk),
+        move |bytes, channels, sample_rate_hz| {
+            // The fixed input map is a 7.1 layout, and the PCM format we
+            // advertise is the only way a client reaches this path, so anything
+            // else means the negotiation produced a shape we cannot label.
+            // Compared against the constant rather than the label vector: this
+            // runs on every buffer, and building that vector to read its length
+            // would allocate once per graph cycle.
+            if channels != DEFAULT_LIVE_INPUT_CHANNELS as u32 {
+                log::warn!(
+                    "Dropping live PCM frame: negotiated {channels} channels, fixed input map expects {DEFAULT_LIVE_INPUT_CHANNELS}"
+                );
+                return;
+            }
+            let frame = build_live_input_frame(bytes, sample_rate_hz, channels as usize);
+            let _ = tx.try_send(Ok(DecoderMessage::AudioData(DecodedAudioData {
+                source: DecodedSource::Live,
+                frame,
+                decode_time_ms: 0.0,
+                sent_at: Instant::now(),
+            })));
+        },
+    )
 }
 
 // Bridge decode/runtime helpers.

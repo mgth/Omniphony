@@ -1,5 +1,6 @@
 use crate::pipewire_pods::{
     IEC958_CODECS_PROP, build_pipewire_bridge_buffers_pod, build_pipewire_bridge_format_pod,
+    build_pipewire_bridge_raw_buffers_pod, build_pipewire_bridge_raw_format_pod,
     build_pipewire_bridge_stream_properties,
 };
 use crate::{InputClockMode, InputControl};
@@ -17,6 +18,9 @@ use std::time::{Duration, Instant};
 const LIVE_BRIDGE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const PW_STREAM_ACCUMULATE_CALLBACKS: usize = 4;
 const PW_DRIVER_IDLE_TRIGGER_INTERVAL: Duration = Duration::from_millis(2);
+/// Channel count of the linear-PCM alternative. The renderer's live input map
+/// is a fixed 7.1 layout, so PCM is only offered in that shape.
+const RAW_FALLBACK_CHANNELS: u16 = 8;
 
 /// Which PipeWire client implementation carries the bridge input.
 ///
@@ -357,14 +361,23 @@ fn refresh_pw_stream_driver_timing(
     }
 }
 
-pub fn run_pipewire_bridge_input_stream<F>(
+/// Run the sink that carries the bridge input.
+///
+/// The node advertises both IEC 61937 and linear PCM, so the negotiated media
+/// subtype decides which consumer receives a buffer: `process_chunk` gets the
+/// encoded bursts to deframe, `process_pcm` gets interleaved `f32` frames.
+/// A client that never enables passthrough lands on the PCM path instead of
+/// silently feeding a deframer that will find no sync word.
+pub fn run_pipewire_bridge_input_stream<F, P>(
     input_control: Arc<InputControl>,
     config: PipewireBridgeStreamConfig,
     stop: Arc<AtomicBool>,
     process_chunk: F,
+    process_pcm: P,
 ) -> Result<()>
 where
     F: FnMut(&[u8]) -> (usize, usize) + 'static,
+    P: FnMut(&[u8], u32, u32) + 'static,
 {
     pw::init();
     let use_driver = bridge_stream_uses_driver(config.clock_mode);
@@ -409,6 +422,7 @@ where
     let trigger_schedule_for_state = Rc::clone(&trigger_schedule);
     let trigger_schedule_for_process = Rc::clone(&trigger_schedule);
     let process_chunk = RefCell::new(process_chunk);
+    let process_pcm = RefCell::new(process_pcm);
 
     let _listener = stream
         .add_local_listener_with_user_data(BridgeCaptureUserData {
@@ -871,6 +885,22 @@ where
             if has_spdif_sync {
                 user_data.sync_buffers_since_log += 1;
             }
+            // Linear PCM was negotiated: hand the frames straight to the PCM
+            // consumer. Deframing does not apply, and the accumulation window
+            // below exists only to give the deframer whole bursts, so PCM must
+            // not go through it — buffering four callbacks would add latency
+            // for no benefit.
+            if !user_data.negotiated_iec958 {
+                process_pcm.borrow_mut()(chunk, user_data.channels, user_data.rate_hz);
+                if use_driver {
+                    schedule_pw_stream_driver_trigger(
+                        &trigger_schedule_for_process,
+                        current_pw_driver_trigger_interval(user_data),
+                        "pcm_frames",
+                    );
+                }
+                return;
+            }
             user_data.accumulate_buf.extend_from_slice(chunk);
             user_data.accumulate_count += 1;
             let (packet_count, queued_count) =
@@ -981,7 +1011,29 @@ where
         .ok_or_else(|| anyhow!("Invalid PipeWire 2ch buffers pod"))?;
     let buffers_8ch = Pod::from_bytes(&buffers_8ch_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire 8ch buffers pod"))?;
-    let mut params = [format_2ch, buffers_2ch, format_8ch, buffers_8ch];
+    // Linear-PCM alternative, offered last so PipeWire keeps preferring the
+    // encoded formats for a passthrough client. It exists so the node is
+    // discoverable at all: clients that build their device list from
+    // EnumFormat drop a sink that advertises encoded formats only.
+    let raw_format_bytes = build_pipewire_bridge_raw_format_pod(
+        config.sample_rate_hz,
+        RAW_FALLBACK_CHANNELS,
+        spa::param::ParamType::EnumFormat,
+    )?;
+    let raw_buffers_bytes =
+        build_pipewire_bridge_raw_buffers_pod(RAW_FALLBACK_CHANNELS, config.sample_rate_hz)?;
+    let raw_format = Pod::from_bytes(&raw_format_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire raw format pod"))?;
+    let raw_buffers = Pod::from_bytes(&raw_buffers_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire raw buffers pod"))?;
+    let mut params = [
+        format_2ch,
+        buffers_2ch,
+        format_8ch,
+        buffers_8ch,
+        raw_format,
+        raw_buffers,
+    ];
 
     let mut stream_flags =
         pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS;
