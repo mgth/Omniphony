@@ -26,6 +26,8 @@ const RAW_FALLBACK_CHANNELS: u16 = 8;
 /// Rate the linear-PCM alternative prefers. The encoded carrier's rate is not a
 /// sensible default here: a PCM client is desktop audio, which runs at 48 kHz.
 const RAW_DEFAULT_RATE_HZ: u32 = 48_000;
+/// IEC 61937 carries its bursts in a 16-bit container.
+const IEC958_BYTES_PER_SAMPLE: usize = std::mem::size_of::<u16>();
 
 /// Which PipeWire client implementation carries the bridge input.
 ///
@@ -55,6 +57,11 @@ struct BridgeCaptureUserData {
     rate_hz: u32,
     channels: u32,
     negotiated_iec958: bool,
+    /// Width of one sample in the negotiated format. IEC 61937 rides a 16-bit
+    /// container, linear PCM here is `f32`, and every byte-to-frame conversion
+    /// on this path depends on which one is live — including the pacer drain,
+    /// which starves the output ring if it is told twice the frames arrived.
+    bytes_per_sample: usize,
     observed_transport_frames: u32,
     last_log_at: Instant,
     add_buffer_calls_since_log: usize,
@@ -435,6 +442,7 @@ where
             rate_hz: config.sample_rate_hz,
             channels: config.channels as u32,
             negotiated_iec958: false,
+            bytes_per_sample: IEC958_BYTES_PER_SAMPLE,
             observed_transport_frames: 0,
             last_log_at: Instant::now(),
             add_buffer_calls_since_log: 0,
@@ -540,6 +548,14 @@ where
             let is_iec958 =
                 media_subtype == pw::spa::param::format::MediaSubtype::Iec958;
             user_data.negotiated_iec958 = is_iec958;
+            // Byte-to-frame conversions below this point follow the negotiated
+            // format, not the encoded container: keeping the 16-bit width for a
+            // 32-bit PCM stream doubles every frame count derived from a chunk.
+            user_data.bytes_per_sample = if is_iec958 {
+                IEC958_BYTES_PER_SAMPLE
+            } else {
+                std::mem::size_of::<f32>()
+            };
             // `spa_format_audio_raw_parse` parses by property key (AudioRate /
             // AudioChannels), not by subtype — so it also extracts a usable
             // `rate` and `channels` from an IEC958 format pod. We need that
@@ -749,7 +765,7 @@ where
             let byte_len = data.chunk().size() as usize;
             if user_data.negotiated_iec958 && byte_len > 0 {
                 let bytes_per_transport_frame = chunk_stride.max(
-                    user_data.channels as usize * std::mem::size_of::<u16>(),
+                    user_data.channels as usize * user_data.bytes_per_sample,
                 );
                 let observed_transport_frames = (byte_len / bytes_per_transport_frame).max(1);
                 user_data.observed_transport_frames =
@@ -825,7 +841,7 @@ where
             {
                 user_data.callback_chunk_logs_remaining -= 1;
                 let transport_ms = byte_len as f64
-                    / (user_data.channels as f64 * std::mem::size_of::<u16>() as f64)
+                    / (user_data.channels as f64 * user_data.bytes_per_sample as f64)
                     / user_data.rate_hz as f64
                     * 1000.0;
                 log::debug!(
@@ -863,7 +879,7 @@ where
             // the subframe rate constant during compressed bursts).
             if user_data.channels > 0 && user_data.rate_hz > 0 {
                 let frames_this_chunk = byte_len as f64
-                    / (user_data.channels as f64 * std::mem::size_of::<u16>() as f64);
+                    / (user_data.channels as f64 * user_data.bytes_per_sample as f64);
                 let delta_us =
                     frames_this_chunk / user_data.rate_hz as f64 * 1_000_000.0;
                 user_data.input_clock_us_cumulative += delta_us;
@@ -882,8 +898,7 @@ where
                 if let Some(pacer) = input_control_for_process.output_pacer() {
                     if pacer.enabled.load(Ordering::Relaxed) {
                         let in_subframes = byte_len as u64
-                            / (user_data.channels as u64
-                                * std::mem::size_of::<u16>() as u64);
+                            / (user_data.channels as u64 * user_data.bytes_per_sample as u64);
                         let drain_samples = (in_subframes
                             .saturating_mul(pacer.out_sample_rate as u64)
                             .saturating_mul(pacer.out_channels as u64)
