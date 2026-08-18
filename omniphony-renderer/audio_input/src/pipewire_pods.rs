@@ -3,7 +3,13 @@ use pipewire as pw;
 use pw::spa;
 use pw::spa::pod::{object, property};
 
-pub(crate) const IEC958_CODECS_PROP: &str = "[ \"TRUEHD\", \"EAC3\" ]";
+pub(crate) const IEC958_CODECS_PROP: &str = "[ \"TRUEHD\", \"EAC3\", \"AC3\" ]";
+/// AC-3 rides a 48 kHz / 2-channel IEC 61937 carrier, where E-AC-3 and TrueHD
+/// use the 4x one. That is a property of the framing, not a setting: a node
+/// that pins a single rate can only ever serve the codecs sharing it, and every
+/// other one is refused with "no target node available".
+pub const IEC958_AC3_RATE_HZ: u32 = 48_000;
+pub const IEC958_AC3_CHANNELS: u16 = 2;
 const IEC958_AUDIO_POSITION_PROP_8CH: &str = "[ FL FR C LFE SL SR RL RR ]";
 const IEC958_AUDIO_POSITION_PROP_2CH: &str = "[ FL FR ]";
 const SPA_PARAM_BUFFERS_META_TYPE_RAW: u32 = 7;
@@ -69,9 +75,13 @@ pub fn build_pipewire_bridge_stream_properties(
     props.insert("iec958.codecs", IEC958_CODECS_PROP);
     props.insert("resample.disable", "true");
     props.insert("node.latency", requested_latency);
+    // Preferred rate, not a pinned one. `node.force-rate` + `node.lock-rate`
+    // used to hold the graph at the 4x carrier, which suited TrueHD and E-AC-3
+    // but made every 48 kHz carrier unreachable: a client asking for AC-3 got
+    // "no target node available", because no node accepted that rate. The rate
+    // now follows the negotiated format, which `param_changed` already re-reads
+    // per format.
     props.insert("node.rate", requested_rate);
-    props.insert("node.lock-rate", "true");
-    props.insert("node.force-rate", sample_rate_hz.to_string());
     props
 }
 
@@ -208,6 +218,21 @@ pub fn build_pipewire_bridge_format_pod(
         iec958_codec_for_channels(channels),
         param_type,
     )
+}
+
+/// Same as [`build_pipewire_bridge_format_pod`], but with the codec stated
+/// rather than derived from the channel count.
+///
+/// The derivation only holds for the two codecs that share the 4x carrier; a
+/// codec on its own carrier needs its own rate and channel count, which the
+/// caller knows and the channel count alone cannot express.
+pub fn build_pipewire_bridge_codec_format_pod(
+    codec: u32,
+    sample_rate_hz: u32,
+    channels: u16,
+    param_type: spa::param::ParamType,
+) -> Result<Vec<u8>> {
+    build_format_pod(sample_rate_hz, channels, codec, param_type)
 }
 
 /// Advertise a linear-PCM alternative next to the IEC 61937 formats.

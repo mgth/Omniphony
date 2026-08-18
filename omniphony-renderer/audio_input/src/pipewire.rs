@@ -1,5 +1,6 @@
 use crate::pipewire_pods::{
-    IEC958_CODECS_PROP, build_pipewire_bridge_buffers_pod, build_pipewire_bridge_format_pod,
+    IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_CODECS_PROP, build_pipewire_bridge_buffers_pod,
+    build_pipewire_bridge_codec_format_pod, build_pipewire_bridge_format_pod,
     build_pipewire_bridge_raw_buffers_pod, build_pipewire_bridge_raw_format_pod,
     build_pipewire_bridge_stream_properties,
 };
@@ -1005,6 +1006,17 @@ where
         .ok_or_else(|| anyhow!("Invalid PipeWire 2ch format pod"))?;
     let format_8ch = Pod::from_bytes(&format_8ch_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire 8ch format pod"))?;
+    // AC-3 rides its own 48 kHz carrier, so it needs a format of its own: the
+    // channel count cannot express it, and the two pods above are both on the
+    // 4x carrier.
+    let format_ac3_bytes = build_pipewire_bridge_codec_format_pod(
+        spa::sys::SPA_AUDIO_IEC958_CODEC_AC3,
+        IEC958_AC3_RATE_HZ,
+        IEC958_AC3_CHANNELS,
+        spa::param::ParamType::EnumFormat,
+    )?;
+    let buffers_ac3_bytes =
+        build_pipewire_bridge_buffers_pod(IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ)?;
     let buffers_2ch_bytes = build_pipewire_bridge_buffers_pod(2, config.sample_rate_hz)?;
     let buffers_8ch_bytes = build_pipewire_bridge_buffers_pod(8, config.sample_rate_hz)?;
     let buffers_2ch = Pod::from_bytes(&buffers_2ch_bytes)
@@ -1026,11 +1038,17 @@ where
         .ok_or_else(|| anyhow!("Invalid PipeWire raw format pod"))?;
     let raw_buffers = Pod::from_bytes(&raw_buffers_bytes)
         .ok_or_else(|| anyhow!("Invalid PipeWire raw buffers pod"))?;
+    let format_ac3 = Pod::from_bytes(&format_ac3_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire AC-3 format pod"))?;
+    let buffers_ac3 = Pod::from_bytes(&buffers_ac3_bytes)
+        .ok_or_else(|| anyhow!("Invalid PipeWire AC-3 buffers pod"))?;
     let mut params = [
-        format_2ch,
-        buffers_2ch,
         format_8ch,
         buffers_8ch,
+        format_2ch,
+        buffers_2ch,
+        format_ac3,
+        buffers_ac3,
         raw_format,
         raw_buffers,
     ];
