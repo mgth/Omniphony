@@ -26,6 +26,7 @@ concurrency:
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -65,8 +66,15 @@ jobs:
       # whole workspace links exactly as in the release build (cheap, robust).
       - name: Install Linux system dependencies
         run: |
+          # Both of these reach out to Launchpad, and both can hang rather
+          # than fail when it is unwell — `add-apt-repository` fetches the
+          # signing key and the index with no timeout of its own. The retry
+          # loops below are useless against a hang (a command that never
+          # returns never reaches the next attempt), so each call is bounded:
+          # that is what turns a stall into a retry, and a bad day into a
+          # failed job instead of one that sits there for hours.
           for attempt in 1 2 3; do
-            if sudo add-apt-repository ppa:pipewire-debian/pipewire-upstream -y; then
+            if sudo timeout 180 add-apt-repository ppa:pipewire-debian/pipewire-upstream -y; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -76,7 +84,7 @@ jobs:
             sleep 10
           done
           for attempt in 1 2 3; do
-            if sudo apt-get update; then
+            if sudo timeout 180 apt-get update; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -85,7 +93,7 @@ jobs:
             fi
             sleep 10
           done
-          sudo apt-get install -y \
+          sudo timeout 600 apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libssl-dev \
             libgtk-3-dev \
@@ -169,6 +177,7 @@ jobs:
     # macOS portability regressions on PRs, before the tag-triggered release
     # builds (liborender / Studio / mpv) ever run on macOS.
     runs-on: macos-14
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -205,6 +214,7 @@ jobs:
     # the default VBAP backend is pure Rust. bindgen finds libclang on the runner
     # image without any setup, which is why no LLVM step appears here.
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
