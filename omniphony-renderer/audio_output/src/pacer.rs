@@ -42,11 +42,17 @@ pub struct PacerHandle {
     pub out_sample_rate: u32,
     /// Output channel count used to compute the per-chunk drain quantum.
     pub out_channels: u32,
-    /// Live mirror of `AdaptiveResamplingConfig::use_output_pacing`. When
-    /// `false`, the input-thread drain is a no-op and the writer pushes
-    /// directly to `ring` — i.e. legacy behaviour. Toggling this atomic is
-    /// the hot-swap mechanism for the feature flag.
-    pub enabled: Arc<AtomicBool>,
+    /// Whether pacing is in effect, from `AdaptiveResamplingConfig::
+    /// use_output_pacing`. When `false`, the drain is a no-op and the writer
+    /// pushes straight to `ring`.
+    ///
+    /// Fixed for the lifetime of the audio output, and a plain `bool` so that
+    /// it cannot be otherwise. It decides *which thread produces into `ring`* —
+    /// the drain when set, the renderer when not — and swapping producers under
+    /// a running stream is exactly what a single-producer ring forbids. Changing
+    /// it takes effect at the next output start, like the other settings that
+    /// shape the audio path rather than tune it.
+    pub enabled: bool,
     /// Diagnostic: cumulative number of samples drawn from the FIFO (real
     /// audio + zero fills). f64-encoded so the diag plot can read it like
     /// any other atomic metric.
@@ -159,7 +165,7 @@ mod tests {
             pre_roll_threshold_samples: pre_roll,
             out_sample_rate: 48_000,
             out_channels: CHANNELS,
-            enabled: Arc::new(AtomicBool::new(true)),
+            enabled: true,
             diag_drain_total: Arc::new(AtomicU64::new(0)),
             diag_underrun_total: Arc::new(AtomicU64::new(0)),
             diag_fifo_level: Arc::new(AtomicU64::new(0)),

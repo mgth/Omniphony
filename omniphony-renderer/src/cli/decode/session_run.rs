@@ -778,7 +778,7 @@ fn spawn_pacer_drain_thread(
                     frac_frames = 0.0;
                     continue;
                 };
-                if !pacer.enabled.load(std::sync::atomic::Ordering::Relaxed)
+                if !pacer.enabled
                     || input_control.applied_snapshot().active_mode
                         != audio_input::InputMode::Bridge
                 {

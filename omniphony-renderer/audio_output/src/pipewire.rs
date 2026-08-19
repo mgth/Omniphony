@@ -246,7 +246,7 @@ pub struct PipewireWriter {
     /// buffer the DAC consumes sees a smooth flow regardless of the
     /// decoder's burst pattern.
     pacer_fifo: Arc<ArrayQueue<f32>>,
-    pacer_enabled: Arc<AtomicBool>,
+    pacer_enabled: bool,
     /// When true, `write_samples` pushes without ever blocking and drops the
     /// overflow above the back-pressure threshold instead of waiting for the
     /// DAC to drain. Decouples the producer from the consumer clock.
@@ -434,7 +434,7 @@ impl PipewireWriter {
         // the same amount of audio. It only fills meaningfully when the
         // input-thread drain lags or is paused (eg. during pre-roll).
         let pacer_fifo = Arc::new(ArrayQueue::new(BUFFER_SIZE));
-        let pacer_enabled = Arc::new(AtomicBool::new(adaptive_config.use_output_pacing));
+        let pacer_enabled = adaptive_config.use_output_pacing;
         let backpressure_disabled = Arc::new(AtomicBool::new(adaptive_config.disable_backpressure));
         let pacer_pre_roll_complete = Arc::new(AtomicBool::new(false));
         let pacer_flush_requested = Arc::new(AtomicBool::new(false));
@@ -520,10 +520,9 @@ impl PipewireWriter {
         let input_trigger_quantum_for_thread = Arc::clone(&input_trigger_quantum_frames);
         // Pacer atomics cloned into the PipeWire thread so the DAC callback
         // can flush the FIFO and re-arm pre-roll on recovery_reacquire.
-        let pacer_fifo_for_thread = Arc::clone(&pacer_fifo);
         let pacer_pre_roll_complete_for_thread = Arc::clone(&pacer_pre_roll_complete);
         let pacer_flush_requested_for_thread = Arc::clone(&pacer_flush_requested);
-        let pacer_enabled_for_thread = Arc::clone(&pacer_enabled);
+        let pacer_enabled_for_thread = pacer_enabled;
         let pacer_pre_roll_threshold_for_thread = pacer_pre_roll_threshold_samples;
 
         // Capture before moving buffer_config into the thread closure.
@@ -580,7 +579,6 @@ impl PipewireWriter {
                 input_trigger_rate_for_thread,
                 input_trigger_quantum_for_thread,
                 input_clock_us,
-                pacer_fifo_for_thread,
                 pacer_pre_roll_complete_for_thread,
                 pacer_flush_requested_for_thread,
                 pacer_enabled_for_thread,
@@ -699,7 +697,7 @@ impl PipewireWriter {
         // backpressure on the renderer push: this guarantees the pacer
         // contributes a *fixed* latency (= pre_roll_threshold) instead of
         // drifting up to seconds of buffered audio.
-        let pacer_active = self.pacer_enabled.load(Ordering::Relaxed);
+        let pacer_active = self.pacer_enabled;
         let target_buffer: &Arc<ArrayQueue<f32>> = if pacer_active {
             &self.pacer_fifo
         } else {
@@ -851,28 +849,10 @@ impl PipewireWriter {
             pre_roll_threshold_samples: self.pacer_pre_roll_threshold_samples,
             out_sample_rate: self.sample_rate,
             out_channels: self.channel_count,
-            enabled: Arc::clone(&self.pacer_enabled),
+            enabled: self.pacer_enabled,
             diag_drain_total: Arc::clone(&self.pacer_drain_total),
             diag_underrun_total: Arc::clone(&self.pacer_underrun_total),
             diag_fifo_level: Arc::clone(&self.pacer_fifo_level),
-        }
-    }
-
-    /// Hot-swap the pacer enabled flag. Called when
-    /// `AdaptiveResamplingConfig::use_output_pacing` flips via OSC.
-    pub fn set_output_pacing_enabled(&self, enabled: bool) {
-        // On transition true → false, drain any leftover FIFO so we don't
-        // resume with stale audio on the next toggle. On false → true,
-        // re-arm pre-roll so we always grow the buffer before the input
-        // thread starts pulling real samples.
-        let was = self.pacer_enabled.swap(enabled, Ordering::Relaxed);
-        if was != enabled {
-            // Ask the drain to flush; it owns the FIFO. Deferring also means a
-            // re-enable cannot start from stale audio, which flushing here did
-            // not guarantee — the renderer refills between the toggle and the
-            // first drain.
-            self.pacer_flush_requested.store(true, Ordering::Release);
-            self.pacer_pre_roll_complete.store(false, Ordering::Relaxed);
         }
     }
 
@@ -959,9 +939,17 @@ impl PipewireWriter {
 
     /// Update adaptive resampling tuning parameters without restarting the audio thread.
     pub fn update_adaptive_config(&self, config: AdaptiveResamplingConfig) {
-        // Hot-swap the pacer enabled flag and reset its state on transition,
-        // so toggling `use_output_pacing` over OSC starts a clean pre-roll.
-        self.set_output_pacing_enabled(config.use_output_pacing);
+        // Output pacing is NOT hot-swappable: it decides which thread produces
+        // into the ring, and swapping producers under a running stream is what
+        // the single-producer invariant forbids. Say so rather than silently
+        // ignoring the request.
+        if config.use_output_pacing != self.pacer_enabled {
+            log::warn!(
+                "Output pacing is fixed for the lifetime of the audio output                  (running with {}, requested {}); the change takes effect at the                  next output start.",
+                self.pacer_enabled,
+                config.use_output_pacing
+            );
+        }
         self.set_backpressure_disabled(config.disable_backpressure);
         *self.live_adaptive_config.lock() = config;
     }
@@ -1155,10 +1143,9 @@ fn run_pipewire_loop(
     input_trigger_rate_hz: Arc<AtomicU32>,
     input_trigger_quantum_frames: Arc<AtomicU32>,
     input_clock_us: Arc<std::sync::atomic::AtomicU64>,
-    pacer_fifo: Arc<ArrayQueue<f32>>,
     pacer_pre_roll_complete: Arc<AtomicBool>,
     pacer_flush_requested: Arc<AtomicBool>,
-    pacer_enabled: Arc<AtomicBool>,
+    pacer_enabled: bool,
     pacer_pre_roll_threshold_samples: usize,
 ) -> Result<()> {
     // Determine actual output rate and resampling ratio
@@ -1489,7 +1476,7 @@ fn run_pipewire_loop(
                     // sum (ring + pacer) lands at user_target. Without this,
                     // setting latency to 500 ms would actually give
                     // 500 + pacer_capacity audible delay.
-                    let runtime_target_buffer_fill = if pacer_enabled.load(Ordering::Relaxed) {
+                    let runtime_target_buffer_fill = if pacer_enabled {
                         target_buffer_fill.saturating_sub(pacer_pre_roll_threshold_samples)
                     } else {
                         target_buffer_fill
@@ -1610,7 +1597,7 @@ fn run_pipewire_loop(
                     // keeps the total end-to-end latency at the user's
                     // configured `latency_ms` regardless of whether the
                     // pacer is active.
-                    let pacer_buffer_samples = if pacer_enabled.load(Ordering::Relaxed) {
+                    let pacer_buffer_samples = if pacer_enabled {
                         pacer_pre_roll_threshold_samples
                     } else {
                         0
