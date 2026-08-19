@@ -20,16 +20,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{
     ADAPTIVE_BAND_FAR, AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
     adaptive_runtime::{
-        AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, LowRecoverPhase,
-        MAX_INTEGRAL_TERM, PRE_BRIDGE_CALIBRATION_CALLBACKS, adaptive_runtime_state_name,
+        AdaptiveRuntimeState, FarModeStepCtx, FarModeStepInputs, LatencyMetricTargets,
+        LowRecoverPhase, MAX_INTEGRAL_TERM, PRE_BRIDGE_CALIBRATION_CALLBACKS,
         compute_hard_recover_high_plan, discard_ring_samples, far_mode_band_from_latency,
-        note_refill_or_underrun, output_to_input_domain_samples, paused_rate_adjust,
+        far_mode_step, note_refill_or_underrun, output_to_input_domain_samples, paused_rate_adjust,
         postprocess_interleaved_output, reset_adaptive_runtime, run_adaptive_servo,
-        should_run_adaptive_servo, store_latency_metrics_from_control_available,
-        update_far_mode_state, update_latency_metrics, zero_pad_tail,
+        should_run_adaptive_servo, update_latency_metrics, zero_pad_tail,
     },
-    adaptive_runtime_state_code, adaptive_runtime_state_name_from_code,
-    clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,
+    adaptive_runtime_state_name_from_code, clamp_ratio_for_local_resampler,
+    local_resampler_ratio_bounds,
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
     ring_buffer_io::{
         flush_ring_buffer, push_samples_drop_overflow, push_samples_with_backpressure,
@@ -246,12 +245,13 @@ pub struct PipewireWriter {
     /// buffer the DAC consumes sees a smooth flow regardless of the
     /// decoder's burst pattern.
     pacer_fifo: Arc<ArrayQueue<f32>>,
-    pacer_enabled: Arc<AtomicBool>,
+    pacer_enabled: bool,
     /// When true, `write_samples` pushes without ever blocking and drops the
     /// overflow above the back-pressure threshold instead of waiting for the
     /// DAC to drain. Decouples the producer from the consumer clock.
     backpressure_disabled: Arc<AtomicBool>,
     pacer_pre_roll_complete: Arc<AtomicBool>,
+    pacer_flush_requested: Arc<AtomicBool>,
     pacer_pre_roll_threshold_samples: usize,
     pacer_drain_total: Arc<AtomicU64>,
     pacer_underrun_total: Arc<AtomicU64>,
@@ -433,9 +433,10 @@ impl PipewireWriter {
         // the same amount of audio. It only fills meaningfully when the
         // input-thread drain lags or is paused (eg. during pre-roll).
         let pacer_fifo = Arc::new(ArrayQueue::new(BUFFER_SIZE));
-        let pacer_enabled = Arc::new(AtomicBool::new(adaptive_config.use_output_pacing));
+        let pacer_enabled = adaptive_config.use_output_pacing;
         let backpressure_disabled = Arc::new(AtomicBool::new(adaptive_config.disable_backpressure));
         let pacer_pre_roll_complete = Arc::new(AtomicBool::new(false));
+        let pacer_flush_requested = Arc::new(AtomicBool::new(false));
         // 64 ms of audio at the output rate × channel count. Covers >1 AU
         // for both supported input codecs (~32 ms per AU) with margin.
         let pacer_pre_roll_threshold_samples =
@@ -518,9 +519,9 @@ impl PipewireWriter {
         let input_trigger_quantum_for_thread = Arc::clone(&input_trigger_quantum_frames);
         // Pacer atomics cloned into the PipeWire thread so the DAC callback
         // can flush the FIFO and re-arm pre-roll on recovery_reacquire.
-        let pacer_fifo_for_thread = Arc::clone(&pacer_fifo);
         let pacer_pre_roll_complete_for_thread = Arc::clone(&pacer_pre_roll_complete);
-        let pacer_enabled_for_thread = Arc::clone(&pacer_enabled);
+        let pacer_flush_requested_for_thread = Arc::clone(&pacer_flush_requested);
+        let pacer_enabled_for_thread = pacer_enabled;
         let pacer_pre_roll_threshold_for_thread = pacer_pre_roll_threshold_samples;
 
         // Capture before moving buffer_config into the thread closure.
@@ -577,8 +578,8 @@ impl PipewireWriter {
                 input_trigger_rate_for_thread,
                 input_trigger_quantum_for_thread,
                 input_clock_us,
-                pacer_fifo_for_thread,
                 pacer_pre_roll_complete_for_thread,
+                pacer_flush_requested_for_thread,
                 pacer_enabled_for_thread,
                 pacer_pre_roll_threshold_for_thread,
             ) {
@@ -621,6 +622,7 @@ impl PipewireWriter {
             pacer_enabled,
             backpressure_disabled,
             pacer_pre_roll_complete,
+            pacer_flush_requested,
             pacer_pre_roll_threshold_samples,
             pacer_drain_total,
             pacer_underrun_total,
@@ -694,7 +696,7 @@ impl PipewireWriter {
         // backpressure on the renderer push: this guarantees the pacer
         // contributes a *fixed* latency (= pre_roll_threshold) instead of
         // drifting up to seconds of buffered audio.
-        let pacer_active = self.pacer_enabled.load(Ordering::Relaxed);
+        let pacer_active = self.pacer_enabled;
         let target_buffer: &Arc<ArrayQueue<f32>> = if pacer_active {
             &self.pacer_fifo
         } else {
@@ -842,27 +844,14 @@ impl PipewireWriter {
             pacer_fifo: Arc::clone(&self.pacer_fifo),
             ring: Arc::clone(&self.sample_buffer),
             pre_roll_complete: Arc::clone(&self.pacer_pre_roll_complete),
+            flush_requested: Arc::clone(&self.pacer_flush_requested),
             pre_roll_threshold_samples: self.pacer_pre_roll_threshold_samples,
             out_sample_rate: self.sample_rate,
             out_channels: self.channel_count,
-            enabled: Arc::clone(&self.pacer_enabled),
+            enabled: self.pacer_enabled,
             diag_drain_total: Arc::clone(&self.pacer_drain_total),
             diag_underrun_total: Arc::clone(&self.pacer_underrun_total),
             diag_fifo_level: Arc::clone(&self.pacer_fifo_level),
-        }
-    }
-
-    /// Hot-swap the pacer enabled flag. Called when
-    /// `AdaptiveResamplingConfig::use_output_pacing` flips via OSC.
-    pub fn set_output_pacing_enabled(&self, enabled: bool) {
-        // On transition true → false, drain any leftover FIFO so we don't
-        // resume with stale audio on the next toggle. On false → true,
-        // re-arm pre-roll so we always grow the buffer before the input
-        // thread starts pulling real samples.
-        let was = self.pacer_enabled.swap(enabled, Ordering::Relaxed);
-        if was != enabled {
-            while self.pacer_fifo.pop().is_some() {}
-            self.pacer_pre_roll_complete.store(false, Ordering::Relaxed);
         }
     }
 
@@ -949,9 +938,17 @@ impl PipewireWriter {
 
     /// Update adaptive resampling tuning parameters without restarting the audio thread.
     pub fn update_adaptive_config(&self, config: AdaptiveResamplingConfig) {
-        // Hot-swap the pacer enabled flag and reset its state on transition,
-        // so toggling `use_output_pacing` over OSC starts a clean pre-roll.
-        self.set_output_pacing_enabled(config.use_output_pacing);
+        // Output pacing is NOT hot-swappable: it decides which thread produces
+        // into the ring, and swapping producers under a running stream is what
+        // the single-producer invariant forbids. Say so rather than silently
+        // ignoring the request.
+        if config.use_output_pacing != self.pacer_enabled {
+            log::warn!(
+                "Output pacing is fixed for the lifetime of the audio output                  (running with {}, requested {}); the change takes effect at the                  next output start.",
+                self.pacer_enabled,
+                config.use_output_pacing
+            );
+        }
         self.set_backpressure_disabled(config.disable_backpressure);
         *self.live_adaptive_config.lock() = config;
     }
@@ -1145,9 +1142,9 @@ fn run_pipewire_loop(
     input_trigger_rate_hz: Arc<AtomicU32>,
     input_trigger_quantum_frames: Arc<AtomicU32>,
     input_clock_us: Arc<std::sync::atomic::AtomicU64>,
-    pacer_fifo: Arc<ArrayQueue<f32>>,
     pacer_pre_roll_complete: Arc<AtomicBool>,
-    pacer_enabled: Arc<AtomicBool>,
+    pacer_flush_requested: Arc<AtomicBool>,
+    pacer_enabled: bool,
     pacer_pre_roll_threshold_samples: usize,
 ) -> Result<()> {
     // Determine actual output rate and resampling ratio
@@ -1478,7 +1475,7 @@ fn run_pipewire_loop(
                     // sum (ring + pacer) lands at user_target. Without this,
                     // setting latency to 500 ms would actually give
                     // 500 + pacer_capacity audible delay.
-                    let runtime_target_buffer_fill = if pacer_enabled.load(Ordering::Relaxed) {
+                    let runtime_target_buffer_fill = if pacer_enabled {
                         target_buffer_fill.saturating_sub(pacer_pre_roll_threshold_samples)
                     } else {
                         target_buffer_fill
@@ -1599,7 +1596,7 @@ fn run_pipewire_loop(
                     // keeps the total end-to-end latency at the user's
                     // configured `latency_ms` regardless of whether the
                     // pacer is active.
-                    let pacer_buffer_samples = if pacer_enabled.load(Ordering::Relaxed) {
+                    let pacer_buffer_samples = if pacer_enabled {
                         pacer_pre_roll_threshold_samples
                     } else {
                         0
@@ -1849,70 +1846,31 @@ fn run_pipewire_loop(
                         // State machine on raw: its entry/exit/settle bands are
                         // already the hysteresis; smoothing on top added phase lag
                         // that drove a slow oscillation.
-                        let far_decision = update_far_mode_state(
+                        let far_decision = far_mode_step(
                             &mut runtime_state,
-                            &adaptive_cfg,
-                            current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
-                            metrics.control_available,
-                            metrics.smoothed_control_available,
-                            runtime_target_buffer_fill,
-                            callback_input_domain_samples,
-                            effective_resample_ratio,
-                            channel_count as usize,
-                            sample_rate,
-                            actual_output_rate,
-                        );
-                        current_runtime_state.store(
-                            adaptive_runtime_state_code(adaptive_runtime_state_name(
-                                runtime_state.low_recover_phase,
-                                far_decision.hard_recover_high,
-                            )),
-                            Ordering::Relaxed,
-                        );
-                        let mut projected_control_available = metrics.control_available;
-                        if far_decision.recovery_reacquire_pending && far_decision.mute_far_output {
-                            projected_control_available =
-                                projected_control_available.saturating_sub(callback_input_domain_samples);
-                        } else if far_decision.hard_recover_high {
-                            let plan = compute_hard_recover_high_plan(
+                            &FarModeStepCtx {
+                                adaptive_config: &adaptive_cfg,
+                                channel_count: channel_count as usize,
+                                input_sample_rate: sample_rate,
+                                output_sample_rate: actual_output_rate,
+                                runtime_state_code: &current_runtime_state,
+                                latency: LatencyMetricTargets {
+                                    measured_latency_ms_bits: &measured_latency_ms_out,
+                                    control_latency_ms_bits: &control_latency_ms_out,
+                                },
+                            },
+                            FarModeStepInputs {
+                                is_far_band: current_adaptive_band.load(Ordering::Relaxed)
+                                    == ADAPTIVE_BAND_FAR,
+                                control_available: metrics.control_available,
+                                smoothed_control_available: metrics.smoothed_control_available,
+                                target_buffer_fill: runtime_target_buffer_fill,
                                 callback_input_domain_samples,
-                                metrics.control_available,
-                                runtime_target_buffer_fill,
-                                effective_resample_ratio,
-                                channel_count as usize,
-                            );
-                            projected_control_available = projected_control_available
-                                .saturating_sub(plan.desired_consume_input_samples);
-                        } else if far_decision.hold_low_recover {
-                            let trim_input_samples = output_to_input_domain_samples(
-                                far_decision.low_recover_trim_output_samples,
-                                effective_resample_ratio,
-                            );
-                            let muted_consume_input_samples =
-                                if far_decision.mute_far_output && far_decision.consume_while_muted {
-                                    callback_input_domain_samples
-                                } else {
-                                    0
-                                };
-                            projected_control_available = projected_control_available
-                                .saturating_sub(
-                                    trim_input_samples.saturating_add(muted_consume_input_samples),
-                                );
-                        }
-                        // Fold in the pacer's fixed contribution so the displayed
-                        // control/measured latency reflects the true end-to-end
-                        // delay and stays comparable to the target — the same
-                        // adjustment the main `display_control_available` path
-                        // applies. The servo keeps using the pacer-excluded
-                        // `projected_control_available` for its own decisions.
-                        store_latency_metrics_from_control_available(
-                            projected_control_available.saturating_add(pacer_buffer_samples),
-                            channel_count as usize,
-                            sample_rate,
-                            f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
-                            LatencyMetricTargets {
-                                measured_latency_ms_bits: &measured_latency_ms_out,
-                                control_latency_ms_bits: &control_latency_ms_out,
+                                resample_ratio: effective_resample_ratio,
+                                pacer_buffer_samples,
+                                graph_latency_ms: f32::from_bits(
+                                    graph_latency_for_callback.load(Ordering::Relaxed),
+                                ),
                             },
                         );
                         if far_decision.hold_low_recover {
@@ -1947,7 +1905,7 @@ fn run_pipewire_loop(
                             // samples queued before the reacquire are stale.
                             // Re-arm pre-roll so the input thread re-primes
                             // before starting real drains.
-                            while pacer_fifo.pop().is_some() {}
+                            pacer_flush_requested.store(true, Ordering::Release);
                             pacer_pre_roll_complete.store(false, Ordering::Relaxed);
                             if far_decision.mute_far_output {
                                 if let Err(e) = resampler_fifo.ensure_output_samples(
@@ -2188,68 +2146,33 @@ fn run_pipewire_loop(
                         let samples_to_read = frames_to_read * ch;
 
                         // State machine on raw — see resampler path.
-                        let far_decision: FarModeDecision = update_far_mode_state(
+                        // Straight copy: the ratio is 1.0, so input and output
+                        // domains coincide. Same step as the resampler path.
+                        let far_decision = far_mode_step(
                             &mut runtime_state,
-                            &adaptive_cfg,
-                            current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
-                            metrics.control_available,
-                            metrics.smoothed_control_available,
-                            runtime_target_buffer_fill,
-                            callback_input_domain_samples,
-                            1.0,
-                            channel_count as usize,
-                            sample_rate,
-                            actual_output_rate,
-                        );
-                        current_runtime_state.store(
-                            adaptive_runtime_state_code(adaptive_runtime_state_name(
-                                runtime_state.low_recover_phase,
-                                far_decision.hard_recover_high,
-                            )),
-                            Ordering::Relaxed,
-                        );
-                        let mut projected_control_available = metrics.control_available;
-                        if far_decision.recovery_reacquire_pending && far_decision.mute_far_output {
-                            projected_control_available =
-                                projected_control_available.saturating_sub(callback_input_domain_samples);
-                        } else if far_decision.hard_recover_high {
-                            let plan = compute_hard_recover_high_plan(
+                            &FarModeStepCtx {
+                                adaptive_config: &adaptive_cfg,
+                                channel_count: channel_count as usize,
+                                input_sample_rate: sample_rate,
+                                output_sample_rate: actual_output_rate,
+                                runtime_state_code: &current_runtime_state,
+                                latency: LatencyMetricTargets {
+                                    measured_latency_ms_bits: &measured_latency_ms_out,
+                                    control_latency_ms_bits: &control_latency_ms_out,
+                                },
+                            },
+                            FarModeStepInputs {
+                                is_far_band: current_adaptive_band.load(Ordering::Relaxed)
+                                    == ADAPTIVE_BAND_FAR,
+                                control_available: metrics.control_available,
+                                smoothed_control_available: metrics.smoothed_control_available,
+                                target_buffer_fill: runtime_target_buffer_fill,
                                 callback_input_domain_samples,
-                                metrics.control_available,
-                                runtime_target_buffer_fill,
-                                1.0,
-                                channel_count as usize,
-                            );
-                            projected_control_available = projected_control_available
-                                .saturating_sub(plan.desired_consume_input_samples);
-                        } else if far_decision.hold_low_recover {
-                            let muted_consume_input_samples =
-                                if far_decision.mute_far_output && far_decision.consume_while_muted {
-                                    callback_input_domain_samples
-                                } else {
-                                    0
-                                };
-                            projected_control_available = projected_control_available
-                                .saturating_sub(
-                                    far_decision
-                                        .low_recover_trim_input_samples
-                                        .saturating_add(muted_consume_input_samples),
-                                );
-                        }
-                        // Fold in the pacer's fixed contribution so the displayed
-                        // control/measured latency reflects the true end-to-end
-                        // delay and stays comparable to the target — the same
-                        // adjustment the main `display_control_available` path
-                        // applies. The servo keeps using the pacer-excluded
-                        // `projected_control_available` for its own decisions.
-                        store_latency_metrics_from_control_available(
-                            projected_control_available.saturating_add(pacer_buffer_samples),
-                            channel_count as usize,
-                            sample_rate,
-                            f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
-                            LatencyMetricTargets {
-                                measured_latency_ms_bits: &measured_latency_ms_out,
-                                control_latency_ms_bits: &control_latency_ms_out,
+                                resample_ratio: 1.0,
+                                pacer_buffer_samples,
+                                graph_latency_ms: f32::from_bits(
+                                    graph_latency_for_callback.load(Ordering::Relaxed),
+                                ),
                             },
                         );
                         if far_decision.hold_low_recover {
@@ -2262,7 +2185,7 @@ fn run_pipewire_loop(
                             runtime_state.pre_bridge_offset_initialized = false;
                             runtime_state.pre_bridge_offset_accum = 0;
                             runtime_state.pre_bridge_offset_count = 0;
-                            while pacer_fifo.pop().is_some() {}
+                            pacer_flush_requested.store(true, Ordering::Release);
                             pacer_pre_roll_complete.store(false, Ordering::Relaxed);
                             if far_decision.mute_far_output {
                                 let dropped =

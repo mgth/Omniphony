@@ -910,16 +910,13 @@ impl Drop for OscSender {
     }
 }
 
-/// Numeric OSC args → `f32`, accepting the common scalar types a sensor app may
-/// emit (float, double, int).
+/// Numeric OSC args → `f32`, dropping anything that is not a number.
+///
+/// Sensor apps pick their own tag for the same reading, so this goes through
+/// the shared parser rather than deciding again which tags count.
 fn collect_f32(args: &[rosc::OscType]) -> Vec<f32> {
     args.iter()
-        .filter_map(|a| match a {
-            rosc::OscType::Float(f) => Some(*f),
-            rosc::OscType::Double(d) => Some(*d as f32),
-            rosc::OscType::Int(i) => Some(*i as f32),
-            _ => None,
-        })
+        .filter_map(|a| runtime_control::osc::parse_f32_arg(Some(a)))
         .collect()
 }
 
