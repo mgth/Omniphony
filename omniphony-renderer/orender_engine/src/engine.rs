@@ -97,6 +97,15 @@ pub struct Engine {
     // ── reusable scratch ──
     frame_events: Vec<SpatialChannelEvent>,
     pcm_f32_buf: Vec<f32>,
+    /// Spare sample buffers for [`RenderedAudio`], returned by
+    /// [`Engine::recycle`] once the host has copied them out.
+    ///
+    /// The buffers cannot simply live here, because every block of one packet is
+    /// alive at the same time — the host copies them in one pass and may stop
+    /// early on a layout change. So they are lent out and handed back. A host
+    /// that never recycles allocates exactly as before; it is an optimisation,
+    /// not a contract.
+    output_pool: Vec<Vec<f32>>,
 
     /// Optional OSC live-control server (kept alive here; its Drop stops the
     /// listener thread when the engine is dropped).
@@ -262,6 +271,7 @@ impl Engine {
             applied_drc_mode: String::new(),
             frame_events: Vec::new(),
             pcm_f32_buf: Vec::new(),
+            output_pool: Vec::new(),
             osc: None,
             audio_meter: None,
             object_names: HashMap::new(),
@@ -831,6 +841,26 @@ impl Engine {
         self.process(data, RInputTransport::Raw, 0)
     }
 
+    /// Hand the sample buffers of a consumed [`process`](Self::process) result
+    /// back for reuse.
+    ///
+    /// Optional: dropping the blocks instead is correct, just one allocation per
+    /// block per packet. Call it once the samples have been copied out — the
+    /// buffers are recycled as-is, so anything still reading them is reading a
+    /// buffer the next frame will overwrite.
+    ///
+    /// Bounded, because a host is free to call this with more blocks than it
+    /// ever renders at once and the pool would otherwise only ever grow.
+    pub fn recycle(&mut self, chunks: Vec<RenderedAudio>) {
+        const MAX_POOLED: usize = 16;
+        for chunk in chunks {
+            if self.output_pool.len() >= MAX_POOLED {
+                break;
+            }
+            self.output_pool.push(chunk.samples);
+        }
+    }
+
     fn render_frame(
         &mut self,
         frame: &RDecodedFrame,
@@ -1030,8 +1060,11 @@ impl Engine {
                 virtual_bed::BedPlanKind::HostPassthrough | virtual_bed::BedPlanKind::Silence => {
                     self.frame_events.clear();
                     let n_channels = self.renderer.output_channel_count() as u32;
+                    let mut samples = self.output_pool.pop().unwrap_or_default();
+                    samples.clear();
+                    samples.resize(sample_count * n_channels as usize, 0.0);
                     return Ok(Some(RenderedAudio {
-                        samples: vec![0.0; sample_count * n_channels as usize],
+                        samples,
                         n_channels,
                         n_frames: sample_count,
                         sample_pos: sample_pos_at_start,
@@ -1223,11 +1256,12 @@ impl Engine {
         }
 
         let render_started = std::time::Instant::now();
+        let donated = self.output_pool.pop().unwrap_or_default();
         let rendered = self.renderer.render_frame(
             render_pcm,
             render_channels,
             &self.frame_events,
-            Vec::new(),
+            donated,
             want_metering,
         )?;
         let render_time_ms = render_started.elapsed().as_secs_f32() * 1000.0;

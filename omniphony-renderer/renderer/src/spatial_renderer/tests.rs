@@ -2351,3 +2351,87 @@ fn cadences_fall_back_to_the_host_default() {
     assert_eq!(control.meter_rate_hz(), 50.0);
     assert_eq!(control.diag_rate_hz(), 50.0);
 }
+
+/// A donated buffer is cleared and resized, so handing back a *used* one is
+/// identical to handing over a fresh one.
+///
+/// The embedded host relies on this to pool its output buffers instead of
+/// allocating one per rendered block. If `render_frame` ever appended to the
+/// donated buffer rather than clearing it, or trusted its existing length, the
+/// symptom would be stale audio from two frames ago rather than a crash — so it
+/// is worth pinning rather than assuming.
+#[test]
+fn a_recycled_output_buffer_renders_identically_to_a_fresh_one() {
+    fn build() -> SpatialRenderer {
+        SpatialRenderer::new(
+            SpeakerLayout::preset("7.1.4").unwrap(),
+            48_000,
+            1,
+            1,
+            0.0,
+            2.0,
+            VbapTableMode::Cartesian {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                z_neg_size: 5,
+            },
+            false,
+            false,
+            DistanceModel::Linear,
+            false,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            false,
+            [1.0, 2.0, 0.5],
+            2.0,
+            0.5,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            1.0,
+            1.0,
+            PreferredEvaluationMode::PrecomputedCartesian,
+            LiveEvaluationMode::PrecomputedCartesian,
+            9,
+            9,
+            5,
+            5,
+        )
+        .unwrap()
+    }
+
+    let pcm: Vec<f32> = (0..40).map(|i| (i * 7 % 13) as f32 / 13.0 - 0.5).collect();
+    let event = vec![SpatialChannelEvent {
+        channel_idx: 0,
+        is_bed: false,
+        gain_db: Some(0),
+        ramp_length: Some(40),
+        size: Some([0.0, 0.0, 0.0]),
+        position: Some([0.3, -0.2, 0.4]),
+        sample_pos: Some(0),
+    }];
+
+    let fresh = build()
+        .render_frame(&pcm, 1, &event, Vec::new(), false)
+        .unwrap();
+
+    // Deliberately hostile: non-zero content, and a length that is both wrong
+    // and longer than what this frame needs.
+    let dirty = vec![-7.5f32; fresh.samples.len() * 3 + 11];
+    let recycled = build().render_frame(&pcm, 1, &event, dirty, false).unwrap();
+
+    assert_eq!(
+        recycled.samples.len(),
+        fresh.samples.len(),
+        "the donated buffer must be resized to this frame, not left long"
+    );
+    assert_eq!(
+        recycled.samples, fresh.samples,
+        "no sample of the previous contents may survive into the render"
+    );
+}
