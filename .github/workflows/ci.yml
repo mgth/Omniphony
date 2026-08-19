@@ -26,7 +26,11 @@ concurrency:
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    # Generous because the dependency install depends on GitHub's Ubuntu
+    # mirror, which has days where it delivers a 27 MB package at a few
+    # hundred kB/s. 45 minutes proved too tight on such a day. This is a
+    # backstop against a genuine stall, not a performance target.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
 
