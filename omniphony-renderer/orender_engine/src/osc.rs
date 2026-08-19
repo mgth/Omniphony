@@ -27,6 +27,7 @@ use self::transport::{
     flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client, send_metering_state,
     send_raw_filtered,
 };
+use runtime_control::osc_contract;
 
 /// Timeout after which a registered client (one that must heartbeat) is considered dead.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -102,7 +103,7 @@ fn send_resume_to_standby() {
 /// Point-to-point reply address: a standby-capable instance answers a
 /// `yield_port` with this, carrying the dynamic UDP port (Int) on which it will
 /// listen for `/omniphony/control/resume`. Both sides live in this crate.
-pub(crate) const STANDBY_RESUME_REPLY: &str = "/omniphony/yield/resume_port";
+pub(crate) const STANDBY_RESUME_REPLY: &str = osc_contract::YIELD_RESUME_PORT;
 
 /// Dynamic resume socket allocated by the yield handler when this instance is
 /// asked to stand by. The render loop's standby path takes it to listen for
@@ -557,7 +558,7 @@ impl OscSender {
                         if let Some(speaker_idx) = ctrl.take_clip_pending() {
                             if let Ok(bytes) =
                                 rosc::encoder::encode(&OscPacket::Message(OscMessage {
-                                    addr: "/omniphony/state/clip".to_string(),
+                                    addr: osc_contract::STATE_CLIP.to_string(),
                                     args: vec![rosc::OscType::Int(speaker_idx as i32)],
                                 }))
                             {
@@ -569,7 +570,7 @@ impl OscSender {
                         Ok((len, src)) => {
                             match rosc::decoder::decode_udp(&buf[..len]) {
                                 Ok((_, OscPacket::Message(msg)))
-                                    if msg.addr == "/omniphony/register" =>
+                                    if msg.addr == osc_contract::REGISTER =>
                                 {
                                     let client = resolve_register_addr(src, &msg.args);
                                     let (is_new, metering_enabled) = clients.register(client);
@@ -594,15 +595,15 @@ impl OscSender {
                                     send_metering_state(&socket, client, metering_enabled);
                                 }
                                 Ok((_, OscPacket::Message(msg)))
-                                    if msg.addr == "/omniphony/heartbeat" =>
+                                    if msg.addr == osc_contract::HEARTBEAT =>
                                 {
                                     let client = resolve_register_addr(src, &msg.args);
                                     let is_known = clients.heartbeat(client);
                                     let reply_addr = if is_known {
                                         log::trace!("OSC heartbeat/ack → {}", client);
-                                        "/omniphony/heartbeat/ack"
+                                        osc_contract::HEARTBEAT_ACK
                                     } else {
-                                        "/omniphony/heartbeat/unknown"
+                                        osc_contract::HEARTBEAT_UNKNOWN
                                     };
                                     // Echo this instance's epoch so the client can
                                     // detect a producer swap behind the same port.
@@ -996,7 +997,7 @@ fn maybe_broadcast_head_pose(
     transport::broadcast_ffff(
         socket,
         clients,
-        "/omniphony/state/head_pose",
+        osc_contract::STATE_HEAD_POSE,
         pose.w as f32,
         pose.x as f32,
         pose.y as f32,

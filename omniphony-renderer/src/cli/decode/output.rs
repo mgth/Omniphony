@@ -34,6 +34,12 @@ pub struct AudioLatencySnapshot {
     pub resampler_pending_latency_ms: Option<f32>,
 }
 
+/// Full scale of the integer sample domain: decoders hand out 24-bit samples
+/// sign-extended into an `i32`, so unity is 2^23 and not `i32::MAX`. Anything
+/// producing frames for the renderer has to scale to this, or it arrives 256x
+/// too loud.
+pub const I32_PCM_FULL_SCALE: i32 = 1 << 23;
+
 /// Audio sample data in different formats
 pub enum AudioSamples {
     /// 24-bit signed integer samples (stored in i32 LSB)
@@ -54,7 +60,10 @@ impl AudioSamples {
     /// Convert to f32 format (range -1.0 to 1.0), converting from i32 if necessary
     pub fn to_f32(&self) -> Vec<f32> {
         match self {
-            AudioSamples::I32(v) => v.iter().map(|&s| (s as f64 / 8388608.0) as f32).collect(),
+            AudioSamples::I32(v) => v
+                .iter()
+                .map(|&s| (s as f64 / I32_PCM_FULL_SCALE as f64) as f32)
+                .collect(),
             AudioSamples::F32(v) => v.clone(),
         }
     }

@@ -673,6 +673,9 @@ pub unsafe extern "C" fn orender_process(
             if !out_frames.is_null() {
                 *out_frames = 0;
             }
+            // Nothing was copied, but the buffers are still worth keeping: the
+            // caller is about to retry with a larger `out` and render again.
+            engine.recycle(chunks);
             return 1; // buffer too small; caller retries larger
         }
 
@@ -695,6 +698,10 @@ pub unsafe extern "C" fn orender_process(
             n_channels = chunk.n_channels;
             first_sample_pos.get_or_insert(chunk.sample_pos);
         }
+        // Copied out (or deliberately skipped, on a layout change): the sample
+        // buffers go back to the engine to be filled again next packet, instead
+        // of being freed and reallocated ~1200 times a second.
+        engine.recycle(chunks);
 
         if !out_frames.is_null() {
             *out_frames = total_frames;

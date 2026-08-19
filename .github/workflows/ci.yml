@@ -26,6 +26,11 @@ concurrency:
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
+    # Generous because the dependency install depends on GitHub's Ubuntu
+    # mirror, which has days where it delivers a 27 MB package at a few
+    # hundred kB/s. 45 minutes proved too tight on such a day. This is a
+    # backstop against a genuine stall, not a performance target.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
 
@@ -65,8 +70,18 @@ jobs:
       # whole workspace links exactly as in the release build (cheap, robust).
       - name: Install Linux system dependencies
         run: |
+          # The two metadata calls below reach Launchpad and can hang rather
+          # than fail when it is unwell, so each is bounded: a retry loop is
+          # useless against a command that never returns.
+          #
+          # The install is NOT capped, deliberately. The archive mirror is
+          # often merely slow — a 27 MB webkit fetch crawling at a few hundred
+          # kB/s is not a stall, and a per-command cap turns a slow run into a
+          # failed one (it did: exit 124 mid-download). `timeout-minutes` on
+          # the job is the right backstop for a genuine stall; here we only
+          # retry, so a dropped download gets another go.
           for attempt in 1 2 3; do
-            if sudo add-apt-repository ppa:pipewire-debian/pipewire-upstream -y; then
+            if sudo timeout 180 add-apt-repository ppa:pipewire-debian/pipewire-upstream -y; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -76,7 +91,7 @@ jobs:
             sleep 10
           done
           for attempt in 1 2 3; do
-            if sudo apt-get update; then
+            if sudo timeout 180 apt-get update; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -85,14 +100,23 @@ jobs:
             fi
             sleep 10
           done
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libpipewire-0.3-dev \
-            pkg-config
+          for attempt in 1 2 3; do
+            if sudo apt-get install -y \
+              libwebkit2gtk-4.1-dev \
+              libssl-dev \
+              libgtk-3-dev \
+              libayatana-appindicator3-dev \
+              librsvg2-dev \
+              libpipewire-0.3-dev \
+              pkg-config; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "apt-get install failed after $attempt attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
 
       # ── Rust: build + test (strict gate) ──────────────────────────────────
       # No --locked: omniphony-renderer/Cargo.lock is gitignored (matches
@@ -169,6 +193,7 @@ jobs:
     # macOS portability regressions on PRs, before the tag-triggered release
     # builds (liborender / Studio / mpv) ever run on macOS.
     runs-on: macos-14
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
@@ -189,5 +214,43 @@ jobs:
           restore-keys: macos-ci-cargo-
 
       - name: Build renderer workspace (macOS arm64)
+        working-directory: omniphony-renderer
+        run: cargo build --workspace
+
+  build-windows:
+    # Windows x64 compile gate. On Windows cpal always pulls its ASIO backend
+    # (audio_output enables the feature per-target; the workspace `asio` feature
+    # is a legacy no-op alias), so this is the only job that exercises asio-sys:
+    # fetching the SDK, running bindgen over asio.h, compiling the SDK's C++ into
+    # libasio.a, and linking it. Until this job existed, that whole path was only
+    # ever built by the tag-triggered release.yml — a broken SDK setup surfaced at
+    # release time, not on the PR that caused it.
+    #
+    # Build-only: no Tauri bundle, and no vcpkg/SAF since saf_vbap is opt-in and
+    # the default VBAP backend is pure Rust. bindgen finds libclang on the runner
+    # image without any setup, which is why no LLVM step appears here.
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            omniphony-renderer/target
+          key: windows-ci-cargo-${{ hashFiles('omniphony-renderer/**/Cargo.toml') }}
+          restore-keys: windows-ci-cargo-
+
+      - name: Setup ASIO SDK
+        uses: ./.github/actions/setup-asio-sdk
+
+      - name: Build renderer workspace (Windows x64)
         working-directory: omniphony-renderer
         run: cargo build --workspace

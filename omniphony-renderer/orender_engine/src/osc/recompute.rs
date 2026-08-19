@@ -8,6 +8,7 @@ use runtime_control::snapshot::{build_renderer_state_json, build_speakers_state_
 use super::client_registry::OscClientRegistry;
 use super::gaintable::GaintableCache;
 use super::transport::{broadcast_int, broadcast_string, send_update_to_client};
+use runtime_control::osc_contract;
 
 pub(crate) fn trigger_layout_recompute(
     control: &Arc<RendererControl>,
@@ -19,7 +20,7 @@ pub(crate) fn trigger_layout_recompute(
         log::warn!(
             "OSC apply: speaker positions cannot be updated — requested backend rebuild could not be prepared"
         );
-        broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 0);
+        broadcast_int(socket, clients, osc_contract::STATE_SPEAKERS_RECOMPUTING, 0);
         return;
     }
 
@@ -34,7 +35,7 @@ pub(crate) fn trigger_layout_recompute(
             .recompute_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
         log::info!("OSC apply: recompute already in progress, queueing a follow-up rebuild");
-        broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 1);
+        broadcast_int(socket, clients, osc_contract::STATE_SPEAKERS_RECOMPUTING, 1);
         return;
     }
 
@@ -42,7 +43,7 @@ pub(crate) fn trigger_layout_recompute(
         Some(plan) => plan,
         None => {
             log::warn!("OSC apply: failed to prepare render backend recompute plan");
-            broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 0);
+            broadcast_int(socket, clients, osc_contract::STATE_SPEAKERS_RECOMPUTING, 0);
             return;
         }
     };
@@ -50,11 +51,11 @@ pub(crate) fn trigger_layout_recompute(
     control
         .recomputing
         .store(true, std::sync::atomic::Ordering::Relaxed);
-    broadcast_int(socket, clients, "/omniphony/state/speakers/recomputing", 1);
+    broadcast_int(socket, clients, osc_contract::STATE_SPEAKERS_RECOMPUTING, 1);
     broadcast_string(
         socket,
         clients,
-        "/omniphony/state/speakers/recompute_error",
+        osc_contract::STATE_SPEAKERS_RECOMPUTE_ERROR,
         "",
     );
 
@@ -136,25 +137,25 @@ pub(crate) fn trigger_layout_recompute(
                     broadcast_string(
                         &socket_clone,
                         &clients_clone,
-                        "/omniphony/state/renderer",
+                        osc_contract::STATE_RENDERER,
                         &renderer_state_json,
                     );
                     broadcast_string(
                         &socket_clone,
                         &clients_clone,
-                        "/omniphony/state/layout",
+                        osc_contract::STATE_LAYOUT,
                         &layout_json,
                     );
                     broadcast_string(
                         &socket_clone,
                         &clients_clone,
-                        "/omniphony/state/speakers",
+                        osc_contract::STATE_SPEAKERS,
                         &speakers_state_json,
                     );
                     broadcast_int(
                         &socket_clone,
                         &clients_clone,
-                        "/omniphony/state/speakers/recomputing",
+                        osc_contract::STATE_SPEAKERS_RECOMPUTING,
                         0,
                     );
                     // The precomputed gain table changed with the new topology.
@@ -212,13 +213,13 @@ pub(crate) fn trigger_layout_recompute(
                     broadcast_string(
                         &socket_clone,
                         &clients_clone,
-                        "/omniphony/state/speakers/recompute_error",
+                        osc_contract::STATE_SPEAKERS_RECOMPUTE_ERROR,
                         &message,
                     );
                     broadcast_int(
                         &socket_clone,
                         &clients_clone,
-                        "/omniphony/state/speakers/recomputing",
+                        osc_contract::STATE_SPEAKERS_RECOMPUTING,
                         0,
                     );
                     // Same follow-up as the success path: a request queued

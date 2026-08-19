@@ -15,6 +15,13 @@ use renderer::metering::AudioMeter;
 use renderer::speaker_layout::SpeakerLayout;
 use std::sync::Arc;
 
+/// Monitoring cadences this host falls back to when the config declares none.
+///
+/// Higher than the embedded host's: this is the renderer Studio talks to, and
+/// the meters and diag plots are only as smooth as this rate.
+const CLI_METER_RATE_HZ: f32 = 50.0;
+const CLI_DIAG_RATE_HZ: f32 = 50.0;
+
 #[cfg(target_os = "windows")]
 fn list_available_output_devices(_backend: OutputBackend) -> Vec<OutputDeviceOption> {
     audio_output::list_asio_devices()
@@ -405,19 +412,15 @@ fn init_osc_runtime(
             .clamp(0.0, 1.0);
         ctrl.live.write().drc_weight = drc_weight;
 
-        // Monitoring cadences: seed RendererControl from config (CLI default
-        // 50 Hz). Renderer is the source of truth — OSC-adjustable + persisted.
-        ctrl.set_meter_rate_hz(
-            render_cfg
-                .as_ref()
-                .and_then(|cfg| cfg.meter_rate)
-                .unwrap_or(50.0),
-        );
-        ctrl.set_diag_rate_hz(
-            render_cfg
-                .as_ref()
-                .and_then(|cfg| cfg.diag_rate)
-                .unwrap_or(50.0),
+        // Monitoring cadences. This host publishes faster than the embedded
+        // one: it is what Studio's meters and diag plots read. Recorded on the
+        // control first so a later profile switch, which replays the shared
+        // runtime seed, falls back to this value and not the embedded host's.
+        // Renderer is the source of truth — OSC-adjustable + persisted.
+        ctrl.set_cadence_defaults_hz(CLI_METER_RATE_HZ, CLI_DIAG_RATE_HZ);
+        ctrl.seed_cadences_from_config(
+            render_cfg.as_ref().and_then(|cfg| cfg.meter_rate),
+            render_cfg.as_ref().and_then(|cfg| cfg.diag_rate),
         );
 
         ctrl.set_requested_ramp_mode(args.ramp_mode.into());
