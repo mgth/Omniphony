@@ -1,4 +1,5 @@
 pub mod adaptive_runtime;
+pub mod callback_state;
 pub mod control;
 pub mod file_sink;
 pub mod iir;
