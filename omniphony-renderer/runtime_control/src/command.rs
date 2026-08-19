@@ -1,3 +1,4 @@
+use crate::osc_contract;
 use log::LevelFilter;
 use rosc::{OscMessage, OscType};
 
@@ -29,12 +30,12 @@ pub fn parse_runtime_log_level(value: &str) -> Option<LevelFilter> {
 
 pub fn parse_process_command(msg: &OscMessage) -> Option<RuntimeCommand> {
     match msg.addr.as_str() {
-        "/omniphony/control/save_config" => Some(RuntimeCommand::SaveConfig),
-        "/omniphony/control/reload_config" => Some(RuntimeCommand::ReloadConfig),
-        "/omniphony/control/quit" => Some(RuntimeCommand::Quit),
-        "/omniphony/control/yield_port" => Some(RuntimeCommand::YieldPort),
-        "/omniphony/control/resume" => Some(RuntimeCommand::Resume),
-        "/omniphony/control/log_level" => msg.args.first().and_then(|arg| match arg {
+        osc_contract::CONTROL_SAVE_CONFIG => Some(RuntimeCommand::SaveConfig),
+        osc_contract::CONTROL_RELOAD_CONFIG => Some(RuntimeCommand::ReloadConfig),
+        osc_contract::CONTROL_QUIT => Some(RuntimeCommand::Quit),
+        osc_contract::CONTROL_YIELD_PORT => Some(RuntimeCommand::YieldPort),
+        osc_contract::CONTROL_RESUME => Some(RuntimeCommand::Resume),
+        osc_contract::CONTROL_LOG_LEVEL => msg.args.first().and_then(|arg| match arg {
             OscType::String(s) => parse_runtime_log_level(s).map(RuntimeCommand::SetLogLevel),
             _ => None,
         }),
@@ -56,13 +57,13 @@ mod tests {
     #[test]
     fn yield_port_maps_to_runtime_command() {
         assert!(matches!(
-            parse_process_command(&msg(crate::osc_contract::CONTROL_YIELD_PORT)),
+            parse_process_command(&msg(osc_contract::CONTROL_YIELD_PORT)),
             Some(RuntimeCommand::YieldPort)
         ));
         assert!(matches!(
-            parse_process_command(&msg(crate::osc_contract::CONTROL_QUIT)),
+            parse_process_command(&msg(osc_contract::CONTROL_QUIT)),
             Some(RuntimeCommand::Quit)
         ));
-        assert!(parse_process_command(&msg("/omniphony/control/unknown")).is_none());
+        assert!(parse_process_command(&msg(osc_contract::CONTROL_UNKNOWN)).is_none());
     }
 }

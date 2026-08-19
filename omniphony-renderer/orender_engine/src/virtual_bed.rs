@@ -921,6 +921,200 @@ pub fn build_fixed_channel_objects(
     )
 }
 
+/// Everything [`plan_channel_render`] reads for a bed-only frame, kept so the
+/// next frame can tell whether replanning is needed at all.
+///
+/// The output layout is represented by `geometry_generation` rather than by a
+/// copy of the layout: it is bumped whenever a change reaches the speaker
+/// geometry (see the layout-recompute path in the OSC dispatcher), and the
+/// layout is the only thing the plan reads out of the topology. The virtual bed
+/// is compared by value because editing it bumps nothing — it is a plain live
+/// param — so a generation counter would miss it and the bed would silently
+/// stop following Studio's editor.
+#[derive(Clone, PartialEq)]
+struct BedPlanKey {
+    labels: Vec<RChannelLabel>,
+    mode: renderer::live_params::ChannelRenderMode,
+    virtual_bed: Option<SpeakerLayout>,
+    surround_placement: SurroundPlacement,
+    room_ratio: [f32; 3],
+    room_ratio_rear: f32,
+    room_ratio_lower: f32,
+    room_ratio_center_blend: f32,
+    geometry_generation: u64,
+}
+
+/// What a planned bed-only frame turned out to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BedPlanKind {
+    /// Renderable. The routing has been applied to the renderer and the events
+    /// are available from [`BedChannelPlanner::events`].
+    Events,
+    /// The channel mode asks the host to handle the channels itself.
+    HostPassthrough,
+    /// Nothing maps to the output: the host should emit silence.
+    Silence,
+}
+
+/// Shared bed-only (channel-content) planner for both hosts.
+///
+/// A bed frame's mapping depends only on the channel labels and a handful of
+/// live params, none of which change per frame — but planning it is not cheap:
+/// it builds a label→speaker map and, for every channel placed by room ratios,
+/// solves a depth warp by bisection. Doing that on every frame cost real time on
+/// short frames (TrueHD delivers 40 samples at a time, so ~1200 plans/second)
+/// and, worse, deep-cloned the virtual bed and the output layout each time just
+/// to read them.
+///
+/// So the inputs are captured on the first frame and compared on the next: a
+/// steady stream replans zero times, and the comparison happens under the read
+/// lock *before* anything is cloned.
+#[derive(Default)]
+pub struct BedChannelPlanner {
+    key: Option<BedPlanKey>,
+    kind: Option<BedPlanKind>,
+    events: Vec<renderer::spatial_renderer::SpatialChannelEvent>,
+    applied_routes: Option<Vec<renderer::spatial_renderer::ChannelRoute>>,
+}
+
+impl BedChannelPlanner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Forget everything (stream reset / new segment).
+    ///
+    /// The renderer's per-channel state is dropped on a segment reset, so the
+    /// applied routing has to be forgotten too or the next plan would consider
+    /// itself already applied.
+    pub fn reset(&mut self) {
+        self.key = None;
+        self.kind = None;
+        self.events.clear();
+        self.applied_routes = None;
+    }
+
+    /// The events of the current plan, in channel order. Empty unless the last
+    /// [`plan`](Self::plan) returned [`BedPlanKind::Events`].
+    pub fn events(&self) -> &[renderer::spatial_renderer::SpatialChannelEvent] {
+        &self.events
+    }
+
+    /// Plan this frame's bed mapping, reusing the previous plan when nothing it
+    /// depends on has changed, and apply the routing to the renderer on change.
+    pub fn plan(
+        &mut self,
+        renderer: &renderer::spatial_renderer::SpatialRenderer,
+        channel_labels: &[RChannelLabel],
+    ) -> BedPlanKind {
+        let control = renderer.renderer_control();
+        let geometry_generation = control.geometry_generation();
+
+        // One lock acquisition: compare first, and only clone the inputs into a
+        // fresh key when the comparison actually failed.
+        let key = {
+            let live = control.live.read();
+            if let (Some(previous), Some(kind)) = (self.key.as_ref(), self.kind)
+                && previous.matches(&live, channel_labels, geometry_generation)
+            {
+                return kind;
+            }
+            BedPlanKey {
+                labels: channel_labels.to_vec(),
+                mode: live.channel_render_mode,
+                virtual_bed: live.virtual_bed.clone(),
+                surround_placement: live.surround_placement,
+                room_ratio: live.room_ratio,
+                room_ratio_rear: live.room_ratio_rear,
+                room_ratio_lower: live.room_ratio_lower,
+                room_ratio_center_blend: live.room_ratio_center_blend,
+                geometry_generation,
+            }
+        };
+
+        let output_layout = renderer.speaker_layout();
+        let kind = match plan_channel_render(
+            key.mode,
+            &key.labels,
+            key.virtual_bed.as_ref(),
+            Some(&output_layout),
+            key.room_ratio,
+            key.room_ratio_rear,
+            key.room_ratio_lower,
+            key.room_ratio_center_blend,
+            key.surround_placement,
+        ) {
+            ChannelRenderPlan::Events { events, routes } => {
+                self.apply_routes(renderer, routes);
+                self.events = events;
+                BedPlanKind::Events
+            }
+            ChannelRenderPlan::HostPassthrough => {
+                self.events.clear();
+                BedPlanKind::HostPassthrough
+            }
+            ChannelRenderPlan::Silence => {
+                self.events.clear();
+                BedPlanKind::Silence
+            }
+        };
+
+        self.key = Some(key);
+        self.kind = Some(kind);
+        kind
+    }
+
+    fn apply_routes(
+        &mut self,
+        renderer: &renderer::spatial_renderer::SpatialRenderer,
+        routes: Vec<renderer::spatial_renderer::ChannelRoute>,
+    ) {
+        if self.applied_routes.as_deref() != Some(routes.as_slice()) {
+            renderer.configure_channel_routing(&routes);
+            self.applied_routes = Some(routes);
+        }
+    }
+}
+
+impl BedPlanKey {
+    /// Whether a plan built from this key is still valid for `live`.
+    ///
+    /// Ordered cheapest-first: the scalars and the label list reject almost
+    /// every real change before the virtual bed is compared element by element.
+    ///
+    /// The key is destructured rather than read field by field so that adding a
+    /// field to it without deciding how it compares here is a compile error, not
+    /// a silently stale plan.
+    fn matches(
+        &self,
+        live: &renderer::live_params::LiveParams,
+        channel_labels: &[RChannelLabel],
+        geometry_generation: u64,
+    ) -> bool {
+        let Self {
+            labels,
+            mode,
+            virtual_bed,
+            surround_placement,
+            room_ratio,
+            room_ratio_rear,
+            room_ratio_lower,
+            room_ratio_center_blend,
+            geometry_generation: planned_geometry,
+        } = self;
+
+        *planned_geometry == geometry_generation
+            && *mode == live.channel_render_mode
+            && *surround_placement == live.surround_placement
+            && *room_ratio == live.room_ratio
+            && *room_ratio_rear == live.room_ratio_rear
+            && *room_ratio_lower == live.room_ratio_lower
+            && *room_ratio_center_blend == live.room_ratio_center_blend
+            && labels == channel_labels
+            && *virtual_bed == live.virtual_bed
+    }
+}
+
 /// Shared fixed-channel planner for object streams (engine + CLI decode
 /// paths). Plans the fixed prefix of the channel list through
 /// [`plan_channel_render`] — virtualized by default, per-entry direct opt-in
@@ -1753,5 +1947,100 @@ mod tests {
                 ChannelRenderPlan::Silence => PlanKind::Silence,
             }
         }
+    }
+
+    // ── What `BedChannelPlanner`'s cache key has to cover ─────────────────
+    //
+    // The planner reuses a plan until one of its inputs changes, so each of
+    // these pins an input that genuinely moves the output: drop it from the key
+    // and the bed silently stops following that control.
+
+    use renderer::speaker_layout::Speaker;
+
+    /// Positions of a spatial plan, in channel order. `None` for a direct
+    /// (one-hot) channel, which carries no position.
+    fn planned_positions(plan: &ChannelRenderPlan) -> Vec<Option<[f64; 3]>> {
+        match plan {
+            ChannelRenderPlan::Events { events, .. } => events.iter().map(|e| e.position).collect(),
+            other => panic!("expected a spatial plan, got {:?}", PlanKind::from(other)),
+        }
+    }
+
+    fn plan_bed(bed: Option<&SpeakerLayout>, room_ratio: [f32; 3]) -> ChannelRenderPlan {
+        plan_channel_render(
+            renderer::live_params::ChannelRenderMode::Spatial,
+            &BED_5_1,
+            bed,
+            None,
+            room_ratio,
+            1.0,
+            1.0,
+            0.0,
+            SurroundPlacement::Side,
+        )
+    }
+
+    /// A bed whose L sits at an intermediate depth. The canonical fallback poses
+    /// all sit on the unit cube's faces, where the room-ratio depth warp is the
+    /// identity — only an off-axis pose shows the warp at all.
+    fn bed_with_l_at(azimuth: f32) -> SpeakerLayout {
+        vbed(vec![
+            Speaker::new("L", azimuth, 0.0),
+            Speaker::new("R", 30.0, 0.0),
+            Speaker::new("C", 0.0, 0.0),
+        ])
+    }
+
+    /// The premise of caching: the plan is a pure function of its inputs, so
+    /// replanning an unchanged frame can only reproduce the same answer.
+    #[test]
+    fn identical_inputs_plan_identically() {
+        let bed = bed_with_l_at(-45.0);
+        let first = plan_bed(Some(&bed), UNIT_ROOM);
+        let second = plan_bed(Some(&bed), UNIT_ROOM);
+        assert_eq!(planned_positions(&first), planned_positions(&second));
+        match (&first, &second) {
+            (
+                ChannelRenderPlan::Events { routes: a, .. },
+                ChannelRenderPlan::Events { routes: b, .. },
+            ) => assert_eq!(a, b),
+            _ => panic!("expected two spatial plans"),
+        }
+    }
+
+    /// Editing the virtual bed moves a channel — and nothing bumps a generation
+    /// counter when it happens, so the key must compare the bed itself.
+    #[test]
+    fn virtual_bed_edit_moves_a_planned_channel() {
+        assert_ne!(
+            planned_positions(&plan_bed(Some(&bed_with_l_at(-30.0)), UNIT_ROOM)),
+            planned_positions(&plan_bed(Some(&bed_with_l_at(-110.0)), UNIT_ROOM)),
+            "moving L in the virtual bed must move the planned object"
+        );
+    }
+
+    /// Same for the room ratios, which warp the depth of every off-axis channel.
+    #[test]
+    fn room_ratio_change_moves_a_planned_channel() {
+        let bed = bed_with_l_at(-45.0);
+        assert_ne!(
+            planned_positions(&plan_bed(Some(&bed), UNIT_ROOM)),
+            planned_positions(&plan_bed(Some(&bed), [1.0, 2.5, 1.0])),
+            "a deeper room must move the off-axis objects"
+        );
+    }
+
+    /// The bed comparison is a derived `PartialEq`; if it ever stopped looking
+    /// at the speakers, every cached plan would go stale without a symptom.
+    #[test]
+    fn layout_equality_detects_a_moved_speaker() {
+        let bed = bed_with_l_at(-30.0);
+        assert_eq!(bed, bed.clone());
+        assert_ne!(bed, bed_with_l_at(-31.0));
+        assert_ne!(
+            Some(bed),
+            None,
+            "resetting the bed to defaults must not compare equal to having one"
+        );
     }
 }

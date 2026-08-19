@@ -28,6 +28,7 @@ use runtime_control::osc::{
     parse_json_string_arg, parse_nonnegative_f32_arg, parse_nonnegative_u32_arg,
     parse_positive_f32_arg, parse_positive_u32_arg, parse_string_arg,
 };
+use runtime_control::osc_contract;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -237,7 +238,7 @@ fn push_audio_domain_broadcasts(
     include_logical_apply: bool,
 ) {
     effects.broadcasts.push(BroadcastUpdate {
-        addr: "/omniphony/state/audio".to_string(),
+        addr: osc_contract::STATE_AUDIO.to_string(),
         value: BroadcastValue::String(build_audio_state_json(audio)),
     });
     if include_logical_apply {
@@ -251,7 +252,7 @@ fn push_input_domain_broadcasts(
     include_logical_apply: bool,
 ) {
     effects.broadcasts.push(BroadcastUpdate {
-        addr: "/omniphony/state/input".to_string(),
+        addr: osc_contract::STATE_INPUT.to_string(),
         value: BroadcastValue::String(build_input_state_json(input)),
     });
     if include_logical_apply {
@@ -288,7 +289,7 @@ impl HostControlHandler for HostAudio {
         let mut effects = ControlEffects::default();
 
         // ── /control/config/audio (batch apply) ──
-        if addr == "/omniphony/control/config/audio" {
+        if addr == osc_contract::CONTROL_CONFIG_AUDIO {
             let patch = parse_json_string_arg::<AudioConfigPatch>(msg.args.first());
             if let Some(patch) = patch {
                 if let Some(output_device) = patch.output_device {
@@ -430,13 +431,13 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/config/audio/apply" {
+        if addr == osc_contract::CONTROL_CONFIG_AUDIO_APPLY {
             push_audio_domain_broadcasts(&mut effects, audio, false);
             effects.log_message = Some("OSC: audio config apply".to_string());
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/config/input" {
+        if addr == osc_contract::CONTROL_CONFIG_INPUT {
             let patch = parse_json_string_arg::<InputConfigPatch>(msg.args.first());
             if let Some(patch) = patch {
                 if let Some(mode) = patch.mode {
@@ -502,7 +503,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/config/input/apply" {
+        if addr == osc_contract::CONTROL_CONFIG_INPUT_APPLY {
             input.request_apply();
             effects.mark_dirty = true;
             push_input_domain_broadcasts(&mut effects, input, false);
@@ -510,10 +511,10 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/audio/output_devices/refresh" {
+        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_DEVICES_REFRESH {
             if let Some(devices) = audio.refresh_available_output_devices() {
                 effects.broadcasts.push(BroadcastUpdate {
-                    addr: "/omniphony/state/audio".to_string(),
+                    addr: osc_contract::STATE_AUDIO.to_string(),
                     value: BroadcastValue::String(build_audio_state_json(audio)),
                 });
                 effects.log_message = Some(format!(
@@ -524,7 +525,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/audio/output_device" {
+        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_DEVICE {
             let requested = msg.args.first().and_then(|arg| match arg {
                 OscType::String(s) => {
                     let trimmed = s.trim();
@@ -541,25 +542,25 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/audio/output_backend" {
+        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_BACKEND {
             audio.set_requested_output_backend(trim_to_opt(parse_string_arg(msg.args.first())));
             effects.mark_dirty = true;
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/audio/output_file" {
+        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_FILE {
             audio.set_requested_output_file(trim_to_opt(parse_string_arg(msg.args.first())));
             effects.mark_dirty = true;
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/audio/output_file_format" {
+        if addr == osc_contract::CONTROL_AUDIO_OUTPUT_FILE_FORMAT {
             audio.set_requested_output_file_format(trim_to_opt(parse_string_arg(msg.args.first())));
             effects.mark_dirty = true;
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/mode" {
+        if addr == osc_contract::CONTROL_INPUT_MODE {
             let requested = parse_string_arg(msg.args.first()).and_then(|value| {
                 match value.to_ascii_lowercase().as_str() {
                     "bridge" | "pipe_bridge" => Some(InputMode::Bridge),
@@ -579,7 +580,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/backend" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_BACKEND {
             let requested = parse_string_arg(msg.args.first()).and_then(|value| {
                 match value.to_ascii_lowercase().as_str() {
                     "pipewire" => Some(InputBackend::Pipewire),
@@ -594,21 +595,21 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/node" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_NODE {
             let requested = parse_string_arg(msg.args.first());
             input.set_requested_node_name(requested);
             effects.mark_dirty = true;
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/description" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_DESCRIPTION {
             let requested = parse_string_arg(msg.args.first());
             input.set_requested_node_description(requested);
             effects.mark_dirty = true;
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/layout" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_LAYOUT {
             let requested = parse_string_arg(msg.args.first()).map(PathBuf::from);
             input.set_requested_layout_path(requested);
             input.set_requested_current_layout(None);
@@ -616,14 +617,14 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/layout_import" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_LAYOUT_IMPORT {
             let requested = parse_input_layout_arg(msg.args.first());
             input.set_requested_current_layout(requested);
             effects.mark_dirty = true;
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/channels" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_CHANNELS {
             let requested = match msg.args.first() {
                 Some(OscType::Int(i)) if *i > 0 => Some(*i as u16),
                 Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u16),
@@ -636,7 +637,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/sample_rate" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_SAMPLE_RATE {
             if let Some(requested) = parse_positive_u32_arg(msg.args.first()) {
                 input.set_requested_sample_rate_hz(Some(requested));
                 effects.mark_dirty = true;
@@ -644,7 +645,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/format" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_FORMAT {
             let requested = parse_string_arg(msg.args.first()).and_then(|value| {
                 match value.to_ascii_lowercase().as_str() {
                     "f32" => Some(InputSampleFormat::F32),
@@ -659,7 +660,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/map" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_MAP {
             let requested = parse_string_arg(msg.args.first()).and_then(|value| {
                 match value.to_ascii_lowercase().as_str() {
                     "7.1-fixed" => Some(InputMapMode::SevenOneFixed),
@@ -673,7 +674,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/lfe_mode" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_LFE_MODE {
             let requested = parse_string_arg(msg.args.first()).and_then(|value| {
                 match value.to_ascii_lowercase().as_str() {
                     "object" => Some(InputLfeMode::Object),
@@ -689,7 +690,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/live/clock_mode" {
+        if addr == osc_contract::CONTROL_INPUT_LIVE_CLOCK_MODE {
             let requested = parse_string_arg(msg.args.first()).and_then(|value| {
                 match value.to_ascii_lowercase().as_str() {
                     "dac" => Some(InputClockMode::Dac),
@@ -705,14 +706,14 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/input/apply" {
+        if addr == osc_contract::CONTROL_INPUT_APPLY {
             input.request_apply();
             effects.mark_dirty = true;
             effects.log_message = Some("OSC: input apply requested".to_string());
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/audio/sample_rate" {
+        if addr == osc_contract::CONTROL_AUDIO_SAMPLE_RATE {
             let requested_hz = match msg.args.first() {
                 Some(OscType::Int(i)) if *i > 0 => Some(*i as u32),
                 Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u32),
@@ -723,7 +724,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING {
             if let Some(enabled) = parse_bool_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling(enabled);
                 effects.mark_dirty = true;
@@ -731,7 +732,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/enable_far_mode" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_ENABLE_FAR_MODE {
             if let Some(enabled) = parse_bool_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_enable_far_mode(enabled);
                 effects.mark_dirty = true;
@@ -739,7 +740,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/force_silence_in_far_mode" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_FORCE_SILENCE_IN_FAR_MODE {
             if let Some(enabled) = parse_bool_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_force_silence_in_far_mode(enabled);
                 effects.mark_dirty = true;
@@ -747,8 +748,8 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/hard_recover_high_in_far_mode"
-            || addr == "/omniphony/control/adaptive_resampling/hard_recover_in_far_mode"
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_HIGH_IN_FAR_MODE
+            || addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_IN_FAR_MODE
         {
             if let Some(enabled) = parse_bool_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_hard_recover_high_in_far_mode(enabled);
@@ -757,7 +758,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/hard_recover_low_in_far_mode" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_HARD_RECOVER_LOW_IN_FAR_MODE {
             if let Some(enabled) = parse_bool_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_hard_recover_low_in_far_mode(enabled);
                 effects.mark_dirty = true;
@@ -765,7 +766,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/far_mode_return_fade_in_ms" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_FAR_MODE_RETURN_FADE_IN_MS {
             if let Some(value) = parse_nonnegative_u32_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_far_mode_return_fade_in_ms(value);
                 effects.mark_dirty = true;
@@ -773,7 +774,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/kp_near" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_KP_NEAR {
             if let Some(value) = parse_positive_f32_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_kp_near(value);
                 effects.mark_dirty = true;
@@ -781,7 +782,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/ki" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_KI {
             if let Some(value) = parse_nonnegative_f32_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_ki(value);
                 effects.mark_dirty = true;
@@ -789,7 +790,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/integral_discharge_ratio" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_INTEGRAL_DISCHARGE_RATIO {
             if let Some(value) = parse_nonnegative_f32_arg(msg.args.first()).map(|v| v.min(1.0)) {
                 audio.set_requested_adaptive_resampling_integral_discharge_ratio(value);
                 effects.mark_dirty = true;
@@ -797,7 +798,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/max_adjust" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_MAX_ADJUST {
             if let Some(value) = parse_positive_f32_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_max_adjust(value);
                 effects.mark_dirty = true;
@@ -805,7 +806,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/update_interval_callbacks" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_UPDATE_INTERVAL_CALLBACKS {
             if let Some(value) = parse_positive_u32_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_update_interval_callbacks(value);
                 effects.mark_dirty = true;
@@ -813,8 +814,8 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/high_recover_entry_margin_ms"
-            || addr == "/omniphony/control/adaptive_resampling/near_far_threshold_ms"
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_HIGH_RECOVER_ENTRY_MARGIN_MS
+            || addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_NEAR_FAR_THRESHOLD_MS
         {
             if let Some(value) = parse_positive_u32_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_high_recover_entry_margin_ms(value);
@@ -823,7 +824,7 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/pause" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_PAUSE {
             if let Some(paused) = parse_bool_arg(msg.args.first()) {
                 audio.set_requested_adaptive_resampling_paused(paused);
                 effects.mark_dirty = true;
@@ -831,13 +832,13 @@ impl HostControlHandler for HostAudio {
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/adaptive_resampling/reset_ratio" {
+        if addr == osc_contract::CONTROL_ADAPTIVE_RESAMPLING_RESET_RATIO {
             audio.request_ratio_reset();
             effects.mark_dirty = true;
             return Some(effects);
         }
 
-        if addr == "/omniphony/control/latency_target" {
+        if addr == osc_contract::CONTROL_LATENCY_TARGET {
             if let Some(latency_ms) = parse_positive_u32_arg(msg.args.first()) {
                 audio.set_requested_latency_target_ms(Some(latency_ms));
                 effects.mark_dirty = true;
@@ -857,7 +858,7 @@ impl HostControlHandler for HostAudio {
         // /state/audio: full output-device + adaptive-resampling state.
         let requested = audio.requested_snapshot();
         messages.push(OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/audio".to_string(),
+            addr: osc_contract::STATE_AUDIO.to_string(),
             args: vec![OscType::String(
                 json!({
                     "outputDevices": audio.available_output_devices(),
@@ -908,7 +909,7 @@ impl HostControlHandler for HostAudio {
         let requested = input.requested_snapshot();
         let applied = input.applied_snapshot();
         messages.push(OscPacket::Message(OscMessage {
-            addr: "/omniphony/state/input".to_string(),
+            addr: osc_contract::STATE_INPUT.to_string(),
             args: vec![OscType::String(
                 json!({
                     "mode": input_mode_name(requested.mode),

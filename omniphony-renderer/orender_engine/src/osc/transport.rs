@@ -4,6 +4,7 @@ use rosc::{OscMessage, OscPacket, OscType};
 use runtime_control::osc::{BroadcastUpdate, BroadcastValue};
 
 use super::client_registry::OscClientRegistry;
+use runtime_control::osc_contract;
 
 pub(crate) fn broadcast_float(
     socket: &UdpSocket,
@@ -109,7 +110,7 @@ pub(crate) fn broadcast_blob(
 
 pub(crate) fn encode_log_record(record: &sys::live_log::BufferedLogRecord) -> Option<Vec<u8>> {
     let packet = OscPacket::Message(OscMessage {
-        addr: "/omniphony/log".to_string(),
+        addr: osc_contract::LOG.to_string(),
         args: vec![
             OscType::Long(record.seq as i64),
             OscType::String(record.level.clone()),
@@ -167,7 +168,7 @@ pub(crate) fn send_raw_filtered<F>(
 
 pub(crate) fn send_metering_state(socket: &UdpSocket, client: SocketAddr, enabled: bool) {
     let packet = OscPacket::Message(OscMessage {
-        addr: "/omniphony/state/osc/metering".to_string(),
+        addr: osc_contract::STATE_OSC_METERING.to_string(),
         args: vec![OscType::Int(if enabled { 1 } else { 0 })],
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {
@@ -179,7 +180,7 @@ pub(crate) fn send_metering_state(socket: &UdpSocket, client: SocketAddr, enable
 
 pub(crate) fn send_diag_state(socket: &UdpSocket, client: SocketAddr, enabled: bool) {
     let packet = OscPacket::Message(OscMessage {
-        addr: "/omniphony/state/osc/diag".to_string(),
+        addr: osc_contract::STATE_OSC_DIAG.to_string(),
         args: vec![OscType::Int(if enabled { 1 } else { 0 })],
     });
     if let Ok(bytes) = rosc::encoder::encode(&packet) {

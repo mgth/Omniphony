@@ -3,10 +3,16 @@
 //! The engine is driven and observed entirely over OSC: clients send
 //! `/omniphony/control/…` messages and receive `/omniphony/state/…` updates.
 //! Those address strings are the wire contract between the engine and every
-//! client (Omniphony Studio, alternative front-ends, automation). Historically
-//! they were bare string literals scattered across the dispatcher and the
-//! producers; this module names them once so the Rust side references symbols
-//! instead of magic strings, and so the surface is discoverable in one place.
+//! client (Omniphony Studio, alternative front-ends, automation). They were
+//! once bare string literals scattered across the dispatcher and the producers;
+//! this module names them once so the Rust side references symbols instead of
+//! magic strings, and so the surface is discoverable in one place.
+//!
+//! "Single source of truth" is enforced, not just asserted: a test walks the
+//! OSC-facing sources and fails on any address spelled out rather than named
+//! here. The reason it is worth a test is that the failure mode is invisible —
+//! a mistyped literal compiles, matches nothing, and the control it belongs to
+//! simply stops working, with no error anywhere.
 //!
 //! The human-readable companion — direction, argument types and semantics for
 //! every address — lives in `docs/osc-control-contract.md`. Keep the two in
@@ -82,6 +88,32 @@ pub const CONTROL_BACKEND_FILE_GET: &str = "/omniphony/control/backend/file/get"
 pub const CONTROL_BACKEND_FILE_LIST: &str = "/omniphony/control/backend/file/list";
 pub const CONTROL_BACKEND_FILE_PUT: &str = "/omniphony/control/backend/file/put";
 pub const CONTROL_BACKEND_PARAM: &str = "/omniphony/control/backend/param";
+pub const CONTROL_BINAURAL_AIR_ABSORPTION: &str = "/omniphony/control/binaural/air_absorption";
+pub const CONTROL_BINAURAL_EAR_GAIN: &str = "/omniphony/control/binaural/ear_gain";
+pub const CONTROL_BINAURAL_EAR_MUTE: &str = "/omniphony/control/binaural/ear_mute";
+pub const CONTROL_BINAURAL_HEAD_RADIUS: &str = "/omniphony/control/binaural/head_radius";
+pub const CONTROL_BINAURAL_HRIR_SOURCE: &str = "/omniphony/control/binaural/hrir_source";
+pub const CONTROL_BINAURAL_HRTF_UPLOAD_BEGIN: &str =
+    "/omniphony/control/binaural/hrtf_upload/begin";
+pub const CONTROL_BINAURAL_HRTF_UPLOAD_CHUNK: &str =
+    "/omniphony/control/binaural/hrtf_upload/chunk";
+pub const CONTROL_BINAURAL_HRTF_UPLOAD_END: &str = "/omniphony/control/binaural/hrtf_upload/end";
+pub const CONTROL_BINAURAL_MODE: &str = "/omniphony/control/binaural_mode";
+pub const CONTROL_BINAURAL_REFLECTIONS_ENABLED: &str =
+    "/omniphony/control/binaural/reflections/enabled";
+pub const CONTROL_BINAURAL_REFLECTIONS_LEVEL: &str =
+    "/omniphony/control/binaural/reflections/level";
+pub const CONTROL_BINAURAL_REFLECTIONS_ROOM_DEPTH: &str =
+    "/omniphony/control/binaural/reflections/room_depth";
+pub const CONTROL_BINAURAL_REFLECTIONS_ROOM_HEIGHT: &str =
+    "/omniphony/control/binaural/reflections/room_height";
+pub const CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH: &str =
+    "/omniphony/control/binaural/reflections/room_width";
+pub const CONTROL_BINAURAL_REVERB_ENABLED: &str = "/omniphony/control/binaural/reverb/enabled";
+pub const CONTROL_BINAURAL_REVERB_LEVEL: &str = "/omniphony/control/binaural/reverb/level";
+pub const CONTROL_BINAURAL_REVERB_PREDELAY: &str = "/omniphony/control/binaural/reverb/predelay";
+pub const CONTROL_BINAURAL_REVERB_RT60: &str = "/omniphony/control/binaural/reverb/rt60";
+pub const CONTROL_BINAURAL_UNIT_SCALE: &str = "/omniphony/control/binaural/unit_scale";
 pub const CONTROL_CONFIG_AUDIO: &str = "/omniphony/control/config/audio";
 pub const CONTROL_CONFIG_AUDIO_APPLY: &str = "/omniphony/control/config/audio/apply";
 pub const CONTROL_CONFIG_INPUT: &str = "/omniphony/control/config/input";
@@ -100,6 +132,13 @@ pub const CONTROL_DIAG_RATE_HZ: &str = "/omniphony/control/diag/rate_hz";
 pub const CONTROL_DISTANCE_MODEL: &str = "/omniphony/control/distance_model";
 pub const CONTROL_DISTANCE_MODEL_METRIC: &str = "/omniphony/control/distance_model_metric";
 pub const CONTROL_GAIN: &str = "/omniphony/control/gain";
+pub const CONTROL_HEAD_ORIENTATION: &str = "/omniphony/control/head/orientation";
+pub const CONTROL_HEAD_QUAT: &str = "/omniphony/control/head/quat";
+pub const CONTROL_HEAD_RECENTER: &str = "/omniphony/control/head/recenter";
+pub const CONTROL_HEAD_TRACKING_ADDRESS: &str = "/omniphony/control/head/tracking/address";
+pub const CONTROL_HEAD_TRACKING_FORMAT: &str = "/omniphony/control/head/tracking/format";
+pub const CONTROL_HEAD_TRACKING_INVERT: &str = "/omniphony/control/head/tracking/invert";
+pub const CONTROL_HEAD_TRACKING_SMOOTHING: &str = "/omniphony/control/head/tracking/smoothing";
 pub const CONTROL_INPUT_APPLY: &str = "/omniphony/control/input/apply";
 pub const CONTROL_INPUT_DRC_MODE: &str = "/omniphony/control/input/drc_mode";
 pub const CONTROL_INPUT_DRC_WEIGHT: &str = "/omniphony/control/input/drc_weight";
@@ -116,18 +155,22 @@ pub const CONTROL_INPUT_LIVE_NODE: &str = "/omniphony/control/input/live/node";
 pub const CONTROL_INPUT_LIVE_SAMPLE_RATE: &str = "/omniphony/control/input/live/sample_rate";
 pub const CONTROL_INPUT_MODE: &str = "/omniphony/control/input/mode";
 pub const CONTROL_INPUT_REFRESH: &str = "/omniphony/control/input/refresh";
+pub const CONTROL_LATENCY_TARGET: &str = "/omniphony/control/latency_target";
 pub const CONTROL_LAYOUT_EXPORT: &str = "/omniphony/control/layout/export";
 pub const CONTROL_LAYOUT_RADIUS_M: &str = "/omniphony/control/layout/radius_m";
 pub const CONTROL_LOG_LEVEL: &str = "/omniphony/control/log_level";
 pub const CONTROL_LOUDNESS: &str = "/omniphony/control/loudness";
 pub const CONTROL_METERING: &str = "/omniphony/control/metering";
 pub const CONTROL_METERING_RATE_HZ: &str = "/omniphony/control/metering/rate_hz";
+pub const CONTROL_OUTPUT_MODE: &str = "/omniphony/control/output_mode";
 pub const CONTROL_OVERLAY_ENABLED: &str = "/omniphony/control/overlay/enabled";
 pub const CONTROL_OVERLAY_HEATMAP_BANDS: &str = "/omniphony/control/overlay/heatmap_bands";
 pub const CONTROL_OVERLAY_HEATMAP_COLORMAP: &str = "/omniphony/control/overlay/heatmap_colormap";
 pub const CONTROL_OVERLAY_HEATMAP_CUSTOM_STOPS: &str =
     "/omniphony/control/overlay/heatmap_custom_stops";
 pub const CONTROL_OVERLAY_HEATMAP_ENABLED: &str = "/omniphony/control/overlay/heatmap_enabled";
+pub const CONTROL_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS: &str =
+    "/omniphony/control/render_evaluation/object_size_intervals";
 /// Enables/disables every renderer-synthesized-object stage without clearing
 /// the configured phantom/height selections.
 pub const CONTROL_SYNTHETIC_OBJECTS: &str = "/omniphony/control/synthetic_objects";
@@ -149,6 +192,7 @@ pub const CONTROL_SURROUND_PLACEMENT: &str = "/omniphony/control/surround_placem
 /// How output channels map to device ports: `by_index` (positionless — port N =
 /// layout speaker N) or `by_name` (positional). Persisted to config.
 pub const CONTROL_OUTPUT_CHANNEL_MAPPING: &str = "/omniphony/control/output_channel_mapping";
+pub const CONTROL_UNKNOWN: &str = "/omniphony/control/unknown";
 /// Set the parametrable virtual bed for channel content. Argument is a YAML
 /// `SpeakerLayout` (one entry per channel label, `spatialize` = virtual/direct);
 /// an empty string resets to the built-in canonical poses (LFE direct).
@@ -341,6 +385,7 @@ pub const STATE_DECODE_TIME_MS: &str = "/omniphony/state/decode_time_ms";
 pub const STATE_DIAG_SCHEMA: &str = "/omniphony/state/diag_schema";
 pub const STATE_DIAG_VALUES: &str = "/omniphony/state/diag_values";
 pub const STATE_FRAME_DURATION_MS: &str = "/omniphony/state/frame_duration_ms";
+pub const STATE_HEAD_POSE: &str = "/omniphony/state/head_pose";
 pub const STATE_INPUT: &str = "/omniphony/state/input";
 pub const STATE_INPUT_PIPE: &str = "/omniphony/state/input_pipe";
 pub const STATE_LATENCY: &str = "/omniphony/state/latency";
@@ -351,13 +396,17 @@ pub const STATE_LATENCY_INSTANT: &str = "/omniphony/state/latency_instant";
 pub const STATE_LATENCY_OUTPUT_FIFO: &str = "/omniphony/state/latency_output_fifo";
 pub const STATE_LATENCY_RESAMPLER_PENDING: &str = "/omniphony/state/latency_resampler_pending";
 pub const STATE_LATENCY_SMOOTHED: &str = "/omniphony/state/latency_smoothed";
+pub const STATE_LATENCY_TARGET: &str = "/omniphony/state/latency_target";
 pub const STATE_LAYOUT: &str = "/omniphony/state/layout";
 pub const STATE_LOG_LEVEL: &str = "/omniphony/state/log_level";
 pub const STATE_LOUDNESS: &str = "/omniphony/state/loudness";
 pub const STATE_MONITORING: &str = "/omniphony/state/monitoring";
+pub const STATE_OBJECT_GENERATORS: &str = "/omniphony/state/object_generators";
+pub const STATE_OBJECT_TEST_POSITION: &str = "/omniphony/state/object_test/position";
 /// Schema of the declared live options (`renderer::options` registry rows),
 /// as a JSON string. Same pattern as `/state/object_generators` / `/state/phantom`.
 pub const STATE_OPTIONS_SCHEMA: &str = "/omniphony/state/options_schema";
+pub const STATE_PHANTOM: &str = "/omniphony/state/phantom";
 /// Named config profiles view as JSON: `{"active": "...", "names": ["..."]}`.
 /// Broadcast in the state snapshot and after every profile mutation.
 pub const STATE_PROFILES: &str = "/omniphony/state/profiles";
@@ -379,6 +428,8 @@ pub const STATE_RENDER_EVALUATION_CARTESIAN_Z_NEG_SIZE: &str =
     "/omniphony/state/render_evaluation/cartesian/z_neg_size";
 pub const STATE_RENDER_EVALUATION_CARTESIAN_Z_SIZE: &str =
     "/omniphony/state/render_evaluation/cartesian/z_size";
+pub const STATE_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS: &str =
+    "/omniphony/state/render_evaluation/object_size_intervals";
 pub const STATE_RENDER_EVALUATION_POLAR_AZIMUTH_RESOLUTION: &str =
     "/omniphony/state/render_evaluation/polar/azimuth_resolution";
 pub const STATE_RENDER_EVALUATION_POLAR_DISTANCE_MAX: &str =
@@ -400,6 +451,24 @@ pub const STATE_SPEAKERS_RECOMPUTE_ERROR: &str = "/omniphony/state/speakers/reco
 pub const STATE_SPEAKERS_RECOMPUTING: &str = "/omniphony/state/speakers/recomputing";
 pub const STATE_VBAP_ALLOW_NEGATIVE_Z: &str = "/omniphony/state/vbap/allow_negative_z";
 pub const STATE_WRITE_TIME_MS: &str = "/omniphony/state/write_time_ms";
+
+// ── Session handshake and high-rate streams ─────────────────────────────────
+//
+// Everything under `/omniphony/` that is neither a control nor a state address:
+// the client/engine handshake, the log relay, and the per-frame streams whose
+// rate makes them their own family (objects, meters, timestamps).
+
+pub const BED_CONFIG: &str = "/omniphony/bed/config";
+pub const HEARTBEAT: &str = "/omniphony/heartbeat";
+pub const HEARTBEAT_ACK: &str = "/omniphony/heartbeat/ack";
+pub const HEARTBEAT_UNKNOWN: &str = "/omniphony/heartbeat/unknown";
+pub const LOG: &str = "/omniphony/log";
+pub const METER_DRC_GAIN: &str = "/omniphony/meter/drc_gain";
+pub const METER_MASTER: &str = "/omniphony/meter/master";
+pub const REGISTER: &str = "/omniphony/register";
+pub const SPATIAL_FRAME: &str = "/omniphony/spatial/frame";
+pub const TIMESTAMP: &str = "/omniphony/timestamp";
+pub const YIELD_RESUME_PORT: &str = "/omniphony/yield/resume_port";
 
 // ── Address catalogues (handy for clients / tests) ──────────────────────────
 
@@ -522,6 +591,36 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_SPREAD_MIN,
     CONTROL_SPREAD_SIZE_TO_SPREAD_MODE,
     CONTROL_YIELD_PORT,
+    CONTROL_BINAURAL_AIR_ABSORPTION,
+    CONTROL_BINAURAL_EAR_GAIN,
+    CONTROL_BINAURAL_EAR_MUTE,
+    CONTROL_BINAURAL_HEAD_RADIUS,
+    CONTROL_BINAURAL_HRIR_SOURCE,
+    CONTROL_BINAURAL_HRTF_UPLOAD_BEGIN,
+    CONTROL_BINAURAL_HRTF_UPLOAD_CHUNK,
+    CONTROL_BINAURAL_HRTF_UPLOAD_END,
+    CONTROL_BINAURAL_MODE,
+    CONTROL_BINAURAL_REFLECTIONS_ENABLED,
+    CONTROL_BINAURAL_REFLECTIONS_LEVEL,
+    CONTROL_BINAURAL_REFLECTIONS_ROOM_DEPTH,
+    CONTROL_BINAURAL_REFLECTIONS_ROOM_HEIGHT,
+    CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH,
+    CONTROL_BINAURAL_REVERB_ENABLED,
+    CONTROL_BINAURAL_REVERB_LEVEL,
+    CONTROL_BINAURAL_REVERB_PREDELAY,
+    CONTROL_BINAURAL_REVERB_RT60,
+    CONTROL_BINAURAL_UNIT_SCALE,
+    CONTROL_HEAD_ORIENTATION,
+    CONTROL_HEAD_QUAT,
+    CONTROL_HEAD_RECENTER,
+    CONTROL_HEAD_TRACKING_ADDRESS,
+    CONTROL_HEAD_TRACKING_FORMAT,
+    CONTROL_HEAD_TRACKING_INVERT,
+    CONTROL_HEAD_TRACKING_SMOOTHING,
+    CONTROL_LATENCY_TARGET,
+    CONTROL_OUTPUT_MODE,
+    CONTROL_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS,
+    CONTROL_UNKNOWN,
 ];
 
 pub const ALL_STATE: &[&str] = &[
@@ -592,6 +691,32 @@ pub const ALL_STATE: &[&str] = &[
     STATE_SPEAKERS_RECOMPUTING,
     STATE_VBAP_ALLOW_NEGATIVE_Z,
     STATE_WRITE_TIME_MS,
+    STATE_HEAD_POSE,
+    STATE_LATENCY_TARGET,
+    STATE_OBJECT_GENERATORS,
+    STATE_OBJECT_TEST_POSITION,
+    STATE_PHANTOM,
+    STATE_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS,
+];
+
+/// Session handshake and high-rate stream addresses: everything under
+/// `/omniphony/` that is neither `control/` nor `state/`.
+///
+/// Catalogued for the same reason as the other two — so the guard tests below
+/// see the whole wire surface, not just the part that happens to be named after
+/// a direction.
+pub const ALL_SESSION: &[&str] = &[
+    BED_CONFIG,
+    HEARTBEAT,
+    HEARTBEAT_ACK,
+    HEARTBEAT_UNKNOWN,
+    LOG,
+    METER_DRC_GAIN,
+    METER_MASTER,
+    REGISTER,
+    SPATIAL_FRAME,
+    TIMESTAMP,
+    YIELD_RESUME_PORT,
 ];
 
 #[cfg(test)]
@@ -620,13 +745,90 @@ mod tests {
     }
 
     #[test]
+    fn session_consts_are_neither_control_nor_state() {
+        for &a in ALL_SESSION {
+            assert!(
+                a.starts_with("/omniphony/"),
+                "not an omniphony address: {a}"
+            );
+            assert!(
+                !a.starts_with("/omniphony/control/") && !a.starts_with("/omniphony/state/"),
+                "belongs in ALL_CONTROL or ALL_STATE, not here: {a}"
+            );
+        }
+    }
+
+    #[test]
     fn no_duplicate_addresses() {
         // A duplicated value would mean two names collide on one wire address,
         // or a typo merged two addresses — both are contract bugs.
         let mut seen = HashSet::new();
-        for &a in ALL_CONTROL.iter().chain(ALL_STATE) {
+        for &a in ALL_CONTROL.iter().chain(ALL_STATE).chain(ALL_SESSION) {
             assert!(seen.insert(a), "duplicate OSC address in contract: {a}");
         }
+    }
+
+    /// The OSC-facing sources must name addresses, not spell them.
+    ///
+    /// This module claims to be the single source of truth, but nothing used to
+    /// enforce it: a bare literal compiles just as well as a constant, and a
+    /// typo in one produces an address that silently never matches — no error,
+    /// no log, just a control that does nothing. So the claim is checked.
+    ///
+    /// Two forms are still spelled out, because they are not addresses: family
+    /// prefixes matched with `starts_with`, and `format!` templates with a
+    /// dynamic tail (`/omniphony/meter/object/{}`). Both would need a different
+    /// shape in the contract than a `&str` constant; until they get one, they
+    /// are listed here rather than silently tolerated.
+    #[test]
+    fn osc_sources_reference_the_contract_instead_of_spelling_addresses() {
+        use std::path::Path;
+
+        // Relative to this crate's root, so the guard follows the files.
+        const SOURCES: &[&str] = &[
+            "src/osc.rs",
+            "src/command.rs",
+            "../host_audio/src/lib.rs",
+            "../orender_engine/src/osc.rs",
+            "../orender_engine/src/osc/dispatch.rs",
+            "../orender_engine/src/osc/transport.rs",
+            "../orender_engine/src/osc/export.rs",
+            "../orender_engine/src/osc/recompute.rs",
+            "../orender_engine/src/osc/state_emit.rs",
+            "../orender_engine/src/osc/metadata_emit.rs",
+            "../orender_engine/src/osc/profiles.rs",
+        ];
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut offenders = Vec::new();
+        for rel in SOURCES {
+            let path = root.join(rel);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("guard is stale: cannot read {}: {e}", path.display()));
+            for (n, line) in src.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let mut rest = line;
+                while let Some(i) = rest.find("\"/omniphony/") {
+                    let after = &rest[i + 1..];
+                    let Some(end) = after.find('"') else { break };
+                    let addr = &after[..end];
+                    // A prefix is matched with `starts_with`; a template is
+                    // filled in by `format!`. Neither is a whole address.
+                    if !addr.ends_with('/') && !addr.contains('{') {
+                        offenders.push(format!("{}:{}: {addr}", rel, n + 1));
+                    }
+                    rest = &after[end..];
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "OSC addresses spelled out instead of referencing this module \
+             (add a constant here and use it):\n  {}",
+            offenders.join("\n  ")
+        );
     }
 
     #[test]
