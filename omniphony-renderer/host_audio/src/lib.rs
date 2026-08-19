@@ -625,11 +625,7 @@ impl HostControlHandler for HostAudio {
         }
 
         if addr == osc_contract::CONTROL_INPUT_LIVE_CHANNELS {
-            let requested = match msg.args.first() {
-                Some(OscType::Int(i)) if *i > 0 => Some(*i as u16),
-                Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u16),
-                _ => None,
-            };
+            let requested = parse_positive_u32_arg(msg.args.first()).map(|v| v as u16);
             if let Some(requested) = requested {
                 input.set_requested_channels(Some(requested));
                 effects.mark_dirty = true;
@@ -714,11 +710,7 @@ impl HostControlHandler for HostAudio {
         }
 
         if addr == osc_contract::CONTROL_AUDIO_SAMPLE_RATE {
-            let requested_hz = match msg.args.first() {
-                Some(OscType::Int(i)) if *i > 0 => Some(*i as u32),
-                Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u32),
-                _ => None,
-            };
+            let requested_hz = parse_positive_u32_arg(msg.args.first());
             audio.set_requested_output_sample_rate(requested_hz);
             effects.mark_dirty = true;
             return Some(effects);
