@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  orender loads the format bridge (libharletty_bridge.dylib) at runtime with
+	  dlopen. The bridge is built and signed by a different project, so under
+	  macOS library validation the load is rejected with "mapping process and
+	  mapped file (non-platform) have different Team IDs" (#260). This exception
+	  is what keeps that dlopen legal once the bundle is signed with a real
+	  Developer ID and hardened runtime (notarization requires declaring it).
+	-->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

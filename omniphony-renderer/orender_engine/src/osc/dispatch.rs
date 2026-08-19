@@ -14,6 +14,9 @@ use runtime_control::osc::{
     BroadcastUpdate, BroadcastValue, ControlEffects, apply_simple_osc_control,
     gaintable_chunk_broadcasts,
 };
+use runtime_control::osc::{
+    parse_bool_arg, parse_f32_arg, parse_nonnegative_u32_arg, parse_positive_u32_arg,
+};
 use runtime_control::osc_contract;
 
 use super::client_registry::OscClientRegistry;
@@ -48,7 +51,7 @@ pub(crate) fn handle_control_message(
     // CLI and embedded engine read them, they persist to config, and they are
     // broadcast in the live-state bundle. Changing them marks the config dirty.
     if addr == osc_contract::CONTROL_METERING_RATE_HZ {
-        if let Some(hz) = first_rate_hz_arg(msg) {
+        if let Some(hz) = parse_f32_arg(msg.args.first()) {
             control.set_meter_rate_hz(hz);
             control.mark_dirty();
             broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
@@ -57,7 +60,7 @@ pub(crate) fn handle_control_message(
         return;
     }
     if addr == osc_contract::CONTROL_DIAG_RATE_HZ {
-        if let Some(hz) = first_rate_hz_arg(msg) {
+        if let Some(hz) = parse_f32_arg(msg.args.first()) {
             control.set_diag_rate_hz(hz);
             control.mark_dirty();
             broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
@@ -100,11 +103,9 @@ pub(crate) fn handle_control_message(
             Some(OscType::String(s)) => s.trim().to_ascii_lowercase(),
             _ => return,
         };
-        let value = match msg.args.get(1) {
-            Some(OscType::Float(f)) => *f,
-            Some(OscType::Double(d)) => *d as f32,
-            Some(OscType::Int(i)) => *i as f32,
-            _ => return,
+        let value = match parse_f32_arg(msg.args.get(1)) {
+            Some(v) => v,
+            None => return,
         };
         if key.is_empty() || !value.is_finite() {
             return;
@@ -131,11 +132,9 @@ pub(crate) fn handle_control_message(
             Some(OscType::String(s)) => s.trim().to_ascii_lowercase(),
             _ => return,
         };
-        let value = match msg.args.get(1) {
-            Some(OscType::Float(f)) => *f,
-            Some(OscType::Double(d)) => *d as f32,
-            Some(OscType::Int(i)) => *i as f32,
-            _ => return,
+        let value = match parse_f32_arg(msg.args.get(1)) {
+            Some(v) => v,
+            None => return,
         };
         if key.is_empty() || !value.is_finite() {
             return;
@@ -181,41 +180,33 @@ pub(crate) fn handle_control_message(
     // (it no longer transports overlay frames). These are transient view
     // preferences — not persisted, so no `mark_dirty`.
     if addr == osc_contract::CONTROL_OVERLAY_ENABLED {
-        let enabled = match msg.args.first() {
-            Some(OscType::Int(i)) => *i != 0,
-            Some(OscType::Float(f)) => *f != 0.0,
-            Some(OscType::Bool(b)) => *b,
-            _ => return,
+        let enabled = match parse_bool_arg(msg.args.first()) {
+            Some(v) => v,
+            None => return,
         };
         crate::overlay::set_enabled(enabled);
         return;
     }
     if addr == osc_contract::CONTROL_OVERLAY_LABELS {
-        let enabled = match msg.args.first() {
-            Some(OscType::Int(i)) => *i != 0,
-            Some(OscType::Float(f)) => *f != 0.0,
-            Some(OscType::Bool(b)) => *b,
-            _ => return,
+        let enabled = match parse_bool_arg(msg.args.first()) {
+            Some(v) => v,
+            None => return,
         };
         crate::overlay::set_labels_enabled(enabled);
         return;
     }
     if addr == osc_contract::CONTROL_OVERLAY_OBJECTS {
-        let visible = match msg.args.first() {
-            Some(OscType::Int(i)) => *i != 0,
-            Some(OscType::Float(f)) => *f != 0.0,
-            Some(OscType::Bool(b)) => *b,
-            _ => return,
+        let visible = match parse_bool_arg(msg.args.first()) {
+            Some(v) => v,
+            None => return,
         };
         crate::overlay::set_objects_visible(visible);
         return;
     }
     if addr == osc_contract::CONTROL_OVERLAY_HEATMAP_ENABLED {
-        let enabled = match msg.args.first() {
-            Some(OscType::Int(i)) => *i != 0,
-            Some(OscType::Float(f)) => *f != 0.0,
-            Some(OscType::Bool(b)) => *b,
-            _ => return,
+        let enabled = match parse_bool_arg(msg.args.first()) {
+            Some(v) => v,
+            None => return,
         };
         crate::overlay::set_heatmap_enabled(enabled);
         return;
@@ -239,45 +230,33 @@ pub(crate) fn handle_control_message(
         return;
     }
     if addr == osc_contract::CONTROL_OVERLAY_HEATMAP_BANDS {
-        let count = match msg.args.first() {
-            Some(OscType::Int(i)) if *i > 0 => *i as usize,
-            Some(OscType::Float(f)) if *f > 0.0 => *f as usize,
-            _ => return,
+        let count = match parse_positive_u32_arg(msg.args.first()) {
+            Some(v) => v as usize,
+            None => return,
         };
         crate::overlay::set_heatmap_bands(count);
         return;
     }
     if addr == osc_contract::CONTROL_OVERLAY_HEATMAP_COLORMAP {
-        let idx = match msg.args.first() {
-            Some(OscType::Int(i)) if *i >= 0 => *i as usize,
-            Some(OscType::Float(f)) if *f >= 0.0 => *f as usize,
-            _ => return,
+        let idx = match parse_nonnegative_u32_arg(msg.args.first()) {
+            Some(v) => v as usize,
+            None => return,
         };
         crate::overlay::set_heatmap_colormap(idx);
         return;
     }
     if addr == osc_contract::CONTROL_OVERLAY_TRAILS {
         // Args mirror Studio's former wire fields: enabled, ttl_ms, mode, teleport.
-        let enabled = match msg.args.first() {
-            Some(OscType::Int(i)) => *i != 0,
-            Some(OscType::Float(f)) => *f != 0.0,
-            Some(OscType::Bool(b)) => *b,
-            _ => return,
+        let enabled = match parse_bool_arg(msg.args.first()) {
+            Some(v) => v,
+            None => return,
         };
-        let ttl_ms = match msg.args.get(1) {
-            Some(OscType::Int(i)) if *i >= 0 => *i as u32,
-            Some(OscType::Float(f)) if *f >= 0.0 => *f as u32,
-            _ => 7000,
-        };
+        let ttl_ms = parse_nonnegative_u32_arg(msg.args.get(1)).unwrap_or(7000);
         let diffuse = matches!(
             msg.args.get(2),
             Some(OscType::String(s)) if s.eq_ignore_ascii_case("diffuse")
         );
-        let teleport = match msg.args.get(3) {
-            Some(OscType::Float(f)) => *f as f64,
-            Some(OscType::Int(i)) => *i as f64,
-            _ => 0.0,
-        };
+        let teleport = parse_f32_arg(msg.args.get(3)).unwrap_or(0.0) as f64;
         crate::overlay::set_trail_config(enabled, ttl_ms, diffuse, teleport);
         return;
     }
@@ -309,10 +288,7 @@ pub(crate) fn handle_control_message(
     // every topology rebuild while subscribed (see `recompute.rs`). Args:
     // [Int have_version, Int speaker_index].
     if addr == osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_SUBSCRIBE {
-        let have_version = match msg.args.first() {
-            Some(OscType::Int(i)) if *i >= 0 => Some(*i as u32),
-            _ => None,
-        };
+        let have_version = parse_nonnegative_u32_arg(msg.args.first());
         // A negative index selects an all-speaker derived field, not an error:
         // the global heatmaps subscribe through the same path as a per-speaker
         // one. Known sentinels pass through; an unknown negative falls back to
@@ -388,10 +364,9 @@ pub(crate) fn handle_control_message(
     }
 
     if addr == osc_contract::CONTROL_METERING {
-        let enabled = match msg.args.first() {
-            Some(OscType::Int(i)) => *i != 0,
-            Some(OscType::Float(f)) => *f != 0.0,
-            _ => return,
+        let enabled = match parse_bool_arg(msg.args.first()) {
+            Some(v) => v,
+            None => return,
         };
         let client = resolve_register_addr(src, &[]);
         if clients.set_metering(client, enabled) {
@@ -401,11 +376,9 @@ pub(crate) fn handle_control_message(
     }
 
     if addr == osc_contract::CONTROL_DIAG_ENABLED {
-        let enabled = match msg.args.first() {
-            Some(OscType::Int(i)) => *i != 0,
-            Some(OscType::Float(f)) => *f != 0.0,
-            Some(OscType::Bool(b)) => *b,
-            _ => return,
+        let enabled = match parse_bool_arg(msg.args.first()) {
+            Some(v) => v,
+            None => return,
         };
         let client = resolve_register_addr(src, &[]);
         if clients.set_diag(client, enabled) {
@@ -670,14 +643,6 @@ pub(crate) fn handle_control_message(
     }
 }
 
-fn first_rate_hz_arg(msg: &OscMessage) -> Option<f32> {
-    msg.args.first().and_then(|arg| match arg {
-        OscType::Float(v) => Some(*v),
-        OscType::Int(v) => Some(*v as f32),
-        _ => None,
-    })
-}
-
 fn set_dirty(control: &Arc<RendererControl>, socket: &UdpSocket, clients: &OscClientRegistry) {
     control.mark_dirty();
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
@@ -690,6 +655,7 @@ fn raw_option_value(arg: Option<&OscType>) -> Option<renderer::options::RawOptio
     match arg? {
         OscType::String(s) => Some(RawOptionValue::Str(s)),
         OscType::Int(i) => Some(RawOptionValue::Number(*i as f64)),
+        OscType::Long(l) => Some(RawOptionValue::Number(*l as f64)),
         OscType::Float(f) => Some(RawOptionValue::Number(*f as f64)),
         OscType::Double(d) => Some(RawOptionValue::Number(*d)),
         OscType::Bool(b) => Some(RawOptionValue::Bool(*b)),

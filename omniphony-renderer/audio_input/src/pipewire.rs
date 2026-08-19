@@ -898,7 +898,7 @@ where
             // until pacer_fifo is primed.
             if user_data.channels > 0 && user_data.rate_hz > 0 {
                 if let Some(pacer) = input_control_for_process.output_pacer() {
-                    if pacer.enabled.load(Ordering::Relaxed) {
+                    if pacer.enabled {
                         let in_subframes = byte_len as u64
                             / (user_data.channels as u64 * user_data.bytes_per_sample as u64);
                         let drain_samples = (in_subframes
