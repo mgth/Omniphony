@@ -252,6 +252,7 @@ pub struct PipewireWriter {
     /// DAC to drain. Decouples the producer from the consumer clock.
     backpressure_disabled: Arc<AtomicBool>,
     pacer_pre_roll_complete: Arc<AtomicBool>,
+    pacer_flush_requested: Arc<AtomicBool>,
     pacer_pre_roll_threshold_samples: usize,
     pacer_drain_total: Arc<AtomicU64>,
     pacer_underrun_total: Arc<AtomicU64>,
@@ -436,6 +437,7 @@ impl PipewireWriter {
         let pacer_enabled = Arc::new(AtomicBool::new(adaptive_config.use_output_pacing));
         let backpressure_disabled = Arc::new(AtomicBool::new(adaptive_config.disable_backpressure));
         let pacer_pre_roll_complete = Arc::new(AtomicBool::new(false));
+        let pacer_flush_requested = Arc::new(AtomicBool::new(false));
         // 64 ms of audio at the output rate × channel count. Covers >1 AU
         // for both supported input codecs (~32 ms per AU) with margin.
         let pacer_pre_roll_threshold_samples =
@@ -520,6 +522,7 @@ impl PipewireWriter {
         // can flush the FIFO and re-arm pre-roll on recovery_reacquire.
         let pacer_fifo_for_thread = Arc::clone(&pacer_fifo);
         let pacer_pre_roll_complete_for_thread = Arc::clone(&pacer_pre_roll_complete);
+        let pacer_flush_requested_for_thread = Arc::clone(&pacer_flush_requested);
         let pacer_enabled_for_thread = Arc::clone(&pacer_enabled);
         let pacer_pre_roll_threshold_for_thread = pacer_pre_roll_threshold_samples;
 
@@ -579,6 +582,7 @@ impl PipewireWriter {
                 input_clock_us,
                 pacer_fifo_for_thread,
                 pacer_pre_roll_complete_for_thread,
+                pacer_flush_requested_for_thread,
                 pacer_enabled_for_thread,
                 pacer_pre_roll_threshold_for_thread,
             ) {
@@ -621,6 +625,7 @@ impl PipewireWriter {
             pacer_enabled,
             backpressure_disabled,
             pacer_pre_roll_complete,
+            pacer_flush_requested,
             pacer_pre_roll_threshold_samples,
             pacer_drain_total,
             pacer_underrun_total,
@@ -842,6 +847,7 @@ impl PipewireWriter {
             pacer_fifo: Arc::clone(&self.pacer_fifo),
             ring: Arc::clone(&self.sample_buffer),
             pre_roll_complete: Arc::clone(&self.pacer_pre_roll_complete),
+            flush_requested: Arc::clone(&self.pacer_flush_requested),
             pre_roll_threshold_samples: self.pacer_pre_roll_threshold_samples,
             out_sample_rate: self.sample_rate,
             out_channels: self.channel_count,
@@ -861,7 +867,11 @@ impl PipewireWriter {
         // thread starts pulling real samples.
         let was = self.pacer_enabled.swap(enabled, Ordering::Relaxed);
         if was != enabled {
-            while self.pacer_fifo.pop().is_some() {}
+            // Ask the drain to flush; it owns the FIFO. Deferring also means a
+            // re-enable cannot start from stale audio, which flushing here did
+            // not guarantee — the renderer refills between the toggle and the
+            // first drain.
+            self.pacer_flush_requested.store(true, Ordering::Release);
             self.pacer_pre_roll_complete.store(false, Ordering::Relaxed);
         }
     }
@@ -1147,6 +1157,7 @@ fn run_pipewire_loop(
     input_clock_us: Arc<std::sync::atomic::AtomicU64>,
     pacer_fifo: Arc<ArrayQueue<f32>>,
     pacer_pre_roll_complete: Arc<AtomicBool>,
+    pacer_flush_requested: Arc<AtomicBool>,
     pacer_enabled: Arc<AtomicBool>,
     pacer_pre_roll_threshold_samples: usize,
 ) -> Result<()> {
@@ -1947,7 +1958,7 @@ fn run_pipewire_loop(
                             // samples queued before the reacquire are stale.
                             // Re-arm pre-roll so the input thread re-primes
                             // before starting real drains.
-                            while pacer_fifo.pop().is_some() {}
+                            pacer_flush_requested.store(true, Ordering::Release);
                             pacer_pre_roll_complete.store(false, Ordering::Relaxed);
                             if far_decision.mute_far_output {
                                 if let Err(e) = resampler_fifo.ensure_output_samples(
@@ -2262,7 +2273,7 @@ fn run_pipewire_loop(
                             runtime_state.pre_bridge_offset_initialized = false;
                             runtime_state.pre_bridge_offset_accum = 0;
                             runtime_state.pre_bridge_offset_count = 0;
-                            while pacer_fifo.pop().is_some() {}
+                            pacer_flush_requested.store(true, Ordering::Release);
                             pacer_pre_roll_complete.store(false, Ordering::Relaxed);
                             if far_decision.mute_far_output {
                                 let dropped =
