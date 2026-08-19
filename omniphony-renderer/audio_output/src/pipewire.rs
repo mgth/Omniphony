@@ -20,16 +20,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{
     ADAPTIVE_BAND_FAR, AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
     adaptive_runtime::{
-        AdaptiveRuntimeState, FarModeDecision, LatencyMetricTargets, LowRecoverPhase,
-        MAX_INTEGRAL_TERM, PRE_BRIDGE_CALIBRATION_CALLBACKS, adaptive_runtime_state_name,
+        AdaptiveRuntimeState, FarModeStepCtx, FarModeStepInputs, LatencyMetricTargets,
+        LowRecoverPhase, MAX_INTEGRAL_TERM, PRE_BRIDGE_CALIBRATION_CALLBACKS,
         compute_hard_recover_high_plan, discard_ring_samples, far_mode_band_from_latency,
-        note_refill_or_underrun, output_to_input_domain_samples, paused_rate_adjust,
+        far_mode_step, note_refill_or_underrun, output_to_input_domain_samples, paused_rate_adjust,
         postprocess_interleaved_output, reset_adaptive_runtime, run_adaptive_servo,
-        should_run_adaptive_servo, store_latency_metrics_from_control_available,
-        update_far_mode_state, update_latency_metrics, zero_pad_tail,
+        should_run_adaptive_servo, update_latency_metrics, zero_pad_tail,
     },
-    adaptive_runtime_state_code, adaptive_runtime_state_name_from_code,
-    clamp_ratio_for_local_resampler, local_resampler_ratio_bounds,
+    adaptive_runtime_state_name_from_code, clamp_ratio_for_local_resampler,
+    local_resampler_ratio_bounds,
     resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
     ring_buffer_io::{
         flush_ring_buffer, push_samples_drop_overflow, push_samples_with_backpressure,
@@ -1847,70 +1846,31 @@ fn run_pipewire_loop(
                         // State machine on raw: its entry/exit/settle bands are
                         // already the hysteresis; smoothing on top added phase lag
                         // that drove a slow oscillation.
-                        let far_decision = update_far_mode_state(
+                        let far_decision = far_mode_step(
                             &mut runtime_state,
-                            &adaptive_cfg,
-                            current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
-                            metrics.control_available,
-                            metrics.smoothed_control_available,
-                            runtime_target_buffer_fill,
-                            callback_input_domain_samples,
-                            effective_resample_ratio,
-                            channel_count as usize,
-                            sample_rate,
-                            actual_output_rate,
-                        );
-                        current_runtime_state.store(
-                            adaptive_runtime_state_code(adaptive_runtime_state_name(
-                                runtime_state.low_recover_phase,
-                                far_decision.hard_recover_high,
-                            )),
-                            Ordering::Relaxed,
-                        );
-                        let mut projected_control_available = metrics.control_available;
-                        if far_decision.recovery_reacquire_pending && far_decision.mute_far_output {
-                            projected_control_available =
-                                projected_control_available.saturating_sub(callback_input_domain_samples);
-                        } else if far_decision.hard_recover_high {
-                            let plan = compute_hard_recover_high_plan(
+                            &FarModeStepCtx {
+                                adaptive_config: &adaptive_cfg,
+                                channel_count: channel_count as usize,
+                                input_sample_rate: sample_rate,
+                                output_sample_rate: actual_output_rate,
+                                runtime_state_code: &current_runtime_state,
+                                latency: LatencyMetricTargets {
+                                    measured_latency_ms_bits: &measured_latency_ms_out,
+                                    control_latency_ms_bits: &control_latency_ms_out,
+                                },
+                            },
+                            FarModeStepInputs {
+                                is_far_band: current_adaptive_band.load(Ordering::Relaxed)
+                                    == ADAPTIVE_BAND_FAR,
+                                control_available: metrics.control_available,
+                                smoothed_control_available: metrics.smoothed_control_available,
+                                target_buffer_fill: runtime_target_buffer_fill,
                                 callback_input_domain_samples,
-                                metrics.control_available,
-                                runtime_target_buffer_fill,
-                                effective_resample_ratio,
-                                channel_count as usize,
-                            );
-                            projected_control_available = projected_control_available
-                                .saturating_sub(plan.desired_consume_input_samples);
-                        } else if far_decision.hold_low_recover {
-                            let trim_input_samples = output_to_input_domain_samples(
-                                far_decision.low_recover_trim_output_samples,
-                                effective_resample_ratio,
-                            );
-                            let muted_consume_input_samples =
-                                if far_decision.mute_far_output && far_decision.consume_while_muted {
-                                    callback_input_domain_samples
-                                } else {
-                                    0
-                                };
-                            projected_control_available = projected_control_available
-                                .saturating_sub(
-                                    trim_input_samples.saturating_add(muted_consume_input_samples),
-                                );
-                        }
-                        // Fold in the pacer's fixed contribution so the displayed
-                        // control/measured latency reflects the true end-to-end
-                        // delay and stays comparable to the target — the same
-                        // adjustment the main `display_control_available` path
-                        // applies. The servo keeps using the pacer-excluded
-                        // `projected_control_available` for its own decisions.
-                        store_latency_metrics_from_control_available(
-                            projected_control_available.saturating_add(pacer_buffer_samples),
-                            channel_count as usize,
-                            sample_rate,
-                            f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
-                            LatencyMetricTargets {
-                                measured_latency_ms_bits: &measured_latency_ms_out,
-                                control_latency_ms_bits: &control_latency_ms_out,
+                                resample_ratio: effective_resample_ratio,
+                                pacer_buffer_samples,
+                                graph_latency_ms: f32::from_bits(
+                                    graph_latency_for_callback.load(Ordering::Relaxed),
+                                ),
                             },
                         );
                         if far_decision.hold_low_recover {
@@ -2186,68 +2146,33 @@ fn run_pipewire_loop(
                         let samples_to_read = frames_to_read * ch;
 
                         // State machine on raw — see resampler path.
-                        let far_decision: FarModeDecision = update_far_mode_state(
+                        // Straight copy: the ratio is 1.0, so input and output
+                        // domains coincide. Same step as the resampler path.
+                        let far_decision = far_mode_step(
                             &mut runtime_state,
-                            &adaptive_cfg,
-                            current_adaptive_band.load(Ordering::Relaxed) == ADAPTIVE_BAND_FAR,
-                            metrics.control_available,
-                            metrics.smoothed_control_available,
-                            runtime_target_buffer_fill,
-                            callback_input_domain_samples,
-                            1.0,
-                            channel_count as usize,
-                            sample_rate,
-                            actual_output_rate,
-                        );
-                        current_runtime_state.store(
-                            adaptive_runtime_state_code(adaptive_runtime_state_name(
-                                runtime_state.low_recover_phase,
-                                far_decision.hard_recover_high,
-                            )),
-                            Ordering::Relaxed,
-                        );
-                        let mut projected_control_available = metrics.control_available;
-                        if far_decision.recovery_reacquire_pending && far_decision.mute_far_output {
-                            projected_control_available =
-                                projected_control_available.saturating_sub(callback_input_domain_samples);
-                        } else if far_decision.hard_recover_high {
-                            let plan = compute_hard_recover_high_plan(
+                            &FarModeStepCtx {
+                                adaptive_config: &adaptive_cfg,
+                                channel_count: channel_count as usize,
+                                input_sample_rate: sample_rate,
+                                output_sample_rate: actual_output_rate,
+                                runtime_state_code: &current_runtime_state,
+                                latency: LatencyMetricTargets {
+                                    measured_latency_ms_bits: &measured_latency_ms_out,
+                                    control_latency_ms_bits: &control_latency_ms_out,
+                                },
+                            },
+                            FarModeStepInputs {
+                                is_far_band: current_adaptive_band.load(Ordering::Relaxed)
+                                    == ADAPTIVE_BAND_FAR,
+                                control_available: metrics.control_available,
+                                smoothed_control_available: metrics.smoothed_control_available,
+                                target_buffer_fill: runtime_target_buffer_fill,
                                 callback_input_domain_samples,
-                                metrics.control_available,
-                                runtime_target_buffer_fill,
-                                1.0,
-                                channel_count as usize,
-                            );
-                            projected_control_available = projected_control_available
-                                .saturating_sub(plan.desired_consume_input_samples);
-                        } else if far_decision.hold_low_recover {
-                            let muted_consume_input_samples =
-                                if far_decision.mute_far_output && far_decision.consume_while_muted {
-                                    callback_input_domain_samples
-                                } else {
-                                    0
-                                };
-                            projected_control_available = projected_control_available
-                                .saturating_sub(
-                                    far_decision
-                                        .low_recover_trim_input_samples
-                                        .saturating_add(muted_consume_input_samples),
-                                );
-                        }
-                        // Fold in the pacer's fixed contribution so the displayed
-                        // control/measured latency reflects the true end-to-end
-                        // delay and stays comparable to the target — the same
-                        // adjustment the main `display_control_available` path
-                        // applies. The servo keeps using the pacer-excluded
-                        // `projected_control_available` for its own decisions.
-                        store_latency_metrics_from_control_available(
-                            projected_control_available.saturating_add(pacer_buffer_samples),
-                            channel_count as usize,
-                            sample_rate,
-                            f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
-                            LatencyMetricTargets {
-                                measured_latency_ms_bits: &measured_latency_ms_out,
-                                control_latency_ms_bits: &control_latency_ms_out,
+                                resample_ratio: 1.0,
+                                pacer_buffer_samples,
+                                graph_latency_ms: f32::from_bits(
+                                    graph_latency_for_callback.load(Ordering::Relaxed),
+                                ),
                             },
                         );
                         if far_decision.hold_low_recover {
