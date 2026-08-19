@@ -17,20 +17,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::callback_state::CallbackState;
 use crate::output_telemetry::{LatencySample, OutputTelemetry};
 use crate::{
     ADAPTIVE_BAND_FAR, AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
     adaptive_runtime::{
-        AdaptiveRuntimeState, FarModeStepCtx, FarModeStepInputs, LatencyMetricTargets,
-        LowRecoverPhase, MAX_INTEGRAL_TERM, PRE_BRIDGE_CALIBRATION_CALLBACKS,
-        compute_hard_recover_high_plan, discard_ring_samples, far_mode_band_from_latency,
-        far_mode_step, note_refill_or_underrun, output_to_input_domain_samples, paused_rate_adjust,
-        postprocess_interleaved_output, reset_adaptive_runtime, run_adaptive_servo,
-        should_run_adaptive_servo, update_latency_metrics, zero_pad_tail,
+        FarModeStepCtx, FarModeStepInputs, LatencyMetricTargets, LowRecoverPhase,
+        MAX_INTEGRAL_TERM, PRE_BRIDGE_CALIBRATION_CALLBACKS, compute_hard_recover_high_plan,
+        discard_ring_samples, far_mode_band_from_latency, far_mode_step, note_refill_or_underrun,
+        output_to_input_domain_samples, paused_rate_adjust, postprocess_interleaved_output,
+        reset_adaptive_runtime, run_adaptive_servo, should_run_adaptive_servo,
+        update_latency_metrics, zero_pad_tail,
     },
     adaptive_runtime_state_name_from_code, clamp_ratio_for_local_resampler,
     local_resampler_ratio_bounds,
-    resampler_fifo::{RESAMPLER_CHUNK_SIZE, ResamplerFifoEngine},
+    resampler_fifo::RESAMPLER_CHUNK_SIZE,
     ring_buffer_io::{
         flush_ring_buffer, push_samples_drop_overflow, push_samples_with_backpressure,
     },
@@ -949,7 +950,7 @@ fn run_pipewire_loop(
     let adaptive_config_snapshot = adaptive_config.lock().clone();
 
     // Initialize resampler for true rate conversion and for adaptive 1:1 operation.
-    let mut resampler_opt = if use_local_resampler {
+    let resampler_opt = if use_local_resampler {
         let params = SincInterpolationParameters {
             sinc_len: 256,
             f_cutoff: 0.95,
@@ -985,12 +986,6 @@ fn run_pipewire_loop(
         None
     };
 
-    // Intermediate buffers for resampling
-    let mut resampler_fifo = ResamplerFifoEngine::new(channel_count as usize);
-    let mut effective_resample_ratio = resample_ratio;
-    let mut runtime_state = AdaptiveRuntimeState::new(resample_ratio);
-    runtime_state.activate_startup_low_recover();
-
     // Setup process callback
     let buffer_for_callback = buffer.clone();
     let desired_rate_for_callback = desired_rate.clone();
@@ -1012,8 +1007,6 @@ fn run_pipewire_loop(
     let output_ring_input_samples_for_callback = telemetry.output_ring_input_samples_bits.clone();
     let runtime_state_code_for_callback = telemetry.runtime_state_code_bits.clone();
     let recovery_discard_count_for_callback = telemetry.recovery_discard_count_bits.clone();
-    let mut last_output_callback_at: Option<Instant> = None;
-    let mut recovery_discard_total: u64 = 0;
     let live_adaptive_config_for_callback = Arc::clone(&adaptive_config);
     let reset_ratio_for_callback = Arc::clone(&reset_ratio_requested);
     let adaptive_resampling_enabled = enable_adaptive_resampling;
@@ -1022,7 +1015,6 @@ fn run_pipewire_loop(
     let pending_input_triggers_for_callback = Arc::clone(&pending_input_triggers);
     let input_trigger_rate_for_callback = Arc::clone(&input_trigger_rate_hz);
     let input_trigger_quantum_for_callback = Arc::clone(&input_trigger_quantum_frames);
-    let mut bresenham_acc: i64 = 0;
     // Compute channel-aware buffer thresholds for the callback (ms → frames → samples).
     // IMPORTANT: these thresholds are compared against `buffer_for_callback.len()`, which
     // stores INPUT-domain samples (writer pushes at `sample_rate` before local resampling).
@@ -1036,12 +1028,20 @@ fn run_pipewire_loop(
     let min_buffer_fill = latency_frames * channel_count as usize;
     let max_buffer_fill = max_buffer_frames * channel_count as usize;
     let target_buffer_fill = min_buffer_fill;
-    let mut logged_runtime_target = target_buffer_fill;
+
+    // Everything the callback carries between invocations, in one place; see
+    // [`CallbackState`]. What it *publishes* lives in `telemetry`.
+    let mut state = CallbackState::new(
+        resampler_opt,
+        channel_count as usize,
+        resample_ratio,
+        target_buffer_fill,
+        adaptive_config_snapshot.clone(),
+    );
+
     // Treat errors above ~120 ms as transient mismatch and allow faster convergence.
     let samples_per_ms = (sample_rate as usize).saturating_mul(channel_count as usize) / 1000;
     let samples_per_ms_f64 = samples_per_ms as f64;
-    let mut adaptive_update_interval =
-        adaptive_config_snapshot.update_interval_callbacks.max(1) as u64;
     // The live config as this callback sees it.
     //
     // The config is pushed from the control thread and read from the realtime
@@ -1050,7 +1050,6 @@ fn run_pipewire_loop(
     // scalars, so the callback keeps its own copy and refreshes it once, at
     // entry, without blocking: on contention the previous copy stands until the
     // next callback, a few milliseconds later.
-    let mut adaptive_cfg = adaptive_config_snapshot.clone();
 
     log::info!(
         "PipeWire buffer thresholds ({}ch): latency={}ms max={}ms quantum={}fr | \
@@ -1074,38 +1073,38 @@ fn run_pipewire_loop(
             // resampler in/out per-callback deltas are computed below using
             // ring/FIFO snapshots taken before any drain.
             let now_cb = Instant::now();
-            let dt_cb_us = last_output_callback_at
+            let dt_cb_us = state.last_callback_at
                 .map(|prev| now_cb.saturating_duration_since(prev).as_micros() as u64)
                 .unwrap_or(0);
-            last_output_callback_at = Some(now_cb);
+            state.last_callback_at = Some(now_cb);
             output_callback_dt_us_for_callback
                 .store((dt_cb_us as f64).to_bits(), Ordering::Relaxed);
             let ring_input_samples_at_entry = buffer_for_callback.len();
             output_ring_input_samples_for_callback
                 .store((ring_input_samples_at_entry as f64).to_bits(), Ordering::Relaxed);
-            let callback_count = runtime_state.advance_callback();
+            let callback_count = state.runtime.advance_callback();
             let mut callback_output_frames: usize = 0;
 
             // --- Test controls: reset ratio / pause PI ---
             if reset_ratio_for_callback.load(Ordering::Relaxed) {
                 reset_ratio_for_callback.store(false, Ordering::Relaxed);
-                if let Some(ref mut resampler) = resampler_opt {
-                    let _ = resampler.set_resample_ratio(resample_ratio, false);
+                if let Some(ref mut resampler) = state.resampler.engine {
+                    let _ = resampler.set_resample_ratio(state.resampler.configured_ratio, false);
                 }
-                let reset = reset_adaptive_runtime(&mut runtime_state, resample_ratio);
-                effective_resample_ratio = reset.effective_resample_ratio;
+                let reset = reset_adaptive_runtime(&mut state.runtime, state.resampler.configured_ratio);
+                state.resampler.effective_ratio = reset.effective_resample_ratio;
                 rate_adjust_for_callback
                     .store(reset.displayed_rate_adjust.to_bits(), Ordering::Relaxed);
                 desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
                 current_adaptive_band.store(reset.adaptive_band, Ordering::Relaxed);
             }
             // The one config read of this callback. Everything downstream uses
-            // `adaptive_cfg`, so the whole callback also sees one consistent
+            // `state.adaptive_config`, so the whole callback also sees one consistent
             // config rather than re-reading a value that can change under it.
             if let Some(cfg) = live_adaptive_config_for_callback.try_lock() {
-                adaptive_cfg.clone_from(&cfg);
+                state.adaptive_config.clone_from(&cfg);
             }
-            let is_pi_paused = adaptive_cfg.paused;
+            let is_pi_paused = state.adaptive_config.paused;
 
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 // Per-cycle frame count requested by PipeWire for THIS callback.
@@ -1177,13 +1176,13 @@ fn run_pipewire_loop(
                             );
                         }
                     }
-                    if runtime_target_buffer_fill != logged_runtime_target {
+                    if runtime_target_buffer_fill != state.logged_runtime_target {
                         log::debug!(
                             "PipeWire runtime target fill adjusted to {} samples for observed callback size {} samples",
                             runtime_target_buffer_fill,
                             frame_aligned_max
                         );
-                        logged_runtime_target = runtime_target_buffer_fill;
+                        state.logged_runtime_target = runtime_target_buffer_fill;
                     }
 
                     // Sample downstream graph latency (RT-safe: pw_stream_get_time is RT-safe
@@ -1204,10 +1203,10 @@ fn run_pipewire_loop(
                     // for the components plot so the chunk dynamics remain
                     // observable.
                     let output_fifo_input_domain_samples_raw = output_to_input_domain_samples(
-                        resampler_fifo.output_len(),
-                        effective_resample_ratio,
+                        state.resampler.fifo.output_len(),
+                        state.resampler.effective_ratio,
                     );
-                    let pending_resampler_input_samples = resampler_fifo.pending_input_samples();
+                    let pending_resampler_input_samples = state.resampler.fifo.pending_input_samples();
                     // DIAG: publish the FIFO and resampler-pending raw input-
                     // domain levels so the diag plot can see whether either is
                     // the source of the post-d43ddab residual sawtooth.
@@ -1220,8 +1219,8 @@ fn run_pipewire_loop(
                         Ordering::Relaxed,
                     );
                     // Callback consumption (input-domain samples).
-                    let callback_input_domain_samples = if effective_resample_ratio > 0.0 {
-                        ((frame_aligned_max as f64) / effective_resample_ratio).round() as usize
+                    let callback_input_domain_samples = if state.resampler.effective_ratio > 0.0 {
+                        ((frame_aligned_max as f64) / state.resampler.effective_ratio).round() as usize
                     } else {
                         frame_aligned_max
                     };
@@ -1285,7 +1284,7 @@ fn run_pipewire_loop(
                         0
                     };
                     let mut metrics = update_latency_metrics(
-                        &mut runtime_state,
+                        &mut state.runtime,
                         available,
                         output_fifo_input_domain_samples_raw,
                         pending_resampler_input_samples,
@@ -1294,8 +1293,8 @@ fn run_pipewire_loop(
                         channel_count as usize,
                         sample_rate,
                         f32::from_bits(graph_latency_for_callback.load(Ordering::Relaxed)),
-                        adaptive_cfg.control_smoothing_cutoff_hz,
-                        adaptive_cfg.control_smoothing_order,
+                        state.adaptive_config.control_smoothing_cutoff_hz,
+                        state.adaptive_config.control_smoothing_order,
                         callback_dt_s,
                         LatencyMetricTargets {
                             measured_latency_ms_bits: &telemetry.measured_latency_ms_bits,
@@ -1317,7 +1316,7 @@ fn run_pipewire_loop(
                     // metrics (control_available, control_latency_ms).
                     let input_clock_us_now =
                         f64::from_bits(input_clock_us_for_callback.load(Ordering::Relaxed));
-                    let pre_bridge_requested = adaptive_cfg.use_pre_bridge_clock;
+                    let pre_bridge_requested = state.adaptive_config.use_pre_bridge_clock;
                     let pre_bridge_ready = pre_bridge_requested && input_clock_us_now > 0.0;
                     if pre_bridge_ready {
                         let input_clock_samples_eq = (input_clock_us_now / 1_000_000.0
@@ -1326,7 +1325,7 @@ fn run_pipewire_loop(
                             as i64;
                         let drained_now =
                             cumulative_drained_for_callback.load(Ordering::Relaxed) as i64;
-                        if !runtime_state.pre_bridge_offset_initialized {
+                        if !state.runtime.pre_bridge_offset_initialized {
                             // Accumulate the raw (input_clock − drained) over
                             // PRE_BRIDGE_CALIBRATION_CALLBACKS callbacks (≥ 1
                             // full decoder batching cycle) and finalize the
@@ -1336,21 +1335,21 @@ fn run_pipewire_loop(
                             // multichannel codec) and
                             // bias the ring's steady-state position by up to
                             // half that range. Averaging removes the bias.
-                            runtime_state.pre_bridge_offset_accum +=
+                            state.runtime.pre_bridge_offset_accum +=
                                 (input_clock_samples_eq - drained_now) as i128;
-                            runtime_state.pre_bridge_offset_count += 1;
-                            if runtime_state.pre_bridge_offset_count
+                            state.runtime.pre_bridge_offset_count += 1;
+                            if state.runtime.pre_bridge_offset_count
                                 >= PRE_BRIDGE_CALIBRATION_CALLBACKS
                             {
-                                let count = runtime_state.pre_bridge_offset_count as i128;
-                                runtime_state.pre_bridge_offset_samples =
-                                    (runtime_state.pre_bridge_offset_accum / count) as i64;
-                                runtime_state.pre_bridge_offset_initialized = true;
+                                let count = state.runtime.pre_bridge_offset_count as i128;
+                                state.runtime.pre_bridge_offset_samples =
+                                    (state.runtime.pre_bridge_offset_accum / count) as i64;
+                                state.runtime.pre_bridge_offset_initialized = true;
                             }
                         } else {
                             let drift_samples = input_clock_samples_eq
                                 - drained_now
-                                - runtime_state.pre_bridge_offset_samples;
+                                - state.runtime.pre_bridge_offset_samples;
                             let target = runtime_target_buffer_fill as i64;
                             let override_value = (target + drift_samples).max(0) as usize;
                             metrics.smoothed_control_available = override_value;
@@ -1399,47 +1398,47 @@ fn run_pipewire_loop(
                     // raw control_available so the hysteresis bands act on the real
                     // buffer level. (The servo gets the smoothed value separately.)
                     let fallback_band = far_mode_band_from_latency(
-                        &adaptive_cfg,
+                        &state.adaptive_config,
                         metrics.control_available,
                         runtime_target_buffer_fill,
                         samples_per_ms,
                     );
                     current_adaptive_band.store(fallback_band, Ordering::Relaxed);
-                    if let Some(ref mut resampler) = resampler_opt {
+                    if let Some(ref mut resampler) = state.resampler.engine {
                         if adaptive_resampling_enabled
                             && !is_pi_paused
-                            && runtime_state.low_recover_phase == LowRecoverPhase::Inactive
+                            && state.runtime.low_recover_phase == LowRecoverPhase::Inactive
                         {
-                            adaptive_update_interval =
-                                adaptive_cfg.update_interval_callbacks.max(1) as u64;
+                            state.adaptive_update_interval =
+                                state.adaptive_config.update_interval_callbacks.max(1) as u64;
                             if should_run_adaptive_servo(
                                 callback_count,
-                                adaptive_update_interval as u32,
+                                state.adaptive_update_interval as u32,
                                 metrics.total_available_input_domain,
                                 channel_count as usize,
                             ) {
                                 let mut decision = run_adaptive_servo(
-                                    &mut runtime_state,
-                                    &adaptive_cfg,
+                                    &mut state.runtime,
+                                    &state.adaptive_config,
                                     metrics,
                                     runtime_target_buffer_fill,
-                                    resample_ratio,
+                                    state.resampler.configured_ratio,
                                     480,
-                                    adaptive_cfg.max_adjust.max(0.000_001),
+                                    state.adaptive_config.max_adjust.max(0.000_001),
                                     samples_per_ms,
                                     samples_per_ms_f64,
                                 );
                                 current_adaptive_band.store(decision.adaptive_band, Ordering::Relaxed);
 
                                 let clamped_ratio = clamp_ratio_for_local_resampler(
-                                    resample_ratio,
+                                    state.resampler.configured_ratio,
                                     decision.step.current_ratio,
                                 );
                                 decision.step.current_ratio = clamped_ratio;
-                                decision.step.consume_adjust = resample_ratio / clamped_ratio;
+                                decision.step.consume_adjust = state.resampler.configured_ratio / clamped_ratio;
                                 decision.effective_resample_ratio = clamped_ratio;
                                 decision.displayed_rate_adjust =
-                                    paused_rate_adjust(resample_ratio, clamped_ratio);
+                                    paused_rate_adjust(state.resampler.configured_ratio, clamped_ratio);
 
                                 if let Err(e) =
                                     resampler.set_resample_ratio(clamped_ratio, true)
@@ -1447,15 +1446,15 @@ fn run_pipewire_loop(
                                 {
                                     log::warn!("Failed to set resampler ratio: {}", e);
                                 } else {
-                                    effective_resample_ratio = clamped_ratio;
-                                    if effective_resample_ratio.to_bits()
-                                        != runtime_state.last_logged_ratio_bits
+                                    state.resampler.effective_ratio = clamped_ratio;
+                                    if state.resampler.effective_ratio.to_bits()
+                                        != state.runtime.last_logged_ratio_bits
                                     {
-                                        let rel_ratio = effective_resample_ratio / resample_ratio;
+                                        let rel_ratio = state.resampler.effective_ratio / state.resampler.configured_ratio;
                                         log::debug!(
                                             "PipeWire adaptive ratio applied: base={:.6} effective={:.6} relative={:.6} consume={:.6} drift={} buf={}/{}",
-                                            resample_ratio,
-                                            effective_resample_ratio,
+                                            state.resampler.configured_ratio,
+                                            state.resampler.effective_ratio,
                                             rel_ratio,
                                             decision.step.consume_adjust,
                                             decision.step.drift,
@@ -1463,9 +1462,9 @@ fn run_pipewire_loop(
                                             runtime_target_buffer_fill
                                         );
                                     }
-                                    runtime_state.last_logged_ratio_bits =
-                                        effective_resample_ratio.to_bits();
-                                    decision.effective_resample_ratio = effective_resample_ratio;
+                                    state.runtime.last_logged_ratio_bits =
+                                        state.resampler.effective_ratio.to_bits();
+                                    decision.effective_resample_ratio = state.resampler.effective_ratio;
                                 }
 
                                 rate_adjust_for_callback
@@ -1478,7 +1477,7 @@ fn run_pipewire_loop(
                                         runtime_target_buffer_fill,
                                         decision.step.drift,
                                         decision.step.current_ratio,
-                                        resample_ratio,
+                                        state.resampler.configured_ratio,
                                         decision.step.p_term,
                                         decision.step.i_term
                                     );
@@ -1488,14 +1487,14 @@ fn run_pipewire_loop(
 
                         let audio_samples_needed = max_samples;
                         let low_recover_was_active =
-                            runtime_state.low_recover_phase != LowRecoverPhase::Inactive;
+                            state.runtime.low_recover_phase != LowRecoverPhase::Inactive;
                         // State machine on raw: its entry/exit/settle bands are
                         // already the hysteresis; smoothing on top added phase lag
                         // that drove a slow oscillation.
                         let far_decision = far_mode_step(
-                            &mut runtime_state,
+                            &mut state.runtime,
                             &FarModeStepCtx {
-                                adaptive_config: &adaptive_cfg,
+                                adaptive_config: &state.adaptive_config,
                                 channel_count: channel_count as usize,
                                 input_sample_rate: sample_rate,
                                 output_sample_rate: actual_output_rate,
@@ -1512,7 +1511,7 @@ fn run_pipewire_loop(
                                 smoothed_control_available: metrics.smoothed_control_available,
                                 target_buffer_fill: runtime_target_buffer_fill,
                                 callback_input_domain_samples,
-                                resample_ratio: effective_resample_ratio,
+                                resample_ratio: state.resampler.effective_ratio,
                                 pacer_buffer_samples,
                                 graph_latency_ms: f32::from_bits(
                                     graph_latency_for_callback.load(Ordering::Relaxed),
@@ -1523,30 +1522,30 @@ fn run_pipewire_loop(
                             desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
                             if !low_recover_was_active {
                                 resampler.reset();
-                                let _ = resampler.set_resample_ratio(resample_ratio, false);
-                                resampler_fifo.reset();
-                            } else if effective_resample_ratio.to_bits() != resample_ratio.to_bits() {
-                                let _ = resampler.set_resample_ratio(resample_ratio, false);
+                                let _ = resampler.set_resample_ratio(state.resampler.configured_ratio, false);
+                                state.resampler.fifo.reset();
+                            } else if state.resampler.effective_ratio.to_bits() != state.resampler.configured_ratio.to_bits() {
+                                let _ = resampler.set_resample_ratio(state.resampler.configured_ratio, false);
                             }
-                            effective_resample_ratio = resample_ratio;
+                            state.resampler.effective_ratio = state.resampler.configured_ratio;
                         }
                         if far_decision.recovery_reacquire_pending {
                             resampler.reset();
-                            let _ = resampler.set_resample_ratio(resample_ratio, false);
-                            resampler_fifo.reset();
-                            effective_resample_ratio = resample_ratio;
+                            let _ = resampler.set_resample_ratio(state.resampler.configured_ratio, false);
+                            state.resampler.fifo.reset();
+                            state.resampler.effective_ratio = state.resampler.configured_ratio;
                             rate_adjust_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
                             desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                            runtime_state.recovery_reacquire_pending = false;
+                            state.runtime.recovery_reacquire_pending = false;
                             // The drained counter we use as the pre-bridge
                             // reference may have advanced during recovery
                             // while input_clock_us did not (paused source).
                             // Drop the cached offset and the in-flight
                             // averaging window so the next steady-state run
                             // captures a fresh, valid mean.
-                            runtime_state.pre_bridge_offset_initialized = false;
-                            runtime_state.pre_bridge_offset_accum = 0;
-                            runtime_state.pre_bridge_offset_count = 0;
+                            state.runtime.pre_bridge_offset_initialized = false;
+                            state.runtime.pre_bridge_offset_accum = 0;
+                            state.runtime.pre_bridge_offset_count = 0;
                             // Flush the post-rendering pacer too: rendered
                             // samples queued before the reacquire are stale.
                             // Re-arm pre-roll so the input thread re-primes
@@ -1554,18 +1553,18 @@ fn run_pipewire_loop(
                             pacer_flush_requested.store(true, Ordering::Release);
                             pacer_pre_roll_complete.store(false, Ordering::Relaxed);
                             if far_decision.mute_far_output {
-                                if let Err(e) = resampler_fifo.ensure_output_samples(
+                                if let Err(e) = state.resampler.fifo.ensure_output_samples(
                                     &buffer_for_callback,
                                     resampler,
                                     audio_samples_needed,
                                 ) {
                                     log::error!("Resampler error during recovery reacquire: {}", e);
-                                } else if resampler_fifo.output_len() > 0 {
-                                    resampler_fifo.discard_samples(audio_samples_needed);
+                                } else if state.resampler.fifo.output_len() > 0 {
+                                    state.resampler.fifo.discard_samples(audio_samples_needed);
                                 }
                                 dest[..max_samples].fill(0.0);
                                 max_samples
-                            } else if let Err(e) = resampler_fifo.ensure_output_samples(
+                            } else if let Err(e) = state.resampler.fifo.ensure_output_samples(
                                 &buffer_for_callback,
                                 resampler,
                                 audio_samples_needed,
@@ -1573,23 +1572,23 @@ fn run_pipewire_loop(
                                 log::error!("Resampler error during recovery reacquire: {}", e);
                                 zero_pad_tail(&mut dest[..max_samples], 0);
                                 max_samples
-                            } else if resampler_fifo.output_len() >= audio_samples_needed {
+                            } else if state.resampler.fifo.output_len() >= audio_samples_needed {
                                 let copied =
-                                    resampler_fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
+                                    state.resampler.fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
                                 debug_assert_eq!(copied, audio_samples_needed);
                                 postprocess_interleaved_output(
                                     &mut dest[..audio_samples_needed],
                                     ch,
                                     far_decision.mute_far_output,
-                                    &mut runtime_state,
+                                    &mut state.runtime,
                                 );
                                 max_samples
                             } else {
                                 let copy_count =
-                                    resampler_fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
+                                    state.resampler.fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
                                 zero_pad_tail(&mut dest[..max_samples], copy_count);
                                 note_refill_or_underrun(
-                                    &mut runtime_state,
+                                    &mut state.runtime,
                                     "Resampler output underrun",
                                     "Resampler output underrun",
                                     copy_count,
@@ -1599,7 +1598,7 @@ fn run_pipewire_loop(
                                     &mut dest[..audio_samples_needed],
                                     ch,
                                     far_decision.mute_far_output,
-                                    &mut runtime_state,
+                                    &mut state.runtime,
                                 );
                                 max_samples
                             }
@@ -1620,7 +1619,7 @@ fn run_pipewire_loop(
                                         .saturating_add(far_decision.low_recover_trim_output_samples)
                                 };
                                 if prepared_samples > 0 {
-                                    if let Err(e) = resampler_fifo.ensure_output_samples(
+                                    if let Err(e) = state.resampler.fifo.ensure_output_samples(
                                         &buffer_for_callback,
                                         resampler,
                                         prepared_samples,
@@ -1628,19 +1627,19 @@ fn run_pipewire_loop(
                                         log::error!("Resampler error: {}", e);
                                     } else {
                                         if far_decision.low_recover_trim_output_samples > 0 {
-                                            resampler_fifo.discard_samples(
+                                            state.resampler.fifo.discard_samples(
                                                 far_decision.low_recover_trim_output_samples,
                                             );
                                         }
                                         if muted_samples_to_consume > 0 {
-                                            resampler_fifo.discard_samples(muted_samples_to_consume);
+                                            state.resampler.fifo.discard_samples(muted_samples_to_consume);
                                         }
                                     }
                                 }
                                 if far_decision.mute_far_output {
                                     dest[..max_samples].fill(0.0);
                                 }
-                            } else if let Err(e) = resampler_fifo.ensure_output_samples(
+                            } else if let Err(e) = state.resampler.fifo.ensure_output_samples(
                                 &buffer_for_callback,
                                 resampler,
                                 audio_samples_needed,
@@ -1652,37 +1651,37 @@ fn run_pipewire_loop(
                                     callback_input_domain_samples,
                                     metrics.control_available,
                                     runtime_target_buffer_fill,
-                                    effective_resample_ratio,
+                                    state.resampler.effective_ratio,
                                     channel_count as usize,
                                 );
-                                if let Err(e) = resampler_fifo.ensure_output_samples(
+                                if let Err(e) = state.resampler.fifo.ensure_output_samples(
                                     &buffer_for_callback,
                                     resampler,
                                     plan.desired_consume_output_samples,
                                 ) {
                                     log::error!("Resampler error: {}", e);
                                 }
-                                resampler_fifo.discard_samples(plan.desired_consume_output_samples);
+                                state.resampler.fifo.discard_samples(plan.desired_consume_output_samples);
                                 dest[..max_samples].fill(0.0);
                             } else if far_decision.hold_low_recover && far_decision.mute_far_output {
                                 dest[..max_samples].fill(0.0);
-                            } else if resampler_fifo.output_len() >= audio_samples_needed {
+                            } else if state.resampler.fifo.output_len() >= audio_samples_needed {
                                 let copied =
-                                    resampler_fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
+                                    state.resampler.fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
                                 debug_assert_eq!(copied, audio_samples_needed);
                                 postprocess_interleaved_output(
                                     &mut dest[..audio_samples_needed],
                                     ch,
                                     far_decision.mute_far_output,
-                                    &mut runtime_state,
+                                    &mut state.runtime,
                                 );
                             } else {
-                                let fifo_available = resampler_fifo.output_len();
+                                let fifo_available = state.resampler.fifo.output_len();
                                 let copy_count =
-                                    resampler_fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
+                                    state.resampler.fifo.drain_into_slice(&mut dest[..audio_samples_needed]);
                                 zero_pad_tail(&mut dest[..max_samples], copy_count);
                                 note_refill_or_underrun(
-                                    &mut runtime_state,
+                                    &mut state.runtime,
                                     "Resampler underrun",
                                     "Resampler underrun",
                                     fifo_available,
@@ -1694,25 +1693,25 @@ fn run_pipewire_loop(
                     } else {
                         if latency_servo_enabled
                             && !is_pi_paused
-                            && callback_count % adaptive_update_interval == 0
-                            && runtime_state.low_recover_phase == LowRecoverPhase::Inactive
+                            && callback_count % state.adaptive_update_interval == 0
+                            && state.runtime.low_recover_phase == LowRecoverPhase::Inactive
                         {
                             if adaptive_resampling_enabled {
-                                adaptive_update_interval =
-                                    adaptive_cfg.update_interval_callbacks.max(1) as u64;
+                                state.adaptive_update_interval =
+                                    state.adaptive_config.update_interval_callbacks.max(1) as u64;
                             }
                             let drift = metrics.smoothed_control_available as i64
                                 - runtime_target_buffer_fill as i64;
 
                             if adaptive_resampling_enabled {
                                 let decision = run_adaptive_servo(
-                                    &mut runtime_state,
-                                    &adaptive_cfg,
+                                    &mut state.runtime,
+                                    &state.adaptive_config,
                                     metrics,
                                     runtime_target_buffer_fill,
                                     1.0,
                                     480,
-                                    adaptive_cfg.max_adjust.max(0.000_001),
+                                    state.adaptive_config.max_adjust.max(0.000_001),
                                     samples_per_ms,
                                     samples_per_ms_f64,
                                 );
@@ -1738,19 +1737,19 @@ fn run_pipewire_loop(
                                 }
                             } else {
                                 if drift.abs() > 480 {
-                                    runtime_state.controller_state.accumulated_drift += drift as f64;
+                                    state.runtime.controller_state.accumulated_drift += drift as f64;
                                     let integral_contribution =
-                                        runtime_state.controller_state.accumulated_drift
+                                        state.runtime.controller_state.accumulated_drift
                                             * LATENCY_SERVO_I_GAIN;
                                     if integral_contribution.abs() > MAX_INTEGRAL_TERM {
-                                        runtime_state.controller_state.accumulated_drift =
+                                        state.runtime.controller_state.accumulated_drift =
                                             (MAX_INTEGRAL_TERM / LATENCY_SERVO_I_GAIN)
                                                 * integral_contribution.signum();
                                     }
                                 }
                                 // Band classification on raw — see resampler path.
                                 let far_band = far_mode_band_from_latency(
-                                    &adaptive_cfg,
+                                    &state.adaptive_config,
                                     metrics.control_available,
                                     runtime_target_buffer_fill,
                                     samples_per_ms,
@@ -1760,7 +1759,7 @@ fn run_pipewire_loop(
                                 drift as f64 * LATENCY_SERVO_P_GAIN / 100.0
                                 };
                                 let i_term = {
-                                runtime_state.controller_state.accumulated_drift * LATENCY_SERVO_I_GAIN
+                                state.runtime.controller_state.accumulated_drift * LATENCY_SERVO_I_GAIN
                                 };
                                 let max_adjust = {
                                 LATENCY_SERVO_MAX_RATE_ADJUST
@@ -1795,9 +1794,9 @@ fn run_pipewire_loop(
                         // Straight copy: the ratio is 1.0, so input and output
                         // domains coincide. Same step as the resampler path.
                         let far_decision = far_mode_step(
-                            &mut runtime_state,
+                            &mut state.runtime,
                             &FarModeStepCtx {
-                                adaptive_config: &adaptive_cfg,
+                                adaptive_config: &state.adaptive_config,
                                 channel_count: channel_count as usize,
                                 input_sample_rate: sample_rate,
                                 output_sample_rate: actual_output_rate,
@@ -1827,19 +1826,19 @@ fn run_pipewire_loop(
                         if far_decision.recovery_reacquire_pending {
                             desired_rate_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
                             rate_adjust_for_callback.store(1.0f32.to_bits(), Ordering::Relaxed);
-                            runtime_state.recovery_reacquire_pending = false;
-                            runtime_state.pre_bridge_offset_initialized = false;
-                            runtime_state.pre_bridge_offset_accum = 0;
-                            runtime_state.pre_bridge_offset_count = 0;
+                            state.runtime.recovery_reacquire_pending = false;
+                            state.runtime.pre_bridge_offset_initialized = false;
+                            state.runtime.pre_bridge_offset_accum = 0;
+                            state.runtime.pre_bridge_offset_count = 0;
                             pacer_flush_requested.store(true, Ordering::Release);
                             pacer_pre_roll_complete.store(false, Ordering::Relaxed);
                             if far_decision.mute_far_output {
                                 let dropped =
                                     discard_ring_samples(&buffer_for_callback, samples_to_read);
-                                recovery_discard_total =
-                                    recovery_discard_total.saturating_add(dropped as u64);
+                                state.recovery_discard_total =
+                                    state.recovery_discard_total.saturating_add(dropped as u64);
                                 recovery_discard_count_for_callback.store(
-                                    (recovery_discard_total as f64).to_bits(),
+                                    (state.recovery_discard_total as f64).to_bits(),
                                     Ordering::Relaxed,
                                 );
                                 if dropped < samples_to_read {
@@ -1870,7 +1869,7 @@ fn run_pipewire_loop(
                                     dest,
                                     ch,
                                     far_decision.mute_far_output,
-                                    &mut runtime_state,
+                                    &mut state.runtime,
                                 );
                                 max_samples
                             }
@@ -1884,10 +1883,10 @@ fn run_pipewire_loop(
                             );
                             let dropped =
                                 discard_ring_samples(&buffer_for_callback, plan.desired_consume_input_samples);
-                            recovery_discard_total =
-                                recovery_discard_total.saturating_add(dropped as u64);
+                            state.recovery_discard_total =
+                                state.recovery_discard_total.saturating_add(dropped as u64);
                             recovery_discard_count_for_callback.store(
-                                (recovery_discard_total as f64).to_bits(),
+                                (state.recovery_discard_total as f64).to_bits(),
                                 Ordering::Relaxed,
                             );
                             if dropped < plan.desired_consume_input_samples {
@@ -1912,10 +1911,10 @@ fn run_pipewire_loop(
                             if samples_to_discard > 0 {
                                 let dropped =
                                     discard_ring_samples(&buffer_for_callback, samples_to_discard);
-                                recovery_discard_total =
-                                    recovery_discard_total.saturating_add(dropped as u64);
+                                state.recovery_discard_total =
+                                    state.recovery_discard_total.saturating_add(dropped as u64);
                                 recovery_discard_count_for_callback.store(
-                                    (recovery_discard_total as f64).to_bits(),
+                                    (state.recovery_discard_total as f64).to_bits(),
                                     Ordering::Relaxed,
                                 );
                                 if dropped < samples_to_discard {
@@ -1948,7 +1947,7 @@ fn run_pipewire_loop(
                                     dest,
                                     ch,
                                     far_decision.mute_far_output,
-                                    &mut runtime_state,
+                                    &mut state.runtime,
                                 );
                                 max_samples
                             }
@@ -1971,12 +1970,12 @@ fn run_pipewire_loop(
                                 dest,
                                 ch,
                                 far_decision.mute_far_output,
-                                &mut runtime_state,
+                                &mut state.runtime,
                             );
 
                             if samples_to_read < frame_aligned_max {
                                 note_refill_or_underrun(
-                                    &mut runtime_state,
+                                    &mut state.runtime,
                                     "Buffer underrun",
                                     "Buffer underrun",
                                     samples_to_read,
@@ -2004,11 +2003,11 @@ fn run_pipewire_loop(
             let in_rate = input_trigger_rate_for_callback.load(Ordering::Relaxed) as i64;
             let in_quantum = input_trigger_quantum_for_callback.load(Ordering::Relaxed) as i64;
             if in_rate > 0 && in_quantum > 0 && callback_output_frames > 0 {
-                bresenham_acc += (callback_output_frames as i64).saturating_mul(in_rate);
+                state.bresenham_acc += (callback_output_frames as i64).saturating_mul(in_rate);
                 let trigger_den = (actual_output_rate as i64).saturating_mul(in_quantum);
-                while trigger_den > 0 && bresenham_acc >= trigger_den {
+                while trigger_den > 0 && state.bresenham_acc >= trigger_den {
                     pending_input_triggers_for_callback.fetch_add(1, Ordering::Relaxed);
-                    bresenham_acc -= trigger_den;
+                    state.bresenham_acc -= trigger_den;
                 }
             }
             // DIAG output-callback: publish current adaptive runtime state
@@ -2019,12 +2018,10 @@ fn run_pipewire_loop(
                 Ordering::Relaxed,
             );
             // DIAG output: effective ratio (ppm deviation from 1.0).
-            let ratio_ppm_dev = (effective_resample_ratio - 1.0) * 1_000_000.0;
+            let ratio_ppm_dev = (state.resampler.effective_ratio - 1.0) * 1_000_000.0;
             output_effective_ratio_ppm_for_callback
                 .store((ratio_ppm_dev).to_bits(), Ordering::Relaxed);
-        })
-        .register()
-        .map_err(|e| anyhow!("Failed to register process listener: {:?}", e))?;
+        })        .register()        .map_err(|e| anyhow!("Failed to register process listener: {:?}", e))?;
 
     // Configure audio format
     let mut audio_info = pw::spa::param::audio::AudioInfoRaw::new();
