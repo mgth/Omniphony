@@ -11,12 +11,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::output_telemetry::OutputTelemetry;
 use crate::{
     ADAPTIVE_BAND_FAR, AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
     adaptive_runtime::{
@@ -253,9 +254,6 @@ pub struct PipewireWriter {
     pacer_pre_roll_complete: Arc<AtomicBool>,
     pacer_flush_requested: Arc<AtomicBool>,
     pacer_pre_roll_threshold_samples: usize,
-    pacer_drain_total: Arc<AtomicU64>,
-    pacer_underrun_total: Arc<AtomicU64>,
-    pacer_fifo_level: Arc<AtomicU64>,
     sample_rate: u32,
     channel_count: u32,
     /// Pre-computed back-pressure threshold in samples (max_latency_ms → samples).
@@ -274,92 +272,9 @@ pub struct PipewireWriter {
     current_runtime_state: Arc<AtomicU8>,
     /// Signals the PipeWire worker thread to stop and exit cleanly.
     shutdown_requested: Arc<AtomicBool>,
-    /// Timestamp of the last successful write into the local ring buffer.
-    last_write_ms: Arc<AtomicU64>,
-    /// Smoothed measured total latency (ring + output FIFO + graph) in ms bits.
-    measured_latency_ms_bits: Arc<AtomicU32>,
-    /// Internal controller latency (ring + output FIFO midpoint) in ms bits.
-    control_latency_ms_bits: Arc<AtomicU32>,
-    /// Downstream graph latency as measured by pw_stream_get_time().delay (f32 ms bits).
-    /// Updated every ~100 callbacks once the stream is stable.
-    graph_latency_ms_bits: Arc<AtomicU32>,
-    /// EMA-smoothed control latency in ms bits — the value the servo actually tracks.
-    smoothed_control_latency_ms_bits: Arc<AtomicU32>,
-    /// Ring-buffer level converted to ms — first of the three control-available components.
-    avail_input_latency_ms_bits: Arc<AtomicU32>,
-    /// Output FIFO (resampler output) converted back to input-domain ms — second component.
-    output_fifo_latency_ms_bits: Arc<AtomicU32>,
-    /// Pending samples inside the local resampler input — third component.
-    resampler_pending_latency_ms_bits: Arc<AtomicU32>,
-    /// Cumulative input-domain samples written via `write_samples`. Paired
-    /// with `cumulative_drained_input_samples` below to give the PI a
-    /// chunk-noise-free `control_available`: the difference (written -
-    /// drained) is the true "samples in flight" between writer and the
-    /// resampler's consumption point, with no chunk granularity artefacts.
-    cumulative_written_input_samples: Arc<std::sync::atomic::AtomicU64>,
-    /// Cumulative samples drained from the input ring per output callback
-    /// (in input domain: callback_output_frames × channels / ratio). The
-    /// counter is incremented continuously (not at chunk boundaries) so
-    /// the running difference with `cumulative_written_input_samples` is
-    /// smooth. Owned here to keep the Arc alive; the callback thread has
-    /// its own clone for the fetch_add.
-    #[allow(dead_code)]
-    cumulative_drained_input_samples: Arc<std::sync::atomic::AtomicU64>,
-    /// Diagnostic: the cumulative-flow control_available value (written -
-    /// drained) actually fed to the PI. Exposed here for direct comparison
-    /// with `output_ring_input_samples` (raw ring level) — if both show the
-    /// same sawtooth, the flow-counter approach hasn't suppressed it.
-    cumulative_flow_control_available_bits: Arc<std::sync::atomic::AtomicU64>,
-    /// Diagnostic atomics published by the PipeWire output process callback.
-    /// `f64` bits stored each callback; lets the Studio diag plot trace the
-    /// drain cadence (interval between callbacks) to localise ring-level
-    /// oscillations whose origin is downstream of the input/decoder/write
-    /// chain.
-    output_callback_dt_us_bits: Arc<std::sync::atomic::AtomicU64>,
-    /// FIFO level between local resampler and PipeWire (input-domain
-    /// samples). Post-d43ddab the callback drains only ~21 ms per cycle so
-    /// this FIFO is no longer fully drained per call and can itself
-    /// oscillate — strong candidate for the residual DAC sawtooth.
-    output_fifo_input_domain_samples_bits: Arc<std::sync::atomic::AtomicU64>,
-    /// Pending input samples held inside the resampler (input-domain).
-    /// Complements the FIFO metric: any oscillation here can manifest as
-    /// latency wobble downstream.
-    output_resampler_pending_input_samples_bits: Arc<std::sync::atomic::AtomicU64>,
-    /// Latency signals duplicated as f64-encoded u64 atomics so they can
-    /// be selected in the generic diag plot alongside other metrics. The
-    /// `*_ms_bits: AtomicU32` set above is kept untouched — it feeds the
-    /// dedicated latency snapshot / OSC pipeline.
-    diag_latency_smoothed_ms_bits: Arc<std::sync::atomic::AtomicU64>,
-    diag_latency_control_ms_bits: Arc<std::sync::atomic::AtomicU64>,
-    diag_rate_adjust_ppm_bits: Arc<std::sync::atomic::AtomicU64>,
-    /// f64-encoded mirrors of the three `control_available` components in ms
-    /// (ring / output-FIFO / resampler-pending). Same values fed to the
-    /// latency OSC path, exposed here so they are selectable in the generic
-    /// diag plot instead of needing a separate components plot.
-    diag_latency_avail_input_ms_bits: Arc<std::sync::atomic::AtomicU64>,
-    diag_latency_output_fifo_ms_bits: Arc<std::sync::atomic::AtomicU64>,
-    diag_latency_resampler_pending_ms_bits: Arc<std::sync::atomic::AtomicU64>,
-    /// Effective resample ratio expressed as ppm deviation from 1.0
-    /// (i.e. (ratio - 1.0) × 1e6). Stays constant when the PI is paused;
-    /// any modulation here under pause indicates a bug in the ratio
-    /// freeze path. f64 bits.
-    output_effective_ratio_ppm_bits: Arc<std::sync::atomic::AtomicU64>,
-    /// Raw input ring-buffer length at callback entry, in samples. Same
-    /// quantity as `avail_input_latency_ms_bits` but published from the
-    /// callback at native cadence (not converted to ms, not sampled at
-    /// send_meter_bundle). Lets us cross-check whether the 1 Hz on the
-    /// components plot is real or a sampling/aliasing artefact.
-    output_ring_input_samples_bits: Arc<std::sync::atomic::AtomicU64>,
-    /// Current adaptive runtime state code (0=stable, 1=low-recover,
-    /// 2=settling, 3=high-recover). Surfaces here as f64 bits so the diag
-    /// plot can chart state transitions over time — if the state changes
-    /// periodically while PI is paused, recovery is the source of any
-    /// ring-level oscillation.
-    runtime_state_code_bits: Arc<std::sync::atomic::AtomicU64>,
-    /// Monotonic counter of ring samples discarded by ANY recovery path
-    /// (low_recover_trim, hard_recover_high, recovery_reacquire_pending).
-    /// Plot as a counter: a non-flat slope means recovery is firing.
-    recovery_discard_count_bits: Arc<std::sync::atomic::AtomicU64>,
+    /// Every atomic this backend publishes — latency gauges, cumulative
+    /// counters, diag-plot mirrors, pacer counters. See [`OutputTelemetry`].
+    telemetry: OutputTelemetry,
     /// Configured ring-buffer target latency (from PipewireBufferConfig::latency_ms).
     target_latency_ms: u32,
     live_adaptive_config: Arc<Mutex<AdaptiveResamplingConfig>>,
@@ -441,9 +356,10 @@ impl PipewireWriter {
         // for both supported input codecs (~32 ms per AU) with margin.
         let pacer_pre_roll_threshold_samples =
             ((sample_rate as usize) * (channel_count as usize) * 64 / 1000).max(1);
-        let pacer_drain_total = Arc::new(AtomicU64::new(0));
-        let pacer_underrun_total = Arc::new(AtomicU64::new(0));
-        let pacer_fifo_level = Arc::new(AtomicU64::new(0));
+        // One bundle instead of twenty-seven atomics created, stored and
+        // cloned one by one.
+        let telemetry = OutputTelemetry::new();
+        let telemetry_for_thread = telemetry.clone();
         let stream_ready = Arc::new(AtomicBool::new(false));
         let ready_clone = stream_ready.clone();
         let ready_for_thread_cleanup = stream_ready.clone();
@@ -455,58 +371,6 @@ impl PipewireWriter {
         let runtime_state_clone = current_runtime_state.clone();
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let shutdown_requested_clone = shutdown_requested.clone();
-        let last_write_ms = Arc::new(AtomicU64::new(wallclock_millis()));
-        let last_write_ms_clone = last_write_ms.clone();
-        let measured_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
-        let measured_latency_clone = measured_latency_ms_bits.clone();
-        let control_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
-        let control_latency_clone = control_latency_ms_bits.clone();
-        let graph_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
-        let graph_latency_clone = graph_latency_ms_bits.clone();
-        let smoothed_control_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
-        let smoothed_control_latency_clone = smoothed_control_latency_ms_bits.clone();
-        let avail_input_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
-        let avail_input_latency_clone = avail_input_latency_ms_bits.clone();
-        let output_fifo_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
-        let output_fifo_latency_clone = output_fifo_latency_ms_bits.clone();
-        let resampler_pending_latency_ms_bits = Arc::new(AtomicU32::new(0u32));
-        let resampler_pending_latency_clone = resampler_pending_latency_ms_bits.clone();
-        let cumulative_written_input_samples = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let cumulative_drained_input_samples = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let cumulative_drained_input_samples_clone = cumulative_drained_input_samples.clone();
-        let cumulative_written_input_samples_clone = cumulative_written_input_samples.clone();
-        let cumulative_flow_control_available_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let cumulative_flow_control_available_clone =
-            cumulative_flow_control_available_bits.clone();
-        let output_callback_dt_us_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let output_callback_dt_us_clone = output_callback_dt_us_bits.clone();
-        let output_fifo_input_domain_samples_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let output_fifo_input_domain_samples_clone = output_fifo_input_domain_samples_bits.clone();
-        let output_resampler_pending_input_samples_bits =
-            Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let output_resampler_pending_input_samples_clone =
-            output_resampler_pending_input_samples_bits.clone();
-        let diag_latency_smoothed_ms_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let diag_latency_smoothed_ms_clone = diag_latency_smoothed_ms_bits.clone();
-        let diag_latency_control_ms_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let diag_latency_control_ms_clone = diag_latency_control_ms_bits.clone();
-        let diag_rate_adjust_ppm_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let diag_rate_adjust_ppm_clone = diag_rate_adjust_ppm_bits.clone();
-        let diag_latency_avail_input_ms_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let diag_latency_avail_input_ms_clone = diag_latency_avail_input_ms_bits.clone();
-        let diag_latency_output_fifo_ms_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let diag_latency_output_fifo_ms_clone = diag_latency_output_fifo_ms_bits.clone();
-        let diag_latency_resampler_pending_ms_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let diag_latency_resampler_pending_ms_clone =
-            diag_latency_resampler_pending_ms_bits.clone();
-        let output_effective_ratio_ppm_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let output_effective_ratio_ppm_clone = output_effective_ratio_ppm_bits.clone();
-        let output_ring_input_samples_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let output_ring_input_samples_clone = output_ring_input_samples_bits.clone();
-        let runtime_state_code_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let runtime_state_code_clone = runtime_state_code_bits.clone();
-        let recovery_discard_count_bits = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let recovery_discard_count_clone = recovery_discard_count_bits.clone();
         let live_config = Arc::new(Mutex::new(adaptive_config));
         let adaptive_config_for_thread = Arc::clone(&live_config);
         let reset_ratio_requested = Arc::new(AtomicBool::new(false));
@@ -550,30 +414,7 @@ impl PipewireWriter {
                 adaptive_band_clone,
                 runtime_state_clone,
                 shutdown_requested_clone,
-                last_write_ms_clone,
-                measured_latency_clone,
-                control_latency_clone,
-                graph_latency_clone,
-                smoothed_control_latency_clone,
-                avail_input_latency_clone,
-                output_fifo_latency_clone,
-                resampler_pending_latency_clone,
-                cumulative_written_input_samples_clone,
-                cumulative_drained_input_samples_clone,
-                cumulative_flow_control_available_clone,
-                output_callback_dt_us_clone,
-                output_fifo_input_domain_samples_clone,
-                output_resampler_pending_input_samples_clone,
-                diag_latency_smoothed_ms_clone,
-                diag_latency_control_ms_clone,
-                diag_rate_adjust_ppm_clone,
-                diag_latency_avail_input_ms_clone,
-                diag_latency_output_fifo_ms_clone,
-                diag_latency_resampler_pending_ms_clone,
-                output_effective_ratio_ppm_clone,
-                output_ring_input_samples_clone,
-                runtime_state_code_clone,
-                recovery_discard_count_clone,
+                telemetry_for_thread,
                 pending_input_triggers_for_thread,
                 input_trigger_rate_for_thread,
                 input_trigger_quantum_for_thread,
@@ -624,9 +465,6 @@ impl PipewireWriter {
             pacer_pre_roll_complete,
             pacer_flush_requested,
             pacer_pre_roll_threshold_samples,
-            pacer_drain_total,
-            pacer_underrun_total,
-            pacer_fifo_level,
             sample_rate,
             channel_count,
             max_buffer_samples,
@@ -637,30 +475,7 @@ impl PipewireWriter {
             current_adaptive_band,
             current_runtime_state,
             shutdown_requested,
-            last_write_ms,
-            measured_latency_ms_bits,
-            control_latency_ms_bits,
-            graph_latency_ms_bits,
-            smoothed_control_latency_ms_bits,
-            avail_input_latency_ms_bits,
-            output_fifo_latency_ms_bits,
-            resampler_pending_latency_ms_bits,
-            cumulative_written_input_samples,
-            cumulative_drained_input_samples,
-            cumulative_flow_control_available_bits,
-            output_callback_dt_us_bits,
-            output_fifo_input_domain_samples_bits,
-            output_resampler_pending_input_samples_bits,
-            diag_latency_smoothed_ms_bits,
-            diag_latency_control_ms_bits,
-            diag_rate_adjust_ppm_bits,
-            diag_latency_avail_input_ms_bits,
-            diag_latency_output_fifo_ms_bits,
-            diag_latency_resampler_pending_ms_bits,
-            output_effective_ratio_ppm_bits,
-            output_ring_input_samples_bits,
-            runtime_state_code_bits,
-            recovery_discard_count_bits,
+            telemetry,
             target_latency_ms,
             live_adaptive_config: live_config,
             reset_ratio_requested,
@@ -680,7 +495,8 @@ impl PipewireWriter {
         // This matches the PI's mental model of "samples committed to the
         // pipeline" — back-pressure drops are exceptional and would show
         // up as a separate divergence anyway.
-        self.cumulative_written_input_samples
+        self.telemetry
+            .cumulative_written_input_samples
             .fetch_add(samples.len() as u64, Ordering::Relaxed);
         // Check if stream is ready
         if !self.stream_ready.load(Ordering::Relaxed) {
@@ -739,7 +555,8 @@ impl PipewireWriter {
             .bootstrap_written_samples
             .saturating_add(report.pushed_samples);
         if report.pushed_samples > 0 {
-            self.last_write_ms
+            self.telemetry
+                .last_write_ms
                 .store(wallclock_millis(), Ordering::Relaxed);
         }
         if self.bootstrap_write_calls <= 5 {
@@ -849,9 +666,9 @@ impl PipewireWriter {
             out_sample_rate: self.sample_rate,
             out_channels: self.channel_count,
             enabled: self.pacer_enabled,
-            diag_drain_total: Arc::clone(&self.pacer_drain_total),
-            diag_underrun_total: Arc::clone(&self.pacer_underrun_total),
-            diag_fifo_level: Arc::clone(&self.pacer_fifo_level),
+            diag_drain_total: Arc::clone(&self.telemetry.pacer_drain_total),
+            diag_underrun_total: Arc::clone(&self.telemetry.pacer_underrun_total),
+            diag_fifo_level: Arc::clone(&self.telemetry.pacer_fifo_level),
         }
     }
 
@@ -879,7 +696,7 @@ impl PipewireWriter {
     /// Includes PipeWire graph scheduling and the netjack2 driver quantum.
     /// Returns 0.0 until the stream has been active for ~2 seconds.
     pub fn graph_latency_ms(&self) -> f32 {
-        f32::from_bits(self.graph_latency_ms_bits.load(Ordering::Relaxed))
+        f32::from_bits(self.telemetry.graph_latency_ms_bits.load(Ordering::Relaxed))
     }
 
     /// Target audio delay seen by the listener:
@@ -896,37 +713,55 @@ impl PipewireWriter {
     /// Measured total audio delay seen by the listener:
     /// current ring-buffer latency + PipeWire graph latency.
     pub fn measured_audio_delay_ms(&self) -> f32 {
-        f32::from_bits(self.measured_latency_ms_bits.load(Ordering::Relaxed))
+        f32::from_bits(
+            self.telemetry
+                .measured_latency_ms_bits
+                .load(Ordering::Relaxed),
+        )
     }
 
     pub fn control_audio_delay_ms(&self) -> f32 {
-        f32::from_bits(self.control_latency_ms_bits.load(Ordering::Relaxed))
+        f32::from_bits(
+            self.telemetry
+                .control_latency_ms_bits
+                .load(Ordering::Relaxed),
+        )
     }
 
     /// EMA-smoothed control latency in ms (the value the servo actually tracks).
     pub fn smoothed_control_audio_delay_ms(&self) -> f32 {
         f32::from_bits(
-            self.smoothed_control_latency_ms_bits
+            self.telemetry
+                .smoothed_control_latency_ms_bits
                 .load(Ordering::Relaxed),
         )
     }
 
     /// Ring-buffer occupancy converted to ms (first component of `control_available`).
     pub fn avail_input_audio_delay_ms(&self) -> f32 {
-        f32::from_bits(self.avail_input_latency_ms_bits.load(Ordering::Relaxed))
+        f32::from_bits(
+            self.telemetry
+                .avail_input_latency_ms_bits
+                .load(Ordering::Relaxed),
+        )
     }
 
     /// Resampler output FIFO content converted back to input-domain ms
     /// (second component of `control_available`).
     pub fn output_fifo_audio_delay_ms(&self) -> f32 {
-        f32::from_bits(self.output_fifo_latency_ms_bits.load(Ordering::Relaxed))
+        f32::from_bits(
+            self.telemetry
+                .output_fifo_latency_ms_bits
+                .load(Ordering::Relaxed),
+        )
     }
 
     /// Local resampler pending input samples expressed as ms
     /// (third component of `control_available`).
     pub fn resampler_pending_audio_delay_ms(&self) -> f32 {
         f32::from_bits(
-            self.resampler_pending_latency_ms_bits
+            self.telemetry
+                .resampler_pending_latency_ms_bits
                 .load(Ordering::Relaxed),
         )
     }
@@ -954,133 +789,10 @@ impl PipewireWriter {
     }
 
     /// Diagnostic metric handles published by the PipeWire output backend.
-    /// Each entry is registered in the global registry by the caller (one
-    /// call to `DiagRegistry::register_external`); the backend updates the
-    /// underlying atomics from the process callback. Adding a new metric in
-    /// this list is the only change needed to surface it in the Studio diag
-    /// plot — no other plumbing required.
+    /// Registered in the global registry by the caller; adding a metric to
+    /// [`OutputTelemetry`] surfaces it in the diag plot with no change here.
     pub fn diag_atomic_handles(&self) -> Vec<sys::diag::DiagAtomicHandle> {
-        vec![
-            sys::diag::DiagAtomicHandle {
-                name: "output_callback_dt_us",
-                label: "Output callback dt",
-                group: "output",
-                unit: "us",
-                atomic: Arc::clone(&self.output_callback_dt_us_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "output_fifo_input_domain_samples",
-                label: "Output FIFO level (input-domain)",
-                group: "output",
-                unit: "samples",
-                atomic: Arc::clone(&self.output_fifo_input_domain_samples_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "output_resampler_pending_input_samples",
-                label: "Resampler pending input samples",
-                group: "output",
-                unit: "samples",
-                atomic: Arc::clone(&self.output_resampler_pending_input_samples_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "latency_smoothed_ms",
-                label: "Smoothed control latency",
-                group: "latency",
-                unit: "ms",
-                atomic: Arc::clone(&self.diag_latency_smoothed_ms_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "latency_control_ms",
-                label: "Control latency (raw)",
-                group: "latency",
-                unit: "ms",
-                atomic: Arc::clone(&self.diag_latency_control_ms_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "rate_adjust_ppm",
-                label: "Rate adjust",
-                group: "latency",
-                unit: "ppm",
-                atomic: Arc::clone(&self.diag_rate_adjust_ppm_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "latency_avail_input_ms",
-                label: "Avail input latency",
-                group: "latency",
-                unit: "ms",
-                atomic: Arc::clone(&self.diag_latency_avail_input_ms_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "latency_output_fifo_ms",
-                label: "Output FIFO latency",
-                group: "latency",
-                unit: "ms",
-                atomic: Arc::clone(&self.diag_latency_output_fifo_ms_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "latency_resampler_pending_ms",
-                label: "Resampler pending latency",
-                group: "latency",
-                unit: "ms",
-                atomic: Arc::clone(&self.diag_latency_resampler_pending_ms_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "output_effective_ratio_ppm",
-                label: "Effective ratio (ppm dev)",
-                group: "output",
-                unit: "ppm",
-                atomic: Arc::clone(&self.output_effective_ratio_ppm_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "output_ring_input_samples",
-                label: "Ring input level (native sampling)",
-                group: "output",
-                unit: "samples",
-                atomic: Arc::clone(&self.output_ring_input_samples_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "cumulative_flow_control_available",
-                label: "Cumulative-flow control_available (PI input)",
-                group: "output",
-                unit: "samples",
-                atomic: Arc::clone(&self.cumulative_flow_control_available_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "pacer_fifo_level",
-                label: "Pacer FIFO level",
-                group: "output",
-                unit: "samples",
-                atomic: Arc::clone(&self.pacer_fifo_level),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "pacer_drain_total",
-                label: "Pacer drain cumulative",
-                group: "output",
-                unit: "samples",
-                atomic: Arc::clone(&self.pacer_drain_total),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "pacer_underrun_total",
-                label: "Pacer underrun cumulative",
-                group: "output",
-                unit: "samples",
-                atomic: Arc::clone(&self.pacer_underrun_total),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "runtime_state_code",
-                label: "Runtime state (0=stable,1=low,2=settle,3=high)",
-                group: "output",
-                unit: "",
-                atomic: Arc::clone(&self.runtime_state_code_bits),
-            },
-            sys::diag::DiagAtomicHandle {
-                name: "recovery_discard_count",
-                label: "Cumulative samples discarded by recovery",
-                group: "output",
-                unit: "samples",
-                atomic: Arc::clone(&self.recovery_discard_count_bits),
-            },
-        ]
+        self.telemetry.diag_handles()
     }
 }
 
@@ -1114,30 +826,7 @@ fn run_pipewire_loop(
     current_adaptive_band: Arc<AtomicU8>,
     current_runtime_state: Arc<AtomicU8>,
     shutdown_requested: Arc<AtomicBool>,
-    _last_write_ms: Arc<AtomicU64>,
-    measured_latency_ms_out: Arc<AtomicU32>,
-    control_latency_ms_out: Arc<AtomicU32>,
-    graph_latency_ms_out: Arc<AtomicU32>,
-    smoothed_control_latency_ms_out: Arc<AtomicU32>,
-    avail_input_latency_ms_out: Arc<AtomicU32>,
-    output_fifo_latency_ms_out: Arc<AtomicU32>,
-    resampler_pending_latency_ms_out: Arc<AtomicU32>,
-    cumulative_written_input_samples: Arc<std::sync::atomic::AtomicU64>,
-    cumulative_drained_input_samples: Arc<std::sync::atomic::AtomicU64>,
-    cumulative_flow_control_available_out: Arc<std::sync::atomic::AtomicU64>,
-    output_callback_dt_us_out: Arc<std::sync::atomic::AtomicU64>,
-    output_fifo_input_domain_samples_out: Arc<std::sync::atomic::AtomicU64>,
-    output_resampler_pending_input_samples_out: Arc<std::sync::atomic::AtomicU64>,
-    diag_latency_smoothed_ms_out: Arc<std::sync::atomic::AtomicU64>,
-    diag_latency_control_ms_out: Arc<std::sync::atomic::AtomicU64>,
-    diag_rate_adjust_ppm_out: Arc<std::sync::atomic::AtomicU64>,
-    diag_latency_avail_input_ms_out: Arc<std::sync::atomic::AtomicU64>,
-    diag_latency_output_fifo_ms_out: Arc<std::sync::atomic::AtomicU64>,
-    diag_latency_resampler_pending_ms_out: Arc<std::sync::atomic::AtomicU64>,
-    output_effective_ratio_ppm_out: Arc<std::sync::atomic::AtomicU64>,
-    output_ring_input_samples_out: Arc<std::sync::atomic::AtomicU64>,
-    runtime_state_code_out: Arc<std::sync::atomic::AtomicU64>,
-    recovery_discard_count_out: Arc<std::sync::atomic::AtomicU64>,
+    telemetry: OutputTelemetry,
     pending_input_triggers: Arc<AtomicI64>,
     input_trigger_rate_hz: Arc<AtomicU32>,
     input_trigger_quantum_frames: Arc<AtomicU32>,
@@ -1229,7 +918,7 @@ fn run_pipewire_loop(
 
     // Setup state changed listener
     let ready_for_state = stream_ready.clone();
-    let graph_latency_for_state = graph_latency_ms_out.clone();
+    let graph_latency_for_state = telemetry.graph_latency_ms_bits.clone();
     let _state_listener = stream
         .add_local_listener_with_user_data(())
         .state_changed(move |_, _, old, new| {
@@ -1307,28 +996,31 @@ fn run_pipewire_loop(
     let desired_rate_for_callback = desired_rate.clone();
     let rate_adjust_for_callback = current_rate_adjust.clone();
     let shutdown_requested_for_callback = shutdown_requested.clone();
-    let graph_latency_for_callback = graph_latency_ms_out.clone();
-    let output_callback_dt_us_for_callback = output_callback_dt_us_out.clone();
+    let graph_latency_for_callback = telemetry.graph_latency_ms_bits.clone();
+    let output_callback_dt_us_for_callback = telemetry.output_callback_dt_us_bits.clone();
     let output_fifo_input_domain_samples_for_callback =
-        output_fifo_input_domain_samples_out.clone();
-    let output_resampler_pending_input_samples_for_callback =
-        output_resampler_pending_input_samples_out.clone();
-    let diag_latency_smoothed_ms_for_callback = diag_latency_smoothed_ms_out.clone();
-    let diag_latency_control_ms_for_callback = diag_latency_control_ms_out.clone();
-    let diag_rate_adjust_ppm_for_callback = diag_rate_adjust_ppm_out.clone();
-    let diag_latency_avail_input_ms_for_callback = diag_latency_avail_input_ms_out.clone();
-    let diag_latency_output_fifo_ms_for_callback = diag_latency_output_fifo_ms_out.clone();
+        telemetry.output_fifo_input_domain_samples_bits.clone();
+    let output_resampler_pending_input_samples_for_callback = telemetry
+        .output_resampler_pending_input_samples_bits
+        .clone();
+    let diag_latency_smoothed_ms_for_callback = telemetry.diag_latency_smoothed_ms_bits.clone();
+    let diag_latency_control_ms_for_callback = telemetry.diag_latency_control_ms_bits.clone();
+    let diag_rate_adjust_ppm_for_callback = telemetry.diag_rate_adjust_ppm_bits.clone();
+    let diag_latency_avail_input_ms_for_callback =
+        telemetry.diag_latency_avail_input_ms_bits.clone();
+    let diag_latency_output_fifo_ms_for_callback =
+        telemetry.diag_latency_output_fifo_ms_bits.clone();
     let diag_latency_resampler_pending_ms_for_callback =
-        diag_latency_resampler_pending_ms_out.clone();
+        telemetry.diag_latency_resampler_pending_ms_bits.clone();
+    let cumulative_written_for_callback = telemetry.cumulative_written_input_samples.clone();
+    let cumulative_drained_for_callback = telemetry.cumulative_drained_input_samples.clone();
     let input_clock_us_for_callback = input_clock_us.clone();
-    let cumulative_written_for_callback = cumulative_written_input_samples.clone();
-    let cumulative_drained_for_callback = cumulative_drained_input_samples.clone();
     let cumulative_flow_control_available_for_callback =
-        cumulative_flow_control_available_out.clone();
-    let output_effective_ratio_ppm_for_callback = output_effective_ratio_ppm_out.clone();
-    let output_ring_input_samples_for_callback = output_ring_input_samples_out.clone();
-    let runtime_state_code_for_callback = runtime_state_code_out.clone();
-    let recovery_discard_count_for_callback = recovery_discard_count_out.clone();
+        telemetry.cumulative_flow_control_available_bits.clone();
+    let output_effective_ratio_ppm_for_callback = telemetry.output_effective_ratio_ppm_bits.clone();
+    let output_ring_input_samples_for_callback = telemetry.output_ring_input_samples_bits.clone();
+    let runtime_state_code_for_callback = telemetry.runtime_state_code_bits.clone();
+    let recovery_discard_count_for_callback = telemetry.recovery_discard_count_bits.clone();
     let mut last_output_callback_at: Option<Instant> = None;
     let mut recovery_discard_total: u64 = 0;
     let live_adaptive_config_for_callback = Arc::clone(&adaptive_config);
@@ -1615,8 +1307,8 @@ fn run_pipewire_loop(
                         adaptive_cfg.control_smoothing_order,
                         callback_dt_s,
                         LatencyMetricTargets {
-                            measured_latency_ms_bits: &measured_latency_ms_out,
-                            control_latency_ms_bits: &control_latency_ms_out,
+                            measured_latency_ms_bits: &telemetry.measured_latency_ms_bits,
+                            control_latency_ms_bits: &telemetry.control_latency_ms_bits,
                         },
                     );
                     let _ = control_available_override; // kept for future revival of the flow override
@@ -1705,7 +1397,7 @@ fn run_pipewire_loop(
                     } else {
                         0.0
                     };
-                    smoothed_control_latency_ms_out
+                    telemetry.smoothed_control_latency_ms_bits
                         .store(smoothed_control_latency_ms.to_bits(), Ordering::Relaxed);
                     // DIAG: f64-encoded mirrors of the latency / rate signals
                     // so the generic diag plot can graph them alongside any
@@ -1737,9 +1429,9 @@ fn run_pipewire_loop(
                     let avail_input_ms = samples_to_ms(available);
                     let output_fifo_ms = samples_to_ms(output_fifo_input_domain_samples_raw);
                     let resampler_pending_ms = samples_to_ms(pending_resampler_input_samples);
-                    avail_input_latency_ms_out.store(avail_input_ms.to_bits(), Ordering::Relaxed);
-                    output_fifo_latency_ms_out.store(output_fifo_ms.to_bits(), Ordering::Relaxed);
-                    resampler_pending_latency_ms_out
+                    telemetry.avail_input_latency_ms_bits.store(avail_input_ms.to_bits(), Ordering::Relaxed);
+                    telemetry.output_fifo_latency_ms_bits.store(output_fifo_ms.to_bits(), Ordering::Relaxed);
+                    telemetry.resampler_pending_latency_ms_bits
                         .store(resampler_pending_ms.to_bits(), Ordering::Relaxed);
                     // f64 mirrors for the generic diag plot (replaces the
                     // standalone components plot).
@@ -1855,8 +1547,8 @@ fn run_pipewire_loop(
                                 output_sample_rate: actual_output_rate,
                                 runtime_state_code: &current_runtime_state,
                                 latency: LatencyMetricTargets {
-                                    measured_latency_ms_bits: &measured_latency_ms_out,
-                                    control_latency_ms_bits: &control_latency_ms_out,
+                                    measured_latency_ms_bits: &telemetry.measured_latency_ms_bits,
+                                    control_latency_ms_bits: &telemetry.control_latency_ms_bits,
                                 },
                             },
                             FarModeStepInputs {
@@ -2157,8 +1849,8 @@ fn run_pipewire_loop(
                                 output_sample_rate: actual_output_rate,
                                 runtime_state_code: &current_runtime_state,
                                 latency: LatencyMetricTargets {
-                                    measured_latency_ms_bits: &measured_latency_ms_out,
-                                    control_latency_ms_bits: &control_latency_ms_out,
+                                    measured_latency_ms_bits: &telemetry.measured_latency_ms_bits,
+                                    control_latency_ms_bits: &telemetry.control_latency_ms_bits,
                                 },
                             },
                             FarModeStepInputs {
