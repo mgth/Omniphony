@@ -234,52 +234,54 @@ pub fn gaintable_chunk_broadcasts(
     out
 }
 
-pub fn parse_bool_arg(arg: Option<&OscType>) -> Option<bool> {
+/// Any OSC numeric argument, as `f64`.
+///
+/// OSC has four numeric tags — `i`, `h`, `f`, `d` — and the *sender* picks one,
+/// not the receiver: Studio's sliders send `f`, a scripted client sends `i` for
+/// the same control, and most Python bindings turn `1.0` into `d`. Which tag
+/// arrived says nothing about what was meant, so the parsers below read the
+/// value and treat the tag as a transport detail.
+///
+/// This is the one place that decides what counts as a number. Handlers used to
+/// answer that question inline and disagreed with each other, so whether a
+/// control accepted your message depended on which address you sent it to — and
+/// a rejected message was dropped in silence, with no error and no log.
+fn numeric(arg: &OscType) -> Option<f64> {
     match arg {
-        Some(OscType::Int(i)) => Some(*i != 0),
-        Some(OscType::Float(f)) => Some(*f != 0.0),
+        OscType::Int(i) => Some(*i as f64),
+        OscType::Long(l) => Some(*l as f64),
+        OscType::Float(f) => Some(*f as f64),
+        OscType::Double(d) => Some(*d),
         _ => None,
+    }
+}
+
+/// A boolean argument: the `T`/`F` tags, or any number read as zero/non-zero.
+pub fn parse_bool_arg(arg: Option<&OscType>) -> Option<bool> {
+    match arg? {
+        OscType::Bool(b) => Some(*b),
+        other => numeric(other).map(|v| v != 0.0),
     }
 }
 
 pub fn parse_positive_u32_arg(arg: Option<&OscType>) -> Option<u32> {
-    match arg {
-        Some(OscType::Int(i)) if *i > 0 => Some(*i as u32),
-        Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u32),
-        _ => None,
-    }
+    numeric(arg?).filter(|v| *v > 0.0).map(|v| v as u32)
 }
 
 pub fn parse_nonnegative_u32_arg(arg: Option<&OscType>) -> Option<u32> {
-    match arg {
-        Some(OscType::Int(i)) if *i >= 0 => Some(*i as u32),
-        Some(OscType::Float(f)) if *f >= 0.0 => Some(*f as u32),
-        _ => None,
-    }
+    numeric(arg?).filter(|v| *v >= 0.0).map(|v| v as u32)
 }
 
 pub fn parse_positive_f32_arg(arg: Option<&OscType>) -> Option<f32> {
-    match arg {
-        Some(OscType::Float(f)) if *f > 0.0 => Some(*f),
-        Some(OscType::Int(i)) if *i > 0 => Some(*i as f32),
-        _ => None,
-    }
+    numeric(arg?).filter(|v| *v > 0.0).map(|v| v as f32)
 }
 
 pub fn parse_nonnegative_f32_arg(arg: Option<&OscType>) -> Option<f32> {
-    match arg {
-        Some(OscType::Float(f)) if *f >= 0.0 => Some(*f),
-        Some(OscType::Int(i)) if *i >= 0 => Some(*i as f32),
-        _ => None,
-    }
+    numeric(arg?).filter(|v| *v >= 0.0).map(|v| v as f32)
 }
 
 pub fn parse_f32_arg(arg: Option<&OscType>) -> Option<f32> {
-    match arg {
-        Some(OscType::Float(f)) => Some(*f),
-        Some(OscType::Int(i)) => Some(*i as f32),
-        _ => None,
-    }
+    numeric(arg?).map(|v| v as f32)
 }
 
 pub fn parse_string_arg(arg: Option<&OscType>) -> Option<String> {
@@ -2103,5 +2105,96 @@ mod freq_cutoff_clear_tests {
             &speaker_patch(r#"{"id":0,"spatialize":true}"#),
         );
         assert_eq!(speaker.freq_low, Some(120.0));
+    }
+
+    /// Every OSC numeric tag must reach the same value.
+    ///
+    /// The sender picks the tag: Studio sends `f`, a scripted client sends `i`,
+    /// most Python bindings turn `1.0` into `d`. Before these parsers agreed,
+    /// which of those a control accepted depended on the address you sent it
+    /// to, and the ones it did not accept were dropped without a word.
+    #[test]
+    fn every_numeric_tag_parses_to_the_same_value() {
+        let tags = [
+            OscType::Int(3),
+            OscType::Long(3),
+            OscType::Float(3.0),
+            OscType::Double(3.0),
+        ];
+        for tag in &tags {
+            assert_eq!(parse_f32_arg(Some(tag)), Some(3.0), "{tag:?}");
+            assert_eq!(parse_positive_f32_arg(Some(tag)), Some(3.0), "{tag:?}");
+            assert_eq!(parse_nonnegative_f32_arg(Some(tag)), Some(3.0), "{tag:?}");
+            assert_eq!(parse_positive_u32_arg(Some(tag)), Some(3), "{tag:?}");
+            assert_eq!(parse_nonnegative_u32_arg(Some(tag)), Some(3), "{tag:?}");
+            assert_eq!(parse_bool_arg(Some(tag)), Some(true), "{tag:?}");
+        }
+    }
+
+    /// A `T`/`F` argument is the natural way to send a toggle, and it used to
+    /// work on some addresses and be silently ignored on others.
+    #[test]
+    fn bool_tags_and_numbers_both_read_as_booleans() {
+        assert_eq!(parse_bool_arg(Some(&OscType::Bool(true))), Some(true));
+        assert_eq!(parse_bool_arg(Some(&OscType::Bool(false))), Some(false));
+        for zero in [
+            OscType::Int(0),
+            OscType::Long(0),
+            OscType::Float(0.0),
+            OscType::Double(0.0),
+        ] {
+            assert_eq!(parse_bool_arg(Some(&zero)), Some(false), "{zero:?}");
+        }
+        assert_eq!(parse_bool_arg(Some(&OscType::Float(-1.0))), Some(true));
+    }
+
+    /// Widening must not have swallowed the sign filters.
+    #[test]
+    fn sign_filters_still_reject_out_of_range_values() {
+        for negative in [OscType::Int(-1), OscType::Double(-0.5)] {
+            assert_eq!(
+                parse_positive_u32_arg(Some(&negative)),
+                None,
+                "{negative:?}"
+            );
+            assert_eq!(
+                parse_positive_f32_arg(Some(&negative)),
+                None,
+                "{negative:?}"
+            );
+            assert_eq!(
+                parse_nonnegative_u32_arg(Some(&negative)),
+                None,
+                "{negative:?}"
+            );
+        }
+        assert_eq!(parse_positive_u32_arg(Some(&OscType::Int(0))), None);
+        assert_eq!(parse_nonnegative_u32_arg(Some(&OscType::Int(0))), Some(0));
+        // NaN is not a value any of these should accept.
+        assert_eq!(
+            parse_positive_f32_arg(Some(&OscType::Float(f32::NAN))),
+            None
+        );
+        assert_eq!(
+            parse_nonnegative_f32_arg(Some(&OscType::Float(f32::NAN))),
+            None
+        );
+    }
+
+    /// Widening the numeric tags must not turn non-numbers into numbers.
+    #[test]
+    fn non_numeric_arguments_are_still_rejected() {
+        for junk in [
+            OscType::String("7".to_string()),
+            OscType::Blob(vec![1, 2, 3]),
+            OscType::Nil,
+            OscType::Char('7'),
+        ] {
+            assert_eq!(parse_f32_arg(Some(&junk)), None, "{junk:?}");
+            assert_eq!(parse_bool_arg(Some(&junk)), None, "{junk:?}");
+            assert_eq!(parse_positive_u32_arg(Some(&junk)), None, "{junk:?}");
+        }
+        assert_eq!(parse_f32_arg(None), None);
+        assert_eq!(parse_bool_arg(None), None);
     }
 }
