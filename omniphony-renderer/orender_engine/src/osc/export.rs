@@ -8,6 +8,7 @@ use runtime_control::HostControlHandler;
 
 use super::client_registry::OscClientRegistry;
 use super::transport::{broadcast_int, broadcast_string, send_raw};
+use runtime_control::osc_contract;
 
 /// Compose the live-state snapshot bundle: core messages (renderer/layout/
 /// speakers/loudness/DRC/monitoring/objects) + the host handler's extra
@@ -31,16 +32,16 @@ pub(crate) fn build_live_state_bundle(
     // lives in this crate), so any host-registered out-of-tree generators are
     // included.
     messages.push(OscPacket::Message(OscMessage {
-        addr: "/omniphony/state/object_generators".to_string(),
+        addr: osc_contract::STATE_OBJECT_GENERATORS.to_string(),
         args: vec![OscType::String(control.object_generators_schema())],
     }));
     // Declared phantom-extraction param schema, so Studio builds its sliders.
     messages.push(OscPacket::Message(OscMessage {
-        addr: "/omniphony/state/phantom".to_string(),
+        addr: osc_contract::STATE_PHANTOM.to_string(),
         args: vec![OscType::String(control.phantom_schema())],
     }));
     messages.push(OscPacket::Message(OscMessage {
-        addr: "/omniphony/state/snapshot_complete".to_string(),
+        addr: osc_contract::STATE_SNAPSHOT_COMPLETE.to_string(),
         args: vec![OscType::Int(1)],
     }));
     let bundle = OscPacket::Bundle(OscBundle {
@@ -62,10 +63,10 @@ pub(crate) fn save_live_config(
     let host_ref: Option<&dyn HostControlHandler> = host.map(|h| h.as_ref());
     // Clear any previous save error so the UI returns to a clean state for
     // this attempt (mirrors what we do at the start of a recompute).
-    broadcast_string(socket, clients, "/omniphony/state/config/save_error", "");
+    broadcast_string(socket, clients, osc_contract::STATE_CONFIG_SAVE_ERROR, "");
     match runtime_control::persist::save_live_config(control, host_ref) {
         Ok(result) => {
-            broadcast_int(socket, clients, "/omniphony/state/config/saved", 1);
+            broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 1);
             let state_bytes = build_live_state_bundle(control, host);
             send_raw(socket, clients, &state_bytes);
             log::info!("OSC: config saved to {}", result.path.display());
@@ -80,7 +81,7 @@ pub(crate) fn save_live_config(
             broadcast_string(
                 socket,
                 clients,
-                "/omniphony/state/config/save_error",
+                osc_contract::STATE_CONFIG_SAVE_ERROR,
                 &message,
             );
         }

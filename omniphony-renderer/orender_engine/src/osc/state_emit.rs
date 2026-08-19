@@ -4,6 +4,7 @@ use serde_json::json;
 
 use super::OscSender;
 use super::export::build_live_state_bundle;
+use runtime_control::osc_contract;
 impl OscSender {
     pub fn send_live_state_bundle(&self) -> Result<()> {
         let control = match self.control {
@@ -34,7 +35,7 @@ impl OscSender {
             "gain": gain_linear
         })
         .to_string();
-        super::transport::broadcast_string(socket, clients, "/omniphony/state/loudness", &payload);
+        super::transport::broadcast_string(socket, clients, osc_contract::STATE_LOUDNESS, &payload);
     }
 
     /// Publish the diag schema and/or values bundle to subscribed clients.
@@ -49,13 +50,13 @@ impl OscSender {
         let mut messages = Vec::with_capacity(2);
         if let Some(json) = diag_schema_json {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/diag_schema".to_string(),
+                addr: osc_contract::STATE_DIAG_SCHEMA.to_string(),
                 args: vec![OscType::String(json)],
             }));
         }
         if let Some(json) = diag_values_json {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/diag_values".to_string(),
+                addr: osc_contract::STATE_DIAG_VALUES.to_string(),
                 args: vec![OscType::String(json)],
             }));
         }
@@ -133,109 +134,109 @@ impl OscSender {
             .or(latency_target_ms)
         {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/latency".to_string(),
+                addr: osc_contract::STATE_LATENCY.to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }
         if let Some(ms) = decode_time_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/decode_time_ms".to_string(),
+                addr: osc_contract::STATE_DECODE_TIME_MS.to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
         if let Some(ms) = render_time_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/render_time_ms".to_string(),
+                addr: osc_contract::STATE_RENDER_TIME_MS.to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
         if let Some(ms) = crossover_time_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/crossover_time_ms".to_string(),
+                addr: osc_contract::STATE_CROSSOVER_TIME_MS.to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
         if let Some(ms) = write_time_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/write_time_ms".to_string(),
+                addr: osc_contract::STATE_WRITE_TIME_MS.to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
         if let Some(ms) = frame_duration_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/frame_duration_ms".to_string(),
+                addr: osc_contract::STATE_FRAME_DURATION_MS.to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
         if let Some(ms) = latency_instant_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/latency_instant".to_string(),
+                addr: osc_contract::STATE_LATENCY_INSTANT.to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }
         if let Some(ms) = latency_control_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/latency_control".to_string(),
+                addr: osc_contract::STATE_LATENCY_CONTROL.to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }
         if let Some(ms) = latency_smoothed_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/latency_smoothed".to_string(),
+                addr: osc_contract::STATE_LATENCY_SMOOTHED.to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }
         if let Some(ms) = latency_target_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/latency_target".to_string(),
+                addr: osc_contract::STATE_LATENCY_TARGET.to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }
         if let Some(ms) = latency_downstream_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/latency_downstream".to_string(),
+                addr: osc_contract::STATE_LATENCY_DOWNSTREAM.to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }
         if let Some(ms) = latency_avail_input_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/latency_avail_input".to_string(),
+                addr: osc_contract::STATE_LATENCY_AVAIL_INPUT.to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }
         if let Some(ms) = latency_output_fifo_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/latency_output_fifo".to_string(),
+                addr: osc_contract::STATE_LATENCY_OUTPUT_FIFO.to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }
         if let Some(ms) = latency_resampler_pending_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/latency_resampler_pending".to_string(),
+                addr: osc_contract::STATE_LATENCY_RESAMPLER_PENDING.to_string(),
                 args: vec![OscType::Float(ms)],
             }));
         }
         if let Some(ratio) = resample_ratio {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/resample_ratio".to_string(),
+                addr: osc_contract::STATE_RESAMPLE_RATIO.to_string(),
                 args: vec![OscType::Float(ratio)],
             }));
         }
         if let Some(band) = adaptive_band {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/adaptive_resampling/band".to_string(),
+                addr: osc_contract::STATE_ADAPTIVE_RESAMPLING_BAND.to_string(),
                 args: vec![OscType::String(band.to_string())],
             }));
         }
         if let Some(state) = adaptive_state {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/adaptive_resampling/state".to_string(),
+                addr: osc_contract::STATE_ADAPTIVE_RESAMPLING_STATE.to_string(),
                 args: vec![OscType::String(state.to_string())],
             }));
         }
         if let Some(gain) = drc_gain {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/meter/drc_gain".to_string(),
+                addr: osc_contract::METER_DRC_GAIN.to_string(),
                 args: vec![OscType::Float(gain)],
             }));
         }
@@ -293,7 +294,7 @@ impl OscSender {
             // other can only draw something half true.
             let (peak, rms) = object_test_level.unwrap_or((-100.0, -100.0));
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/object_test/position".to_string(),
+                addr: osc_contract::STATE_OBJECT_TEST_POSITION.to_string(),
                 args: vec![
                     OscType::Float(x),
                     OscType::Float(y),
@@ -304,7 +305,7 @@ impl OscSender {
             }));
         }
         messages.push(OscPacket::Message(OscMessage {
-            addr: "/omniphony/meter/master".to_string(),
+            addr: osc_contract::METER_MASTER.to_string(),
             args: vec![
                 OscType::Float(snapshot.master_peak),
                 OscType::Float(snapshot.master_rms),
@@ -333,19 +334,19 @@ impl OscSender {
         let mut messages = Vec::new();
         if let Some(ms) = decode_time_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/decode_time_ms".to_string(),
+                addr: osc_contract::STATE_DECODE_TIME_MS.to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
         if let Some(ms) = render_time_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/render_time_ms".to_string(),
+                addr: osc_contract::STATE_RENDER_TIME_MS.to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }
         if let Some(ms) = write_time_ms {
             messages.push(OscPacket::Message(OscMessage {
-                addr: "/omniphony/state/write_time_ms".to_string(),
+                addr: osc_contract::STATE_WRITE_TIME_MS.to_string(),
                 args: vec![OscType::Float(ms.max(0.0))],
             }));
         }

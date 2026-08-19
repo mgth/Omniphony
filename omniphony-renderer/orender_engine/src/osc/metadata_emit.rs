@@ -3,6 +3,7 @@ use rosc::{OscMessage, OscPacket, OscType};
 use std::sync::atomic::Ordering;
 
 use super::{ObjectMeta, ObjectSnapshot, OscSender};
+use runtime_control::osc_contract;
 
 impl OscSender {
     pub fn send_object_position(&self, object_id: u32, x: f32, y: f32, z: f32) -> Result<()> {
@@ -17,7 +18,7 @@ impl OscSender {
 
     pub fn send_bed_config(&self, channel_count: u32) -> Result<()> {
         let msg = OscMessage {
-            addr: "/omniphony/bed/config".to_string(),
+            addr: osc_contract::BED_CONFIG.to_string(),
             args: vec![OscType::Int(channel_count as i32)],
         };
         let bytes = rosc::encoder::encode(&OscPacket::Message(msg))?;
@@ -27,7 +28,7 @@ impl OscSender {
 
     pub fn send_timestamp(&self, sample_pos: u64, seconds: f64) -> Result<()> {
         let msg = OscMessage {
-            addr: "/omniphony/timestamp".to_string(),
+            addr: osc_contract::TIMESTAMP.to_string(),
             args: vec![OscType::Long(sample_pos as i64), OscType::Double(seconds)],
         };
         let bytes = rosc::encoder::encode(&OscPacket::Message(msg))?;
@@ -43,7 +44,7 @@ impl OscSender {
         objects: &[ObjectMeta],
     ) -> Result<()> {
         let frame_msg = OscMessage {
-            addr: "/omniphony/spatial/frame".to_string(),
+            addr: osc_contract::SPATIAL_FRAME.to_string(),
             args: vec![
                 OscType::Long(sample_pos as i64),
                 OscType::Long(self.content_generation as i64),
