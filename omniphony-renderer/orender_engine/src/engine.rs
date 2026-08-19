@@ -20,6 +20,14 @@ use renderer::speaker_layout::SpeakerLayout;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Monitoring cadences this host falls back to when the config declares none.
+///
+/// Lower than the CLI's: embedded in a player, the only consumer is the
+/// in-process overlay, and the host is the one that may be running on
+/// constrained hardware.
+const EMBEDDED_METER_RATE_HZ: f32 = 10.0;
+const EMBEDDED_DIAG_RATE_HZ: f32 = 10.0;
+
 /// Options for the engine's OSC live-control server.
 pub struct OscOptions {
     /// Monitoring target host (where outgoing VU/state bundles are sent).
@@ -383,7 +391,24 @@ impl Engine {
         // configure it before building the renderer.
         let t_bridge = std::time::Instant::now();
         let mut bridge = LoadedBridge::load_with_params(&resolved_bridge)?;
-        bridge.configure("presentation", "best");
+        // Honour `render.presentation` like the CLI does. This host has no
+        // flags, so the config is the only way to ask for anything other than
+        // the default — hard-coding it here made the setting silently
+        // inoperative for everything played through mpv.
+        let presentation = render_cfg
+            .as_ref()
+            .and_then(renderer::config_fields::presentation::get)
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| renderer::config_fields::presentation::DEFAULT.to_string());
+        if !bridge.configure("presentation", presentation.as_str()) {
+            // Not fatal here, unlike the CLI: this host is a decoder inside a
+            // player, and refusing to start would drop playback entirely where
+            // falling back to the bridge's own default still plays.
+            log::warn!(
+                "Bridge rejected presentation '{}'; keeping the bridge default",
+                presentation
+            );
+        }
         if let Some(codec) = input_codec {
             // Disambiguates the bridge's `Raw` transport (no data_type byte).
             // Unknown to older bridges → harmless `false`, which falls back to
@@ -455,6 +480,12 @@ impl Engine {
         if let Some(info) = profiles_info {
             control.set_profiles_info(info);
         }
+
+        // This host publishes monitoring slower than the CLI: it is embedded in
+        // a player, where the overlay is the only consumer. Declared before the
+        // seed below, which falls back to it, and re-read by any later profile
+        // switch.
+        control.set_cadence_defaults_hz(EMBEDDED_METER_RATE_HZ, EMBEDDED_DIAG_RATE_HZ);
 
         // Monitoring cadences, ramp mode, declared live options and the DRC
         // selection: seeded through the shared runtime seed — the same call

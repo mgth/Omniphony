@@ -1515,6 +1515,16 @@ pub struct RendererControl {
     /// OSC diag-publication cadence in Hz (`f32::to_bits`). Read lock-free by
     /// the diag publisher; OSC-adjustable and persisted to config.
     pub diag_rate_hz_bits: Arc<std::sync::atomic::AtomicU32>,
+    /// This host's fallback cadences (`f32::to_bits`), used when the config
+    /// declares none.
+    ///
+    /// They are host policy, not config: the embedded host publishes slower
+    /// than the CLI, which drives Studio's meters and plots. Recorded here at
+    /// boot so every later re-seed — a live profile switch replays the whole
+    /// runtime seed — falls back to the value this host chose, instead of
+    /// whichever literal the shared seed happened to carry.
+    meter_rate_default_hz_bits: std::sync::atomic::AtomicU32,
+    diag_rate_default_hz_bits: std::sync::atomic::AtomicU32,
 
     /// Available render backends, queried by `prepare_topology_rebuild_for_layout`
     /// to build the active backend by id. Defaults to the built-ins; a host
@@ -1612,6 +1622,8 @@ impl RendererControl {
             // Seeded from config (or a host default) after construction.
             meter_rate_hz_bits: Arc::new(std::sync::atomic::AtomicU32::new(50.0_f32.to_bits())),
             diag_rate_hz_bits: Arc::new(std::sync::atomic::AtomicU32::new(50.0_f32.to_bits())),
+            meter_rate_default_hz_bits: std::sync::atomic::AtomicU32::new(50.0_f32.to_bits()),
+            diag_rate_default_hz_bits: std::sync::atomic::AtomicU32::new(50.0_f32.to_bits()),
             backend_registry: RwLock::new(BackendRegistry::builtin()),
             backend_params: RwLock::new(HashMap::new()),
             object_generators_schema: RwLock::new("[]".to_string()),
@@ -1799,6 +1811,40 @@ impl RendererControl {
     pub fn set_diag_rate_hz(&self, hz: f32) {
         self.diag_rate_hz_bits
             .store(hz.clamp(1.0, 1000.0).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Record this host's fallback cadences, once, at boot.
+    ///
+    /// See [`seed_cadences_from_config`](Self::seed_cadences_from_config) for
+    /// what they are for.
+    pub fn set_cadence_defaults_hz(&self, meter_hz: f32, diag_hz: f32) {
+        self.meter_rate_default_hz_bits
+            .store(meter_hz.clamp(1.0, 1000.0).to_bits(), Ordering::Relaxed);
+        self.diag_rate_default_hz_bits
+            .store(diag_hz.clamp(1.0, 1000.0).to_bits(), Ordering::Relaxed);
+    }
+
+    /// This host's fallback meter cadence in Hz.
+    pub fn meter_rate_default_hz(&self) -> f32 {
+        f32::from_bits(self.meter_rate_default_hz_bits.load(Ordering::Relaxed))
+    }
+
+    /// This host's fallback diag cadence in Hz.
+    pub fn diag_rate_default_hz(&self) -> f32 {
+        f32::from_bits(self.diag_rate_default_hz_bits.load(Ordering::Relaxed))
+    }
+
+    /// Apply the config's cadences, falling back to this host's defaults.
+    ///
+    /// The fallback has to come from the host and not from the caller, because
+    /// the callers are not all the host: boot passes the config it loaded, but
+    /// so does the live profile switch, which runs inside the OSC dispatcher
+    /// and has no idea which host it is serving. Resolving it here is what
+    /// stops a profile switch from quietly re-seeding a CLI session at the
+    /// embedded host's slower cadence.
+    pub fn seed_cadences_from_config(&self, meter_hz: Option<f32>, diag_hz: Option<f32>) {
+        self.set_meter_rate_hz(meter_hz.unwrap_or_else(|| self.meter_rate_default_hz()));
+        self.set_diag_rate_hz(diag_hz.unwrap_or_else(|| self.diag_rate_default_hz()));
     }
 
     /// Store the active config file path so the save-config OSC handler can use it.

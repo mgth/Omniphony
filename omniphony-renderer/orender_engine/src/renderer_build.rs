@@ -748,8 +748,13 @@ pub fn seed_runtime_state_from_render_config(
     control: &RendererControl,
     render_cfg: Option<&RenderConfig>,
 ) {
-    control.set_meter_rate_hz(render_cfg.and_then(|c| c.meter_rate).unwrap_or(10.0));
-    control.set_diag_rate_hz(render_cfg.and_then(|c| c.diag_rate).unwrap_or(10.0));
+    // Fallback comes from the host (recorded on the control at boot), not from
+    // a literal here: this same seed is replayed by the live profile switch,
+    // which has no idea which host it is running in.
+    control.seed_cadences_from_config(
+        render_cfg.and_then(|c| c.meter_rate),
+        render_cfg.and_then(|c| c.diag_rate),
+    );
 
     // Object-transition ramp mode: honour `render.ramp_mode` (default "frame";
     // per-sample `compute_gains` is the most expensive path and must be an
@@ -899,4 +904,52 @@ pub fn apply_render_config_live(
     seed_control_from_render_config(control, Some(render_cfg));
     seed_runtime_state_from_render_config(control, Some(render_cfg));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_renderer() -> renderer::spatial_renderer::SpatialRenderer {
+        let params = SpatialRendererParams::from_render_config(None);
+        let layout = SpeakerLayout::preset("7.1.4").expect("preset layout");
+        build_spatial_renderer(
+            &params,
+            layout,
+            48_000,
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                allow_negative_z: true,
+            },
+            bridge_api::RVbapTableMode::Cartesian,
+            None,
+        )
+        .expect("renderer")
+    }
+
+    /// The shared runtime seed must not carry a cadence of its own.
+    ///
+    /// It is replayed wholesale by the live profile switch, on whichever host
+    /// happens to be running. When it hard-coded the embedded host's 10 Hz, a
+    /// profile switch on the CLI silently dropped Studio's meters from 50 Hz to
+    /// 10 — the bug this pins.
+    #[test]
+    fn the_runtime_seed_keeps_the_host_cadence_default() {
+        let renderer = test_renderer();
+        let control = renderer.renderer_control();
+
+        control.set_cadence_defaults_hz(50.0, 50.0);
+        seed_runtime_state_from_render_config(&control, None);
+        assert_eq!(control.meter_rate_hz(), 50.0);
+        assert_eq!(control.diag_rate_hz(), 50.0);
+
+        // A second host, slower on purpose, gets its own value from the same
+        // call — the seed reads the host, it does not decide.
+        control.set_cadence_defaults_hz(10.0, 10.0);
+        seed_runtime_state_from_render_config(&control, None);
+        assert_eq!(control.meter_rate_hz(), 10.0);
+        assert_eq!(control.diag_rate_hz(), 10.0);
+    }
 }

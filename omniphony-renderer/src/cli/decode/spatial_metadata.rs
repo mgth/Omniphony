@@ -110,17 +110,26 @@ impl<'a> SpatialMetadataCoordinator<'a> {
         };
         let coordinate_format = self.spatial.coordinate_format;
 
+        // Cached whether or not anyone is listening, mirroring the embedded
+        // host: names are declared sparsely, typically once at the start of a
+        // stream, so a Studio attaching mid-playback would otherwise show an
+        // object list that stays unnamed until the next declaration — which
+        // for most content never comes.
+        for upd in meta.name_updates.iter() {
+            if self.spatial.object_names.get(&upd.id).map(String::as_str) != Some(upd.name.as_str())
+            {
+                self.spatial
+                    .object_names
+                    .insert(upd.id, upd.name.to_string());
+            }
+        }
+
         if self
             .osc_sender
             .as_ref()
             .is_some_and(|sender| sender.has_osc_clients())
         {
             let osc_sender = self.osc_sender.as_mut().expect("osc_sender present");
-            for upd in meta.name_updates.iter() {
-                self.spatial
-                    .object_names
-                    .insert(upd.id, upd.name.to_string());
-            }
             let mut objects: Vec<ObjectMeta> = self
                 .spatial_renderer
                 .and_then(|renderer| {

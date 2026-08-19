@@ -2271,3 +2271,83 @@ fn clearing_the_test_restores_normal_output() {
         "with the test cleared and a silent programme the output must be silent"
     );
 }
+
+/// The monitoring cadences fall back to the *host's* default, not to a literal
+/// living in whichever code path happens to re-seed them.
+///
+/// This is a regression test for a shipped bug: the CLI host booted its meters
+/// at 50 Hz, but the shared runtime seed — replayed wholesale by the live
+/// profile switch — carried the embedded host's 10 Hz. Switching profile on the
+/// CLI therefore dropped the cadence to a fifth, silently, with the only symptom
+/// being Studio's meters going choppy.
+#[test]
+fn cadences_fall_back_to_the_host_default() {
+    let layout = SpeakerLayout::preset("7.1.4").unwrap();
+    let renderer = SpatialRenderer::new(
+        layout,
+        48_000,
+        1,
+        1,
+        0.0,
+        2.0,
+        VbapTableMode::Cartesian {
+            x_size: 9,
+            y_size: 9,
+            z_size: 5,
+            z_neg_size: 5,
+        },
+        false,
+        false,
+        DistanceModel::Linear,
+        false,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        false,
+        [1.0, 2.0, 0.5],
+        2.0,
+        0.5,
+        0.0,
+        0.0,
+        false,
+        false,
+        false,
+        1.0,
+        1.0,
+        PreferredEvaluationMode::PrecomputedCartesian,
+        LiveEvaluationMode::PrecomputedCartesian,
+        9,
+        9,
+        5,
+        5,
+    )
+    .unwrap();
+    let control = renderer.renderer_control();
+
+    // An embedded host declares a slower cadence, then seeds from a config
+    // that says nothing about it.
+    control.set_cadence_defaults_hz(10.0, 10.0);
+    control.seed_cadences_from_config(None, None);
+    assert_eq!(control.meter_rate_hz(), 10.0);
+    assert_eq!(control.diag_rate_hz(), 10.0);
+
+    // A host that wants faster monitoring keeps it across a re-seed — this is
+    // the assertion that used to fail, because the re-seed carried 10 Hz.
+    control.set_cadence_defaults_hz(50.0, 50.0);
+    control.seed_cadences_from_config(None, None);
+    assert_eq!(control.meter_rate_hz(), 50.0);
+    assert_eq!(control.diag_rate_hz(), 50.0);
+
+    // A config that does declare a cadence still wins over the host default.
+    control.seed_cadences_from_config(Some(25.0), Some(4.0));
+    assert_eq!(control.meter_rate_hz(), 25.0);
+    assert_eq!(control.diag_rate_hz(), 4.0);
+
+    // And the declared default survives a config-driven seed, so the *next*
+    // profile switch still lands on the host's value rather than the last
+    // config's.
+    control.seed_cadences_from_config(None, None);
+    assert_eq!(control.meter_rate_hz(), 50.0);
+    assert_eq!(control.diag_rate_hz(), 50.0);
+}
