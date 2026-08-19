@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::output_telemetry::OutputTelemetry;
+use crate::output_telemetry::{LatencySample, OutputTelemetry};
 use crate::{
     ADAPTIVE_BAND_FAR, AdaptiveResamplingConfig, LOCAL_RESAMPLER_MAX_RELATIVE_RATIO,
     adaptive_runtime::{
@@ -1003,15 +1003,6 @@ fn run_pipewire_loop(
     let output_resampler_pending_input_samples_for_callback = telemetry
         .output_resampler_pending_input_samples_bits
         .clone();
-    let diag_latency_smoothed_ms_for_callback = telemetry.diag_latency_smoothed_ms_bits.clone();
-    let diag_latency_control_ms_for_callback = telemetry.diag_latency_control_ms_bits.clone();
-    let diag_rate_adjust_ppm_for_callback = telemetry.diag_rate_adjust_ppm_bits.clone();
-    let diag_latency_avail_input_ms_for_callback =
-        telemetry.diag_latency_avail_input_ms_bits.clone();
-    let diag_latency_output_fifo_ms_for_callback =
-        telemetry.diag_latency_output_fifo_ms_bits.clone();
-    let diag_latency_resampler_pending_ms_for_callback =
-        telemetry.diag_latency_resampler_pending_ms_bits.clone();
     let cumulative_written_for_callback = telemetry.cumulative_written_input_samples.clone();
     let cumulative_drained_for_callback = telemetry.cumulative_drained_input_samples.clone();
     let input_clock_us_for_callback = input_clock_us.clone();
@@ -1387,60 +1378,23 @@ fn run_pipewire_loop(
                     // target. The servo keeps tracking the pacer-excluded
                     // `metrics.smoothed_control_available`; only the displayed
                     // value changes here.
-                    let smoothed_display_available =
-                        metrics.smoothed_control_available.saturating_add(pacer_buffer_samples);
-                    let smoothed_control_latency_ms = if channel_count > 0 && sample_rate > 0 {
-                        smoothed_display_available as f32
-                            / channel_count as f32
-                            / sample_rate as f32
-                            * 1000.0
-                    } else {
-                        0.0
-                    };
-                    telemetry.smoothed_control_latency_ms_bits
-                        .store(smoothed_control_latency_ms.to_bits(), Ordering::Relaxed);
-                    // DIAG: f64-encoded mirrors of the latency / rate signals
-                    // so the generic diag plot can graph them alongside any
-                    // other registered metric on the same time scale.
-                    diag_latency_smoothed_ms_for_callback.store(
-                        (smoothed_control_latency_ms as f64).to_bits(),
-                        Ordering::Relaxed,
+                    telemetry.publish_latency(
+                        &LatencySample {
+                            smoothed_control_available: metrics
+                                .smoothed_control_available
+                                .saturating_add(pacer_buffer_samples),
+                            control_latency_ms: metrics.control_latency_ms,
+                            rate_adjust: f32::from_bits(
+                                rate_adjust_for_callback.load(Ordering::Relaxed),
+                            ),
+                            avail_input_samples: available,
+                            output_fifo_input_domain_samples:
+                                output_fifo_input_domain_samples_raw,
+                            resampler_pending_input_samples: pending_resampler_input_samples,
+                        },
+                        channel_count,
+                        sample_rate,
                     );
-                    let control_latency_ms_now = metrics.control_latency_ms;
-                    diag_latency_control_ms_for_callback.store(
-                        (control_latency_ms_now as f64).to_bits(),
-                        Ordering::Relaxed,
-                    );
-                    let rate_adjust_now =
-                        f32::from_bits(rate_adjust_for_callback.load(Ordering::Relaxed));
-                    diag_rate_adjust_ppm_for_callback.store(
-                        (((rate_adjust_now as f64) - 1.0) * 1e6).to_bits(),
-                        Ordering::Relaxed,
-                    );
-                    // Publish the three components of `control_available` as ms so
-                    // they can be plotted independently in the Studio control plot.
-                    let samples_to_ms = |samples: usize| -> f32 {
-                        if channel_count > 0 && sample_rate > 0 {
-                            samples as f32 / channel_count as f32 / sample_rate as f32 * 1000.0
-                        } else {
-                            0.0
-                        }
-                    };
-                    let avail_input_ms = samples_to_ms(available);
-                    let output_fifo_ms = samples_to_ms(output_fifo_input_domain_samples_raw);
-                    let resampler_pending_ms = samples_to_ms(pending_resampler_input_samples);
-                    telemetry.avail_input_latency_ms_bits.store(avail_input_ms.to_bits(), Ordering::Relaxed);
-                    telemetry.output_fifo_latency_ms_bits.store(output_fifo_ms.to_bits(), Ordering::Relaxed);
-                    telemetry.resampler_pending_latency_ms_bits
-                        .store(resampler_pending_ms.to_bits(), Ordering::Relaxed);
-                    // f64 mirrors for the generic diag plot (replaces the
-                    // standalone components plot).
-                    diag_latency_avail_input_ms_for_callback
-                        .store((avail_input_ms as f64).to_bits(), Ordering::Relaxed);
-                    diag_latency_output_fifo_ms_for_callback
-                        .store((output_fifo_ms as f64).to_bits(), Ordering::Relaxed);
-                    diag_latency_resampler_pending_ms_for_callback
-                        .store((resampler_pending_ms as f64).to_bits(), Ordering::Relaxed);
                     // Band classification feeds the low-recover state machine: use
                     // raw control_available so the hysteresis bands act on the real
                     // buffer level. (The servo gets the smoothed value separately.)
