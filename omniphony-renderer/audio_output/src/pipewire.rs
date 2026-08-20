@@ -107,6 +107,37 @@ fn to_pipewire_position(name: &str) -> String {
     }
 }
 
+/// Properties that pin the output stream to `target`.
+///
+/// Four properties, because stating the device once is not enough:
+///
+/// - `target.object` is what WirePlumber 0.5 resolves first; `node.target` is
+///   the deprecated spelling it only falls back to. The input side already
+///   states both (`build_pipewire_bridge_capture_stream_properties`).
+/// - `node.dont-move` makes the session manager ignore a `target.node` entry
+///   in the default metadata. Any mixer offering "play on the default device"
+///   writes `target.node = -1` there, and that entry outranks both properties
+///   above — the stream then leaves the requested device without a word.
+/// - `node.dont-fallback` forbids the consolation prize: when the requested
+///   device cannot be linked, the stream must stay unlinked rather than land
+///   on the default sink.
+///
+/// The last two matter because of what the default sink can be. Omniphony
+/// publishes its own bridge input sink, and a machine that plays through
+/// Omniphony has it set as the default: falling back there loops the rendered
+/// output straight back into the decoder input, and — since that node drives
+/// the graph it is triggered by — hands the output stream a clock that only
+/// this stream keeps alive. The ring then stops draining altogether, which
+/// reads as an endless "Buffer drain timeout" and total silence.
+fn output_target_properties(target: &str) -> [(&'static str, &str); 4] {
+    [
+        ("target.object", target),
+        ("node.target", target),
+        ("node.dont-move", "true"),
+        ("node.dont-fallback", "true"),
+    ]
+}
+
 // Buffer size: 4 seconds of audio at 48kHz, 16 channels
 const BUFFER_SIZE: usize = 48000 * 16 * 4;
 
@@ -876,8 +907,13 @@ fn run_pipewire_loop(
 
     // Set target output node if specified
     if let Some(ref target) = output_device {
-        props.insert("node.target", target.as_str());
-        log::info!("PipeWire output target: {}", target);
+        for (key, value) in output_target_properties(target) {
+            props.insert(key, value);
+        }
+        log::info!(
+            "PipeWire output target: {} (pinned: no session move, no default-sink fallback)",
+            target
+        );
     }
 
     // Set channel names if provided (e.g., "FL,FR,C,LFE,BL,BR")
@@ -2131,4 +2167,27 @@ fn run_pipewire_loop(
     // happens naturally when these objects are dropped on the owning thread.
     main_loop.stop();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_target_is_stated_in_both_spellings() {
+        let props = output_target_properties("bluez_output.AA_BB_CC.1");
+        assert_eq!(
+            props[0],
+            ("target.object", "bluez_output.AA_BB_CC.1"),
+            "WirePlumber 0.5 resolves target.object first"
+        );
+        assert_eq!(props[1], ("node.target", "bluez_output.AA_BB_CC.1"));
+    }
+
+    #[test]
+    fn output_target_refuses_moves_and_default_fallback() {
+        let props = output_target_properties("alsa_output.pci-0000_00_1f.3.analog-stereo");
+        assert!(props.contains(&("node.dont-move", "true")));
+        assert!(props.contains(&("node.dont-fallback", "true")));
+    }
 }
