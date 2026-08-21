@@ -291,6 +291,14 @@ impl<'a> WriterLifecycleCoordinator<'a> {
         match output_backend {
             #[cfg(target_os = "linux")]
             OutputBackend::Pipewire => {
+                if let Some(reason) = bridge_input_loop_reason(
+                    self.runtime.output_device.as_deref(),
+                    self.input_control
+                        .and_then(|ic| ic.applied_snapshot().node_name)
+                        .as_deref(),
+                ) {
+                    return Err(anyhow!(reason));
+                }
                 // Pre-bridge clock atomic: when no live input is wired up
                 // (file decode path) the writer gets a zero-initialised
                 // atomic that never increments, so `use_pre_bridge_clock`
@@ -384,6 +392,31 @@ impl<'a> WriterLifecycleCoordinator<'a> {
     }
 }
 
+/// Why the requested output device cannot be opened, when it is the very sink
+/// this renderer publishes as its live input.
+///
+/// Playing into our own bridge input is not merely a routing curiosity: the
+/// rendered audio re-enters the decoder, and the output stream ends up clocked
+/// by a node that only the output stream keeps running. The first time the
+/// programme stops, the graph has nothing left to drive it, the output ring
+/// never drains, and the session goes silent behind an endless stream of
+/// back-pressure timeouts. Refuse it while it is still a config error; the
+/// message reaches Studio through `set_audio_error`.
+#[cfg(target_os = "linux")]
+fn bridge_input_loop_reason(
+    output_device: Option<&str>,
+    bridge_input_node: Option<&str>,
+) -> Option<String> {
+    let (device, input_node) = (output_device?, bridge_input_node?);
+    (device == input_node).then(|| {
+        format!(
+            "Output device '{device}' is this renderer's own bridge input sink: \
+             routing the render output back into its own input would loop the audio \
+             and stall the output ring. Select a real playback device."
+        )
+    })
+}
+
 fn effective_audio_state(
     output_backend: OutputBackend,
     input_sample_rate: u32,
@@ -398,5 +431,32 @@ fn effective_audio_state(
         OutputBackend::Coreaudio => (output_rate.unwrap_or(input_sample_rate), "f32le"),
         OutputBackend::File => (output_rate.unwrap_or(input_sample_rate), "f32le"),
         _ => (input_sample_rate, "s24le"),
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playing_into_the_own_bridge_input_is_refused() {
+        let reason = bridge_input_loop_reason(Some("omniphony"), Some("omniphony"))
+            .expect("the loop must be refused");
+        assert!(reason.contains("omniphony"));
+    }
+
+    #[test]
+    fn a_real_device_is_allowed() {
+        assert!(
+            bridge_input_loop_reason(Some("bluez_output.AA_BB_CC.1"), Some("omniphony")).is_none()
+        );
+    }
+
+    #[test]
+    fn nothing_to_compare_allows_the_build() {
+        // No device requested (default sink) or no live input published: the
+        // names cannot be compared, so this guard has no opinion.
+        assert!(bridge_input_loop_reason(None, Some("omniphony")).is_none());
+        assert!(bridge_input_loop_reason(Some("omniphony"), None).is_none());
     }
 }

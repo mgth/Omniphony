@@ -239,6 +239,25 @@ impl DecodeHandler {
     }
 
     pub fn poll_runtime_state(&mut self) -> Result<()> {
+        // Live output changes (device, backend, rate, latency) were applied
+        // from `handle_decoded_frame` alone, so they only landed when the
+        // decoder happened to be producing. Idle — between two programmes, or
+        // in front of a test signal — the request sat in `AudioControl` until
+        // something else made frames flow again, which is why switching the
+        // output device looked like it needed an unrelated apply on the *input*
+        // to take effect. Apply it on the idle tick too. Only the request is
+        // consumed here: an invalidated writer is rebuilt by the next frame,
+        // real or fabricated by the speaker-test idle feed.
+        OutputRuntimeCoordinator::new(
+            &mut self.output,
+            &mut self.runtime,
+            self.audio_control.as_deref(),
+        )
+        .sync_all()?;
+        if self.output.audio_writer.is_none() {
+            self.reset_direct_trigger_wiring();
+        }
+
         if let Some(renderer) = self.spatial_renderer.as_ref() {
             let control = renderer.renderer_control();
             let drc_mode = control.live.read().drc_mode.clone();
