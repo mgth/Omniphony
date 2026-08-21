@@ -576,6 +576,16 @@ impl Engine {
         &self.last_bed_labels
     }
 
+    /// Constant DSP latency of the rendered output, in samples at the engine
+    /// sample rate (see [`SpatialRenderer::output_latency_samples`]). 0 for
+    /// the default filters; non-zero when the linear-phase FIR crossover sits
+    /// on the rendered path. May change mid-stream (live option / output-mode
+    /// switch); meaningful after the first processed packet. The host uses it
+    /// to shift output timestamps for A/V sync.
+    pub fn output_latency_samples(&self) -> u64 {
+        self.renderer.output_latency_samples() as u64
+    }
+
     /// Configured render mode for channel-based (non-object) content, as a small
     /// code for the C FFI: 0 = host (the host should fall back to its native
     /// decoder for plain multichannel streams), non-zero = spatial (render

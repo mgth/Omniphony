@@ -2519,6 +2519,13 @@ fn fir_crossover_keeps_beds_aligned_with_objects() {
         IMPULSE_AT + latency < sample_length,
         "test frame too short for the bank latency ({latency})"
     );
+    // The host-facing accessor must report the same figure the mix used —
+    // this is what liborender forwards to mpv for A/V sync compensation.
+    assert_eq!(
+        r.output_latency_samples(),
+        latency,
+        "output_latency_samples must reflect the rendered path"
+    );
 
     // Arrival time = argmax of per-sample magnitude, per path.
     let argmax = |value_at: &dyn Fn(usize) -> f32| -> usize {

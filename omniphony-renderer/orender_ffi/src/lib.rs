@@ -199,7 +199,10 @@ pub const ORENDER_ABI_MAJOR: u32 = 0;
 //    OrenderChannelLabel, and the /omniphony/state/render/abi OSC broadcast.
 // 6: added orender_has_objects (live-fact semantics; orender_is_spatial is a
 //    deprecated alias kept for older hosts).
-pub const ORENDER_ABI_MINOR: u32 = 6;
+// 7: added orender_output_latency_samples (constant DSP latency of the
+//    rendered output, for host A/V sync compensation — non-zero when the
+//    linear-phase FIR crossover is active).
+pub const ORENDER_ABI_MINOR: u32 = 7;
 
 /// Speaker-position labels written by [`orender_channel_layout`] and
 /// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -517,6 +520,26 @@ pub unsafe extern "C" fn orender_bed_layout(
             }
         }
         n
+    }))
+    .unwrap_or(0)
+}
+
+/// Constant DSP latency of the rendered output, in samples at the engine
+/// sample rate: PCM fed to [`orender_process`] emerges this many samples later
+/// in the rendered stream. 0 for the default filters; non-zero when the
+/// linear-phase FIR crossover sits on the rendered path. The host should
+/// subtract `latency / sample_rate` from the presentation timestamps of
+/// rendered frames (or delay video by the same amount) to preserve A/V sync.
+/// May change mid-stream (live crossover / output-mode switch), so poll it
+/// per rendered frame; meaningful after the first [`orender_process`] call.
+/// 0 on a NULL handle / error.
+#[no_mangle]
+pub unsafe extern "C" fn orender_output_latency_samples(r: *const OrenderRenderer) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if r.is_null() {
+            return 0;
+        }
+        (*(r as *const Engine)).output_latency_samples()
     }))
     .unwrap_or(0)
 }

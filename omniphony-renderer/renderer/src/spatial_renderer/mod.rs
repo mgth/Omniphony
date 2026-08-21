@@ -297,6 +297,13 @@ pub struct SpatialRenderer {
     /// index out of the new width. 0 until the first mix pass.
     last_mix_num_speakers: usize,
 
+    /// Constant DSP latency of the render path the LAST frame actually took,
+    /// in samples (see [`Self::output_latency_samples`]). Cached at render
+    /// time rather than recomputed in the accessor so the reported value can
+    /// never disagree with the path that produced the samples (the live
+    /// output-mode flag can flip between a render and a host query).
+    last_output_latency: usize,
+
     /// Scratch per-channel world positions for the binaural path (reused).
     binaural_pos_buf: Vec<[f64; 3]>,
 
@@ -607,6 +614,20 @@ impl SpatialRenderer {
         if binaural_active && cascade_active {
             self.refresh_cascade_for_topology(topology, topology_identity);
         }
+
+        // Latency of the path this frame takes: the speaker path and the
+        // cascaded binaural path both mix through the main speaker stage
+        // (crossover included); the plain binaural path bypasses the
+        // crossover entirely. Cached for [`Self::output_latency_samples`].
+        self.last_output_latency = if binaural_active && !(cascade_active && self.cascade.is_some())
+        {
+            0
+        } else {
+            self.speaker_stage
+                .crossover_filter_bank
+                .as_ref()
+                .map_or(0, |b| b.latency_samples())
+        };
 
         // ── 1. Snapshot live params so we hold the read lock for as short a time as possible ──
         let live_position_interpolation;
@@ -1217,6 +1238,19 @@ impl SpatialRenderer {
             self.control.live.read().binaural.output_mode,
             crate::live_params::OutputMode::Binaural
         )
+    }
+
+    /// Constant DSP latency of the rendered output, in samples at the engine
+    /// sample rate: input PCM fed to [`Self::render_frame`] emerges this many
+    /// samples later in the rendered stream. 0 for the default filters;
+    /// non-zero when the linear-phase FIR crossover sits on the rendered path.
+    /// Reflects the path the LAST rendered frame took (0 before the first
+    /// frame) and may change mid-stream when the crossover engine or the
+    /// output mode is switched live. Hosts subtract `latency / sample_rate`
+    /// from output presentation timestamps (or delay video by the same
+    /// amount) to preserve A/V sync.
+    pub fn output_latency_samples(&self) -> usize {
+        self.last_output_latency
     }
 
     /// The virtual-speaker bus of the last cascaded frame, when the cascaded
