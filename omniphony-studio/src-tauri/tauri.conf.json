@@ -1,7 +1,7 @@
 {
   "identifier": "fr.omniphony.studio",
   "productName": "Omniphony Studio",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
