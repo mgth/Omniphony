@@ -30,7 +30,8 @@
 
 use crate::config::RenderConfig;
 use crate::live_params::{
-    HrirUpdateLattice, LiveParams, OutputChannelMapping, PhantomExtractMode, SurroundPlacement,
+    CrossoverType, HrirUpdateLattice, LiveParams, OutputChannelMapping, PhantomExtractMode,
+    SurroundPlacement,
 };
 
 /// What kind of value an option takes. Drives wire validation, the published
@@ -280,6 +281,35 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         config_seed: |live, render| {
             if let Some(mode) = crate::config_fields::phantom_extract_mode::get(render) {
                 live.phantom_extract_mode = mode;
+            }
+        },
+    },
+    OptionSpec {
+        key: "crossover_type",
+        kind: OptionKind::Enum(&["lr4", "fir"]),
+        default: OptionDefault::Str("lr4"),
+        // No REPLAN: the speaker stage compares the live value against the
+        // bank it built every frame and rebuilds the filter bank itself; no
+        // synthesized-object topology depends on it.
+        flags: OptionFlags::PERSIST,
+        i18n_key: "renderer.crossoverTypeLabel",
+        help_i18n_key: Some("help.crossoverType"),
+        legacy_control_addr: "/omniphony/control/crossover_type",
+        set: |live, raw| match raw {
+            RawOptionValue::Str(s) => {
+                let crossover_type = CrossoverType::from_str(s)?;
+                live.crossover_type = crossover_type;
+                Some(crossover_type.as_str().to_string())
+            }
+            _ => None,
+        },
+        get_json: |live| live.crossover_type.as_str().into(),
+        config_store: |render, live| {
+            crate::config_fields::crossover_type::store(render, live.crossover_type)
+        },
+        config_seed: |live, render| {
+            if let Some(crossover_type) = crate::config_fields::crossover_type::get(render) {
+                live.crossover_type = crossover_type;
             }
         },
     },

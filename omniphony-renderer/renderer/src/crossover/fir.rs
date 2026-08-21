@@ -394,6 +394,34 @@ impl FirCrossoverBank {
     }
 }
 
+impl FirCrossoverBank {
+    /// Was `state` allocated by [`Self::make_state`] on a bank of this exact
+    /// shape? Used to invalidate per-channel states when the bank is rebuilt.
+    pub(crate) fn state_compatible(&self, state: &FirCrossoverState) -> bool {
+        state.fdl.len() == self.partitions
+            && state.delay_hist.len() == self.kernel_delay
+            && state.out.len() == self.num_bands
+    }
+}
+
+impl FirCrossoverState {
+    /// Zero all filter memory in place (no reallocation), so a new signal
+    /// never splices into the previous one's tail.
+    pub fn reset(&mut self) {
+        self.pending.clear();
+        self.prev_block.fill(0.0);
+        for spectrum in &mut self.fdl {
+            spectrum.fill(Complex::default());
+        }
+        self.fdl_pos = 0;
+        self.delay_hist.fill(0.0);
+        for band in &mut self.out {
+            band.fill(0.0);
+        }
+        self.read_idx = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

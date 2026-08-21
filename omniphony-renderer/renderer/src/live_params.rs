@@ -186,6 +186,43 @@ impl PhantomExtractMode {
     }
 }
 
+/// Which filter implementation splits band-limited layouts into crossover
+/// bands.
+///
+/// * `lr4` (default) — IIR Linkwitz-Riley: zero latency; the recombined bands
+///   are magnitude-flat but the phase rotates around every cutoff.
+/// * `fir` — linear-phase FIR: the band sum is a pure delay of the input
+///   (flat in magnitude AND phase), at the price of a constant latency of
+///   roughly 0.1 s at the default design. Intended for film playback, where
+///   quality outranks latency. Directly-routed (bed) channels are delayed by
+///   the same amount inside the speaker stage so the mix stays time-aligned.
+///
+/// Live-tunable via `/omniphony/control/crossover_type`, persisted to config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CrossoverType {
+    #[default]
+    Lr4,
+    Fir,
+}
+
+impl CrossoverType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lr4 => "lr4",
+            Self::Fir => "fir",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "lr4" | "iir" => Some(Self::Lr4),
+            "fir" | "linear_phase" => Some(Self::Fir),
+            _ => None,
+        }
+    }
+}
+
 /// Where the surround pair (`Ls`/`Rs`) of a channel-based source WITHOUT
 /// dedicated back channels (4.x / 5.x) is placed when rendered through the
 /// virtual bed. Sources that already carry back channels (7.x: `Lb`/`Rb`/`Cb`)
@@ -1190,6 +1227,12 @@ pub struct LiveParams {
     /// output stream is (re)configured. Live-tunable via
     /// `/omniphony/control/output_channel_mapping`.
     pub output_channel_mapping: OutputChannelMapping,
+
+    /// Crossover filter implementation: minimum-latency IIR (`lr4`) or
+    /// linear-phase FIR (`fir`). The speaker stage compares this against the
+    /// bank it built every frame, so a flip takes effect without a topology
+    /// change. Live-tunable via `/omniphony/control/crossover_type`.
+    pub crossover_type: CrossoverType,
 
     /// Parametrable virtual bed for channel-based content (consulted only when
     /// `channel_render_mode == Spatial`). One entry per input-channel label

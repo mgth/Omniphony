@@ -16,8 +16,11 @@
 //! interp re-seed check. Exactly one mix pass per `channel_states` per frame —
 //! the cascade must give the virtual stage its own slew/interp storage.
 
-use crate::crossover::{BiquadState, FreqBand, LR4CrossoverBank, compute_bands};
-use crate::live_params::{ObjectLiveParams, RampMode, RendererControl};
+use crate::crossover::{
+    CrossoverBank, CrossoverStates, FirCrossoverBank, FreqBand, IntegerDelay, LR4CrossoverBank,
+    compute_bands,
+};
+use crate::live_params::{CrossoverType, ObjectLiveParams, RampMode, RendererControl};
 use crate::ramp_strategy::{RampContext, RampStrategy};
 use crate::render_backend::MultiBandTable;
 use crate::spatial_vbap::Gains;
@@ -46,16 +49,28 @@ pub(super) struct SpeakerRenderStage {
     /// per-band path by clearing it.
     pub(super) unified_table: Option<MultiBandTable>,
     /// `None` when `render_bands` has exactly 1 entry (no crossover active).
-    pub(super) crossover_filter_bank: Option<LR4CrossoverBank>,
+    /// The engine inside (LR4 IIR vs linear-phase FIR) follows the
+    /// `crossover_type` live option.
+    pub(super) crossover_filter_bank: Option<CrossoverBank>,
+    /// The engine the current bank was built for, compared against the live
+    /// option every frame so a flip rebuilds the bank without a topology
+    /// change.
+    pub(super) crossover_built_type: CrossoverType,
     /// Per-object filter states for the crossover bank, keyed by channel index.
-    pub(super) crossover_filter_states: Vec<Option<Vec<BiquadState>>>,
+    pub(super) crossover_filter_states: Vec<Option<CrossoverStates>>,
+    /// Per-channel compensation delays for directly-routed (bed) channels,
+    /// keyed by channel index like `crossover_filter_states`. Only populated
+    /// when the active crossover engine has latency (FIR): a direct route
+    /// bypasses the filter bank, so without this delay beds would land
+    /// `latency_samples()` early relative to every filtered object.
+    pub(super) bed_delays: Vec<Option<IntegerDelay>>,
     /// Generator for the speaker test signal. Kept on the stage (not created per
     /// test) so starting one allocates nothing and the render path stays clean.
     pub(super) test_noise: crate::speaker_test::PinkNoise,
     /// Crossover states for the test signal, sized on first use. Separate from
     /// `crossover_filter_states`: the test is its own source and must not share
     /// filter memory with an input channel.
-    pub(super) test_filter_states: Vec<BiquadState>,
+    pub(super) test_filter_states: Option<CrossoverStates>,
     /// Samples the current test has been running, against the safety cap. Reset
     /// whenever the test target or level changes.
     pub(super) test_elapsed_samples: u64,
@@ -65,7 +80,7 @@ pub(super) struct SpeakerRenderStage {
     /// `crossover_filter_states` and `test_filter_states` for the same reason
     /// those are separate from each other: it is a third independent source, and
     /// sharing filter memory would splice one signal's tail into another.
-    pub(super) object_test_filter_states: Vec<BiquadState>,
+    pub(super) object_test_filter_states: Option<CrossoverStates>,
     /// Previous block's destination gains for the object test, per band — the
     /// start point of this block's interpolation. Exactly the role
     /// `ChannelState::interp_prev_gains` plays for a real object; the test has
@@ -265,11 +280,37 @@ impl SpeakerRenderStage {
                 self.bed_routing_gains_buf.fill(0.0);
                 self.bed_routing_gains_buf[speaker_idx] = 1.0;
 
+                // Time alignment: the FIR crossover delays every filtered
+                // (object) channel by a constant latency, and a direct route
+                // bypasses the filter bank — so it must be delayed by the same
+                // amount or beds land early relative to objects. Zero-latency
+                // engines (LR4) skip this entirely.
+                let crossover_latency = self
+                    .crossover_filter_bank
+                    .as_ref()
+                    .map_or(0, |b| b.latency_samples());
+                let mut bed_delay = if crossover_latency > 0 {
+                    if self.bed_delays.len() <= input_channel_idx {
+                        self.bed_delays.resize_with(input_channel_idx + 1, || None);
+                    }
+                    let slot = &mut self.bed_delays[input_channel_idx];
+                    if slot.as_ref().is_none_or(|d| d.delay() != crossover_latency) {
+                        *slot = Some(IntegerDelay::new(crossover_latency));
+                    }
+                    slot.as_mut()
+                } else {
+                    None
+                };
+
                 // Mix bed samples through the same per-speaker gain accumulation model
                 // used for objects, but with a one-hot routing table.
                 for sample_idx in 0..sample_length {
-                    let sample = input_pcm[sample_idx * input_channel_count + input_channel_idx]
+                    let mut sample = input_pcm
+                        [sample_idx * input_channel_count + input_channel_idx]
                         * (gain_start + gain_step * sample_idx as f32);
+                    if let Some(delay) = bed_delay.as_mut() {
+                        sample = delay.push(sample);
+                    }
                     let out_base = sample_idx * self.num_speakers;
                     for (speaker_idx, &gain) in self.bed_routing_gains_buf.iter().enumerate() {
                         output[out_base + speaker_idx] += sample * gain;
@@ -318,23 +359,19 @@ impl SpeakerRenderStage {
                 };
 
                 // ── Unified band rendering path ─────────────────────────────────────────
-                // Always iterate over `render_bands` (1 band = no crossover, N bands = LR4).
-                // Each band returns full-size Gains (zeroed for out-of-band speakers) so the
-                // inner mix loop is contiguous and SIMD-friendly.
+                // Always iterate over `render_bands` (1 band = no crossover, N bands =
+                // the active crossover engine). Each band returns full-size Gains
+                // (zeroed for out-of-band speakers) so the inner mix loop is
+                // contiguous and SIMD-friendly.
 
                 // Lazily allocate per-object filter state only when crossover is active.
-                let obj_filter_states: Option<&mut Vec<BiquadState>> =
+                let obj_filter_states: Option<&mut CrossoverStates> =
                     if let Some(fb) = self.crossover_filter_bank.as_ref() {
-                        let state_count = fb.state_count();
                         if self.crossover_filter_states.len() <= input_channel_idx {
                             self.crossover_filter_states
                                 .resize_with(input_channel_idx + 1, || None);
                         }
-                        let slot = &mut self.crossover_filter_states[input_channel_idx];
-                        if slot.is_none() {
-                            *slot = Some(vec![BiquadState::default(); state_count]);
-                        }
-                        slot.as_mut()
+                        Some(fb.ensure_states(&mut self.crossover_filter_states[input_channel_idx]))
                     } else {
                         None
                     };
@@ -369,11 +406,11 @@ impl SpeakerRenderStage {
                         let mut fst = obj_filter_states;
                         if profile_crossover {
                             let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
+                            let fst_states = fst.take().expect("filter states");
                             let started_at = std::time::Instant::now();
                             fb.process_block(
                                 sample_length,
-                                fst_slice,
+                                fst_states,
                                 &mut self.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
@@ -400,7 +437,7 @@ impl SpeakerRenderStage {
                                 let split = split_bands(
                                     raw,
                                     &self.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
+                                    fst.as_mut().map(|s| &mut **s),
                                 );
                                 let out_base = sample_idx * self.num_speakers;
                                 let out_frame = &mut output[out_base..out_base + self.num_speakers];
@@ -430,11 +467,11 @@ impl SpeakerRenderStage {
                         let mut fst = obj_filter_states;
                         if profile_crossover {
                             let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
+                            let fst_states = fst.take().expect("filter states");
                             let started_at = std::time::Instant::now();
                             fb.process_block(
                                 sample_length,
-                                fst_slice,
+                                fst_states,
                                 &mut self.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
@@ -461,7 +498,7 @@ impl SpeakerRenderStage {
                                 let split = split_bands(
                                     raw,
                                     &self.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
+                                    fst.as_mut().map(|s| &mut **s),
                                 );
                                 let out_base = sample_idx * self.num_speakers;
                                 let out_frame = &mut output[out_base..out_base + self.num_speakers];
@@ -481,11 +518,11 @@ impl SpeakerRenderStage {
                             .resize(self.render_bands.len(), Gains::zeroed(self.num_speakers));
                         if profile_crossover {
                             let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
+                            let fst_states = fst.take().expect("filter states");
                             let started_at = std::time::Instant::now();
                             fb.process_block(
                                 sample_length,
-                                fst_slice,
+                                fst_states,
                                 &mut self.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
@@ -567,7 +604,7 @@ impl SpeakerRenderStage {
                                 let split = split_bands(
                                     raw,
                                     &self.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
+                                    fst.as_mut().map(|s| &mut **s),
                                 );
                                 let out_base = sample_idx * self.num_speakers;
                                 let out_frame = &mut output[out_base..out_base + self.num_speakers];
@@ -616,11 +653,11 @@ impl SpeakerRenderStage {
                         let inv_n = 1.0 / sample_length.max(1) as f32;
                         if profile_crossover {
                             let fb = self.crossover_filter_bank.as_ref().expect("crossover bank");
-                            let fst_slice = fst.as_mut().expect("filter states").as_mut_slice();
+                            let fst_states = fst.take().expect("filter states");
                             let started_at = std::time::Instant::now();
                             fb.process_block(
                                 sample_length,
-                                fst_slice,
+                                fst_states,
                                 &mut self.crossover_band_scratch,
                                 |sample_idx| {
                                     input_pcm[sample_idx * input_channel_count + input_channel_idx]
@@ -665,7 +702,7 @@ impl SpeakerRenderStage {
                                 let split = split_bands(
                                     raw,
                                     &self.crossover_filter_bank,
-                                    fst.as_mut().map(|v| v.as_mut_slice()),
+                                    fst.as_mut().map(|s| &mut **s),
                                 );
                                 let out_base = sample_idx * self.num_speakers;
                                 let out_frame = &mut output[out_base..out_base + self.num_speakers];
@@ -734,7 +771,7 @@ impl SpeakerRenderStage {
         num_speakers: usize,
         sample_rate: u32,
     ) -> Result<Self> {
-        let (render_bands, crossover_filter_bank) =
+        let (render_bands, crossover_filter_bank, crossover_built_type) =
             Self::build_crossover(control, layout, num_speakers, sample_rate, &[])?;
         let unified_table = Self::build_unified_table(&render_bands, num_speakers);
         Ok(Self {
@@ -744,12 +781,14 @@ impl SpeakerRenderStage {
             render_bands_topology_identity: topology_identity,
             unified_table,
             crossover_filter_bank,
+            crossover_built_type,
             crossover_filter_states: Vec::new(),
+            bed_delays: Vec::new(),
             test_noise: crate::speaker_test::PinkNoise::default(),
-            test_filter_states: Vec::new(),
+            test_filter_states: None,
             test_elapsed_samples: 0,
             test_identity: None,
-            object_test_filter_states: Vec::new(),
+            object_test_filter_states: None,
             object_test_prev_gains: Vec::new(),
             object_test_end_gains: Vec::new(),
             object_test_band_gains: Vec::new(),
@@ -781,11 +820,16 @@ impl SpeakerRenderStage {
         topology_identity: usize,
         active_layout: &SpeakerLayout,
     ) -> Result<()> {
-        if self.render_bands_topology_identity == topology_identity {
+        // A `crossover_type` flip rebuilds the bank too, even with the
+        // topology unchanged — the option is live, not part of the topology.
+        let requested_type = control.live.read().crossover_type;
+        if self.render_bands_topology_identity == topology_identity
+            && self.crossover_built_type == requested_type
+        {
             return Ok(());
         }
 
-        let (render_bands, crossover_filter_bank) = Self::build_crossover(
+        let (render_bands, crossover_filter_bank, crossover_built_type) = Self::build_crossover(
             control,
             active_layout,
             self.num_speakers,
@@ -795,7 +839,11 @@ impl SpeakerRenderStage {
         self.unified_table = Self::build_unified_table(&render_bands, self.num_speakers);
         self.render_bands = render_bands;
         self.crossover_filter_bank = crossover_filter_bank;
+        self.crossover_built_type = crossover_built_type;
         self.crossover_filter_states.clear();
+        self.bed_delays.clear();
+        self.test_filter_states = None;
+        self.object_test_filter_states = None;
         self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
         self.render_bands_topology_identity = topology_identity;
         Ok(())
@@ -867,8 +915,8 @@ impl SpeakerRenderStage {
             self.test_identity = Some(identity);
             self.test_elapsed_samples = 0;
             self.test_noise.reset();
-            for s in &mut self.test_filter_states {
-                *s = BiquadState::default();
+            if let Some(states) = self.test_filter_states.as_mut() {
+                states.reset();
             }
         }
 
@@ -910,12 +958,10 @@ impl SpeakerRenderStage {
         // one band covering everything, so this degenerates to unfiltered noise.
         match self.crossover_filter_bank.as_ref() {
             Some(bank) => {
-                if self.test_filter_states.len() != bank.state_count() {
-                    self.test_filter_states = vec![BiquadState::default(); bank.state_count()];
-                }
+                let states = bank.ensure_states(&mut self.test_filter_states);
                 for f in 0..frames {
                     let raw = self.test_noise.next_sample();
-                    let bands = bank.process_sample(raw, &mut self.test_filter_states);
+                    let bands = bank.process_sample(raw, states);
                     let mut acc = 0.0f32;
                     for (b, band) in self.render_bands.iter().enumerate() {
                         if b < bands.len() && band.speaker_indices.contains(&test.speaker_idx) {
@@ -1038,19 +1084,10 @@ impl SpeakerRenderStage {
             .resize(n_bands, Gains::zeroed(self.num_speakers));
 
         let inv_n = 1.0 / frames.max(1) as f32;
-        if self.object_test_filter_states.len()
-            != self
-                .crossover_filter_bank
-                .as_ref()
-                .map_or(0, |b| b.state_count())
-        {
-            self.object_test_filter_states = vec![
-                BiquadState::default();
-                self.crossover_filter_bank
-                    .as_ref()
-                    .map_or(0, |b| b.state_count())
-            ];
-        }
+        let mut split_states = self
+            .crossover_filter_bank
+            .as_ref()
+            .map(|bank| bank.ensure_states(&mut self.object_test_filter_states));
 
         for sample_idx in 0..frames {
             let f = (sample_idx as f32 + 1.0) * inv_n;
@@ -1067,8 +1104,7 @@ impl SpeakerRenderStage {
             let split = split_bands(
                 noise[sample_idx],
                 &self.crossover_filter_bank,
-                (!self.object_test_filter_states.is_empty())
-                    .then(|| self.object_test_filter_states.as_mut_slice()),
+                split_states.as_mut().map(|s| &mut **s),
             );
             let out_base = sample_idx * self.num_speakers;
             let out_frame = &mut output[out_base..out_base + self.num_speakers];
@@ -1176,16 +1212,19 @@ impl SpeakerRenderStage {
 
     /// Build crossover band engines from a speaker layout.
     ///
-    /// Returns `(render_bands, Some(filter_bank))` when the layout defines finite crossover
-    /// edges on at least one speaker (producing ≥ 2 bands), or `(single_band, None)` when
-    /// no crossover is needed. `render_bands` always has at least one entry.
+    /// Returns `(render_bands, Some(filter_bank), built_type)` when the layout defines
+    /// finite crossover edges on at least one speaker (producing ≥ 2 bands), or
+    /// `(single_band, None, built_type)` when no crossover is needed. `render_bands`
+    /// always has at least one entry. The filter engine follows the `crossover_type`
+    /// live option; the type actually built is returned so the caller can detect a
+    /// later flip.
     fn build_crossover(
         control: &Arc<RendererControl>,
         layout: &SpeakerLayout,
         num_speakers: usize,
         sample_rate: u32,
         prev_bands: &[BandRenderer],
-    ) -> Result<(Vec<BandRenderer>, Option<LR4CrossoverBank>)> {
+    ) -> Result<(Vec<BandRenderer>, Option<CrossoverBank>, CrossoverType)> {
         // For each new band, reuse the matching previous band (same speaker subset)
         // so an evaluation-only refresh can keep its triangulated gain model.
         let make_renderer = |b: &FreqBand| {
@@ -1195,13 +1234,14 @@ impl SpeakerRenderStage {
             BandRenderer::from_band(b, layout, num_speakers, control, prev)
         };
 
+        let crossover_type = control.live.read().crossover_type;
         let bands = compute_bands(layout);
         if bands.len() <= 1 {
             let render_bands = bands
                 .iter()
                 .map(make_renderer)
                 .collect::<Result<Vec<_>>>()?;
-            return Ok((render_bands, None));
+            return Ok((render_bands, None, crossover_type));
         }
 
         let cutoffs: Vec<f32> = bands
@@ -1210,19 +1250,24 @@ impl SpeakerRenderStage {
             .filter(|f| f.is_finite())
             .collect();
 
-        let filter_bank = LR4CrossoverBank::new(&cutoffs, sample_rate);
+        let filter_bank = match crossover_type {
+            CrossoverType::Lr4 => CrossoverBank::Lr4(LR4CrossoverBank::new(&cutoffs, sample_rate)),
+            CrossoverType::Fir => CrossoverBank::Fir(FirCrossoverBank::new(&cutoffs, sample_rate)),
+        };
         let render_bands = bands
             .iter()
             .map(make_renderer)
             .collect::<Result<Vec<_>>>()?;
 
         log::info!(
-            "Crossover enabled: {} bands, cutoffs = {:?} Hz",
+            "Crossover enabled ({}): {} bands, cutoffs = {:?} Hz, latency {} samples",
+            crossover_type.as_str(),
             bands.len(),
-            cutoffs
+            cutoffs,
+            filter_bank.latency_samples(),
         );
 
-        Ok((render_bands, Some(filter_bank)))
+        Ok((render_bands, Some(filter_bank), crossover_type))
     }
 
     /// Merge the per-band cartesian tables into a single multi-band table so a

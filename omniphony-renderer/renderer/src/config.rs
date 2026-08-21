@@ -188,6 +188,11 @@ pub struct RenderConfig {
     /// Absent = `by_index`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_channel_mapping: Option<crate::live_params::OutputChannelMapping>,
+    /// Crossover filter implementation for band-limited layouts: `lr4` (IIR,
+    /// zero latency, the default) or `fir` (linear-phase FIR — the band sum is
+    /// a pure delay, at the price of ~0.1 s of latency). Absent = `lr4`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crossover_type: Option<crate::live_params::CrossoverType>,
     /// Bed→height object generator (2D upmix) id for channel content
     /// (`none` / `copy_up` / `pad` / …). Absent / empty = off.
     #[serde(skip_serializing_if = "Option::is_none")]

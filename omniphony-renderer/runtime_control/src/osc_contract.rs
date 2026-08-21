@@ -192,6 +192,10 @@ pub const CONTROL_SURROUND_PLACEMENT: &str = "/omniphony/control/surround_placem
 /// How output channels map to device ports: `by_index` (positionless — port N =
 /// layout speaker N) or `by_name` (positional). Persisted to config.
 pub const CONTROL_OUTPUT_CHANNEL_MAPPING: &str = "/omniphony/control/output_channel_mapping";
+/// Crossover filter implementation for band-limited layouts: `lr4` (IIR, zero
+/// latency) or `fir` (linear-phase, constant latency — the band sum is a pure
+/// delay). Persisted to config.
+pub const CONTROL_CROSSOVER_TYPE: &str = "/omniphony/control/crossover_type";
 pub const CONTROL_UNKNOWN: &str = "/omniphony/control/unknown";
 /// Set the parametrable virtual bed for channel content. Argument is a YAML
 /// `SpeakerLayout` (one entry per channel label, `spatialize` = virtual/direct);
@@ -514,6 +518,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_PHANTOM_EXTRACT_PARAM,
     CONTROL_SURROUND_PLACEMENT,
     CONTROL_OUTPUT_CHANNEL_MAPPING,
+    CONTROL_CROSSOVER_TYPE,
     CONTROL_VIRTUAL_BED,
     CONTROL_CONFIG_AUDIO,
     CONTROL_CONFIG_AUDIO_APPLY,

@@ -427,6 +427,9 @@ impl SpatialRenderer {
             // Seeded to the default (ByIndex); the CLI bootstrap and the embedded
             // mpv host override it from `render.output_channel_mapping`.
             output_channel_mapping: crate::live_params::OutputChannelMapping::default(),
+            // Seeded to the default (Lr4); the CLI bootstrap and the embedded
+            // mpv host override it from `render.crossover_type`.
+            crossover_type: crate::live_params::CrossoverType::default(),
             // Seeded from `render.virtual_bed` by the same bootstrap; `None`
             // uses the built-in canonical poses (LFE direct, rest virtualized).
             virtual_bed: None,

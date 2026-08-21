@@ -340,6 +340,15 @@ render_field! {
     eq = crate::live_params::OutputChannelMapping::eq
 }
 
+render_field! {
+    /// Crossover filter implementation: lr4 (IIR, zero latency) vs fir
+    /// (linear-phase, constant latency) (`render.crossover_type`). Default `Lr4`.
+    pub crossover_type: crate::live_params::CrossoverType =
+        crate::live_params::CrossoverType::Lr4,
+    field = crossover_type,
+    eq = crate::live_params::CrossoverType::eq
+}
+
 render_field_str! {
     /// Bed→height object generator id for channel content
     /// (`render.object_generator_id`). Empty / absent = off.

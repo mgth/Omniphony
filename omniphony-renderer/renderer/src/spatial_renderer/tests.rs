@@ -2435,3 +2435,121 @@ fn a_recycled_output_buffer_renders_identically_to_a_fresh_one() {
         "no sample of the previous contents may survive into the render"
     );
 }
+
+/// With the linear-phase FIR crossover selected, every path through the
+/// speaker stage carries the same constant delay: an impulse fed to a direct
+/// (bed) channel and one fed to an object channel must land at the same
+/// output sample index. The object path is delayed by the FIR bank itself;
+/// the bed path bypasses the bank and relies on the compensating
+/// `IntegerDelay` — this test fails if that compensation is missing or wrong.
+#[test]
+fn fir_crossover_keeps_beds_aligned_with_objects() {
+    let mut r = crossover_renderer();
+    r.control.live.write().crossover_type = crate::live_params::CrossoverType::Fir;
+    // Channel 0: direct LFE bed (7.1.4 speaker 3). Channel 1: trailing object.
+    r.configure_channel_routing(&[ChannelRoute::Direct(bridge_api::RChannelLabel::LFE)]);
+    const LFE_SPK: usize = 3;
+    const IMPULSE_AT: usize = 2_000; // past the gain slew (20 ms = 960 samples)
+
+    let events = vec![
+        SpatialChannelEvent {
+            channel_idx: 0,
+            is_bed: true,
+            gain_db: Some(0),
+            ramp_length: Some(0),
+            size: None,
+            position: None,
+            sample_pos: Some(0),
+        },
+        SpatialChannelEvent {
+            channel_idx: 1,
+            is_bed: false,
+            gain_db: Some(0),
+            ramp_length: Some(0),
+            size: Some([0.0, 0.0, 0.0]),
+            position: Some([0.0, 1.0, 0.0]),
+            sample_pos: Some(0),
+        },
+    ];
+
+    // Render in host-sized frames rather than one huge block: the gain slew
+    // is constant-rate but block-granular, so a single 16k-sample frame would
+    // still be ramping at the impulse and scale it down.
+    let frame_len = 1_024;
+    let sample_length = 16 * frame_len;
+    let mut pcm = vec![0.0f32; sample_length * 2];
+    pcm[IMPULSE_AT * 2] = 1.0; // bed channel
+    pcm[IMPULSE_AT * 2 + 1] = 1.0; // object channel
+
+    let mut samples = Vec::with_capacity(sample_length * 12);
+    let mut n = 0;
+    for f in 0..sample_length / frame_len {
+        let ev: &[SpatialChannelEvent] = if f == 0 { &events } else { &[] };
+        let out = r
+            .render_frame(
+                &pcm[f * frame_len * 2..(f + 1) * frame_len * 2],
+                2,
+                ev,
+                Vec::new(),
+                false,
+            )
+            .unwrap();
+        n = out.n_channels;
+        samples.extend_from_slice(&out.samples);
+    }
+    let out = RenderedFrame {
+        samples,
+        n_channels: n,
+        object_gains: Vec::new(),
+        object_band_gains: Vec::new(),
+        object_band_sq: Vec::new(),
+        object_test_position: None,
+        object_test_level: None,
+        crossover_time_ms: 0.0,
+    };
+
+    let latency = r
+        .speaker_stage
+        .crossover_filter_bank
+        .as_ref()
+        .expect("crossover layout must build a bank")
+        .latency_samples();
+    assert!(latency > 0, "the FIR engine must report its latency");
+    assert!(
+        IMPULSE_AT + latency < sample_length,
+        "test frame too short for the bank latency ({latency})"
+    );
+
+    // Arrival time = argmax of per-sample magnitude, per path.
+    let argmax = |value_at: &dyn Fn(usize) -> f32| -> usize {
+        (0..sample_length)
+            .max_by(|&a, &b| value_at(a).total_cmp(&value_at(b)))
+            .unwrap()
+    };
+    let bed_at = |s: usize| out.samples[s * n + LFE_SPK].abs();
+    let obj_at = |s: usize| -> f32 {
+        (0..n)
+            .filter(|&spk| spk != LFE_SPK)
+            .map(|spk| out.samples[s * n + spk].abs())
+            .sum()
+    };
+
+    let bed_peak = argmax(&bed_at);
+    let obj_peak = argmax(&obj_at);
+    assert_eq!(
+        bed_peak,
+        IMPULSE_AT + latency,
+        "bed impulse must be delayed by exactly the bank latency"
+    );
+    assert_eq!(
+        obj_peak,
+        IMPULSE_AT + latency,
+        "object impulse must arrive at the bank latency"
+    );
+    // The bed path is a pure delay: the impulse must come through at unity.
+    let v = out.samples[bed_peak * n + LFE_SPK];
+    assert!(
+        (v - 1.0).abs() < 1e-3,
+        "bed impulse must survive the compensation delay at unity gain, got {v}"
+    );
+}
