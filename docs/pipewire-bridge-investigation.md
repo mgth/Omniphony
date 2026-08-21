@@ -1,5 +1,16 @@
 # PipeWire Bridge Investigation
 
+> **Status note (2026-08): the abandoned backends have been removed from the tree.**
+> The investigation below explored five backends. Only two survived and ship today:
+> `PwClientNode` (upstream clock mode) and `PwStream` (dac/pipewire clock modes),
+> selected by `selected_pipewire_bridge_backend` in `src/cli/decode/live_input.rs`.
+> `PwExportedNode`, `PwAdapter` and `PwFilter` had been unreachable for a long time —
+> no clock mode could select them — and their copies had started drifting behind bug
+> fixes made in the live path. They were deleted, along with
+> `audio_input/src/pipewire_exported.rs` and `audio_input/src/pipewire_legacy.rs`.
+> This document is kept as the record of *why* they were abandoned; the code itself
+> is recoverable from git history. Section "Priorité 2" below is superseded.
+
 ## Objet
 
 Ce document résume les recherches menées sur le bridge PipeWire utilisé par `orender` pour exposer `omniphony` comme cible audio `pipewire/omniphony` pour `mpv`, avec du passthrough IEC61937 / TrueHD.

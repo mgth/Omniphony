@@ -7,8 +7,10 @@ or to **binaural headphones**, in real time. Open source, GPL-3.0.
 [![Website & Docs — omniphony.mgth.fr](https://img.shields.io/badge/Website%20%26%20Docs-omniphony.mgth.fr-56c9ff?style=for-the-badge&logo=astro&logoColor=white)](https://omniphony.mgth.fr)
 
 [![Download Omniphony Studio](https://img.shields.io/badge/Download-Omniphony-2ea44f?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/latest)
-[![Download mpv-omniphony](https://img.shields.io/badge/Download-mpv--omniphony-1f6feb?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.4.2)
-[![Download mpv-omniphony FEL](https://img.shields.io/badge/Download-mpv--omniphony%20FEL-8957e5?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.4.2-fel-beta.1)
+<!-- The player lives under the mpv-v* tag namespace, which /releases/latest never
+     resolves to (that is the Studio v* line) — bump these two on each mpv release. -->
+[![Download mpv-omniphony](https://img.shields.io/badge/Download-mpv--omniphony-1f6feb?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.5.0)
+[![Download mpv-omniphony FEL](https://img.shields.io/badge/Download-mpv--omniphony%20FEL-8957e5?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.5.0-fel-beta.4)
 
 ![Omniphony Studio rendering a spatial mix](Omniphony_capture.png)
 
@@ -50,6 +52,27 @@ Omniphony is the engine; you can drive it three ways:
 | **[mpv-omniphony](docs/mpv-omniphony.md)** | The [mpv](https://mpv.io/) media player with an opt-in spatial decoder (`--ad=orender`) that renders through the engine instead of downmixing. ([usage guide](docs/mpv-omniphony.md) · [source](https://github.com/mgth/mpv-omniphony)) |
 
 [![mpv-omniphony — mpv playing a spatial mix, supervised by Omniphony Studio](https://github.com/mgth/mpv-omniphony/raw/main/mpv-omniphony-1200.png)](docs/mpv-omniphony.md)
+
+## Install on Arch
+
+The stack is packaged on the AUR — built from source, managed by pacman like
+everything else:
+
+```sh
+paru -S mpv-omniphony omniphony-studio
+```
+
+[`mpv-omniphony`](https://aur.archlinux.org/packages/mpv-omniphony) replaces the
+stock mpv (`provides mpv` + `libmpv`) and pulls in
+[`orender`](https://aur.archlinux.org/packages/orender) — the engine package with
+the CLI and `liborender.so`, installable on its own for a player-less setup.
+[`omniphony-studio`](https://aur.archlinux.org/packages/omniphony-studio) is the
+Studio app, running against that system engine rather than a bundled copy. Movie
+discs carrying a video enhancement layer want
+[`mpv-omniphony-fel`](https://aur.archlinux.org/packages/mpv-omniphony-fel)
+instead of the plain player package: same spatial decoder on an mpv master
+snapshot, plus Dolby Vision Profile 7 FEL reconstruction. Decoder bridges install
+the same way — search the AUR for the one your format needs.
 
 ## How it works
 

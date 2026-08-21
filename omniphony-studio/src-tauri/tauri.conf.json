@@ -1,7 +1,7 @@
 {
   "identifier": "fr.omniphony.studio",
   "productName": "Omniphony Studio",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -23,7 +23,9 @@
       }
     },
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": false,
+      "entitlements": "Entitlements.plist"
     }
   },
   "app": {

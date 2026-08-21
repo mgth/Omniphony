@@ -1,0 +1,49 @@
+name: Setup ASIO SDK
+description: >
+  Fetch the Steinberg ASIO SDK and export CPAL_ASIO_DIR so cpal can compile its
+  ASIO backend. Windows only — guard the call site with
+  `if: runner.os == 'Windows'`.
+
+# Since 2025-10-15 the SDK is dual-licensed: the proprietary Steinberg ASIO
+# License, or GPLv3. We take the GPLv3 option, which matches the licence this
+# project already carries (GPL-3.0-or-later), so the SDK comes from the public
+# mirror and no credentials are involved.
+#
+# The mirror carries no tags, so the commit is pinned here — tracking `main`
+# would let an upstream push change the shipped binary silently. This file is
+# the single place to bump it. Before bumping, check that every .cpp under
+# common/, host/ and host/pc/ still carries a licence header: asio-sys compiles
+# all of them except asiodrvr.cpp. Two of them (common/combase.cpp and
+# common/dllentry.cpp) are Microsoft COM base classes that carry no licence
+# grant at all, and never have.
+
+inputs:
+  commit:
+    description: Commit of github.com/audiosdk/asio to pin.
+    required: false
+    # "inital commit of version 2.3.4" (2025-10-16)
+    default: 496a0765b8bb9c26f764f22f9a9712a937177db2
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch the ASIO SDK
+      shell: bash
+      env:
+        ASIO_SDK_COMMIT: ${{ inputs.commit }}
+      run: |
+        set -euo pipefail
+        SDK_DIR="$RUNNER_TEMP/asio-$ASIO_SDK_COMMIT"
+        # 7z, not tar: RUNNER_TEMP is a Windows path (D:\a\_temp) and the GNU
+        # tar in Git Bash mishandles it twice over — it reads a leading "D:" as
+        # the host part of host:path syntax, and it cannot open a backslash path
+        # as the -C directory even with --force-local. 7z takes Windows paths as
+        # they come, which is how this step worked before it used a tarball.
+        curl -sSL --retry 3 -o "$RUNNER_TEMP/asio_sdk.zip" \
+          "https://github.com/audiosdk/asio/archive/$ASIO_SDK_COMMIT.zip"
+        7z x "$RUNNER_TEMP/asio_sdk.zip" -o"$RUNNER_TEMP" > /dev/null
+        # Fail here rather than inside bindgen with a less obvious message.
+        for header in common/asio.h common/asiosys.h host/asiodrivers.h; do
+          test -f "$SDK_DIR/$header" || { echo "missing $header in the SDK"; exit 1; }
+        done
+        echo "CPAL_ASIO_DIR=$SDK_DIR" >> "$GITHUB_ENV"

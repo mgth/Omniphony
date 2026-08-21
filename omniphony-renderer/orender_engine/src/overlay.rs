@@ -347,27 +347,43 @@ fn bump_generation() {
 }
 
 /// Mutate the display state under the lock, then publish (and optionally
-/// persist) the change.
+/// persist) the change — but only if the *broadcast* state actually moved.
 ///
 /// Every display mutator goes through this rather than locking directly, so a
 /// new control cannot be added that changes what is drawn without the change
 /// being announced — the omission that let Studio and an mpv keybind drift
 /// apart silently.
+///
+/// The change check compares [`display_state_json`]'s output before and after
+/// the mutation, so it is exact with respect to what clients receive. Without
+/// it, every idempotent control push (Studio re-syncs its seven overlay prefs
+/// on each snapshot apply) bumped the generation and rebroadcast an unchanged
+/// `/omniphony/state/overlay` — the feedback edge of a broadcast storm.
 fn with_display_state<T>(persist: bool, f: impl FnOnce(&mut OverlayState) -> T) -> Option<T> {
-    let out = {
-        let mut s = overlay().state.lock().ok()?;
-        f(&mut s)
+    let o = overlay();
+    let enabled = o.enabled.load(Ordering::Relaxed);
+    let (out, changed) = {
+        let mut s = o.state.lock().ok()?;
+        let before = display_json_locked(enabled, &s);
+        let out = f(&mut s);
+        let changed = display_json_locked(enabled, &s) != before;
+        (out, changed)
     };
-    bump_generation();
-    if persist {
-        save_prefs();
+    if changed {
+        bump_generation();
+        if persist {
+            save_prefs();
+        }
     }
     Some(out)
 }
 
-/// Master enable/disable (Studio toggle; also gates `is_active`).
+/// Master enable/disable (Studio toggle; also gates `is_active`). Publishes
+/// and persists only on an actual flip.
 pub fn set_enabled(on: bool) {
-    overlay().enabled.store(on, Ordering::Relaxed);
+    if overlay().enabled.swap(on, Ordering::Relaxed) == on {
+        return;
+    }
     bump_generation();
     save_prefs();
 }
@@ -525,6 +541,13 @@ pub fn display_state_json() -> String {
     let Ok(s) = o.state.lock() else {
         return "{}".to_string();
     };
+    display_json_locked(enabled, &s)
+}
+
+/// The serialization behind [`display_state_json`], callable while already
+/// holding the state lock — [`with_display_state`] uses it to compare the
+/// broadcast state before and after a mutation.
+fn display_json_locked(enabled: bool, s: &OverlayState) -> String {
     serde_json::json!({
         "enabled": enabled,
         "labelsEnabled": s.labels_enabled,
@@ -1869,6 +1892,43 @@ mod tests {
         assert_eq!(v["trailTtlMs"], 2500);
         assert_eq!(v["trailMode"], "diffuse");
         assert!((v["trailTeleportThreshold"].as_f64().unwrap() - 0.75).abs() < 1e-6);
+    }
+
+    /// Writing a display pref that is already at that value must NOT bump the
+    /// generation: Studio re-pushes all its overlay prefs on every snapshot
+    /// apply, and an unconditional bump rebroadcast an unchanged
+    /// `/omniphony/state/overlay` per push — the feedback edge of a broadcast
+    /// storm.
+    #[test]
+    fn idempotent_display_writes_do_not_publish() {
+        let _g = guard();
+        // Pin every field to a known value, then replay the exact same writes
+        // the way `syncMpvOverlayPrefs` does on each snapshot apply.
+        set_enabled(true);
+        set_labels_enabled(false);
+        set_objects_visible(true);
+        set_heatmap_enabled(true);
+        set_heatmap_bands(7);
+        set_heatmap_colormap(2);
+        set_trail_config(true, 2500, true, 0.75);
+
+        let before = state_generation();
+        set_enabled(true);
+        set_labels_enabled(false);
+        set_objects_visible(true);
+        set_heatmap_enabled(true);
+        set_heatmap_bands(7);
+        set_heatmap_colormap(2);
+        set_trail_config(true, 2500, true, 0.75);
+        assert_eq!(
+            state_generation(),
+            before,
+            "an unchanged pref replay must not republish"
+        );
+
+        // And an actual change right after still publishes.
+        set_heatmap_bands(8);
+        assert!(state_generation() > before, "a real change must publish");
     }
 
     /// Per-frame scene data must NOT bump the generation: it changes every

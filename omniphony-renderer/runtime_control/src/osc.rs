@@ -1,4 +1,5 @@
 use crate::context::RuntimeControlContext;
+use crate::osc_contract;
 use renderer::live_params::LiveEvaluationMode;
 use renderer::render_backend::canonical_builtin_backend_id;
 use rosc::{OscMessage, OscType};
@@ -214,7 +215,7 @@ pub fn gaintable_chunk_broadcasts(
         })
         .to_string();
         out.push(BroadcastUpdate {
-            addr: "/omniphony/state/debug/speaker_gaintable/meta".to_string(),
+            addr: osc_contract::STATE_DEBUG_SPEAKER_GAINTABLE_META.to_string(),
             value: BroadcastValue::String(meta),
         });
     }
@@ -226,59 +227,61 @@ pub fn gaintable_chunk_broadcasts(
         blob.extend_from_slice(&(ci as u32).to_le_bytes());
         blob.extend_from_slice(&bytes[start..end]);
         out.push(BroadcastUpdate {
-            addr: "/omniphony/state/debug/speaker_gaintable/chunk".to_string(),
+            addr: osc_contract::STATE_DEBUG_SPEAKER_GAINTABLE_CHUNK.to_string(),
             value: BroadcastValue::Blob(blob),
         });
     }
     out
 }
 
-pub fn parse_bool_arg(arg: Option<&OscType>) -> Option<bool> {
+/// Any OSC numeric argument, as `f64`.
+///
+/// OSC has four numeric tags — `i`, `h`, `f`, `d` — and the *sender* picks one,
+/// not the receiver: Studio's sliders send `f`, a scripted client sends `i` for
+/// the same control, and most Python bindings turn `1.0` into `d`. Which tag
+/// arrived says nothing about what was meant, so the parsers below read the
+/// value and treat the tag as a transport detail.
+///
+/// This is the one place that decides what counts as a number. Handlers used to
+/// answer that question inline and disagreed with each other, so whether a
+/// control accepted your message depended on which address you sent it to — and
+/// a rejected message was dropped in silence, with no error and no log.
+fn numeric(arg: &OscType) -> Option<f64> {
     match arg {
-        Some(OscType::Int(i)) => Some(*i != 0),
-        Some(OscType::Float(f)) => Some(*f != 0.0),
+        OscType::Int(i) => Some(*i as f64),
+        OscType::Long(l) => Some(*l as f64),
+        OscType::Float(f) => Some(*f as f64),
+        OscType::Double(d) => Some(*d),
         _ => None,
+    }
+}
+
+/// A boolean argument: the `T`/`F` tags, or any number read as zero/non-zero.
+pub fn parse_bool_arg(arg: Option<&OscType>) -> Option<bool> {
+    match arg? {
+        OscType::Bool(b) => Some(*b),
+        other => numeric(other).map(|v| v != 0.0),
     }
 }
 
 pub fn parse_positive_u32_arg(arg: Option<&OscType>) -> Option<u32> {
-    match arg {
-        Some(OscType::Int(i)) if *i > 0 => Some(*i as u32),
-        Some(OscType::Float(f)) if *f > 0.0 => Some(*f as u32),
-        _ => None,
-    }
+    numeric(arg?).filter(|v| *v > 0.0).map(|v| v as u32)
 }
 
 pub fn parse_nonnegative_u32_arg(arg: Option<&OscType>) -> Option<u32> {
-    match arg {
-        Some(OscType::Int(i)) if *i >= 0 => Some(*i as u32),
-        Some(OscType::Float(f)) if *f >= 0.0 => Some(*f as u32),
-        _ => None,
-    }
+    numeric(arg?).filter(|v| *v >= 0.0).map(|v| v as u32)
 }
 
 pub fn parse_positive_f32_arg(arg: Option<&OscType>) -> Option<f32> {
-    match arg {
-        Some(OscType::Float(f)) if *f > 0.0 => Some(*f),
-        Some(OscType::Int(i)) if *i > 0 => Some(*i as f32),
-        _ => None,
-    }
+    numeric(arg?).filter(|v| *v > 0.0).map(|v| v as f32)
 }
 
 pub fn parse_nonnegative_f32_arg(arg: Option<&OscType>) -> Option<f32> {
-    match arg {
-        Some(OscType::Float(f)) if *f >= 0.0 => Some(*f),
-        Some(OscType::Int(i)) if *i >= 0 => Some(*i as f32),
-        _ => None,
-    }
+    numeric(arg?).filter(|v| *v >= 0.0).map(|v| v as f32)
 }
 
 pub fn parse_f32_arg(arg: Option<&OscType>) -> Option<f32> {
-    match arg {
-        Some(OscType::Float(f)) => Some(*f),
-        Some(OscType::Int(i)) => Some(*i as f32),
-        _ => None,
-    }
+    numeric(arg?).map(|v| v as f32)
 }
 
 pub fn parse_string_arg(arg: Option<&OscType>) -> Option<String> {
@@ -556,7 +559,7 @@ pub fn apply_simple_osc_control(
     let addr = msg.addr.as_str();
     let mut effects = ControlEffects::default();
 
-    if addr == "/omniphony/control/config/layout" {
+    if addr == osc_contract::CONTROL_CONFIG_LAYOUT {
         let patch = parse_json_string_arg::<LayoutConfigPatch>(msg.args.first());
         if let Some(patch) = patch {
             let mut changed = false;
@@ -700,14 +703,14 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/config/layout/apply" {
+    if addr == osc_contract::CONTROL_CONFIG_LAYOUT_APPLY {
         effects.mark_dirty = true;
         effects.trigger_layout_recompute = true;
         effects.log_message = Some("OSC: layout config apply".to_string());
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/config/speakers" {
+    if addr == osc_contract::CONTROL_CONFIG_SPEAKERS {
         let patch = parse_json_string_arg::<SpeakersConfigPatch>(msg.args.first());
         if let Some(patch) = patch {
             let mut changed = false;
@@ -753,7 +756,7 @@ pub fn apply_simple_osc_control(
     // (orender_engine::osc::dispatch) against RendererControl — the single
     // source of truth for both, persisted to config.
 
-    if addr == "/omniphony/control/render_backend" {
+    if addr == osc_contract::CONTROL_RENDER_BACKEND {
         // Accept built-in ids/aliases (e.g. "distance") and any registered backend
         // id (e.g. a contributor's "example"), so the dropdown can offer them all.
         let requested_id = parse_string_arg(msg.args.first()).and_then(|value| {
@@ -773,7 +776,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/output_mode" {
+    if addr == osc_contract::CONTROL_OUTPUT_MODE {
         // Switch between the classic speaker (VBAP) path and the independent
         // binaural (headphone) stage. No topology recompute: the binaural path
         // does not use the speaker topology.
@@ -790,7 +793,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == crate::osc_contract::CONTROL_SPEAKER_TEST {
+    if addr == osc_contract::CONTROL_SPEAKER_TEST {
         // Start/stop the per-speaker test signal. A negative index stops: the
         // client owns the trigger policy (hold, fixed burst, toggle), so the
         // renderer only ever sees "play this" or "stop".
@@ -835,7 +838,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == crate::osc_contract::CONTROL_OBJECT_TEST {
+    if addr == osc_contract::CONTROL_OBJECT_TEST {
         // Start/move/stop the object test. Studio sends one of these per pointer
         // move while dragging, so the common case is a position update on an
         // already-running test: keep it allocation-free and let the renderer
@@ -915,7 +918,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == crate::osc_contract::CONTROL_OBJECT_TEST_ROTATION {
+    if addr == osc_contract::CONTROL_OBJECT_TEST_ROTATION {
         let Some(axis_name) = parse_string_arg(msg.args.first()) else {
             log::warn!("OSC {addr}: expected [axis, radius, period, azimuth, elevation]");
             return Some(effects);
@@ -966,7 +969,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == crate::osc_contract::CONTROL_OBJECT_TEST_CLIP {
+    if addr == osc_contract::CONTROL_OBJECT_TEST_CLIP {
         // Choosing the file the `clip` signal plays. Everything expensive
         // happens here, on the control thread: read, downmix, resample,
         // normalise. The render path gets an array and an index.
@@ -1018,13 +1021,13 @@ pub fn apply_simple_osc_control(
             }
         };
         effects.broadcasts.push(BroadcastUpdate {
-            addr: crate::osc_contract::STATE_OBJECT_TEST_CLIP.to_string(),
+            addr: osc_contract::STATE_OBJECT_TEST_CLIP.to_string(),
             value: BroadcastValue::String(state),
         });
         return Some(effects);
     }
 
-    if addr == crate::osc_contract::CONTROL_SPEAKER_TEST_IDLE_FEED {
+    if addr == osc_contract::CONTROL_SPEAKER_TEST_IDLE_FEED {
         // Arm/disarm the idle feed that keeps the output chain warm while the
         // client's test pane is open. Arming always bumps the generation (even
         // when already armed) so the decode loop refreshes its keepalive
@@ -1049,7 +1052,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural_mode" {
+    if addr == osc_contract::CONTROL_BINAURAL_MODE {
         // Switch the binaural stage between per-object HRTF ("direct") and the
         // virtual-speaker cascade ("cascaded"). No topology recompute: the
         // cascade stage builds its own virtual topology lazily on the render
@@ -1067,7 +1070,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/ear_gain" {
+    if addr == osc_contract::CONTROL_BINAURAL_EAR_GAIN {
         // Headphone L/R output gain: [ear_idx (0|1), linear_gain]. Dedicated
         // params — the ears no longer ride the first two per-speaker slots
         // (those drive the virtual FL/FR in cascaded mode).
@@ -1087,7 +1090,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/ear_mute" {
+    if addr == osc_contract::CONTROL_BINAURAL_EAR_MUTE {
         // Headphone L/R mute: [ear_idx (0|1), 0|1].
         let idx = parse_nonnegative_u32_arg(msg.args.first());
         let mute = parse_bool_arg(msg.args.get(1));
@@ -1103,7 +1106,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/head/orientation" {
+    if addr == osc_contract::CONTROL_HEAD_ORIENTATION {
         // Static head pose from Euler degrees [yaw, pitch, roll]. The live
         // head-tracking input (SensorsOSC) lands in M2; this lets Studio / tests
         // drive the pose directly. No topology rebuild (binaural is topology-free).
@@ -1117,7 +1120,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/head/quat" {
+    if addr == osc_contract::CONTROL_HEAD_QUAT {
         // Static head pose from a raw quaternion [w, x, y, z].
         let w = parse_f32_arg(msg.args.first()).unwrap_or(1.0);
         let x = parse_f32_arg(msg.args.get(1)).unwrap_or(0.0);
@@ -1130,7 +1133,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/hrir_source" {
+    if addr == osc_contract::CONTROL_BINAURAL_HRIR_SOURCE {
         // "synthetic" | "saf"/"kemar" | "sofa:<path>" | "pinna[:<size>:<depth>]".
         // No topology rebuild; the render thread rebuilds the HRIR grid lazily
         // when the source changes.
@@ -1151,7 +1154,7 @@ pub fn apply_simple_osc_control(
     // For setups where Studio does not share a filesystem with the renderer:
     // begin [s name, i total_bytes] → chunk [i seq, b data]* → end [i chunks].
     // The file lands in <config dir>/hrtf/ and is activated on completion.
-    if addr == "/omniphony/control/binaural/hrtf_upload/begin" {
+    if addr == osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_BEGIN {
         let name = parse_string_arg(msg.args.first()).unwrap_or_default();
         let total = match msg.args.get(1) {
             Some(rosc::OscType::Int(i)) if *i > 0 => *i as usize,
@@ -1180,7 +1183,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/hrtf_upload/chunk" {
+    if addr == osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_CHUNK {
         let seq = match msg.args.first() {
             Some(rosc::OscType::Int(i)) if *i >= 0 => *i as u32,
             _ => return Some(effects),
@@ -1206,7 +1209,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/hrtf_upload/end" {
+    if addr == osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_END {
         let chunks = match msg.args.first() {
             Some(rosc::OscType::Int(i)) if *i >= 0 => *i as u32,
             _ => 0,
@@ -1249,7 +1252,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/unit_scale" {
+    if addr == osc_contract::CONTROL_BINAURAL_UNIT_SCALE {
         // Metres per ADM unit (isotropic distance scale for the binaural stage).
         if let Some(v) = parse_f32_arg(msg.args.first()) {
             if v.is_finite() && v > 0.0 {
@@ -1262,7 +1265,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/head_radius" {
+    if addr == osc_contract::CONTROL_BINAURAL_HEAD_RADIUS {
         // Effective head radius (m) for the ITD model — half the inter-ear
         // distance. Human range is roughly 6–12 cm.
         if let Some(v) = parse_f32_arg(msg.args.first()) {
@@ -1276,7 +1279,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/reflections/enabled" {
+    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_ENABLED {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().binaural.reflections.enabled = v;
             effects.mark_dirty = true;
@@ -1285,7 +1288,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/reflections/level" {
+    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_LEVEL {
         if let Some(v) = parse_f32_arg(msg.args.first()) {
             if v.is_finite() {
                 ctx.renderer.live.write().binaural.reflections.level = v.clamp(0.0, 1.0);
@@ -1296,9 +1299,9 @@ pub fn apply_simple_osc_control(
     }
 
     if let Some(axis) = match addr {
-        "/omniphony/control/binaural/reflections/room_width" => Some(0usize),
-        "/omniphony/control/binaural/reflections/room_depth" => Some(1),
-        "/omniphony/control/binaural/reflections/room_height" => Some(2),
+        osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH => Some(0usize),
+        osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_DEPTH => Some(1),
+        osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_HEIGHT => Some(2),
         _ => None,
     } {
         if let Some(v) = parse_f32_arg(msg.args.first()) {
@@ -1314,7 +1317,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/reverb/enabled" {
+    if addr == osc_contract::CONTROL_BINAURAL_REVERB_ENABLED {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().binaural.reverb.enabled = v;
             effects.mark_dirty = true;
@@ -1323,7 +1326,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/reverb/level" {
+    if addr == osc_contract::CONTROL_BINAURAL_REVERB_LEVEL {
         if let Some(v) = parse_f32_arg(msg.args.first()) {
             if v.is_finite() {
                 ctx.renderer.live.write().binaural.reverb.level = v.clamp(0.0, 1.0);
@@ -1333,7 +1336,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/reverb/rt60" {
+    if addr == osc_contract::CONTROL_BINAURAL_REVERB_RT60 {
         if let Some(v) = parse_f32_arg(msg.args.first()) {
             if v.is_finite() && v > 0.0 {
                 ctx.renderer.live.write().binaural.reverb.rt60_s = v.clamp(0.1, 3.0);
@@ -1343,7 +1346,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/reverb/predelay" {
+    if addr == osc_contract::CONTROL_BINAURAL_REVERB_PREDELAY {
         if let Some(v) = parse_f32_arg(msg.args.first()) {
             if v.is_finite() && v >= 0.0 {
                 ctx.renderer.live.write().binaural.reverb.predelay_ms = v.clamp(0.0, 100.0);
@@ -1353,7 +1356,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/binaural/air_absorption" {
+    if addr == osc_contract::CONTROL_BINAURAL_AIR_ABSORPTION {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().binaural.air_absorption = v;
             effects.mark_dirty = true;
@@ -1362,7 +1365,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/head/recenter" {
+    if addr == osc_contract::CONTROL_HEAD_RECENTER {
         // Capture the current raw tracker orientation as "forward" and snap the
         // rendered pose to identity so the scene faces straight ahead.
         let mut live = ctx.renderer.live.write();
@@ -1376,7 +1379,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/head/tracking/address" {
+    if addr == osc_contract::CONTROL_HEAD_TRACKING_ADDRESS {
         // Empty string disables tracking.
         let raw = parse_string_arg(msg.args.first()).unwrap_or_default();
         let mut live = ctx.renderer.live.write();
@@ -1390,7 +1393,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/head/tracking/format" {
+    if addr == osc_contract::CONTROL_HEAD_TRACKING_FORMAT {
         if let Some(fmt) = parse_string_arg(msg.args.first())
             .and_then(|s| renderer::binaural::HeadTrackingFormat::from_str(&s))
         {
@@ -1401,7 +1404,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/head/tracking/smoothing" {
+    if addr == osc_contract::CONTROL_HEAD_TRACKING_SMOOTHING {
         if let Some(v) = parse_f32_arg(msg.args.first()) {
             ctx.renderer.live.write().binaural.tracking.smoothing = v.clamp(0.0, 0.999);
             effects.mark_dirty = true;
@@ -1409,7 +1412,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/head/tracking/invert" {
+    if addr == osc_contract::CONTROL_HEAD_TRACKING_INVERT {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().binaural.tracking.invert = v;
             effects.mark_dirty = true;
@@ -1417,7 +1420,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/render_backend/restore" {
+    if addr == osc_contract::CONTROL_RENDER_BACKEND_RESTORE {
         effects.log_message = Some(
             "OSC: render_backend/restore is no longer supported after removing from_file"
                 .to_string(),
@@ -1432,7 +1435,7 @@ pub fn apply_simple_osc_control(
     // barycenter tab) even though it is not the active selection. Values are
     // stored generically (no typed field per backend) and read at the next
     // topology rebuild via the schema.
-    if addr == "/omniphony/control/backend/param" {
+    if addr == osc_contract::CONTROL_BACKEND_PARAM {
         let (target, key, value_arg) = if msg.args.len() >= 3 {
             (
                 parse_string_arg(msg.args.first()),
@@ -1485,7 +1488,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/render_evaluation_mode" {
+    if addr == osc_contract::CONTROL_RENDER_EVALUATION_MODE {
         let requested = parse_string_arg(msg.args.first())
             .and_then(|value| LiveEvaluationMode::from_str(&value));
         if let Some(requested) = requested {
@@ -1512,13 +1515,13 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/render_evaluation_mode/from_file" {
+    if addr == osc_contract::CONTROL_RENDER_EVALUATION_MODE_FROM_FILE {
         effects.log_message =
             Some("OSC: render_evaluation_mode/from_file is no longer supported".to_string());
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/input/drc_mode" {
+    if addr == osc_contract::CONTROL_INPUT_DRC_MODE {
         let requested = parse_string_arg(msg.args.first());
         if let Some(requested) = requested {
             let mut live = ctx.renderer.live.write();
@@ -1531,7 +1534,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/input/drc_weight" {
+    if addr == osc_contract::CONTROL_INPUT_DRC_WEIGHT {
         if let Some(value) = parse_f32_arg(msg.args.first()) {
             let clamped = value.clamp(0.0, 1.0);
             let mut live = ctx.renderer.live.write();
@@ -1544,7 +1547,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/ramp_mode" {
+    if addr == osc_contract::CONTROL_RAMP_MODE {
         let Some(mode) = msg.args.first().and_then(|arg| match arg {
             OscType::String(s) => renderer::live_params::RampMode::from_str(s),
             _ => None,
@@ -1558,7 +1561,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/layout/radius_m" {
+    if addr == osc_contract::CONTROL_LAYOUT_RADIUS_M {
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
             ctx.renderer
                 .with_editable_layout(|layout| layout.radius_m = v);
@@ -1568,7 +1571,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/gain" {
+    if addr == osc_contract::CONTROL_GAIN {
         if let Some(gain) = parse_f32_arg(msg.args.first()) {
             ctx.renderer.live.write().master_gain = gain;
             effects.mark_dirty = true;
@@ -1582,7 +1585,7 @@ pub fn apply_simple_osc_control(
     // working; the canonical path is `/omniphony/control/backend/param`. All of
     // them trigger a topology rebuild (the values are baked, not per-request).
     macro_rules! spread_param_with_recompute {
-        ($path:literal, $key:literal) => {
+        ($path:expr, $key:literal) => {
             if addr == $path {
                 if let Some(value) = parse_f32_arg(msg.args.first()) {
                     ctx.renderer.set_backend_param(
@@ -1598,18 +1601,18 @@ pub fn apply_simple_osc_control(
         };
     }
 
-    spread_param_with_recompute!("/omniphony/control/spread/min", "spread_min");
-    spread_param_with_recompute!("/omniphony/control/spread/max", "spread_max");
+    spread_param_with_recompute!(osc_contract::CONTROL_SPREAD_MIN, "spread_min");
+    spread_param_with_recompute!(osc_contract::CONTROL_SPREAD_MAX, "spread_max");
     spread_param_with_recompute!(
-        "/omniphony/control/spread/distance_range",
+        osc_contract::CONTROL_SPREAD_DISTANCE_RANGE,
         "spread_distance_range"
     );
     spread_param_with_recompute!(
-        "/omniphony/control/spread/distance_curve",
+        osc_contract::CONTROL_SPREAD_DISTANCE_CURVE,
         "spread_distance_curve"
     );
 
-    if addr == "/omniphony/control/spread/from_distance" {
+    if addr == osc_contract::CONTROL_SPREAD_FROM_DISTANCE {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.set_backend_param(
                 "vbap",
@@ -1622,7 +1625,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/spread/size_to_spread_mode" {
+    if addr == osc_contract::CONTROL_SPREAD_SIZE_TO_SPREAD_MODE {
         if let Some(OscType::String(s)) = msg.args.first() {
             if let Some(mode) = renderer::render_backend::SizeToSpreadMode::from_str(
                 s.trim().to_ascii_lowercase().as_str(),
@@ -1641,7 +1644,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/auto_gain" {
+    if addr == osc_contract::CONTROL_AUTO_GAIN {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().auto_gain = v;
             effects.mark_dirty = true;
@@ -1650,7 +1653,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/auto_gain_ceiling" {
+    if addr == osc_contract::CONTROL_AUTO_GAIN_CEILING {
         if let Some(v) = parse_f32_arg(msg.args.first()) {
             // dBFS target; clamp to a sane range (ceiling at or below 0 dBFS).
             ctx.renderer.live.write().auto_gain_ceiling_db = v.clamp(-12.0, 0.0);
@@ -1670,19 +1673,19 @@ pub fn apply_simple_osc_control(
             let state_addr = match rest {
                 "x_size" => {
                     ctx.renderer.live.write().evaluation.cartesian.x_size = size;
-                    Some("/omniphony/state/render_evaluation/cartesian/x_size")
+                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_X_SIZE)
                 }
                 "y_size" => {
                     ctx.renderer.live.write().evaluation.cartesian.y_size = size;
-                    Some("/omniphony/state/render_evaluation/cartesian/y_size")
+                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Y_SIZE)
                 }
                 "z_size" => {
                     ctx.renderer.live.write().evaluation.cartesian.z_size = size;
-                    Some("/omniphony/state/render_evaluation/cartesian/z_size")
+                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Z_SIZE)
                 }
                 "z_neg_size" => {
                     ctx.renderer.live.write().evaluation.cartesian.z_neg_size = size;
-                    Some("/omniphony/state/render_evaluation/cartesian/z_neg_size")
+                    Some(osc_contract::STATE_RENDER_EVALUATION_CARTESIAN_Z_NEG_SIZE)
                 }
                 _ => None,
             };
@@ -1701,7 +1704,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/render_evaluation/position_interpolation" {
+    if addr == osc_contract::CONTROL_RENDER_EVALUATION_POSITION_INTERPOLATION {
         if let Some(enabled) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().evaluation.position_interpolation = enabled;
             // No layout recompute: this flag only selects nearest-cell vs
@@ -1711,14 +1714,14 @@ pub fn apply_simple_osc_control(
             // the whole grid here just produced an identical table.
             effects.mark_dirty = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/render_evaluation/position_interpolation".to_string(),
+                addr: osc_contract::STATE_RENDER_EVALUATION_POSITION_INTERPOLATION.to_string(),
                 value: BroadcastValue::Int(if enabled { 1 } else { 0 }),
             });
         }
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/render_evaluation/object_size_intervals" {
+    if addr == osc_contract::CONTROL_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS {
         let intervals = match msg.args.first() {
             Some(OscType::Int(i)) => Some((*i).max(0) as usize),
             Some(OscType::Float(f)) => Some(f.round().max(0.0) as usize),
@@ -1732,7 +1735,7 @@ pub fn apply_simple_osc_control(
             // tables, reuse the backend geometry.
             effects.evaluation_only = true;
             effects.broadcasts.push(BroadcastUpdate {
-                addr: "/omniphony/state/render_evaluation/object_size_intervals".to_string(),
+                addr: osc_contract::STATE_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS.to_string(),
                 value: BroadcastValue::Int(intervals as i32),
             });
         }
@@ -1751,11 +1754,11 @@ pub fn apply_simple_osc_control(
                     let state_addr = match rest {
                         "azimuth_resolution" => {
                             ctx.renderer.live.write().evaluation.polar.azimuth_values = res;
-                            Some("/omniphony/state/render_evaluation/polar/azimuth_resolution")
+                            Some(osc_contract::STATE_RENDER_EVALUATION_POLAR_AZIMUTH_RESOLUTION)
                         }
                         "elevation_resolution" => {
                             ctx.renderer.live.write().evaluation.polar.elevation_values = res;
-                            Some("/omniphony/state/render_evaluation/polar/elevation_resolution")
+                            Some(osc_contract::STATE_RENDER_EVALUATION_POLAR_ELEVATION_RESOLUTION)
                         }
                         _ => None,
                     };
@@ -1783,7 +1786,7 @@ pub fn apply_simple_osc_control(
                     effects.trigger_layout_recompute = true;
                     effects.evaluation_only = true;
                     effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/render_evaluation/polar/distance_res".to_string(),
+                        addr: osc_contract::STATE_RENDER_EVALUATION_POLAR_DISTANCE_RES.to_string(),
                         value: BroadcastValue::Int(res),
                     });
                 }
@@ -1800,7 +1803,7 @@ pub fn apply_simple_osc_control(
                     effects.trigger_layout_recompute = true;
                     effects.evaluation_only = true;
                     effects.broadcasts.push(BroadcastUpdate {
-                        addr: "/omniphony/state/render_evaluation/polar/distance_max".to_string(),
+                        addr: osc_contract::STATE_RENDER_EVALUATION_POLAR_DISTANCE_MAX.to_string(),
                         value: BroadcastValue::Float(max_v),
                     });
                 }
@@ -1810,7 +1813,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/loudness" {
+    if addr == osc_contract::CONTROL_LOUDNESS {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().use_loudness = v;
             effects.mark_dirty = true;
@@ -1818,7 +1821,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/distance_model" {
+    if addr == osc_contract::CONTROL_DISTANCE_MODEL {
         if let Some(OscType::String(model)) = msg.args.first() {
             if let Ok(model) = model.parse::<renderer::spatial_vbap::DistanceModel>() {
                 ctx.renderer.live.write().distance_model = model;
@@ -1829,7 +1832,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/distance_model_metric" {
+    if addr == osc_contract::CONTROL_DISTANCE_MODEL_METRIC {
         if let Some(OscType::String(metric)) = msg.args.first() {
             if let Ok(metric) = metric.parse::<renderer::spatial_vbap::DistanceMetric>() {
                 ctx.renderer.live.write().distance_model_metric = metric;
@@ -1918,7 +1921,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/room_ratio" {
+    if addr == osc_contract::CONTROL_ROOM_RATIO {
         if msg.args.len() >= 3 {
             let w = parse_f32_arg(msg.args.first());
             let l = parse_f32_arg(msg.args.get(1));
@@ -1933,7 +1936,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/room_ratio_rear" {
+    if addr == osc_contract::CONTROL_ROOM_RATIO_REAR {
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
             ctx.renderer.live.write().room_ratio_rear = v;
             effects.mark_dirty = true;
@@ -1943,7 +1946,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/room_ratio_lower" {
+    if addr == osc_contract::CONTROL_ROOM_RATIO_LOWER {
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.max(0.01)) {
             ctx.renderer.live.write().room_ratio_lower = v;
             effects.mark_dirty = true;
@@ -1953,7 +1956,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if addr == "/omniphony/control/room_ratio_center_blend" {
+    if addr == osc_contract::CONTROL_ROOM_RATIO_CENTER_BLEND {
         if let Some(v) = parse_f32_arg(msg.args.first()).map(|f| f.clamp(0.0, 1.0)) {
             ctx.renderer.live.write().room_ratio_center_blend = v;
             effects.mark_dirty = true;
@@ -2013,7 +2016,7 @@ pub fn apply_simple_osc_control(
         }
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/object/") {
+    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_OBJECT_PREFIX) {
         if let Some(idx_str) = rest.strip_suffix("/mute") {
             if let Ok(idx) = idx_str.parse::<usize>() {
                 if let Some(muted) = parse_bool_arg(msg.args.first()) {
@@ -2102,5 +2105,96 @@ mod freq_cutoff_clear_tests {
             &speaker_patch(r#"{"id":0,"spatialize":true}"#),
         );
         assert_eq!(speaker.freq_low, Some(120.0));
+    }
+
+    /// Every OSC numeric tag must reach the same value.
+    ///
+    /// The sender picks the tag: Studio sends `f`, a scripted client sends `i`,
+    /// most Python bindings turn `1.0` into `d`. Before these parsers agreed,
+    /// which of those a control accepted depended on the address you sent it
+    /// to, and the ones it did not accept were dropped without a word.
+    #[test]
+    fn every_numeric_tag_parses_to_the_same_value() {
+        let tags = [
+            OscType::Int(3),
+            OscType::Long(3),
+            OscType::Float(3.0),
+            OscType::Double(3.0),
+        ];
+        for tag in &tags {
+            assert_eq!(parse_f32_arg(Some(tag)), Some(3.0), "{tag:?}");
+            assert_eq!(parse_positive_f32_arg(Some(tag)), Some(3.0), "{tag:?}");
+            assert_eq!(parse_nonnegative_f32_arg(Some(tag)), Some(3.0), "{tag:?}");
+            assert_eq!(parse_positive_u32_arg(Some(tag)), Some(3), "{tag:?}");
+            assert_eq!(parse_nonnegative_u32_arg(Some(tag)), Some(3), "{tag:?}");
+            assert_eq!(parse_bool_arg(Some(tag)), Some(true), "{tag:?}");
+        }
+    }
+
+    /// A `T`/`F` argument is the natural way to send a toggle, and it used to
+    /// work on some addresses and be silently ignored on others.
+    #[test]
+    fn bool_tags_and_numbers_both_read_as_booleans() {
+        assert_eq!(parse_bool_arg(Some(&OscType::Bool(true))), Some(true));
+        assert_eq!(parse_bool_arg(Some(&OscType::Bool(false))), Some(false));
+        for zero in [
+            OscType::Int(0),
+            OscType::Long(0),
+            OscType::Float(0.0),
+            OscType::Double(0.0),
+        ] {
+            assert_eq!(parse_bool_arg(Some(&zero)), Some(false), "{zero:?}");
+        }
+        assert_eq!(parse_bool_arg(Some(&OscType::Float(-1.0))), Some(true));
+    }
+
+    /// Widening must not have swallowed the sign filters.
+    #[test]
+    fn sign_filters_still_reject_out_of_range_values() {
+        for negative in [OscType::Int(-1), OscType::Double(-0.5)] {
+            assert_eq!(
+                parse_positive_u32_arg(Some(&negative)),
+                None,
+                "{negative:?}"
+            );
+            assert_eq!(
+                parse_positive_f32_arg(Some(&negative)),
+                None,
+                "{negative:?}"
+            );
+            assert_eq!(
+                parse_nonnegative_u32_arg(Some(&negative)),
+                None,
+                "{negative:?}"
+            );
+        }
+        assert_eq!(parse_positive_u32_arg(Some(&OscType::Int(0))), None);
+        assert_eq!(parse_nonnegative_u32_arg(Some(&OscType::Int(0))), Some(0));
+        // NaN is not a value any of these should accept.
+        assert_eq!(
+            parse_positive_f32_arg(Some(&OscType::Float(f32::NAN))),
+            None
+        );
+        assert_eq!(
+            parse_nonnegative_f32_arg(Some(&OscType::Float(f32::NAN))),
+            None
+        );
+    }
+
+    /// Widening the numeric tags must not turn non-numbers into numbers.
+    #[test]
+    fn non_numeric_arguments_are_still_rejected() {
+        for junk in [
+            OscType::String("7".to_string()),
+            OscType::Blob(vec![1, 2, 3]),
+            OscType::Nil,
+            OscType::Char('7'),
+        ] {
+            assert_eq!(parse_f32_arg(Some(&junk)), None, "{junk:?}");
+            assert_eq!(parse_bool_arg(Some(&junk)), None, "{junk:?}");
+            assert_eq!(parse_positive_u32_arg(Some(&junk)), None, "{junk:?}");
+        }
+        assert_eq!(parse_f32_arg(None), None);
+        assert_eq!(parse_bool_arg(None), None);
     }
 }

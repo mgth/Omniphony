@@ -168,8 +168,15 @@ impl HrirProvider for ParametricPinnaHrir {
         // delay spread — hence the notch pattern — collapses behind the head:
         // that is the front/back cue. (8) is validated for the frontal half
         // space only; the rear is our extrapolation.
+        //
+        // `abs`, not a [0, 1] clamp: the formula assumes a signed azimuth in
+        // [-180°, 180°], but the grid feeds [0°, 360°), where cos(az/2) goes
+        // negative over the whole left hemisphere. Clamping that to 0 rendered
+        // the entire left side with the collapsed "behind the head" notch
+        // pattern (audibly brighter on the left); |cos(az/2)| is the same even,
+        // 360°-periodic function under both conventions.
         let az = az_deg.to_radians();
-        let front = (0.5 * az).cos().clamp(0.0, 1.0);
+        let front = (0.5 * az).cos().abs();
         let el_term = (90.0 - el_deg).to_radians(); // 0 overhead, grows downward
         let fs_scale = sample_rate as f32 / Self::REF_FS;
         let mut taus = [0.0f32; 5];
@@ -387,6 +394,30 @@ impl HrirSet {
             out.right[n] =
                 w00 * p00.right[n] + w10 * p10.right[n] + w01 * p01.right[n] + w11 * p11.right[n];
         }
+    }
+
+    /// The largest absolute tap in the whole grid.
+    ///
+    /// Zero exactly when every direction renders silence — and that is a state
+    /// the level normalization in [`new`](Self::new) cannot rescue, since a
+    /// zero mean energy skips the rescale. Build-time only; the audio thread
+    /// never asks.
+    pub fn peak(&self) -> f32 {
+        self.grid
+            .iter()
+            .flat_map(|p| p.left.iter().chain(p.right.iter()))
+            .fold(0.0f32, |m, &x| m.max(x.abs()))
+    }
+
+    /// True when every node of the grid holds the same kernel — the provider
+    /// collapsed onto a single response, so the set carries no direction
+    /// information at all and the image cannot move.
+    pub fn is_direction_invariant(&self) -> bool {
+        let Some((first, rest)) = self.grid.split_first() else {
+            return true;
+        };
+        rest.iter()
+            .all(|p| p.left == first.left && p.right == first.right)
     }
 }
 
@@ -646,6 +677,60 @@ mod tests {
             max_diff < 0.05,
             "fractional-delay discontinuity: {max_diff}"
         );
+    }
+
+    /// Left/right mirror symmetry: every *modelled* provider (synthetic, pinna,
+    /// PRTF) has no ear-specific data, so rendering the mirrored direction must
+    /// swap the ears exactly: `render(az).left == render(-az).right`. Measured
+    /// sets (SAF/SOFA) are exempt — real ears are not symmetric. The grid feeds
+    /// azimuths in [0°, 360°), so the mirror of `az` is `360 - az`; a provider
+    /// that assumes signed azimuths breaks precisely on that convention (heard
+    /// as a brighter left hemisphere with `pinna`).
+    #[test]
+    fn modelled_providers_are_left_right_symmetric() {
+        let providers: Vec<(&str, Box<dyn HrirProvider>)> = vec![
+            ("synthetic", Box::new(SyntheticHrir)),
+            (
+                "pinna",
+                Box::new(ParametricPinnaHrir {
+                    d: ParametricPinnaHrir::D_PB_NH,
+                    depth: 1.0,
+                }),
+            ),
+            (
+                "prtf",
+                Box::new(crate::binaural::prtf::SpagnolPrtfHrir {
+                    depth: 1.0,
+                    freq_scale: 1.0,
+                }),
+            ),
+        ];
+        for (name, p) in &providers {
+            for el in [-30.0f32, 0.0, 30.0] {
+                for az in [10.0f32, 30.0, 90.0, 150.0] {
+                    let a = p.render(az, el, 48_000);
+                    let b = p.render(360.0 - az, el, 48_000);
+                    let d_lr: f32 = a
+                        .left
+                        .iter()
+                        .zip(b.right.iter())
+                        .map(|(x, y)| (x - y) * (x - y))
+                        .sum();
+                    let d_rl: f32 = a
+                        .right
+                        .iter()
+                        .zip(b.left.iter())
+                        .map(|(x, y)| (x - y) * (x - y))
+                        .sum();
+                    assert!(
+                        d_lr < 1e-8 && d_rl < 1e-8,
+                        "{name}: az {az}/{} el {el} not mirror-symmetric \
+                         (L↔R sumsq {d_lr:e} / {d_rl:e})",
+                        360.0 - az
+                    );
+                }
+            }
+        }
     }
 
     #[test]

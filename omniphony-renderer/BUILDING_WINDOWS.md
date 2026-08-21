@@ -170,6 +170,14 @@ cargo build --release --features saf_vbap
 | `LIBCLANG_PATH` | Path to LLVM/Clang `lib/` directory (for bindgen) | (none, required if not on PATH) |
 | `CPAL_ASIO_DIR` | Path to Steinberg ASIO SDK directory | (none, **required** — place the SDK at `C:/dev/asio_sdk`) |
 
+Get the SDK from <https://github.com/audiosdk/asio>, the public mirror Steinberg
+published when it dual-licensed ASIO on 2025-10-15, and use it under the GPLv3
+half of that dual licence — the same licence as this project. CI pins a specific
+commit of that repository; see the "Setup ASIO SDK" step in
+`.github/workflows/release.yml`. Do **not** substitute a copy of the older
+single-licence SDK: it is proprietary, and linking it into a GPL binary is what
+kept ASIO out of free audio software for twenty years.
+
 ### Feature combinations
 
 | Features | Commands available |

@@ -27,6 +27,7 @@ use self::transport::{
     flush_pending_logs, resolve_register_addr, send_buffered_logs_to_client, send_metering_state,
     send_raw_filtered,
 };
+use runtime_control::osc_contract;
 
 /// Timeout after which a registered client (one that must heartbeat) is considered dead.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -102,7 +103,7 @@ fn send_resume_to_standby() {
 /// Point-to-point reply address: a standby-capable instance answers a
 /// `yield_port` with this, carrying the dynamic UDP port (Int) on which it will
 /// listen for `/omniphony/control/resume`. Both sides live in this crate.
-pub(crate) const STANDBY_RESUME_REPLY: &str = "/omniphony/yield/resume_port";
+pub(crate) const STANDBY_RESUME_REPLY: &str = osc_contract::YIELD_RESUME_PORT;
 
 /// Dynamic resume socket allocated by the yield handler when this instance is
 /// asked to stand by. The render loop's standby path takes it to listen for
@@ -557,7 +558,7 @@ impl OscSender {
                         if let Some(speaker_idx) = ctrl.take_clip_pending() {
                             if let Ok(bytes) =
                                 rosc::encoder::encode(&OscPacket::Message(OscMessage {
-                                    addr: "/omniphony/state/clip".to_string(),
+                                    addr: osc_contract::STATE_CLIP.to_string(),
                                     args: vec![rosc::OscType::Int(speaker_idx as i32)],
                                 }))
                             {
@@ -569,7 +570,7 @@ impl OscSender {
                         Ok((len, src)) => {
                             match rosc::decoder::decode_udp(&buf[..len]) {
                                 Ok((_, OscPacket::Message(msg)))
-                                    if msg.addr == "/omniphony/register" =>
+                                    if msg.addr == osc_contract::REGISTER =>
                                 {
                                     let client = resolve_register_addr(src, &msg.args);
                                     let (is_new, metering_enabled) = clients.register(client);
@@ -594,15 +595,15 @@ impl OscSender {
                                     send_metering_state(&socket, client, metering_enabled);
                                 }
                                 Ok((_, OscPacket::Message(msg)))
-                                    if msg.addr == "/omniphony/heartbeat" =>
+                                    if msg.addr == osc_contract::HEARTBEAT =>
                                 {
                                     let client = resolve_register_addr(src, &msg.args);
                                     let is_known = clients.heartbeat(client);
                                     let reply_addr = if is_known {
                                         log::trace!("OSC heartbeat/ack → {}", client);
-                                        "/omniphony/heartbeat/ack"
+                                        osc_contract::HEARTBEAT_ACK
                                     } else {
-                                        "/omniphony/heartbeat/unknown"
+                                        osc_contract::HEARTBEAT_UNKNOWN
                                     };
                                     // Echo this instance's epoch so the client can
                                     // detect a producer swap behind the same port.
@@ -909,16 +910,13 @@ impl Drop for OscSender {
     }
 }
 
-/// Numeric OSC args → `f32`, accepting the common scalar types a sensor app may
-/// emit (float, double, int).
+/// Numeric OSC args → `f32`, dropping anything that is not a number.
+///
+/// Sensor apps pick their own tag for the same reading, so this goes through
+/// the shared parser rather than deciding again which tags count.
 fn collect_f32(args: &[rosc::OscType]) -> Vec<f32> {
     args.iter()
-        .filter_map(|a| match a {
-            rosc::OscType::Float(f) => Some(*f),
-            rosc::OscType::Double(d) => Some(*d as f32),
-            rosc::OscType::Int(i) => Some(*i as f32),
-            _ => None,
-        })
+        .filter_map(|a| runtime_control::osc::parse_f32_arg(Some(a)))
         .collect()
 }
 
@@ -943,20 +941,22 @@ fn apply_head_tracking_packet(packet: &OscPacket, ctrl: &RendererControl) -> boo
                     let current = live.binaural.head_pose;
                     live.binaural.head_pose = live.binaural.tracking.ingest(raw, current);
                 }
-                // Re-broadcast the live state so connected clients (Studio) see the
-                // moving pose. Throttled to ~10 Hz so a 60–100 Hz sensor stream
-                // doesn't resend the full state bundle on every packet. (The 3D
-                // head view rides the lighter 30 Hz `/state/head_pose` channel —
-                // see `maybe_broadcast_head_pose`.)
-                static LAST_BUMP_MS: std::sync::atomic::AtomicU64 =
+                // The moving pose rides the dedicated ~30 Hz `/state/head_pose`
+                // channel (see `maybe_broadcast_head_pose`); the full live-state
+                // bundle only needs to go out when the *stream* (re)starts, so
+                // Studio's tracking gate arms from a snapshot that carries a
+                // valid pose. Bumping it per packet — even throttled — kept the
+                // entire state bundle rebroadcasting for as long as the tracker
+                // ran, and every idle client re-applied an unchanged snapshot.
+                static LAST_PACKET_MS: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
+                const STREAM_RESUME_GAP_MS: u64 = 2_000;
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                let last = LAST_BUMP_MS.load(std::sync::atomic::Ordering::Relaxed);
-                if now_ms.saturating_sub(last) >= 100 {
-                    LAST_BUMP_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                let last = LAST_PACKET_MS.swap(now_ms, std::sync::atomic::Ordering::Relaxed);
+                if last == 0 || now_ms.saturating_sub(last) >= STREAM_RESUME_GAP_MS {
                     ctrl.bump_live_state();
                 }
                 return true;
@@ -996,7 +996,7 @@ fn maybe_broadcast_head_pose(
     transport::broadcast_ffff(
         socket,
         clients,
-        "/omniphony/state/head_pose",
+        osc_contract::STATE_HEAD_POSE,
         pose.w as f32,
         pose.x as f32,
         pose.y as f32,

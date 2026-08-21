@@ -231,11 +231,33 @@ impl DecodeHandler {
             (active_mode, source),
             (InputMode::Bridge, DecodedSource::Bridge)
                 | (InputMode::Live, DecodedSource::Live)
-                | (InputMode::PipewireBridge, DecodedSource::Bridge)
+                // The PipeWire sink advertises PCM alongside IEC 61937, so this
+                // mode legitimately produces either source depending on what the
+                // client negotiated.
+                | (InputMode::PipewireBridge, DecodedSource::Bridge | DecodedSource::Live)
         )
     }
 
     pub fn poll_runtime_state(&mut self) -> Result<()> {
+        // Live output changes (device, backend, rate, latency) were applied
+        // from `handle_decoded_frame` alone, so they only landed when the
+        // decoder happened to be producing. Idle — between two programmes, or
+        // in front of a test signal — the request sat in `AudioControl` until
+        // something else made frames flow again, which is why switching the
+        // output device looked like it needed an unrelated apply on the *input*
+        // to take effect. Apply it on the idle tick too. Only the request is
+        // consumed here: an invalidated writer is rebuilt by the next frame,
+        // real or fabricated by the speaker-test idle feed.
+        OutputRuntimeCoordinator::new(
+            &mut self.output,
+            &mut self.runtime,
+            self.audio_control.as_deref(),
+        )
+        .sync_all()?;
+        if self.output.audio_writer.is_none() {
+            self.reset_direct_trigger_wiring();
+        }
+
         if let Some(renderer) = self.spatial_renderer.as_ref() {
             let control = renderer.renderer_control();
             let drc_mode = control.live.read().drc_mode.clone();
@@ -414,6 +436,14 @@ impl DecodeHandler {
             if let Some(ic) = self.input_control.as_ref() {
                 let rate_hz = ic.input_trigger_rate_hz();
                 let quantum_frames = ic.input_trigger_quantum_frames();
+                // Logged until wiring succeeds: this mode stays silent when a
+                // precondition is missing, and the quantum in particular is
+                // worth seeing — it sets the trigger rate, so a wrong one makes
+                // the sink pull at a multiple of real time.
+                log::debug!(
+                    "Direct trigger wiring attempt: rate={rate_hz}Hz quantum={quantum_frames}fr writer={}",
+                    self.output.audio_writer.is_some()
+                );
                 if rate_hz > 0 && quantum_frames > 0 {
                     if let Some(writer) = self.output.audio_writer.as_ref() {
                         writer.set_input_trigger_rate_hz(rate_hz);
@@ -576,10 +606,10 @@ impl DecodeHandler {
             self.input_control.as_deref(),
             self.spatial_renderer.as_mut(),
         );
-        if ctx.bed_conform && sample_write.spatial_has_objects() {
+        if ctx.bed_conform && sample_write.frame_has_objects(source) {
             sample_write.write_audio_samples_bed_conform(&frame, ctx.decode_time_ms)?;
         } else {
-            sample_write.write_audio_samples(&frame, ctx.decode_time_ms)?;
+            sample_write.write_audio_samples(&frame, ctx.decode_time_ms, source)?;
         }
 
         Ok(())

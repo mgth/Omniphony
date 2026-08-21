@@ -745,6 +745,122 @@ pub fn compute_hard_recover_high_plan(
     }
 }
 
+/// Loop-invariant context for [`far_mode_step`].
+pub struct FarModeStepCtx<'a> {
+    pub adaptive_config: &'a crate::AdaptiveResamplingConfig,
+    pub channel_count: usize,
+    pub input_sample_rate: u32,
+    pub output_sample_rate: u32,
+    /// Published runtime-state code, for the diag plot.
+    pub runtime_state_code: &'a std::sync::atomic::AtomicU8,
+    pub latency: LatencyMetricTargets<'a>,
+}
+
+/// The per-callback figures the far-mode step works from.
+pub struct FarModeStepInputs {
+    pub is_far_band: bool,
+    pub control_available: usize,
+    pub smoothed_control_available: usize,
+    pub target_buffer_fill: usize,
+    pub callback_input_domain_samples: usize,
+    /// The ratio this path works in: the resampler's effective ratio, or `1.0`
+    /// when samples are copied straight through.
+    pub resample_ratio: f64,
+    /// The pacer's fixed contribution, folded into the *displayed* latency only.
+    pub pacer_buffer_samples: usize,
+    pub graph_latency_ms: f32,
+}
+
+/// Run the far-mode state machine for one callback, publish the runtime-state
+/// code, and store the latency the metrics display.
+///
+/// The resampler path and the direct-copy path differ only in the ratio they
+/// work in, but each used to carry its own copy of this, and the copies had
+/// drifted apart:
+///
+/// * the resampler copy recovered the low-recover trim by converting the
+///   decision's *output* figure back through the ratio. That round trip —
+///   `align(round(input × ratio))` on the way out, `round(output / ratio)` on
+///   the way back — does not return the input figure the state machine actually
+///   decided once the ratio is far enough from 1. Both now read
+///   `low_recover_trim_input_samples`, which is the authoritative one: the
+///   output figure is derived from it, not the reverse.
+/// * the displayed-latency store had been kept identical by hand.
+///
+/// It only skewed the *displayed* latency, never what was consumed — but it is
+/// exactly the shape of bug that gets fixed on one path and left on the other.
+pub fn far_mode_step(
+    state: &mut AdaptiveRuntimeState,
+    ctx: &FarModeStepCtx<'_>,
+    inputs: FarModeStepInputs,
+) -> FarModeDecision {
+    let decision = update_far_mode_state(
+        state,
+        ctx.adaptive_config,
+        inputs.is_far_band,
+        inputs.control_available,
+        inputs.smoothed_control_available,
+        inputs.target_buffer_fill,
+        inputs.callback_input_domain_samples,
+        inputs.resample_ratio,
+        ctx.channel_count,
+        ctx.input_sample_rate,
+        ctx.output_sample_rate,
+    );
+    ctx.runtime_state_code.store(
+        crate::adaptive_runtime_state_code(adaptive_runtime_state_name(
+            state.low_recover_phase,
+            decision.hard_recover_high,
+        )),
+        Ordering::Relaxed,
+    );
+
+    // What the buffer level will be once this callback's action has been
+    // applied — the servo reasons about the outcome, not the reading.
+    let mut projected = inputs.control_available;
+    if decision.recovery_reacquire_pending && decision.mute_far_output {
+        projected = projected.saturating_sub(inputs.callback_input_domain_samples);
+    } else if decision.hard_recover_high {
+        let plan = compute_hard_recover_high_plan(
+            inputs.callback_input_domain_samples,
+            inputs.control_available,
+            inputs.target_buffer_fill,
+            inputs.resample_ratio,
+            ctx.channel_count,
+        );
+        projected = projected.saturating_sub(plan.desired_consume_input_samples);
+    } else if decision.hold_low_recover {
+        let muted_consume_input_samples =
+            if decision.mute_far_output && decision.consume_while_muted {
+                inputs.callback_input_domain_samples
+            } else {
+                0
+            };
+        projected = projected.saturating_sub(
+            decision
+                .low_recover_trim_input_samples
+                .saturating_add(muted_consume_input_samples),
+        );
+    }
+
+    // Fold in the pacer's fixed contribution so the displayed control/measured
+    // latency reflects the true end-to-end delay and stays comparable to the
+    // target. The servo keeps using the pacer-excluded figure for its own
+    // decisions.
+    store_latency_metrics_from_control_available(
+        projected.saturating_add(inputs.pacer_buffer_samples),
+        ctx.channel_count,
+        ctx.input_sample_rate,
+        inputs.graph_latency_ms,
+        LatencyMetricTargets {
+            measured_latency_ms_bits: ctx.latency.measured_latency_ms_bits,
+            control_latency_ms_bits: ctx.latency.control_latency_ms_bits,
+        },
+    );
+
+    decision
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,6 +971,115 @@ mod tests {
         s.controller_state.accumulated_drift = -7.0;
         reset_controller_integrator(&mut s);
         assert_eq!(s.controller_state.accumulated_drift, 0.0);
+    }
+
+    // ── far_mode_step: the step both output paths share ──────────────────
+
+    fn step_ctx<'a>(
+        cfg: &'a crate::AdaptiveResamplingConfig,
+        code: &'a std::sync::atomic::AtomicU8,
+        measured: &'a Arc<AtomicU32>,
+        control: &'a Arc<AtomicU32>,
+    ) -> FarModeStepCtx<'a> {
+        FarModeStepCtx {
+            adaptive_config: cfg,
+            channel_count: 8,
+            input_sample_rate: 48_000,
+            output_sample_rate: 48_000,
+            runtime_state_code: code,
+            latency: LatencyMetricTargets {
+                measured_latency_ms_bits: measured,
+                control_latency_ms_bits: control,
+            },
+        }
+    }
+
+    fn step_inputs(control_available: usize, ratio: f64) -> FarModeStepInputs {
+        FarModeStepInputs {
+            is_far_band: false,
+            control_available,
+            smoothed_control_available: control_available,
+            target_buffer_fill: 48_000,
+            callback_input_domain_samples: 1024,
+            resample_ratio: ratio,
+            pacer_buffer_samples: 0,
+            graph_latency_ms: 0.0,
+        }
+    }
+
+    /// The step publishes the runtime-state code the diag plot reads, which
+    /// both output paths used to store by hand.
+    #[test]
+    fn far_mode_step_publishes_the_runtime_state_code() {
+        let cfg = crate::AdaptiveResamplingConfig::default();
+        let code = std::sync::atomic::AtomicU8::new(u8::MAX);
+        let (m, c) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+        let mut state = AdaptiveRuntimeState::new(1.0);
+
+        far_mode_step(
+            &mut state,
+            &step_ctx(&cfg, &code, &m, &c),
+            step_inputs(48_000, 1.0),
+        );
+        assert_eq!(
+            code.load(Ordering::Relaxed),
+            crate::adaptive_runtime_state_code("stable")
+        );
+    }
+
+    /// The step stores a latency for the metrics to display, and folds the
+    /// pacer's fixed contribution into it.
+    #[test]
+    fn far_mode_step_stores_the_displayed_latency_including_the_pacer() {
+        let cfg = crate::AdaptiveResamplingConfig::default();
+        let code = std::sync::atomic::AtomicU8::new(0);
+        let (m, c) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+
+        let mut without = AdaptiveRuntimeState::new(1.0);
+        far_mode_step(
+            &mut without,
+            &step_ctx(&cfg, &code, &m, &c),
+            step_inputs(48_000, 1.0),
+        );
+        let latency_without = f32::from_bits(c.load(Ordering::Relaxed));
+
+        let mut with = AdaptiveRuntimeState::new(1.0);
+        let mut inputs = step_inputs(48_000, 1.0);
+        inputs.pacer_buffer_samples = 48_000;
+        far_mode_step(&mut with, &step_ctx(&cfg, &code, &m, &c), inputs);
+        let latency_with = f32::from_bits(c.load(Ordering::Relaxed));
+
+        assert!(
+            latency_with > latency_without,
+            "the pacer's contribution must show in the displayed latency \
+             ({latency_with} vs {latency_without})"
+        );
+    }
+
+    /// The low-recover trim is taken in the input domain the state machine
+    /// decided, not recovered by converting its output figure back.
+    ///
+    /// The resampler path used to do the round trip — `align(round(input ×
+    /// ratio))` out, `round(output / ratio)` back — which does not return the
+    /// input figure once the ratio is far enough from 1. It only skewed the
+    /// displayed latency, but the two paths disagreed about a number the state
+    /// machine had already decided.
+    #[test]
+    fn the_low_recover_trim_does_not_round_trip_through_the_output_domain() {
+        // A ratio far enough from 1 that the round trip loses samples, and an
+        // overshoot large enough for the trim to be non-zero.
+        let ratio = 1.05_f64;
+        let plan = compute_low_recover_settle_trim_plan(60_000, 48_000, 1024, ratio, 8);
+        assert!(
+            plan.desired_consume_input_samples > 0,
+            "the fixture must actually produce a trim"
+        );
+        let round_tripped =
+            output_to_input_domain_samples(plan.desired_consume_output_samples, ratio);
+        assert_ne!(
+            round_tripped, plan.desired_consume_input_samples,
+            "fixture is only meaningful if the round trip actually loses samples"
+        );
     }
 
     #[test]

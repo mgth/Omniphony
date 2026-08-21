@@ -1,7 +1,9 @@
 pub mod adaptive_runtime;
+pub mod callback_state;
 pub mod control;
 pub mod file_sink;
 pub mod iir;
+pub mod output_telemetry;
 pub mod pacer;
 pub mod resampler_fifo;
 pub mod ring_buffer_io;
