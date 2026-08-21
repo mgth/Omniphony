@@ -140,6 +140,17 @@ pub struct InputControl {
     /// arrival, smoothing the decoder's burst pattern out of the ring.
     /// Installed by the writer lifecycle once both sides exist.
     output_pacer: Mutex<Option<audio_output::PacerHandle>>,
+    /// Total latency of everything BEHIND the bridge sink's input, in
+    /// nanoseconds: render DSP latency (e.g. the linear-phase FIR crossover)
+    /// plus the measured output-chain latency (post-render ring + pacer FIFO
+    /// + graph delay to the DAC — the graph delay already folds in the
+    /// terminal sink's own declared latency, per PipeWire's latency
+    /// accounting). Written by the render/write path each rendered frame;
+    /// read by the client-node backend, which republishes the sink's
+    /// Latency/ProcessLatency params when it moves so upstream players
+    /// (pipewire-pulse → Firefox, …) delay video accordingly. 0 until the
+    /// first rendered frame.
+    downstream_latency_ns: AtomicU64,
 }
 
 impl Default for InputControl {
@@ -173,7 +184,20 @@ impl InputControl {
             },
             input_clock_us: Arc::new(AtomicU64::new(0)),
             output_pacer: Mutex::new(None),
+            downstream_latency_ns: AtomicU64::new(0),
         }
+    }
+
+    /// Publish the current downstream latency (see the field doc). Called by
+    /// the render/write path each rendered frame; a plain atomic store.
+    pub fn set_downstream_latency_ns(&self, ns: u64) {
+        self.downstream_latency_ns.store(ns, Ordering::Relaxed);
+    }
+
+    /// The last published downstream latency in nanoseconds (0 before the
+    /// first rendered frame).
+    pub fn downstream_latency_ns(&self) -> u64 {
+        self.downstream_latency_ns.load(Ordering::Relaxed)
     }
 
     pub fn diag_registry(&self) -> Arc<DiagRegistry> {

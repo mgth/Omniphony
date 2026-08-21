@@ -419,13 +419,17 @@ pub fn build_pipewire_bridge_meta_pod() -> Result<Vec<u8>> {
     Ok(values)
 }
 
-pub fn build_pipewire_bridge_process_latency_pod() -> Result<Vec<u8>> {
+/// Node-internal processing latency in nanoseconds. Zero at startup; the
+/// client-node backend republishes it with the real figure (render DSP +
+/// output chain) once the pipeline reports one — see
+/// `pipewire_client_node.rs`.
+pub fn build_pipewire_bridge_process_latency_pod(latency_ns: i64) -> Result<Vec<u8>> {
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamProcessLatency,
         spa::param::ParamType::ProcessLatency,
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_PROCESS_LATENCY_quantum), Float, 0.0f32),
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_PROCESS_LATENCY_rate), Int, 0i32),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_PROCESS_LATENCY_ns), Long, 0i64),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_PROCESS_LATENCY_ns), Long, latency_ns),
     };
     let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
@@ -456,7 +460,13 @@ pub fn build_pipewire_bridge_tag_pod(direction: spa::sys::spa_direction) -> Resu
     Ok(values)
 }
 
-pub fn build_pipewire_bridge_latency_pod() -> Result<Vec<u8>> {
+/// Input-port Latency param, direction INPUT — the convention a sink's input
+/// port uses to advertise "time from a sample delivered here until it is
+/// heard" (hardware ALSA sinks report their device buffering the same way,
+/// as quantum/rate fields; we use nanoseconds because our chain spans
+/// several sample rates). Zero at startup; republished with the real figure
+/// by the client-node backend.
+pub fn build_pipewire_bridge_latency_pod(latency_ns: i64) -> Result<Vec<u8>> {
     let obj = object! {
         spa::utils::SpaTypes::ObjectParamLatency,
         spa::param::ParamType::Latency,
@@ -468,8 +478,8 @@ pub fn build_pipewire_bridge_latency_pod() -> Result<Vec<u8>> {
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_LATENCY_maxQuantum), Float, 0.0f32),
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_LATENCY_minRate), Int, 0i32),
         property!(RawSpaPodKey(spa::sys::SPA_PARAM_LATENCY_maxRate), Int, 0i32),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_LATENCY_minNs), Long, 0i64),
-        property!(RawSpaPodKey(spa::sys::SPA_PARAM_LATENCY_maxNs), Long, 0i64),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_LATENCY_minNs), Long, latency_ns),
+        property!(RawSpaPodKey(spa::sys::SPA_PARAM_LATENCY_maxNs), Long, latency_ns),
     };
     let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
