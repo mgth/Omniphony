@@ -555,6 +555,19 @@ pub struct AppState {
     /// full layout on apply and again post-recompute).
     #[serde(skip)]
     pub last_layout_state_hash: Option<u64>,
+    /// Hash of the last `state:snapshot_ready` payload actually emitted to the
+    /// webview. The domain appliers merge partial payloads and cannot cheaply
+    /// tell "already at these values" from "changed" (the renderer even
+    /// alternates two `/state/input` documents in one bundle), so the dedup
+    /// happens here, on the one thing that matters: the bytes the webview
+    /// would receive. An identical snapshot is not re-emitted — each emit
+    /// triggers a full `applyInitState` UI rebuild on the other side.
+    #[serde(skip)]
+    pub last_snapshot_emit_hash: Option<u64>,
+    /// Same guard for `overlay:state`: the payload is small but each emit makes
+    /// the frontend re-adopt the display prefs and re-render the switches.
+    #[serde(skip)]
+    pub last_overlay_emit_hash: Option<u64>,
 }
 
 impl AppState {
@@ -806,6 +819,8 @@ impl Default for AppState {
             selected_layout_key: None,
             osc_snapshot_ready: false,
             last_layout_state_hash: None,
+            last_snapshot_emit_hash: None,
+            last_overlay_emit_hash: None,
         }
     }
 }

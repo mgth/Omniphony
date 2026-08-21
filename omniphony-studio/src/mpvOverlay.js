@@ -40,28 +40,50 @@ export function onOverlayState(fn) {
  * This is the authoritative direction: whatever flipped the value — a Studio
  * switch, an mpv keybind, or the prefs restored at orender startup — Studio
  * ends up showing what is actually drawn.
+ *
+ * The listeners only fan out when a field actually moved: they re-render the
+ * switches and reset the energy-volume rebuild throttle, so replaying them on
+ * an unchanged rebroadcast turns broadcast rate into texture-rebuild rate.
  */
 export function applyOverlayState(payload) {
   if (!payload || typeof payload !== 'object') return;
-  if (typeof payload.enabled === 'boolean') overlay.enabled = payload.enabled;
-  if (typeof payload.objectsVisible === 'boolean') app.objectsVisible = payload.objectsVisible;
-  if (typeof payload.labelsEnabled === 'boolean') app.objectLabelsEnabled = payload.labelsEnabled;
+  // Adopt `value` into `obj[key]`, reporting whether it moved.
+  const adopt = (obj, key, value) => {
+    if (obj[key] === value) return false;
+    obj[key] = value;
+    return true;
+  };
+  let changed = false;
+  if (typeof payload.enabled === 'boolean') {
+    changed = adopt(overlay, 'enabled', payload.enabled) || changed;
+  }
+  if (typeof payload.objectsVisible === 'boolean') {
+    changed = adopt(app, 'objectsVisible', payload.objectsVisible) || changed;
+  }
+  if (typeof payload.labelsEnabled === 'boolean') {
+    changed = adopt(app, 'objectLabelsEnabled', payload.labelsEnabled) || changed;
+  }
   if (typeof payload.heatmapEnabled === 'boolean') {
-    app.objectEnergyHeatmapEnabled = payload.heatmapEnabled;
+    changed = adopt(app, 'objectEnergyHeatmapEnabled', payload.heatmapEnabled) || changed;
   }
   if (Number.isFinite(Number(payload.heatmapBands))) {
-    app.objectEnergyHeatmapBandCount = Math.max(1, Math.min(12, Math.round(Number(payload.heatmapBands))));
+    const bands = Math.max(1, Math.min(12, Math.round(Number(payload.heatmapBands))));
+    changed = adopt(app, 'objectEnergyHeatmapBandCount', bands) || changed;
   }
-  if (typeof payload.trailsEnabled === 'boolean') app.trailsEnabled = payload.trailsEnabled;
+  if (typeof payload.trailsEnabled === 'boolean') {
+    changed = adopt(app, 'trailsEnabled', payload.trailsEnabled) || changed;
+  }
   if (Number.isFinite(Number(payload.trailTtlMs))) {
-    app.trailPointTtlMs = Math.max(500, Math.round(Number(payload.trailTtlMs)));
+    const ttl = Math.max(500, Math.round(Number(payload.trailTtlMs)));
+    changed = adopt(app, 'trailPointTtlMs', ttl) || changed;
   }
   if (payload.trailMode === 'diffuse' || payload.trailMode === 'line') {
-    app.trailRenderMode = payload.trailMode;
+    changed = adopt(app, 'trailRenderMode', payload.trailMode) || changed;
   }
   if (Number.isFinite(Number(payload.trailTeleportThreshold))) {
-    app.trailTeleportThreshold = Number(payload.trailTeleportThreshold);
+    changed = adopt(app, 'trailTeleportThreshold', Number(payload.trailTeleportThreshold)) || changed;
   }
+  if (!changed) return;
   for (const fn of stateListeners) {
     try {
       fn(payload);

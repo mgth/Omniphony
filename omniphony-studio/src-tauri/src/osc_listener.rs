@@ -1816,6 +1816,34 @@ fn flush_emit_batch(app: &AppHandle) {
     let _ = app.emit("state:batch", serde_json::json!({ "events": events }));
 }
 
+/// Hash a JSON payload for emit-level dedup. `serde_json` serializes both
+/// struct fields (declaration order) and `Value` maps (sorted keys)
+/// deterministically, so byte-equality of the string is content equality.
+fn emit_payload_hash(payload: &serde_json::Value) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    payload.to_string().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Skip an emit whose payload is byte-identical to the previous one on the
+/// same channel. The domain appliers merge partial `/state/*` payloads and
+/// cannot cheaply tell "already at these values" from "changed" (the renderer
+/// even alternates two `/state/input` documents in one bundle), so the dedup
+/// happens on the one thing that matters: the bytes the webview would
+/// receive. A `state:snapshot_ready` triggers a full `applyInitState` UI
+/// rebuild over there; `overlay:state` re-renders the display switches — both
+/// are worth a hash compare.
+fn already_emitted(last: &mut Option<u64>, payload: &serde_json::Value) -> bool {
+    let hash = emit_payload_hash(payload);
+    if *last == Some(hash) {
+        return true;
+    }
+    *last = Some(hash);
+    false
+}
+
 fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
     // Per-object mutes preserved across a seek/reset so they can be re-emitted to
     // the frontend after the `source:remove` wipe (see the SpatialFrame arm).
@@ -3123,7 +3151,20 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
         if is_batched_event(event) {
             queue_batched_emit(event, payload);
         } else {
-            let _ = app.emit(event, payload);
+            let duplicate = match event {
+                "state:snapshot_ready" => already_emitted(
+                    &mut state.lock().unwrap().last_snapshot_emit_hash,
+                    &payload,
+                ),
+                "overlay:state" => already_emitted(
+                    &mut state.lock().unwrap().last_overlay_emit_hash,
+                    &payload,
+                ),
+                _ => false,
+            };
+            if !duplicate {
+                let _ = app.emit(event, payload);
+            }
         }
     }
 }
