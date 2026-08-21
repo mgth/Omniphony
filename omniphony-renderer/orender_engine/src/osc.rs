@@ -941,20 +941,22 @@ fn apply_head_tracking_packet(packet: &OscPacket, ctrl: &RendererControl) -> boo
                     let current = live.binaural.head_pose;
                     live.binaural.head_pose = live.binaural.tracking.ingest(raw, current);
                 }
-                // Re-broadcast the live state so connected clients (Studio) see the
-                // moving pose. Throttled to ~10 Hz so a 60–100 Hz sensor stream
-                // doesn't resend the full state bundle on every packet. (The 3D
-                // head view rides the lighter 30 Hz `/state/head_pose` channel —
-                // see `maybe_broadcast_head_pose`.)
-                static LAST_BUMP_MS: std::sync::atomic::AtomicU64 =
+                // The moving pose rides the dedicated ~30 Hz `/state/head_pose`
+                // channel (see `maybe_broadcast_head_pose`); the full live-state
+                // bundle only needs to go out when the *stream* (re)starts, so
+                // Studio's tracking gate arms from a snapshot that carries a
+                // valid pose. Bumping it per packet — even throttled — kept the
+                // entire state bundle rebroadcasting for as long as the tracker
+                // ran, and every idle client re-applied an unchanged snapshot.
+                static LAST_PACKET_MS: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
+                const STREAM_RESUME_GAP_MS: u64 = 2_000;
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                let last = LAST_BUMP_MS.load(std::sync::atomic::Ordering::Relaxed);
-                if now_ms.saturating_sub(last) >= 100 {
-                    LAST_BUMP_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                let last = LAST_PACKET_MS.swap(now_ms, std::sync::atomic::Ordering::Relaxed);
+                if last == 0 || now_ms.saturating_sub(last) >= STREAM_RESUME_GAP_MS {
                     ctrl.bump_live_state();
                 }
                 return true;
