@@ -21,6 +21,10 @@ their component actually changed.
 
 - The integration tree (`workflows/integration/omniphony`) is clean and on
   `main`; no completed work is sitting uncommitted.
+- `git fetch origin --tags` exits non-zero because the rolling `integration`
+  and `mpv-integration` tags move on every integration build ("would clobber
+  existing tag"). That rejection is harmless — the branches and release tags
+  still fetch; don't `--force` tags just to silence it.
 - CI is green on `main` (`ci.yml`: fmt, build, full test suite incl. doctests).
 - The changes shipping in this release have been validated (the user listens
   live; audio-path changes need that sign-off).
@@ -53,6 +57,10 @@ commit — not squash**. `release.yml`'s guard job checks
 `git merge-base --is-ancestor <tag SHA> origin/release`; a squash rewrites the
 SHAs and the guard rejects the tag.
 
+`ci.yml` gates PRs to `release` too, so the promotion PR re-runs the full
+suite it just ran on `main` — budget for two CI passes (~6 min each at 0.5.1)
+between the bump merge and the tag.
+
 Back-merge discipline: any hotfix committed directly on `release` must be
 merged back into `main`, or `main` regresses at the next promotion.
 
@@ -70,7 +78,12 @@ The tag push triggers `release.yml`:
 - **build-studio** — Linux (`.deb`/`.rpm`/`.AppImage`), Windows
   (`.msi`/`.exe`), macOS arm64 (`.dmg`/`.app.tar.gz`, ad-hoc signed, not
   notarized). tauri-action creates a **draft** release named
-  "Omniphony vX.Y.Z".
+  "Omniphony vX.Y.Z". Seven assets expected; whole run took ~17 min at 0.5.1
+  (Linux is the slowest job at ~11 min).
+
+The draft's URL is `releases/tag/untagged-<hash>` until it is published —
+that is normal, not a broken tag association; it becomes `releases/tag/vX.Y.Z`
+at publish.
 
 Expect a first-of-its-kind release build to expose latent build breakage that
 PR CI never exercises: `--enable`-forced features that only auto-detect on the
@@ -92,6 +105,9 @@ gh release edit vX.Y.Z --repo mgth/Omniphony --draft=false --latest
 
 Only the Studio bundle `v*` release is marked `--latest`; `liborender-v*` and
 `mpv-v*` are published not-latest.
+
+To verify the latest marker, use `gh api repos/mgth/Omniphony/releases/latest`
+— `gh release view --json` has no `isLatest` field.
 
 ## 6. Optional: standalone liborender release
 
