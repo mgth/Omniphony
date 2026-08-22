@@ -171,11 +171,35 @@ publishes the bundles as a **draft on `mgth/Omniphony` under `mpv-vX.Y.Z`**
    (`FEL_RENDERER_DIR` selects which renderer checkout provides the
    link-time liborender).
 
-## 8. Post-release checks
+## 8. AUR packages — systematic, part of the release
+
+Every release bumps the AUR packages before the release is considered done.
+Local clones live in `aur/<pkg>/` at the workspace root (PKGBUILD sources of
+truth: `packaging/arch/` in this repo, `packaging/` in mpv-omniphony).
+
+| Package | Bump when |
+|---|---|
+| `orender` | every `v*` release |
+| `omniphony-studio` | every `v*` release |
+| `mpv-omniphony` | when an `mpv-v*` bundle was cut: `_tag`, `depends=('orender>=X.Y.Z')` (the release-train couple) |
+| `mpv-omniphony-fel` | with mpv-omniphony; also refresh `_mpvcommit` to the mpv master SHA the local FEL build verified (`scripts/build-fel-local.sh`) |
+| `harletty-bridge` | on its own 0.7.x line only — never the stack number |
+
+Per package: bump `pkgver` (+ `_tag`/pins), reset `pkgrel=1`, `updpkgsums`,
+build-test with `makepkg -fCd` (`-d` because the runtime `orender` dep need
+not be installed locally), `makepkg --printsrcinfo > .SRCINFO`, commit
+`upgpkg: <pkg> X.Y.Z-1`, push `master`.
+
+Check the ssh agent holds the AUR key first
+(`SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket ssh-add -l`) and only ask for
+an `ssh-add` when it is empty. The AUR web site blocks robots (Anubis):
+verify with `ssh aur@aur.archlinux.org list-repos` or the RPC API
+(`aur.archlinux.org/rpc/v5/…`), never by scraping the site.
+
+## 9. Post-release checks
 
 - macOS: verify the signed bundle still decodes (the 0.5.0 hardened-runtime
   regression, #260/#261) — check `codesign -d --entitlements` on the shipped
   app and confirm the bridge `dlopen` works on a real machine.
 - First download on macOS: Gatekeeper behaviour (#201).
-- Update the AUR packages if they track the release.
 - Amend **this document** with anything the release taught.
