@@ -320,6 +320,10 @@ pub struct LiveInputState {
 pub struct LiveOptionsState {
     pub object_generator_params: Option<serde_json::Value>,
     pub object_generator_layout_has_height: Option<bool>,
+    /// Facts about the crossover bank the renderer actually built (engine,
+    /// bands, cutoffs, FIR taps, latency). Passthrough JSON; annotates the
+    /// crossover control.
+    pub crossover: Option<serde_json::Value>,
     pub phantom_params: Option<serde_json::Value>,
     pub fixed_channel_catalog: Option<serde_json::Value>,
     pub fixed_channel_processing: Option<serde_json::Value>,

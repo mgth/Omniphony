@@ -187,6 +187,35 @@ export function renderAudioFormatDisplay() {
     }
   }
   updateOutputChannelMappingUI();
+  renderCrossoverInfoDisplay();
+}
+
+function getCrossoverInfoEl() { return inRendererPanel('crossoverInfo'); }
+
+// Annotate the crossover control with the bank the renderer actually built
+// ({engine, bands, cutoffsHz, taps, latencyMs} from the snapshot; null until
+// the first render). Piggybacks on the audio-format flush so it re-renders on
+// every state push and language re-render without its own dirty flag.
+function renderCrossoverInfoDisplay() {
+  const el = getCrossoverInfoEl();
+  if (!el) return;
+  const info = app.crossover;
+  if (!info || !(info.bands > 1)) {
+    el.textContent = t('renderer.crossoverInfoNone');
+    return;
+  }
+  const low = Array.isArray(info.cutoffsHz) && info.cutoffsHz.length
+    ? Math.round(info.cutoffsHz[0])
+    : '—';
+  const values = {
+    bands: info.bands,
+    low,
+    taps: Number.isFinite(info.taps) ? info.taps.toLocaleString() : '—',
+    latency: Number.isFinite(info.latencyMs) ? info.latencyMs.toFixed(1) : '0.0'
+  };
+  el.textContent = info.engine === 'fir'
+    ? tf('renderer.crossoverInfoFir', values)
+    : tf('renderer.crossoverInfoIir', values);
 }
 
 export function closeAudioSampleRateMenu() {

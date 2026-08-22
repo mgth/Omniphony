@@ -341,6 +341,7 @@ export function rendererPanelMarkup() {
                   <option value="fir" data-i18n="renderer.crossoverType.fir">Linear-phase FIR</option>
                 </select>
               </div>
+              <div id="crossoverInfo" style="font-size:0.65rem;color:#888;">—</div>
             </div>
           </div>
           <div class="info-section renderer-subpanel" id="backendParametersSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">

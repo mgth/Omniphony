@@ -1241,6 +1241,14 @@ impl SpeakerRenderStage {
                 .iter()
                 .map(make_renderer)
                 .collect::<Result<Vec<_>>>()?;
+            control.set_crossover_info(crate::live_params::CrossoverInfo {
+                engine: crossover_type,
+                bands: 1,
+                cutoffs_hz: Vec::new(),
+                taps: None,
+                latency_samples: 0,
+                sample_rate,
+            });
             return Ok((render_bands, None, crossover_type));
         }
 
@@ -1266,6 +1274,18 @@ impl SpeakerRenderStage {
             cutoffs,
             filter_bank.latency_samples(),
         );
+
+        control.set_crossover_info(crate::live_params::CrossoverInfo {
+            engine: crossover_type,
+            bands: bands.len(),
+            cutoffs_hz: cutoffs,
+            taps: match &filter_bank {
+                CrossoverBank::Fir(bank) => Some(bank.taps()),
+                CrossoverBank::Lr4(_) => None,
+            },
+            latency_samples: filter_bank.latency_samples(),
+            sample_rate,
+        });
 
         Ok((render_bands, Some(filter_bank), crossover_type))
     }
