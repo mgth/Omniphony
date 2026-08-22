@@ -340,6 +340,23 @@ render_field! {
     eq = crate::live_params::OutputChannelMapping::eq
 }
 
+render_field! {
+    /// Crossover filter implementation: lr4 (IIR, zero latency) vs fir
+    /// (linear-phase, constant latency) (`render.crossover_type`). Default `Lr4`.
+    pub crossover_type: crate::live_params::CrossoverType =
+        crate::live_params::CrossoverType::Lr4,
+    field = crossover_type,
+    eq = crate::live_params::CrossoverType::eq
+}
+
+render_field! {
+    /// FIR crossover transition width as a fraction of the lowest cutoff
+    /// (`render.crossover_fir_transition_ratio`). Default 0.5.
+    pub crossover_fir_transition_ratio: f32 = 0.5,
+    field = crossover_fir_transition_ratio,
+    eq = |a: &f32, b: &f32| a == b
+}
+
 render_field_str! {
     /// Bed→height object generator id for channel content
     /// (`render.object_generator_id`). Empty / absent = off.

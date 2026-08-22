@@ -186,6 +186,65 @@ impl PhantomExtractMode {
     }
 }
 
+/// Which filter implementation splits band-limited layouts into crossover
+/// bands.
+///
+/// * `lr4` (default) — IIR Linkwitz-Riley: zero latency; the recombined bands
+///   are magnitude-flat but the phase rotates around every cutoff.
+/// * `fir` — linear-phase FIR: the band sum is a pure delay of the input
+///   (flat in magnitude AND phase), at the price of a constant latency of
+///   roughly 0.1 s at the default design. Intended for film playback, where
+///   quality outranks latency. Directly-routed (bed) channels are delayed by
+///   the same amount inside the speaker stage so the mix stays time-aligned.
+///
+/// Live-tunable via `/omniphony/control/crossover_type`, persisted to config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CrossoverType {
+    #[default]
+    Lr4,
+    Fir,
+}
+
+impl CrossoverType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lr4 => "lr4",
+            Self::Fir => "fir",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "lr4" | "iir" => Some(Self::Lr4),
+            "fir" | "linear_phase" => Some(Self::Fir),
+            _ => None,
+        }
+    }
+}
+
+/// Facts about the crossover bank the speaker stage actually built, for the
+/// `/state/renderer` snapshot (Studio annotates the crossover control with
+/// them). Reported rather than derived client-side because only the render
+/// thread knows what was really constructed — the FIR tap count comes out of
+/// the Kaiser design, and the engine can differ from the live option for a
+/// frame around a flip.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrossoverInfo {
+    /// Engine actually built (may lag the live option by one frame).
+    pub engine: CrossoverType,
+    /// Number of bands (1 = layout defines no band edges, no filtering).
+    pub bands: usize,
+    /// Band edges in Hz, ascending. Empty when `bands == 1`.
+    pub cutoffs_hz: Vec<f32>,
+    /// FIR kernel length; `None` for the IIR engine.
+    pub taps: Option<usize>,
+    /// Constant DSP latency of the bank in samples (0 for the IIR engine).
+    pub latency_samples: usize,
+    /// Sample rate the bank was built for (converts latency to time).
+    pub sample_rate: u32,
+}
+
 /// Where the surround pair (`Ls`/`Rs`) of a channel-based source WITHOUT
 /// dedicated back channels (4.x / 5.x) is placed when rendered through the
 /// virtual bed. Sources that already carry back channels (7.x: `Lb`/`Rb`/`Cb`)
@@ -1191,6 +1250,20 @@ pub struct LiveParams {
     /// `/omniphony/control/output_channel_mapping`.
     pub output_channel_mapping: OutputChannelMapping,
 
+    /// Crossover filter implementation: minimum-latency IIR (`lr4`) or
+    /// linear-phase FIR (`fir`). The speaker stage compares this against the
+    /// bank it built every frame, so a flip takes effect without a topology
+    /// change. Live-tunable via `/omniphony/control/crossover_type`.
+    pub crossover_type: CrossoverType,
+
+    /// FIR crossover transition width as a fraction of the lowest cutoff
+    /// (the Kaiser design's `transition_ratio`): smaller = steeper bands but
+    /// more taps, latency and ringing; larger = the opposite. Only consulted
+    /// by the `fir` engine; the speaker stage rebuilds the bank live when it
+    /// moves. Clamped to [0.05, 2.0]. Live-tunable via
+    /// `/omniphony/control/crossover_fir_transition_ratio`.
+    pub crossover_fir_transition_ratio: f32,
+
     /// Parametrable virtual bed for channel-based content (consulted only when
     /// `channel_render_mode == Spatial`). One entry per input-channel label
     /// (`L`, `R`, `C`, `LFE`, `Ls`, `Rs`, `Lb`, `Rb`, …): `spatialize:true`
@@ -1499,6 +1572,13 @@ pub struct RendererControl {
     /// next to the build fingerprint.
     pub host_abi: Mutex<Option<(u32, u32)>>,
 
+    /// Facts about the crossover bank the speaker stage actually built
+    /// (engine, bands, cutoffs, taps, latency). Written by the render thread
+    /// on every bank (re)build, broadcast in the `/state/renderer` snapshot so
+    /// Studio can annotate the crossover control. `None` until the first
+    /// build.
+    crossover_info: Mutex<Option<CrossoverInfo>>,
+
     /// Actual renderer input path used for this process.
     pub input_path: Mutex<Option<String>>,
     /// Requested format bridge path to be persisted into render.bridge_path.
@@ -1613,6 +1693,7 @@ impl RendererControl {
             config_status: Mutex::new(None),
             bridge_error: Mutex::new(None),
             host_abi: Mutex::new(None),
+            crossover_info: Mutex::new(None),
             input_path: Mutex::new(None),
             bridge_path: Mutex::new(None),
             bridge_supported_drc_modes: Mutex::new(Vec::new()),
@@ -1882,6 +1963,24 @@ impl RendererControl {
     /// hosts never call this).
     pub fn set_host_abi(&self, major: u32, minor: u32) {
         *self.host_abi.lock() = Some((major, minor));
+    }
+
+    /// Publish the crossover bank the speaker stage just built. Bumps the
+    /// live-state generation only when the facts actually changed, so the
+    /// per-frame refresh path can call this unconditionally without
+    /// re-broadcast churn (a bank rebuild is rare: topology or engine flip).
+    pub fn set_crossover_info(&self, info: CrossoverInfo) {
+        let mut guard = self.crossover_info.lock();
+        if guard.as_ref() != Some(&info) {
+            *guard = Some(info);
+            drop(guard);
+            self.bump_live_state();
+        }
+    }
+
+    /// Facts about the last crossover bank built (see [`CrossoverInfo`]).
+    pub fn crossover_info(&self) -> Option<CrossoverInfo> {
+        self.crossover_info.lock().clone()
     }
 
     pub fn host_abi(&self) -> Option<(u32, u32)> {

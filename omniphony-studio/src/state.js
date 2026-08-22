@@ -256,6 +256,10 @@ export const app = {
   // by the renderer. They keep the editor useful without a compatible stream.
   fixedChannelCatalog: [],
   fixedChannelProcessing: { stream: 'idle', labels: [], phantom: 'no_stream', height: 'no_stream' },
+  // Facts about the crossover bank the renderer actually built ({engine,
+  // bands, cutoffsHz, taps, latencyMs}), annotating the crossover control.
+  // Null until the renderer reports one.
+  crossover: null,
   // Speaker names that can't be routed by position in by_name mode (reported by
   // the renderer for the active backend); shown as a warning. Empty when none.
   outputChannelMappingUnroutable: [],

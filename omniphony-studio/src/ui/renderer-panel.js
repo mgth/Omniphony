@@ -329,6 +329,25 @@ export function rendererPanelMarkup() {
               </div>
             </div>
           </div>
+          <div class="info-section renderer-subpanel" id="crossoverSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
+            <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
+              <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-i18n="renderer.crossoverTitle">Crossover</div>
+            </div>
+            <div class="renderer-subpanel-body" style="margin-top:0.25rem;margin-left:1rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.18rem">
+              <div class="control-row" id="crossoverTypeRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                <label for="crossoverTypeSelect" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="renderer.crossoverTypeLabel">Filter</label>
+                <select id="crossoverTypeSelect" class="delay-input" data-option="crossover_type" style="min-width:9rem">
+                  <option value="lr4" data-i18n="renderer.crossoverType.lr4">LR4 (low latency)</option>
+                  <option value="fir" data-i18n="renderer.crossoverType.fir">Linear-phase FIR</option>
+                </select>
+              </div>
+              <div class="control-row" id="crossoverTransitionRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                <label for="crossoverTransitionInput" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="renderer.crossoverTransitionLabel">FIR transition</label>
+                <input id="crossoverTransitionInput" class="delay-input" data-option="crossover_fir_transition_ratio" type="number" min="0.05" max="2" step="0.05" value="0.5" style="width:5rem" />
+              </div>
+              <div id="crossoverInfo" style="font-size:0.65rem;color:#888;">—</div>
+            </div>
+          </div>
           <div class="info-section renderer-subpanel" id="backendParametersSection" style="margin:0;padding:0.4rem 0.5rem;border:1px solid rgba(255,255,255,0.08);border-radius:8px;background:rgba(255,255,255,0.03)">
             <div class="renderer-subpanel-bar" style="display:flex;align-items:center;justify-content:space-between;gap:0.4rem">
               <div class="renderer-subpanel-titlebar" style="display:flex;align-items:center;gap:0.45rem;min-width:0">

@@ -38,7 +38,7 @@ function resolvesInEn(key) {
   return typeof node === 'string';
 }
 
-const KINDS = new Set(['bool', 'enum', 'string']);
+const KINDS = new Set(['bool', 'enum', 'string', 'float']);
 const failures = [];
 const fail = (msg) => {
   failures.push(msg);

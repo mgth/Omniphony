@@ -302,6 +302,22 @@ impl<'a> SampleWriteCoordinator<'a> {
 
                     let num_speakers = renderer.num_speakers();
 
+                    // Feed the PipeWire bridge sink's advertised latency:
+                    // render DSP latency (constant, e.g. the linear-phase FIR
+                    // crossover) plus the measured output-chain latency (ring
+                    // + pacer FIFO + graph delay to the DAC). The client-node
+                    // backend republishes the sink's Latency/ProcessLatency
+                    // params when this moves, so upstream players stay in
+                    // A/V sync.
+                    if let Some(ic) = self.input_control {
+                        let rate = frame.sampling_frequency.max(1) as u64;
+                        let dsp_ns =
+                            renderer.output_latency_samples() as u64 * 1_000_000_000 / rate;
+                        let out_ns = current_latency_instant_ms
+                            .map_or(0, |ms| (ms.max(0.0) as f64 * 1e6) as u64);
+                        ic.set_downstream_latency_ns(dsp_ns + out_ns);
+                    }
+
                     let meter_snapshot = if has_metering_clients {
                         // Which accumulators the frame belongs in depends on what
                         // was rendered, not on the layout: a binaural frame is a
@@ -538,6 +554,16 @@ impl<'a> SampleWriteCoordinator<'a> {
                         has_metering_clients,
                     )?;
                     let num_speakers = renderer.num_speakers();
+
+                    // Same sink-latency feed as the object path above.
+                    if let Some(ic) = self.input_control {
+                        let rate = frame.sampling_frequency.max(1) as u64;
+                        let dsp_ns =
+                            renderer.output_latency_samples() as u64 * 1_000_000_000 / rate;
+                        let out_ns = current_latency_instant_ms
+                            .map_or(0, |ms| (ms.max(0.0) as f64 * 1e6) as u64);
+                        ic.set_downstream_latency_ns(dsp_ns + out_ns);
+                    }
 
                     let meter_snapshot = if has_metering_clients {
                         // Which accumulators the frame belongs in depends on what

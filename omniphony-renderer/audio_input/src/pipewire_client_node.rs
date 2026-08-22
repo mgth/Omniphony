@@ -316,8 +316,8 @@ pub fn run_pipewire_bridge_client_node_backend(
         )?,
         props_param_bytes: build_pipewire_bridge_props_pod()?,
         meta_param_bytes: build_pipewire_bridge_meta_pod()?,
-        latency_param_bytes: build_pipewire_bridge_latency_pod()?,
-        process_latency_param_bytes: build_pipewire_bridge_process_latency_pod()?,
+        latency_param_bytes: build_pipewire_bridge_latency_pod(0)?,
+        process_latency_param_bytes: build_pipewire_bridge_process_latency_pod(0)?,
         tag_param_bytes: build_pipewire_bridge_tag_pod(spa::sys::SPA_DIRECTION_INPUT)?,
         buffers_param_bytes: build_pipewire_bridge_buffers_pod(
             config.channels,
@@ -551,11 +551,31 @@ pub fn run_pipewire_bridge_client_node_backend(
         active_res
     );
 
+    // Advertised sink latency: the render/write path publishes the pipeline's
+    // total downstream latency (render DSP + measured output chain up to and
+    // including the DAC's own declared latency) into InputControl; when it
+    // moves past the hysteresis, republish the node's Latency/ProcessLatency
+    // params so upstream players (pipewire-pulse → browsers, …) re-time their
+    // A/V sync. Checked once a second: the figure only steps on a crossover
+    // engine flip and creeps with the drift servo, and each republish fans a
+    // param-changed out to every subscriber.
+    let mut advertised_latency_ns: u64 = 0;
+    let mut latency_check_countdown = 0u32;
     while !state.stop.load(Ordering::Relaxed)
         && !sys::ShutdownHandle::is_requested()
         && !sys::ShutdownHandle::is_restart_from_config_requested()
     {
         let _ = mainloop.loop_().iterate(Duration::from_millis(100));
+        if latency_check_countdown > 0 {
+            latency_check_countdown -= 1;
+            continue;
+        }
+        latency_check_countdown = 10;
+        let target_ns = state.input_control.downstream_latency_ns();
+        if target_ns.abs_diff(advertised_latency_ns) >= 2_000_000 {
+            pipewire_bridge_client_node_publish_latency(&mut state, target_ns);
+            advertised_latency_ns = target_ns;
+        }
     }
 
     unsafe {
@@ -812,6 +832,51 @@ fn pipewire_bridge_client_node_refresh_configured_state(
         port_res
     );
     if node_res < 0 { node_res } else { port_res }
+}
+
+/// Rebuild the Latency/ProcessLatency pods with `latency_ns` and re-emit the
+/// node + port params, bumping the params' serial so subscribers re-read them.
+/// Runs on the main-loop thread (called between loop iterations).
+fn pipewire_bridge_client_node_publish_latency(
+    state: &mut PipewireBridgeClientNodeState,
+    latency_ns: u64,
+) {
+    let ns = latency_ns.min(i64::MAX as u64) as i64;
+    let (latency_pod, process_pod) = match (
+        build_pipewire_bridge_latency_pod(ns),
+        build_pipewire_bridge_process_latency_pod(ns),
+    ) {
+        (Ok(l), Ok(p)) => (l, p),
+        (l, p) => {
+            log::warn!(
+                "PipeWire bridge client-node: failed to build latency pods ({:?} / {:?})",
+                l.err(),
+                p.err()
+            );
+            return;
+        }
+    };
+    state.latency_param_bytes = latency_pod;
+    state.process_latency_param_bytes = process_pod;
+    // Serial bump: same flags, new content — without it subscribers that
+    // already cached the (zero) params would not re-enumerate them.
+    for info in state
+        .node_params
+        .iter_mut()
+        .chain(state.port_params.iter_mut())
+    {
+        if info.id == spa::sys::SPA_PARAM_Latency || info.id == spa::sys::SPA_PARAM_ProcessLatency {
+            info.flags |= spa::sys::SPA_PARAM_INFO_SERIAL;
+            info.user = info.user.wrapping_add(1);
+        }
+    }
+    let res = pipewire_bridge_client_node_refresh_configured_state(state);
+    log::info!(
+        "PipeWire bridge sink now advertises {:.1} ms latency (node={}, update result={})",
+        latency_ns as f64 / 1e6,
+        state.config.node_name,
+        res
+    );
 }
 
 fn pipewire_bridge_client_node_find_mem(

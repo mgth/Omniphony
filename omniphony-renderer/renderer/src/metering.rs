@@ -4,6 +4,48 @@ use std::time::{Duration, Instant};
 
 const DBFS_FLOOR: f32 = -100.0;
 
+/// Exponential average of a per-frame cost's duty cycle (time spent / audio
+/// time), reported as a per-frame-equivalent duration in milliseconds.
+///
+/// Bursty stages alias badly when timed over small host frames: the FIR
+/// crossover does its FFT work once per 1024-sample hop, so a 40-sample
+/// TrueHD access unit pays the burst on one frame in ~26 and a sampled
+/// display reads the cheap ones. Folding the duty cycle through an EMA over
+/// ~1 s of audio makes the reported figure mean the same thing at every
+/// frame size, and keeps it directly comparable to the frame budget.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DutyEma(f32);
+
+impl DutyEma {
+    /// Time constant in milliseconds of audio: long enough to integrate any
+    /// realistic burst cadence, short enough to follow a live tuning change
+    /// within a second.
+    const TAU_MS: f32 = 1_000.0;
+
+    /// Fold one frame's measured cost in and return the smoothed
+    /// per-frame-equivalent milliseconds (duty × this frame's duration).
+    pub fn update(&mut self, elapsed_ms: f32, frame_ms: f32) -> f32 {
+        if frame_ms <= 0.0 {
+            return 0.0;
+        }
+        let duty = elapsed_ms / frame_ms;
+        let alpha = (frame_ms / Self::TAU_MS).min(1.0);
+        self.0 += alpha * (duty - self.0);
+        self.0 * frame_ms
+    }
+
+    /// The smoothed per-frame-equivalent for a frame of `frame_ms` WITHOUT
+    /// folding new data in — for frames where the cost was paid but not
+    /// measured (e.g. metering off), so the EMA holds instead of decaying.
+    pub fn value_for(&self, frame_ms: f32) -> f32 {
+        if frame_ms <= 0.0 {
+            0.0
+        } else {
+            self.0 * frame_ms
+        }
+    }
+}
+
 fn linear_to_dbfs(v: f32) -> f32 {
     if v <= 0.0 {
         DBFS_FLOOR
@@ -390,5 +432,26 @@ mod tests {
         assert_eq!(bands[0], DBFS_FLOOR);
         assert_eq!(bands[1], DBFS_FLOOR);
         assert!(bands[2] > DBFS_FLOOR);
+    }
+
+    /// The duty EMA must converge to the true average of a bursty cost
+    /// pattern — the exact shape that defeats raw per-frame sampling: a
+    /// 40-sample host frame paying the FIR block burst once every 26 frames.
+    #[test]
+    fn duty_ema_integrates_bursty_frames() {
+        let mut ema = DutyEma::default();
+        let frame_ms = 0.833f32;
+        let mut shown = 0.0f32;
+        for i in 0..20_000 {
+            let cost_ms = if i % 26 == 0 { 2.6 } else { 0.007 };
+            shown = ema.update(cost_ms, frame_ms);
+        }
+        // True average per frame ≈ (25 × 0.007 + 2.6) / 26 ≈ 0.107 ms.
+        assert!(
+            (0.09..=0.13).contains(&shown),
+            "EMA must read the burst-cycle average, got {shown}"
+        );
+        // Without new data the estimate holds (metering off ≠ cost gone).
+        assert_eq!(ema.value_for(frame_ms), shown);
     }
 }

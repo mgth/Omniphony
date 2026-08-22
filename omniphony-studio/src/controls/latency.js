@@ -523,6 +523,19 @@ export function renderRenderTimeUI() {
   const rndShown = getStableRenderPerfValue('render', rndAvg, now);
   const croShown = getStableRenderPerfValue('crossover', croAvg, now);
   const wriShown = getStableRenderPerfValue('write', wriAvg, now);
+  // Dual display "X ms (Y%)": the millisecond figures are only comparable
+  // to their own host's frame budget (a 40-sample TrueHD access unit vs a
+  // 32 ms E-AC-3 sync frame vs a PipeWire quantum), so the duty percentage is
+  // the number that compares across hosts and frame sizes. Omitted while the
+  // frame duration is unknown.
+  const hasBudget = Number.isFinite(frameBudgetMs) && frameBudgetMs > 0;
+  const msWithPct = (ms) => {
+    if (ms === null || !Number.isFinite(ms)) return '\u2014';
+    const base = `${formatNumber(ms, 3)} ms`;
+    if (!hasBudget) return base;
+    const pct = (ms / frameBudgetMs) * 100;
+    return `${base} (${formatNumber(pct, pct >= 10 ? 0 : 1)}%)`;
+  };
   const setSegment = (el, startMs, endMs) => {
     if (!el) return;
     const left = Math.min(100, Math.max(0, (startMs / scaleMs) * 100));
@@ -565,42 +578,42 @@ export function renderRenderTimeUI() {
 
   if (rendererPerfDecodeValueEl) {
     rendererPerfDecodeValueEl.textContent = tf('renderer.perf.decode', {
-      value: decShown === null ? '—' : `${formatNumber(decShown, 3)} ms`
+      value: msWithPct(decShown)
     });
   }
   if (rendererPerfRenderValueEl) {
     rendererPerfRenderValueEl.textContent = tf('renderer.perf.render', {
-      value: rndShown === null ? '—' : `${formatNumber(rndShown, 3)} ms`
+      value: msWithPct(rndShown)
     });
   }
   if (rendererPerfCrossoverValueEl) {
     rendererPerfCrossoverValueEl.textContent = tf('renderer.perf.crossover', {
-      value: croShown === null ? '—' : `${formatNumber(croShown, 3)} ms`
+      value: msWithPct(croShown)
     });
   }
   if (rendererPerfWriteValueEl) {
     rendererPerfWriteValueEl.textContent = tf('renderer.perf.write', {
-      value: wriShown === null ? '—' : `${formatNumber(wriShown, 3)} ms`
+      value: msWithPct(wriShown)
     });
   }
   if (rendererPerfDecodeMaxValueEl) {
     rendererPerfDecodeMaxValueEl.textContent = tf('renderer.perf.max', {
-      value: decMax === null ? '—' : `${formatNumber(decMax, 3)} ms`
+      value: msWithPct(decMax)
     });
   }
   if (rendererPerfRenderMaxValueEl) {
     rendererPerfRenderMaxValueEl.textContent = tf('renderer.perf.max', {
-      value: rndMax === null ? '—' : `${formatNumber(rndMax, 3)} ms`
+      value: msWithPct(rndMax)
     });
   }
   if (rendererPerfCrossoverMaxValueEl) {
     rendererPerfCrossoverMaxValueEl.textContent = tf('renderer.perf.max', {
-      value: croMax === null ? '—' : `${formatNumber(croMax, 3)} ms`
+      value: msWithPct(croMax)
     });
   }
   if (rendererPerfWriteMaxValueEl) {
     rendererPerfWriteMaxValueEl.textContent = tf('renderer.perf.max', {
-      value: wriMax === null ? '—' : `${formatNumber(wriMax, 3)} ms`
+      value: msWithPct(wriMax)
     });
   }
   if (rendererPerfFrameValueEl) {

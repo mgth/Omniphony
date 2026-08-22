@@ -24,7 +24,7 @@
 // C-ABI minor version: backwards-compatible additions only. Consumers should
 // gate optional features on symbol presence (dlsym), not on this value; it
 // exists for logging and diagnostics.
-#define ORENDER_ABI_MINOR 6
+#define ORENDER_ABI_MINOR 7
 
 // Speaker-position labels written by [`orender_channel_layout`] and
 // [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
@@ -153,6 +153,17 @@ int orender_dialnorm_db(const struct OrenderRenderer *r);
 // bytes are filled (else nothing is written — call with `out_labels = NULL` to
 // query `N`). `0` for plain multichannel / no bed / NULL handle / error.
 uint32_t orender_bed_layout(const struct OrenderRenderer *r, uint8_t *out_labels, uint32_t cap);
+
+// Constant DSP latency of the rendered output, in samples at the engine
+// sample rate: PCM fed to [`orender_process`] emerges this many samples later
+// in the rendered stream. 0 for the default filters; non-zero when the
+// linear-phase FIR crossover sits on the rendered path. The host should
+// subtract `latency / sample_rate` from the presentation timestamps of
+// rendered frames (or delay video by the same amount) to preserve A/V sync.
+// May change mid-stream (live crossover / output-mode switch), so poll it
+// per rendered frame; meaningful after the first [`orender_process`] call.
+// 0 on a NULL handle / error.
+uint64_t orender_output_latency_samples(const struct OrenderRenderer *r);
 
 // Configured render mode for channel-based (non-object) content:
 // 0 = host, 1 = spatial; <0 on error. When this is `host` (0) and

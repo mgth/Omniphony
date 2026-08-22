@@ -124,6 +124,7 @@ pub fn build_renderer_state_json(
     unroutable_speaker_names: &[String],
     fixed_channel_catalog_json: &str,
     fixed_channel_processing_json: &str,
+    crossover_info: Option<renderer::live_params::CrossoverInfo>,
 ) -> String {
     let effective_backend = active_topology.backend.backend_id();
     let effective_evaluation_mode = active_topology.backend.evaluation_mode().as_str();
@@ -178,6 +179,17 @@ pub fn build_renderer_state_json(
         "outputChannelMappingUnroutable": unroutable_speaker_names,
         "fixedChannelCatalog": fixed_channel_catalog,
         "fixedChannelProcessing": fixed_channel_processing,
+        // Facts about the crossover bank the speaker stage actually built
+        // (engine, bands, cutoffs, FIR taps, latency). Studio annotates the
+        // crossover control with them. Null until the first render built one.
+        "crossover": crossover_info.map(|info| json!({
+            "engine": info.engine.as_str(),
+            "bands": info.bands,
+            "cutoffsHz": info.cutoffs_hz,
+            "taps": info.taps,
+            "latencyMs": info.latency_samples as f64 * 1000.0
+                / info.sample_rate.max(1) as f64,
+        })),
         // Declared live options, emitted generically from the registry under
         // their canonical (snake_case) keys. The flat camelCase keys above are
         // the legacy spellings, kept while clients migrate to this block.
@@ -427,6 +439,7 @@ pub fn build_live_state_bundle(
         &[],
         &control.fixed_channel_catalog(),
         &control.fixed_channel_processing(),
+        control.crossover_info(),
     );
 
     let mut messages = vec![
