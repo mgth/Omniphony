@@ -304,15 +304,12 @@ pub struct SpatialRenderer {
     /// output-mode flag can flip between a render and a host query).
     last_output_latency: usize,
 
-    /// EMA of the crossover stage's duty cycle (measured time / audio time),
-    /// time constant ~1 s of audio. The FIR bank works in 1024-sample bursts,
-    /// so with small host frames (a 40-sample TrueHD access unit) the raw
-    /// per-frame timing aliases: ~25 frames cost microseconds and one carries
-    /// the whole FFT burst, and a sampled display reads the cheap ones. The
-    /// EMA integrates across the burst cycle so `crossover_time_ms` means the
-    /// same thing at every frame size. Updated only when the breakdown is
-    /// measured (metering on); holds its last value otherwise.
-    crossover_duty_ema: f32,
+    /// EMA of the crossover stage's duty cycle (see
+    /// [`crate::metering::DutyEma`]): integrates across the FIR bank's
+    /// 1024-sample burst cycle so `crossover_time_ms` means the same thing at
+    /// every host frame size. Updated only when the breakdown is measured
+    /// (metering on); holds its last value otherwise.
+    crossover_duty_ema: crate::metering::DutyEma,
 
     /// Scratch per-channel world positions for the binaural path (reused).
     binaural_pos_buf: Vec<[f64; 3]>,
@@ -341,27 +338,18 @@ pub struct SpatialRenderer {
 /// (no metering client): the EMA then holds its last value instead of
 /// decaying on a cost that was paid but not timed.
 fn smoothed_crossover_time_ms(
-    duty_ema: &mut f32,
+    duty_ema: &mut crate::metering::DutyEma,
     elapsed: std::time::Duration,
     sample_length: usize,
     sample_rate: u32,
     measured: bool,
 ) -> f32 {
-    /// EMA time constant in milliseconds of audio: long enough to integrate
-    /// across the FIR bank's 1024-sample burst cycle at any host frame size
-    /// (a 40-sample TrueHD access unit sees one burst every ~26 frames),
-    /// short enough to follow a live tuning change within a second.
-    const TAU_MS: f32 = 1_000.0;
     let frame_ms = sample_length as f32 * 1000.0 / sample_rate.max(1) as f32;
-    if frame_ms <= 0.0 {
-        return 0.0;
-    }
     if measured {
-        let duty = elapsed.as_secs_f32() * 1000.0 / frame_ms;
-        let alpha = (frame_ms / TAU_MS).min(1.0);
-        *duty_ema += alpha * (duty - *duty_ema);
+        duty_ema.update(elapsed.as_secs_f32() * 1000.0, frame_ms)
+    } else {
+        duty_ema.value_for(frame_ms)
     }
-    *duty_ema * frame_ms
 }
 
 impl SpatialRenderer {

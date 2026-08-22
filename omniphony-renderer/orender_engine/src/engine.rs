@@ -106,6 +106,11 @@ pub struct Engine {
     /// that never recycles allocates exactly as before; it is an optimisation,
     /// not a contract.
     output_pool: Vec<Vec<f32>>,
+    /// Duty-cycle EMA of the render cost, for the meter bundle: raw per-frame
+    /// timings alias with 40-sample TrueHD access units (the FIR crossover's
+    /// burst lands on one frame in ~26), so the emitted figure is smoothed to
+    /// a per-frame equivalent. `PerfLog` keeps recording the raw value.
+    render_duty: renderer::metering::DutyEma,
 
     /// Optional OSC live-control server (kept alive here; its Drop stops the
     /// listener thread when the engine is dropped).
@@ -272,6 +277,7 @@ impl Engine {
             frame_events: Vec::new(),
             pcm_f32_buf: Vec::new(),
             output_pool: Vec::new(),
+            render_duty: Default::default(),
             osc: None,
             audio_meter: None,
             object_names: HashMap::new(),
@@ -1275,6 +1281,12 @@ impl Engine {
             want_metering,
         )?;
         let render_time_ms = render_started.elapsed().as_secs_f32() * 1000.0;
+        // Smoothed per-frame-equivalent for the meter bundle (see the field
+        // doc); PerfLog below keeps recording the raw per-frame figure.
+        let render_time_smoothed_ms = self.render_duty.update(
+            render_time_ms,
+            sample_count as f32 / sample_rate as f32 * 1000.0,
+        );
 
         // Dynamic object count = decoded channels minus the fixed channels.
         // Only meaningful for object-based content; plain multichannel
@@ -1362,7 +1374,7 @@ impl Engine {
                             rendered.object_test_level,
                             Some(decode_time_ms),
                             Some(rendered.crossover_time_ms),
-                            Some(render_time_ms),
+                            Some(render_time_smoothed_ms),
                             None,
                             Some(frame_duration_ms),
                             None,

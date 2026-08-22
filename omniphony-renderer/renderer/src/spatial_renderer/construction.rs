@@ -518,7 +518,7 @@ impl SpatialRenderer {
             cascade: None,
             last_mix_num_speakers: 0,
             last_output_latency: 0,
-            crossover_duty_ema: 0.0,
+            crossover_duty_ema: Default::default(),
             binaural_pos_buf: Vec::new(),
             binaural_gain_buf: Vec::new(),
             binaural_direct_buf: Vec::new(),
