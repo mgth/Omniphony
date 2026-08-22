@@ -814,6 +814,8 @@
   "renderer.crossoverInfoFir": "{bands} bandes · {taps} taps · {latency} ms · coupure basse {low} Hz",
   "renderer.crossoverInfoIir": "{bands} bandes · IIR · aucune latence ajoutée · coupure basse {low} Hz",
   "renderer.crossoverInfoNone": "Aucun bord de bande dans la layout — crossover inactif",
+  "renderer.crossoverTransitionLabel": "Transition RIF",
+  "help.crossoverFirTransition": "Largeur de transition du crossover RIF à phase linéaire, en fraction de la coupure la plus basse. Plus petit = séparation plus raide mais plus de taps, plus de latence et un ringing (masqué) plus long près de la coupure basse ; plus grand = l'inverse. La ligne en dessous montre en direct les taps et la latence qui en résultent. Utilisé uniquement par le moteur RIF ; la somme recombinée reste un délai pur parfait quel que soit le réglage.",
   "help.crossoverType": "Choisit le filtre qui découpe les enceintes à bande limitée en bandes de crossover. LR4 : le crossover IIR classique — aucune latence ajoutée, niveau recombiné plat, mais la phase tourne autour de chaque coupure. RIF à phase linéaire : reconstruction exacte du signal — plate en niveau ET en phase — au prix d'un retard constant d'environ 100 ms ; adapté à la lecture de films, où la qualité prime sur la latence. Beds et objets restent alignés ; seule la sortie globale est retardée.",
   "backend.restore": "Restaurer le backend",
   "adaptive.controlSmoothingOrder.opt1": "1 (un pôle, 6 dB/oct)",

@@ -349,6 +349,14 @@ render_field! {
     eq = crate::live_params::CrossoverType::eq
 }
 
+render_field! {
+    /// FIR crossover transition width as a fraction of the lowest cutoff
+    /// (`render.crossover_fir_transition_ratio`). Default 0.5.
+    pub crossover_fir_transition_ratio: f32 = 0.5,
+    field = crossover_fir_transition_ratio,
+    eq = |a: &f32, b: &f32| a == b
+}
+
 render_field_str! {
     /// Bed→height object generator id for channel content
     /// (`render.object_generator_id`). Empty / absent = off.

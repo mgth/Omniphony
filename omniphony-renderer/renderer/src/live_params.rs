@@ -1256,6 +1256,14 @@ pub struct LiveParams {
     /// change. Live-tunable via `/omniphony/control/crossover_type`.
     pub crossover_type: CrossoverType,
 
+    /// FIR crossover transition width as a fraction of the lowest cutoff
+    /// (the Kaiser design's `transition_ratio`): smaller = steeper bands but
+    /// more taps, latency and ringing; larger = the opposite. Only consulted
+    /// by the `fir` engine; the speaker stage rebuilds the bank live when it
+    /// moves. Clamped to [0.05, 2.0]. Live-tunable via
+    /// `/omniphony/control/crossover_fir_transition_ratio`.
+    pub crossover_fir_transition_ratio: f32,
+
     /// Parametrable virtual bed for channel-based content (consulted only when
     /// `channel_render_mode == Spatial`). One entry per input-channel label
     /// (`L`, `R`, `C`, `LFE`, `Ls`, `Rs`, `Lb`, `Rb`, …): `spatialize:true`

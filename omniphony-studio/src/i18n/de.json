@@ -814,6 +814,8 @@
   "renderer.crossoverInfoFir": "{bands} Bänder · {taps} Taps · {latency} ms · untere Trennung {low} Hz",
   "renderer.crossoverInfoIir": "{bands} Bänder · IIR · keine zusätzliche Latenz · untere Trennung {low} Hz",
   "renderer.crossoverInfoNone": "Keine Bandgrenzen im Layout — Frequenzweiche inaktiv",
+  "renderer.crossoverTransitionLabel": "FIR-Übergang",
+  "help.crossoverFirTransition": "Übergangsbreite der linearphasigen FIR-Frequenzweiche als Bruchteil der tiefsten Trennfrequenz. Kleiner = steilere Bänder, aber mehr Taps, mehr Latenz und längeres (maskiertes) Nachschwingen nahe der tiefen Trennung; größer = umgekehrt. Die Zeile darunter zeigt Taps und Latenz live. Nur vom FIR-Modus genutzt; die Summe bleibt bei jeder Einstellung ein perfektes reines Delay.",
   "help.crossoverType": "Wählt das Filter, das bandbegrenzte Lautsprecher in Frequenzweichen-Bänder aufteilt. LR4 ist die klassische IIR-Weiche: keine zusätzliche Latenz, flacher Summenpegel, aber die Phase dreht um jede Trennfrequenz. Linearphasiges FIR rekonstruiert das Signal exakt — flach in Pegel UND Phase — um den Preis einer konstanten Verzögerung von etwa 100 ms; geeignet für Filmwiedergabe, wo Qualität vor Latenz geht. Beds und Objekte bleiben zeitlich ausgerichtet; nur der Gesamtausgang wird verzögert.",
   "backend.restore": "Backend wiederherstellen",
   "adaptive.controlSmoothingOrder.opt1": "1 (Einzelpol, 6 dB/Okt.)",

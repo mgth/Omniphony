@@ -36,7 +36,7 @@ use crate::live_params::{
 
 /// What kind of value an option takes. Drives wire validation, the published
 /// schema, and (later) which Studio control the binder renders.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OptionKind {
     /// Boolean toggle; accepts int/float (0 = false) and bool on the wire.
     Bool,
@@ -46,6 +46,10 @@ pub enum OptionKind {
     Enum(&'static [&'static str]),
     /// Free-form string (e.g. a registry id).
     Str,
+    /// Bounded numeric value; accepts float/int (and a parseable string) on
+    /// the wire, clamped to `[min, max]` by the setter. `step` is a UI hint
+    /// for the Studio control, not a validation grid.
+    Float { min: f32, max: f32, step: f32 },
 }
 
 /// Behaviour flags, interpreted generically by the plumbing layers.
@@ -78,6 +82,7 @@ impl OptionFlags {
 pub enum OptionDefault {
     Bool(bool),
     Str(&'static str),
+    Float(f32),
 }
 
 impl OptionDefault {
@@ -85,6 +90,7 @@ impl OptionDefault {
         match self {
             Self::Bool(b) => b.into(),
             Self::Str(s) => s.into(),
+            Self::Float(f) => f.into(),
         }
     }
 }
@@ -314,6 +320,47 @@ pub static LIVE_OPTIONS: &[OptionSpec] = &[
         },
     },
     OptionSpec {
+        key: "crossover_fir_transition_ratio",
+        kind: OptionKind::Float {
+            min: 0.05,
+            max: 2.0,
+            step: 0.05,
+        },
+        default: OptionDefault::Float(0.5),
+        // No REPLAN, same as crossover_type: the speaker stage compares the
+        // live value against the bank it built every frame and rebuilds the
+        // FIR bank itself when it moves.
+        flags: OptionFlags::PERSIST,
+        i18n_key: "renderer.crossoverTransitionLabel",
+        help_i18n_key: Some("help.crossoverFirTransition"),
+        legacy_control_addr: "/omniphony/control/crossover_fir_transition_ratio",
+        set: |live, raw| {
+            let v = match raw {
+                RawOptionValue::Number(n) => *n as f32,
+                RawOptionValue::Str(s) => s.trim().parse::<f32>().ok()?,
+                RawOptionValue::Bool(_) => return None,
+            };
+            if !v.is_finite() {
+                return None;
+            }
+            let v = v.clamp(0.05, 2.0);
+            live.crossover_fir_transition_ratio = v;
+            Some(format!("{v}"))
+        },
+        get_json: |live| live.crossover_fir_transition_ratio.into(),
+        config_store: |render, live| {
+            crate::config_fields::crossover_fir_transition_ratio::store(
+                render,
+                live.crossover_fir_transition_ratio,
+            )
+        },
+        config_seed: |live, render| {
+            if let Some(ratio) = crate::config_fields::crossover_fir_transition_ratio::get(render) {
+                live.crossover_fir_transition_ratio = ratio.clamp(0.05, 2.0);
+            }
+        },
+    },
+    OptionSpec {
         key: "hrir_update_lattice",
         kind: OptionKind::Enum(&["exact", "fine", "balanced", "coarse"]),
         default: OptionDefault::Str("exact"),
@@ -398,6 +445,7 @@ pub fn reset_live_to_defaults(live: &mut LiveParams) {
         let raw = match spec.default {
             OptionDefault::Bool(b) => RawOptionValue::Bool(b),
             OptionDefault::Str(s) => RawOptionValue::Str(s),
+            OptionDefault::Float(f) => RawOptionValue::Number(f as f64),
         };
         if (spec.set)(live, &raw).is_none() {
             // A spec whose default fails its own validation is a registry bug.
@@ -511,6 +559,7 @@ pub fn schema_json() -> String {
                 OptionKind::Bool => ("bool", None),
                 OptionKind::Enum(values) => ("enum", Some(values)),
                 OptionKind::Str => ("string", None),
+                OptionKind::Float { .. } => ("float", None),
             };
             let mut flags = Vec::new();
             if spec.flags.contains(OptionFlags::PERSIST) {
@@ -528,6 +577,11 @@ pub fn schema_json() -> String {
             });
             if let Some(values) = values {
                 obj["values"] = values.into();
+            }
+            if let OptionKind::Float { min, max, step } = spec.kind {
+                obj["min"] = min.into();
+                obj["max"] = max.into();
+                obj["step"] = step.into();
             }
             if let Some(help) = spec.help_i18n_key {
                 obj["helpI18nKey"] = help.into();

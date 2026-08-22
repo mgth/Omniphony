@@ -341,6 +341,10 @@ export function rendererPanelMarkup() {
                   <option value="fir" data-i18n="renderer.crossoverType.fir">Linear-phase FIR</option>
                 </select>
               </div>
+              <div class="control-row" id="crossoverTransitionRow" style="margin-top:0;grid-template-columns:1fr auto;align-items:center">
+                <label for="crossoverTransitionInput" style="font-size:12px;font-weight:600;white-space:nowrap;color:#ffffff" data-i18n="renderer.crossoverTransitionLabel">FIR transition</label>
+                <input id="crossoverTransitionInput" class="delay-input" data-option="crossover_fir_transition_ratio" type="number" min="0.05" max="2" step="0.05" value="0.5" style="width:5rem" />
+              </div>
               <div id="crossoverInfo" style="font-size:0.65rem;color:#888;">—</div>
             </div>
           </div>

@@ -430,6 +430,8 @@ impl SpatialRenderer {
             // Seeded to the default (Lr4); the CLI bootstrap and the embedded
             // mpv host override it from `render.crossover_type`.
             crossover_type: crate::live_params::CrossoverType::default(),
+            crossover_fir_transition_ratio:
+                crate::config_fields::crossover_fir_transition_ratio::DEFAULT,
             // Seeded from `render.virtual_bed` by the same bootstrap; `None`
             // uses the built-in canonical poses (LFE direct, rest virtualized).
             virtual_bed: None,

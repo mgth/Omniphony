@@ -58,6 +58,13 @@ export function bindOptionControls() {
       el.addEventListener('click', () => setOption(key, el.dataset.optionValue));
     } else if (el.tagName === 'SELECT') {
       el.addEventListener('change', () => setOption(key, el.value));
+    } else if (el.type === 'number') {
+      // Float option: send as a JSON number; the renderer clamps to the
+      // declared [min, max] and echoes the canonical value back.
+      el.addEventListener('change', () => {
+        const v = Number(el.value);
+        if (Number.isFinite(v)) setOption(key, v);
+      });
     } else if (el.type === 'checkbox') {
       el.addEventListener('change', () => {
         const enumOn = el.dataset.optionOn;
@@ -83,6 +90,9 @@ export function reflectBoundOptions() {
       if (document.activeElement === el) continue;
       const empty = el.dataset.optionEmpty;
       el.value = (v === '' || v === null) && empty !== undefined ? empty : String(v);
+    } else if (el.type === 'number') {
+      if (document.activeElement === el) continue;
+      el.value = String(v);
     } else if (el.type === 'checkbox') {
       const enumOn = el.dataset.optionOn;
       el.checked = enumOn !== undefined ? String(v) === enumOn : !!v;

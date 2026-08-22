@@ -56,6 +56,10 @@ pub(super) struct SpeakerRenderStage {
     /// option every frame so a flip rebuilds the bank without a topology
     /// change.
     pub(super) crossover_built_type: CrossoverType,
+    /// The FIR transition ratio the current bank was built with, compared
+    /// against the live option every frame (only when the FIR engine is
+    /// active) so a tuning change rebuilds the bank live.
+    pub(super) crossover_built_fir_ratio: f32,
     /// Per-object filter states for the crossover bank, keyed by channel index.
     pub(super) crossover_filter_states: Vec<Option<CrossoverStates>>,
     /// Per-channel compensation delays for directly-routed (bed) channels,
@@ -771,7 +775,7 @@ impl SpeakerRenderStage {
         num_speakers: usize,
         sample_rate: u32,
     ) -> Result<Self> {
-        let (render_bands, crossover_filter_bank, crossover_built_type) =
+        let (render_bands, crossover_filter_bank, crossover_built_type, crossover_built_fir_ratio) =
             Self::build_crossover(control, layout, num_speakers, sample_rate, &[])?;
         let unified_table = Self::build_unified_table(&render_bands, num_speakers);
         Ok(Self {
@@ -782,6 +786,7 @@ impl SpeakerRenderStage {
             unified_table,
             crossover_filter_bank,
             crossover_built_type,
+            crossover_built_fir_ratio,
             crossover_filter_states: Vec::new(),
             bed_delays: Vec::new(),
             test_noise: crate::speaker_test::PinkNoise::default(),
@@ -820,26 +825,35 @@ impl SpeakerRenderStage {
         topology_identity: usize,
         active_layout: &SpeakerLayout,
     ) -> Result<()> {
-        // A `crossover_type` flip rebuilds the bank too, even with the
-        // topology unchanged — the option is live, not part of the topology.
-        let requested_type = control.live.read().crossover_type;
+        // A `crossover_type` flip — or a FIR transition-ratio change while
+        // that engine is active — rebuilds the bank too, even with the
+        // topology unchanged: those options are live, not part of the
+        // topology.
+        let (requested_type, requested_ratio) = {
+            let live = control.live.read();
+            (live.crossover_type, live.crossover_fir_transition_ratio)
+        };
         if self.render_bands_topology_identity == topology_identity
             && self.crossover_built_type == requested_type
+            && (requested_type != CrossoverType::Fir
+                || self.crossover_built_fir_ratio == requested_ratio)
         {
             return Ok(());
         }
 
-        let (render_bands, crossover_filter_bank, crossover_built_type) = Self::build_crossover(
-            control,
-            active_layout,
-            self.num_speakers,
-            self.sample_rate,
-            &self.render_bands,
-        )?;
+        let (render_bands, crossover_filter_bank, crossover_built_type, crossover_built_fir_ratio) =
+            Self::build_crossover(
+                control,
+                active_layout,
+                self.num_speakers,
+                self.sample_rate,
+                &self.render_bands,
+            )?;
         self.unified_table = Self::build_unified_table(&render_bands, self.num_speakers);
         self.render_bands = render_bands;
         self.crossover_filter_bank = crossover_filter_bank;
         self.crossover_built_type = crossover_built_type;
+        self.crossover_built_fir_ratio = crossover_built_fir_ratio;
         self.crossover_filter_states.clear();
         self.bed_delays.clear();
         self.test_filter_states = None;
@@ -1212,19 +1226,19 @@ impl SpeakerRenderStage {
 
     /// Build crossover band engines from a speaker layout.
     ///
-    /// Returns `(render_bands, Some(filter_bank), built_type)` when the layout defines
-    /// finite crossover edges on at least one speaker (producing ≥ 2 bands), or
-    /// `(single_band, None, built_type)` when no crossover is needed. `render_bands`
-    /// always has at least one entry. The filter engine follows the `crossover_type`
-    /// live option; the type actually built is returned so the caller can detect a
-    /// later flip.
+    /// Returns `(render_bands, Some(filter_bank), built_type, built_fir_ratio)` when
+    /// the layout defines finite crossover edges on at least one speaker (producing
+    /// ≥ 2 bands), or `(single_band, None, built_type, built_fir_ratio)` when no
+    /// crossover is needed. `render_bands` always has at least one entry. The filter
+    /// engine and FIR transition ratio follow the live options; the values actually
+    /// built are returned so the caller can detect a later change.
     fn build_crossover(
         control: &Arc<RendererControl>,
         layout: &SpeakerLayout,
         num_speakers: usize,
         sample_rate: u32,
         prev_bands: &[BandRenderer],
-    ) -> Result<(Vec<BandRenderer>, Option<CrossoverBank>, CrossoverType)> {
+    ) -> Result<(Vec<BandRenderer>, Option<CrossoverBank>, CrossoverType, f32)> {
         // For each new band, reuse the matching previous band (same speaker subset)
         // so an evaluation-only refresh can keep its triangulated gain model.
         let make_renderer = |b: &FreqBand| {
@@ -1234,7 +1248,10 @@ impl SpeakerRenderStage {
             BandRenderer::from_band(b, layout, num_speakers, control, prev)
         };
 
-        let crossover_type = control.live.read().crossover_type;
+        let (crossover_type, fir_transition_ratio) = {
+            let live = control.live.read();
+            (live.crossover_type, live.crossover_fir_transition_ratio)
+        };
         let bands = compute_bands(layout);
         if bands.len() <= 1 {
             let render_bands = bands
@@ -1249,7 +1266,7 @@ impl SpeakerRenderStage {
                 latency_samples: 0,
                 sample_rate,
             });
-            return Ok((render_bands, None, crossover_type));
+            return Ok((render_bands, None, crossover_type, fir_transition_ratio));
         }
 
         let cutoffs: Vec<f32> = bands
@@ -1260,7 +1277,14 @@ impl SpeakerRenderStage {
 
         let filter_bank = match crossover_type {
             CrossoverType::Lr4 => CrossoverBank::Lr4(LR4CrossoverBank::new(&cutoffs, sample_rate)),
-            CrossoverType::Fir => CrossoverBank::Fir(FirCrossoverBank::new(&cutoffs, sample_rate)),
+            CrossoverType::Fir => CrossoverBank::Fir(FirCrossoverBank::with_spec(
+                &cutoffs,
+                sample_rate,
+                crate::crossover::FirCrossoverSpec {
+                    transition_ratio: fir_transition_ratio,
+                    ..Default::default()
+                },
+            )),
         };
         let render_bands = bands
             .iter()
@@ -1287,7 +1311,12 @@ impl SpeakerRenderStage {
             sample_rate,
         });
 
-        Ok((render_bands, Some(filter_bank), crossover_type))
+        Ok((
+            render_bands,
+            Some(filter_bank),
+            crossover_type,
+            fir_transition_ratio,
+        ))
     }
 
     /// Merge the per-band cartesian tables into a single multi-band table so a

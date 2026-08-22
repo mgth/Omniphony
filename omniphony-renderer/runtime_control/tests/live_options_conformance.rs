@@ -191,6 +191,7 @@ fn snapshot_json(control: &Arc<RendererControl>) -> serde_json::Value {
         &[],
         "[]",
         "{}",
+        control.crossover_info(),
     );
     serde_json::from_str(&json).expect("snapshot is valid JSON")
 }
@@ -269,6 +270,10 @@ mod registry {
             ("object_generator_id", RawOptionValue::Str("copy_up")),
             ("phantom_extract_mode", RawOptionValue::Str("spectral")),
             ("crossover_type", RawOptionValue::Str("fir")),
+            (
+                "crossover_fir_transition_ratio",
+                RawOptionValue::Number(0.75),
+            ),
             ("hrir_update_lattice", RawOptionValue::Str("coarse")),
         ]
     }

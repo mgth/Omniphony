@@ -596,6 +596,27 @@ mod tests {
         }
     }
 
+    /// Doubling the transition ratio halves the kernel (and the latency):
+    /// the ratio is the live tuning surface, so its scaling must stay
+    /// monotonic and roughly inverse.
+    #[test]
+    fn transition_ratio_scales_the_kernel() {
+        let sample_rate = 48000;
+        let spec = |ratio: f32| FirCrossoverSpec {
+            transition_ratio: ratio,
+            ..Default::default()
+        };
+        let narrow = FirCrossoverBank::with_spec(&[80.0], sample_rate, spec(0.5));
+        let wide = FirCrossoverBank::with_spec(&[80.0], sample_rate, spec(1.0));
+        assert!(wide.taps() < narrow.taps());
+        assert!(wide.latency_samples() < narrow.latency_samples());
+        let ratio = narrow.taps() as f64 / wide.taps() as f64;
+        assert!(
+            (1.8..=2.2).contains(&ratio),
+            "taps should scale roughly inversely with the transition ratio, got {ratio}"
+        );
+    }
+
     /// The default spec must size the kernel from the lowest cutoff and keep
     /// the latency accounting consistent.
     #[test]

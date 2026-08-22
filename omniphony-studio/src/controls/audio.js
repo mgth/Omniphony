@@ -199,6 +199,11 @@ function getCrossoverInfoEl() { return inRendererPanel('crossoverInfo'); }
 function renderCrossoverInfoDisplay() {
   const el = getCrossoverInfoEl();
   if (!el) return;
+  // The FIR transition tuning only means something for the FIR engine.
+  const transitionRow = inRendererPanel('crossoverTransitionRow');
+  if (transitionRow) {
+    transitionRow.style.display = getLiveOption('crossover_type') === 'fir' ? '' : 'none';
+  }
   const info = app.crossover;
   if (!info || !(info.bands > 1)) {
     el.textContent = t('renderer.crossoverInfoNone');
