@@ -149,10 +149,23 @@ publishes the bundles as a **draft on `mgth/Omniphony` under `mpv-vX.Y.Z`**
 3. PR to its `main`; merge when its CI is green. Pushing workflow-file
    changes needs the SSH remote (`git@github.com-mgth:mgth/mpv-omniphony.git`);
    the HTTPS token lacks the `workflow` scope.
-4. After the Omniphony tag exists: `git tag vX.Y.Z && git push origin vX.Y.Z`
-   in `mpv-omniphony`. Publish the resulting `mpv-vX.Y.Z` draft on
-   `mgth/Omniphony` **not-latest**, notes in the established style.
-5. The local FEL build (`mpvo-fel`, `patches-master/`,
+4. After the Omniphony tag exists, tag **from `origin/main`, never from a
+   local `main` checkout**: a squash merge diverges any local `main`, and at
+   0.5.2 a `git pull --ff-only` failure was swallowed by a `| tail` pipeline
+   — the tag landed on the stale pre-PR commit and the build ran with the old
+   `OMNIPHONY_REF` (cancel the run, delete the tag, retag). Use:
+   `git fetch origin main && git tag vX.Y.Z origin/main && git push origin vX.Y.Z`.
+   Publish the resulting `mpv-vX.Y.Z` draft on `mgth/Omniphony`
+   **not-latest**, notes in the established style.
+5. Don't trust `gh run watch --exit-status` for the verdict — at 0.5.2 it
+   returned success while `build-windows` had failed and `release` was
+   skipped. Read `gh run view <id> --json conclusion,jobs` instead.
+6. The Windows job's "Verify staged DLL imports resolve" step guards the
+   ownstuff ffmpeg↔x265 pairing in both directions. It fired at 0.5.2
+   because the old x265 4.1 pin outlived its reason (ffmpeg had been rebuilt
+   against the current x265) — the pin is gone; if the pairing breaks again
+   the fix is a new pin or its removal, per the step's message.
+7. The local FEL build (`mpvo-fel`, `patches-master/`,
    `scripts/build-fel-local.sh`) is a dev-only artifact, never released;
    regenerate it locally whenever the fork's `orender` branch moves
    (`FEL_RENDERER_DIR` selects which renderer checkout provides the
