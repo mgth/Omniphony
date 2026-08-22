@@ -20,7 +20,10 @@ their component actually changed.
 ## 1. Preconditions
 
 - The integration tree (`workflows/integration/omniphony`) is clean and on
-  `main`; no completed work is sitting uncommitted.
+  `main`; no completed work is sitting uncommitted. If integration is parked
+  on another branch (a concurrent session's WIP), do not disturb it: drive
+  the release from a dedicated temporary worktree of `main` instead
+  (`git worktree add <dir> origin/main`) — done that way at 0.5.2.
 - `git fetch origin --tags` exits non-zero because the rolling `integration`
   and `mpv-integration` tags move on every integration build ("would clobber
   existing tag"). That rejection is harmless — the branches and release tags
@@ -118,15 +121,42 @@ standalone `.so`/`.dll`/`.dylib`. Skipped at 0.5.0 and 0.5.1.
 
 ## 7. Optional: mpv-omniphony bundle release
 
-Source lives in `mgth/mpv-omniphony`, assets are published on
-`mgth/Omniphony` under `mpv-v*`. Summary (see the memory fiche and
-`docs/mpv-omniphony.md` for detail): bump `OMNIPHONY_REF` to the new tag in
-its `release.yml`, regenerate `patches/` from the fork's `orender` branch,
-copy `ad_orender.c`, PR to its `main`, tag `vX.Y.Z` there. Its PR CI builds
-against a **mock liborender** — new FFI functions must be added to
-`.github/scripts/mock-liborender.sh` or the tag build fails where the PR
-passed. Pushing workflow-file changes needs the SSH remote
-(`git@github.com-mgth:…`); the HTTPS token lacks the `workflow` scope.
+Cut this whenever the player side changed: patches, launcher behaviour, or a
+liborender ABI addition the player consumes (e.g. the PTS latency
+compensation at 0.5.2). Source lives in `mgth/mpv-omniphony`; its tag build
+publishes the bundles as a **draft on `mgth/Omniphony` under `mpv-vX.Y.Z`**
+(via the `OMNIPHONY_RELEASE_TOKEN` secret).
+
+1. The fork's `orender` branch (main tree `workflows/integration/mpv`, based
+   on the pinned `v0.41.0`) carries everything to ship and is pushed.
+2. In `mpv-omniphony`:
+   - `scripts/regenerate-patches.sh <fork-path>` — regenerates `patches/`
+     from `v0.41.0..orender`. (`patches-master/` is the separate series for
+     the local Dolby Vision FEL build; it has its own regenerate script whose
+     default base ref is stale — base it on the parent of the first fork
+     commit — and it is NOT part of this release.)
+   - `cp <fork>/audio/decode/ad_orender.c src/ad_orender.c` (kept in sync as
+     the regenerate scripts remind).
+   - Bump `OMNIPHONY_REF` in `.github/workflows/release.yml` to the new
+     Omniphony tag — the build compiles liborender **from source at that
+     ref**, so the Omniphony `vX.Y.Z` tag must exist before this repo's tag
+     build runs.
+   - If the liborender ABI gained symbols, extend
+     `.github/scripts/stub-liborender.sh` (successor of the old
+     mock-liborender): dlsym-optional symbols only degrade gracefully in the
+     CI loader tests, but the stub should stay representative of the real
+     surface.
+3. PR to its `main`; merge when its CI is green. Pushing workflow-file
+   changes needs the SSH remote (`git@github.com-mgth:mgth/mpv-omniphony.git`);
+   the HTTPS token lacks the `workflow` scope.
+4. After the Omniphony tag exists: `git tag vX.Y.Z && git push origin vX.Y.Z`
+   in `mpv-omniphony`. Publish the resulting `mpv-vX.Y.Z` draft on
+   `mgth/Omniphony` **not-latest**, notes in the established style.
+5. The local FEL build (`mpvo-fel`, `patches-master/`,
+   `scripts/build-fel-local.sh`) is a dev-only artifact, never released;
+   regenerate it locally whenever the fork's `orender` branch moves
+   (`FEL_RENDERER_DIR` selects which renderer checkout provides the
+   link-time liborender).
 
 ## 8. Post-release checks
 
