@@ -304,6 +304,16 @@ pub struct SpatialRenderer {
     /// output-mode flag can flip between a render and a host query).
     last_output_latency: usize,
 
+    /// EMA of the crossover stage's duty cycle (measured time / audio time),
+    /// time constant ~1 s of audio. The FIR bank works in 1024-sample bursts,
+    /// so with small host frames (a 40-sample TrueHD access unit) the raw
+    /// per-frame timing aliases: ~25 frames cost microseconds and one carries
+    /// the whole FFT burst, and a sampled display reads the cheap ones. The
+    /// EMA integrates across the burst cycle so `crossover_time_ms` means the
+    /// same thing at every frame size. Updated only when the breakdown is
+    /// measured (metering on); holds its last value otherwise.
+    crossover_duty_ema: f32,
+
     /// Scratch per-channel world positions for the binaural path (reused).
     binaural_pos_buf: Vec<[f64; 3]>,
 
@@ -321,6 +331,37 @@ pub struct SpatialRenderer {
     /// what keeps the level contract and the restart behaviour identical
     /// between them.
     object_test_source: crate::object_test::ObjectTestSource,
+}
+
+/// Fold one frame's measured crossover time into the duty-cycle EMA and
+/// return the smoothed per-frame-equivalent cost in milliseconds (duty ×
+/// this frame's audio duration). Free-standing (borrows only the EMA field)
+/// so it composes with the `LiveSnapshot` borrows held across the render
+/// arms. `measured` is false when the breakdown was not collected this frame
+/// (no metering client): the EMA then holds its last value instead of
+/// decaying on a cost that was paid but not timed.
+fn smoothed_crossover_time_ms(
+    duty_ema: &mut f32,
+    elapsed: std::time::Duration,
+    sample_length: usize,
+    sample_rate: u32,
+    measured: bool,
+) -> f32 {
+    /// EMA time constant in milliseconds of audio: long enough to integrate
+    /// across the FIR bank's 1024-sample burst cycle at any host frame size
+    /// (a 40-sample TrueHD access unit sees one burst every ~26 frames),
+    /// short enough to follow a live tuning change within a second.
+    const TAU_MS: f32 = 1_000.0;
+    let frame_ms = sample_length as f32 * 1000.0 / sample_rate.max(1) as f32;
+    if frame_ms <= 0.0 {
+        return 0.0;
+    }
+    if measured {
+        let duty = elapsed.as_secs_f32() * 1000.0 / frame_ms;
+        let alpha = (frame_ms / TAU_MS).min(1.0);
+        *duty_ema += alpha * (duty - *duty_ema);
+    }
+    *duty_ema * frame_ms
 }
 
 impl SpatialRenderer {
@@ -1038,7 +1079,13 @@ impl SpatialRenderer {
                         object_band_sq: diag.object_band_sq,
                         object_test_position,
                         object_test_level,
-                        crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
+                        crossover_time_ms: smoothed_crossover_time_ms(
+                            &mut self.crossover_duty_ema,
+                            diag.crossover_elapsed,
+                            sample_length,
+                            self.sample_rate,
+                            measure_breakdown,
+                        ),
                     }
                 }
                 None => RenderedFrame {
@@ -1049,7 +1096,15 @@ impl SpatialRenderer {
                     object_band_sq: Vec::new(),
                     object_test_position,
                     object_test_level,
-                    crossover_time_ms: 0.0,
+                    // The plain binaural path carries no crossover: a genuine
+                    // zero, folded into the EMA so the display decays to 0.
+                    crossover_time_ms: smoothed_crossover_time_ms(
+                        &mut self.crossover_duty_ema,
+                        std::time::Duration::ZERO,
+                        sample_length,
+                        self.sample_rate,
+                        measure_breakdown,
+                    ),
                 },
             });
         }
@@ -1225,7 +1280,13 @@ impl SpatialRenderer {
             object_band_sq: diag.object_band_sq,
             object_test_position,
             object_test_level,
-            crossover_time_ms: diag.crossover_elapsed.as_secs_f32() * 1000.0,
+            crossover_time_ms: smoothed_crossover_time_ms(
+                &mut self.crossover_duty_ema,
+                diag.crossover_elapsed,
+                sample_length,
+                self.sample_rate,
+                measure_breakdown,
+            ),
         })
     }
 
