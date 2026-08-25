@@ -215,7 +215,7 @@ pub struct SmallBands {
 }
 
 impl SmallBands {
-    fn new(len: usize) -> Self {
+    pub(crate) fn new(len: usize) -> Self {
         debug_assert!(len <= 8, "SmallBands supports at most 8 bands");
         Self {
             data: [0.0; 8],
@@ -231,7 +231,7 @@ impl SmallBands {
         }
     }
 
-    fn set(&mut self, i: usize, v: f32) {
+    pub(crate) fn set(&mut self, i: usize, v: f32) {
         self.data[i] = v;
     }
 

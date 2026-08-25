@@ -3,7 +3,7 @@
 //! `pub(super)` (or `pub` for the renderer's public API types) so the
 //! `SpatialRenderer` impl in the parent module can use them.
 
-use crate::crossover::{BiquadState, FreqBand, LR4CrossoverBank};
+use crate::crossover::{CrossoverBank, CrossoverStates, FreqBand};
 use crate::live_params::{RenderTopology, RendererControl};
 use crate::ramp_strategy::ChannelRampState;
 use crate::render_backend::{
@@ -45,9 +45,6 @@ pub struct RenderedFrame {
     /// meter which is pre-gain. Feeds the per-band object meters; empty when
     /// metering is off or no crossover is active.
     pub object_band_sq: Vec<(usize, Vec<f64>)>,
-    /// Time spent in the crossover filter-bank stage during `render_frame`.
-    ///
-    /// This is a subset of the total render time.
     /// Where the object test's source sits, once its orbit and the room clamp
     /// are applied — `None` when no test is running.
     ///
@@ -60,6 +57,16 @@ pub struct RenderedFrame {
     /// same reason as the position: it is a source Studio invented, so the
     /// renderer is the only party that can meter it.
     pub object_test_level: Option<(f32, f32)>,
+    /// Smoothed cost of the crossover filter-bank stage, in milliseconds per
+    /// frame of this frame's duration (a subset of the total render time).
+    /// Deliberately NOT the raw per-frame timing: the FIR bank works in
+    /// 1024-sample bursts, so with small host frames (a 40-sample TrueHD
+    /// access unit) the raw value aliases — ~25 frames cost microseconds and
+    /// one carries the whole FFT burst, and a sampled display reads the cheap
+    /// ones. This is the duty-cycle EMA (~1 s of audio) times the frame
+    /// duration, so it means the same thing at every frame size and is
+    /// directly comparable to the frame budget. Only advances while metering
+    /// collects the breakdown; holds its last value otherwise.
     pub crossover_time_ms: f32,
 }
 
@@ -355,13 +362,14 @@ impl BandRenderer {
 
 /// Split one sample into frequency bands.
 ///
-/// When a crossover filter bank is active, runs the sample through the LR4 chain.
+/// When a crossover filter bank is active, runs the sample through the active
+/// engine (LR4 or linear-phase FIR).
 /// Otherwise returns a 1-band passthrough so the caller's band loop is identical.
 #[inline]
 pub(super) fn split_bands(
     raw: f32,
-    filter_bank: &Option<LR4CrossoverBank>,
-    states: Option<&mut [BiquadState]>,
+    filter_bank: &Option<CrossoverBank>,
+    states: Option<&mut CrossoverStates>,
 ) -> crate::crossover::SmallBands {
     match (filter_bank.as_ref(), states) {
         (Some(fb), Some(s)) => fb.process_sample(raw, s),

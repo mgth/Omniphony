@@ -2,8 +2,9 @@ use crate::pipewire_pods::{
     IEC958_AC3_CHANNELS, IEC958_AC3_RATE_HZ, IEC958_CODECS_PROP, IEC958_DTS_CHANNELS,
     IEC958_DTS_RATE_HZ, IEC958_DTSHD_CHANNELS, IEC958_DTSHD_RATE_HZ,
     build_pipewire_bridge_buffers_pod, build_pipewire_bridge_codec_format_pod,
-    build_pipewire_bridge_format_pod, build_pipewire_bridge_raw_buffers_pod,
-    build_pipewire_bridge_raw_format_pod, build_pipewire_bridge_stream_properties,
+    build_pipewire_bridge_format_pod, build_pipewire_bridge_latency_pod,
+    build_pipewire_bridge_raw_buffers_pod, build_pipewire_bridge_raw_format_pod,
+    build_pipewire_bridge_stream_properties,
 };
 use crate::{InputClockMode, InputControl};
 use anyhow::{Result, anyhow};
@@ -1189,6 +1190,16 @@ where
     let direct_trigger_active = input_control.direct_trigger_active_arc();
     let mut next_direct_trigger_at: Option<Instant> = None;
 
+    // Advertised sink latency: the render/write path publishes the pipeline's
+    // total downstream latency (render DSP + measured output chain up to and
+    // including the DAC's own declared latency) into InputControl; when it
+    // moves past the hysteresis, update the stream's Latency param so
+    // upstream players (pipewire-pulse → browsers, …) re-time their A/V
+    // sync. Checked once a second: the figure only steps on a crossover
+    // engine flip and creeps with the drift servo.
+    let mut advertised_latency_ns: u64 = 0;
+    let mut latency_checked_at = Instant::now();
+
     while !stop.load(Ordering::Relaxed)
         && !sys::ShutdownHandle::is_requested()
         && !sys::ShutdownHandle::is_restart_from_config_requested()
@@ -1217,6 +1228,37 @@ where
             drain_scheduled_pw_stream_trigger(&stream, &trigger_schedule, log_prefix);
         } else {
             let _ = mainloop.loop_().iterate(Duration::from_millis(50));
+        }
+
+        if latency_checked_at.elapsed() >= Duration::from_secs(1) {
+            latency_checked_at = Instant::now();
+            let target_ns = input_control.downstream_latency_ns();
+            if target_ns.abs_diff(advertised_latency_ns) >= 2_000_000 {
+                match build_pipewire_bridge_latency_pod(target_ns.min(i64::MAX as u64) as i64) {
+                    Ok(bytes) => {
+                        if let Some(pod) = Pod::from_bytes(&bytes) {
+                            match stream.update_params(&mut [pod]) {
+                                Ok(()) => {
+                                    log::info!(
+                                        "{} sink now advertises {:.1} ms latency (node={})",
+                                        log_prefix,
+                                        target_ns as f64 / 1e6,
+                                        config.node_name,
+                                    );
+                                    advertised_latency_ns = target_ns;
+                                }
+                                Err(e) => log::warn!(
+                                    "{} failed to update the Latency param: {e:?}",
+                                    log_prefix
+                                ),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("{} failed to build the Latency pod: {e:#}", log_prefix)
+                    }
+                }
+            }
         }
     }
 

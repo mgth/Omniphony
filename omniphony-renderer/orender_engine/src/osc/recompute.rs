@@ -123,6 +123,7 @@ pub(crate) fn trigger_layout_recompute(
                             &unroutable,
                             &control_clone.fixed_channel_catalog(),
                             &control_clone.fixed_channel_processing(),
+                            control_clone.crossover_info(),
                         )
                     };
                     let layout_json = {

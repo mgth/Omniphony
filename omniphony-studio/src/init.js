@@ -532,6 +532,13 @@ export function applyInitState(payload) {
       (n) => typeof n === 'string'
     );
   }
+  if (Object.prototype.hasOwnProperty.call(payload, 'crossover')) {
+    // null = the renderer has not built a bank yet; the audio-format flush
+    // renders the annotation under the crossover control either way.
+    app.crossover =
+      payload.crossover && typeof payload.crossover === 'object' ? payload.crossover : null;
+    updateAudioFormatDisplay();
+  }
   if (Object.prototype.hasOwnProperty.call(payload, 'virtualBed')) {
     // null = renderer is on the built-in canonical poses; an object is the
     // configured/live bed. The editor seeds defaults when this is null.

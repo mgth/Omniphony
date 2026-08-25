@@ -427,6 +427,11 @@ impl SpatialRenderer {
             // Seeded to the default (ByIndex); the CLI bootstrap and the embedded
             // mpv host override it from `render.output_channel_mapping`.
             output_channel_mapping: crate::live_params::OutputChannelMapping::default(),
+            // Seeded to the default (Lr4); the CLI bootstrap and the embedded
+            // mpv host override it from `render.crossover_type`.
+            crossover_type: crate::live_params::CrossoverType::default(),
+            crossover_fir_transition_ratio:
+                crate::config_fields::crossover_fir_transition_ratio::DEFAULT,
             // Seeded from `render.virtual_bed` by the same bootstrap; `None`
             // uses the built-in canonical poses (LFE direct, rest virtualized).
             virtual_bed: None,
@@ -512,6 +517,8 @@ impl SpatialRenderer {
             binaural: crate::binaural::BinauralRenderer::new(sample_rate),
             cascade: None,
             last_mix_num_speakers: 0,
+            last_output_latency: 0,
+            crossover_duty_ema: Default::default(),
             binaural_pos_buf: Vec::new(),
             binaural_gain_buf: Vec::new(),
             binaural_direct_buf: Vec::new(),
