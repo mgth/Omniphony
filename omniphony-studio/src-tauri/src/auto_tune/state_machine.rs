@@ -123,7 +123,7 @@ impl State {
     }
 
     /// A run that has ended, one way or another.
-    fn is_terminal(self) -> bool {
+    pub fn is_terminal(self) -> bool {
         matches!(self, State::Completed | State::Cancelled | State::Error)
     }
 }

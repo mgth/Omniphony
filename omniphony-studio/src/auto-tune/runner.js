@@ -1,6 +1,10 @@
 // Glue layer between the PI auto-tune FSM and the studio runtime.
 //
-// Owns the polling loop (50 ms), forwards app.* telemetry to the FSM,
+// `createAutoTuneRunner()` picks an implementation at start: the local one
+// below, or the backend port behind the `rust_auto_tune` config flag. The
+// wizard drives whichever it gets through the same interface.
+//
+// The local runner owns the polling loop (50 ms), forwards app.* telemetry to the FSM,
 // applies kpNear/ki/maxAdjust/updateIntervalCallbacks patches via
 // sendAudioConfig(), and persists/restores the initial values via the
 // Tauri auto_tune_snapshot_* commands so the wizard survives a WebView
@@ -13,10 +17,11 @@ import { app } from '../state.js';
 import { sendAudioConfig, buildAudioConfigPayload } from '../controls/audio.js';
 import { updateAdaptiveResamplingUI } from '../controls/adaptive.js';
 import { createAutoTuneStateMachine } from './state-machine.js';
+import { createBackendAutoTuneRunner } from './backend-runner.js';
 
 const POLL_INTERVAL_MS = 50;
 
-export function createAutoTuneRunner() {
+export function createLocalAutoTuneRunner() {
   let fsm = null;
   let intervalId = null;
   const listeners = new Set();
@@ -179,5 +184,69 @@ export function createAutoTuneRunner() {
     getContext,
     restoreSnapshot,
     hasPendingSnapshot,
+  };
+}
+
+/**
+ * The runner the wizard gets: the backend port when `rust_auto_tune` is on,
+ * the local state machine otherwise.
+ *
+ * The choice is made at `start()`, not at construction, so `on()` can be
+ * registered first — the backend emits its first events synchronously inside
+ * `auto_tune_start`, and a listener attached afterwards would miss step 1.
+ */
+export function createAutoTuneRunner() {
+  const listeners = new Set();
+  let impl = null;
+
+  function emit(event, payload) {
+    for (const fn of listeners) {
+      try {
+        fn(event, payload);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[auto-tune runner] listener error', err);
+      }
+    }
+  }
+
+  async function pick() {
+    if (impl) return impl;
+    let backend = false;
+    try {
+      backend = (await invoke('auto_tune_backend_enabled')) === true;
+    } catch (err) {
+      // An older backend has no such command; the local runner is the default
+      // anyway, so this is the right way to fail.
+      backend = false;
+    }
+    impl = backend ? createBackendAutoTuneRunner() : createLocalAutoTuneRunner();
+    impl.on(emit);
+    return impl;
+  }
+
+  return {
+    on(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    async start(options) {
+      return (await pick()).start(options);
+    },
+    async cancel() {
+      return impl ? impl.cancel() : false;
+    },
+    async accept() {
+      return impl ? impl.accept() : false;
+    },
+    userAck(kind) {
+      return impl ? impl.userAck(kind) : false;
+    },
+    abbreviate() {
+      return impl ? impl.abbreviate() : false;
+    },
+    async getState() {
+      return impl ? impl.getState() : 'idle';
+    },
   };
 }

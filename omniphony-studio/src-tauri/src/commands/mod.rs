@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod auto_tune;
 pub mod binaural;
 pub mod diag;
 pub mod engine;
