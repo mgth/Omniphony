@@ -71,6 +71,8 @@ pub fn build_object_metas(
                     .unwrap_or([0.0, 0.0, 0.0]),
                 fixed: false,
                 label: String::new(),
+                // Carried by the stream, not synthesized here.
+                kind: crate::object_gen::ObjectKind::Dynamic,
             })
         })
         .collect()

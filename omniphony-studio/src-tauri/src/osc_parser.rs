@@ -53,6 +53,36 @@ fn clamp(v: f64, min: f64, max: f64) -> f64 {
 // form also carry their angles, and the frontend re-derives cartesian from
 // those, which is why this mostly stayed invisible.
 
+/// Classify an object from its name, for renderers that predate the explicit
+/// `kind` on `/meta`.
+///
+/// This is the regular expression the frontend used to run, moved to the
+/// backend so the frontend never has to classify. It is a compatibility path,
+/// not the rule: a current renderer says what the object is, and this is only
+/// consulted when it does not.
+///
+/// Removable once no renderer older than that field is in use.
+fn infer_object_kind(name: Option<&str>) -> Option<String> {
+    let name = name?;
+    let lower = name.to_ascii_lowercase();
+    // Bed->height synthesis: PAD "Ambience_FL", copy-up "Height_Ls_synth",
+    // DirAC diffuse "Diffuse_TFL".
+    if lower.starts_with("ambience_") || lower.starts_with("diffuse_") {
+        return Some("height".to_string());
+    }
+    if lower.starts_with("height_") && lower.ends_with("_synth") {
+        return Some("height".to_string());
+    }
+    // Phantom extraction and the spectral sector rings.
+    if lower.starts_with("phantom_")
+        || lower.starts_with("direct_")
+        || lower.starts_with("directh_")
+    {
+        return Some("phantom".to_string());
+    }
+    None
+}
+
 fn find_id_in_address(parts: &[&str]) -> Option<String> {
     let anchors = ["source", "sources", "object", "obj", "track", "channel"];
     let reserved: std::collections::HashSet<&str> = [
@@ -145,6 +175,9 @@ pub enum OscEvent {
         label: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         generation: Option<u64>,
+        /// `"height"`, `"phantom"`, or absent for an ordinary object.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     #[serde(rename = "update:size")]
     UpdateSize {
@@ -574,11 +607,20 @@ fn parse_omniphony_object_meta(
         Some(OscType::Int(v)) if *v >= 0 => Some(*v as u64),
         _ => None,
     };
+    // Appended after `generation`; absent from renderers that predate it, in
+    // which case the kind is inferred from the name below.
+    let kind = raw_args
+        .get(3)
+        .and_then(unwrap_string)
+        .map(|k| k.trim().to_ascii_lowercase())
+        .filter(|k| matches!(k.as_str(), "height" | "phantom"))
+        .or_else(|| infer_object_kind(label.as_deref()));
     Some(OscEvent::UpdateMeta {
         id,
         fixed,
         label,
         generation,
+        kind,
     })
 }
 
@@ -1109,6 +1151,49 @@ mod tests {
     use rosc::OscType;
 
     #[test]
+    fn the_name_fallback_classifies_what_the_regex_used_to() {
+        for name in [
+            "Ambience_FL",
+            "Diffuse_TFL",
+            "Height_Ls_synth",
+            "AMBIENCE_FR",
+        ] {
+            assert_eq!(
+                super::infer_object_kind(Some(name)).as_deref(),
+                Some("height"),
+                "{name}"
+            );
+        }
+        for name in ["Phantom_L_C", "Phantom_C", "Direct_FL", "DirectH_FL"] {
+            assert_eq!(
+                super::infer_object_kind(Some(name)).as_deref(),
+                Some("phantom"),
+                "{name}"
+            );
+        }
+    }
+
+    /// An ordinary object has no kind — the badge must stay blank rather than
+    /// picking one of the synthesized icons.
+    #[test]
+    fn an_ordinary_name_infers_nothing() {
+        for name in ["Dialogue", "Obj_3", "L", "heights"] {
+            assert_eq!(super::infer_object_kind(Some(name)), None, "{name}");
+        }
+        assert_eq!(super::infer_object_kind(None), None);
+    }
+
+    /// `Height_x_synth` needs both ends: the prefix alone is a different thing.
+    #[test]
+    fn the_height_pattern_needs_its_suffix() {
+        assert_eq!(super::infer_object_kind(Some("Height_Ls")), None);
+        assert_eq!(
+            super::infer_object_kind(Some("Height_Ls_synth")).as_deref(),
+            Some("height")
+        );
+    }
+
+    #[test]
     fn parses_object_meta_message() {
         let parsed = parse_osc_message(
             "/omniphony/object/3/meta",
@@ -1126,6 +1211,7 @@ mod tests {
                 fixed: true,
                 label: Some(label),
                 generation: Some(7),
+                ..
             }) if id == "3" && label == "LFE"
         ));
     }
@@ -1183,6 +1269,7 @@ mod tests {
                 fixed: false,
                 label: None,
                 generation: None,
+                ..
             }) if id == "12"
         ));
     }

@@ -19,11 +19,18 @@ pub fn control_audio_sample_rate(state: State<SharedState>, sample_rate: i32) {
 }
 
 #[tauri::command]
-pub fn control_audio_config(state: State<SharedState>, payload: serde_json::Value) {
-    let text = match serde_json::to_string(&payload) {
-        Ok(text) => text,
-        Err(_) => return,
-    };
+pub fn control_audio_config(
+    state: State<SharedState>,
+    payload: serde_json::Value,
+) -> Option<serde_json::Value> {
+    // The form sends what the user typed; the schema decides what it means.
+    // Returning the effective configuration is what lets the UI show the
+    // corrected value rather than the rejected one — the frontend used to
+    // apply these bounds itself on the way out, so a field that was pulled
+    // into range looked accepted as typed.
+    let raw: crate::audio_config::AudioConfig = serde_json::from_value(payload).ok()?;
+    let effective = raw.resolve();
+    let text = serde_json::to_string(&effective).ok()?;
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
@@ -31,6 +38,7 @@ pub fn control_audio_config(state: State<SharedState>, payload: serde_json::Valu
             value: text,
         },
     );
+    serde_json::to_value(&effective).ok()
 }
 
 #[tauri::command]

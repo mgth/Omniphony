@@ -2079,6 +2079,14 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 s.current_content_generation = Some(generation);
                 s.current_coordinate_format = coordinate_format;
 
+                // Compatibility path for renderers that predate
+                // `/omniphony/object/{id}/remove`: infer which slots are gone
+                // from the frame's object count. A current renderer sends the
+                // removal outright, so this only catches what it already did.
+                //
+                // Removable once no renderer older than that lifecycle message
+                // is in use — it is the inference the explicit signal replaces,
+                // and keeping it is what lets an old renderer still clean up.
                 let stale_ids: Vec<String> = if is_reset {
                     s.sources.keys().cloned().collect()
                 } else {
@@ -2170,6 +2178,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                             "directSpeakerIndex": entry.direct_speaker_index,
                             "fixed": entry.fixed,
                             "label": entry.label,
+                            "kind": entry.kind,
                             "sourceTag": entry.source_tag,
                             "name": entry.name
                         }
@@ -2182,11 +2191,13 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 fixed,
                 label,
                 generation,
+                kind,
             } => {
                 let current_generation = s.current_content_generation;
                 let entry = s.sources.entry(id.clone()).or_default();
                 entry.fixed = Some(fixed);
                 entry.label = label.clone();
+                entry.kind = kind.clone();
                 if entry.generation.is_none() {
                     entry.generation = generation.or(current_generation);
                 }

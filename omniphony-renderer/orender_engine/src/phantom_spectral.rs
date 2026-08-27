@@ -45,6 +45,7 @@
 //! [`SpectralExtractor::prepare`]; [`SpectralExtractor::process`] is
 //! allocation-free and never panics.
 
+use crate::object_gen::ObjectKind;
 use std::sync::Arc;
 
 use realfft::num_complex::Complex;
@@ -339,6 +340,7 @@ impl SpectralExtractor {
                 },
                 gain_db: SPEC_GAIN_DB,
                 size: SPEC_SIZE,
+                kind: ObjectKind::Phantom,
             })
             .collect()
     }
