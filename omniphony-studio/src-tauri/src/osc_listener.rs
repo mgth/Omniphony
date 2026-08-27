@@ -16,6 +16,7 @@ use crate::osc_parser::{
     is_heartbeat_address, parse_osc_message, CoordinateFormat, HeartbeatResponse, LogEntry,
     OscEvent,
 };
+use crate::timing_stats::TimeWindow;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_ACK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -940,6 +941,8 @@ fn osc_thread(
 
     let mut buf = [0u8; 65536];
     let mut last_batch_flush = Instant::now();
+    let mut last_timing_stats = Instant::now();
+    let mut last_timing_stats_hash: Option<u64> = None;
     let mut last_watchdog_check = Instant::now();
     let mut disconnected_since: Option<Instant> = Some(Instant::now());
 
@@ -960,6 +963,14 @@ fn osc_thread(
         if last_batch_flush.elapsed() >= BATCH_FLUSH_INTERVAL {
             flush_emit_batch(&app);
             last_batch_flush = Instant::now();
+        }
+
+        // Reduce the timing telemetry to what the gauges actually draw, at
+        // 4 Hz. Also independent of the sample rate: the renderer reports per
+        // audio frame, which for a 40-sample TrueHD access unit is over 1 kHz.
+        if last_timing_stats.elapsed() >= TIMING_STATS_INTERVAL {
+            emit_timing_stats(&app, &mut last_timing_stats_hash);
+            last_timing_stats = Instant::now();
         }
 
         // drain control messages (non-blocking)
@@ -1753,6 +1764,131 @@ thread_local! {
     static EMIT_BATCH: std::cell::RefCell<
         std::collections::HashMap<String, (&'static str, serde_json::Value)>,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
+
+    // Sliding windows over the renderer's timing telemetry. Same ownership rule
+    // as EMIT_BATCH: recorded and flushed only from the OSC thread, so no lock.
+    static TIMING_WINDOWS: std::cell::RefCell<TimingWindows> =
+        std::cell::RefCell::new(TimingWindows::new());
+}
+
+/// Span the raw-latency min/max markers cover. Mirrors what the frontend used
+/// to keep as `LATENCY_RAW_WINDOW_MS`.
+const LATENCY_RAW_WINDOW_MS: u64 = 4000;
+/// Span the per-stage max markers cover (`RENDER_TIME_WINDOW_MS` in the JS).
+const RENDER_TIME_WINDOW_MS: u64 = 5000;
+/// Shorter span the per-stage bars average over, so the bars settle while the
+/// max markers still remember a spike.
+const RENDER_TIME_AVERAGE_WINDOW_MS: u64 = 1000;
+/// How often the consolidated stats event goes out. The underlying samples
+/// arrive far faster; the gauges cannot show more than this.
+const TIMING_STATS_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The five series the Studio's latency and renderer-performance gauges draw.
+struct TimingWindows {
+    started: Option<Instant>,
+    latency: TimeWindow,
+    decode: TimeWindow,
+    render: TimeWindow,
+    crossover: TimeWindow,
+    write: TimeWindow,
+}
+
+impl TimingWindows {
+    fn new() -> Self {
+        Self {
+            started: None,
+            latency: TimeWindow::new(LATENCY_RAW_WINDOW_MS),
+            decode: TimeWindow::new(RENDER_TIME_WINDOW_MS),
+            render: TimeWindow::new(RENDER_TIME_WINDOW_MS),
+            crossover: TimeWindow::new(RENDER_TIME_WINDOW_MS),
+            write: TimeWindow::new(RENDER_TIME_WINDOW_MS),
+        }
+    }
+
+    /// Milliseconds since the first sample. A monotonic origin of our own, so
+    /// the buckets never depend on wall-clock adjustments.
+    fn now_ms(&mut self) -> u64 {
+        let started = *self.started.get_or_insert_with(Instant::now);
+        started.elapsed().as_millis() as u64
+    }
+}
+
+/// Which series a sample belongs to.
+#[derive(Clone, Copy)]
+enum TimingSeries {
+    Latency,
+    Decode,
+    Render,
+    Crossover,
+    Write,
+}
+
+/// Fold one telemetry sample into its window.
+///
+/// A non-finite value means the renderer has nothing to report for that stage
+/// (no output running yet, no crossover configured), and drops the series'
+/// history rather than being folded in — otherwise the max marker would keep
+/// showing a spike from a stage that has since gone quiet. This is what the
+/// frontend did when it owned the windows.
+fn record_timing(series: TimingSeries, value: f64) {
+    TIMING_WINDOWS.with(|w| {
+        let mut w = w.borrow_mut();
+        let now = w.now_ms();
+        let window = match series {
+            TimingSeries::Latency => &mut w.latency,
+            TimingSeries::Decode => &mut w.decode,
+            TimingSeries::Render => &mut w.render,
+            TimingSeries::Crossover => &mut w.crossover,
+            TimingSeries::Write => &mut w.write,
+        };
+        if value.is_finite() {
+            window.record(now, value);
+        } else {
+            window.clear();
+        }
+    });
+}
+
+/// `{ "min": .., "max": .., "mean": .. }`, or `null` when the span is empty.
+/// A null tells the frontend to hide the marker rather than draw a stale one.
+fn stats_json(stats: Option<crate::timing_stats::WindowStats>) -> serde_json::Value {
+    match stats {
+        Some(s) => serde_json::json!({ "min": s.min, "max": s.max, "mean": s.mean }),
+        None => serde_json::Value::Null,
+    }
+}
+
+/// Emit the consolidated timing snapshot the gauges draw from.
+///
+/// This replaces five per-message events with one at 4 Hz. The frontend used to
+/// receive every sample purely to reduce it to these numbers.
+///
+/// Identical payloads are dropped, so an idle or disconnected renderer costs
+/// nothing rather than four all-null events per second.
+fn emit_timing_stats(app: &AppHandle, last_hash: &mut Option<u64>) {
+    let payload = TIMING_WINDOWS.with(|w| {
+        let mut w = w.borrow_mut();
+        let now = w.now_ms();
+        // Per-stage bars average over the short span; their max markers reach
+        // back over the long one.
+        let stage = |window: &TimeWindow| {
+            serde_json::json!({
+                "avg": stats_json(window.stats(now, RENDER_TIME_AVERAGE_WINDOW_MS)),
+                "max": stats_json(window.stats(now, RENDER_TIME_WINDOW_MS)),
+            })
+        };
+        serde_json::json!({
+            "latency": stats_json(w.latency.stats(now, LATENCY_RAW_WINDOW_MS)),
+            "decode": stage(&w.decode),
+            "render": stage(&w.render),
+            "crossover": stage(&w.crossover),
+            "write": stage(&w.write),
+        })
+    });
+    if already_emitted(last_hash, &payload) {
+        return;
+    }
+    let _ = app.emit("latency:stats", payload);
 }
 
 fn is_batched_event(event: &str) -> bool {
@@ -2476,6 +2612,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateLatencyInstant { value } => {
                 let rounded = s.set_latency_instant_value(value);
+                record_timing(TimingSeries::Latency, value);
                 (
                     Some(("latency:instant", serde_json::json!({ "value": rounded }))),
                     removed_ids,
@@ -2597,6 +2734,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateDecodeTimeMs { value } => {
                 s.decode_time_ms = Some(value);
+                record_timing(TimingSeries::Decode, value);
                 (
                     Some(("decode:time_ms", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -2618,6 +2756,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateRenderTimeMs { value } => {
                 s.render_time_ms = Some(value);
+                record_timing(TimingSeries::Render, value);
                 (
                     Some(("render:time_ms", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -2625,6 +2764,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateCrossoverTimeMs { value } => {
                 s.crossover_time_ms = Some(value);
+                record_timing(TimingSeries::Crossover, value);
                 (
                     Some(("crossover:time_ms", serde_json::json!({ "value": value }))),
                     removed_ids,
@@ -2632,6 +2772,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
             OscEvent::StateWriteTimeMs { value } => {
                 s.write_time_ms = Some(value);
+                record_timing(TimingSeries::Write, value);
                 (
                     Some(("write:time_ms", serde_json::json!({ "value": value }))),
                     removed_ids,

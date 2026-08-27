@@ -221,15 +221,18 @@ export const app = {
   diagSchema: null,
   diagValues: null,
   decodeTimeMs: null,
-  decodeTimeWindow: [],
   renderTimeMs: null,
-  renderTimeWindow: [],
   crossoverTimeMs: null,
-  crossoverTimeWindow: [],
   writeTimeMs: null,
-  writeTimeWindow: [],
   frameDurationMs: null,
-  latencyRawWindow: [],
+  // Sliding-window aggregates of the timing telemetry, computed by the backend
+  // and delivered by `latency:stats` at 4 Hz. The frontend used to keep each
+  // series as an array of samples and reduce it here, which meant receiving
+  // every sample — up to a few kHz — purely to derive these few numbers.
+  //   { latency: {min,max,mean}|null,
+  //     decode|render|crossover|write: { avg: {...}|null, max: {...}|null } }
+  // A null series means "nothing in the window": hide the marker.
+  timingStats: null,
   resampleRatio: null,
   latencyTargetApplyTimer: null,
 
@@ -621,8 +624,9 @@ export function usesNumericSpatialPlaceholders() {
 export const METER_DECAY_START_MS = 250;
 export const METER_DECAY_DB_PER_SEC = 45;
 export const DEFAULT_SAMPLE_RATE_HZ = 48000;
-export const LATENCY_RAW_WINDOW_MS = 4000;
-export const RENDER_TIME_WINDOW_MS = 5000;
+// The timing-window spans moved to the backend that now owns the windows:
+// LATENCY_RAW_WINDOW_MS / RENDER_TIME_WINDOW_MS / RENDER_TIME_AVERAGE_WINDOW_MS
+// in `src-tauri/src/osc_listener.rs`.
 export const AUDIO_SAMPLE_RATE_PRESETS = [0, 32000, 44100, 48000, 88200, 96000, 176400, 192000];
 export const isLinux = typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('linux');
 
