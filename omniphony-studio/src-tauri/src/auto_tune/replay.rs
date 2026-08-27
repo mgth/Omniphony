@@ -64,6 +64,130 @@ mod tests {
         }
     }
 
+    /// The event's payload, in the shape the frontend listener receives it.
+    ///
+    /// This matters beyond parity for its own sake: the wizard reads payload
+    /// fields directly (`payload.palierStats?.peakToPeakPpm`,
+    /// `payload.verdict?.reason`, wizard-ui.js:115-119), so a payload the port
+    /// does not reproduce is a readout the UI silently loses.
+    fn event_payload(event: &Event) -> Value {
+        // `emit('progress', { step, ...detail })` and friends: the tag is
+        // merged into the detail object, not nested under it.
+        let merged = |tag_key: &str, tag: &str, detail: &Value| {
+            let mut o = serde_json::Map::new();
+            o.insert(tag_key.to_string(), Value::String(tag.to_string()));
+            if let Some(d) = detail.as_object() {
+                for (k, v) in d {
+                    o.insert(k.clone(), v.clone());
+                }
+            }
+            Value::Object(o)
+        };
+        match event {
+            Event::ApplyParams {
+                kp_near,
+                ki,
+                max_adjust,
+                update_interval_callbacks,
+            } => {
+                // The JS emits only the keys it is actually changing.
+                let mut o = serde_json::Map::new();
+                for (k, v) in [
+                    ("kpNear", kp_near),
+                    ("ki", ki),
+                    ("maxAdjust", max_adjust),
+                    ("updateIntervalCallbacks", update_interval_callbacks),
+                ] {
+                    if let Some(v) = v {
+                        o.insert(k.to_string(), serde_json::json!(v));
+                    }
+                }
+                Value::Object(o)
+            }
+            Event::Progress { step, detail } => merged("step", step, detail),
+            Event::AwaitUserAction { kind, detail } => merged("kind", kind, detail),
+            Event::Error { kind, detail } => merged("kind", kind, detail),
+            Event::SourceLost { events } => serde_json::json!({ "events": events }),
+            Event::SourceRecovered { restored_state } => {
+                serde_json::json!({ "restoredState": restored_state })
+            }
+            Event::Complete(r) => serde_json::json!({
+                "kpCrit": r.kp_crit,
+                "kpFinal": r.kp_final,
+                "kiFinal": r.ki_final,
+                "maxAdjustFinal": r.max_adjust_final,
+                "updateIntervalFinal": r.update_interval_final,
+                "tighteningOscillation": r.tightening_oscillation,
+                "tighteningConverged": r.tightening_converged,
+            }),
+            // `emit('cancelled', {})` — an empty object, not a null.
+            Event::Cancelled => serde_json::json!({}),
+        }
+    }
+
+    /// Compare two payloads, tolerating float representation noise. Reports
+    /// the first difference as a dotted path so a failure names the field.
+    fn payload_diff(ours: &Value, theirs: &Value, path: &str) -> Option<String> {
+        match (ours, theirs) {
+            (Value::Object(a), Value::Object(b)) => {
+                let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
+                keys.sort();
+                keys.dedup();
+                for k in keys {
+                    let sub = if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{path}.{k}")
+                    };
+                    match (a.get(k), b.get(k)) {
+                        (Some(x), Some(y)) => {
+                            if let Some(d) = payload_diff(x, y, &sub) {
+                                return Some(d);
+                            }
+                        }
+                        // The JS omits nothing it sets, so a key on one side
+                        // only is a real difference — except for an explicit
+                        // null, which serde and JSON.stringify disagree about.
+                        (Some(x), None) if !x.is_null() => {
+                            return Some(format!("{sub}: we emit {x}, the frontend omits it"))
+                        }
+                        (None, Some(y)) if !y.is_null() => {
+                            return Some(format!("{sub}: we omit it, the frontend emits {y}"))
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+            (Value::Array(a), Value::Array(b)) => {
+                if a.len() != b.len() {
+                    return Some(format!("{path}: {} items, recorded {}", a.len(), b.len()));
+                }
+                for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                    if let Some(d) = payload_diff(x, y, &format!("{path}[{i}]")) {
+                        return Some(d);
+                    }
+                }
+                None
+            }
+            (Value::Number(a), Value::Number(b)) => {
+                let (x, y) = (
+                    a.as_f64().unwrap_or(f64::NAN),
+                    b.as_f64().unwrap_or(f64::NAN),
+                );
+                // Relative tolerance: these run from 1e-3 (ki) to 1e6 (ppm).
+                let scale = x.abs().max(y.abs()).max(1.0);
+                if (x - y).abs() > scale * 1e-9 {
+                    Some(format!("{path}: {x}, recorded {y}"))
+                } else {
+                    None
+                }
+            }
+            (a, b) if a == b => None,
+            (a, b) => Some(format!("{path}: {a}, recorded {b}")),
+        }
+    }
+
     /// The recorded runs all override the durations, so replaying them says
     /// nothing about what the machine does when nobody overrides anything —
     /// which is every real run. Checked field by field against the frontend's
@@ -134,25 +258,26 @@ mod tests {
             let ring_once = setup["ringOnceDuringRecovery"].as_bool().unwrap_or(false);
 
             let mut fsm = AutoTune::new(opts);
-            let mut emitted: Vec<&'static str> = Vec::new();
+            let mut emitted: Vec<(&'static str, Value)> = Vec::new();
             let mut states: Vec<String> = Vec::new();
 
             // The kp the plant sees is the last one *applied*, not the one in
             // the context — the two part company as soon as the sweep declares
             // oscillation. See the note in the recorder.
             let mut applied_kp = 0.0_f64;
-            let observe =
-                |events: Vec<Event>, emitted: &mut Vec<&'static str>, applied_kp: &mut f64| {
-                    for e in events {
-                        if let Event::ApplyParams {
-                            kp_near: Some(kp), ..
-                        } = e
-                        {
-                            *applied_kp = kp;
-                        }
-                        emitted.push(event_name(&e));
+            let observe = |events: Vec<Event>,
+                           emitted: &mut Vec<(&'static str, Value)>,
+                           applied_kp: &mut f64| {
+                for e in events {
+                    if let Event::ApplyParams {
+                        kp_near: Some(kp), ..
+                    } = e
+                    {
+                        *applied_kp = kp;
                     }
-                };
+                    emitted.push((event_name(&e), event_payload(&e)));
+                }
+            };
 
             observe(fsm.start(0.0), &mut emitted, &mut applied_kp);
 
@@ -281,16 +406,27 @@ mod tests {
                 "{name}: the sequence of states diverged"
             );
 
-            let expected_events: Vec<&str> = run["events"]
-                .as_array()
-                .unwrap()
+            let recorded_events = run["events"].as_array().unwrap();
+            let names: Vec<&str> = emitted.iter().map(|(n, _)| *n).collect();
+            let expected_names: Vec<&str> = recorded_events
                 .iter()
                 .map(|e| e["event"].as_str().unwrap())
                 .collect();
             assert_eq!(
-                emitted, expected_events,
+                names, expected_names,
                 "{name}: the sequence of events diverged"
             );
+
+            // And the payloads, which the wizard reads field by field.
+            for (i, ((ev, ours), recorded)) in emitted.iter().zip(recorded_events).enumerate() {
+                let theirs = &recorded["payload"];
+                if theirs.is_null() && ours.is_null() {
+                    continue;
+                }
+                if let Some(d) = payload_diff(ours, theirs, "") {
+                    panic!("{name}: event #{i} ({ev}) payload differs — {d}");
+                }
+            }
         }
     }
 

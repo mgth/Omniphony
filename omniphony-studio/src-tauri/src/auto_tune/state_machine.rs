@@ -27,7 +27,7 @@
 use super::detectors::{
     compute_palier_stats, compute_rate_stats, detect_convergence, detect_oscillation_absolute,
     detect_oscillation_by_jump, detect_saturation, detect_source_loss, error_ms,
-    ConvergenceThresholds, OscillationThresholds, PalierStats, RateStats, Sample,
+    ConvergenceThresholds, JumpVerdict, OscillationThresholds, PalierStats, RateStats, Sample,
     SaturationThresholds, SourceLossThresholds,
 };
 
@@ -172,6 +172,64 @@ pub struct TuningResult {
     pub tightening_converged: bool,
 }
 
+// ── payload shapes ──────────────────────────────────────────────────────────
+//
+// The wizard reads progress payloads field by field
+// (`payload.palierStats?.peakToPeakPpm`, `payload.verdict?.reason`), so these
+// are part of the contract, not decoration. Non-finite floats serialise to
+// `null`, which is what `JSON.stringify` does with `Infinity` on the frontend.
+
+fn palier_stats_json(s: &PalierStats) -> serde_json::Value {
+    serde_json::json!({
+        "peakToPeakPpm": s.peak_to_peak_ppm,
+        "crossings": s.crossings,
+        "crossingRate": s.crossing_rate,
+        "meanPpm": s.mean_ppm,
+        "samples": s.samples,
+        "stableDurationMs": s.stable_duration_ms,
+    })
+}
+
+fn rate_stats_json(s: &RateStats) -> serde_json::Value {
+    serde_json::json!({
+        "peakAbsPpm": s.peak_abs_ppm,
+        "meanPpm": s.mean_ppm,
+        "stdPpm": s.std_ppm,
+        "samples": s.samples,
+    })
+}
+
+/// The jump verdict as the frontend emits it: each rejection branch carries
+/// only what it had computed by the time it gave up.
+fn jump_verdict_json(
+    v: &JumpVerdict,
+    current: Option<&PalierStats>,
+    baselines: &[Option<PalierStats>],
+) -> serde_json::Value {
+    let mut o = serde_json::Map::new();
+    o.insert("oscillating".into(), serde_json::json!(v.oscillating));
+    o.insert("reason".into(), serde_json::json!(v.reason));
+    if let Some(c) = current {
+        o.insert("currentStats".into(), palier_stats_json(c));
+    }
+    if v.reason == Some("baseline-too-short") {
+        let kept: Vec<serde_json::Value> =
+            baselines.iter().flatten().map(palier_stats_json).collect();
+        o.insert("baselines".into(), serde_json::Value::Array(kept));
+    }
+    for (key, value) in [
+        ("maxBaselinePeakToPeakPpm", v.max_baseline_peak_to_peak_ppm),
+        ("maxBaselineCrossingRate", v.max_baseline_crossing_rate),
+        ("peakToPeakJump", v.peak_to_peak_jump),
+        ("crossingJump", v.crossing_jump),
+    ] {
+        if let Some(value) = value {
+            o.insert(key.into(), serde_json::json!(value));
+        }
+    }
+    serde_json::Value::Object(o)
+}
+
 /// What the user can ask for mid-run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ack {
@@ -182,6 +240,9 @@ pub enum Ack {
 
 #[derive(Debug, Clone, Copy)]
 struct PalierRecord {
+    /// The kp this palier ran at. Only surfaced in the `no-oscillation`
+    /// error payload, which reports the whole sweep.
+    kp: f64,
     stats: Option<PalierStats>,
     saturated: bool,
 }
@@ -435,6 +496,7 @@ impl AutoTune {
         let verdict = detect_oscillation_by_jump(palier_stats.as_ref(), &baselines, &self.osc);
 
         self.ctx.kp_history.push(PalierRecord {
+            kp: self.ctx.current_kp,
             stats: palier_stats,
             saturated: sat.saturated,
         });
@@ -461,6 +523,7 @@ impl AutoTune {
                 "kpFinal": kp_final,
                 "currentKi": initial_ki,
                 "kiIteration": 0,
+                "verdict": jump_verdict_json(&verdict, palier_stats.as_ref(), baselines),
             });
             self.set_state(State::TuningKi, detail, out);
             return;
@@ -471,7 +534,20 @@ impl AutoTune {
             self.state = State::Error;
             out.push(Event::Error {
                 kind: "no-oscillation",
-                detail: serde_json::json!({ "kpReached": self.ctx.current_kp }),
+                detail: serde_json::json!({
+                    "kpReached": self.ctx.current_kp,
+                    "lastStats": palier_stats.as_ref().map(palier_stats_json),
+                    "history": self
+                        .ctx
+                        .kp_history
+                        .iter()
+                        .map(|p| serde_json::json!({
+                            "kp": p.kp,
+                            "stats": p.stats.as_ref().map(palier_stats_json),
+                            "saturated": p.saturated,
+                        }))
+                        .collect::<Vec<_>>(),
+                }),
             });
             return;
         }
@@ -485,7 +561,12 @@ impl AutoTune {
         });
         out.push(Event::Progress {
             step: "holdKp",
-            detail: serde_json::json!({ "currentKp": next_kp, "saturated": sat.saturated }),
+            detail: serde_json::json!({
+                "currentKp": next_kp,
+                "saturated": sat.saturated,
+                "palierStats": palier_stats.as_ref().map(palier_stats_json),
+                "verdict": jump_verdict_json(&verdict, palier_stats.as_ref(), baselines),
+            }),
         });
     }
 
@@ -560,6 +641,8 @@ impl AutoTune {
                 "currentKi": next_ki,
                 "kiIteration": self.ctx.ki_iteration,
                 "reason": reason,
+                "firstHalfMeanErr": first_half,
+                "secondHalfMeanErr": second_half,
             }),
         });
     }
@@ -660,6 +743,7 @@ impl AutoTune {
             "maxAdjustFinal": max_adjust,
             "updateIntervalFinal": update_interval,
             "maxAdjustWarn": max_adjust > self.opts.max_adjust_warn_threshold,
+            "rateStats": rate_stats_json(&stats),
         });
         self.set_state(State::Tightening, detail, out);
     }
