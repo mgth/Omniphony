@@ -9,6 +9,7 @@ import { app } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { createAutoTuneRunner } from './runner.js';
 import { createSparkline } from './sparkline.js';
+import { attachQuitGuard, detachQuitGuard } from './quit-guard.js';
 
 let modalEl = null;
 let bodyEl = null;
@@ -278,7 +279,15 @@ function renderSuspended() {
 
 async function handleStart() {
   if (!runner) return;
-  await runner.start();
+  const result = await runner.start();
+  // Only guard the close button once a run is actually under way: a refused
+  // start leaves nothing to lose.
+  if (!result || result.started !== false) {
+    attachQuitGuard(handleCancel).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[auto-tune wizard] could not guard the close button', err);
+    });
+  }
 }
 
 async function handleCancel() {
@@ -306,6 +315,7 @@ async function handleAccept() {
 }
 
 function closeWizard() {
+  detachQuitGuard();
   stopSparklineRender();
   if (runnerOff) {
     runnerOff();
