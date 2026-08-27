@@ -35,6 +35,10 @@ flate2 = "1"
 socket2 = "0.5"
 tokio = { version = "1", features = ["sync", "rt", "macros"] }
 log = "0.4"
+# Installs the actual sink for the `log` macros above; without it every `log::*`
+# call in this crate is discarded at runtime. Same backend as the renderer's
+# `sys::live_log`, so RUST_LOG behaves identically in both.
+env_logger = "0.11"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
 # Cross-platform process RSS/virtual memory readout for the opt-in memory
