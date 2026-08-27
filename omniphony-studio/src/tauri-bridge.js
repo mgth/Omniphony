@@ -414,11 +414,8 @@ export function setupTauriBridge() {
     if (oscMeteringToggleEl) oscMeteringToggleEl.checked = app.oscMeteringEnabled;
     if (!app.oscMeteringEnabled) {
       app.decodeTimeMs = null;
-      app.decodeTimeWindow = [];
       app.renderTimeMs = null;
-      app.renderTimeWindow = [];
       app.writeTimeMs = null;
-      app.writeTimeWindow = [];
     }
     updateRenderTimeUI();
   });
@@ -572,7 +569,6 @@ export function setupTauriBridge() {
       setDecodeTimeMs(value);
     } else {
       app.decodeTimeMs = null;
-      app.decodeTimeWindow = [];
     }
     updateRenderTimeUI();
   });
@@ -583,7 +579,6 @@ export function setupTauriBridge() {
       setRenderTimeMs(value);
     } else {
       app.renderTimeMs = null;
-      app.renderTimeWindow = [];
     }
     updateRenderTimeUI();
   });
@@ -594,7 +589,6 @@ export function setupTauriBridge() {
       setCrossoverTimeMs(value);
     } else {
       app.crossoverTimeMs = null;
-      app.crossoverTimeWindow = [];
     }
     updateRenderTimeUI();
   });
@@ -605,8 +599,17 @@ export function setupTauriBridge() {
       setWriteTimeMs(value);
     } else {
       app.writeTimeMs = null;
-      app.writeTimeWindow = [];
     }
+    updateRenderTimeUI();
+  });
+
+  // Sliding-window aggregates for the latency and renderer-performance gauges,
+  // computed in the backend (`timing_stats.rs`) and delivered at 4 Hz. The
+  // per-message events above still carry the instantaneous values the readouts
+  // show; only the windowing moved.
+  listen('latency:stats', ({ payload }) => {
+    app.timingStats = payload ?? null;
+    updateLatencyMeterUI();
     updateRenderTimeUI();
   });
 

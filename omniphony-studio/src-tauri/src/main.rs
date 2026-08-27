@@ -9,6 +9,7 @@ mod layouts;
 mod osc_listener;
 mod osc_parser;
 mod runtime_env;
+mod timing_stats;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI32;
