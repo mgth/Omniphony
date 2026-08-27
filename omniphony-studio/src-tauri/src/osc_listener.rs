@@ -1759,9 +1759,11 @@ fn is_batched_event(event: &str) -> bool {
     BATCHED_EVENTS.contains(&event)
 }
 
-/// Floor of the meter scale, in dBFS. Anything at or below this reads as
-/// silence; mirrors `METER_DB_MIN` in the frontend.
-const METER_DB_MIN: f64 = -100.0;
+/// Bottom of the meter scale, in dBFS. Mirrors `METER_DB_MIN` in
+/// `src/mute-solo.js`, which is where the frontend's meters bottom out — not
+/// the -100 floor the OSC parser clamps raw levels to. The two are different
+/// numbers doing different jobs, and the derived master meter wants this one.
+const METER_DB_MIN: f64 = -60.0;
 
 /// Reconstruct a master meter from the per-speaker meters.
 ///
@@ -3318,12 +3320,34 @@ mod master_meter_tests {
         );
     }
 
+    /// The floor only comes into play once the summed linear energy underflows
+    /// to exactly zero — an ordinary "very quiet" level converts normally, and
+    /// must not be snapped up to the floor.
     #[test]
-    fn silence_stays_at_the_floor_rather_than_negative_infinity() {
-        let v = derived_master_meter(&speakers(&[(-200.0, -200.0)])).unwrap();
+    fn a_quiet_level_converts_rather_than_hitting_the_floor() {
+        let v = derived_master_meter(&speakers(&[(-80.0, -80.0)])).unwrap();
+        assert!((field(&v, "rmsDbfs") - (-80.0)).abs() < 1e-6);
+    }
+
+    /// True zero energy would be -inf dB, which would saturate the scale.
+    #[test]
+    fn zero_energy_reads_as_the_floor_not_negative_infinity() {
+        // 10^(-20000/20) underflows to 0.0 in f64.
+        let v = derived_master_meter(&speakers(&[(-20000.0, -20000.0)])).unwrap();
         let rms = field(&v, "rmsDbfs");
         assert!(rms.is_finite(), "rms was {rms}");
-        assert!(rms <= METER_DB_MIN, "rms was {rms}");
+        assert_eq!(rms, METER_DB_MIN);
+    }
+
+    /// With every speaker below the meter's bottom, the peak stays at that
+    /// bottom (-60, `METER_DB_MIN` in mute-solo.js) rather than the -100 the
+    /// OSC parser clamps raw levels to. Confusing the two shows up as a wrong
+    /// number in the master readout whenever the room is quiet.
+    #[test]
+    fn the_peak_floor_is_the_meter_bottom_not_the_parser_clamp() {
+        assert_eq!(METER_DB_MIN, -60.0);
+        let v = derived_master_meter(&speakers(&[(-80.0, -80.0), (-90.0, -90.0)])).unwrap();
+        assert_eq!(field(&v, "peakDbfs"), -60.0);
     }
 
     #[test]
