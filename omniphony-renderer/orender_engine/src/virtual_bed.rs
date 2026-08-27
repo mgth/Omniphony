@@ -15,92 +15,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-#[inline]
-fn map_depth_with_room_ratios(
-    depth: f32,
-    front_ratio: f32,
-    rear_ratio: f32,
-    center_blend: f32,
-) -> f32 {
-    let d = depth.clamp(-1.0, 1.0);
-    let blend = center_blend.clamp(0.0, 1.0);
-    let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
-    if d >= 0.0 {
-        let t = d;
-        let a = center_ratio - front_ratio;
-        let b = 2.0 * (front_ratio - center_ratio);
-        a * t * t * t + b * t * t + center_ratio * t
-    } else {
-        let t = -d;
-        let a = center_ratio - rear_ratio;
-        let b = 2.0 * (rear_ratio - center_ratio);
-        -(a * t * t * t + b * t * t + center_ratio * t)
-    }
-}
-
-fn inverse_map_depth_with_room_ratios(
-    mapped_depth: f32,
-    front_ratio: f32,
-    rear_ratio: f32,
-    center_blend: f32,
-) -> f32 {
-    let y = mapped_depth;
-    if y >= 0.0 {
-        let target = y.clamp(0.0, front_ratio.max(0.0));
-        let mut lo = 0.0f32;
-        let mut hi = 1.0f32;
-        for _ in 0..28 {
-            let mid = (lo + hi) * 0.5;
-            let val = map_depth_with_room_ratios(mid, front_ratio, rear_ratio, center_blend);
-            if val < target {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        (lo + hi) * 0.5
-    } else {
-        let target = y.clamp(-rear_ratio.max(0.0), 0.0);
-        let mut lo = -1.0f32;
-        let mut hi = 0.0f32;
-        for _ in 0..28 {
-            let mid = (lo + hi) * 0.5;
-            let val = map_depth_with_room_ratios(mid, front_ratio, rear_ratio, center_blend);
-            if val < target {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        (lo + hi) * 0.5
-    }
-}
-
-fn inverse_room_ratio_map_for_virtual_object(
-    target_x: f32,
-    target_y: f32,
-    target_z: f32,
-    room_ratio: [f32; 3],
-    room_ratio_rear: f32,
-    room_ratio_lower: f32,
-    room_ratio_center_blend: f32,
-) -> (f32, f32, f32) {
-    let width = room_ratio[0].max(0.01);
-    let front = room_ratio[1].max(0.01);
-    let height = room_ratio[2].max(0.01);
-    let rear = room_ratio_rear.max(0.01);
-    let lower = room_ratio_lower.max(0.01);
-
-    let x = (target_x / width).clamp(-1.0, 1.0);
-    let y = inverse_map_depth_with_room_ratios(target_y, front, rear, room_ratio_center_blend)
-        .clamp(-1.0, 1.0);
-    let z = if target_z >= 0.0 {
-        (target_z / height).clamp(-1.0, 1.0)
-    } else {
-        (target_z / lower).clamp(-1.0, 1.0)
-    };
-    (x, y, z)
-}
+use omniphony_geometry::f32::inverse_room_scaled_position;
 
 #[derive(Clone)]
 struct VirtualBedLayouts {
@@ -228,10 +143,8 @@ fn speaker_pose_to_normalized(
             speaker.elevation,
             speaker.distance,
         );
-        let (x, y, z) = inverse_room_ratio_map_for_virtual_object(
-            sx,
-            sy,
-            sz,
+        let [x, y, z] = inverse_room_scaled_position(
+            [sx, sy, sz],
             room_ratio,
             room_ratio_rear,
             room_ratio_lower,

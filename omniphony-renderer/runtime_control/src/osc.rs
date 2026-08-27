@@ -1,5 +1,6 @@
 use crate::context::RuntimeControlContext;
 use crate::osc_contract;
+use omniphony_geometry::f32 as geometry;
 use renderer::live_params::LiveEvaluationMode;
 use renderer::render_backend::canonical_builtin_backend_id;
 use rosc::{OscMessage, OscType};
@@ -305,27 +306,6 @@ pub fn parse_input_layout_arg(
     serde_yaml_ng::from_str::<renderer::speaker_layout::SpeakerLayout>(&raw).ok()
 }
 
-fn spherical_to_cartesian(azimuth: f32, elevation: f32, distance: f32) -> (f32, f32, f32) {
-    let az = azimuth.to_radians();
-    let el = elevation.to_radians();
-    let horizontal = distance * el.cos();
-    let x = horizontal * az.sin();
-    let y = horizontal * az.cos();
-    let z = distance * el.sin();
-    (x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0), z.clamp(-1.0, 1.0))
-}
-
-fn cartesian_to_spherical(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
-    let dist = (x * x + y * y + z * z).sqrt();
-    let az = x.atan2(y).to_degrees();
-    let el = if dist > 0.0 {
-        z.atan2((x * x + y * y).sqrt()).to_degrees()
-    } else {
-        0.0
-    };
-    (az, el, dist.max(0.01))
-}
-
 fn remap_live_speakers_remove(
     speakers: &mut std::collections::HashMap<usize, renderer::live_params::SpeakerLiveParams>,
     remove_idx: usize,
@@ -450,7 +430,7 @@ fn apply_layout_speaker_patch(
         let x = patch.x.unwrap_or(speaker.x).clamp(-1.0, 1.0);
         let y = patch.y.unwrap_or(speaker.y).clamp(-1.0, 1.0);
         let z = patch.z.unwrap_or(speaker.z).clamp(-1.0, 1.0);
-        let (azimuth, elevation, distance) = cartesian_to_spherical(x, y, z);
+        let (azimuth, elevation, distance) = geometry::hydrate_from_cartesian(x, y, z);
         if speaker.x != x
             || speaker.y != y
             || speaker.z != z
@@ -476,7 +456,7 @@ fn apply_layout_speaker_patch(
             .unwrap_or(speaker.elevation)
             .clamp(-90.0, 90.0);
         let distance = patch.distance.unwrap_or(speaker.distance).max(0.01);
-        let (x, y, z) = spherical_to_cartesian(azimuth, elevation, distance);
+        let (x, y, z) = geometry::hydrate_from_spherical(azimuth, elevation, distance);
         if speaker.azimuth != azimuth
             || speaker.elevation != elevation
             || speaker.distance != distance
@@ -540,7 +520,7 @@ fn build_layout_speaker_from_patch(
         let x = patch.x.unwrap_or(speaker.x).clamp(-1.0, 1.0);
         let y = patch.y.unwrap_or(speaker.y).clamp(-1.0, 1.0);
         let z = patch.z.unwrap_or(speaker.z).clamp(-1.0, 1.0);
-        let (azimuth, elevation, distance) = cartesian_to_spherical(x, y, z);
+        let (azimuth, elevation, distance) = geometry::hydrate_from_cartesian(x, y, z);
         speaker.x = x;
         speaker.y = y;
         speaker.z = z;
