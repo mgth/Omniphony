@@ -94,6 +94,13 @@ impl Default for AdaptiveResampling {
 }
 
 /// The effective configuration: every field resolved to a usable number.
+///
+/// The integer fields are integers *on purpose*, and changing one to `f64`
+/// breaks the wire silently. `AudioConfigPatch` on the renderer side types
+/// them `Option<u32>` (host_audio/src/lib.rs:44-59), and `serde_json` refuses
+/// a JSON float for a `u32` — so a single `1.0` where `1` was expected makes
+/// the renderer reject the *entire* patch, without a log line, and every audio
+/// setting stops arriving. See `the_wire_format_keeps_integers_integral`.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectiveAdaptiveResampling {
@@ -102,20 +109,20 @@ pub struct EffectiveAdaptiveResampling {
     pub force_silence_in_far_mode: bool,
     pub hard_recover_high_in_far_mode: bool,
     pub hard_recover_low_in_far_mode: bool,
-    pub far_mode_return_fade_in_ms: f64,
+    pub far_mode_return_fade_in_ms: u32,
     pub kp_near: f64,
     pub ki: f64,
     pub integral_discharge_ratio: f64,
     pub max_adjust: f64,
-    pub high_recover_entry_margin_ms: f64,
-    pub update_interval_callbacks: f64,
+    pub high_recover_entry_margin_ms: u32,
+    pub update_interval_callbacks: u32,
     pub low_recover_settle_stable_ms: f64,
     pub low_recover_entry_margin_ms: f64,
     pub low_recover_exit_margin_ms: f64,
     pub low_recover_settle_margin_ms: f64,
     pub low_recover_refill_delta_alpha: f64,
     pub control_smoothing_cutoff_hz: f64,
-    pub control_smoothing_order: f64,
+    pub control_smoothing_order: u32,
     pub paused: bool,
     pub use_pre_bridge_clock: bool,
     pub use_output_pacing: bool,
@@ -140,7 +147,7 @@ impl AdaptiveResampling {
                 self.far_mode_return_fade_in_ms,
                 0.0,
             ))
-            .max(0.0),
+            .max(0.0) as u32,
             kp_near: finite_or(self.kp_near, 1.0),
             ki: finite_or(self.ki, 1.0),
             integral_discharge_ratio: finite_or(self.integral_discharge_ratio, 0.25),
@@ -152,12 +159,9 @@ impl AdaptiveResampling {
                 self.high_recover_entry_margin_ms,
                 1000.0,
             ))
-            .max(1.0),
-            update_interval_callbacks: round_like_js(finite_or(
-                self.update_interval_callbacks,
-                1.0,
-            ))
-            .max(1.0),
+            .max(1.0) as u32,
+            update_interval_callbacks: round_like_js(finite_or(self.update_interval_callbacks, 1.0))
+                .max(1.0) as u32,
 
             low_recover_settle_stable_ms: finite_or(self.low_recover_settle_stable_ms, 200.0)
                 .max(0.0),
@@ -174,7 +178,7 @@ impl AdaptiveResampling {
                 .max(0.001),
             // Only first and second order are implemented.
             control_smoothing_order: round_like_js(finite_or(self.control_smoothing_order, 1.0))
-                .clamp(1.0, 2.0),
+                .clamp(1.0, 2.0) as u32,
 
             paused: self.paused,
             use_pre_bridge_clock: self.use_pre_bridge_clock,
@@ -199,8 +203,8 @@ pub struct AudioConfig {
 #[serde(rename_all = "camelCase")]
 pub struct EffectiveAudioConfig {
     pub output_device: Option<String>,
-    pub sample_rate: Option<f64>,
-    pub latency_target_ms: Option<f64>,
+    pub sample_rate: Option<u32>,
+    pub latency_target_ms: Option<u32>,
     pub adaptive_resampling: EffectiveAdaptiveResampling,
 }
 
@@ -215,8 +219,15 @@ impl AudioConfig {
                 .as_ref()
                 .map(|d| d.trim().to_string())
                 .filter(|d| !d.is_empty()),
-            sample_rate: self.sample_rate.filter(|v| v.is_finite() && *v > 0.0),
-            latency_target_ms: self.latency_target_ms.filter(|v| v.is_finite() && *v > 0.0),
+            // Integers on the wire: see the note on EffectiveAdaptiveResampling.
+            sample_rate: self
+                .sample_rate
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .map(|v| round_like_js(v) as u32),
+            latency_target_ms: self
+                .latency_target_ms
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .map(|v| round_like_js(v) as u32),
             adaptive_resampling: self.adaptive_resampling.resolve(),
         }
     }
@@ -226,8 +237,66 @@ impl AudioConfig {
 mod tests {
     use super::*;
 
+    /// The renderer types these `Option<u32>` and `serde_json` refuses a float
+    /// for a `u32`, so a single `1.0` in place of `1` makes it drop the whole
+    /// patch — silently, because the handler is
+    /// `if let Some(patch) = parse(...)` with no else. Every audio setting then
+    /// stops arriving and the UI looks like it is ignoring clicks.
+    ///
+    /// This is a regression test: the fields were `f64` when the schema moved
+    /// from JS to Rust, and the JSON went from `1` to `1.0`. Nothing failed —
+    /// not a test, not a log line — until someone noticed a switch that would
+    /// not stay on. So the assertion is on the serialised text, which is what
+    /// actually crosses the wire; asserting on the struct's values would pass
+    /// either way.
     fn raw(json: serde_json::Value) -> AudioConfig {
         serde_json::from_value(json).expect("payload must deserialize")
+    }
+
+    #[test]
+    fn the_wire_format_keeps_integers_integral() {
+        let text = serde_json::to_string(
+            &raw(serde_json::json!({
+                "sampleRate": 48000,
+                "latencyTargetMs": 50,
+                "adaptiveResampling": {
+                    "enabled": true,
+                    "farModeReturnFadeInMs": 500,
+                    "highRecoverEntryMarginMs": 1000,
+                    "updateIntervalCallbacks": 1,
+                    "controlSmoothingOrder": 1
+                }
+            }))
+            .resolve(),
+        )
+        .expect("the effective config must serialise");
+
+        // Parsed back, not string-matched: `"updateIntervalCallbacks":1` is a
+        // prefix of `...:1.0`, so a `contains` check passes on exactly the
+        // value it is meant to reject. Asking serde whether the number is an
+        // integer is the question actually being asked.
+        let back: serde_json::Value =
+            serde_json::from_str(&text).expect("what we emit must be valid JSON");
+        let adaptive = &back["adaptiveResampling"];
+        for (label, value) in [
+            ("sampleRate", &back["sampleRate"]),
+            ("latencyTargetMs", &back["latencyTargetMs"]),
+            ("farModeReturnFadeInMs", &adaptive["farModeReturnFadeInMs"]),
+            (
+                "highRecoverEntryMarginMs",
+                &adaptive["highRecoverEntryMarginMs"],
+            ),
+            (
+                "updateIntervalCallbacks",
+                &adaptive["updateIntervalCallbacks"],
+            ),
+            ("controlSmoothingOrder", &adaptive["controlSmoothingOrder"]),
+        ] {
+            assert!(
+                value.is_u64(),
+                "{label} must cross the wire as an integer, got {value} in: {text}"
+            );
+        }
     }
 
     #[test]
@@ -238,11 +307,11 @@ mod tests {
         assert_eq!(r.ki, 1.0);
         assert_eq!(r.integral_discharge_ratio, 0.25);
         assert_eq!(r.max_adjust, 0.01);
-        assert_eq!(r.high_recover_entry_margin_ms, 1000.0);
-        assert_eq!(r.update_interval_callbacks, 1.0);
+        assert_eq!(r.high_recover_entry_margin_ms, 1000);
+        assert_eq!(r.update_interval_callbacks, 1);
         assert_eq!(r.low_recover_settle_stable_ms, 200.0);
         assert_eq!(r.control_smoothing_cutoff_hz, 0.5);
-        assert_eq!(r.control_smoothing_order, 1.0);
+        assert_eq!(r.control_smoothing_order, 1);
         assert!(!r.enabled);
     }
 
@@ -262,13 +331,13 @@ mod tests {
         }))
         .resolve();
         let r = &effective.adaptive_resampling;
-        assert_eq!(r.far_mode_return_fade_in_ms, 0.0);
-        assert_eq!(r.high_recover_entry_margin_ms, 1.0);
-        assert_eq!(r.update_interval_callbacks, 1.0);
+        assert_eq!(r.far_mode_return_fade_in_ms, 0);
+        assert_eq!(r.high_recover_entry_margin_ms, 1);
+        assert_eq!(r.update_interval_callbacks, 1);
         assert_eq!(r.low_recover_settle_stable_ms, 0.0);
         assert_eq!(r.low_recover_refill_delta_alpha, 1.0);
         assert_eq!(r.control_smoothing_cutoff_hz, 0.001);
-        assert_eq!(r.control_smoothing_order, 2.0);
+        assert_eq!(r.control_smoothing_order, 2);
     }
 
     #[test]
@@ -282,7 +351,7 @@ mod tests {
 
     #[test]
     fn the_smoothing_order_is_rounded_before_clamping() {
-        for (input, expected) in [(1.4, 1.0), (1.6, 2.0), (2.4, 2.0), (0.2, 1.0)] {
+        for (input, expected) in [(1.4, 1u32), (1.6, 2), (2.4, 2), (0.2, 1)] {
             let effective = raw(serde_json::json!({
                 "adaptiveResampling": { "controlSmoothingOrder": input }
             }))
@@ -343,7 +412,7 @@ mod tests {
             raw(serde_json::json!({ "sampleRate": 48000 }))
                 .resolve()
                 .sample_rate,
-            Some(48000.0)
+            Some(48000)
         );
     }
 

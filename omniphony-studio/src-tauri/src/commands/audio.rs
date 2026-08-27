@@ -28,9 +28,34 @@ pub fn control_audio_config(
     // corrected value rather than the rejected one — the frontend used to
     // apply these bounds itself on the way out, so a field that was pulled
     // into range looked accepted as typed.
-    let raw: crate::audio_config::AudioConfig = serde_json::from_value(payload).ok()?;
+    //
+    // Neither step below may fail quietly. `sendAudioConfig()` chains the
+    // apply call onto this one's promise, so a `None` here means the renderer
+    // is told to apply a configuration it was never sent: the switch flips on,
+    // nothing reaches the audio path, and the next state broadcast flips it
+    // back. That is a silent no-op that reads as a UI bug, and it is what the
+    // original `.ok()?` produced.
+    let raw: crate::audio_config::AudioConfig = match serde_json::from_value(payload.clone()) {
+        Ok(config) => config,
+        Err(err) => {
+            // `eprintln!`, not `log::error!`: this crate never installs a
+            // logger, so every `log::` macro in it writes to nowhere.
+            eprintln!(
+                "[audio config] rejected — not sent to the renderer: {err}; payload: {payload}"
+            );
+            return None;
+        }
+    };
     let effective = raw.resolve();
-    let text = serde_json::to_string(&effective).ok()?;
+    let text = match serde_json::to_string(&effective) {
+        Ok(text) => text,
+        Err(err) => {
+            // serde_json refuses non-finite floats, so this is reachable if a
+            // resolved field ever comes out NaN or infinite.
+            eprintln!("[audio config] not serialisable — not sent: {err}; resolved: {effective:?}");
+            return None;
+        }
+    };
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
