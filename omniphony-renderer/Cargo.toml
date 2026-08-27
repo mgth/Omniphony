@@ -1,5 +1,5 @@
 [workspace]
-members = ["renderer", "audio_input", "audio_output", "sys", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures"]
+members = ["renderer", "audio_input", "audio_output", "sys", "bridge_api", "spdif", "runtime_control", "orender_engine", "orender_ffi", "host_audio", "example_backend", "script_backend", "reference_bridge", "dsp_fixtures", "omniphony-geometry"]
 resolver = "2"
 
 [package]

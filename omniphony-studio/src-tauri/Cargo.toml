@@ -8,6 +8,11 @@ name = "omniphony-studio"
 path = "src/main.rs"
 
 [dependencies]
+# Single source of truth for coordinate frames, angle wrapping and the room
+# depth warp, shared with the renderer. Dependency-free by design — check the
+# crate's own Cargo.toml before adding anything to it, because whatever it
+# pulls in lands in the Studio build too.
+omniphony-geometry = { path = "../../omniphony-renderer/omniphony-geometry" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

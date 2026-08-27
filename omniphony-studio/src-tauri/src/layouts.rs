@@ -1,3 +1,4 @@
+use omniphony_geometry::f64 as geometry;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -136,26 +137,12 @@ fn clamp(v: f64, min: f64, max: f64) -> f64 {
     v.max(min).min(max)
 }
 
-fn spherical_to_cartesian(az_deg: f64, el_deg: f64, dist: f64) -> (f64, f64, f64) {
-    let az = az_deg.to_radians();
-    let el = el_deg.to_radians();
-    (
-        dist * el.cos() * az.cos(),
-        dist * el.sin(),
-        dist * el.cos() * az.sin(),
-    )
-}
-
-fn cartesian_to_spherical(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
-    let dist = (x * x + y * y + z * z).sqrt();
-    let az = z.atan2(x).to_degrees();
-    let el = if dist > 0.0 {
-        y.atan2((x * x + z * z).sqrt()).to_degrees()
-    } else {
-        0.0
-    };
-    (az, el, dist)
-}
+// Coordinate conversions come from `omniphony-geometry`, which the renderer
+// shares. They used to live here, and applied the Three.js scene-space formula
+// (`az = atan2(z, x)`, elevation off +Y) to layout files written in the ADM
+// frame the renderer uses (`az = atan2(x, y)`, elevation off +Z). The axes were
+// never swizzled, so the two disagreed: `FR` in layouts/7.1.4.yaml — x=1, y=1,
+// z=0, front-right at ear level — parsed as azimuth 0°, elevation 45°.
 
 // ── raw deserialization types ─────────────────────────────────────────────
 
@@ -283,7 +270,7 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
         let x = clamp(x, -1.0, 1.0);
         let y = clamp(y, -1.0, 1.0);
         let z = clamp(z, -1.0, 1.0);
-        let (derived_az, derived_el, derived_dist) = cartesian_to_spherical(x, y, z);
+        let (derived_az, derived_el, derived_dist) = geometry::hydrate_from_cartesian(x, y, z);
         return Speaker {
             id,
             x,
@@ -303,13 +290,13 @@ fn normalize_speaker(raw: RawSpeaker) -> Speaker {
     let az = raw.azimuth.or(raw.az).unwrap_or(0.0);
     let el = raw.elevation.or(raw.el).unwrap_or(0.0);
     let dist = raw.distance.or(raw.dist).unwrap_or(1.0).max(0.01);
-    let (x, y, z) = spherical_to_cartesian(az, el, dist);
+    let (x, y, z) = geometry::hydrate_from_spherical(az, el, dist);
 
     Speaker {
         id,
-        x: clamp(x, -1.0, 1.0),
-        y: clamp(y, -1.0, 1.0),
-        z: clamp(z, -1.0, 1.0),
+        x,
+        y,
+        z,
         azimuth_deg: az,
         elevation_deg: el,
         distance_m: dist,
@@ -613,6 +600,63 @@ pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{normalize_speaker, parse_yaml_layout, RawSpeaker};
+
+    /// A cartesian speaker must derive its angles in the ADM frame the layout
+    /// file is written in — the same one the renderer reads it with.
+    ///
+    /// `FR` from layouts/7.1.4.yaml is x=1, y=1, z=0: front-right, ear level.
+    /// The scene-space formula this code used to carry read it as azimuth 0°
+    /// (straight ahead) and elevation 45° (up), because it never swizzled the
+    /// axes. Angles are only derived when the file omits them, and cartesian
+    /// export drops them again, so the corruption surfaced on round-trip:
+    /// `coord_mode` defaults to polar when the key is absent, and a layout
+    /// carrying x/y/z but no `coord_mode` exported these derived angles.
+    #[test]
+    fn derives_speaker_angles_in_the_adm_frame() {
+        let speaker = normalize_speaker(RawSpeaker {
+            name: Some(serde_json::json!("FR")),
+            x: Some(1.0),
+            y: Some(1.0),
+            z: Some(0.0),
+            ..RawSpeaker::default()
+        });
+        assert!(
+            (speaker.azimuth_deg - 45.0).abs() < 1e-6,
+            "azimuth {} should be 45° (front-right), not 0°",
+            speaker.azimuth_deg
+        );
+        assert!(
+            speaker.elevation_deg.abs() < 1e-6,
+            "elevation {} should be 0° (ear level), not 45°",
+            speaker.elevation_deg
+        );
+    }
+
+    /// Overhead must read as +90° elevation, and the polar->cartesian
+    /// direction has to land back on the same axis.
+    #[test]
+    fn derives_overhead_and_lateral_speakers_consistently() {
+        let top = normalize_speaker(RawSpeaker {
+            name: Some(serde_json::json!("TOP")),
+            x: Some(0.0),
+            y: Some(0.0),
+            z: Some(1.0),
+            ..RawSpeaker::default()
+        });
+        assert!((top.elevation_deg - 90.0).abs() < 1e-6);
+
+        // Hard right in polar must come back as +X, not +Z.
+        let right = normalize_speaker(RawSpeaker {
+            name: Some(serde_json::json!("R")),
+            azimuth: Some(90.0),
+            elevation: Some(0.0),
+            distance: Some(1.0),
+            ..RawSpeaker::default()
+        });
+        assert!((right.x - 1.0).abs() < 1e-6, "x was {}", right.x);
+        assert!(right.y.abs() < 1e-6, "y was {}", right.y);
+        assert!(right.z.abs() < 1e-6, "z was {}", right.z);
+    }
 
     #[test]
     fn normalizes_freq_fields_from_json_variants() {

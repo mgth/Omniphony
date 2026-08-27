@@ -1,3 +1,4 @@
+use omniphony_geometry::f64 as geometry;
 use rosc::OscType;
 use serde::Serialize;
 
@@ -45,14 +46,12 @@ fn clamp(v: f64, min: f64, max: f64) -> f64 {
     v.max(min).min(max)
 }
 
-fn spherical_to_cartesian(az_deg: f64, el_deg: f64, dist: f64) -> (f64, f64, f64) {
-    let az = az_deg.to_radians();
-    let el = el_deg.to_radians();
-    let x = dist * el.cos() * az.cos();
-    let y = dist * el.sin();
-    let z = dist * el.cos() * az.sin();
-    (x, y, z)
-}
+// Polar -> cartesian comes from `omniphony-geometry`, shared with the renderer.
+// The copy that lived here read the angles in the Three.js scene frame while
+// labelling the result as ADM, so an object sent at azimuth 90° (hard right)
+// was stored at ADM (0, 0, dist) — directly overhead. Objects arriving in polar
+// form also carry their angles, and the frontend re-derives cartesian from
+// those, which is why this mostly stayed invisible.
 
 fn find_id_in_address(parts: &[&str]) -> Option<String> {
     let anchors = ["source", "sources", "object", "obj", "track", "channel"];
@@ -1299,7 +1298,7 @@ pub fn parse_osc_message(
 
     let (x, y, z) = if has_spherical {
         let (px, py, pz) =
-            spherical_to_cartesian(numeric_args[0], numeric_args[1], numeric_args[2]);
+            geometry::from_spherical(numeric_args[0], numeric_args[1], numeric_args[2]);
         (px, py, pz)
     } else {
         (numeric_args[0], numeric_args[1], numeric_args[2])

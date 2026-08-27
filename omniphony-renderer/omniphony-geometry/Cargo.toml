@@ -1,0 +1,16 @@
+[package]
+name = "omniphony-geometry"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Canonical coordinate, angle and room-geometry math shared by the Omniphony renderer and Studio"
+repository = "https://github.com/mgth/Omniphony"
+rust-version = "1.87.0"
+
+# Deliberately dependency-free.
+#
+# This crate is consumed from OUTSIDE the renderer workspace (the Studio's
+# `src-tauri`, which is its own cargo project). Anything pulled in here lands in
+# the Studio build too, so the renderer's DSP dependencies (realfft, rayon, sys)
+# must never reach this crate. Keep it std-only.
+[dependencies]

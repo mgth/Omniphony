@@ -2566,6 +2566,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "omniphony-geometry"
+version = "0.1.0"
+
+[[package]]
 name = "omniphony-studio"
 version = "0.5.2"
 dependencies = [
@@ -2573,6 +2577,7 @@ dependencies = [
  "image",
  "log",
  "memory-stats",
+ "omniphony-geometry",
  "rfd 0.15.4",
  "rosc",
  "serde",
