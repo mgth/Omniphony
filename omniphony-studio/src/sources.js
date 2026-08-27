@@ -120,41 +120,56 @@ export function getObjectDisplayName(id) {
   return name;
 }
 
-// Classify a (possibly synthesized) object from its name into a compact badge:
-// a `type` for the list's fixed type-icon ('height' for the bed→height upmix
-// objects, 'phantom' for the phantom-extraction objects, '' otherwise) and a
-// short position `code` (e.g. FL, Ls, L·C, L). Keeps the long technical name off
-// the vertical strip so list rows don't grow tall.
+// A compact badge for the list: a `type` for the fixed type-icon, and a short
+// position `code` (FL, Ls, L·C, L) that keeps the long technical name off the
+// vertical strip.
+//
+// The `type` is the renderer's — it arrives on the object's meta as `kind`
+// (`docs/channel-object-contract.md`), the way `fixed` does. It used to be read
+// off the name here with a regular expression, which meant renaming a generator's
+// output silently reclassified it.
+//
+// The `code` stays here on purpose: turning `Phantom_L_C` into `L·C` or marking
+// the high ring with `↑` is display formatting, not something the protocol
+// should carry. The patterns below survive for that alone — they no longer
+// decide what an object *is*.
+/** The renderer's classification of an object, or '' when it says nothing. */
+function objectKind(id) {
+  const kind = sourcePositionsRaw.get(String(id))?.kind;
+  return kind === 'height' || kind === 'phantom' ? kind : '';
+}
+
 export function objectBadge(id) {
   // The injected source's name is a sentence ("Test object"), which the list's
   // vertical strip cannot carry — it is sized for codes like FL or TBR. Give it
   // one. Not translated, like every other code in that strip.
   if (String(id) === OBJECT_TEST_SOURCE_ID) return { type: '', code: 'INJ' };
+  const kind = objectKind(id);
   const name = getObjectDisplayName(id);
   // Bed→height synth objects: PAD "Ambience_FL", copy_up "Height_Ls_synth",
   // DirAC diffuse "Diffuse_TFL".
   let m = name.match(/^Ambience_(.+)$/i);
-  if (m) return { type: 'height', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   m = name.match(/^Height_(.+)_synth$/i);
-  if (m) return { type: 'height', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   m = name.match(/^Diffuse_(.+)$/i);
-  if (m) return { type: 'height', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   // Phantom extraction "Phantom_L_C" → a source localized between two channels;
   // single-label "Phantom_C" → a relocalized channel.
   m = name.match(/^Phantom_([^_]+)_(.+)$/i);
-  if (m) return { type: 'phantom', code: `${m[1]}·${m[2]}` };
+  if (m) return { type: kind, code: `${m[1]}·${m[2]}` };
   m = name.match(/^Phantom_([^_]+)$/i);
-  if (m) return { type: 'phantom', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   // Spectral extraction sectors: high ring "DirectH_FL" (marked ↑ to keep the
   // code distinct from the floor ring's), floor ring "Direct_FL".
   m = name.match(/^DirectH_(.+)$/i);
-  if (m) return { type: 'phantom', code: `${m[1]}↑` };
+  if (m) return { type: kind, code: `${m[1]}↑` };
   m = name.match(/^Direct_(.+)$/i);
-  if (m) return { type: 'phantom', code: m[1] };
+  if (m) return { type: kind, code: m[1] };
   // Default: strip a single technical prefix word, as before.
   const u = name.indexOf('_');
   const code = u >= 0 ? name.slice(u + 1) : name;
-  return { type: '', code: code || name };
+  return { type: kind, code: code || name };
 }
 
 export function formatObjectLabel(id) {
@@ -1065,6 +1080,8 @@ export function updateSource(id, position) {
     // channel and its canonical label — never inferred from directSpeakerIndex.
     fixed: position?.fixed === true ? true : undefined,
     label: typeof position?.label === 'string' && position.label ? position.label : undefined,
+    // What the object is, per the renderer. See objectBadge().
+    kind: typeof position?.kind === 'string' && position.kind ? position.kind : undefined,
     t: now
   });
   sourcePositionsRaw.set(String(id), raw);

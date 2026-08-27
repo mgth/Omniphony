@@ -596,6 +596,9 @@ pub fn build_virtual_bed_objects(
             size: [0.0, 0.0, 0.0],
             fixed: true,
             label: bridge_api::labels::canonical_name(*label).to_string(),
+            // A bed channel at its canonical pose: `fixed` already says what
+            // it is, so it is not one of the synthesized kinds.
+            kind: crate::object_gen::ObjectKind::Dynamic,
         });
     }
     if objects.is_empty() {

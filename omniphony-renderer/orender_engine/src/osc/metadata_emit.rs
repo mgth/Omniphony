@@ -138,6 +138,9 @@ impl OscSender {
                         OscType::Int(i32::from(obj.fixed)),
                         OscType::String(obj.label.clone()),
                         OscType::Long(self.content_generation as i64),
+                        // Appended, so a client reading the first three by
+                        // index is unaffected. Empty for an ordinary object.
+                        OscType::String(obj.kind.as_wire().to_string()),
                     ],
                 };
                 let meta_bytes = rosc::encoder::encode(&OscPacket::Message(meta_msg))?;

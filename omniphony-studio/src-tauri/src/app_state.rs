@@ -30,6 +30,11 @@ pub struct SourcePosition {
     /// Canonical channel-label name for a fixed channel ("L", "TFL"…).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// "height", "phantom", or absent for an ordinary object. Explicit from
+    /// the renderer; inferred from the name by the parser only for renderers
+    /// that predate the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "sourceTag", skip_serializing_if = "Option::is_none")]

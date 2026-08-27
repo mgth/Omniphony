@@ -195,6 +195,7 @@ impl ChannelObjectStages {
             size: spec.size,
             fixed: false,
             label: String::new(),
+            kind: spec.kind,
         })
     }
 

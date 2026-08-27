@@ -30,6 +30,7 @@
 //! [`PhantomExtractStage::process_and_extend`] does not allocate (steady state)
 //! and never panics.
 
+use crate::object_gen::ObjectKind;
 use bridge_api::RChannelLabel;
 use renderer::live_params::PhantomExtractMode;
 
@@ -253,6 +254,7 @@ fn phantom_spec(name: String, position: [f64; 3]) -> SynthObjectSpec {
         position,
         gain_db: PHANTOM_GAIN_DB,
         size: PHANTOM_SIZE,
+        kind: ObjectKind::Phantom,
     }
 }
 

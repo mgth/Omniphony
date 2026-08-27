@@ -261,6 +261,10 @@ pub struct ObjectMeta {
     /// Canonical channel-label name for a fixed channel (`"L"`, `"TFL"`…);
     /// empty for dynamic objects.
     pub label: String,
+    /// What this object is, as the generator that made it knows. Explicit for
+    /// the same reason as `fixed`: clients used to read it off the name with a
+    /// regular expression, so a rename silently reclassified everything.
+    pub kind: crate::object_gen::ObjectKind,
 }
 
 /// Epsilon for position/float comparison in delta OSC sending.

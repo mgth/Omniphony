@@ -2170,6 +2170,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                             "directSpeakerIndex": entry.direct_speaker_index,
                             "fixed": entry.fixed,
                             "label": entry.label,
+                            "kind": entry.kind,
                             "sourceTag": entry.source_tag,
                             "name": entry.name
                         }
@@ -2182,11 +2183,13 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 fixed,
                 label,
                 generation,
+                kind,
             } => {
                 let current_generation = s.current_content_generation;
                 let entry = s.sources.entry(id.clone()).or_default();
                 entry.fixed = Some(fixed);
                 entry.label = label.clone();
+                entry.kind = kind.clone();
                 if entry.generation.is_none() {
                     entry.generation = generation.or(current_generation);
                 }
