@@ -1,3 +1,4 @@
+import { linearToDb } from '../audio-math.js';
 import { app } from '../state.js';
 import { invoke } from '@tauri-apps/api/core';
 import { t } from '../i18n.js';
@@ -112,7 +113,7 @@ export function updateDrcMeterUI(gain) {
 
     if (!drcGaugeFillEl || !drcGainValueEl) return;
 
-    const gainDb = gain > 0 ? 20 * Math.log10(gain) : -100;
+    const gainDb = linearToDb(gain);
     const displayedDb = Number.isFinite(gainDb) ? gainDb : -100;
 
     // Max absolute delta for gauge display (e.g. +/-20dB).

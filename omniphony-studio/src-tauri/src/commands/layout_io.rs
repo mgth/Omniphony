@@ -204,5 +204,23 @@ pub fn export_layout_to_path(path: String, layout: Layout) -> Result<(), String>
         return Err("empty export path".to_string());
     }
 
+    // Normalize here rather than trusting the caller. The frontend used to
+    // clamp and derive the missing coordinate representation on its way in,
+    // which put the rules for a valid stored speaker in two places — and left
+    // export following different ones from import.
+    let mut layout = layout;
+    for speaker in &mut layout.speakers {
+        layouts::normalize_for_export(speaker);
+    }
+
     layouts::save_layout_file(Path::new(trimmed), &layout)
+}
+
+/// Default file name offered for a layout export, e.g. `7.1.4`.
+///
+/// Both the convention and the file-name sanitizing live in `layouts.rs`, next
+/// to the writer that consumes the result.
+#[tauri::command]
+pub fn default_layout_export_name(layout: Layout) -> String {
+    layouts::sanitize_export_name(&layouts::default_export_name(&layout.speakers))
 }

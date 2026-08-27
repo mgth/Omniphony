@@ -5,7 +5,7 @@ import { pushLog, normalizeLogError } from '../log.js';
 import { updateConfigSavedUI } from '../controls/config.js';
 import {
   renderSpeakerEditor,
-  sanitizeLayoutExportName, defaultLayoutExportNameFromSpeakers, serializeCurrentLayoutForExport,
+  serializeCurrentLayoutForExport,
   refreshOverlayLists, hydrateLayoutSelect, applyLayoutToRenderer
 } from '../speakers.js';
 
@@ -47,13 +47,15 @@ export function setupLayoutListeners() {
   if (exportLayoutBtnEl) {
     exportLayoutBtnEl.addEventListener('click', () => {
       if (isSpeakerLayoutFrozen()) return;
-      const fallbackName = sanitizeLayoutExportName(defaultLayoutExportNameFromSpeakers(app.currentLayoutSpeakers));
-      invoke('pick_export_layout_path', { suggestedName: fallbackName })
+      const layout = serializeCurrentLayoutForExport();
+      if (!layout) return;
+      // The backend names the file from the speaker set ("7.1.4") and
+      // sanitizes it; it also normalizes the speakers on the way out.
+      invoke('default_layout_export_name', { layout })
+        .then((fallbackName) => invoke('pick_export_layout_path', { suggestedName: fallbackName }))
         .then((path) => {
           const trimmed = typeof path === 'string' ? path.trim() : '';
           if (!trimmed) return;
-          const layout = serializeCurrentLayoutForExport();
-          if (!layout) return;
           return invoke('export_layout_to_path', { path: trimmed, layout })
             .then(() => {
               pushLog('info', tf('log.layoutExported', { path: trimmed }));

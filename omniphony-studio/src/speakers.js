@@ -127,7 +127,7 @@ import { computeCrossoverBandLabels, computeCrossoverBandEdges } from './crossov
 import { onSpeakerSelectionChanged } from './controls/speaker-test.js';
 
 import {
-  linearToDb,
+  formatLinearAsDb,
   meterToPercent,
   formatLevel,
   getBaseGain,
@@ -289,53 +289,12 @@ function syncInputValueUnlessEditing(inputEl, nextValue) {
 
 export { getSpeakerSpatializeValue, getSpeakerBaseOpacity };
 
-export function defaultLayoutExportNameFromSpeakers(speakers) {
-  let a = 0;
-  let b = 0;
-  let c = 0;
-  for (const speaker of speakers || []) {
-    const spatialized = getSpeakerSpatializeValue(speaker) !== 0;
-    if (!spatialized) {
-      b += 1;
-      continue;
-    }
-    const y = Number(speaker?.y);
-    if (Number.isFinite(y) && y > 0.5) {
-      c += 1;
-    } else {
-      a += 1;
-    }
-  }
-  return `${a}.${b}.${c}`;
-}
-
-export function sanitizeLayoutExportName(name) {
-  const sanitized = String(name ?? '')
-    .trim()
-    .split('')
-    .map((ch) => (/^[A-Za-z0-9._-]$/.test(ch) ? ch : '_'))
-    .join('');
-  const trimmed = sanitized.replace(/^\.+|\.+$/g, '');
-  return trimmed || 'layout';
-}
-
-export function serializeSpeakerForExport(speaker, index) {
-  hydrateSpeakerCoordinateState(speaker);
-  return {
-    id: String(speaker?.id ?? `spk-${index}`),
-    x: clampNumber(Number(speaker?.x) || 0, -1, 1),
-    y: clampNumber(Number(speaker?.y) || 0, -1, 1),
-    z: clampNumber(Number(speaker?.z) || 0, -1, 1),
-    azimuthDeg: Number.isFinite(Number(speaker?.azimuthDeg)) ? Number(speaker.azimuthDeg) : 0,
-    elevationDeg: Number.isFinite(Number(speaker?.elevationDeg)) ? Number(speaker.elevationDeg) : 0,
-    distanceM: Math.max(0.01, Number(speaker?.distanceM) || 1),
-    coordMode: getSpeakerCoordMode(speaker),
-    spatialize: getSpeakerSpatializeValue(speaker),
-    delay_ms: Math.max(0, Number(speaker?.delay_ms) || 0),
-    freqLow: Number.isFinite(Number(speaker?.freqLow)) && Number(speaker.freqLow) > 0 ? Number(speaker.freqLow) : null,
-    freqHigh: Number.isFinite(Number(speaker?.freqHigh)) && Number(speaker.freqHigh) > 0 ? Number(speaker.freqHigh) : null
-  };
-}
+// The export file-name convention ("7.1.4"), its sanitizing, and the per-speaker
+// normalization all live in `src-tauri/src/layouts.rs`, next to the writer that
+// consumes them — reached through the `default_layout_export_name` and
+// `export_layout_to_path` commands. What is sent below is the editor state as
+// it stands; the backend clamps it and derives the missing coordinate
+// representation, using the same rules it applies on import.
 
 export function serializeCurrentLayoutForExport() {
   const layout = currentLayoutRef();
@@ -345,7 +304,20 @@ export function serializeCurrentLayoutForExport() {
     key: String(layout.key || 'layout'),
     name: String(layout.name || layout.key || 'layout'),
     radius_m: Math.max(0.01, Number(layout.radius_m) || Number(sceneState.metersPerUnit) || 1),
-    speakers: currentLayoutSpeakers.map((speaker, index) => serializeSpeakerForExport(speaker, index))
+    speakers: currentLayoutSpeakers.map((speaker, index) => ({
+      id: String(speaker?.id ?? `spk-${index}`),
+      x: Number(speaker?.x) || 0,
+      y: Number(speaker?.y) || 0,
+      z: Number(speaker?.z) || 0,
+      azimuthDeg: Number(speaker?.azimuthDeg) || 0,
+      elevationDeg: Number(speaker?.elevationDeg) || 0,
+      distanceM: Number(speaker?.distanceM) || 1,
+      coordMode: getSpeakerCoordMode(speaker),
+      spatialize: getSpeakerSpatializeValue(speaker),
+      delay_ms: Number(speaker?.delay_ms) || 0,
+      freqLow: Number(speaker?.freqLow) || null,
+      freqHigh: Number(speaker?.freqHigh) || null
+    }))
   };
 }
 
@@ -589,7 +561,7 @@ export function getObjectDominantSpeakerText(id) {
   }
   const speaker = currentLayoutSpeakers[bestIndex];
   const name = String(speaker?.id ?? bestIndex);
-  return `${name} ${linearToDb(bestGain)}`;
+  return `${name} ${formatLinearAsDb(bestGain)}`;
 }
 
 export function objectHasActiveTrail(id) {
@@ -991,7 +963,7 @@ export function updateSpeakerBandBars(entry, speakerIndex) {
       // of crossover bands. Same palette as the object band bars and 3D gauges.
       bar.style.setProperty('--band-color', bandColor(b, contributions.length));
     }
-    if (dbEl) dbEl.textContent = linearToDb(gain);
+    if (dbEl) dbEl.textContent = formatLinearAsDb(gain);
   });
 
   for (let b = 0; b < entry.bandBarsContainer.children.length; b += 1) {
@@ -1269,7 +1241,7 @@ export function renderSpeakerEditor() {
   const rMeters = Math.hypot(speakerMeters.x, speakerMeters.y, speakerMeters.z);
   syncInputValueUnlessEditing(speakerEditRMetersInputEl, formatNumber(rMeters, 2));
   if (speakerEditGainSliderEl) speakerEditGainSliderEl.value = String(gain);
-  if (speakerEditGainBoxEl) speakerEditGainBoxEl.textContent = linearToDb(gain);
+  if (speakerEditGainBoxEl) speakerEditGainBoxEl.textContent = formatLinearAsDb(gain);
   if (speakerEditDelayMsInputEl) speakerEditDelayMsInputEl.value = String(Math.max(0, delayMs));
   if (speakerEditDelaySamplesInputEl) speakerEditDelaySamplesInputEl.value = String(delayMsToSamples(delayMs));
   if (speakerEditSpatializeToggleEl) speakerEditSpatializeToggleEl.checked = getSpeakerSpatializeValue(speaker) !== 0;

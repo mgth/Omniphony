@@ -531,6 +531,111 @@ pub fn load_layout_file(path: &Path) -> Option<Layout> {
     })
 }
 
+/// Default export file name for a speaker set, as `spatialized.non.height`.
+///
+/// The Studio's naming convention: how many spatialized speakers sit at or
+/// below ear level, how many are excluded from spatialization (LFE), and how
+/// many are overhead. A 7.1.4 layout exports as `7.1.4`.
+///
+/// The height test is on the ADM z axis, so it is the same "is this a height
+/// speaker" question the renderer asks — not a name match.
+pub fn default_export_name(speakers: &[Speaker]) -> String {
+    let mut ear_level = 0;
+    let mut non_spatialized = 0;
+    let mut height = 0;
+    for speaker in speakers {
+        if speaker.spatialize == 0 {
+            non_spatialized += 1;
+        } else if speaker.z > HEIGHT_SPEAKER_Z {
+            height += 1;
+        } else {
+            ear_level += 1;
+        }
+    }
+    format!("{ear_level}.{non_spatialized}.{height}")
+}
+
+/// Above this normalised height a spatialized speaker counts as overhead for
+/// the export name.
+const HEIGHT_SPEAKER_Z: f64 = 0.5;
+
+/// Reduce a name to something safe to use as a file name.
+///
+/// Everything outside `[A-Za-z0-9._-]` becomes `_`, and leading/trailing dots
+/// are stripped so the result cannot be a hidden file or trip an extension
+/// check. An empty result falls back to `layout` rather than producing a file
+/// with no name.
+pub fn sanitize_export_name(name: &str) -> String {
+    let sanitized: String = name
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('.');
+    if trimmed.is_empty() {
+        "layout".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Bring a speaker coming from the editor into the shape the layout format
+/// expects, before it is written out.
+///
+/// The frontend used to do this on its way to the export command, which meant
+/// the rules for a valid stored speaker lived in two places — and the one that
+/// mattered on *import* (`normalize_speaker`) was not the one applied on
+/// export. Both now clamp the same way and derive the missing coordinate
+/// representation through `omniphony-geometry`.
+pub fn normalize_for_export(speaker: &mut Speaker) {
+    speaker.x = clamp(speaker.x, -1.0, 1.0);
+    speaker.y = clamp(speaker.y, -1.0, 1.0);
+    speaker.z = clamp(speaker.z, -1.0, 1.0);
+    speaker.delay_ms = speaker.delay_ms.max(0.0);
+    speaker.freq_low = speaker.freq_low.filter(|v| *v > 0.0);
+    speaker.freq_high = speaker.freq_high.filter(|v| *v > 0.0);
+    speaker.coord_mode = if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
+        "cartesian".to_string()
+    } else {
+        "polar".to_string()
+    };
+
+    // Derive whichever representation is not authoritative, so the two never
+    // disagree in the written file.
+    if speaker.coord_mode == "cartesian" {
+        let (az, el, dist) = geometry::hydrate_from_cartesian(speaker.x, speaker.y, speaker.z);
+        speaker.azimuth_deg = az;
+        speaker.elevation_deg = el;
+        speaker.distance_m = dist;
+    } else {
+        if !speaker.azimuth_deg.is_finite() {
+            speaker.azimuth_deg = 0.0;
+        }
+        if !speaker.elevation_deg.is_finite() {
+            speaker.elevation_deg = 0.0;
+        }
+        speaker.distance_m = if speaker.distance_m.is_finite() {
+            speaker.distance_m.max(0.01)
+        } else {
+            1.0
+        };
+        let (x, y, z) = geometry::hydrate_from_spherical(
+            speaker.azimuth_deg,
+            speaker.elevation_deg,
+            speaker.distance_m,
+        );
+        speaker.x = x;
+        speaker.y = y;
+        speaker.z = z;
+    }
+}
+
 pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
     let ext = path
         .extension()
@@ -599,7 +704,10 @@ pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_speaker, parse_yaml_layout, RawSpeaker};
+    use super::{
+        default_export_name, load_layout_file, normalize_for_export, normalize_speaker,
+        parse_yaml_layout, sanitize_export_name, save_layout_file, Layout, RawSpeaker, Speaker,
+    };
 
     /// A cartesian speaker must derive its angles in the ADM frame the layout
     /// file is written in — the same one the renderer reads it with.
@@ -611,6 +719,169 @@ mod tests {
     /// export drops them again, so the corruption surfaced on round-trip:
     /// `coord_mode` defaults to polar when the key is absent, and a layout
     /// carrying x/y/z but no `coord_mode` exported these derived angles.
+    fn spk(id: &str, x: f64, y: f64, z: f64, spatialize: u8) -> Speaker {
+        Speaker {
+            id: id.to_string(),
+            x,
+            y,
+            z,
+            azimuth_deg: 0.0,
+            elevation_deg: 0.0,
+            distance_m: 1.0,
+            coord_mode: "cartesian".to_string(),
+            spatialize,
+            delay_ms: 0.0,
+            freq_low: None,
+            freq_high: None,
+        }
+    }
+
+    // ── export name ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_export_name_counts_ear_level_lfe_and_height() {
+        // A 7.1.4: seven at ear level, one non-spatialized, four overhead.
+        let mut speakers: Vec<Speaker> = (0..7)
+            .map(|i| spk(&i.to_string(), 1.0, 0.0, 0.0, 1))
+            .collect();
+        speakers.push(spk("lfe", 0.0, 1.0, 0.0, 0));
+        speakers.extend((0..4).map(|i| spk(&format!("t{i}"), 1.0, 0.0, 1.0, 1)));
+        assert_eq!(default_export_name(&speakers), "7.1.4");
+    }
+
+    /// Height is decided on the z axis, not on the speaker's name — the same
+    /// question the renderer asks.
+    #[test]
+    fn height_is_decided_by_position_not_name() {
+        let speakers = vec![
+            spk("TFL", 1.0, 1.0, 0.0, 1), // named like a top speaker, at ear level
+            spk("plain", 0.0, 0.0, 0.9, 1),
+        ];
+        assert_eq!(default_export_name(&speakers), "1.0.1");
+    }
+
+    #[test]
+    fn a_non_spatialized_speaker_never_counts_as_height() {
+        let speakers = vec![spk("lfe", 0.0, 0.0, 1.0, 0)];
+        assert_eq!(default_export_name(&speakers), "0.1.0");
+    }
+
+    #[test]
+    fn an_empty_layout_still_names_something() {
+        assert_eq!(default_export_name(&[]), "0.0.0");
+    }
+
+    // ── file-name sanitizing ────────────────────────────────────────────────
+
+    #[test]
+    fn sanitizing_keeps_safe_characters_and_replaces_the_rest() {
+        assert_eq!(sanitize_export_name("7.1.4"), "7.1.4");
+        assert_eq!(sanitize_export_name("my layout"), "my_layout");
+        assert_eq!(sanitize_export_name("a/b\\c"), "a_b_c");
+    }
+
+    /// Leading and trailing dots would make a hidden file or confuse an
+    /// extension check.
+    #[test]
+    fn sanitizing_strips_edge_dots_and_never_returns_empty() {
+        assert_eq!(sanitize_export_name("..hidden.."), "hidden");
+        assert_eq!(sanitize_export_name("..."), "layout");
+        assert_eq!(sanitize_export_name("   "), "layout");
+        // Unsafe characters become underscores, which is a usable name — the
+        // fallback is only for a name that ends up genuinely empty. Matches the
+        // frontend this replaces.
+        assert_eq!(sanitize_export_name("///"), "___");
+    }
+
+    // ── export normalization ────────────────────────────────────────────────
+
+    #[test]
+    fn export_clamps_out_of_range_values() {
+        let mut speaker = spk("s", 5.0, -9.0, 0.25, 1);
+        speaker.delay_ms = -3.0;
+        speaker.freq_low = Some(0.0);
+        normalize_for_export(&mut speaker);
+        assert_eq!(speaker.x, 1.0);
+        assert_eq!(speaker.y, -1.0);
+        assert_eq!(speaker.delay_ms, 0.0);
+        assert_eq!(speaker.freq_low, None);
+    }
+
+    /// A cartesian speaker must get angles in the ADM frame, so the written
+    /// file agrees with what the renderer reads back.
+    #[test]
+    fn export_derives_angles_for_a_cartesian_speaker() {
+        let mut speaker = spk("FR", 1.0, 1.0, 0.0, 1);
+        normalize_for_export(&mut speaker);
+        assert!((speaker.azimuth_deg - 45.0).abs() < 1e-6);
+        assert!(speaker.elevation_deg.abs() < 1e-6);
+    }
+
+    #[test]
+    fn export_derives_cartesian_for_a_polar_speaker() {
+        let mut speaker = spk("R", 0.0, 0.0, 0.0, 1);
+        speaker.coord_mode = "polar".to_string();
+        speaker.azimuth_deg = 90.0;
+        speaker.distance_m = 1.0;
+        normalize_for_export(&mut speaker);
+        assert!((speaker.x - 1.0).abs() < 1e-6, "x was {}", speaker.x);
+        assert!(speaker.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn export_repairs_a_non_finite_polar_speaker() {
+        let mut speaker = spk("s", 0.0, 0.0, 0.0, 1);
+        speaker.coord_mode = "polar".to_string();
+        speaker.azimuth_deg = f64::NAN;
+        speaker.distance_m = f64::NAN;
+        normalize_for_export(&mut speaker);
+        assert_eq!(speaker.azimuth_deg, 0.0);
+        assert_eq!(speaker.distance_m, 1.0);
+        assert!(speaker.x.is_finite() && speaker.y.is_finite() && speaker.z.is_finite());
+    }
+
+    /// The acceptance criterion for this change: what the export writes can be
+    /// read back as the same speaker set. Goes through the real file path, so
+    /// the YAML formatter and the parser are both exercised.
+    #[test]
+    fn an_exported_layout_round_trips_through_the_parser() {
+        let mut layout = Layout {
+            key: "roundtrip".to_string(),
+            name: "round trip".to_string(),
+            radius_m: 1.5,
+            speakers: vec![
+                spk("FL", -1.0, 1.0, 0.0, 1),
+                spk("FR", 1.0, 1.0, 0.0, 1),
+                spk("LFE", 0.0, 1.0, -1.0, 0),
+            ],
+        };
+        layout.speakers[0].freq_low = Some(80.0);
+        layout.speakers[0].delay_ms = 2.5;
+        for speaker in &mut layout.speakers {
+            normalize_for_export(speaker);
+        }
+
+        let path = std::env::temp_dir().join("omniphony-export-roundtrip.yaml");
+        save_layout_file(&path, &layout).expect("export must succeed");
+        let reparsed = load_layout_file(&path).expect("exported YAML must parse");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(reparsed.speakers.len(), 3);
+        assert!((reparsed.radius_m - 1.5).abs() < 1e-9);
+        for (before, after) in layout.speakers.iter().zip(reparsed.speakers.iter()) {
+            assert_eq!(before.id, after.id, "name did not survive");
+            assert_eq!(before.spatialize, after.spatialize, "spatialize flipped");
+            assert!((before.x - after.x).abs() < 1e-6, "x drifted");
+            assert!((before.y - after.y).abs() < 1e-6, "y drifted");
+            assert!((before.z - after.z).abs() < 1e-6, "z drifted");
+            assert_eq!(before.freq_low, after.freq_low, "crossover edge lost");
+            assert!(
+                (before.delay_ms - after.delay_ms).abs() < 1e-9,
+                "delay lost"
+            );
+        }
+    }
+
     #[test]
     fn derives_speaker_angles_in_the_adm_frame() {
         let speaker = normalize_speaker(RawSpeaker {

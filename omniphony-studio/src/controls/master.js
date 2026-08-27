@@ -4,17 +4,16 @@
  * Extracted from app.js (lines 4547-4590).
  */
 
+import { linearToDb } from '../audio-math.js';
 import {
   app,
   dirty,
-  speakerLevels,
   supportsRealtimeKey,
-  masterPeak,
   masterLevel
 } from '../state.js';
 import { t, tf } from '../i18n.js';
 import { formatNumber } from '../coordinates.js';
-import { linearToDb, dbToMeterPercent, METER_DB_MIN } from '../mute-solo.js';
+import { formatLinearAsDb, dbToMeterPercent, METER_DB_MIN } from '../mute-solo.js';
 import { scheduleUIFlush } from '../flush.js';
 import { inAudioPanel, inRendererPanel, inDrcPanel } from '../ui/panel-roots.js';
 
@@ -37,7 +36,7 @@ export function renderMasterGainUI() {
   }
   if (masterGainBoxEl) {
     const hasValue = Number.isFinite(app.masterGain) && app.masterGain > 0;
-    masterGainBoxEl.textContent = hasValue ? linearToDb(app.masterGain) : '—';
+    masterGainBoxEl.textContent = hasValue ? formatLinearAsDb(app.masterGain) : '—';
   }
 }
 
@@ -102,35 +101,25 @@ export function flashClipIndicator() {
   }, 1000);
 }
 
-// Master output meter. Preferred source: the engine's post-master-gain
-// /omniphony/meter/master (state.masterLevel). Fallback when that message is
-// absent (older engine / un-rebuilt backend): derive it from the speaker
-// meters — master peak = loudest speaker peak (identical to the engine's
-// max(spk_peak), speakers are already metered post-master-gain), master RMS ≈
-// combined speaker energy. Returns { peakDb, rmsDb } or null when no data.
+// Master output meter. The backend is the single source of truth: it forwards
+// the engine's post-master-gain /omniphony/meter/master when there is one, and
+// reconstructs it from the speaker meters when there is not (older engine, or a
+// backend that has not been rebuilt) — see `derived_master_meter` in
+// src-tauri/src/osc_listener.rs. Either way `masterLevel` is populated, so
+// there is nothing to fall back to here.
+//
+// Returns { peakDb, rmsDb }, or null before the first meter arrives.
 function getMasterMeter() {
-  if (masterLevel && typeof masterLevel.rmsDbfs === 'number') {
-    const rmsDb = masterLevel.rmsDbfs;
-    return {
-      rmsDb,
-      peakDb: typeof masterLevel.peakDbfs === 'number' ? masterLevel.peakDbfs : rmsDb
-    };
-  }
-  const speakers = Array.from(speakerLevels.values()).filter(
-    (m) => m && typeof m.peakDbfs === 'number'
-  );
-  if (speakers.length === 0) {
+  if (!masterLevel || typeof masterLevel.rmsDbfs !== 'number') {
     return null;
   }
-  let peakDb = METER_DB_MIN;
-  let sumSquares = 0;
-  for (const m of speakers) {
-    if (m.peakDbfs > peakDb) peakDb = m.peakDbfs;
-    const rmsLin = Math.pow(10, (typeof m.rmsDbfs === 'number' ? m.rmsDbfs : -100) / 20);
-    sumSquares += rmsLin * rmsLin;
-  }
-  const rmsLin = Math.sqrt(sumSquares / speakers.length);
-  return { peakDb, rmsDb: rmsLin > 0 ? 20 * Math.log10(rmsLin) : METER_DB_MIN };
+  const rmsDb = masterLevel.rmsDbfs;
+  const peakDb = typeof masterLevel.peakDbfs === 'number' ? masterLevel.peakDbfs : rmsDb;
+  return {
+    rmsDb,
+    peakDb,
+    holdDb: typeof masterLevel.peakHoldDbfs === 'number' ? masterLevel.peakHoldDbfs : peakDb
+  };
 }
 
 export function updateMasterMeterUI() {
@@ -158,23 +147,14 @@ export function updateMasterMeterUI() {
   const levelPercent = dbToMeterPercent(peakDb);
   masterMeterFillEl.style.setProperty('--level', `${levelPercent.toFixed(1)}%`);
 
-  const now = Date.now();
-  if (peakDb >= (masterPeak.db ?? METER_DB_MIN)) {
-    masterPeak.db = peakDb;
-    masterPeak.value = dbToMeterPercent(peakDb);
-    masterPeak.expires = now + 1000;
-  } else if (now > masterPeak.expires) {
-    masterPeak.db = Math.max(peakDb, masterPeak.db - 2.0);
-    masterPeak.value = dbToMeterPercent(masterPeak.db);
-    if (masterPeak.value <= levelPercent + 0.1) masterPeak.expires = now + 1000;
-  }
-
   masterMeterTextEl.textContent = `${formatNumber(rmsDb, 1)} dB`;
 
   if (masterMeterPeakEl) {
-    masterMeterPeakEl.style.setProperty('--level', `${masterPeak.value.toFixed(1)}%`);
-    masterMeterPeakEl.style.opacity = masterPeak.value > 0.1 ? '1' : '0';
-    masterMeterPeakEl.classList.toggle('over', (masterPeak.db ?? METER_DB_MIN) >= 0);
+    // Hold and decay come from the backend, same as every other meter.
+    const holdPercent = dbToMeterPercent(level.holdDb);
+    masterMeterPeakEl.style.setProperty('--level', `${holdPercent.toFixed(1)}%`);
+    masterMeterPeakEl.style.opacity = holdPercent > 0.1 ? '1' : '0';
+    masterMeterPeakEl.classList.toggle('over', level.holdDb >= 0);
   }
 }
 
@@ -192,7 +172,7 @@ export function renderLoudnessDisplay() {
   const correctionDbValue =
     app.loudnessGain === null || Number(app.loudnessGain) <= 0
       ? null
-      : 20 * Math.log10(Number(app.loudnessGain));
+      : linearToDb(app.loudnessGain);
   const targetValue =
     app.loudnessSource !== null && correctionDbValue !== null
       ? app.loudnessSource + correctionDbValue
@@ -201,7 +181,7 @@ export function renderLoudnessDisplay() {
   const gainText =
     app.loudnessGain === null
       ? '—'
-      : `${formatNumber(app.loudnessGain, 2)} (${linearToDb(app.loudnessGain)})`;
+      : `${formatNumber(app.loudnessGain, 2)} (${formatLinearAsDb(app.loudnessGain)})`;
   loudnessInfoEl.innerHTML = [
     `source loudness: ${sourceText}`,
     `target loudness: ${targetText}`,
