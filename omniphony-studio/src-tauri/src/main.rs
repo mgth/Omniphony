@@ -231,6 +231,7 @@ fn main() {
             pick_orender_path,
             pick_backend_file_path,
             export_layout_to_path,
+            default_layout_export_name,
             control_speaker_gain,
             control_object_mute,
             control_speaker_mute,
