@@ -5,6 +5,7 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+omniphony-geometry = { version = "0.1.0", path = "../omniphony-geometry" }
 anyhow = "1.0.99"
 log = "0.4.27"
 renderer = { path = "../renderer" }

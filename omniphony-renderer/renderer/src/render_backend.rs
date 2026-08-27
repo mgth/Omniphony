@@ -1720,17 +1720,13 @@ fn sample_wrapped_axis(values: &[f32], position: f32, interpolate: bool) -> Axis
     best
 }
 
-#[inline]
-fn wrap_degrees(value: f32) -> f32 {
-    let wrapped = (value + 180.0).rem_euclid(360.0) - 180.0;
-    if wrapped == -180.0 { 180.0 } else { wrapped }
-}
+use omniphony_geometry::f32::wrap_deg as wrap_degrees;
 
-#[inline]
-fn wrapped_angle_distance(a: f32, b: f32) -> f32 {
-    let delta = (a - b).abs().rem_euclid(360.0);
-    delta.min(360.0 - delta)
-}
+// The local version took `(a - b).abs()` before `rem_euclid`; the crate's does
+// not. `rem_euclid` is already non-negative, and for a negative delta it yields
+// `360 - |delta| mod 360`, which the following `min` folds back to the same
+// answer — so the two agree for every input.
+use omniphony_geometry::f32::wrapped_distance_deg as wrapped_angle_distance;
 
 #[cfg(test)]
 mod cartesian_lookup_bench {
