@@ -1,12 +1,19 @@
 //! Replay the recorded frontend runs through the Rust state machine.
 //!
-//! `scripts/dump-auto-tune-runs.mjs` drove the JS machine through four
-//! scenarios and recorded, for each, the state after every sample and the
-//! events it emitted. This walks the same telemetry through
-//! [`super::state_machine::AutoTune`] and requires the same sequence.
+//! `scripts/dump-auto-tune-runs.mjs` drove the JS machine through a set of
+//! scenarios and recorded, for each, the state after every sample, the events
+//! it emitted, and the tuning values it held. This walks the same telemetry
+//! through [`super::state_machine::AutoTune`] and requires the same sequence.
 //!
-//! Sequence, not outcome: two implementations can reach the same final kp/ki
-//! along different paths, and the path is what patches a live audio loop.
+//! Sequence and values, not just outcome: two implementations can reach the
+//! same final kp/ki along different paths, and the path is what patches a live
+//! audio loop.
+//!
+//! The stimulus is rebuilt here rather than replayed from a recorded sample
+//! stream, because the plant *reacts* to the kp the machine applies — a run
+//! only oscillates because kp got too high. So this file has to reproduce the
+//! recorder's plant exactly. Everything that shapes it is read from the
+//! recording's per-run `setup` block; nothing is keyed off a scenario name.
 
 #[cfg(test)]
 mod tests {
@@ -25,7 +32,7 @@ mod tests {
         serde_json::from_str(&text).expect("recording must be valid JSON")
     }
 
-    /// The scenario options the recorder used.
+    /// The scenario options the recorder used, over the machine's defaults.
     fn options(recorded: &Value) -> Options {
         let get = |key: &str, fallback: f64| recorded[key].as_f64().unwrap_or(fallback);
         let d = Options::default();
@@ -57,31 +64,97 @@ mod tests {
         }
     }
 
+    /// The recorded runs all override the durations, so replaying them says
+    /// nothing about what the machine does when nobody overrides anything —
+    /// which is every real run. Checked field by field against the frontend's
+    /// `AUTO_TUNE_DEFAULTS`.
+    #[test]
+    fn the_defaults_match_the_frontend() {
+        let recorded = runs();
+        let js = &recorded["defaults"];
+        let d = Options::default();
+        let pairs: [(&str, f64); 23] = [
+            ("initialKp", d.initial_kp),
+            ("initialMaxAdjust", d.initial_max_adjust),
+            ("initialUpdateInterval", d.initial_update_interval),
+            ("kpMax", d.kp_max),
+            ("kpPalierMs", d.kp_palier_ms),
+            ("kpBaselinePaliers", d.kp_baseline_paliers as f64),
+            ("kiPalierMs", d.ki_palier_ms),
+            ("kiMaxIterations", f64::from(d.ki_max_iterations)),
+            ("kiMin", d.ki_min),
+            ("perturbationRecoverMs", d.perturbation_recover_ms),
+            ("longRunDefaultMs", d.long_run_default_ms),
+            ("longRunMinAbbreviateMs", d.long_run_min_abbreviate_ms),
+            ("longRunStatsWindowMs", d.long_run_stats_window_ms),
+            ("tighteningPalierMs", d.tightening_palier_ms),
+            ("ziegerKpScale", d.zieger_kp_scale),
+            ("initialKiFromKpDivisor", d.initial_ki_from_kp_divisor),
+            ("sampleRetentionMs", d.sample_retention_ms),
+            ("maxAdjustFloor", d.max_adjust_floor),
+            ("maxAdjustSafetyMargin", d.max_adjust_safety_margin),
+            ("maxAdjustWarnThreshold", d.max_adjust_warn_threshold),
+            ("updateIntervalCleanStdPpm", d.update_interval_clean_std_ppm),
+            ("updateIntervalClean", d.update_interval_clean),
+            ("updateIntervalDefault", d.update_interval_default),
+        ];
+        for (key, ours) in pairs {
+            let theirs = js[key]
+                .as_f64()
+                .unwrap_or_else(|| panic!("frontend default {key} is missing from the recording"));
+            assert!(
+                (ours - theirs).abs() < 1e-12,
+                "default {key}: Rust has {ours}, the frontend has {theirs}"
+            );
+        }
+        // And nothing new on the frontend side went unnoticed.
+        let count = js.as_object().expect("defaults object").len();
+        assert_eq!(
+            count,
+            pairs.len(),
+            "the frontend has {count} defaults, this test knows {}",
+            pairs.len()
+        );
+    }
+
     #[test]
     fn every_recorded_run_replays_identically() {
         let recorded = runs();
         let step_ms = recorded["stepMs"].as_f64().expect("stepMs");
-        let base_opts = options(&recorded["options"]);
         let run_list = recorded["runs"].as_array().expect("runs");
-        assert!(run_list.len() >= 4, "the recording looks truncated");
+        assert!(run_list.len() >= 7, "the recording looks truncated");
 
         for run in run_list {
             let name = run["name"].as_str().unwrap();
-            // `kpNeverOscillates` lowers the ceiling; the recorder stores the
-            // merged options per run only implicitly, so recover it from the
-            // kp the run gave up at.
-            let mut opts = base_opts;
-            if name == "kpNeverOscillates" {
-                opts.kp_max = 64.0;
-            }
+            let setup = &run["setup"];
+            let opts = options(&setup["options"]);
+            let mut plant = Plant::from(&setup["plant"], &setup["latencyErr"]);
+            let ack_every = setup["ackEvery"].as_u64();
+            let cancel_at = setup["cancelAt"].as_u64();
+            let ring_once = setup["ringOnceDuringRecovery"].as_bool().unwrap_or(false);
 
             let mut fsm = AutoTune::new(opts);
             let mut emitted: Vec<&'static str> = Vec::new();
             let mut states: Vec<String> = Vec::new();
 
-            for e in fsm.start(0.0) {
-                emitted.push(event_name(&e));
-            }
+            // The kp the plant sees is the last one *applied*, not the one in
+            // the context — the two part company as soon as the sweep declares
+            // oscillation. See the note in the recorder.
+            let mut applied_kp = 0.0_f64;
+            let observe =
+                |events: Vec<Event>, emitted: &mut Vec<&'static str>, applied_kp: &mut f64| {
+                    for e in events {
+                        if let Event::ApplyParams {
+                            kp_near: Some(kp), ..
+                        } = e
+                        {
+                            *applied_kp = kp;
+                        }
+                        emitted.push(event_name(&e));
+                    }
+                };
+
+            observe(fsm.start(0.0), &mut emitted, &mut applied_kp);
 
             let recorded_steps = run["steps"].as_array().unwrap();
             let last_index = recorded_steps
@@ -89,45 +162,31 @@ mod tests {
                 .and_then(|s| s["i"].as_u64())
                 .unwrap_or(0) as usize;
 
-            // `kiIterates` supplies its own latency error and so does not pull
-            // the jitter random — the RNG advances once per sample there, twice
-            // everywhere else.
-            let plant = Plant {
-                kp_crit: if name == "kpNeverOscillates" {
-                    1e9
-                } else {
-                    40.0
-                },
-                pulls_jitter: name != "kiIterates",
-            };
             for i in 0..=last_index {
                 let t = i as f64 * step_ms;
-                let ppm = plant.at(t, fsm.progress().current_kp, i);
+                let ppm = plant.rate_ppm(t, applied_kp, i);
                 let sample = crate::auto_tune::detectors::Sample {
                     t,
-                    latency_smoothed_ms: Some(if name == "kiIterates" {
-                        200.0 + 3.0 + (i as f64 / 40.0).sin() * 2.0
-                    } else {
-                        200.0 + plant.jitter(i)
-                    }),
+                    latency_smoothed_ms: Some(200.0 + plant.latency_err(i)),
                     latency_target_ms: Some(200.0),
                     resample_ratio: Some(1.0 + ppm / 1e6),
                     phase: Some("stable".to_string()),
                 };
-                for e in fsm.push_sample(sample) {
-                    emitted.push(event_name(&e));
-                }
+                observe(fsm.push_sample(sample), &mut emitted, &mut applied_kp);
 
-                if name == "cancelledMidSweep" && i == 200 {
-                    for e in fsm.cancel() {
-                        emitted.push(event_name(&e));
-                    }
+                if cancel_at == Some(i as u64) {
+                    observe(fsm.cancel(), &mut emitted, &mut applied_kp);
                 }
-                if name == "fullRunWithAcks" && i % 20 == 0 {
-                    for e in fsm.user_ack(Ack::Perturbation, t) {
-                        emitted.push(event_name(&e));
-                    }
+                if ack_every.is_some_and(|n| i as u64 % n == 0) {
+                    observe(
+                        fsm.user_ack(Ack::Perturbation, t),
+                        &mut emitted,
+                        &mut applied_kp,
+                    );
                     fsm.abbreviate();
+                }
+                if ring_once {
+                    plant.update_ring(fsm.state() == State::PerturbationRecovering);
                 }
 
                 // Compare the tuning values wherever the recorder captured
@@ -236,19 +295,65 @@ mod tests {
     }
 
     /// The recorder's plant, reproduced: quiet noise below a critical gain,
-    /// growing oscillation above it. Must match
+    /// growing oscillation above it, plus a one-shot ring the runner raises
+    /// during perturbation recovery. Must match
     /// `scripts/dump-auto-tune-runs.mjs` exactly, including the RNG.
     struct Plant {
         kp_crit: f64,
-        /// Whether the scenario also pulls a random for the latency jitter.
-        pulls_jitter: bool,
+        noise_ppm: f64,
+        ring_ppm: f64,
+        latency_err: LatencyErr,
+        ring_on: bool,
+        ring_spent: bool,
+    }
+
+    /// The declared shape of the latency error, mirroring `latencyErrFn`.
+    enum LatencyErr {
+        /// No declared error: the recorder adds its own jitter, and that is the
+        /// only case that pulls a *second* random per sample.
+        Jitter,
+        Sine {
+            offset: f64,
+            amp: f64,
+            period_samples: f64,
+        },
+        Decay {
+            from: f64,
+            tau_samples: f64,
+        },
     }
 
     impl Plant {
+        fn from(plant: &Value, latency_err: &Value) -> Self {
+            let num = |v: &Value, k: &str| v[k].as_f64().expect("plant field");
+            let err = match latency_err["kind"].as_str() {
+                None => LatencyErr::Jitter,
+                Some("sine") => LatencyErr::Sine {
+                    offset: num(latency_err, "offset"),
+                    amp: num(latency_err, "amp"),
+                    period_samples: num(latency_err, "periodSamples"),
+                },
+                Some("decay") => LatencyErr::Decay {
+                    from: num(latency_err, "from"),
+                    tau_samples: num(latency_err, "tauSamples"),
+                },
+                Some(other) => panic!("unknown latency error kind: {other}"),
+            };
+            Self {
+                kp_crit: num(plant, "kpCrit"),
+                noise_ppm: num(plant, "noisePpm"),
+                ring_ppm: num(plant, "ringPpm"),
+                latency_err: err,
+                ring_on: false,
+                ring_spent: false,
+            }
+        }
+
         /// The recorder pulls the rate noise first, then the latency jitter —
-        /// unless the scenario supplies its own latency error, in which case
-        /// only the first is drawn.
+        /// unless the scenario declares its own error, in which case only the
+        /// first is drawn.
         fn rng_at(&self, index: usize) -> (f64, f64) {
+            let pulls_jitter = matches!(self.latency_err, LatencyErr::Jitter);
             let mut state: u32 = 4242;
             let mut next = || {
                 state = state.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -258,16 +363,19 @@ mod tests {
             let mut b = 0.0;
             for _ in 0..=index {
                 a = next();
-                if self.pulls_jitter {
+                if pulls_jitter {
                     b = next();
                 }
             }
             (a, b)
         }
 
-        fn at(&self, t: f64, kp: f64, index: usize) -> f64 {
+        fn rate_ppm(&self, t: f64, kp: f64, index: usize) -> f64 {
             let (r, _) = self.rng_at(index);
-            let noise = (r - 0.5) * 80.0;
+            let noise = (r - 0.5) * self.noise_ppm;
+            if self.ring_on {
+                return self.ring_ppm * (t / 700.0).sin() + noise;
+            }
             if kp < self.kp_crit {
                 return noise;
             }
@@ -275,9 +383,35 @@ mod tests {
             900.0 * excess * (t / 700.0).sin() + noise
         }
 
-        fn jitter(&self, index: usize) -> f64 {
-            let (_, r) = self.rng_at(index);
-            (r - 0.5) * 0.02
+        fn latency_err(&self, index: usize) -> f64 {
+            match self.latency_err {
+                LatencyErr::Jitter => {
+                    let (_, r) = self.rng_at(index);
+                    (r - 0.5) * 0.02
+                }
+                LatencyErr::Sine {
+                    offset,
+                    amp,
+                    period_samples,
+                } => offset + (index as f64 / period_samples).sin() * amp,
+                LatencyErr::Decay { from, tau_samples } => {
+                    from * (-(index as f64) / tau_samples).exp()
+                }
+            }
+        }
+
+        /// One-shot ring: raised the first time recovery starts, dropped for
+        /// good when that recovery ends.
+        fn update_ring(&mut self, recovering: bool) {
+            if self.ring_spent {
+                return;
+            }
+            if recovering {
+                self.ring_on = true;
+            } else if self.ring_on {
+                self.ring_on = false;
+                self.ring_spent = true;
+            }
         }
     }
 }
