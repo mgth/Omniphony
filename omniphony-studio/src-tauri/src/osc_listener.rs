@@ -1895,6 +1895,55 @@ fn is_batched_event(event: &str) -> bool {
     BATCHED_EVENTS.contains(&event)
 }
 
+/// Bottom of the meter scale, in dBFS. Mirrors `METER_DB_MIN` in
+/// `src/mute-solo.js`, which is where the frontend's meters bottom out — not
+/// the -100 floor the OSC parser clamps raw levels to. The two are different
+/// numbers doing different jobs, and the derived master meter wants this one.
+const METER_DB_MIN: f64 = -60.0;
+
+/// Reconstruct a master meter from the per-speaker meters.
+///
+/// Used only when the renderer does not publish `/omniphony/meter/master` —
+/// an older engine, or a backend that has not been rebuilt. Speakers are
+/// already metered post-master-gain, so:
+///
+/// - **peak** is the loudest speaker peak, which is exactly what the engine's
+///   own `max(spk_peak)` reports;
+/// - **RMS** is the combined speaker energy: sum the squared linear RMS values
+///   and take the root of the mean, since uncorrelated speaker signals add in
+///   power, not amplitude.
+///
+/// Returns `None` when no speaker has reported yet, which the frontend draws as
+/// an idle meter rather than a zero one.
+fn derived_master_meter(
+    speaker_levels: &std::collections::HashMap<String, Meter>,
+) -> Option<serde_json::Value> {
+    if speaker_levels.is_empty() {
+        return None;
+    }
+    let mut peak_dbfs = METER_DB_MIN;
+    let mut sum_squares = 0.0f64;
+    for meter in speaker_levels.values() {
+        if meter.peak_dbfs > peak_dbfs {
+            peak_dbfs = meter.peak_dbfs;
+        }
+        let rms_linear = 10f64.powf(meter.rms_dbfs / 20.0);
+        sum_squares += rms_linear * rms_linear;
+    }
+    let rms_linear = (sum_squares / speaker_levels.len() as f64).sqrt();
+    let rms_dbfs = if rms_linear > 0.0 {
+        20.0 * rms_linear.log10()
+    } else {
+        METER_DB_MIN
+    };
+    Some(serde_json::json!({
+        "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs },
+        // Lets the frontend tell a reconstructed meter from a reported one —
+        // for display or diagnosis, not for choosing a code path.
+        "derived": true,
+    }))
+}
+
 fn batch_dedup_key(event: &str, payload: &serde_json::Value) -> String {
     let id = payload.get("id").map(|v| v.to_string()).unwrap_or_default();
     if event == "source:band_gains" {
@@ -2217,6 +2266,16 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         rms_dbfs,
                     },
                 );
+                // Older engines (and un-rebuilt backends) never send
+                // /omniphony/meter/master. Derive it here so the frontend gets
+                // a master meter either way and needs no fallback of its own.
+                // Both events are batched, so this adds one entry to the 16 ms
+                // window rather than an emit per message.
+                if s.master_level.is_none() {
+                    if let Some(derived) = derived_master_meter(&s.speaker_levels) {
+                        queue_batched_emit("master:meter", derived);
+                    }
+                }
                 (
                     Some((
                         "speaker:meter",
@@ -3333,5 +3392,108 @@ mod tests {
         assert!((speaker.x - 1.0).abs() < 1e-6, "x was {}", speaker.x);
         assert!(speaker.y.abs() < 1e-6, "y was {}", speaker.y);
         assert!(speaker.z.abs() < 1e-6, "z was {}", speaker.z);
+    }
+}
+
+#[cfg(test)]
+mod master_meter_tests {
+    use super::{derived_master_meter, METER_DB_MIN};
+    use crate::app_state::Meter;
+    use std::collections::HashMap;
+
+    fn speakers(levels: &[(f64, f64)]) -> HashMap<String, Meter> {
+        levels
+            .iter()
+            .enumerate()
+            .map(|(i, &(peak_dbfs, rms_dbfs))| {
+                (
+                    i.to_string(),
+                    Meter {
+                        peak_dbfs,
+                        rms_dbfs,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn field(value: &serde_json::Value, name: &str) -> f64 {
+        value["meter"][name].as_f64().unwrap()
+    }
+
+    #[test]
+    fn no_speakers_yields_no_meter() {
+        assert!(derived_master_meter(&HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn peak_is_the_loudest_speaker() {
+        let v = derived_master_meter(&speakers(&[(-20.0, -30.0), (-6.0, -40.0), (-12.0, -35.0)]))
+            .unwrap();
+        assert!((field(&v, "peakDbfs") - (-6.0)).abs() < 1e-9);
+    }
+
+    /// Uncorrelated speakers add in power: N speakers at the same level sum to
+    /// that level, since the mean of N equal squares is one square.
+    #[test]
+    fn equal_speakers_sum_to_their_own_level() {
+        for count in [1usize, 2, 8] {
+            let levels: Vec<(f64, f64)> = vec![(-10.0, -20.0); count];
+            let v = derived_master_meter(&speakers(&levels)).unwrap();
+            assert!(
+                (field(&v, "rmsDbfs") - (-20.0)).abs() < 1e-9,
+                "{count} speakers gave {}",
+                field(&v, "rmsDbfs")
+            );
+        }
+    }
+
+    /// One speaker twice the amplitude of another, averaged over the two:
+    /// sqrt((1^2 + 0.5^2)/2) = 0.7906 -> -2.04 dB.
+    #[test]
+    fn combines_unequal_speakers_in_power() {
+        let v = derived_master_meter(&speakers(&[(0.0, 0.0), (0.0, -6.0206)])).unwrap();
+        let expected = 20.0 * ((1.0f64 + 0.25) / 2.0).sqrt().log10();
+        assert!(
+            (field(&v, "rmsDbfs") - expected).abs() < 1e-3,
+            "got {}",
+            field(&v, "rmsDbfs")
+        );
+    }
+
+    /// The floor only comes into play once the summed linear energy underflows
+    /// to exactly zero — an ordinary "very quiet" level converts normally, and
+    /// must not be snapped up to the floor.
+    #[test]
+    fn a_quiet_level_converts_rather_than_hitting_the_floor() {
+        let v = derived_master_meter(&speakers(&[(-80.0, -80.0)])).unwrap();
+        assert!((field(&v, "rmsDbfs") - (-80.0)).abs() < 1e-6);
+    }
+
+    /// True zero energy would be -inf dB, which would saturate the scale.
+    #[test]
+    fn zero_energy_reads_as_the_floor_not_negative_infinity() {
+        // 10^(-20000/20) underflows to 0.0 in f64.
+        let v = derived_master_meter(&speakers(&[(-20000.0, -20000.0)])).unwrap();
+        let rms = field(&v, "rmsDbfs");
+        assert!(rms.is_finite(), "rms was {rms}");
+        assert_eq!(rms, METER_DB_MIN);
+    }
+
+    /// With every speaker below the meter's bottom, the peak stays at that
+    /// bottom (-60, `METER_DB_MIN` in mute-solo.js) rather than the -100 the
+    /// OSC parser clamps raw levels to. Confusing the two shows up as a wrong
+    /// number in the master readout whenever the room is quiet.
+    #[test]
+    fn the_peak_floor_is_the_meter_bottom_not_the_parser_clamp() {
+        assert_eq!(METER_DB_MIN, -60.0);
+        let v = derived_master_meter(&speakers(&[(-80.0, -80.0), (-90.0, -90.0)])).unwrap();
+        assert_eq!(field(&v, "peakDbfs"), -60.0);
+    }
+
+    #[test]
+    fn a_derived_meter_says_so() {
+        let v = derived_master_meter(&speakers(&[(-10.0, -20.0)])).unwrap();
+        assert_eq!(v["derived"], serde_json::json!(true));
     }
 }
