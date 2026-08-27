@@ -10,6 +10,7 @@ name = "renderer"
 
 [dependencies]
 anyhow = "1"
+omniphony-geometry = { version = "0.1.0", path = "../omniphony-geometry" }
 bridge_api = { version = "0.3.0", path = "../bridge_api" }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }

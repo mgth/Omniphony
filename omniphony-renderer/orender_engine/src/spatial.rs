@@ -9,15 +9,7 @@ use renderer::spatial_renderer::SpatialChannelEvent;
 use std::collections::HashMap;
 
 /// Wrap an azimuth in degrees into `[-180, 180]`.
-pub fn normalize_azimuth_deg(mut azimuth_deg: f32) -> f32 {
-    while azimuth_deg < -180.0 {
-        azimuth_deg += 360.0;
-    }
-    while azimuth_deg > 180.0 {
-        azimuth_deg -= 360.0;
-    }
-    azimuth_deg
-}
+pub use omniphony_geometry::f32::normalize_deg as normalize_azimuth_deg;
 
 /// Raw, unconverted position `[x, y, z]` exactly as the event carries it (no
 /// coordinate-format conversion). Used for OSC object broadcast, where the
