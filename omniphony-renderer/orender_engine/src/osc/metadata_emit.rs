@@ -119,6 +119,25 @@ impl OscSender {
             };
             let meta_bytes = rosc::encoder::encode(&OscPacket::Message(meta_msg))?;
             self.send_to_all(&meta_bytes);
+
+            // Say it outright, after the zeroed triple above. A client that
+            // understands this drops the object; one that does not still sees
+            // the zeros and clears its display the old way.
+            //
+            // This is emitted here rather than at the call sites on purpose:
+            // `send_object_frame` is the single emitter both hosts go through
+            // (the FFI/mpv path in `engine.rs`, and the CLI decode path in
+            // `cli/decode/*`), so the two cannot drift apart.
+            let remove_msg = OscMessage {
+                addr: format!(
+                    "/omniphony/object/{}/{}",
+                    stale_id,
+                    osc_contract::OBJECT_REMOVE_SUFFIX
+                ),
+                args: vec![OscType::Long(self.content_generation as i64)],
+            };
+            let remove_bytes = rosc::encoder::encode(&OscPacket::Message(remove_msg))?;
+            self.send_to_all(&remove_bytes);
         }
 
         for (object_id, obj) in objects.iter().enumerate() {

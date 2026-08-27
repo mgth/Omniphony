@@ -91,6 +91,23 @@ Serialized JSON speaker runtime/config snapshot with per-speaker `gain`, `delayM
 | `generation` | `i64` | Monotonic content generation ID |
 | `name` | `string` | Object or bed label |
 
+#### `/omniphony/object/{idx}/remove`
+
+Sent when an object's slot goes away — the frame's `object_count` shrank past
+it, or the content changed.
+
+| Argument | Type | Description |
+|---|---|---|
+| `generation` | `i64` | Monotonic content generation ID |
+
+A slot going away is also signalled the older way, by zeroing its position,
+`/size` and `/meta`, and that is still sent for clients that predate this
+message. Both are emitted for the same slot: the zeroed triple first, then this.
+
+A client that only watches `object_count` has to infer which slots are gone,
+which is what leaves ghost objects behind after a seek — the count can stay the
+same while the objects behind it change.
+
 ### Metering
 
 Enabled with `--osc-metering`.

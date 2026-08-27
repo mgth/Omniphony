@@ -614,9 +614,6 @@ export function supportsRealtimeKey(key) {
   return Array.isArray(realtime) && realtime.includes(key);
 }
 
-export function usesNumericSpatialPlaceholders() {
-  return (app.producerCapabilities?.producer || 'renderer') === 'renderer';
-}
 
 // ---------------------------------------------------------------------------
 // Constants

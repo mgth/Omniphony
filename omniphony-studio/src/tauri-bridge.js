@@ -19,7 +19,6 @@ import {
   speakerGainCache,
   speakerDelays,
   layoutsByKey,
-  usesNumericSpatialPlaceholders
 } from './state.js';
 
 import { setObjectTestReportedPosition, setObjectTestClipState } from './controls/object-test.js';
@@ -256,23 +255,16 @@ export function setupTauriBridge() {
       }
     }
 
-    if (usesNumericSpatialPlaceholders()) {
-      // Ensure IDs [0..objectCount-1] exist for renderer snapshots that use numeric IDs.
-      for (let i = 0; i < objectCount; i += 1) {
-        const id = String(i);
-        if (!sourceMeshes.has(id)) {
-          updateSource(id, { x: 0, y: 0, z: 0, name: `Object_${i}`, _noTrail: true });
-        }
-      }
-
-      // Safety purge in case stale objects remain locally.
-      for (const id of Array.from(sourceMeshes.keys())) {
-        const idx = Number(id);
-        if (Number.isInteger(idx) && idx >= objectCount) {
-          removeSource(id);
-        }
-      }
-    }
+    // Objects are no longer synthesised from `objectCount` and purged by
+    // comparing indices against it. The renderer says which slots exist: a
+    // position update creates one, `/omniphony/object/{id}/remove` drops it
+    // (handled by `source:remove` above). Inferring it from the count is what
+    // left ghosts after a seek — the count can stay the same while the objects
+    // behind it change, so no index ever crossed the purge threshold.
+    //
+    // A client that registers gets a full object snapshot (`force_full_next`
+    // in the engine's OSC listener), so nothing depends on having watched the
+    // stream from the start.
 
     // The stream is now active again → drop any synthetic at-rest bed markers so
     // they don't coexist with the live objects.

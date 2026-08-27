@@ -2079,6 +2079,14 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 s.current_content_generation = Some(generation);
                 s.current_coordinate_format = coordinate_format;
 
+                // Compatibility path for renderers that predate
+                // `/omniphony/object/{id}/remove`: infer which slots are gone
+                // from the frame's object count. A current renderer sends the
+                // removal outright, so this only catches what it already did.
+                //
+                // Removable once no renderer older than that lifecycle message
+                // is in use — it is the inference the explicit signal replaces,
+                // and keeping it is what lets an old renderer still clean up.
                 let stale_ids: Vec<String> = if is_reset {
                     s.sources.keys().cloned().collect()
                 } else {

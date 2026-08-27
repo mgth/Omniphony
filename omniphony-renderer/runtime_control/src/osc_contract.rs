@@ -476,6 +476,15 @@ pub const METER_DRC_GAIN: &str = "/omniphony/meter/drc_gain";
 pub const METER_MASTER: &str = "/omniphony/meter/master";
 pub const REGISTER: &str = "/omniphony/register";
 pub const SPATIAL_FRAME: &str = "/omniphony/spatial/frame";
+/// Suffix for the per-object lifecycle message: `/omniphony/object/{id}/remove`.
+///
+/// An object's slot going away used to be signalled only by zeroing its
+/// position, size and meta — a client had to infer "gone" from "silent at the
+/// origin", or from the frame's object count, which is what left ghosts behind
+/// after a seek. This says it.
+///
+/// The zeroed triple is still sent for clients that predate this.
+pub const OBJECT_REMOVE_SUFFIX: &str = "remove";
 pub const TIMESTAMP: &str = "/omniphony/timestamp";
 pub const YIELD_RESUME_PORT: &str = "/omniphony/yield/resume_port";
 

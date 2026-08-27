@@ -25,6 +25,13 @@ function getAudioSampleRateInputEl() { return inAudioPanel('audioSampleRateInput
 function getAudioSampleRateMenuEl() { return inAudioPanel('audioSampleRateMenu'); }
 function getAudioOutputSummaryEl() { return inAudioPanel('audioOutputSummary'); }
 
+// What the user typed, unmodified. The bounds, the defaults and the coercions
+// live in `src-tauri/src/audio_config.rs`, which is also what forwards the
+// configuration to the renderer — so there is one definition of a valid audio
+// config, on the side that owns it. `control_audio_config` hands back the
+// effective values, and `applyEffectiveAudioConfig` below renders those, so a
+// field pulled into range shows its corrected value instead of looking
+// accepted as typed.
 export function buildAudioConfigPayload() {
   return {
     outputDevice: app.audioOutputDevice || null,
@@ -36,20 +43,20 @@ export function buildAudioConfigPayload() {
       forceSilenceInFarMode: app.adaptiveResamplingForceSilenceInFarMode === true,
       hardRecoverHighInFarMode: app.adaptiveResamplingHardRecoverHighInFarMode === true,
       hardRecoverLowInFarMode: app.adaptiveResamplingHardRecoverLowInFarMode === true,
-      farModeReturnFadeInMs: Math.max(0, Math.round(app.adaptiveResamplingFarModeReturnFadeInMs ?? 0)),
-      kpNear: Number(app.adaptiveResamplingKpNear ?? 1),
-      ki: Number(app.adaptiveResamplingKi ?? 1),
-      integralDischargeRatio: Number(app.adaptiveResamplingIntegralDischargeRatio ?? 0.25),
-      maxAdjust: Number(app.adaptiveResamplingMaxAdjust ?? 0.01),
-      highRecoverEntryMarginMs: Math.max(1, Math.round(app.adaptiveResamplingHighRecoverEntryMarginMs ?? 1000)),
-      updateIntervalCallbacks: Math.max(1, Math.round(app.adaptiveResamplingUpdateIntervalCallbacks ?? 1)),
-      lowRecoverSettleStableMs: Math.max(0, Number(app.adaptiveResamplingLowRecoverSettleStableMs ?? 200)),
-      lowRecoverEntryMarginMs: Math.max(0, Number(app.adaptiveResamplingLowRecoverEntryMarginMs ?? 18)),
-      lowRecoverExitMarginMs: Math.max(0, Number(app.adaptiveResamplingLowRecoverExitMarginMs ?? 6)),
-      lowRecoverSettleMarginMs: Math.max(0, Number(app.adaptiveResamplingLowRecoverSettleMarginMs ?? 6)),
-      lowRecoverRefillDeltaAlpha: Math.min(1, Math.max(0, Number(app.adaptiveResamplingLowRecoverRefillDeltaAlpha ?? 0.5))),
-      controlSmoothingCutoffHz: Math.max(0.001, Number(app.adaptiveResamplingControlSmoothingCutoffHz ?? 0.5)),
-      controlSmoothingOrder: Math.min(2, Math.max(1, Math.round(Number(app.adaptiveResamplingControlSmoothingOrder ?? 1)))),
+      farModeReturnFadeInMs: app.adaptiveResamplingFarModeReturnFadeInMs,
+      kpNear: app.adaptiveResamplingKpNear,
+      ki: app.adaptiveResamplingKi,
+      integralDischargeRatio: app.adaptiveResamplingIntegralDischargeRatio,
+      maxAdjust: app.adaptiveResamplingMaxAdjust,
+      highRecoverEntryMarginMs: app.adaptiveResamplingHighRecoverEntryMarginMs,
+      updateIntervalCallbacks: app.adaptiveResamplingUpdateIntervalCallbacks,
+      lowRecoverSettleStableMs: app.adaptiveResamplingLowRecoverSettleStableMs,
+      lowRecoverEntryMarginMs: app.adaptiveResamplingLowRecoverEntryMarginMs,
+      lowRecoverExitMarginMs: app.adaptiveResamplingLowRecoverExitMarginMs,
+      lowRecoverSettleMarginMs: app.adaptiveResamplingLowRecoverSettleMarginMs,
+      lowRecoverRefillDeltaAlpha: app.adaptiveResamplingLowRecoverRefillDeltaAlpha,
+      controlSmoothingCutoffHz: app.adaptiveResamplingControlSmoothingCutoffHz,
+      controlSmoothingOrder: app.adaptiveResamplingControlSmoothingOrder,
       paused: app.adaptiveResamplingPaused === true,
       usePreBridgeClock: app.adaptiveResamplingUsePreBridgeClock === true,
       useOutputPacing: app.adaptiveResamplingUseOutputPacing === true,
@@ -58,9 +65,37 @@ export function buildAudioConfigPayload() {
   };
 }
 
+/** Adopt the values the backend actually applied, so the form shows them. */
+function applyEffectiveAudioConfig(effective) {
+  const r = effective?.adaptiveResampling;
+  if (!r || typeof r !== 'object') return;
+  const numeric = {
+    farModeReturnFadeInMs: 'adaptiveResamplingFarModeReturnFadeInMs',
+    kpNear: 'adaptiveResamplingKpNear',
+    ki: 'adaptiveResamplingKi',
+    integralDischargeRatio: 'adaptiveResamplingIntegralDischargeRatio',
+    maxAdjust: 'adaptiveResamplingMaxAdjust',
+    highRecoverEntryMarginMs: 'adaptiveResamplingHighRecoverEntryMarginMs',
+    updateIntervalCallbacks: 'adaptiveResamplingUpdateIntervalCallbacks',
+    lowRecoverSettleStableMs: 'adaptiveResamplingLowRecoverSettleStableMs',
+    lowRecoverEntryMarginMs: 'adaptiveResamplingLowRecoverEntryMarginMs',
+    lowRecoverExitMarginMs: 'adaptiveResamplingLowRecoverExitMarginMs',
+    lowRecoverSettleMarginMs: 'adaptiveResamplingLowRecoverSettleMarginMs',
+    lowRecoverRefillDeltaAlpha: 'adaptiveResamplingLowRecoverRefillDeltaAlpha',
+    controlSmoothingCutoffHz: 'adaptiveResamplingControlSmoothingCutoffHz',
+    controlSmoothingOrder: 'adaptiveResamplingControlSmoothingOrder'
+  };
+  for (const [field, key] of Object.entries(numeric)) {
+    if (Number.isFinite(r[field])) app[key] = r[field];
+  }
+  dirty.adaptiveResampling = true;
+  scheduleUIFlush();
+}
+
 export function sendAudioConfig({ apply = true } = {}) {
   const payload = buildAudioConfigPayload();
-  return invoke('control_audio_config', { payload }).then(() => {
+  return invoke('control_audio_config', { payload }).then((effective) => {
+    applyEffectiveAudioConfig(effective);
     if (!apply) return null;
     return invoke('control_audio_config_apply');
   });
