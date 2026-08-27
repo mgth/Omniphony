@@ -539,11 +539,18 @@ fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
     let Ok(parsed) = serde_json::from_str::<InputDomainState>(value) else {
         return false;
     };
+    // Canonicalise before the state is stored, so what the frontend receives
+    // never carries a protocol alias. An unrecognised mode is dropped rather
+    // than stored: a mode nothing can act on is worse than the last good one.
     if let Some(mode) = parsed.mode {
-        s.input_mode = Some(mode);
+        if let Some(normalized) = crate::commands::input::normalize_input_mode(&mode) {
+            s.input_mode = Some(normalized.to_string());
+        }
     }
     if let Some(active_mode) = parsed.active_mode {
-        s.input_active_mode = Some(active_mode);
+        if let Some(normalized) = crate::commands::input::normalize_input_mode(&active_mode) {
+            s.input_active_mode = Some(normalized.to_string());
+        }
     }
     if let Some(apply_pending) = parsed.apply_pending {
         s.input_apply_pending = Some(if apply_pending { 1 } else { 0 });
@@ -636,7 +643,10 @@ fn apply_renderer_domain_state(s: &mut AppState, value: &str) -> bool {
     if let Some(vbap_polar) = parsed.vbap_polar {
         s.vbap_polar = vbap_polar;
     }
-    if let Some(render_backend_state) = parsed.render_backend_state {
+    if let Some(mut render_backend_state) = parsed.render_backend_state {
+        // Validate before storing, so the snapshot the frontend receives is
+        // already correct rather than merely reported.
+        render_backend_state.sanitize();
         s.render_backend_state = render_backend_state;
     }
     if let Some(options) = parsed.options {

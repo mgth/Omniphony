@@ -35,19 +35,26 @@ pub fn control_input_config_apply(state: State<SharedState>) {
     );
 }
 
+/// Canonical spelling of an input mode, or `None` if it is not one.
+///
+/// The protocol carries two historical aliases — `bridge` for `pipe_bridge`
+/// and `live` for `pipewire`. Both directions go through here: the frontend
+/// used to re-implement this table when reading a snapshot, which meant the
+/// same aliases were resolved in two places and only one of them was the
+/// authority.
+pub fn normalize_input_mode(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "bridge" | "pipe_bridge" => Some("pipe_bridge"),
+        "live" | "pipewire" => Some("pipewire"),
+        "pipewire_bridge" => Some("pipewire_bridge"),
+        _ => None,
+    }
+}
+
 #[tauri::command]
 pub fn control_input_mode(state: State<SharedState>, value: String) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(
-        trimmed.as_str(),
-        "bridge" | "pipe_bridge" | "live" | "pipewire" | "pipewire_bridge"
-    ) {
+    let Some(normalized) = normalize_input_mode(&value) else {
         return;
-    }
-    let normalized = match trimmed.as_str() {
-        "bridge" => "pipe_bridge",
-        "live" => "pipewire",
-        other => other,
     };
     send_control(
         &state.osc_tx,

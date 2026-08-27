@@ -178,6 +178,82 @@ pub struct HybridState {
     pub metric: Option<String>,
 }
 
+impl RenderBackendState {
+    /// Bring a freshly-received backend state into a shape the frontend can
+    /// render without checking it first.
+    ///
+    /// The renderer is the authority on which backends exist, but the values
+    /// still travel over a protocol that can carry a stale config: an id from
+    /// a backend that is no longer registered, a curve point outside the unit
+    /// square, a metric nothing implements. The frontend used to test all of
+    /// this on arrival, which put the rules for "valid state" on the far side
+    /// of the boundary from the state itself.
+    pub fn sanitize(&mut self) {
+        fn lowered(value: &Option<String>) -> Option<String> {
+            value
+                .as_ref()
+                .map(|v| v.trim().to_ascii_lowercase())
+                .filter(|v| !v.is_empty())
+        }
+
+        self.selection = lowered(&self.selection);
+        self.effective = lowered(&self.effective);
+        self.allowed_evaluation_modes = self
+            .allowed_evaluation_modes
+            .iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect();
+
+        // A hybrid's inner models may be any registered backend except another
+        // hybrid. When the engine has not published its list, any non-hybrid id
+        // is accepted rather than none — an empty list means "unknown", not
+        // "nothing is valid".
+        let known: Vec<String> = self
+            .available_backends
+            .as_array()
+            .map(|backends| {
+                backends
+                    .iter()
+                    .filter_map(|backend| backend.get("id").and_then(|v| v.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let valid_inner = |id: &Option<String>| -> Option<String> {
+            let id = lowered(id)?;
+            if id == "hybrid" {
+                return None;
+            }
+            if known.is_empty() || known.iter().any(|k| *k == id) {
+                Some(id)
+            } else {
+                None
+            }
+        };
+        self.hybrid.external_backend = valid_inner(&self.hybrid.external_backend);
+        self.hybrid.internal_backend = valid_inner(&self.hybrid.internal_backend);
+
+        // The curve is a blend weight against a normalised distance: a point
+        // outside the unit square has no meaning, and a non-finite one would
+        // poison every sample drawn from it.
+        self.hybrid
+            .curve
+            .retain(|point| point[0].is_finite() && point[1].is_finite());
+        for point in &mut self.hybrid.curve {
+            point[0] = point[0].clamp(0.0, 1.0);
+            point[1] = point[1].clamp(0.0, 1.0);
+        }
+        self.hybrid.curve_smoothing = self
+            .hybrid
+            .curve_smoothing
+            .filter(|v| v.is_finite())
+            .map(|v| v.clamp(0.0, 1.0));
+        self.hybrid.metric = lowered(&self.hybrid.metric)
+            .filter(|metric| matches!(metric.as_str(), "spherical" | "chebyshev"));
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RenderBackendState {
     pub selection: Option<String>,
@@ -826,5 +902,154 @@ impl Default for AppState {
             last_snapshot_emit_hash: None,
             last_overlay_emit_hash: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::RenderBackendState;
+
+    fn with_backends(ids: &[&str]) -> RenderBackendState {
+        RenderBackendState {
+            available_backends: serde_json::json!(ids
+                .iter()
+                .map(|id| serde_json::json!({ "id": id }))
+                .collect::<Vec<_>>()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ids_are_trimmed_and_lowercased() {
+        let mut state = RenderBackendState {
+            selection: Some("  VBAP  ".to_string()),
+            effective: Some("Hybrid".to_string()),
+            ..Default::default()
+        };
+        state.sanitize();
+        assert_eq!(state.selection.as_deref(), Some("vbap"));
+        assert_eq!(state.effective.as_deref(), Some("hybrid"));
+    }
+
+    #[test]
+    fn a_blank_id_becomes_none_rather_than_an_empty_string() {
+        let mut state = RenderBackendState {
+            selection: Some("   ".to_string()),
+            ..Default::default()
+        };
+        state.sanitize();
+        assert_eq!(state.selection, None);
+    }
+
+    /// The acceptance case: an id from a backend that is no longer registered.
+    #[test]
+    fn an_unknown_inner_backend_is_dropped() {
+        let mut state = with_backends(&["vbap", "cavern"]);
+        state.hybrid.external_backend = Some("gone".to_string());
+        state.hybrid.internal_backend = Some("vbap".to_string());
+        state.sanitize();
+        assert_eq!(state.hybrid.external_backend, None);
+        assert_eq!(state.hybrid.internal_backend.as_deref(), Some("vbap"));
+    }
+
+    /// A hybrid cannot nest inside itself, whatever the registry says.
+    #[test]
+    fn a_hybrid_cannot_be_its_own_inner_backend() {
+        let mut state = with_backends(&["vbap", "hybrid"]);
+        state.hybrid.external_backend = Some("hybrid".to_string());
+        state.sanitize();
+        assert_eq!(state.hybrid.external_backend, None);
+    }
+
+    /// An empty registry means "not published yet", not "nothing is valid" —
+    /// rejecting everything there would blank a working hybrid config.
+    #[test]
+    fn an_unpublished_registry_accepts_any_non_hybrid_id() {
+        let mut state = RenderBackendState::default();
+        state.hybrid.external_backend = Some("vbap".to_string());
+        state.hybrid.internal_backend = Some("hybrid".to_string());
+        state.sanitize();
+        assert_eq!(state.hybrid.external_backend.as_deref(), Some("vbap"));
+        assert_eq!(state.hybrid.internal_backend, None);
+    }
+
+    /// The other acceptance case: a curve point outside the unit square.
+    #[test]
+    fn curve_points_are_clamped_into_the_unit_square() {
+        let mut state = RenderBackendState::default();
+        state.hybrid.curve = vec![[-0.5, 2.0], [0.5, 0.5], [3.0, -1.0]];
+        state.sanitize();
+        assert_eq!(state.hybrid.curve, vec![[0.0, 1.0], [0.5, 0.5], [1.0, 0.0]]);
+    }
+
+    /// A non-finite point cannot be clamped into anything meaningful, so it is
+    /// removed — leaving it would poison every sample drawn from the curve.
+    #[test]
+    fn non_finite_curve_points_are_removed_not_clamped() {
+        let mut state = RenderBackendState::default();
+        state.hybrid.curve = vec![
+            [0.0, 0.0],
+            [f64::NAN, 0.5],
+            [1.0, f64::INFINITY],
+            [1.0, 1.0],
+        ];
+        state.sanitize();
+        assert_eq!(state.hybrid.curve, vec![[0.0, 0.0], [1.0, 1.0]]);
+    }
+
+    #[test]
+    fn smoothing_is_clamped_and_non_finite_is_dropped() {
+        let mut state = RenderBackendState::default();
+        state.hybrid.curve_smoothing = Some(5.0);
+        state.sanitize();
+        assert_eq!(state.hybrid.curve_smoothing, Some(1.0));
+
+        state.hybrid.curve_smoothing = Some(f64::NAN);
+        state.sanitize();
+        assert_eq!(state.hybrid.curve_smoothing, None);
+    }
+
+    #[test]
+    fn only_implemented_metrics_survive() {
+        let mut state = RenderBackendState::default();
+        state.hybrid.metric = Some("Chebyshev".to_string());
+        state.sanitize();
+        assert_eq!(state.hybrid.metric.as_deref(), Some("chebyshev"));
+
+        state.hybrid.metric = Some("manhattan".to_string());
+        state.sanitize();
+        assert_eq!(state.hybrid.metric, None);
+    }
+
+    #[test]
+    fn evaluation_modes_are_normalised_and_blanks_dropped() {
+        let mut state = RenderBackendState {
+            allowed_evaluation_modes: vec![
+                " Realtime ".to_string(),
+                String::new(),
+                "PRECOMPUTED_POLAR".to_string(),
+            ],
+            ..Default::default()
+        };
+        state.sanitize();
+        assert_eq!(
+            state.allowed_evaluation_modes,
+            vec!["realtime".to_string(), "precomputed_polar".to_string()]
+        );
+    }
+
+    /// Sanitizing an already-clean state must not change it.
+    #[test]
+    fn sanitize_is_idempotent() {
+        let mut state = with_backends(&["vbap"]);
+        state.selection = Some("vbap".to_string());
+        state.hybrid.external_backend = Some("vbap".to_string());
+        state.hybrid.curve = vec![[0.0, 0.0], [1.0, 1.0]];
+        state.hybrid.curve_smoothing = Some(0.5);
+        state.hybrid.metric = Some("spherical".to_string());
+        state.sanitize();
+        let once = state.clone();
+        state.sanitize();
+        assert_eq!(format!("{once:?}"), format!("{state:?}"));
     }
 }
