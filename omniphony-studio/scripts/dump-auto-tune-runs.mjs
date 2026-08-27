@@ -69,7 +69,7 @@ function plant({ kpCrit = 40, noisePpm = 80, rng }) {
  * cancellations land at a reproducible point in the timeline rather than a
  * wall-clock one.
  */
-function record({ name, samples, options = {}, actions = {}, plantOpts = {} }) {
+function record({ name, samples, options = {}, actions = {}, plantOpts = {}, latencyErr = null }) {
   const rng = makeRng(4242);
   const rate = plant({ ...plantOpts, rng });
 
@@ -93,7 +93,7 @@ function record({ name, samples, options = {}, actions = {}, plantOpts = {} }) {
       const ppm = rate(t, kp);
       fsm.pushSample({
         t,
-        latencySmoothedMs: 200 + (rng() - 0.5) * 0.02,
+        latencySmoothedMs: 200 + (latencyErr ? latencyErr(i, t, rng) : (rng() - 0.5) * 0.02),
         latencyTargetMs: 200,
         resampleRatio: 1 + ppm / 1e6,
         phase: 'stable'
@@ -165,6 +165,17 @@ const runs = [
     samples: 1600,
     options: FAST,
     actions: { 200: (fsm) => fsm.cancel() }
+  }),
+
+  // A latency error too large to converge, so `tuningKi` has to iterate
+  // instead of settling on the first palier. Without this the ki branches
+  // (too-slow, diverging, overshoot, the iteration cap) are never recorded —
+  // every other scenario converges immediately and walks straight past them.
+  record({
+    name: 'kiIterates',
+    samples: 4000,
+    options: FAST,
+    latencyErr: (i) => 3 + Math.sin(i / 40) * 2
   }),
 
   // Acknowledge the perturbation prompt as soon as it is raised, then let the

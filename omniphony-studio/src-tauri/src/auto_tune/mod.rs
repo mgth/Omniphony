@@ -7,3 +7,5 @@
 #![allow(dead_code)]
 
 pub mod detectors;
+pub mod replay;
+pub mod state_machine;
