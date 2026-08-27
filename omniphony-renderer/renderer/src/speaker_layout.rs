@@ -36,33 +36,12 @@
 //! ```
 
 use anyhow::{Context, Result};
+use omniphony_geometry::f32 as geometry;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-
-fn map_depth_with_room_ratios(
-    depth: f32,
-    front_ratio: f32,
-    rear_ratio: f32,
-    center_blend: f32,
-) -> f32 {
-    let d = depth.clamp(-1.0, 1.0);
-    let blend = center_blend.clamp(0.0, 1.0);
-    let center_ratio = rear_ratio + (front_ratio - rear_ratio) * blend;
-    if d >= 0.0 {
-        let t = d;
-        let a = center_ratio - front_ratio;
-        let b = 2.0 * (front_ratio - center_ratio);
-        a * t * t * t + b * t * t + center_ratio * t
-    } else {
-        let t = -d;
-        let a = center_ratio - rear_ratio;
-        let b = 2.0 * (rear_ratio - center_ratio);
-        -(a * t * t * t + b * t * t + center_ratio * t)
-    }
-}
 
 /// Legacy 0-9 bed id for a channel label. The renderer no longer routes by
 /// bed id — the only remaining consumer is the CLI file-export bed
@@ -145,29 +124,6 @@ fn default_radius_m() -> f32 {
     1.0
 }
 
-fn spherical_to_cartesian(azimuth: f32, elevation: f32, distance: f32) -> (f32, f32, f32) {
-    let az = azimuth.to_radians();
-    let el = elevation.to_radians();
-    // Keep speaker cartesian persistence aligned with the renderer ADM convention:
-    // x = right, y = front, z = up.
-    let horizontal = distance * el.cos();
-    let x = horizontal * az.sin();
-    let y = horizontal * az.cos();
-    let z = distance * el.sin();
-    (x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0), z.clamp(-1.0, 1.0))
-}
-
-fn cartesian_to_spherical(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
-    let dist = (x * x + y * y + z * z).sqrt();
-    let az = x.atan2(y).to_degrees();
-    let el = if dist > 0.0 {
-        z.atan2((x * x + y * y).sqrt()).to_degrees()
-    } else {
-        0.0
-    };
-    (az, el, dist.max(0.01))
-}
-
 fn speaker_with_distance(
     name: impl Into<String>,
     azimuth: f32,
@@ -216,7 +172,7 @@ impl<'de> Deserialize<'de> for Speaker {
                 let x = x.clamp(-1.0, 1.0);
                 let y = y.clamp(-1.0, 1.0);
                 let z = z.clamp(-1.0, 1.0);
-                let (az, el, dist) = cartesian_to_spherical(x, y, z);
+                let (az, el, dist) = geometry::to_spherical(x, y, z);
                 (
                     raw.azimuth.unwrap_or(az),
                     raw.elevation.unwrap_or(el),
@@ -229,7 +185,7 @@ impl<'de> Deserialize<'de> for Speaker {
                 let az = raw.azimuth.unwrap_or(0.0);
                 let el = raw.elevation.unwrap_or(0.0);
                 let dist = raw.distance.unwrap_or(1.0).max(0.01);
-                let (x, y, z) = spherical_to_cartesian(az, el, dist);
+                let (x, y, z) = geometry::hydrate_from_spherical(az, el, dist);
                 (az, el, dist, x, y, z)
             };
         Ok(Self {
@@ -294,7 +250,7 @@ impl Speaker {
         delay_ms: f32,
     ) -> Self {
         let distance = distance.max(0.01);
-        let (x, y, z) = spherical_to_cartesian(azimuth, elevation, distance);
+        let (x, y, z) = geometry::hydrate_from_spherical(azimuth, elevation, distance);
         Self {
             name: name.into(),
             azimuth,
@@ -326,7 +282,7 @@ impl Speaker {
         let x = x.clamp(-1.0, 1.0);
         let y = y.clamp(-1.0, 1.0);
         let z = z.clamp(-1.0, 1.0);
-        let (azimuth, elevation, distance) = cartesian_to_spherical(x, y, z);
+        let (azimuth, elevation, distance) = geometry::to_spherical(x, y, z);
         Self {
             name: name.into(),
             azimuth,
@@ -489,7 +445,7 @@ impl SpeakerLayout {
             }
             let pos = if speaker.coord_mode.eq_ignore_ascii_case("cartesian") {
                 let scaled_x = speaker.x * room_ratio[0];
-                let scaled_y = map_depth_with_room_ratios(
+                let scaled_y = geometry::map_depth(
                     speaker.y,
                     room_ratio[1],
                     room_ratio_rear,
