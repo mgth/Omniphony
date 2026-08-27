@@ -205,6 +205,7 @@ fn main() {
             debug_state_sizes,
             debug_write_memory_csv,
             get_state,
+            get_vbap_grid_nodes,
             get_osc_config,
             renderer_is_local,
             expected_orender_path,

@@ -4,6 +4,8 @@
 //!
 //! Each command forwards a value to the renderer over OSC.
 
+use omniphony_geometry::f64 as geometry;
+
 use crate::osc_listener::OscControlMsg;
 use crate::{send_control, send_distance_metric, SharedState};
 use tauri::State;
@@ -513,4 +515,39 @@ pub fn control_render_input_pipe(state: State<SharedState>, value: String) {
             value: value.trim().to_string(),
         },
     );
+}
+
+/// Node positions of the cartesian gain table, per axis, or `null` when no
+/// cartesian grid is configured.
+///
+/// The Studio's snap-to-grid has to land on the nodes the renderer actually
+/// samples at. The frontend used to rebuild them from the published interval
+/// counts, which meant re-implementing two protocol conventions: that the
+/// counts are intervals rather than nodes, and that the height axis is
+/// asymmetric (an optional negative half at its own resolution, stopping short
+/// of zero so both halves do not claim it). Both now come from
+/// `omniphony-geometry`, which is also what the renderer builds the table with.
+#[tauri::command]
+pub fn get_vbap_grid_nodes(state: State<SharedState>) -> Option<serde_json::Value> {
+    let cartesian = {
+        let s = state.inner.lock().unwrap();
+        s.vbap_cartesian.clone()
+    };
+
+    // Intervals, as published. Anything under one interval is not a grid.
+    let x_intervals = cartesian.x_size.unwrap_or(0);
+    let y_intervals = cartesian.y_size.unwrap_or(0);
+    let z_intervals = cartesian.z_size.unwrap_or(0);
+    if x_intervals < 1 || y_intervals < 1 || z_intervals < 1 {
+        return None;
+    }
+    let z_neg_nodes = cartesian.z_neg_size.unwrap_or(0) as usize;
+
+    // Intervals -> nodes, the same conversion `live_params.rs` applies before
+    // handing the counts to the table builder.
+    let x = geometry::evenly_spaced_axis(x_intervals as usize + 1, -1.0, 1.0);
+    let y = geometry::evenly_spaced_axis(y_intervals as usize + 1, -1.0, 1.0);
+    let z = geometry::cartesian_z_axis(z_intervals as usize + 1, z_neg_nodes);
+
+    Some(serde_json::json!({ "x": x, "y": y, "z": z }))
 }

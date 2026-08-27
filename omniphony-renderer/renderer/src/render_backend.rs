@@ -912,25 +912,11 @@ struct AxisSample {
     fraction: f32,
 }
 
-pub(crate) fn evenly_spaced_axis(count: usize, min: f32, max: f32) -> Vec<f32> {
-    if count <= 1 {
-        return vec![min];
-    }
-    let step = (max - min) / (count.saturating_sub(1) as f32);
-    (0..count).map(|index| min + step * index as f32).collect()
-}
-
-pub(crate) fn cartesian_z_axis(z_size: usize, z_neg_size: usize) -> Vec<f32> {
-    let mut values = Vec::with_capacity(z_neg_size + z_size);
-    if z_neg_size > 0 {
-        for index in 0..z_neg_size {
-            let t = (index + 1) as f32 / z_neg_size as f32;
-            values.push(-1.0 + (t - 1.0 / z_neg_size as f32));
-        }
-    }
-    values.extend(evenly_spaced_axis(z_size.max(2), 0.0, 1.0));
-    values
-}
+// The cartesian table's axis geometry lives in `omniphony-geometry`, shared
+// with the Studio: its snap-to-grid has to land on the same nodes the table is
+// sampled at, and re-deriving them from the published interval counts is what
+// made that fragile.
+pub(crate) use omniphony_geometry::f32::{cartesian_z_axis, evenly_spaced_axis};
 
 fn polar_azimuth_axis(count: usize) -> Vec<f32> {
     let count = count.max(2);

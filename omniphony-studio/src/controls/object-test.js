@@ -355,26 +355,36 @@ function send() {
 // half), its positive half is `z_size + 1` nodes from zero. Hence an explicit
 // list of nodes rather than a step.
 
+// The node list comes from the backend (`get_vbap_grid_nodes`), which builds it
+// with `omniphony-geometry` — the same code the renderer samples the table
+// with. Rebuilding it here from the published interval counts meant
+// re-implementing the conventions described above, and being silently wrong if
+// either ever changed.
+//
+// Cached because snapping happens inside a drag and cannot await: the command
+// is re-issued whenever the VBAP cartesian state changes.
+let cachedGridAxes = null;
+
 /** The grid the renderer is actually sampling on, or null when there is none. */
 function gridAxes() {
-  const g = app.vbapCartesianState || {};
-  const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0);
-  // Intervals, as published.
-  const xI = n(g.xSize);
-  const yI = n(g.ySize);
-  const zI = n(g.zSize);
-  const zNegNodes = Math.max(0, n(g.zNegSize));
-  if (xI < 1 || yI < 1 || zI < 1) return null;
+  return cachedGridAxes;
+}
 
-  const evenly = (count, min, max) => {
-    if (count <= 1) return [min];
-    const step = (max - min) / (count - 1);
-    return Array.from({ length: count }, (_, i) => min + step * i);
-  };
-  const zAxis = [];
-  for (let i = 0; i < zNegNodes; i += 1) zAxis.push(-1 + i / zNegNodes);
-  zAxis.push(...evenly(zI + 1, 0, 1));
-  return [evenly(xI + 1, -1, 1), evenly(yI + 1, -1, 1), zAxis];
+/** Re-fetch the grid. Called on connect and whenever `vbap:cartesian` moves. */
+export function refreshVbapGridNodes() {
+  return invoke('get_vbap_grid_nodes')
+    .then((nodes) => {
+      cachedGridAxes = nodes && Array.isArray(nodes.x) && nodes.x.length > 0
+        ? [nodes.x, nodes.y, nodes.z]
+        : null;
+    })
+    .catch(() => {
+      cachedGridAxes = null;
+    })
+    // Separate hop so a render error cannot discard a grid that arrived fine.
+    // The snap toggle is offered-but-inert without a grid, so its disabled
+    // state follows the cache.
+    .then(() => renderObjectTestUI());
 }
 
 /** Nearest node on one axis. */

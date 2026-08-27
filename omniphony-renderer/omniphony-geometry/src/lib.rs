@@ -312,6 +312,46 @@ macro_rules! geometry_for {
             }
 
             // ---------------------------------------------------------------
+            // Sampling grids
+            // ---------------------------------------------------------------
+
+            /// `count` positions spread evenly from `min` to `max`, inclusive.
+            ///
+            /// A count of one or zero collapses to `min` rather than dividing
+            /// by zero.
+            pub fn evenly_spaced_axis(count: usize, min: $f, max: $f) -> Vec<$f> {
+                if count <= 1 {
+                    return vec![min];
+                }
+                let step = (max - min) / (count.saturating_sub(1) as $f);
+                (0..count).map(|index| min + step * index as $f).collect()
+            }
+
+            /// Node positions of the cartesian gain table's height axis.
+            ///
+            /// Not symmetric, which is the whole reason this is a function and
+            /// not a step size. The positive half is a plain even spread over
+            /// `[0, 1]`, but the space below the listener is optional and gets
+            /// its own resolution: `z_neg_size` nodes covering `[-1, 0)`,
+            /// stopping short of zero so the two halves do not both land on it.
+            ///
+            /// Both counts are **node counts**, not intervals. The live
+            /// parameter is an interval count and is converted before it gets
+            /// here (`live_params.rs`: `z_size.max(1) + 1`) — a distinction
+            /// that has to survive every hop of the protocol, and the reason
+            /// the Studio asks for these positions instead of rebuilding them.
+            pub fn cartesian_z_axis(z_size: usize, z_neg_size: usize) -> Vec<$f> {
+                let mut values = Vec::with_capacity(z_neg_size + z_size);
+                if z_neg_size > 0 {
+                    for index in 0..z_neg_size {
+                        values.push(-1.0 + index as $f / z_neg_size as $f);
+                    }
+                }
+                values.extend(evenly_spaced_axis(z_size.max(2), 0.0, 1.0));
+                values
+            }
+
+            // ---------------------------------------------------------------
             // Coordinate hydration
             // ---------------------------------------------------------------
 
@@ -570,6 +610,66 @@ mod tests {
     fn hydration_clamps_out_of_range_cartesian() {
         let (az, _, _) = hydrate_from_cartesian(5.0, 0.0, 0.0);
         close(az, 90.0);
+    }
+
+    // ── Sampling grids ──────────────────────────────────────────────────────
+
+    #[test]
+    fn an_even_axis_spans_its_ends_inclusively() {
+        assert_eq!(evenly_spaced_axis(2, -1.0, 1.0), vec![-1.0, 1.0]);
+        assert_eq!(evenly_spaced_axis(3, -1.0, 1.0), vec![-1.0, 0.0, 1.0]);
+        assert_eq!(
+            evenly_spaced_axis(5, 0.0, 1.0),
+            vec![0.0, 0.25, 0.5, 0.75, 1.0]
+        );
+    }
+
+    #[test]
+    fn a_degenerate_axis_collapses_to_its_start() {
+        assert_eq!(evenly_spaced_axis(1, -1.0, 1.0), vec![-1.0]);
+        assert_eq!(evenly_spaced_axis(0, -1.0, 1.0), vec![-1.0]);
+    }
+
+    /// With no space below the listener the height axis is just the upper half.
+    #[test]
+    fn the_height_axis_without_a_negative_half_starts_at_zero() {
+        assert_eq!(cartesian_z_axis(3, 0), vec![0.0, 0.5, 1.0]);
+    }
+
+    /// The asymmetric case, and the reason this is a function rather than a
+    /// step: the two halves have independent resolutions, and the negative one
+    /// stops short of zero so they do not both claim it.
+    #[test]
+    fn the_height_axis_halves_are_independent_and_meet_once() {
+        let axis = cartesian_z_axis(3, 2);
+        assert_eq!(axis, vec![-1.0, -0.5, 0.0, 0.5, 1.0]);
+        assert_eq!(axis.iter().filter(|v| **v == 0.0).count(), 1);
+    }
+
+    #[test]
+    fn the_height_axis_is_ascending_for_any_split() {
+        for z_size in 2..8usize {
+            for z_neg in 0..8usize {
+                let axis = cartesian_z_axis(z_size, z_neg);
+                assert_eq!(axis.len(), z_neg + z_size.max(2));
+                for pair in axis.windows(2) {
+                    assert!(
+                        pair[1] > pair[0],
+                        "not ascending at z_size={z_size} z_neg={z_neg}: {axis:?}"
+                    );
+                }
+                assert_eq!(*axis.first().unwrap(), if z_neg > 0 { -1.0 } else { 0.0 });
+                assert_eq!(*axis.last().unwrap(), 1.0);
+            }
+        }
+    }
+
+    /// A single-node request is widened to two, because a table axis with one
+    /// position cannot interpolate.
+    #[test]
+    fn the_height_axis_never_degenerates_to_one_node() {
+        assert_eq!(cartesian_z_axis(1, 0), vec![0.0, 1.0]);
+        assert_eq!(cartesian_z_axis(0, 0), vec![0.0, 1.0]);
     }
 
     // ── Precision parity ────────────────────────────────────────────────────
