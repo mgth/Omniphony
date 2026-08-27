@@ -7,7 +7,6 @@
 import {
   app,
   dirty,
-  speakerLevels,
   supportsRealtimeKey,
   masterPeak,
   masterLevel
@@ -102,35 +101,23 @@ export function flashClipIndicator() {
   }, 1000);
 }
 
-// Master output meter. Preferred source: the engine's post-master-gain
-// /omniphony/meter/master (state.masterLevel). Fallback when that message is
-// absent (older engine / un-rebuilt backend): derive it from the speaker
-// meters — master peak = loudest speaker peak (identical to the engine's
-// max(spk_peak), speakers are already metered post-master-gain), master RMS ≈
-// combined speaker energy. Returns { peakDb, rmsDb } or null when no data.
+// Master output meter. The backend is the single source of truth: it forwards
+// the engine's post-master-gain /omniphony/meter/master when there is one, and
+// reconstructs it from the speaker meters when there is not (older engine, or a
+// backend that has not been rebuilt) — see `derived_master_meter` in
+// src-tauri/src/osc_listener.rs. Either way `masterLevel` is populated, so
+// there is nothing to fall back to here.
+//
+// Returns { peakDb, rmsDb }, or null before the first meter arrives.
 function getMasterMeter() {
-  if (masterLevel && typeof masterLevel.rmsDbfs === 'number') {
-    const rmsDb = masterLevel.rmsDbfs;
-    return {
-      rmsDb,
-      peakDb: typeof masterLevel.peakDbfs === 'number' ? masterLevel.peakDbfs : rmsDb
-    };
-  }
-  const speakers = Array.from(speakerLevels.values()).filter(
-    (m) => m && typeof m.peakDbfs === 'number'
-  );
-  if (speakers.length === 0) {
+  if (!masterLevel || typeof masterLevel.rmsDbfs !== 'number') {
     return null;
   }
-  let peakDb = METER_DB_MIN;
-  let sumSquares = 0;
-  for (const m of speakers) {
-    if (m.peakDbfs > peakDb) peakDb = m.peakDbfs;
-    const rmsLin = Math.pow(10, (typeof m.rmsDbfs === 'number' ? m.rmsDbfs : -100) / 20);
-    sumSquares += rmsLin * rmsLin;
-  }
-  const rmsLin = Math.sqrt(sumSquares / speakers.length);
-  return { peakDb, rmsDb: rmsLin > 0 ? 20 * Math.log10(rmsLin) : METER_DB_MIN };
+  const rmsDb = masterLevel.rmsDbfs;
+  return {
+    rmsDb,
+    peakDb: typeof masterLevel.peakDbfs === 'number' ? masterLevel.peakDbfs : rmsDb
+  };
 }
 
 export function updateMasterMeterUI() {
