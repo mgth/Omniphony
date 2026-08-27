@@ -13,6 +13,7 @@
  * getObjectDisplayName, formatObjectLabel.
  */
 
+import { linearToDb } from './audio-math.js';
 import * as THREE from 'three';
 import {
   sourceMeshes,
@@ -75,7 +76,7 @@ import { disposeSpeakerBandBar, bandColor } from './scene/speaker-band-bars.js';
 import { createTrailRenderable } from './trails.js';
 import { shouldAppendTrailPoint, recordTrailPoint, shouldRebuildTrailGeometry } from './trails.js';
 import {
-  linearToDb,
+  formatLinearAsDb,
   meterToPercent,
   getSoloTarget,
   sendObjectMute
@@ -608,11 +609,11 @@ export function getSelectedSourceContribution(index) {
     if (!Number.isFinite(sourceRms) || rawGain <= 0) {
       return null;
     }
-    return sourceRms + (20 * Math.log10(rawGain));
+    return sourceRms + linearToDb(rawGain);
   })();
   return {
     gain: rawGain,
-    gainDb: linearToDb(rawGain),
+    gainDb: formatLinearAsDb(rawGain),
     resultDbfs,
     resultText: resultDbfs === null ? '\u2014 dBFS' : `${formatNumber(resultDbfs, 1)} dBFS`,
     percent: resultDbfs === null ? 0 : meterToPercent({ rmsDbfs: resultDbfs })
@@ -656,10 +657,10 @@ export function getSelectedSpeakerContributionForObject(id) {
   const sourceRms = Number(sourceMeter?.rmsDbfs);
   const resultDbfs = (!Number.isFinite(sourceRms) || rawGain <= 0)
     ? null
-    : sourceRms + (20 * Math.log10(rawGain));
+    : sourceRms + linearToDb(rawGain);
   return {
     gain: rawGain,
-    gainDb: linearToDb(rawGain),
+    gainDb: formatLinearAsDb(rawGain),
     resultDbfs,
     resultText: resultDbfs === null ? '\u2014 dBFS' : `${formatNumber(resultDbfs, 1)} dBFS`,
     percent: resultDbfs === null ? 0 : meterToPercent({ rmsDbfs: resultDbfs })
@@ -727,7 +728,7 @@ function updateObjectBandBars(entry, id) {
       // of crossover bands gets a colour. Same palette as the 3D speaker gauges.
       bar.style.setProperty('--band-color', bandColor(b, contributions.length));
     }
-    if (dbEl) dbEl.textContent = linearToDb(gain);
+    if (dbEl) dbEl.textContent = formatLinearAsDb(gain);
   });
 
   for (let b = 0; b < entry.bandBarsContainer.children.length; b += 1) {

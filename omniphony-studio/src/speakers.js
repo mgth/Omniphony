@@ -127,7 +127,7 @@ import { computeCrossoverBandLabels, computeCrossoverBandEdges } from './crossov
 import { onSpeakerSelectionChanged } from './controls/speaker-test.js';
 
 import {
-  linearToDb,
+  formatLinearAsDb,
   meterToPercent,
   formatLevel,
   getBaseGain,
@@ -561,7 +561,7 @@ export function getObjectDominantSpeakerText(id) {
   }
   const speaker = currentLayoutSpeakers[bestIndex];
   const name = String(speaker?.id ?? bestIndex);
-  return `${name} ${linearToDb(bestGain)}`;
+  return `${name} ${formatLinearAsDb(bestGain)}`;
 }
 
 export function objectHasActiveTrail(id) {
@@ -963,7 +963,7 @@ export function updateSpeakerBandBars(entry, speakerIndex) {
       // of crossover bands. Same palette as the object band bars and 3D gauges.
       bar.style.setProperty('--band-color', bandColor(b, contributions.length));
     }
-    if (dbEl) dbEl.textContent = linearToDb(gain);
+    if (dbEl) dbEl.textContent = formatLinearAsDb(gain);
   });
 
   for (let b = 0; b < entry.bandBarsContainer.children.length; b += 1) {
@@ -1241,7 +1241,7 @@ export function renderSpeakerEditor() {
   const rMeters = Math.hypot(speakerMeters.x, speakerMeters.y, speakerMeters.z);
   syncInputValueUnlessEditing(speakerEditRMetersInputEl, formatNumber(rMeters, 2));
   if (speakerEditGainSliderEl) speakerEditGainSliderEl.value = String(gain);
-  if (speakerEditGainBoxEl) speakerEditGainBoxEl.textContent = linearToDb(gain);
+  if (speakerEditGainBoxEl) speakerEditGainBoxEl.textContent = formatLinearAsDb(gain);
   if (speakerEditDelayMsInputEl) speakerEditDelayMsInputEl.value = String(Math.max(0, delayMs));
   if (speakerEditDelaySamplesInputEl) speakerEditDelaySamplesInputEl.value = String(delayMsToSamples(delayMs));
   if (speakerEditSpatializeToggleEl) speakerEditSpatializeToggleEl.checked = getSpeakerSpatializeValue(speaker) !== 0;

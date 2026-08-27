@@ -17,9 +17,6 @@ export const sourceLabels = new Map();
 export const sourceOutlines = new Map();
 export const sourceLevels = new Map();
 export const speakerLevels = new Map();
-export const sourcePeaks = new Map(); // { value: number, expires: number }
-export const speakerPeaks = new Map(); // { value: number, expires: number }
-export let masterPeak = { value: 0, expires: 0 };
 // Engine-reported master output meter { peakDbfs, rmsDbfs }, or null until the
 // first /omniphony/meter/master is received. Live ESM binding read by master.js.
 export let masterLevel = null;

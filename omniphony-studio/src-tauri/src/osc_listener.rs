@@ -16,6 +16,7 @@ use crate::osc_parser::{
     is_heartbeat_address, parse_osc_message, CoordinateFormat, HeartbeatResponse, LogEntry,
     OscEvent,
 };
+use crate::peak_hold::PeakHolds;
 use crate::timing_stats::TimeWindow;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -1769,6 +1770,21 @@ thread_local! {
     // as EMIT_BATCH: recorded and flushed only from the OSC thread, so no lock.
     static TIMING_WINDOWS: std::cell::RefCell<TimingWindows> =
         std::cell::RefCell::new(TimingWindows::new());
+    // Per-meter peak-hold. Same ownership rule as EMIT_BATCH: only the OSC
+    // thread touches it, so no lock.
+    static PEAK_HOLDS: std::cell::RefCell<PeakHolds> =
+        std::cell::RefCell::new(PeakHolds::new());
+}
+
+/// Advance a meter's peak-hold and return the cursor value, in dBFS.
+fn peak_hold(key: &str, peak_dbfs: f64) -> f64 {
+    PEAK_HOLDS.with(|h| h.borrow_mut().update(key, peak_dbfs, Instant::now()))
+}
+
+/// Drop a meter's hold state — a removed object must not leave a cursor
+/// behind for the next object to inherit its id.
+fn forget_peak_hold(key: &str) {
+    PEAK_HOLDS.with(|h| h.borrow_mut().forget(key));
 }
 
 /// Span the raw-latency min/max markers cover. Mirrors what the frontend used
@@ -1937,7 +1953,11 @@ fn derived_master_meter(
         METER_DB_MIN
     };
     Some(serde_json::json!({
-        "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs },
+        "meter": {
+            "peakDbfs": peak_dbfs,
+            "rmsDbfs": rms_dbfs,
+            "peakHoldDbfs": peak_hold("master", peak_dbfs),
+        },
         // Lets the frontend tell a reconstructed meter from a reported one —
         // for display or diagnosis, not for choosing a code path.
         "derived": true,
@@ -2185,6 +2205,10 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
             }
 
             OscEvent::Remove { id } => {
+                // Drop the hold too: object ids are reused across tracks and
+                // seeks, and an inherited cursor would show a peak the new
+                // object never produced.
+                forget_peak_hold(&format!("src:{id}"));
                 s.sources.remove(&id);
                 s.source_levels.remove(&id);
                 s.object_speaker_gains.remove(&id);
@@ -2221,6 +2245,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                                 "peakDbfs": peak_dbfs,
                                 "rmsDbfs": rms_dbfs,
                                 "bandRmsDbfs": band_rms_dbfs,
+                                "peakHoldDbfs": peak_hold(&format!("src:{id}"), peak_dbfs),
                             }
                         }),
                     )),
@@ -2281,7 +2306,11 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         "speaker:meter",
                         serde_json::json!({
                             "id": id,
-                            "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                            "meter": {
+                                "peakDbfs": peak_dbfs,
+                                "rmsDbfs": rms_dbfs,
+                                "peakHoldDbfs": peak_hold(&format!("spk:{id}"), peak_dbfs),
+                            }
                         }),
                     )),
                     removed_ids,
@@ -2297,7 +2326,11 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     "ear:meter",
                     serde_json::json!({
                         "id": id,
-                        "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                        "meter": {
+                            "peakDbfs": peak_dbfs,
+                            "rmsDbfs": rms_dbfs,
+                            "peakHoldDbfs": peak_hold(&format!("ear:{id}"), peak_dbfs),
+                        }
                     }),
                 )),
                 removed_ids,
@@ -2315,7 +2348,11 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                     Some((
                         "master:meter",
                         serde_json::json!({
-                            "meter": { "peakDbfs": peak_dbfs, "rmsDbfs": rms_dbfs }
+                            "meter": {
+                                "peakDbfs": peak_dbfs,
+                                "rmsDbfs": rms_dbfs,
+                                "peakHoldDbfs": peak_hold("master", peak_dbfs),
+                            }
                         }),
                     )),
                     removed_ids,
@@ -3319,6 +3356,9 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
     }; // mutex released here, before any emit
 
     for id in removed_ids {
+        // Same reason as the single-object removal above: a bulk wipe (reset,
+        // seek, track change) must not leave holds for ids that come back.
+        forget_peak_hold(&format!("src:{id}"));
         let _ = app.emit("source:remove", serde_json::json!({ "id": id }));
     }
 
