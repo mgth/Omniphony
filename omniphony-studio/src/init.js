@@ -167,19 +167,14 @@ export function applyInitState(payload) {
   }
   updateVbapCartesian();
   if (payload.renderBackendState && typeof payload.renderBackendState === 'object') {
-    // Accept any backend id the engine reports (built-in or contributor-
-    // registered); the engine already validated it against its registry.
+    // Ids, evaluation modes, the hybrid inner backends, its curve, smoothing
+    // and metric all arrive validated: `RenderBackendState::sanitize` runs in
+    // the backend before the state is stored, so this is hydration only.
     if (typeof payload.renderBackendState.selection === 'string') {
-      const selection = payload.renderBackendState.selection.trim().toLowerCase();
-      if (selection) {
-        app.renderBackendState.selection = selection;
-      }
+      app.renderBackendState.selection = payload.renderBackendState.selection;
     }
     if (typeof payload.renderBackendState.effective === 'string') {
-      const effective = payload.renderBackendState.effective.trim().toLowerCase();
-      if (effective) {
-        app.renderBackendState.effective = effective;
-      }
+      app.renderBackendState.effective = payload.renderBackendState.effective;
     }
     app.renderBackendState.effectiveLabel = typeof payload.renderBackendState.effectiveLabel === 'string'
       ? payload.renderBackendState.effectiveLabel
@@ -189,8 +184,6 @@ export function applyInitState(payload) {
       : null;
     app.renderBackendState.allowedEvaluationModes = Array.isArray(payload.renderBackendState.allowedEvaluationModes)
       ? payload.renderBackendState.allowedEvaluationModes
-        .map((value) => String(value ?? '').trim().toLowerCase())
-        .filter((value) => value.length > 0)
       : [];
     app.renderBackendState.frozenRoomRatio = payload.renderBackendState.frozenRoomRatio === true;
     app.renderBackendState.frozenSpeakers = payload.renderBackendState.frozenSpeakers === true;
@@ -207,42 +200,14 @@ export function applyInitState(payload) {
       : {};
     const hybrid = payload.renderBackendState.hybrid;
     if (hybrid && typeof hybrid === 'object') {
-      // Any registered backend can be a hybrid inner model, except a nested
-      // hybrid. The dropdown is populated from `availableBackends`; accept an id
-      // present in that list (or any non-hybrid id if the list isn't published).
-      const available = app.renderBackendState.availableBackends;
-      const validInner = (id) =>
-        typeof id === 'string'
-        && id.length > 0
-        && id !== 'hybrid'
-        && (!Array.isArray(available)
-          || available.length === 0
-          || available.some((b) => String(b.id) === id));
-      const external = typeof hybrid.externalBackend === 'string'
-        ? hybrid.externalBackend.trim().toLowerCase()
-        : null;
-      const internal = typeof hybrid.internalBackend === 'string'
-        ? hybrid.internalBackend.trim().toLowerCase()
-        : null;
-      app.renderBackendState.hybrid.externalBackend = validInner(external) ? external : null;
-      app.renderBackendState.hybrid.internalBackend = validInner(internal) ? internal : null;
-      app.renderBackendState.hybrid.curve = Array.isArray(hybrid.curve)
-        ? hybrid.curve
-          .filter((point) => Array.isArray(point) && point.length === 2
-            && Number.isFinite(point[0]) && Number.isFinite(point[1]))
-          .map((point) => [
-            Math.min(1, Math.max(0, point[0])),
-            Math.min(1, Math.max(0, point[1]))
-          ])
-        : null;
+      app.renderBackendState.hybrid.externalBackend = hybrid.externalBackend ?? null;
+      app.renderBackendState.hybrid.internalBackend = hybrid.internalBackend ?? null;
+      app.renderBackendState.hybrid.curve = Array.isArray(hybrid.curve) ? hybrid.curve : null;
       if (typeof hybrid.metric === 'string') {
-        const metric = hybrid.metric.trim().toLowerCase();
-        if (['spherical', 'chebyshev'].includes(metric)) {
-          app.renderBackendState.hybrid.metric = metric;
-        }
+        app.renderBackendState.hybrid.metric = hybrid.metric;
       }
       if (Number.isFinite(hybrid.curveSmoothing)) {
-        app.renderBackendState.hybrid.curveSmoothing = Math.min(1, Math.max(0, hybrid.curveSmoothing));
+        app.renderBackendState.hybrid.curveSmoothing = hybrid.curveSmoothing;
       }
     }
   }
@@ -576,21 +541,18 @@ export function applyInitState(payload) {
   if (typeof payload.audioError === 'string') {
     app.audioError = payload.audioError.trim() || null;
   }
+  // The protocol's two historical aliases (`bridge` for `pipe_bridge`, `live`
+  // for `pipewire`) are resolved by `normalize_input_mode` in the backend, on
+  // the way in as well as the way out. An unrecognised mode never reaches the
+  // snapshot, so there is nothing to test for here.
   if (typeof payload.inputMode === 'string') {
-    const value = payload.inputMode.trim().toLowerCase();
-    if (value === 'bridge' || value === 'pipe_bridge' || value === 'live' || value === 'pipewire' || value === 'pipewire_bridge') {
-      const normalized = value === 'bridge' ? 'pipe_bridge' : (value === 'live' ? 'pipewire' : value);
-      if (!app.inputModeDirty || normalized === app.inputMode) {
-        app.inputMode = normalized;
-        app.inputModeDirty = false;
-      }
+    if (!app.inputModeDirty || payload.inputMode === app.inputMode) {
+      app.inputMode = payload.inputMode;
+      app.inputModeDirty = false;
     }
   }
   if (typeof payload.inputActiveMode === 'string') {
-    const value = payload.inputActiveMode.trim().toLowerCase();
-    if (value === 'bridge' || value === 'pipe_bridge' || value === 'live' || value === 'pipewire' || value === 'pipewire_bridge') {
-      app.inputActiveMode = value === 'bridge' ? 'pipe_bridge' : (value === 'live' ? 'pipewire' : value);
-    }
+    app.inputActiveMode = payload.inputActiveMode;
   }
   if (typeof payload.inputApplyPending === 'number') {
     const pending = payload.inputApplyPending !== 0;
