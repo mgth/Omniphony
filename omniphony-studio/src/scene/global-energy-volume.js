@@ -25,7 +25,12 @@
 
 import { app } from '../state.js';
 import { EnergyVolume } from './energy-volume-core.js';
-import { VOLUME_REBUILD_INTERVAL_MS, clampVolumeGamma } from './object-energy-shared.js';
+import {
+  VOLUME_REBUILD_INTERVAL_MS,
+  clampVolumeGamma,
+  makeCellIndexer,
+  signaturesEqual,
+} from './object-energy-shared.js';
 import { getGlobalEnergyTable } from './speaker-gaintable.js';
 
 const volume = new EnergyVolume();
@@ -41,13 +46,6 @@ export const GLOBAL_ENERGY_SCALE_DEFAULT_DB = 6;
 const SILENCE_AMPLITUDE = 1e-6;
 
 let lastBuildSig = null;
-function sigEqual(a, b) {
-  if (!a || !b || a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
 
 export function hideGlobalEnergyVolume() {
   volume.hide();
@@ -62,25 +60,6 @@ export function globalEnergyScaleDb() {
   const raw = Number(app.globalEnergyHeatmapScaleDb);
   if (!Number.isFinite(raw) || raw <= 0) return GLOBAL_ENERGY_SCALE_DEFAULT_DB;
   return Math.max(GLOBAL_ENERGY_SCALE_MIN_DB, Math.min(GLOBAL_ENERGY_SCALE_MAX_DB, raw));
-}
-
-function clampIdx(value, n) {
-  if (value < 0) return 0;
-  if (value > n - 1) return n - 1;
-  return value;
-}
-
-function nearestIndex(positions, n, value) {
-  let best = 0;
-  let bestDist = Infinity;
-  for (let i = 0; i < n; i += 1) {
-    const d = Math.abs(positions[i] - value);
-    if (d < bestDist) {
-      bestDist = d;
-      best = i;
-    }
-  }
-  return best;
 }
 
 export function refreshGlobalEnergyVolume(nowMs) {
@@ -108,7 +87,7 @@ export function refreshGlobalEnergyVolume(nowMs) {
     app.objectEnergyVolumeGammaMip,
     ratio.height, ratio.lower, ratio.width, ratio.rear, ratio.length,
   ];
-  if (sigEqual(sig, lastBuildSig)) return;
+  if (signaturesEqual(sig, lastBuildSig)) return;
 
   const now = Number.isFinite(nowMs) ? nowMs : performance.now();
   const refreshMs = Number(app.volumeRefreshMs) > 0
@@ -118,7 +97,7 @@ export function refreshGlobalEnergyVolume(nowMs) {
   app.lastGlobalEnergyVolumeAt = now;
   lastBuildSig = sig;
 
-  const { nx, ny, nz, bands, zPositions } = table;
+  const { bands } = table;
   const nbands = bands.length;
   if (nbands < 1) {
     hideGlobalEnergyVolume();
@@ -142,25 +121,7 @@ export function refreshGlobalEnergyVolume(nowMs) {
     for (let i = 0; i < cells; i += 1) total[i] = Math.sqrt(total[i]);
     amplitudes = total;
   }
-  const nxh = nx - 1;
-  const nyh = ny - 1;
-  const nzh = nz - 1;
-
-  let cachedOh = NaN;
-  let cachedZi = 0;
-  const lookupZi = (oh) => {
-    if (oh === cachedOh) return cachedZi;
-    cachedOh = oh;
-    cachedZi = zPositions
-      ? nearestIndex(zPositions, nz, oh)
-      : clampIdx(Math.round(((oh + 1) * 0.5) * nzh), nz);
-    return cachedZi;
-  };
-  const cellIndex = (ow, od, oh) => {
-    const xi = clampIdx(Math.round(((ow + 1) * 0.5) * nxh), nx);
-    const yi = clampIdx(Math.round(((od + 1) * 0.5) * nyh), ny);
-    return xi + nx * (yi + ny * lookupZi(oh));
-  };
+  const cellIndex = makeCellIndexer(table);
 
   const invScale = 1 / scaleDb;
   volume.update({
