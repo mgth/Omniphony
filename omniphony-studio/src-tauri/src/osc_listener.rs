@@ -1,3 +1,4 @@
+use omniphony_geometry::f64 as geometry;
 use rosc::{decoder, OscPacket, OscType};
 use std::net::UdpSocket;
 use std::sync::{Arc, Mutex};
@@ -233,30 +234,10 @@ fn clamp_layout_value(value: f64, min: f64, max: f64) -> f64 {
     value.max(min).min(max)
 }
 
-fn cartesian_to_spherical(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
-    let distance = (x * x + y * y + z * z).sqrt();
-    let azimuth = z.atan2(x).to_degrees();
-    let elevation = if distance > 0.0 {
-        y.atan2((x * x + z * z).sqrt()).to_degrees()
-    } else {
-        0.0
-    };
-    (azimuth, elevation, distance)
-}
-
-fn spherical_to_cartesian(
-    azimuth_deg: f64,
-    elevation_deg: f64,
-    distance_m: f64,
-) -> (f64, f64, f64) {
-    let azimuth = azimuth_deg.to_radians();
-    let elevation = elevation_deg.to_radians();
-    (
-        distance_m * elevation.cos() * azimuth.cos(),
-        distance_m * elevation.sin(),
-        distance_m * elevation.cos() * azimuth.sin(),
-    )
-}
+// Conversions come from `omniphony-geometry`, shared with the renderer. The
+// copies that lived here read the ADM coordinates the renderer publishes as if
+// they were Three.js scene coordinates — the same missing axis swizzle as
+// `layouts.rs`, but on the LIVE layout rather than a file.
 
 fn scalar_string(value: Option<serde_json::Value>, fallback: &str) -> String {
     match value {
@@ -315,7 +296,7 @@ fn normalized_layout_domain_speaker(raw: LayoutDomainSpeakerState) -> Speaker {
         let y = clamp_layout_value(y, -1.0, 1.0);
         let z = clamp_layout_value(z, -1.0, 1.0);
         let (fallback_azimuth, fallback_elevation, fallback_distance) =
-            cartesian_to_spherical(x, y, z);
+            geometry::to_spherical(x, y, z);
         return Speaker {
             id,
             x,
@@ -339,12 +320,13 @@ fn normalized_layout_domain_speaker(raw: LayoutDomainSpeakerState) -> Speaker {
     let azimuth = raw.azimuth.unwrap_or(0.0);
     let elevation = raw.elevation.unwrap_or(0.0);
     let distance_m = raw.distance.unwrap_or(1.0).max(0.01);
-    let (x, y, z) = spherical_to_cartesian(azimuth, elevation, distance_m);
+    // hydrate_from_spherical already clamps to the normalised cube.
+    let (x, y, z) = geometry::hydrate_from_spherical(azimuth, elevation, distance_m);
     Speaker {
         id,
-        x: clamp_layout_value(x, -1.0, 1.0),
-        y: clamp_layout_value(y, -1.0, 1.0),
-        z: clamp_layout_value(z, -1.0, 1.0),
+        x,
+        y,
+        z,
         azimuth_deg: azimuth,
         elevation_deg: elevation,
         distance_m,
@@ -3166,5 +3148,49 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 let _ = app.emit(event, payload);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalized_layout_domain_speaker, LayoutDomainSpeakerState};
+
+    /// The live layout the renderer publishes is in the ADM frame, same as a
+    /// layout file. This path used to read it as Three.js scene coordinates —
+    /// the same missing swizzle `layouts.rs` had, but on the running layout.
+    #[test]
+    fn derives_live_speaker_angles_in_the_adm_frame() {
+        let speaker = normalized_layout_domain_speaker(LayoutDomainSpeakerState {
+            name: Some(serde_json::json!("FR")),
+            x: Some(1.0),
+            y: Some(1.0),
+            z: Some(0.0),
+            ..LayoutDomainSpeakerState::default()
+        });
+        assert!(
+            (speaker.azimuth_deg - 45.0).abs() < 1e-6,
+            "azimuth {} should be 45° (front-right), not 0°",
+            speaker.azimuth_deg
+        );
+        assert!(
+            speaker.elevation_deg.abs() < 1e-6,
+            "elevation {} should be 0° (ear level), not 45°",
+            speaker.elevation_deg
+        );
+    }
+
+    /// Polar -> cartesian on the same path: hard right is +X, not +Z.
+    #[test]
+    fn derives_live_speaker_cartesian_in_the_adm_frame() {
+        let speaker = normalized_layout_domain_speaker(LayoutDomainSpeakerState {
+            name: Some(serde_json::json!("R")),
+            azimuth: Some(90.0),
+            elevation: Some(0.0),
+            distance: Some(1.0),
+            ..LayoutDomainSpeakerState::default()
+        });
+        assert!((speaker.x - 1.0).abs() < 1e-6, "x was {}", speaker.x);
+        assert!(speaker.y.abs() < 1e-6, "y was {}", speaker.y);
+        assert!(speaker.z.abs() < 1e-6, "z was {}", speaker.z);
     }
 }
