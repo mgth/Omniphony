@@ -551,3 +551,22 @@ pub fn get_vbap_grid_nodes(state: State<SharedState>) -> Option<serde_json::Valu
 
     Some(serde_json::json!({ "x": x, "y": y, "z": z }))
 }
+
+/// Sample the hybrid backend's blend curve at `count + 1` evenly spaced
+/// positions across `[0, 1]`, for the editor's preview.
+///
+/// The preview used to be drawn by a second implementation of the curve living
+/// in the frontend. Two implementations of the same function is two chances to
+/// disagree, and a preview that disagrees with the audio path is worse than no
+/// preview: it says the crossfade is somewhere it is not. This calls the same
+/// `blend_curve_y` the renderer's `BlendCurve::eval` does.
+#[tauri::command]
+pub fn sample_hybrid_curve(points: Vec<[f64; 2]>, smoothing: f64, count: usize) -> Vec<f64> {
+    let count = count.clamp(1, 4096);
+    (0..=count)
+        .map(|i| {
+            let x = i as f64 / count as f64;
+            geometry::blend_curve_y(&points, smoothing, x)
+        })
+        .collect()
+}

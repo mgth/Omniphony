@@ -352,6 +352,124 @@ macro_rules! geometry_for {
             }
 
             // ---------------------------------------------------------------
+            // Blend curve
+            // ---------------------------------------------------------------
+
+            /// Piecewise-linear interpolation through sorted control points.
+            fn linear_y(points: &[[$f; 2]], x: $f) -> $f {
+                let last = points.len() - 1;
+                for i in 0..last {
+                    let [x0, y0] = points[i];
+                    let [x1, y1] = points[i + 1];
+                    if x <= x1 {
+                        let span = (x1 - x0).max(1e-6);
+                        let t = ((x - x0) / span).clamp(0.0, 1.0);
+                        return y0 + (y1 - y0) * t;
+                    }
+                }
+                points[last][1]
+            }
+
+            #[inline]
+            fn midpoint(a: [$f; 2], b: [$f; 2]) -> [$f; 2] {
+                [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]
+            }
+
+            /// Quadratic Bézier (`start`, `control`, `end`) as `y` at a given
+            /// `x`, by solving `Bx(u) = x` for `u` in `[0, 1]`.
+            fn quadratic_bezier_y_at_x(
+                start: [$f; 2],
+                control: [$f; 2],
+                end: [$f; 2],
+                x: $f,
+            ) -> $f {
+                let a = start[0] - 2.0 * control[0] + end[0];
+                let b = 2.0 * (control[0] - start[0]);
+                let c = start[0] - x;
+                let u = if a.abs() < 1e-6 {
+                    if b.abs() < 1e-9 { 0.0 } else { -c / b }
+                } else {
+                    let disc = (b * b - 4.0 * a * c).max(0.0).sqrt();
+                    let u1 = (-b + disc) / (2.0 * a);
+                    if (0.0..=1.0).contains(&u1) {
+                        u1
+                    } else {
+                        (-b - disc) / (2.0 * a)
+                    }
+                }
+                .clamp(0.0, 1.0);
+                let omu = 1.0 - u;
+                omu * omu * start[1] + 2.0 * omu * u * control[1] + u * u * end[1]
+            }
+
+            /// Approximating uniform quadratic B-spline as `y(x)`: straight
+            /// from the first point to the first segment midpoint, a quadratic
+            /// Bézier around each interior point (control = the point,
+            /// endpoints = the adjacent midpoints), then straight from the last
+            /// midpoint to the last point. Passes through the endpoints and the
+            /// segment midpoints, tangent to every segment at its midpoint.
+            fn bspline_y(points: &[[$f; 2]], x: $f) -> $f {
+                let last = points.len() - 1;
+                if last <= 1 {
+                    // Fewer than three points: no corner to cut.
+                    return linear_y(points, x);
+                }
+                let m_first = midpoint(points[0], points[1]);
+                if x <= m_first[0] {
+                    let span = (m_first[0] - points[0][0]).max(1e-6);
+                    let t = ((x - points[0][0]) / span).clamp(0.0, 1.0);
+                    return points[0][1] + (m_first[1] - points[0][1]) * t;
+                }
+                let m_last = midpoint(points[last - 1], points[last]);
+                if x >= m_last[0] {
+                    let span = (points[last][0] - m_last[0]).max(1e-6);
+                    let t = ((x - m_last[0]) / span).clamp(0.0, 1.0);
+                    return m_last[1] + (points[last][1] - m_last[1]) * t;
+                }
+                for i in 1..last {
+                    let end = midpoint(points[i], points[i + 1]);
+                    if x <= end[0] {
+                        let start = midpoint(points[i - 1], points[i]);
+                        return quadratic_bezier_y_at_x(start, points[i], end, x);
+                    }
+                }
+                points[last][1]
+            }
+
+            /// Evaluate the hybrid backend's blend curve at normalised `x`.
+            ///
+            /// `smoothing` blends the piecewise-linear curve (0 — passes
+            /// through the control points) with the approximating B-spline
+            /// (1 — corner cutting). Anything outside the point range holds the
+            /// nearest endpoint.
+            ///
+            /// This decides how the hybrid backend crossfades between its two
+            /// inner backends, so the Studio's preview and the audio path must
+            /// be the same function — a preview drawn by a second
+            /// implementation is a preview that can lie.
+            ///
+            /// An empty point set evaluates to 0.
+            pub fn blend_curve_y(points: &[[$f; 2]], smoothing: $f, x: $f) -> $f {
+                if points.is_empty() {
+                    return 0.0;
+                }
+                if x <= points[0][0] {
+                    return points[0][1];
+                }
+                let last = points.len() - 1;
+                if x >= points[last][0] {
+                    return points[last][1];
+                }
+                let linear = linear_y(points, x);
+                let smoothing = smoothing.clamp(0.0, 1.0);
+                if smoothing <= 0.0 {
+                    return linear;
+                }
+                let spline = bspline_y(points, x);
+                (linear + (spline - linear) * smoothing).clamp(0.0, 1.0)
+            }
+
+            // ---------------------------------------------------------------
             // Coordinate hydration
             // ---------------------------------------------------------------
 
@@ -670,6 +788,92 @@ mod tests {
     fn the_height_axis_never_degenerates_to_one_node() {
         assert_eq!(cartesian_z_axis(1, 0), vec![0.0, 1.0]);
         assert_eq!(cartesian_z_axis(0, 0), vec![0.0, 1.0]);
+    }
+
+    // ── Blend curve ─────────────────────────────────────────────────────────
+
+    const RAMP: [[f64; 2]; 2] = [[0.0, 0.0], [1.0, 1.0]];
+
+    #[test]
+    fn the_curve_holds_its_endpoints_outside_the_range() {
+        assert_eq!(blend_curve_y(&RAMP, 0.0, -0.5), 0.0);
+        assert_eq!(blend_curve_y(&RAMP, 0.0, 1.5), 1.0);
+        assert_eq!(blend_curve_y(&RAMP, 1.0, -0.5), 0.0);
+    }
+
+    #[test]
+    fn an_empty_curve_is_zero() {
+        assert_eq!(blend_curve_y(&[], 0.0, 0.5), 0.0);
+    }
+
+    #[test]
+    fn zero_smoothing_is_piecewise_linear() {
+        for i in 0..=10 {
+            let x = i as f64 / 10.0;
+            assert!((blend_curve_y(&RAMP, 0.0, x) - x).abs() < 1e-9);
+        }
+    }
+
+    /// Two points have no corner to cut, so smoothing must be a no-op there —
+    /// otherwise the simplest curve would move when the slider does.
+    #[test]
+    fn smoothing_does_nothing_without_an_interior_point() {
+        for smoothing in [0.0, 0.5, 1.0] {
+            assert!((blend_curve_y(&RAMP, smoothing, 0.3) - 0.3).abs() < 1e-9);
+        }
+    }
+
+    /// Corner cutting pulls the curve off a sharp interior point, but must
+    /// leave the endpoints alone.
+    #[test]
+    fn smoothing_cuts_the_corner_and_keeps_the_endpoints() {
+        let knee = [[0.0, 0.0], [0.5, 1.0], [1.0, 1.0]];
+        let linear = blend_curve_y(&knee, 0.0, 0.5);
+        let smooth = blend_curve_y(&knee, 1.0, 0.5);
+        assert!(
+            (linear - 1.0).abs() < 1e-9,
+            "linear passes through the point"
+        );
+        assert!(
+            smooth < linear,
+            "smoothing should cut the corner, got {smooth}"
+        );
+        assert_eq!(blend_curve_y(&knee, 1.0, 0.0), 0.0);
+        assert_eq!(blend_curve_y(&knee, 1.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn smoothing_interpolates_between_linear_and_spline() {
+        let knee = [[0.0, 0.0], [0.5, 1.0], [1.0, 1.0]];
+        let x = 0.4;
+        let linear = blend_curve_y(&knee, 0.0, x);
+        let spline = blend_curve_y(&knee, 1.0, x);
+        let half = blend_curve_y(&knee, 0.5, x);
+        assert!((half - (linear + spline) * 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn smoothing_is_clamped_to_its_range() {
+        let knee = [[0.0, 0.0], [0.5, 1.0], [1.0, 1.0]];
+        assert_eq!(
+            blend_curve_y(&knee, -1.0, 0.4),
+            blend_curve_y(&knee, 0.0, 0.4)
+        );
+        assert_eq!(
+            blend_curve_y(&knee, 2.0, 0.4),
+            blend_curve_y(&knee, 1.0, 0.4)
+        );
+    }
+
+    /// The blend weight drives a crossfade, so it can never leave [0, 1] no
+    /// matter what the spline overshoot does.
+    #[test]
+    fn the_curve_stays_in_range_for_awkward_point_sets() {
+        let spiky = [[0.0, 1.0], [0.2, 0.0], [0.4, 1.0], [0.6, 0.0], [1.0, 1.0]];
+        for i in 0..=100 {
+            let y = blend_curve_y(&spiky, 1.0, i as f64 / 100.0);
+            assert!((0.0..=1.0).contains(&y), "y was {y}");
+        }
     }
 
     // ── Precision parity ────────────────────────────────────────────────────

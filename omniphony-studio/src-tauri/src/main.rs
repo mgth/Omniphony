@@ -207,6 +207,7 @@ fn main() {
             debug_write_memory_csv,
             get_state,
             get_vbap_grid_nodes,
+            sample_hybrid_curve,
             get_osc_config,
             renderer_is_local,
             expected_orender_path,

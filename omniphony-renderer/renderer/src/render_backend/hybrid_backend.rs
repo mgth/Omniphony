@@ -194,93 +194,12 @@ impl BlendCurve {
         if x >= points[last][0] {
             return points[last][1];
         }
-        let linear = linear_y(points, x);
-        if self.smoothing <= 0.0 {
-            return linear;
-        }
-        let spline = bspline_y(points, x);
-        (linear + (spline - linear) * self.smoothing).clamp(0.0, 1.0)
+        omniphony_geometry::f32::blend_curve_y(points, self.smoothing, x)
     }
 
     pub fn points(&self) -> &[[f32; 2]] {
         &self.points
     }
-}
-
-/// Piecewise-linear interpolation through the (sorted, in-range) control points.
-fn linear_y(points: &[[f32; 2]], x: f32) -> f32 {
-    let last = points.len() - 1;
-    for i in 0..last {
-        let [x0, y0] = points[i];
-        let [x1, y1] = points[i + 1];
-        if x <= x1 {
-            let span = (x1 - x0).max(1e-6);
-            let t = ((x - x0) / span).clamp(0.0, 1.0);
-            return y0 + (y1 - y0) * t;
-        }
-    }
-    points[last][1]
-}
-
-#[inline]
-fn midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
-    [0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])]
-}
-
-/// Approximating uniform quadratic B-spline as a function `y(x)`: straight from
-/// the first point to the first segment midpoint, a quadratic Bézier around each
-/// interior point (control = the point, endpoints = the adjacent segment
-/// midpoints), then straight from the last midpoint to the last point. The curve
-/// passes through the endpoints and the segment midpoints, and is tangent to
-/// every segment at its midpoint.
-fn bspline_y(points: &[[f32; 2]], x: f32) -> f32 {
-    let last = points.len() - 1;
-    if last <= 1 {
-        // Fewer than three points: no corner to cut, so it is just the line.
-        return linear_y(points, x);
-    }
-    let m_first = midpoint(points[0], points[1]);
-    if x <= m_first[0] {
-        let span = (m_first[0] - points[0][0]).max(1e-6);
-        let t = ((x - points[0][0]) / span).clamp(0.0, 1.0);
-        return points[0][1] + (m_first[1] - points[0][1]) * t;
-    }
-    let m_last = midpoint(points[last - 1], points[last]);
-    if x >= m_last[0] {
-        let span = (points[last][0] - m_last[0]).max(1e-6);
-        let t = ((x - m_last[0]) / span).clamp(0.0, 1.0);
-        return m_last[1] + (points[last][1] - m_last[1]) * t;
-    }
-    for i in 1..last {
-        let end = midpoint(points[i], points[i + 1]);
-        if x <= end[0] {
-            let start = midpoint(points[i - 1], points[i]);
-            return quadratic_bezier_y_at_x(start, points[i], end, x);
-        }
-    }
-    points[last][1]
-}
-
-/// Evaluate the quadratic Bézier (`start`, `control`, `end`) as `y` at the given
-/// `x` by solving `Bx(u) = x` for `u ∈ [0, 1]`.
-fn quadratic_bezier_y_at_x(start: [f32; 2], control: [f32; 2], end: [f32; 2], x: f32) -> f32 {
-    let a = start[0] - 2.0 * control[0] + end[0];
-    let b = 2.0 * (control[0] - start[0]);
-    let c = start[0] - x;
-    let u = if a.abs() < 1e-6 {
-        if b.abs() < 1e-9 { 0.0 } else { -c / b }
-    } else {
-        let disc = (b * b - 4.0 * a * c).max(0.0).sqrt();
-        let u1 = (-b + disc) / (2.0 * a);
-        if (0.0..=1.0).contains(&u1) {
-            u1
-        } else {
-            (-b - disc) / (2.0 * a)
-        }
-    }
-    .clamp(0.0, 1.0);
-    let omu = 1.0 - u;
-    omu * omu * start[1] + 2.0 * omu * u * control[1] + u * u * end[1]
 }
 
 impl Default for BlendCurve {
