@@ -83,7 +83,7 @@ import {
 } from './mute-solo.js';
 import { formatNumber } from './coordinates.js';
 import { t, tf } from './i18n.js';
-import { computeCrossoverBandLabels } from './crossover-bands.js';
+import { crossoverBandLabels } from './crossover-bands.js';
 
 // ---------------------------------------------------------------------------
 // Callbacks that other modules populate to avoid circular imports.
@@ -668,7 +668,7 @@ export function getSelectedSpeakerContributionForObject(id) {
 }
 
 function getCrossoverBandLabels() {
-  return computeCrossoverBandLabels(app.currentLayoutSpeakers);
+  return crossoverBandLabels(app.currentLayoutCutoffs);
 }
 
 function getSelectedSpeakerBandContributionsForObject(id) {

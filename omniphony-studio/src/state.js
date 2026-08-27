@@ -563,6 +563,10 @@ export const app = {
   // Layout
   currentLayoutKey: null,
   currentLayoutSpeakers: [],
+  // Interior crossover edges for the live layout, from the backend. Set
+  // alongside currentLayoutSpeakers, and refreshed by the events that move
+  // them (speaker freq limits, spatialize).
+  currentLayoutCutoffs: [],
 
   // UI flush
   uiFlushScheduled: false,

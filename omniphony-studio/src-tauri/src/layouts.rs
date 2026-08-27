@@ -43,7 +43,7 @@ fn default_coord_mode() -> String {
     "polar".to_string()
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Layout {
     pub key: String,
     pub name: String,
@@ -53,6 +53,27 @@ pub struct Layout {
     /// Defaults to 1.0 when absent from the layout file.
     #[serde(default = "default_radius_m")]
     pub radius_m: f64,
+}
+
+// `crossoverCutoffs` is derived, not stored, so it cannot go stale. Every path
+// that ships a layout — the state bundle, a layout change, a speaker's
+// frequency being edited — serializes through here and gets the current
+// answer. Storing it as a field would mean remembering to refresh it at each
+// of those, and forgetting one is invisible until a band edge is wrong.
+impl Serialize for Layout {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Layout", 5)?;
+        state.serialize_field("key", &self.key)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("speakers", &self.speakers)?;
+        state.serialize_field("radius_m", &self.radius_m)?;
+        state.serialize_field("crossoverCutoffs", &crossover_cutoffs(&self.speakers))?;
+        state.end()
+    }
 }
 
 #[derive(Serialize)]
@@ -531,6 +552,31 @@ pub fn load_layout_file(path: &Path) -> Option<Layout> {
     })
 }
 
+/// Interior crossover band edges for a speaker set, in Hz: every distinct
+/// cutoff a spatialized speaker declares, sorted.
+///
+/// The bands themselves are `[0, ...cutoffs, +inf]`. Only the interior edges
+/// are published because JSON has no infinity — the frontend caps the ends.
+///
+/// Non-spatialized speakers are skipped: an LFE's low-pass is not a band
+/// boundary for the objects being panned, and counting it would split the
+/// heatmap on an edge nothing is rendered across.
+pub fn crossover_cutoffs(speakers: &[Speaker]) -> Vec<f64> {
+    let mut cutoffs: Vec<f64> = speakers
+        .iter()
+        .filter(|speaker| speaker.spatialize != 0)
+        .flat_map(|speaker| [speaker.freq_low, speaker.freq_high])
+        .flatten()
+        .map(f64::from)
+        .filter(|value| *value > 0.0)
+        .collect();
+    cutoffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // Two speakers meeting at "the same" cutoff rarely agree to the last
+    // decimal; anything closer than 0.1 Hz is one edge, not two.
+    cutoffs.dedup_by(|a, b| (*a - *b).abs() < 0.1);
+    cutoffs
+}
+
 /// Default export file name for a speaker set, as `spatialized.non.height`.
 ///
 /// The Studio's naming convention: how many spatialized speakers sit at or
@@ -705,8 +751,9 @@ pub fn save_layout_file(path: &Path, layout: &Layout) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_export_name, load_layout_file, normalize_for_export, normalize_speaker,
-        parse_yaml_layout, sanitize_export_name, save_layout_file, Layout, RawSpeaker, Speaker,
+        crossover_cutoffs, default_export_name, load_layout_file, normalize_for_export,
+        normalize_speaker, parse_yaml_layout, sanitize_export_name, save_layout_file, Layout,
+        RawSpeaker, Speaker,
     };
 
     /// A cartesian speaker must derive its angles in the ADM frame the layout
@@ -734,6 +781,97 @@ mod tests {
             freq_low: None,
             freq_high: None,
         }
+    }
+
+    // ── crossover bands ─────────────────────────────────────────────────────
+
+    fn banded(id: &str, low: Option<f32>, high: Option<f32>, spatialize: u8) -> Speaker {
+        let mut speaker = spk(id, 0.0, 1.0, 0.0, spatialize);
+        speaker.freq_low = low;
+        speaker.freq_high = high;
+        speaker
+    }
+
+    #[test]
+    fn a_layout_with_no_crossover_has_no_edges() {
+        let speakers = vec![spk("L", -1.0, 1.0, 0.0, 1), spk("R", 1.0, 1.0, 0.0, 1)];
+        assert!(crossover_cutoffs(&speakers).is_empty());
+    }
+
+    #[test]
+    fn edges_are_sorted_and_deduplicated() {
+        let speakers = vec![
+            banded("sub", None, Some(120.0), 1),
+            banded("mid", Some(120.0), Some(4000.0), 1),
+            banded("hi", Some(4000.0), None, 1),
+        ];
+        assert_eq!(crossover_cutoffs(&speakers), vec![120.0, 4000.0]);
+    }
+
+    /// Two speakers meeting at "the same" cutoff rarely agree to the last
+    /// decimal. Within 0.1 Hz is one edge; beyond it is two.
+    #[test]
+    fn near_identical_cutoffs_collapse_to_one_edge() {
+        let speakers = vec![
+            banded("a", None, Some(120.0), 1),
+            banded("b", Some(120.05), None, 1),
+        ];
+        assert_eq!(crossover_cutoffs(&speakers), vec![120.0]);
+
+        let speakers = vec![
+            banded("a", None, Some(120.0), 1),
+            banded("b", Some(120.5), None, 1),
+        ];
+        assert_eq!(crossover_cutoffs(&speakers).len(), 2);
+    }
+
+    /// An LFE's low-pass is not a band boundary for the objects being panned.
+    #[test]
+    fn a_non_spatialized_speaker_contributes_no_edge() {
+        let speakers = vec![
+            banded("LFE", None, Some(120.0), 0),
+            spk("L", -1.0, 1.0, 0.0, 1),
+        ];
+        assert!(crossover_cutoffs(&speakers).is_empty());
+    }
+
+    #[test]
+    fn non_positive_cutoffs_are_ignored() {
+        let speakers = vec![
+            banded("a", Some(0.0), Some(-5.0), 1),
+            banded("b", Some(80.0), None, 1),
+        ];
+        assert_eq!(crossover_cutoffs(&speakers), vec![80.0]);
+    }
+
+    /// A mixed layout: some speakers banded, some full-range. The full-range
+    /// ones must not add edges, but must not suppress the others' either.
+    #[test]
+    fn a_mixed_layout_keeps_only_the_declared_edges() {
+        let speakers = vec![
+            spk("L", -1.0, 1.0, 0.0, 1),
+            banded("sub", None, Some(80.0), 1),
+            spk("R", 1.0, 1.0, 0.0, 1),
+        ];
+        assert_eq!(crossover_cutoffs(&speakers), vec![80.0]);
+    }
+
+    /// The cutoffs are derived at serialization, so a layout whose speakers
+    /// changed since it was loaded still ships the right edges.
+    #[test]
+    fn serialization_reflects_an_edited_speaker() {
+        let mut layout = Layout {
+            key: "k".to_string(),
+            name: "k".to_string(),
+            radius_m: 1.0,
+            speakers: vec![banded("a", None, Some(80.0), 1)],
+        };
+        let before = serde_json::to_value(&layout).unwrap();
+        assert_eq!(before["crossoverCutoffs"], serde_json::json!([80.0]));
+
+        layout.speakers[0].freq_high = Some(200.0);
+        let after = serde_json::to_value(&layout).unwrap();
+        assert_eq!(after["crossoverCutoffs"], serde_json::json!([200.0]));
     }
 
     // ── export name ─────────────────────────────────────────────────────────

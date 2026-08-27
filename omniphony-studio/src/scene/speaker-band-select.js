@@ -17,7 +17,7 @@
 
 import { app } from '../state.js';
 import { t, onLocaleChange } from '../i18n.js';
-import { computeCrossoverBandLabels } from '../crossover-bands.js';
+import { crossoverBandLabels } from '../crossover-bands.js';
 import { renderBandCursor } from '../controls/band-cursor.js';
 
 /**
@@ -29,7 +29,7 @@ import { renderBandCursor } from '../controls/band-cursor.js';
  */
 export function syncCrossoverBandSelects() {
   const selectEl = document.getElementById('heatmapBandSelect');
-  const labels = computeCrossoverBandLabels(app.currentLayoutSpeakers, {
+  const labels = crossoverBandLabels(app.currentLayoutCutoffs, {
     includeSingleBand: true,
   }) || [t('heatmap.bandFull')];
   const maxIndex = Math.max(0, labels.length - 1);

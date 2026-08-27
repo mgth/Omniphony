@@ -123,7 +123,7 @@ import { t, tf } from './i18n.js';
 import { pushLog } from './log.js';
 import { scheduleUIFlush } from './flush.js';
 import { updateItemClasses, updateSpeakerMeterUI, updateObjectMeterUI } from './flush.js';
-import { computeCrossoverBandLabels, computeCrossoverBandEdges } from './crossover-bands.js';
+import { crossoverBandLabels, crossoverBandEdges } from './crossover-bands.js';
 import { onSpeakerSelectionChanged } from './controls/speaker-test.js';
 
 import {
@@ -274,6 +274,10 @@ function get_currentLayoutKey() { return app.currentLayoutKey; }
 function set_currentLayoutKey(v) { app.currentLayoutKey = v; }
 function get_currentLayoutSpeakers() { return app.currentLayoutSpeakers; }
 function set_currentLayoutSpeakers(v) { app.currentLayoutSpeakers = v; }
+/** Band edges come from the layout the speakers belong to, not from the speakers. */
+function set_currentLayoutCutoffs(layout) {
+  app.currentLayoutCutoffs = Array.isArray(layout?.crossoverCutoffs) ? layout.crossoverCutoffs : [];
+}
 
 function syncInputValueUnlessEditing(inputEl, nextValue) {
   if (!inputEl) return;
@@ -908,7 +912,7 @@ export function updateSpeakerItem(entry, id, speaker) {
 }
 
 function getCrossoverBandLabels() {
-  return computeCrossoverBandLabels(app.currentLayoutSpeakers, {
+  return crossoverBandLabels(app.currentLayoutCutoffs, {
     useUnicodeGte: true,
     useUnicodeDash: true,
   });
@@ -1075,7 +1079,7 @@ export function updateSpeakerVisualsFromState(index) {
   if (bandBar) {
     bandBar.visible = app.speakerBandBarsEnabled;
     bandBar.position.set(scenePosition.x + SPEAKER_BAND_BAR_OFFSET, scenePosition.y, scenePosition.z);
-    updateSpeakerBandBar(bandBar, speaker, computeCrossoverBandEdges(currentLayoutSpeakers));
+    updateSpeakerBandBar(bandBar, speaker, crossoverBandEdges(app.currentLayoutCutoffs));
   }
 
   const entry = speakerItems.get(String(index));
@@ -1560,7 +1564,7 @@ export function renderSpeakersList() {
 
   speakersListEl.textContent = '';
   const activeIds = new Set();
-  const bandEdges = computeCrossoverBandEdges(currentLayoutSpeakers);
+  const bandEdges = crossoverBandEdges(app.currentLayoutCutoffs);
   currentLayoutSpeakers.forEach((speaker, index) => {
     const id = String(index);
     activeIds.add(id);
@@ -2238,6 +2242,7 @@ export function renderLayout(key) {
   if (!layout) {
     set_currentLayoutKey(null);
     set_currentLayoutSpeakers([]);
+    app.currentLayoutCutoffs = [];
     renderSpeakersList();
     set_selectedSpeakerIndex(null);
     app.polarEditArmed = false;
@@ -2251,6 +2256,7 @@ export function renderLayout(key) {
   set_currentLayoutKey(key);
   const newSpeakers = Array.isArray(layout.speakers) ? layout.speakers : [];
   set_currentLayoutSpeakers(newSpeakers);
+  set_currentLayoutCutoffs(layout);
   syncCrossoverBandSelects();
   sceneState.metersPerUnit = Math.max(0.01, Number(layout.radius_m) || 1.0);
   speakerDelays.clear();
@@ -2320,7 +2326,7 @@ export function renderLayout(key) {
     }
   });
 
-  const bandEdges = computeCrossoverBandEdges(layout.speakers);
+  const bandEdges = crossoverBandEdges(layout.crossoverCutoffs);
   layout.speakers.forEach((speaker, index) => {
     const mesh = new THREE.Mesh(speakerGeometry.clone(), speakerMaterial.clone());
     const scenePosition = normalizedOmniphonyToScenePosition(speaker);
@@ -2485,6 +2491,7 @@ function patchCurrentLayout(key) {
   const nextSpeakers = Array.isArray(layout.speakers) ? layout.speakers : [];
   set_currentLayoutKey(key);
   set_currentLayoutSpeakers(nextSpeakers);
+  set_currentLayoutCutoffs(layout);
   syncCrossoverBandSelects();
   sceneState.metersPerUnit = Math.max(0.01, Number(layout.radius_m) || 1.0);
   speakerDelays.clear();
@@ -2539,6 +2546,7 @@ export function hydrateLayoutSelect(layouts, selectedLayoutKey) {
   } else {
     set_currentLayoutKey(null);
     set_currentLayoutSpeakers([]);
+    app.currentLayoutCutoffs = [];
     renderSpeakersList();
     renderSpeakerEditor();
   }

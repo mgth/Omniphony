@@ -1907,6 +1907,19 @@ fn emit_timing_stats(app: &AppHandle, last_hash: &mut Option<u64>) {
     let _ = app.emit("latency:stats", payload);
 }
 
+/// Interior crossover edges of the live layout, for the events that change one.
+///
+/// The frontend edits its own copy of a speaker when one of these arrives, so
+/// it cannot re-derive the band edges from a layout it has not been re-sent.
+/// Shipping them alongside keeps the two in step without a full layout push.
+fn live_crossover_cutoffs(s: &AppState) -> Vec<f64> {
+    s.selected_layout_key
+        .as_ref()
+        .and_then(|key| s.layouts.iter().find(|l| &l.key == key))
+        .map(|layout| crate::layouts::crossover_cutoffs(&layout.speakers))
+        .unwrap_or_default()
+}
+
 fn is_batched_event(event: &str) -> bool {
     BATCHED_EVENTS.contains(&event)
 }
@@ -2454,10 +2467,17 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         }
                     }
                 }
+                // Spatialize gates whether a speaker's cutoffs count as band
+                // edges at all, so toggling it moves them.
+                let crossover_cutoffs = live_crossover_cutoffs(&s);
                 (
                     Some((
                         "speaker:spatialize",
-                        serde_json::json!({ "id": id, "spatialize": if spatialize { 1 } else { 0 } }),
+                        serde_json::json!({
+                            "id": id,
+                            "spatialize": if spatialize { 1 } else { 0 },
+                            "crossoverCutoffs": crossover_cutoffs,
+                        }),
                     )),
                     removed_ids,
                 )
@@ -2491,10 +2511,15 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         }
                     }
                 }
+                let crossover_cutoffs = live_crossover_cutoffs(&s);
                 (
                     Some((
                         "speaker:freq_low",
-                        serde_json::json!({ "id": id, "freq_low": freq_low }),
+                        serde_json::json!({
+                            "id": id,
+                            "freq_low": freq_low,
+                            "crossoverCutoffs": crossover_cutoffs,
+                        }),
                     )),
                     removed_ids,
                 )
@@ -2510,10 +2535,15 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                         }
                     }
                 }
+                let crossover_cutoffs = live_crossover_cutoffs(&s);
                 (
                     Some((
                         "speaker:freq_high",
-                        serde_json::json!({ "id": id, "freq_high": freq_high }),
+                        serde_json::json!({
+                            "id": id,
+                            "freq_high": freq_high,
+                            "crossoverCutoffs": crossover_cutoffs,
+                        }),
                     )),
                     removed_ids,
                 )

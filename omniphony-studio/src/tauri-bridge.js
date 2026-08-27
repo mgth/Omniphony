@@ -329,6 +329,11 @@ export function setupTauriBridge() {
     }
     const next = Number(payload.spatialize) === 0 ? 0 : 1;
     setSpeakerSpatializeLocal(index, next);
+    // Spatialize gates whether this speaker's cutoffs are band edges at all.
+    if (Array.isArray(payload.crossoverCutoffs)) {
+      app.currentLayoutCutoffs = payload.crossoverCutoffs;
+      syncCrossoverBandSelects();
+    }
     updateSpeakerControlsUI();
   });
 
@@ -353,6 +358,9 @@ export function setupTauriBridge() {
     if (!speaker) return;
     const fl = payload.freq_low;
     speaker.freqLow = fl != null && fl > 0 ? fl : null;
+    if (Array.isArray(payload.crossoverCutoffs)) {
+      app.currentLayoutCutoffs = payload.crossoverCutoffs;
+    }
     syncCrossoverBandSelects();
     if (app.selectedSpeakerIndex === index) renderSpeakerEditor();
   });
@@ -364,6 +372,9 @@ export function setupTauriBridge() {
     if (!speaker) return;
     const fh = payload.freq_high;
     speaker.freqHigh = fh != null && fh > 0 ? fh : null;
+    if (Array.isArray(payload.crossoverCutoffs)) {
+      app.currentLayoutCutoffs = payload.crossoverCutoffs;
+    }
     syncCrossoverBandSelects();
     if (app.selectedSpeakerIndex === index) renderSpeakerEditor();
   });
