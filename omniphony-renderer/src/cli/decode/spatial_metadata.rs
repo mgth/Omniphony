@@ -166,6 +166,7 @@ impl<'a> SpatialMetadataCoordinator<'a> {
                 coordinate_format,
                 &self.spatial.object_channels,
                 &meta.channel_gains,
+                self.spatial.fixed_planner.fixed_trims(),
                 meta.sample_pos,
                 meta.ramp_duration,
                 &mut self.spatial.frame_events,

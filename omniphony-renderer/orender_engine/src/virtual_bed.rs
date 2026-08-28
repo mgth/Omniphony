@@ -1055,6 +1055,10 @@ pub struct FixedChannelPlanner {
     planned_labels: Vec<RChannelLabel>,
     planned_epoch: Option<u64>,
     applied_routes: Option<Vec<renderer::spatial_renderer::ChannelRoute>>,
+    /// Bed-entry trim per fixed channel index, cached at plan time so the
+    /// per-metadata-frame event build ([`crate::spatial::build_spatial_channel_events`])
+    /// indexes a slice instead of re-matching label aliases.
+    trims: Vec<i8>,
 }
 
 impl FixedChannelPlanner {
@@ -1067,11 +1071,21 @@ impl FixedChannelPlanner {
         self.planned_labels.clear();
         self.planned_epoch = None;
         self.applied_routes = None;
+        self.trims.clear();
     }
 
     /// Fixed labels of the last planned prefix.
     pub fn fixed_labels(&self) -> &[RChannelLabel] {
         &self.planned_labels
+    }
+
+    /// Bed-entry trim (dB) per fixed channel index, from the last plan.
+    ///
+    /// The stream's own OAMD channel gains re-stamp the bed channels on every
+    /// metadata frame, which would silently undo the plan events' trim; the
+    /// hosts pass this slice to the event build so the two combine instead.
+    pub fn fixed_trims(&self) -> &[i8] {
+        &self.trims
     }
 
     /// Apply a route set computed elsewhere (the fixed-only render path),
@@ -1131,6 +1145,18 @@ impl FixedChannelPlanner {
             )
         };
         let output_layout = renderer.speaker_layout();
+
+        // Trim per fixed channel, mirroring the gain the plan events carry, so
+        // the hosts can fold it into the stream's recurring channel-gain events.
+        let has_back = fixed
+            .iter()
+            .any(|l| matches!(l, RChannelLabel::Lb | RChannelLabel::Rb | RChannelLabel::Cb));
+        self.trims.clear();
+        self.trims.extend(
+            fixed
+                .iter()
+                .map(|l| bed_entry_gain_db(virtual_bed_layout.as_ref(), *l, has_back)),
+        );
 
         match plan_channel_render(
             renderer::live_params::ChannelRenderMode::Spatial,
@@ -2048,6 +2074,79 @@ mod tests {
             planned_positions(&plan_bed(Some(&bed), UNIT_ROOM)),
             planned_positions(&plan_bed(Some(&bed), [1.0, 2.5, 1.0])),
             "a deeper room must move the off-axis objects"
+        );
+    }
+
+    /// A live bed edit reaches a running object stream as a new
+    /// `live.virtual_bed` plus an options-epoch bump (the OSC handler's
+    /// contract). The fixed-prefix planner caches on that epoch: without the
+    /// bump the stream keeps rendering the old bed until the next track
+    /// switch — the regression this test pins, from both sides.
+    #[test]
+    fn live_bed_edit_replans_an_object_stream_prefix() {
+        use renderer::speaker_layout::Speaker;
+        let renderer = crate::renderer_build::build_spatial_renderer(
+            &crate::renderer_build::SpatialRendererParams::from_render_config(None),
+            SpeakerLayout::preset("7.1.4").expect("preset layout"),
+            48_000,
+            bridge_api::RVbapCartesianDefaults {
+                x_size: 9,
+                y_size: 9,
+                z_size: 5,
+                allow_negative_z: true,
+            },
+            bridge_api::RVbapTableMode::Cartesian,
+            None,
+        )
+        .expect("renderer");
+        let control = renderer.renderer_control();
+        let labels = [
+            RChannelLabel::L,
+            RChannelLabel::R,
+            RChannelLabel::C,
+            RChannelLabel::LFE,
+            RChannelLabel::Object,
+        ];
+
+        let mut planner = FixedChannelPlanner::new();
+        let mut out = Vec::new();
+        planner.plan_object_stream_fixed(&labels, &renderer, &mut out);
+        assert!(!out.is_empty(), "initial plan emits the prefix events");
+        assert_eq!(planner.fixed_trims(), &[0, 0, 0, 0], "no bed → unity trims");
+
+        // The edit: LFE trimmed to −6 dB in the bed.
+        let mut lfe = Speaker::new("LFE", 45.0, -10.0);
+        lfe.gain_db = -6;
+        lfe.spatialize = false;
+        control.live.write().virtual_bed = Some(vbed(vec![
+            Speaker::new("L", -30.0, 0.0),
+            Speaker::new("C", 0.0, 0.0),
+            Speaker::new("R", 30.0, 0.0),
+            lfe,
+        ]));
+
+        // Without the epoch bump the plan is (wrongly, if the handler forgot
+        // it) considered current.
+        out.clear();
+        planner.plan_object_stream_fixed(&labels, &renderer, &mut out);
+        assert!(out.is_empty(), "no epoch bump → cached plan");
+
+        control.bump_options_epoch();
+        out.clear();
+        planner.plan_object_stream_fixed(&labels, &renderer, &mut out);
+        let lfe_event = out
+            .iter()
+            .find(|e| e.channel_idx == 3)
+            .expect("LFE event after replan");
+        assert_eq!(
+            lfe_event.gain_db,
+            Some(-6),
+            "replanned event carries the trim"
+        );
+        assert_eq!(
+            planner.fixed_trims(),
+            &[0, 0, 0, -6],
+            "trims exposed for the stream-gain sum"
         );
     }
 

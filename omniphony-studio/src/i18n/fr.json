@@ -343,7 +343,7 @@
   "channelEdit.destinationPosition": "Les coordonnées ci-dessous sont la position réelle de l’enceinte.",
   "channelEdit.noMatchingSpeaker": "Aucune enceinte correspondante",
   "channelEdit.gain": "Gain",
-  "help.channelEdit.gain": "Gain de sortie de ce canal fixe, en dB. Ajuste un canal par rapport aux autres (par exemple pour baisser le LFE) ; 0 dB le laisse inchangé.",
+  "help.channelEdit.gain": "Trim d'entrée de ce canal source, en dB, appliqué que le canal soit Virtual ou Direct. Ajuste un canal par rapport aux autres (par exemple pour baisser le LFE) ; 0 dB le laisse inchangé.",
   "audio.sampleRate": "Fréquence d'échantillonnage",
   "layout.label": "Layout :",
   "layout.loading": "Chargement...",

@@ -156,6 +156,11 @@ pub(crate) fn handle_control_message(
             if trimmed.is_empty() {
                 control.live.write().virtual_bed = None;
                 control.mark_dirty();
+                // The fixed-prefix planner caches on `(labels, options_epoch)`;
+                // without the bump an object stream keeps rendering the old bed
+                // until the next track switch. The channel-stream planner
+                // compares the bed by value and does not need it.
+                control.bump_options_epoch();
                 broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
                 control.bump_live_state();
                 log::info!("OSC virtual bed reset to defaults");
@@ -164,6 +169,8 @@ pub(crate) fn handle_control_message(
                     Ok(layout) => {
                         control.live.write().virtual_bed = Some(layout);
                         control.mark_dirty();
+                        // Same replan trigger as the reset branch above.
+                        control.bump_options_epoch();
                         broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
                         control.bump_live_state();
                         log::info!("OSC virtual bed updated");

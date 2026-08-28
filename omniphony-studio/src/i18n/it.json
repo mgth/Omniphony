@@ -343,7 +343,7 @@
   "channelEdit.destinationPosition": "Le coordinate sotto indicano la posizione reale del diffusore.",
   "channelEdit.noMatchingSpeaker": "Nessun diffusore corrispondente",
   "channelEdit.gain": "Gain",
-  "help.channelEdit.gain": "Gain di uscita di questo canale fisso, in dB. Regola un canale rispetto agli altri (ad esempio per abbassare l'LFE); 0 dB lo lascia invariato.",
+  "help.channelEdit.gain": "Trim d'ingresso di questo canale sorgente, in dB, applicato sia che il canale sia Virtual sia Direct. Regola un canale rispetto agli altri (ad esempio per abbassare l'LFE); 0 dB lo lascia invariato.",
   "audio.sampleRate": "Frequenza di campionamento",
   "layout.label": "Layout:",
   "layout.loading": "Caricamento...",

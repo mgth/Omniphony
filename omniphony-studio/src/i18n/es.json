@@ -343,7 +343,7 @@
   "channelEdit.destinationPosition": "Las coordenadas siguientes son la posición real del altavoz.",
   "channelEdit.noMatchingSpeaker": "No hay altavoz correspondiente",
   "channelEdit.gain": "Ganancia",
-  "help.channelEdit.gain": "Ganancia de salida de este canal fijo, en dB. Ajusta un canal respecto a los demás (por ejemplo para bajar el LFE); 0 dB lo deja sin cambios.",
+  "help.channelEdit.gain": "Recorte de entrada de este canal de origen, en dB, aplicado tanto si el canal es Virtual como Direct. Ajusta un canal respecto a los demás (por ejemplo para bajar el LFE); 0 dB lo deja sin cambios.",
   "audio.sampleRate": "Frecuencia de muestreo",
   "layout.label": "Layout:",
   "layout.loading": "Cargando...",

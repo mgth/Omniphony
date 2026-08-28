@@ -343,7 +343,7 @@
   "channelEdit.destinationPosition": "Die Koordinaten unten zeigen die tatsächliche Lautsprecherposition.",
   "channelEdit.noMatchingSpeaker": "Kein passender Lautsprecher",
   "channelEdit.gain": "Gain",
-  "help.channelEdit.gain": "Ausgangs-Gain dieses festen Quellkanals in dB. Trimmt einen Kanal relativ zu den anderen (z. B. um den LFE abzusenken); 0 dB lässt ihn unverändert.",
+  "help.channelEdit.gain": "Eingangs-Trim dieses Quellkanals in dB, wirksam egal ob der Kanal Virtual oder Direct ist. Trimmt einen Kanal relativ zu den anderen (z. B. um den LFE abzusenken); 0 dB lässt ihn unverändert.",
   "audio.sampleRate": "Abtastrate",
   "layout.label": "Layout:",
   "layout.loading": "Lädt...",

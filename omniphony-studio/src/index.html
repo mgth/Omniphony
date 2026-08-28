@@ -704,6 +704,14 @@
       <div class="info-section" id="channelEditSection" style="display:none">
         <div class="info-title" id="channelEditTitle" data-i18n="channelEdit.title">Channel Editor</div>
         <div id="channelEditBody" class="editor-body">
+          <!-- Gain sits above the Virtual/Direct choice: it is an input trim
+               that applies in both placements, so it must not read as a
+               setting of one of them. -->
+          <div class="editor-row gain-row" style="margin-bottom:0.35rem">
+            <label for="channelEditGainSlider" data-i18n="channelEdit.gain" data-help-i18n="help.channelEdit.gain">Gain</label>
+            <input id="channelEditGainSlider" class="gain-slider" type="range" min="-24" max="12" step="1" value="0" />
+            <div id="channelEditGainBox" class="gain-box">0 dB</div>
+          </div>
           <label class="switch-row" style="cursor:pointer;margin-bottom:0.35rem">
             <span id="channelEditSpatializeText" data-i18n="virtualBed.virtual">Virtual</span>
             <input id="channelEditSpatializeToggle" type="checkbox" />
@@ -760,11 +768,6 @@
               </div>
               <button id="channelEditPolarGizmoBtn" type="button" class="toggle-btn" data-i18n="speaker.edit3d">3D Edit</button>
             </div>
-          </div>
-          <div class="editor-row gain-row">
-            <label for="channelEditGainSlider" data-i18n="channelEdit.gain" data-help-i18n="help.channelEdit.gain">Gain</label>
-            <input id="channelEditGainSlider" class="gain-slider" type="range" min="-24" max="12" step="1" value="0" />
-            <div id="channelEditGainBox" class="gain-box">0 dB</div>
           </div>
         </div>
       </div>

@@ -343,7 +343,7 @@
   "channelEdit.destinationPosition": "As coordenadas abaixo são a posição real da caixa.",
   "channelEdit.noMatchingSpeaker": "Nenhuma caixa correspondente",
   "channelEdit.gain": "Ganho",
-  "help.channelEdit.gain": "Ganho de saída deste canal fixo, em dB. Ajusta um canal em relação aos outros (por exemplo para baixar o LFE); 0 dB o deixa inalterado.",
+  "help.channelEdit.gain": "Ajuste de entrada deste canal de origem, em dB, aplicado com o canal em Virtual ou Direct. Ajusta um canal em relação aos outros (por exemplo para baixar o LFE); 0 dB o deixa inalterado.",
   "audio.sampleRate": "Taxa de amostragem",
   "layout.label": "Layout:",
   "layout.loading": "Carregando...",

@@ -343,7 +343,7 @@
   "channelEdit.destinationPosition": "The coordinates below are the speaker's actual position.",
   "channelEdit.noMatchingSpeaker": "No matching speaker",
   "channelEdit.gain": "Gain",
-  "help.channelEdit.gain": "Output gain for this fixed source channel, in dB. Trims one channel relative to the others (for example to pull the LFE down); 0 dB leaves it unchanged.",
+  "help.channelEdit.gain": "Input trim for this source channel, in dB, applied whether the channel is Virtual or Direct. Adjusts one channel relative to the others (for example to pull the LFE down); 0 dB leaves it unchanged.",
   "audio.sampleRate": "Sample rate",
   "layout.label": "Layout:",
   "layout.loading": "Loading...",
