@@ -511,7 +511,7 @@ pub fn build_virtual_bed_events(
         events.push(renderer::spatial_renderer::SpatialChannelEvent {
             channel_idx,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(bed_entry_gain_db(input_layout, *label, use_7_1)),
             ramp_length: Some(0),
             size: None,
             position: Some([x as f64, y as f64, z as f64]),
@@ -631,6 +631,19 @@ fn find_virtual_bed_entry(
     })
 }
 
+/// The bed entry's `gain_db` as an audio-event gain: clamped into the event's
+/// `i8` domain (where −128 is the −inf sentinel — a bare cast would wrap),
+/// unity when the bed has no entry for the label.
+///
+/// The event is what the render paths consume; `ObjectMeta.gain` is only the
+/// Studio/OSC display value. Stamping the entry gain here is what makes the
+/// bed editor's per-channel gain reach the sound (#220).
+fn bed_entry_gain_db(layout: Option<&SpeakerLayout>, label: RChannelLabel, use_7_1: bool) -> i8 {
+    find_virtual_bed_entry(layout, label, use_7_1)
+        .map(|entry| entry.gain_db.clamp(i8::MIN as i32, i8::MAX as i32) as i8)
+        .unwrap_or(0)
+}
+
 /// Whether a channel should be virtualized (`true`) or routed direct to its
 /// speaker (`false`): the virtual bed's per-entry `spatialize` flag, falling
 /// back to [`default_channel_spatialize`] when the bed has no entry for it.
@@ -731,6 +744,7 @@ fn build_virtual_bed_plan(
 
     for (channel_idx, label) in channel_labels.iter().enumerate() {
         let spatialize = channel_is_spatialized(virtual_bed, *label, use_7_1);
+        let gain_db = bed_entry_gain_db(virtual_bed, *label, use_7_1);
         if spatialize {
             // Virtualize: place an object at the bed's (or fallback) pose.
             match resolve_virtual_bed_pose(
@@ -748,7 +762,7 @@ fn build_virtual_bed_plan(
                     events.push(renderer::spatial_renderer::SpatialChannelEvent {
                         channel_idx,
                         is_bed: false,
-                        gain_db: Some(0),
+                        gain_db: Some(gain_db),
                         ramp_length: Some(0),
                         size: None,
                         position: Some([x as f64, y as f64, z as f64]),
@@ -775,7 +789,7 @@ fn build_virtual_bed_plan(
                     events.push(renderer::spatial_renderer::SpatialChannelEvent {
                         channel_idx,
                         is_bed: true,
-                        gain_db: Some(0),
+                        gain_db: Some(gain_db),
                         ramp_length: Some(0),
                         size: None,
                         position: None,
@@ -1448,6 +1462,97 @@ mod tests {
         for obj in objects.iter().filter(|o| !o.name.eq_ignore_ascii_case("C")) {
             assert_eq!(obj.gain, 0, "{} has no configured gain", obj.name);
         }
+    }
+
+    #[test]
+    fn bed_entry_gain_reaches_the_audio_events() {
+        // The display objects above are not what the renderer consumes: the
+        // audio events are. A bed gain that only reaches `ObjectMeta.gain`
+        // shows a trimmed channel in Studio while rendering it at unity —
+        // exactly the bug reported in #220. Both event kinds must carry it:
+        // a spatialized channel (C) and a direct-routed one (LFE).
+        use renderer::speaker_layout::Speaker;
+        let mut c = Speaker::new("C", 0.0, 0.0);
+        c.gain_db = -6;
+        let mut lfe = Speaker::new("LFE", 45.0, -10.0);
+        lfe.gain_db = -6;
+        lfe.spatialize = false;
+        let bed = vbed(vec![
+            Speaker::new("L", -30.0, 0.0),
+            c,
+            Speaker::new("R", 30.0, 0.0),
+            lfe,
+        ]);
+        let labels = [
+            RChannelLabel::L,
+            RChannelLabel::C,
+            RChannelLabel::R,
+            RChannelLabel::LFE,
+        ];
+
+        let plan = plan_channel_render(
+            renderer::live_params::ChannelRenderMode::Spatial,
+            &labels,
+            Some(&bed),
+            None,
+            UNIT_ROOM,
+            1.0,
+            1.0,
+            0.0,
+            SurroundPlacement::Side,
+        );
+        let ChannelRenderPlan::Events { events, .. } = plan else {
+            panic!("expected Events");
+        };
+        let gain_of = |idx: usize| {
+            events
+                .iter()
+                .find(|e| e.channel_idx == idx)
+                .expect("event")
+                .gain_db
+        };
+
+        assert_eq!(gain_of(1), Some(-6), "spatialized C carries the bed gain");
+        assert_eq!(
+            gain_of(3),
+            Some(-6),
+            "direct-routed LFE carries the bed gain"
+        );
+        assert_eq!(gain_of(0), Some(0), "unset entries stay at unity");
+    }
+
+    #[test]
+    fn bed_entry_gain_clamps_into_the_event_domain() {
+        // The entry gain is an `i32`, the event gain an `i8` whose −128 means
+        // −inf. A bare cast would wrap −200 dB into +56 dB; it must clamp to
+        // the −inf sentinel instead (and symmetrically on the positive side).
+        use renderer::speaker_layout::Speaker;
+        let mut c = Speaker::new("C", 0.0, 0.0);
+        c.gain_db = -200;
+        let bed = vbed(vec![
+            Speaker::new("L", -30.0, 0.0),
+            c,
+            Speaker::new("R", 30.0, 0.0),
+        ]);
+        let plan = plan_channel_render(
+            renderer::live_params::ChannelRenderMode::Spatial,
+            &[RChannelLabel::L, RChannelLabel::C, RChannelLabel::R],
+            Some(&bed),
+            None,
+            UNIT_ROOM,
+            1.0,
+            1.0,
+            0.0,
+            SurroundPlacement::Side,
+        );
+        let ChannelRenderPlan::Events { events, .. } = plan else {
+            panic!("expected Events");
+        };
+        let c_event = events
+            .iter()
+            .find(|e| e.channel_idx == 1)
+            .expect("C event present");
+        assert_eq!(c_event.gain_db, Some(i8::MIN), "clamped, not wrapped");
     }
 
     #[test]
