@@ -86,13 +86,13 @@ pub(crate) fn handle_control_message(
             return;
         };
         if let Some(raw) = raw_option_value(msg.args.get(1)) {
-            apply_live_option(control, spec, &raw, socket, clients);
+            apply_live_option(control, spec, &raw, socket, clients, host);
         }
         return;
     }
     if let Some(spec) = renderer::options::find_by_legacy_addr(addr) {
         if let Some(raw) = raw_option_value(msg.args.first()) {
-            apply_live_option(control, spec, &raw, socket, clients);
+            apply_live_option(control, spec, &raw, socket, clients, host);
         }
         return;
     }
@@ -667,12 +667,19 @@ fn raw_option_value(arg: Option<&OscType>) -> Option<renderer::options::RawOptio
 /// `options::apply_to_control` (which marks dirty and bumps the replan epoch
 /// on a real change), then commit to config.yaml (`PERSIST`) and notify
 /// clients. Invalid values are dropped with a warning, per the OSC contract.
+///
+/// The live-state bundle goes out with the acknowledgement, exactly as
+/// `apply_control_effects` does for a dirty-marking dedicated handler. Without
+/// it a client that did not send the message never learns the value moved, and
+/// the one that did never learns what the setter made of it — an option clamped
+/// on arrival would keep displaying the number the user typed.
 fn apply_live_option(
     control: &Arc<RendererControl>,
     spec: &'static renderer::options::OptionSpec,
     raw: &renderer::options::RawOptionValue,
     socket: &Arc<UdpSocket>,
     clients: &Arc<OscClientRegistry>,
+    host: Option<&Arc<dyn HostControlHandler>>,
 ) {
     let Some(canonical) = renderer::options::apply_to_control(control, spec, raw) else {
         log::warn!("OSC option {}: rejected value", spec.key);
@@ -687,6 +694,8 @@ fn apply_live_option(
         }
     }
     broadcast_int(socket, clients, osc_contract::STATE_CONFIG_SAVED, 0);
+    let state_bytes = build_live_state_bundle(control, host);
+    super::transport::send_raw(socket, clients, &state_bytes);
     log::info!("OSC option {} set to '{}'", spec.key, canonical);
 }
 
