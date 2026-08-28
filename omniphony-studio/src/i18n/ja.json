@@ -343,7 +343,7 @@
   "channelEdit.destinationPosition": "以下の座標はスピーカーの実際の位置です。",
   "channelEdit.noMatchingSpeaker": "対応するスピーカーがありません",
   "channelEdit.gain": "ゲイン",
-  "help.channelEdit.gain": "この固定チャンネルの出力ゲイン（dB）。他のチャンネルに対して調整します（例: LFE を下げる）。0 dB は変更なし。",
+  "help.channelEdit.gain": "このソースチャンネルの入力トリム（dB）。Virtual／Direct のどちらでも適用されます。他のチャンネルに対して調整します（例: LFE を下げる）。0 dB は変更なし。",
   "audio.sampleRate": "サンプルレート",
   "layout.label": "レイアウト:",
   "layout.loading": "読み込み中...",
