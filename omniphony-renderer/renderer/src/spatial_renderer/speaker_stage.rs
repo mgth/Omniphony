@@ -879,7 +879,9 @@ impl SpeakerRenderStage {
     /// (`BandRenderer::speaker_indices`), so the noise goes through the very
     /// same LR4 bank as programme audio and only the bands listing this speaker
     /// are summed. A full-range speaker sums all of them and hears the whole
-    /// signal; a sub hears only its own.
+    /// signal; a sub hears only its own. A direct (non-spatialized) speaker
+    /// appears in no band at all — programme audio bypasses the filter bank on
+    /// its way there, so the test bypasses it too and plays unfiltered.
     ///
     /// `test.level` is a **peak** target, not an RMS one: the contribution
     /// written here never exceeds `±level`, so a level ≤ 1.0 cannot clip. That
@@ -968,10 +970,21 @@ impl SpeakerRenderStage {
         let gain = test.level / crate::speaker_test::PinkNoise::CREST;
         let ceiling = test.level.abs();
 
+        // A speaker listed in no band is a direct (non-spatialized) route —
+        // band membership is computed over spatialized speakers only. Programme
+        // audio reaches such a speaker by bypassing the filter bank entirely
+        // (see the direct-channel path in `mix_channels`), so the test must do
+        // the same: summing "the bands that cover this speaker" would sum
+        // nothing and the test would be silent.
+        let covered = self
+            .render_bands
+            .iter()
+            .any(|band| band.speaker_indices.contains(&test.speaker_idx));
+
         // Sum only the bands this speaker covers. Without a crossover there is
         // one band covering everything, so this degenerates to unfiltered noise.
         match self.crossover_filter_bank.as_ref() {
-            Some(bank) => {
+            Some(bank) if covered => {
                 let states = bank.ensure_states(&mut self.test_filter_states);
                 for f in 0..frames {
                     let raw = self.test_noise.next_sample();
@@ -986,7 +999,7 @@ impl SpeakerRenderStage {
                         (acc * gain).clamp(-ceiling, ceiling);
                 }
             }
-            None => {
+            _ => {
                 for f in 0..frames {
                     let raw = self.test_noise.next_sample();
                     output[f * self.num_speakers + test.speaker_idx] +=

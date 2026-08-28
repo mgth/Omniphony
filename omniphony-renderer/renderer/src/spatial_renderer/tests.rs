@@ -2198,6 +2198,61 @@ fn speaker_test_is_limited_to_the_speakers_bands() {
     );
 }
 
+/// A direct (non-spatialized) speaker must still produce a test signal when a
+/// crossover is active.
+///
+/// Band membership is computed over spatialized speakers only, so a direct
+/// speaker appears in no band; the original band-summing injection summed
+/// nothing for it and the test was silent. Programme audio reaches a direct
+/// speaker by bypassing the filter bank, so the test must play unfiltered
+/// there — asserted by comparing its slew ratio against the sub's: identical
+/// low-passed noise on both would mean the fallback did not engage.
+#[test]
+fn speaker_test_reaches_a_direct_speaker_despite_the_crossover() {
+    let frames = 4096;
+    let pcm = vec![0.0f32; frames];
+
+    // The fixture is the 7.1.4 preset: speaker 3 is the LFE, the preset's one
+    // non-spatialized speaker.
+    assert!(!SpeakerLayout::preset("7.1.4").unwrap().speakers[3].spatialize);
+
+    let mut channel_for = |idx: usize| -> Vec<f32> {
+        let mut r = crossover_renderer();
+        r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
+            speaker_idx: idx,
+            level: 0.1,
+            isolation: crate::live_params::TestIsolation::TestOnly,
+        });
+        let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+        let n = out.n_channels;
+        (0..frames).map(|f| out.samples[f * n + idx]).collect()
+    };
+
+    let direct = channel_for(3);
+    let amp: f32 = direct.iter().map(|s| s.abs()).sum::<f32>() / frames as f32;
+    assert!(
+        amp > 0.0,
+        "the direct (non-spatialized) speaker must produce a test signal"
+    );
+
+    // Unfiltered, not accidentally low-passed: full-range noise slews far
+    // faster than the sub's 80 Hz band.
+    let sub = channel_for(0);
+    let slew = |ch: &[f32]| -> f32 {
+        let amp: f32 = ch.iter().map(|s| s.abs()).sum::<f32>() / ch.len() as f32;
+        let step: f32 =
+            ch.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f32>() / (ch.len() - 1) as f32;
+        step / amp
+    };
+    assert!(
+        slew(&direct) > slew(&sub) * 4.0,
+        "the direct speaker's test must be full-range, not band-limited \
+         (direct {:.4}, sub {:.4})",
+        slew(&direct),
+        slew(&sub)
+    );
+}
+
 /// A test at full scale must not put a single sample past full scale.
 ///
 /// This is the regression guard for the bug that shipped in the original test
