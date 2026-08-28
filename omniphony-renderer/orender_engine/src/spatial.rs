@@ -108,20 +108,34 @@ pub fn event_pos_as_adm_cartesian(
 /// Object events map to their PCM channel through the cached
 /// `object_channels` declaration (events for undeclared ids are skipped);
 /// `channel_gains` yields one gain/ramp-only event per listed fixed channel.
+///
+/// `bed_trims` is the virtual bed's per-fixed-channel trim (dB, indexed by
+/// channel, from [`crate::virtual_bed::FixedChannelPlanner::fixed_trims`]),
+/// summed onto each stream channel gain. The stream re-stamps the bed gains on
+/// every metadata frame; without the sum it would silently undo the trim the
+/// plan events carried. A stream gain of −128 is the −inf sentinel and is
+/// passed through untouched (and the saturating sum bottoms out there too).
 pub fn build_spatial_channel_events(
     conf: &Configuration,
     coordinate_format: RCoordinateFormat,
     object_channels: &[(u32, usize)],
     channel_gains: &[RChannelGain],
+    bed_trims: &[i8],
     sample_pos: u64,
     ramp_duration: u32,
     out: &mut Vec<SpatialChannelEvent>,
 ) {
     for gain in channel_gains {
+        let trim = bed_trims.get(gain.channel as usize).copied().unwrap_or(0);
+        let gain_db = if gain.gain_db == i8::MIN {
+            i8::MIN
+        } else {
+            gain.gain_db.saturating_add(trim)
+        };
         out.push(SpatialChannelEvent {
             channel_idx: gain.channel as usize,
             is_bed: true,
-            gain_db: Some(gain.gain_db),
+            gain_db: Some(gain_db),
             ramp_length: Some(ramp_duration),
             size: None,
             position: None,
@@ -187,6 +201,7 @@ mod tests {
             RCoordinateFormat::Cartesian,
             &object_channels,
             &gains,
+            &[],
             480,
             32,
             &mut out,
@@ -201,6 +216,46 @@ mod tests {
         assert_eq!(out[0].sample_pos, Some(480));
         assert!(!out[1].is_bed);
         assert_eq!(out[1].channel_idx, 6);
+    }
+
+    #[test]
+    fn bed_trims_sum_onto_the_stream_channel_gains() {
+        // The stream re-stamps the bed gains on every metadata frame; the bed
+        // trim must combine with them, not lose to them. −128 is the stream's
+        // −inf sentinel: a trim cannot raise a channel the stream silenced.
+        let conf = Configuration::new(Vec::new());
+        let gains = [
+            bridge_api::RChannelGain {
+                channel: 0,
+                gain_db: -3,
+            },
+            bridge_api::RChannelGain {
+                channel: 1,
+                gain_db: i8::MIN,
+            },
+            // Beyond the trims slice: untouched.
+            bridge_api::RChannelGain {
+                channel: 5,
+                gain_db: 2,
+            },
+        ];
+        let trims = [-6i8, -6, 0, 0];
+
+        let mut out = Vec::new();
+        build_spatial_channel_events(
+            &conf,
+            RCoordinateFormat::Cartesian,
+            &[],
+            &gains,
+            &trims,
+            0,
+            0,
+            &mut out,
+        );
+
+        assert_eq!(out[0].gain_db, Some(-9), "stream −3 + trim −6");
+        assert_eq!(out[1].gain_db, Some(i8::MIN), "−inf stays −inf");
+        assert_eq!(out[2].gain_db, Some(2), "no trim entry → unchanged");
     }
 
     #[test]

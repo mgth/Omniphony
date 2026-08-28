@@ -960,6 +960,7 @@ impl Engine {
                 self.coordinate_format,
                 &self.object_channels,
                 &meta.channel_gains,
+                self.fixed_planner.fixed_trims(),
                 meta.sample_pos,
                 meta.ramp_duration,
                 &mut self.frame_events,
