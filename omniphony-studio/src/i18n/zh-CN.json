@@ -343,7 +343,7 @@
   "channelEdit.destinationPosition": "以下坐标是扬声器的实际位置。",
   "channelEdit.noMatchingSpeaker": "没有匹配的扬声器",
   "channelEdit.gain": "增益",
-  "help.channelEdit.gain": "此固定声道的输出增益（dB）。相对其他声道进行微调（例如降低 LFE）；0 dB 表示不变。",
+  "help.channelEdit.gain": "此源声道的输入微调（dB），无论声道处于 Virtual 还是 Direct 模式都会生效。相对其他声道进行微调（例如降低 LFE）；0 dB 表示不变。",
   "audio.sampleRate": "采样率",
   "layout.label": "布局:",
   "layout.loading": "加载中...",
