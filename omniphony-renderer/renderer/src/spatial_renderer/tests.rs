@@ -2076,6 +2076,12 @@ fn crossover_renderer() -> SpatialRenderer {
     layout.speakers[1].freq_high = Some(2000.0);
     layout.speakers[2].freq_low = Some(2000.0);
     layout.speakers[2].freq_high = None;
+    renderer_for_layout(layout)
+}
+
+/// Build a renderer over an arbitrary layout with the same defaults as
+/// [`crossover_renderer`].
+fn renderer_for_layout(layout: SpeakerLayout) -> SpatialRenderer {
     SpatialRenderer::new(
         layout,
         48_000,
@@ -2203,10 +2209,11 @@ fn speaker_test_is_limited_to_the_speakers_bands() {
 ///
 /// Band membership is computed over spatialized speakers only, so a direct
 /// speaker appears in no band; the original band-summing injection summed
-/// nothing for it and the test was silent. Programme audio reaches a direct
-/// speaker by bypassing the filter bank, so the test must play unfiltered
-/// there — asserted by comparing its slew ratio against the sub's: identical
-/// low-passed noise on both would mean the fallback did not engage.
+/// nothing for it and the test was silent. A direct speaker that declares no
+/// frequency range plays the test unfiltered (programme audio reaches it by
+/// bypassing the filter bank, and nothing says what to cut) — asserted by
+/// comparing its slew ratio against the sub's: identical low-passed noise on
+/// both would mean the fallback did not engage.
 #[test]
 fn speaker_test_reaches_a_direct_speaker_despite_the_crossover() {
     let frames = 4096;
@@ -2250,6 +2257,66 @@ fn speaker_test_reaches_a_direct_speaker_despite_the_crossover() {
          (direct {:.4}, sub {:.4})",
         slew(&direct),
         slew(&sub)
+    );
+}
+
+/// A direct speaker that declares a frequency range gets a band-limited test,
+/// even though it belongs to no crossover band.
+///
+/// Programme audio bypasses the filter bank on its way to a direct speaker,
+/// but `freq_low`/`freq_high` still describe what it can reproduce — a
+/// direct-routed sub must not be fed full-range noise. The injection builds a
+/// dedicated LR4 split at the speaker's own edges instead. Asserted like
+/// `speaker_test_is_limited_to_the_speakers_bands`: a direct sub cut at 80 Hz
+/// must slew like the spatialized sub's band, far below the tweeter's.
+#[test]
+fn a_direct_speakers_test_honours_its_declared_frequency_range() {
+    let frames = 4096;
+    let pcm = vec![0.0f32; frames];
+
+    let mut channel_for = |idx: usize, freq_high: Option<f32>| -> Vec<f32> {
+        let mut layout = SpeakerLayout::preset("7.1.4").unwrap();
+        layout.speakers[0].freq_low = None;
+        layout.speakers[0].freq_high = Some(80.0);
+        layout.speakers[1].freq_low = Some(80.0);
+        layout.speakers[1].freq_high = Some(2000.0);
+        layout.speakers[2].freq_low = Some(2000.0);
+        layout.speakers[2].freq_high = None;
+        // Speaker 3 is the LFE, the preset's one non-spatialized speaker.
+        assert!(!layout.speakers[3].spatialize);
+        layout.speakers[3].freq_high = freq_high;
+        let mut r = renderer_for_layout(layout);
+        r.control.live.write().speaker_test = Some(crate::live_params::SpeakerTest {
+            speaker_idx: idx,
+            level: 0.1,
+            isolation: crate::live_params::TestIsolation::TestOnly,
+        });
+        let out = r.render_frame(&pcm, 1, &[], Vec::new(), false).unwrap();
+        let n = out.n_channels;
+        (0..frames).map(|f| out.samples[f * n + idx]).collect()
+    };
+
+    let slew = |ch: &[f32]| -> f32 {
+        let amp: f32 = ch.iter().map(|s| s.abs()).sum::<f32>() / ch.len() as f32;
+        assert!(amp > 0.0, "speaker produced no test signal");
+        let step: f32 =
+            ch.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f32>() / (ch.len() - 1) as f32;
+        step / amp
+    };
+
+    let direct_sub = slew(&channel_for(3, Some(80.0)));
+    let spatial_sub = slew(&channel_for(0, None));
+    let top = slew(&channel_for(2, None));
+
+    assert!(
+        direct_sub < top * 0.25,
+        "a direct speaker cut at 80 Hz must be band-limited, not full-range \
+         (direct sub {direct_sub:.4}, top {top:.4})"
+    );
+    assert!(
+        direct_sub < spatial_sub * 2.0 && spatial_sub < direct_sub * 2.0,
+        "the direct sub's band must move like the spatialized sub's \
+         (direct sub {direct_sub:.4}, spatialized sub {spatial_sub:.4})"
     );
 }
 

@@ -75,6 +75,18 @@ pub(super) struct SpeakerRenderStage {
     /// `crossover_filter_states`: the test is its own source and must not share
     /// filter memory with an input channel.
     pub(super) test_filter_states: Option<CrossoverStates>,
+    /// Usable frequency range per speaker of THIS stage's layout
+    /// (`(freq_low, freq_high)`, `None` = open end), captured at build time so
+    /// the test can band-limit a direct (non-spatialized) speaker to its own
+    /// range — such a speaker appears in no crossover band.
+    pub(super) speaker_freq_ranges: Vec<(Option<f32>, Option<f32>)>,
+    /// Dedicated LR4 bank splitting at the tested direct speaker's own edges.
+    /// Built lazily when a test targets a direct speaker that declares a
+    /// frequency range; dropped whenever the test identity changes (its edges
+    /// are the tested speaker's own). Always LR4 regardless of the live
+    /// `crossover_type`: a single-speaker test has nothing to phase-align with,
+    /// so the FIR engine's latency would buy nothing.
+    pub(super) test_direct_bank: Option<CrossoverBank>,
     /// Samples the current test has been running, against the safety cap. Reset
     /// whenever the test target or level changes.
     pub(super) test_elapsed_samples: u64,
@@ -791,6 +803,12 @@ impl SpeakerRenderStage {
             bed_delays: Vec::new(),
             test_noise: crate::speaker_test::PinkNoise::default(),
             test_filter_states: None,
+            speaker_freq_ranges: layout
+                .speakers
+                .iter()
+                .map(|s| (s.freq_low, s.freq_high))
+                .collect(),
+            test_direct_bank: None,
             test_elapsed_samples: 0,
             test_identity: None,
             object_test_filter_states: None,
@@ -857,6 +875,12 @@ impl SpeakerRenderStage {
         self.crossover_filter_states.clear();
         self.bed_delays.clear();
         self.test_filter_states = None;
+        self.speaker_freq_ranges = active_layout
+            .speakers
+            .iter()
+            .map(|s| (s.freq_low, s.freq_high))
+            .collect();
+        self.test_direct_bank = None;
         self.object_test_filter_states = None;
         self.crossover_band_scratch.iter_mut().for_each(Vec::clear);
         self.render_bands_topology_identity = topology_identity;
@@ -881,7 +905,10 @@ impl SpeakerRenderStage {
     /// are summed. A full-range speaker sums all of them and hears the whole
     /// signal; a sub hears only its own. A direct (non-spatialized) speaker
     /// appears in no band at all — programme audio bypasses the filter bank on
-    /// its way there, so the test bypasses it too and plays unfiltered.
+    /// its way there — but its declared `freq_low`/`freq_high` still say what
+    /// it can reproduce, so the test band-limits to that range with a
+    /// dedicated LR4 split, and plays unfiltered only when no range is
+    /// declared.
     ///
     /// `test.level` is a **peak** target, not an RMS one: the contribution
     /// written here never exceeds `±level`, so a level ≤ 1.0 cannot clip. That
@@ -917,6 +944,7 @@ impl SpeakerRenderStage {
                 self.test_identity = None;
                 self.test_elapsed_samples = 0;
                 self.test_noise.reset();
+                self.test_direct_bank = None;
             }
             return false;
         };
@@ -934,6 +962,9 @@ impl SpeakerRenderStage {
             if let Some(states) = self.test_filter_states.as_mut() {
                 states.reset();
             }
+            // The dedicated direct-speaker bank splits at the tested speaker's
+            // own edges, so a new target invalidates it.
+            self.test_direct_bank = None;
         }
 
         let frames = output.len() / self.num_speakers;
@@ -971,11 +1002,9 @@ impl SpeakerRenderStage {
         let ceiling = test.level.abs();
 
         // A speaker listed in no band is a direct (non-spatialized) route —
-        // band membership is computed over spatialized speakers only. Programme
-        // audio reaches such a speaker by bypassing the filter bank entirely
-        // (see the direct-channel path in `mix_channels`), so the test must do
-        // the same: summing "the bands that cover this speaker" would sum
-        // nothing and the test would be silent.
+        // band membership is computed over spatialized speakers only, so the
+        // band-summing path below would sum nothing and the test would be
+        // silent. Such a speaker gets the dedicated fallback further down.
         let covered = self
             .render_bands
             .iter()
@@ -1000,10 +1029,52 @@ impl SpeakerRenderStage {
                 }
             }
             _ => {
-                for f in 0..frames {
-                    let raw = self.test_noise.next_sample();
-                    output[f * self.num_speakers + test.speaker_idx] +=
-                        (raw * gain).clamp(-ceiling, ceiling);
+                // Direct (non-spatialized) speaker, or no crossover at all.
+                // Programme audio reaches a direct speaker by bypassing the
+                // filter bank (see the direct-channel path in `mix_channels`),
+                // but the speaker's declared frequency range still says what
+                // it can reproduce — so the test honours it with a dedicated
+                // LR4 split at the speaker's own edges, and only falls back to
+                // unfiltered noise when no range is declared. `lo < hi` guards
+                // a degenerate range, whose middle band would be near-silence.
+                let (lo, hi) = self
+                    .speaker_freq_ranges
+                    .get(test.speaker_idx)
+                    .copied()
+                    .unwrap_or((None, None));
+                let range_valid = match (lo, hi) {
+                    (Some(lo), Some(hi)) => lo < hi,
+                    (None, None) => false,
+                    _ => true,
+                };
+                if range_valid {
+                    if self.test_direct_bank.is_none() {
+                        // Built once per test start (identity change drops it),
+                        // not in the steady-state path.
+                        let edges: Vec<f32> = [lo, hi].into_iter().flatten().collect();
+                        self.test_direct_bank = Some(CrossoverBank::Lr4(LR4CrossoverBank::new(
+                            &edges,
+                            self.sample_rate,
+                        )));
+                    }
+                    let bank = self.test_direct_bank.as_ref().expect("just built");
+                    let states = bank.ensure_states(&mut self.test_filter_states);
+                    // Bands are [0, lo), [lo, hi), [hi, ∞) minus the absent
+                    // edges — the speaker's own band is right after the low
+                    // split when there is one.
+                    let keep = usize::from(lo.is_some());
+                    for f in 0..frames {
+                        let raw = self.test_noise.next_sample();
+                        let bands = bank.process_sample(raw, states);
+                        output[f * self.num_speakers + test.speaker_idx] +=
+                            (bands.get(keep) * gain).clamp(-ceiling, ceiling);
+                    }
+                } else {
+                    for f in 0..frames {
+                        let raw = self.test_noise.next_sample();
+                        output[f * self.num_speakers + test.speaker_idx] +=
+                            (raw * gain).clamp(-ceiling, ceiling);
+                    }
                 }
             }
         }
