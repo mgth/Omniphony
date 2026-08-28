@@ -67,7 +67,9 @@ pub fn get_about_info() -> AboutInfo {
 pub fn save_osc_config(state: State<SharedState>, mut config: OscConfig) -> Result<(), String> {
     // The JS config form doesn't carry server-only fields; preserve them from
     // the persisted copy so a save doesn't wipe the remembered import dir.
-    config.last_layout_import_dir = load_config(&state.config_dir).last_layout_import_dir;
+    let persisted = load_config(&state.config_dir);
+    config.last_layout_import_dir = persisted.last_layout_import_dir;
+    config.rust_auto_tune = persisted.rust_auto_tune;
     save_config(&state.config_dir, &config)?;
     // A config change re-arms the auto-start watchdog after a failure streak.
     state.watchdog.lock().unwrap().rearm();

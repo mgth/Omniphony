@@ -28,6 +28,7 @@ use tokio::sync::mpsc::UnboundedSender;
 // imported so `generate_handler!` can keep referring to them by bare name.
 use commands::app::*;
 use commands::audio::*;
+use commands::auto_tune::*;
 use commands::binaural::*;
 use commands::diag::*;
 use commands::engine::*;
@@ -81,6 +82,7 @@ pub(crate) struct SharedState {
     /// Local renderer process spawned by Studio (manual launch or watchdog).
     pub(crate) renderer_child: Arc<Mutex<Option<std::process::Child>>>,
     pub(crate) watchdog: Arc<Mutex<WatchdogControl>>,
+    pub(crate) auto_tune: crate::auto_tune::runner::AutoTuneRunner,
 }
 
 // ── helper ────────────────────────────────────────────────────────────────
@@ -188,6 +190,7 @@ fn main() {
                 auto_tune_snapshot: Arc::new(Mutex::new(None)),
                 renderer_child: Arc::new(Mutex::new(None)),
                 watchdog: Arc::new(Mutex::new(WatchdogControl::default())),
+                auto_tune: Default::default(),
             };
             app.manage(shared);
 
@@ -395,6 +398,13 @@ fn main() {
             control_audio_sample_rate,
             control_drc_mode,
             control_drc_weight,
+            auto_tune_backend_enabled,
+            auto_tune_start,
+            auto_tune_cancel,
+            auto_tune_accept,
+            auto_tune_ack,
+            auto_tune_abbreviate,
+            auto_tune_state,
             auto_tune_snapshot_save,
             auto_tune_snapshot_take,
             auto_tune_snapshot_peek,
@@ -418,6 +428,15 @@ fn main() {
             // resort. mpv-embedded renderers are unaffected (separate process).
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let state = app_handle.state::<SharedState>();
+                // A tuning run in progress has the renderer on half-swept
+                // values — a kp the sweep was about to reject, say. Put the
+                // originals back before anything else: the renderer may well
+                // outlive us (keep-alive, or an mpv-embedded one), and nothing
+                // would ever restore them otherwise.
+                if state.auto_tune.is_running() {
+                    log::info!("auto-tune still running at exit; restoring the previous values");
+                    state.auto_tune.cancel(app_handle, &state.osc_tx);
+                }
                 let keep_alive = load_config(&state.config_dir).keep_renderer_alive_on_quit;
                 let mut child_guard = state.renderer_child.lock().unwrap();
                 if let Some(child) = child_guard.as_mut() {

@@ -34,7 +34,7 @@
  * does.
  */
 
-import { createAutoTuneStateMachine } from '../src/auto-tune/state-machine.js';
+import { AUTO_TUNE_DEFAULTS, createAutoTuneStateMachine } from '../src/auto-tune/state-machine.js';
 
 /** Deterministic pseudo-random, so a run is reproducible. */
 function makeRng(seed) {
@@ -50,10 +50,15 @@ const STEP_MS = 250;
 /**
  * A crude closed loop: quiet below `kpCrit`, growing oscillation above it.
  * Returns rate_adjust in ppm for a given time and applied kp.
+ *
+ * `ring` is a shared flag the runner raises to make the loop oscillate
+ * regardless of kp — used to model a perturbation that leaves the loop
+ * ringing after the disturbance is gone.
  */
-function plant({ kpCrit = 40, noisePpm = 80, rng }) {
+function plant({ kpCrit = 40, noisePpm = 80, ringPpm = 0, rng, ring }) {
   return (t, kp) => {
     const noise = (rng() - 0.5) * noisePpm;
+    if (ring && ring.on) return ringPpm * Math.sin(t / 700) + noise;
     if (kp < kpCrit) return noise;
     // Past the critical gain the loop rings; amplitude grows with the excess.
     const excess = Math.min(8, kp / kpCrit);
@@ -63,20 +68,76 @@ function plant({ kpCrit = 40, noisePpm = 80, rng }) {
 }
 
 /**
+ * Latency error in ms, as a *declared* shape rather than a closure — the Rust
+ * replay has to reproduce it, and a description it can read beats a formula it
+ * has to be told about scenario by scenario.
+ *
+ * Returning null means "no error": the runner then adds its own tiny jitter,
+ * which is the only case that pulls a second random per sample.
+ */
+function latencyErrFn(spec) {
+  if (!spec) return null;
+  switch (spec.kind) {
+    // Sustained sinusoidal error: too large to converge, so tuningKi iterates.
+    case 'sine':
+      return (i) => spec.offset + Math.sin(i / spec.periodSamples) * spec.amp;
+    // Barely-decaying error: never converges, but never worsens either — the
+    // one shape that lands in the `too-slow` branch. See `kiTooSlow` below.
+    case 'decay':
+      return (i) => spec.from * Math.exp(-i / spec.tauSamples);
+    default:
+      throw new Error(`unknown latency error kind: ${spec.kind}`);
+  }
+}
+
+/**
  * Drive one scenario and record it.
  *
- * `actions` maps a sample index to a callback, so user acknowledgements and
- * cancellations land at a reproducible point in the timeline rather than a
- * wall-clock one.
+ * Everything that shapes a run is declared, not coded: the plant, the latency
+ * error, and the user actions (`ackEvery` polls for a prompt and answers it,
+ * `cancelAt` cancels at a fixed sample index). All of it is echoed into the
+ * recording so the Rust replay reads the setup instead of hardcoding it per
+ * scenario name — the first version did that, and it is exactly the kind of
+ * duplication that lets the two harnesses drift apart in silence.
+ *
+ * Actions are indexed by sample, not wall-clock, so they land at a
+ * reproducible point in the timeline.
  */
-function record({ name, samples, options = {}, actions = {}, plantOpts = {} }) {
+function record({
+  name,
+  samples,
+  options = {},
+  plantOpts = {},
+  latencyErr = null,
+  ackEvery = null,
+  cancelAt = null,
+  ringOnceDuringRecovery = false,
+}) {
   const rng = makeRng(4242);
-  const rate = plant({ ...plantOpts, rng });
+  // Raised by the runner below when the machine enters perturbationRecovering.
+  const ring = { on: false, spent: false };
+  const rate = plant({ ...plantOpts, rng, ring: ringOnceDuringRecovery ? ring : null });
+  const latencyErrOf = latencyErrFn(latencyErr);
 
   const events = [];
   const steps = [];
   const fsm = createAutoTuneStateMachine(options);
-  fsm.on((event, payload) => events.push({ event, payload }));
+
+  // The kp the renderer would actually be running: the last one *applied*, not
+  // `context.currentKp`. The two diverge the moment the sweep declares
+  // oscillation — the machine emits applyParams{kpNear: 0.6·kpCrit} but leaves
+  // currentKp at kpCrit (state-machine.js:196-203). Feeding the plant
+  // currentKp, as the first version of this file did, left it ringing above
+  // the critical gain for the whole of every run: no scenario ever saw a calm
+  // loop after the sweep, which is precisely the regime the rest of the
+  // procedure is tuned in.
+  let appliedKp = 0;
+  fsm.on((event, payload) => {
+    if (event === 'applyParams' && typeof payload?.kpNear === 'number') {
+      appliedKp = payload.kpNear;
+    }
+    events.push({ event, payload });
+  });
 
   // `userAck('perturbation')` reads Date.now(); pin it to the sample clock so
   // the recording is reproducible. See the header.
@@ -89,16 +150,32 @@ function record({ name, samples, options = {}, actions = {}, plantOpts = {} }) {
     for (let i = 0; i < samples; i += 1) {
       const t = i * STEP_MS;
       clock = t;
-      const kp = fsm.getContext().currentKp;
-      const ppm = rate(t, kp);
+      const ppm = rate(t, appliedKp);
       fsm.pushSample({
         t,
-        latencySmoothedMs: 200 + (rng() - 0.5) * 0.02,
+        latencySmoothedMs: 200 + (latencyErrOf ? latencyErrOf(i) : (rng() - 0.5) * 0.02),
         latencyTargetMs: 200,
         resampleRatio: 1 + ppm / 1e6,
         phase: 'stable'
       });
-      if (actions[i]) actions[i](fsm);
+      if (cancelAt === i) fsm.cancel();
+      if (ackEvery && i % ackEvery === 0) {
+        // Poll for a prompt and answer it; the FSM ignores an ack it did not
+        // ask for, so this is safe to fire blind.
+        fsm.userAck('perturbation');
+        fsm.abbreviate();
+      }
+      // One-shot ring: raise the flag the first time recovery starts, drop it
+      // for good when that recovery ends. A ring on every recovery would make
+      // the back-off re-enter tuningKi for ever.
+      if (ringOnceDuringRecovery && !ring.spent) {
+        const recovering = fsm.getState() === 'perturbationRecovering';
+        if (recovering) ring.on = true;
+        else if (ring.on) {
+          ring.on = false;
+          ring.spent = true;
+        }
+      }
       // Record only on a change: a full per-sample dump is mostly repetition,
       // and what matters is where the machine moved.
       const state = fsm.getState();
@@ -114,7 +191,22 @@ function record({ name, samples, options = {}, actions = {}, plantOpts = {} }) {
     Date.now = realNow;
   }
 
-  return { name, finalState: fsm.getState(), context: fsm.getContext(), events, steps };
+  return {
+    name,
+    // The setup, so the replay can reconstruct the stimulus from data.
+    setup: {
+      options,
+      plant: { kpCrit: 40, noisePpm: 80, ringPpm: 0, ...plantOpts },
+      latencyErr,
+      ackEvery,
+      cancelAt,
+      ringOnceDuringRecovery,
+    },
+    finalState: fsm.getState(),
+    context: fsm.getContext(),
+    events,
+    steps,
+  };
 }
 
 // Shorter paliers than production, so a scenario walks the whole procedure in
@@ -164,7 +256,57 @@ const runs = [
     name: 'cancelledMidSweep',
     samples: 1600,
     options: FAST,
-    actions: { 200: (fsm) => fsm.cancel() }
+    cancelAt: 200
+  }),
+
+  // A latency error too large to converge, so `tuningKi` has to iterate
+  // instead of settling on the first palier. Without this the ki branches
+  // (too-slow, diverging, overshoot, the iteration cap) are never recorded —
+  // every other scenario converges immediately and walks straight past them.
+  record({
+    name: 'kiIterates',
+    samples: 4000,
+    options: FAST,
+    latencyErr: { kind: 'sine', offset: 3, amp: 2, periodSamples: 40 }
+  }),
+
+  // The `too-slow` branch of tuningKi, which nothing above reaches: it needs an
+  // error that neither converges (so the palier ends undecided), nor worsens
+  // (that is `diverging`), nor improves by the 20 % the heuristic wants (that
+  // is `still-converging`). A barely-decaying error is the only shape left —
+  // half-mean ratio ≈ 0.997, well inside the gap between "not worse" and
+  // "meaningfully better". Peak ≈ mean, so it is not read as overshoot either.
+  record({
+    name: 'kiTooSlow',
+    samples: 4000,
+    options: FAST,
+    latencyErr: { kind: 'decay', from: 3, tauSamples: 20000 }
+  }),
+
+  // The ki back-off after a perturbation that leaves the loop ringing: the one
+  // path where the machine *lowers* ki (×0.7) and re-enters tuningKi with the
+  // iteration budget nearly spent. Needs oscillation during recovery
+  // regardless of kp — by then kp is 0.6·kpCrit and the plant is quiet — so
+  // the runner rings the loop for the duration of the first recovery only.
+  //
+  // perturbationRecoverMs is 30 s here, not FAST's 14 s: the detector discards
+  // a 10 s warm-up and then wants four mean crossings, which at the plant's
+  // ~4.4 s period needs about 20 s of usable window. At 14 s it saw a single
+  // half-period and read the ringing loop as calm.
+  //
+  // The noise is raised for a second, unrelated reason: tightening picks the
+  // update interval from the rate spread, and at the default 80 ppm every run
+  // now lands on the clean branch (5). Before the applied-kp fix above they
+  // all landed on the dirty one (10), because the loop never stopped ringing.
+  // 200 ppm keeps this run dirty so both branches stay recorded; past ~600 the
+  // sweep itself stops detecting oscillation.
+  record({
+    name: 'perturbationLeavesRinging',
+    samples: 16000,
+    options: { ...FAST, perturbationRecoverMs: 30000 },
+    plantOpts: { ringPpm: 1200, noisePpm: 200 },
+    ringOnceDuringRecovery: true,
+    ackEvery: 20
   }),
 
   // Acknowledge the perturbation prompt as soon as it is raised, then let the
@@ -173,18 +315,7 @@ const runs = [
     name: 'fullRunWithAcks',
     samples: 16000,
     options: FAST,
-    actions: Object.fromEntries(
-      // Poll for a prompt every 20 samples and answer it; the FSM ignores an
-      // ack it did not ask for, so this is safe to fire blind.
-      Array.from({ length: 200 }, (_, k) => [
-        k * 20,
-        (fsm) => {
-          fsm.userAck('perturbation');
-          fsm.userAck('ready');
-          fsm.abbreviate();
-        }
-      ])
-    )
+    ackEvery: 20
   })
 ];
 
@@ -195,6 +326,10 @@ const out = {
     'The JS is the reference; the Rust port is asserted against these runs.',
   stepMs: STEP_MS,
   options: FAST,
+  // Every scenario overrides the durations, so replaying them proves nothing
+  // about the defaults — a port could ship a 15 s kp palier and still replay
+  // perfectly. Recorded so the Rust side can assert them field by field.
+  defaults: AUTO_TUNE_DEFAULTS,
   runs
 };
 
