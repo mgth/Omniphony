@@ -179,7 +179,9 @@ impl OscSender {
                         OscType::Float(obj.y),
                         OscType::Float(obj.z),
                         OscType::Int(obj.direct_speaker_index.map(|v| v as i32).unwrap_or(-1)),
-                        OscType::Int(obj.gain),
+                        // The wire stays Int: the native mpv overlay parses this tag, and it
+                        // is display-only — the editor reads the bed itself, not this frame.
+                        OscType::Int(obj.gain.round() as i32),
                         OscType::Float(obj.priority),
                         OscType::Int(ramp_duration as i32),
                         OscType::Long(self.content_generation as i64),

@@ -120,12 +120,12 @@ export function setupChannelEditorListeners() {
   if (gainSlider) {
     const gainBox = el('channelEditGainBox');
     gainSlider.addEventListener('input', () => {
-      const v = Math.round(Number(gainSlider.value) || 0);
-      if (gainBox) gainBox.textContent = `${v > 0 ? '+' : ''}${v} dB`;
+      const v = Math.round((Number(gainSlider.value) || 0) * 10) / 10;
+      if (gainBox) gainBox.textContent = `${v > 0 ? '+' : ''}${v.toFixed(1)} dB`;
     });
     gainSlider.addEventListener('change', () => {
       const name = selectedChannel();
-      if (name) applyChannelGain(name, Math.round(Number(gainSlider.value) || 0));
+      if (name) applyChannelGain(name, Number(gainSlider.value) || 0);
     });
     // Double-click resets to unity (0 dB), mirroring the speaker gain slider.
     gainSlider.addEventListener('dblclick', () => {

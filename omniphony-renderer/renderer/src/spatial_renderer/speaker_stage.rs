@@ -256,12 +256,8 @@ impl SpeakerRenderStage {
             let state = SpatialRenderer::state_mut(channel_states, input_channel_idx);
             let gain_db = state.gain_db;
 
-            // Convert gain from dB to linear
-            let gain_linear = if gain_db == -128 {
-                0.0 // -inf dB
-            } else {
-                10.0_f32.powf(gain_db as f32 / 20.0)
-            };
+            // Convert gain from dB to linear (−inf floor honoured).
+            let gain_linear = super::components::gain_db_to_linear(gain_db);
             // Slewed per-sample gain factor (includes the mute 0/1 factor):
             // factor(s) = gain_start + gain_step * s.
             let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;

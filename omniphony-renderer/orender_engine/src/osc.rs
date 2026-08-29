@@ -248,7 +248,7 @@ pub struct ObjectMeta {
     pub coord_mode: String,
     pub direct_speaker_index: Option<u32>,
     /// Gain in dB (integer, -128 = silent).
-    pub gain: i32,
+    pub gain: f32,
     pub priority: f32,
     /// Per-axis object spatial extent (w, d, h), each in [0.0, 1.0].
     /// `[0.0, 0.0, 0.0]` denotes a point source.
@@ -281,7 +281,7 @@ struct ObjectSnapshot {
     z: f32,
     coord_mode: String,
     direct_speaker_index: Option<u32>,
-    gain: i32,
+    gain: f32,
     priority: f32,
     size: [f32; 3],
 }

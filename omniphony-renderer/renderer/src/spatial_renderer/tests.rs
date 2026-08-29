@@ -75,7 +75,7 @@ fn unified_crossover_matches_per_band() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -160,7 +160,7 @@ fn unified_polar_matches_per_band() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -263,7 +263,7 @@ fn unified_table_with_two_speaker_fallback_band() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -498,7 +498,7 @@ fn virtual_bed_mixes_direct_and_virtualized_channels() {
         SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some([0.0, 1.0, 0.0]), // front-centre object
@@ -507,7 +507,7 @@ fn virtual_bed_mixes_direct_and_virtualized_channels() {
         SpatialChannelEvent {
             channel_idx: 1,
             is_bed: true,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: None,
             position: None,
@@ -638,7 +638,7 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
         let events = vec![SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some([0.0, 1.0, 0.0]),
@@ -705,7 +705,7 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
         SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some([0.0, 1.0, 0.0]),
@@ -714,7 +714,7 @@ fn spatialized_lfe_alone_in_low_band_routes_object_bass() {
         SpatialChannelEvent {
             channel_idx: 1,
             is_bed: true,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: None,
             position: None,
@@ -804,7 +804,7 @@ fn all_four_ramp_modes_render_distinctly() {
         vec![SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(40),
             size: Some([0.0, 0.0, 0.0]),
             position: Some(position),
@@ -936,7 +936,7 @@ fn binaural_object_ramp_advances_and_lateralizes() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([1.0, 0.0, 0.0]),
@@ -1034,7 +1034,7 @@ fn binaural_output_follows_master_gain() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.5, 1.0, 0.0]),
@@ -1127,7 +1127,7 @@ fn binaural_ear_mute_uses_dedicated_ear_params() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.0, 1.0, 0.0]),
@@ -1201,7 +1201,7 @@ fn binaural_clipping_flags_ear_and_auto_gain_reduces_master() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.5, 1.0, 0.0]),
@@ -1309,7 +1309,7 @@ fn binaural_lfe_bed_feeds_both_ears_equally_and_dry() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: true,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(0),
         size: None,
         position: None,
@@ -1430,7 +1430,7 @@ speakers:
         let event = vec![SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: None,
             position: Some(pos),
@@ -1559,7 +1559,7 @@ fn cascaded_binaural_builds_stage_and_lateralizes() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([1.0, 0.0, 0.0]),
@@ -1632,7 +1632,7 @@ fn cascaded_matches_direct_at_virtual_speaker_direction() {
         let event = vec![SpatialChannelEvent {
             channel_idx: 0,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some(pos),
@@ -1685,7 +1685,7 @@ fn cascaded_binaural_follows_master_gain() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.5, 1.0, 0.0]),
@@ -1737,7 +1737,7 @@ fn cascaded_lfe_routes_direct_to_both_ears() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: true,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(0),
         size: None,
         position: None,
@@ -1790,7 +1790,7 @@ fn interp_survives_speaker_cascade_width_switch() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.4, 0.6, 0.2]),
@@ -1908,7 +1908,7 @@ fn rendered_frame_reports_the_geometry_it_produced() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(frames as u32),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -2009,7 +2009,7 @@ fn an_output_mode_change_is_ramped_not_stepped() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(frames as u32),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -2531,7 +2531,7 @@ fn a_recycled_output_buffer_renders_identically_to_a_fresh_one() {
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(40),
         size: Some([0.0, 0.0, 0.0]),
         position: Some([0.3, -0.2, 0.4]),
@@ -2577,7 +2577,7 @@ fn fir_crossover_keeps_beds_aligned_with_objects() {
         SpatialChannelEvent {
             channel_idx: 0,
             is_bed: true,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: None,
             position: None,
@@ -2586,7 +2586,7 @@ fn fir_crossover_keeps_beds_aligned_with_objects() {
         SpatialChannelEvent {
             channel_idx: 1,
             is_bed: false,
-            gain_db: Some(0),
+            gain_db: Some(0.0),
             ramp_length: Some(0),
             size: Some([0.0, 0.0, 0.0]),
             position: Some([0.0, 1.0, 0.0]),

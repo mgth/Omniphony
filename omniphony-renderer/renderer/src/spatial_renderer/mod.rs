@@ -78,7 +78,7 @@ mod components;
 mod construction;
 mod speaker_stage;
 use components::{ChannelState, evaluation_build_config};
-pub use components::{RenderedFrame, SpatialChannelEvent};
+pub use components::{GAIN_DB_NEG_INF, RenderedFrame, SpatialChannelEvent, gain_db_to_linear};
 use speaker_stage::SpeakerRenderStage;
 
 /// Snapshot of `LiveParams` taken at the start of each render frame.
@@ -892,17 +892,13 @@ impl SpatialRenderer {
                             _ => 1.0,
                         };
                         // Stream metadata gain, same semantics as the VBAP path:
-                        // silent (-128 = -inf dB) until the first metadata arrives.
+                        // silent (−inf floor) until the first metadata arrives.
                         let gain_db = states
                             .get(c)
                             .filter(|s| s.initialized)
                             .map(|s| s.gain_db)
-                            .unwrap_or(-128);
-                        let gain_linear = if gain_db == -128 {
-                            0.0
-                        } else {
-                            10.0_f32.powf(gain_db as f32 / 20.0)
-                        };
+                            .unwrap_or(components::GAIN_DB_NEG_INF);
+                        let gain_linear = components::gain_db_to_linear(gain_db);
                         // Slewed like the VBAP path (block-end value: the binaural
                         // stage updates per block anyway).
                         let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;

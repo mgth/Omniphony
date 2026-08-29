@@ -167,7 +167,7 @@ impl ChannelObjectStages {
             .map(move |(index, spec)| SpatialChannelEvent {
                 channel_idx: channel_count + index,
                 is_bed: false,
-                gain_db: Some(spec.gain_db),
+                gain_db: Some(f32::from(spec.gain_db)),
                 ramp_length: Some(0),
                 size: Some(spec.size),
                 position: Some(spec.position),
@@ -190,7 +190,7 @@ impl ChannelObjectStages {
             z: spec.position[2] as f32,
             coord_mode: "cartesian".to_string(),
             direct_speaker_index: None,
-            gain: spec.gain_db as i32,
+            gain: f32::from(spec.gain_db),
             priority: 0.0,
             size: spec.size,
             fixed: false,

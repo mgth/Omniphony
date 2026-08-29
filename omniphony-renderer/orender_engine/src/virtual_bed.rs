@@ -583,7 +583,7 @@ pub fn build_virtual_bed_objects(
         // Per-channel gain from the virtual bed (dB); 0 = unity when unset.
         let gain = find_virtual_bed_entry(virtual_bed, *label, use_7_1)
             .map(|entry| entry.gain_db)
-            .unwrap_or(0);
+            .unwrap_or(0.0);
         objects.push(ObjectMeta {
             name,
             x,
@@ -631,17 +631,25 @@ fn find_virtual_bed_entry(
     })
 }
 
-/// The bed entry's `gain_db` as an audio-event gain: clamped into the event's
-/// `i8` domain (where −128 is the −inf sentinel — a bare cast would wrap),
-/// unity when the bed has no entry for the label.
+/// The bed entry's `gain_db` as an audio-event gain: clamped into the event
+/// domain (where `GAIN_DB_NEG_INF` = −128 is the −inf floor), unity when the
+/// bed has no entry for the label. Carried as `f32` end to end so the editor's
+/// 0.1 dB steps survive — the whole-dB `i8` lives only on the decoder side.
 ///
 /// The event is what the render paths consume; `ObjectMeta.gain` is only the
 /// Studio/OSC display value. Stamping the entry gain here is what makes the
 /// bed editor's per-channel gain reach the sound (#220).
-fn bed_entry_gain_db(layout: Option<&SpeakerLayout>, label: RChannelLabel, use_7_1: bool) -> i8 {
+fn bed_entry_gain_db(layout: Option<&SpeakerLayout>, label: RChannelLabel, use_7_1: bool) -> f32 {
     find_virtual_bed_entry(layout, label, use_7_1)
-        .map(|entry| entry.gain_db.clamp(i8::MIN as i32, i8::MAX as i32) as i8)
-        .unwrap_or(0)
+        .map(|entry| {
+            let db = entry.gain_db;
+            if db.is_finite() {
+                db.clamp(renderer::spatial_renderer::GAIN_DB_NEG_INF, 127.0)
+            } else {
+                0.0
+            }
+        })
+        .unwrap_or(0.0)
 }
 
 /// Whether a channel should be virtualized (`true`) or routed direct to its
@@ -1058,7 +1066,7 @@ pub struct FixedChannelPlanner {
     /// Bed-entry trim per fixed channel index, cached at plan time so the
     /// per-metadata-frame event build ([`crate::spatial::build_spatial_channel_events`])
     /// indexes a slice instead of re-matching label aliases.
-    trims: Vec<i8>,
+    trims: Vec<f32>,
 }
 
 impl FixedChannelPlanner {
@@ -1084,7 +1092,7 @@ impl FixedChannelPlanner {
     /// The stream's own OAMD channel gains re-stamp the bed channels on every
     /// metadata frame, which would silently undo the plan events' trim; the
     /// hosts pass this slice to the event build so the two combine instead.
-    pub fn fixed_trims(&self) -> &[i8] {
+    pub fn fixed_trims(&self) -> &[f32] {
         &self.trims
     }
 
@@ -1462,7 +1470,7 @@ mod tests {
         use renderer::speaker_layout::Speaker;
         // A virtual bed sets C to -6 dB; channels with no explicit gain stay at 0.
         let mut center = Speaker::new("C", 0.0, 0.0);
-        center.gain_db = -6;
+        center.gain_db = -6.0;
         let bed = vbed(vec![
             Speaker::new("L", -30.0, 0.0),
             center,
@@ -1484,9 +1492,9 @@ mod tests {
             .iter()
             .find(|o| o.name.eq_ignore_ascii_case("C"))
             .expect("C object present");
-        assert_eq!(c.gain, -6, "C gain comes from the virtual bed");
+        assert_eq!(c.gain, -6.0, "C gain comes from the virtual bed");
         for obj in objects.iter().filter(|o| !o.name.eq_ignore_ascii_case("C")) {
-            assert_eq!(obj.gain, 0, "{} has no configured gain", obj.name);
+            assert_eq!(obj.gain, 0.0, "{} has no configured gain", obj.name);
         }
     }
 
@@ -1499,9 +1507,9 @@ mod tests {
         // a spatialized channel (C) and a direct-routed one (LFE).
         use renderer::speaker_layout::Speaker;
         let mut c = Speaker::new("C", 0.0, 0.0);
-        c.gain_db = -6;
+        c.gain_db = -6.5;
         let mut lfe = Speaker::new("LFE", 45.0, -10.0);
-        lfe.gain_db = -6;
+        lfe.gain_db = -6.5;
         lfe.spatialize = false;
         let bed = vbed(vec![
             Speaker::new("L", -30.0, 0.0),
@@ -1538,13 +1546,13 @@ mod tests {
                 .gain_db
         };
 
-        assert_eq!(gain_of(1), Some(-6), "spatialized C carries the bed gain");
+        assert_eq!(gain_of(1), Some(-6.5), "spatialized C carries the bed gain");
         assert_eq!(
             gain_of(3),
-            Some(-6),
+            Some(-6.5),
             "direct-routed LFE carries the bed gain"
         );
-        assert_eq!(gain_of(0), Some(0), "unset entries stay at unity");
+        assert_eq!(gain_of(0), Some(0.0), "unset entries stay at unity");
     }
 
     #[test]
@@ -1554,7 +1562,7 @@ mod tests {
         // the −inf sentinel instead (and symmetrically on the positive side).
         use renderer::speaker_layout::Speaker;
         let mut c = Speaker::new("C", 0.0, 0.0);
-        c.gain_db = -200;
+        c.gain_db = -200.0;
         let bed = vbed(vec![
             Speaker::new("L", -30.0, 0.0),
             c,
@@ -1578,7 +1586,11 @@ mod tests {
             .iter()
             .find(|e| e.channel_idx == 1)
             .expect("C event present");
-        assert_eq!(c_event.gain_db, Some(i8::MIN), "clamped, not wrapped");
+        assert_eq!(
+            c_event.gain_db,
+            Some(renderer::spatial_renderer::GAIN_DB_NEG_INF),
+            "clamped to the −inf floor"
+        );
     }
 
     #[test]
@@ -2112,11 +2124,15 @@ mod tests {
         let mut out = Vec::new();
         planner.plan_object_stream_fixed(&labels, &renderer, &mut out);
         assert!(!out.is_empty(), "initial plan emits the prefix events");
-        assert_eq!(planner.fixed_trims(), &[0, 0, 0, 0], "no bed → unity trims");
+        assert_eq!(
+            planner.fixed_trims(),
+            &[0.0, 0.0, 0.0, 0.0],
+            "no bed → unity trims"
+        );
 
         // The edit: LFE trimmed to −6 dB in the bed.
         let mut lfe = Speaker::new("LFE", 45.0, -10.0);
-        lfe.gain_db = -6;
+        lfe.gain_db = -6.5;
         lfe.spatialize = false;
         control.live.write().virtual_bed = Some(vbed(vec![
             Speaker::new("L", -30.0, 0.0),
@@ -2140,12 +2156,12 @@ mod tests {
             .expect("LFE event after replan");
         assert_eq!(
             lfe_event.gain_db,
-            Some(-6),
+            Some(-6.5),
             "replanned event carries the trim"
         );
         assert_eq!(
             planner.fixed_trims(),
-            &[0, 0, 0, -6],
+            &[0.0, 0.0, 0.0, -6.5],
             "trims exposed for the stream-gain sum"
         );
     }

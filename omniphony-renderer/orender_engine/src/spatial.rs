@@ -63,7 +63,9 @@ pub fn build_object_metas(
                 z: z as f32,
                 coord_mode: fallback_coord_mode(),
                 direct_speaker_index: None,
-                gain: event.gain_db().map_or(-128, |g| g as i32),
+                gain: event
+                    .gain_db()
+                    .map_or(renderer::spatial_renderer::GAIN_DB_NEG_INF, f32::from),
                 priority: 0.0,
                 size: event
                     .size()
@@ -120,17 +122,17 @@ pub fn build_spatial_channel_events(
     coordinate_format: RCoordinateFormat,
     object_channels: &[(u32, usize)],
     channel_gains: &[RChannelGain],
-    bed_trims: &[i8],
+    bed_trims: &[f32],
     sample_pos: u64,
     ramp_duration: u32,
     out: &mut Vec<SpatialChannelEvent>,
 ) {
     for gain in channel_gains {
-        let trim = bed_trims.get(gain.channel as usize).copied().unwrap_or(0);
+        let trim = bed_trims.get(gain.channel as usize).copied().unwrap_or(0.0);
         let gain_db = if gain.gain_db == i8::MIN {
-            i8::MIN
+            renderer::spatial_renderer::GAIN_DB_NEG_INF
         } else {
-            gain.gain_db.saturating_add(trim)
+            (f32::from(gain.gain_db) + trim).max(renderer::spatial_renderer::GAIN_DB_NEG_INF)
         };
         out.push(SpatialChannelEvent {
             channel_idx: gain.channel as usize,
@@ -154,7 +156,7 @@ pub fn build_spatial_channel_events(
         out.push(SpatialChannelEvent {
             channel_idx,
             is_bed: false,
-            gain_db: event.gain_db(),
+            gain_db: event.gain_db().map(f32::from),
             ramp_length: event.ramp_length(),
             size: event
                 .size()
@@ -211,7 +213,7 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert!(out[0].is_bed);
         assert_eq!(out[0].channel_idx, 2);
-        assert_eq!(out[0].gain_db, Some(-3));
+        assert_eq!(out[0].gain_db, Some(-3.0));
         assert_eq!(out[0].ramp_length, Some(32));
         assert_eq!(out[0].sample_pos, Some(480));
         assert!(!out[1].is_bed);
@@ -239,7 +241,7 @@ mod tests {
                 gain_db: 2,
             },
         ];
-        let trims = [-6i8, -6, 0, 0];
+        let trims = [-6.0f32, -6.0, 0.0, 0.0];
 
         let mut out = Vec::new();
         build_spatial_channel_events(
@@ -253,9 +255,13 @@ mod tests {
             &mut out,
         );
 
-        assert_eq!(out[0].gain_db, Some(-9), "stream −3 + trim −6");
-        assert_eq!(out[1].gain_db, Some(i8::MIN), "−inf stays −inf");
-        assert_eq!(out[2].gain_db, Some(2), "no trim entry → unchanged");
+        assert_eq!(out[0].gain_db, Some(-9.0), "stream −3 + trim −6");
+        assert_eq!(
+            out[1].gain_db,
+            Some(renderer::spatial_renderer::GAIN_DB_NEG_INF),
+            "−inf stays −inf"
+        );
+        assert_eq!(out[2].gain_db, Some(2.0), "no trim entry → unchanged");
     }
 
     #[test]
@@ -271,7 +277,7 @@ mod tests {
         assert_eq!(metas.len(), 1);
         assert_eq!(metas[0].name, "Music");
         assert_eq!(metas[0].direct_speaker_index, None);
-        assert_eq!(metas[0].gain, -3);
+        assert_eq!(metas[0].gain, -3.0);
         assert!((metas[0].x - 0.1).abs() < 1e-6);
     }
 

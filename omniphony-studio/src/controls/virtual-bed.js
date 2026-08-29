@@ -154,7 +154,9 @@ function defaultEntry(base) {
 function readEntry(base, match) {
   if (!match) return defaultEntry(base);
   const cartesian = String(match.coord_mode || '').toLowerCase() === 'cartesian';
-  const gainDb = Number.isFinite(Number(match.gain_db)) ? Math.round(Number(match.gain_db)) : 0;
+  const gainDb = Number.isFinite(Number(match.gain_db))
+    ? Math.round(Number(match.gain_db) * 10) / 10
+    : 0;
   const spatialize = match.spatialize !== false;
   if (cartesian && Number.isFinite(Number(match.x))) {
     const x = Number(match.x) || 0;
@@ -251,7 +253,8 @@ function buildLayoutPayload(channels) {
         entry.elevation = Number(c.elevation) || 0;
         entry.distance = Number(c.distance) > 0 ? Number(c.distance) : 0.01;
       }
-      if (Math.round(c.gainDb || 0) !== 0) entry.gain_db = Math.round(c.gainDb);
+      const gainDb = Math.round((Number(c.gainDb) || 0) * 10) / 10;
+      if (gainDb !== 0) entry.gain_db = gainDb;
       return entry;
     })
   };
@@ -364,7 +367,8 @@ export function applyChannelSceneCartesian(name, sx, sy, sz) {
 
 export function applyChannelGain(name, gainDb) {
   commitChannel(name, (c) => {
-    c.gainDb = Math.round(Number(gainDb) || 0);
+    // 0.1 dB resolution, matching the per-speaker output gain.
+    c.gainDb = Math.round((Number(gainDb) || 0) * 10) / 10;
   });
 }
 
@@ -657,7 +661,10 @@ export function renderChannelEditor(force = false) {
   const gainSlider = el('channelEditGainSlider');
   if (gainSlider) gainSlider.value = String(ch.gainDb || 0);
   const gainBox = el('channelEditGainBox');
-  if (gainBox) gainBox.textContent = `${ch.gainDb > 0 ? '+' : ''}${ch.gainDb || 0} dB`;
+  if (gainBox) {
+    const g = Number(ch.gainDb) || 0;
+    gainBox.textContent = `${g > 0 ? '+' : ''}${g.toFixed(1)} dB`;
+  }
 
   // Direct channels are pinned to their speaker: only Direct/Virtual + gain edit.
   const positionInputs = [

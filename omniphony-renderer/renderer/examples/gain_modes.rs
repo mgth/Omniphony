@@ -72,7 +72,7 @@ fn gains_at(r: &mut SpatialRenderer, p: [f64; 3]) -> Vec<f32> {
     let ev = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(0),
         size: Some([0.0, 0.0, 0.0]),
         position: Some(p),

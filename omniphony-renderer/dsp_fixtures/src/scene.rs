@@ -222,7 +222,7 @@ pub fn move_events(n_objects: usize, seed_round: u64) -> Vec<SpatialChannelEvent
             SpatialChannelEvent {
                 channel_idx: ch,
                 is_bed: false,
-                gain_db: Some(0),
+                gain_db: Some(0.0),
                 ramp_length: Some(BLOCK_SAMPLES as u32),
                 size: Some([0.0, 0.0, 0.0]),
                 position: Some([
@@ -256,7 +256,7 @@ pub fn drift_events(n_objects: usize, seed_round: u64) -> Vec<SpatialChannelEven
             SpatialChannelEvent {
                 channel_idx: ch,
                 is_bed: false,
-                gain_db: Some(0),
+                gain_db: Some(0.0),
                 ramp_length: Some(BLOCK_SAMPLES as u32),
                 size: Some([0.0, 0.0, 0.0]),
                 position: Some([az.sin(), az.cos(), (ch % 5) as f64 * 0.25]),
@@ -504,7 +504,7 @@ pub fn render_single_object_binaural(
     let event = vec![SpatialChannelEvent {
         channel_idx: 0,
         is_bed: false,
-        gain_db: Some(0),
+        gain_db: Some(0.0),
         ramp_length: Some(BLOCK_SAMPLES as u32),
         size: Some([0.0, 0.0, 0.0]),
         position: Some(position),
