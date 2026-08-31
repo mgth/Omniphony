@@ -300,8 +300,10 @@ fn fallback_virtual_bed_pose(
 }
 
 /// Stable editor catalogue available even when no stream is active. Every
-/// fixed-channel label has a canonical pose; dynamic objects and unknown
-/// channels are deliberately excluded.
+/// fixed-channel label has a canonical pose plus the accepted spellings for its
+/// label (from `bridge_api::labels`), so Studio can match channel names with the
+/// same alias tolerance as layout YAMLs; dynamic objects and unknown channels are
+/// deliberately excluded.
 pub fn fixed_channel_catalog_json() -> String {
     use RChannelLabel::{
         C, Cb, L, LFE, LFE2, Lb, Ls, Lsc, Lsd, Lw, R, Rb, Rs, Rsc, Rsd, Rw, Tbl, Tbr, Tc, Tfc, Tfl,
@@ -317,6 +319,7 @@ pub fn fixed_channel_catalog_json() -> String {
             let (_, x, y, z) = fallback_virtual_bed_pose(label, true)?;
             Some(serde_json::json!({
                 "label": bridge_api::labels::canonical_name(label),
+                "aliases": bridge_api::labels::aliases_for(label),
                 "group": if z > 0.0 { "height" } else { "floor" },
                 "x": x,
                 "y": y,
@@ -1244,6 +1247,23 @@ mod tests {
         assert_eq!(tfc["x"], 0.0);
         assert_eq!(tfc["y"], 1.0);
         assert_eq!(tfc["z"], 1.0);
+
+        // Every entry carries its label's accepted spellings, so Studio can match
+        // channel names with the renderer's own alias tolerance.
+        for entry in entries {
+            let label = entry["label"].as_str().expect("string label");
+            let aliases = entry["aliases"].as_array().expect("aliases array");
+            assert!(!aliases.is_empty(), "no aliases published for {}", label);
+        }
+        // Spot-check that the spellings actually resolve back to their own label.
+        let tfl: Vec<&str> = entry("TFL")["aliases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(tfl.contains(&"TOPFRONTLEFT"));
+        assert!(tfl.contains(&"HL"));
     }
 
     #[test]

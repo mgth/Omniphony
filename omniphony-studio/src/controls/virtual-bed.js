@@ -27,6 +27,7 @@ import {
   normalizedToMeters,
   formatNumber
 } from '../coordinates.js';
+import { buildChannelAliasMap, normalizeChannelName } from '../channel-aliases.js';
 
 // Fallback editable fixed-channel set with default ADM cartesian poses
 // (X left/right, Y rear/front, Z down/up; ear level Z = 0). LFE channels
@@ -59,60 +60,58 @@ const FALLBACK_BED = [
   { name: 'TFC', x: 0, y: 1, z: 1, spatialize: true }
 ];
 
-// Name aliases per canonical channel (mirrors the renderer's label_aliases) so
-// the editor matches a bed/object entry however it is named (L/FL, Ls/SL, …).
-const CHANNEL_ALIASES = {
-  L: ['l', 'fl', 'frontleft', 'leftfront'],
-  R: ['r', 'fr', 'frontright', 'rightfront'],
-  C: ['c', 'fc', 'center', 'centre'],
-  LFE: ['lfe', 'lfe1', 'sub', 'subwoofer', 'sw'],
-  LFE2: ['lfe2'],
-  Ls: ['ls', 'sl', 'leftsurround', 'surroundleft'],
-  Rs: ['rs', 'sr', 'rightsurround', 'surroundright'],
-  Lb: ['lb', 'bl', 'lrs', 'backleft', 'leftback', 'rearleft', 'leftrear'],
-  Rb: ['rb', 'br', 'rrs', 'backright', 'rightback', 'rightrear', 'rearright'],
-  Cb: ['cb', 'bc', 'rc', 'backcenter', 'rearcenter', 'centerback'],
-  Lsc: ['lsc', 'flc', 'frontleftcenter', 'leftcenter'],
-  Rsc: ['rsc', 'frc', 'frontrightcenter', 'rightcenter'],
-  Lsd: ['lsd'],
-  Rsd: ['rsd'],
-  Lw: ['lw', 'fwl', 'wl', 'wideleft', 'frontwideleft'],
-  Rw: ['rw', 'fwr', 'wr', 'wideright', 'frontwideright'],
-  TFL: ['tfl', 'ltf', 'tpfl', 'topfrontleft', 'upperfrontleft'],
-  TFR: ['tfr', 'rtf', 'tpfr', 'topfrontright', 'upperfrontright'],
-  TSL: ['tsl', 'tpsl', 'topsideleft', 'uppersideleft'],
-  TSR: ['tsr', 'tpsr', 'topsideright', 'uppersideright'],
-  TBL: ['tbl', 'ltr', 'tpbl', 'topbackleft', 'toprearleft', 'upperbackleft'],
-  TBR: ['tbr', 'rtr', 'tpbr', 'topbackright', 'toprearright', 'upperbackright'],
-  TC: ['tc', 'tpc', 'topcenter', 'topmiddlecenter'],
-  TFC: ['tfc', 'tpfc', 'topfrontcenter']
-};
+// Memoised view of the renderer-published fixed-channel catalogue: the alias map
+// (normalised spelling → canonical label, from each entry's 'aliases' field) and
+// the canonical order list. Rebuilt only when the catalogue reference or length
+// changes — the renderer publishes it once at start-up and then keeps it static.
+let catalogCache = { catalog: null, length: -1, bySpelling: new Map(), order: [] };
+function catalogView() {
+  const catalog = Array.isArray(app.fixedChannelCatalog) ? app.fixedChannelCatalog : [];
+  if (catalogCache.catalog !== catalog || catalogCache.length !== catalog.length) {
+    catalogCache = {
+      catalog,
+      length: catalog.length,
+      bySpelling: buildChannelAliasMap(catalog),
+      order: catalog.map((e) => e?.label).filter((l) => typeof l === 'string' && l.trim())
+    };
+  }
+  return catalogCache;
+}
 
-// Canonical channel key (L/R/C/LFE/Ls/Rs/Lb/Rb) for any alias, or null.
+// Canonical channel key (L/R/C/LFE/Ls/Rs/Lb/Rb/…) for any spelling the renderer
+// accepts, or null. The alias table comes from the published catalogue, so the
+// editor matches bed and object entries with exactly the same tolerance as
+// layout YAMLs on the renderer.
 export function canonicalChannelName(name) {
   if (typeof name !== 'string') return null;
-  const lower = name.trim().toLowerCase();
-  for (const [key, aliases] of Object.entries(CHANNEL_ALIASES)) {
-    if (aliases.includes(lower)) return key;
-  }
+  const norm = normalizeChannelName(name);
+  if (!norm) return null;
+  const view = catalogView();
+  if (view.bySpelling.has(norm)) return view.bySpelling.get(norm);
+  // Fallback: match the published catalogue / processing labels directly, in case
+  // a label the renderer knows about is missing from its alias table.
   const published = [
-    ...(Array.isArray(app.fixedChannelCatalog) ? app.fixedChannelCatalog.map((e) => e?.label) : []),
+    ...view.order,
     ...(Array.isArray(app.fixedChannelProcessing?.labels) ? app.fixedChannelProcessing.labels : []),
     ...(Array.isArray(app.virtualBed?.speakers) ? app.virtualBed.speakers.map((e) => e?.name) : [])
-  ].find((label) => typeof label === 'string' && label.trim().toLowerCase() === lower);
+  ].find((label) => typeof label === 'string' && normalizeChannelName(label) === norm);
   if (published) return published.trim();
   return null;
 }
 
-// Stable fixed-channel order, with the common 7.1.4 set first.
-const CANONICAL_CHANNEL_ORDER = FALLBACK_BED.map((c) => c.name);
+// Stable fixed-channel order, with the common 7.1.4 set first: the renderer's
+// catalogue order when it is published, otherwise the fallback bed order.
+function canonicalOrderList() {
+  const view = catalogView();
+  return view.order.length ? view.order : FALLBACK_BED.map((c) => c.name);
+}
 
 // Rank of a channel (by any alias) in the canonical order, or -1 if it is not a
 // bed channel. Used to order the objects list for bed sources by the classic
 // 5.1/7.1 channel order instead of alphabetically.
 export function canonicalChannelOrder(name) {
   const key = canonicalChannelName(name);
-  return key ? CANONICAL_CHANNEL_ORDER.indexOf(key) : -1;
+  return key ? canonicalOrderList().indexOf(key) : -1;
 }
 
 // ---------------------------------------------------------------------------

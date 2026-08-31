@@ -162,6 +162,17 @@ pub fn canonical_name(label: RChannelLabel) -> &'static str {
     }
 }
 
+/// Accepted spellings for a label in normalised form (uppercase, no
+/// whitespace/`_`/`-`) — the same list [`label_for_name`] matches against,
+/// including the short canonical forms. Non-fixed labels ([`RChannelLabel::Object],
+/// [`RChannelLabel::Unknown`]) have no aliases and get an empty slice.
+pub fn aliases_for(label: RChannelLabel) -> &'static [&'static str] {
+    ALIASES
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map_or(&[], |(_, aliases)| *aliases)
+}
+
 /// Resolve a speaker/channel name to its label. Case-insensitive and
 /// separator-tolerant; returns [`RChannelLabel::Unknown`] for names that
 /// don't resolve (the caller then falls back to its own policy, e.g. a
@@ -218,5 +229,21 @@ mod tests {
         assert_eq!(label_for_name("tfl"), Tfl);
         assert_eq!(label_for_name("height-right"), Tfr);
         assert_eq!(label_for_name("nonsense"), Unknown);
+    }
+
+    #[test]
+    fn aliases_for_matches_the_alias_table() {
+        for (label, aliases) in ALIASES {
+            assert_eq!(aliases_for(*label), *aliases);
+            for alias in *aliases {
+                assert_eq!(
+                    label_for_name(alias),
+                    *label,
+                    "alias {alias:?} must resolve back to its own label"
+                );
+            }
+        }
+        assert!(aliases_for(Object).is_empty());
+        assert!(aliases_for(Unknown).is_empty());
     }
 }

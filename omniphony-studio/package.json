@@ -7,6 +7,7 @@
     "build": "vite build",
     "prepare-sidecar": "node scripts/prepare-sidecar.mjs",
     "i18n:check": "node scripts/check-i18n.mjs",
+    "test:labels": "node scripts/test-channel-aliases.mjs",
     "test:math": "node scripts/test-math.mjs",
     "lint:dead": "knip",
     "tauri:build:linux": "NO_STRIP=true tauri build",
