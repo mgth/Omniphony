@@ -26,6 +26,15 @@ assert.equal(normalizeChannelName(null), '');
 assert.equal(normalizeChannelName(42), '');
 assert.equal(normalizeChannelName('   '), '');
 
+// Offline contract (pinned by inspection — virtual-bed.js is not importable
+// from plain node because of its Tauri/i18n imports): with no catalogue
+// published, canonicalChannelName falls back to the fallback bed, so exact
+// canonical spellings still resolve through this same normalisation:
+//   canonicalChannelName('L')   === 'L'    (fallback-bed name 'L')
+//   canonicalChannelName('tfl') === 'TFL'  (case/separator-normalised)
+assert.equal(normalizeChannelName('L'), 'L');
+assert.equal(normalizeChannelName('tfl'), 'TFL');
+
 // --- alias map from a renderer-shaped catalogue ---------------------------
 const catalog = [
   { label: "L", aliases: ["FL", "L", "FRONTLEFT", "LEFTFRONT"] },

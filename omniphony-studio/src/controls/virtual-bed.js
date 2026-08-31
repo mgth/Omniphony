@@ -96,6 +96,10 @@ export function canonicalChannelName(name) {
     ...(Array.isArray(app.virtualBed?.speakers) ? app.virtualBed.speakers.map((e) => e?.name) : [])
   ].find((label) => typeof label === 'string' && normalizeChannelName(label) === norm);
   if (published) return published.trim();
+  // Offline last resort (no catalogue published yet): exact canonical bed names
+  // still resolve against the fallback bed; aliases wait for the renderer.
+  const fallback = FALLBACK_BED.find((c) => normalizeChannelName(c.name) === norm);
+  if (fallback) return fallback.name;
   return null;
 }
 
