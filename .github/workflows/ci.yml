@@ -160,6 +160,16 @@ jobs:
         working-directory: omniphony-studio
         run: npm run build
 
+      # Drift pins for the renderer<->Studio mirrors (channel-spelling
+      # normalisation, geometry golden vectors) — hard gates, like knip below.
+      - name: Channel-alias parity tests
+        working-directory: omniphony-studio
+        run: npm run test:labels
+
+      - name: Math golden-vector tests
+        working-directory: omniphony-studio
+        run: npm run test:math
+
       # Translation parity is reported but never blocks a merge: incomplete
       # locales fall back to English at runtime, so this is a heads-up, not a
       # gate. Emits ::warning:: annotations on the PR.
