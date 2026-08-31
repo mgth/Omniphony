@@ -1266,6 +1266,30 @@ mod tests {
         assert!(tfl.contains(&"HL"));
     }
 
+    /// The bed-planner matcher (label_aliases) must only accept spellings that the
+    /// bridge_api single source of truth also resolves to the same label, otherwise a
+    /// user-bed speaker name could earn a pose here while failing everywhere else. Only
+    /// the 7.1 lists are asserted: the 5.1 arms deliberately fold back surround into
+    /// Ls/Rs, which is context-dependent bed folding, not SoT-level tolerance.
+    #[test]
+    fn planner_aliases_resolve_through_the_so_t() {
+        use RChannelLabel::*;
+        let fixed = [
+            L, R, C, LFE, LFE2, Ls, Rs, Lb, Rb, Cb, Lsc, Rsc, Lw, Rw, Lsd, Rsd, Tfl, Tfr, Tsl, Tsr,
+            Tbl, Tbr, Tc, Tfc,
+        ];
+        for label in fixed {
+            let aliases = label_aliases(label, true).expect("planner aliases");
+            for alias in aliases {
+                assert_eq!(
+                    bridge_api::labels::label_for_name(alias),
+                    label,
+                    "planner spelling {alias:?} no longer resolves to {label:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn fallback_pose_exists_for_every_non_object_label() {
         use RChannelLabel::*;
