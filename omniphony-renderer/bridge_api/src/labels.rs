@@ -118,11 +118,11 @@ const ALIASES: &[(RChannelLabel, &[&str])] = &[
     ),
     (
         RChannelLabel::Tsl,
-        &["TSL", "TPSL", "TOPSIDELEFT", "UPSIDELEFT", "USL"],
+        &["TSL", "TPSL", "TOPSIDELEFT", "UPPERSIDELEFT", "USL"],
     ),
     (
         RChannelLabel::Tsr,
-        &["TSR", "TPSR", "TOPSIDERIGHT", "UPSIDERIGHT", "USR"],
+        &["TSR", "TPSR", "TOPSIDERIGHT", "UPPERSIDERIGHT", "USR"],
     ),
     (
         RChannelLabel::Tbl,
@@ -154,7 +154,7 @@ const ALIASES: &[(RChannelLabel, &[&str])] = &[
         RChannelLabel::Tc,
         &["TC", "TPC", "TOPCENTER", "TOPMIDDLECENTER"],
     ),
-    (RChannelLabel::Tfc, &["TFC", "TOPFRONTCENTER"]),
+    (RChannelLabel::Tfc, &["TFC", "TPFC", "TOPFRONTCENTER"]),
 ];
 
 /// Canonical short name for a label — the form used in bundled layout YAMLs,
@@ -262,6 +262,8 @@ mod tests {
         // Height-tier spellings accepted by the bed-planner matcher and by
         // hand-edited beds must resolve through this table too.
         assert_eq!(label_for_name("UpperFrontLeft"), Tfl);
+        assert_eq!(label_for_name("UpperSideLeft"), Tsl);
+        assert_eq!(label_for_name("upper side right"), Tsr);
         assert_eq!(label_for_name("upper back right"), Tbr);
         assert_eq!(label_for_name("LTR"), Tbl);
         assert_eq!(label_for_name("RTR"), Tbr);
