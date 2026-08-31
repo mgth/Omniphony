@@ -19,6 +19,11 @@ use crate::RChannelLabel;
 /// This table is the union of the historical matchers it replaces; parity
 /// with both is pinned by tests here and in the consuming crates
 /// (`renderer::speaker_layout` keeps the legacy-alias parity net).
+///
+/// The `orender_engine` virtual-bed planner keeps a context-dependent matcher
+/// (5.1 vs 7.1 bed shape); its unconditional spellings must stay within this
+/// table, so names it accepts in user beds also resolve through
+/// [`label_for_name`] and reach Studio via the fixed-channel catalogue.
 const ALIASES: &[(RChannelLabel, &[&str])] = &[
     (RChannelLabel::L, &["FL", "L", "FRONTLEFT", "LEFTFRONT"]),
     (RChannelLabel::R, &["FR", "R", "FRONTRIGHT", "RIGHTFRONT"]),
@@ -89,6 +94,7 @@ const ALIASES: &[(RChannelLabel, &[&str])] = &[
             "TFL",
             "TPFL",
             "TOPFRONTLEFT",
+            "UPPERFRONTLEFT",
             "UFL",
             "LTF",
             "LEFTTOPFRONT",
@@ -102,6 +108,7 @@ const ALIASES: &[(RChannelLabel, &[&str])] = &[
             "TFR",
             "TPFR",
             "TOPFRONTRIGHT",
+            "UPPERFRONTRIGHT",
             "UFR",
             "RTF",
             "RIGHTTOPFRONT",
@@ -109,15 +116,39 @@ const ALIASES: &[(RChannelLabel, &[&str])] = &[
             "HR",
         ],
     ),
-    (RChannelLabel::Tsl, &["TSL", "TPSL", "TOPSIDELEFT", "USL"]),
-    (RChannelLabel::Tsr, &["TSR", "TPSR", "TOPSIDERIGHT", "USR"]),
+    (
+        RChannelLabel::Tsl,
+        &["TSL", "TPSL", "TOPSIDELEFT", "UPSIDELEFT", "USL"],
+    ),
+    (
+        RChannelLabel::Tsr,
+        &["TSR", "TPSR", "TOPSIDERIGHT", "UPSIDERIGHT", "USR"],
+    ),
     (
         RChannelLabel::Tbl,
-        &["TBL", "TPBL", "TOPBACKLEFT", "UBL", "TRL"],
+        &[
+            "TBL",
+            "TPBL",
+            "TOPBACKLEFT",
+            "TOPREARLEFT",
+            "UBL",
+            "TRL",
+            "LTR",
+            "UPPERBACKLEFT",
+        ],
     ),
     (
         RChannelLabel::Tbr,
-        &["TBR", "TPBR", "TOPBACKRIGHT", "UBR", "TRR"],
+        &[
+            "TBR",
+            "TPBR",
+            "TOPBACKRIGHT",
+            "TOPREARRIGHT",
+            "UBR",
+            "TRR",
+            "RTR",
+            "UPPERBACKRIGHT",
+        ],
     ),
     (
         RChannelLabel::Tc,
@@ -228,6 +259,13 @@ mod tests {
         assert_eq!(label_for_name("TOP_FRONT_LEFT"), Tfl);
         assert_eq!(label_for_name("tfl"), Tfl);
         assert_eq!(label_for_name("height-right"), Tfr);
+        // Height-tier spellings accepted by the bed-planner matcher and by
+        // hand-edited beds must resolve through this table too.
+        assert_eq!(label_for_name("UpperFrontLeft"), Tfl);
+        assert_eq!(label_for_name("upper back right"), Tbr);
+        assert_eq!(label_for_name("LTR"), Tbl);
+        assert_eq!(label_for_name("RTR"), Tbr);
+        assert_eq!(label_for_name("TopMiddleCenter"), Tc);
         assert_eq!(label_for_name("nonsense"), Unknown);
     }
 
