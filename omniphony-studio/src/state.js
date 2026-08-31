@@ -477,8 +477,12 @@ export const app = {
   // different bands only reads as confusion, so there is one selection.
   // `heatmapAllBands` switches each display to its own all-bands composite
   // (the readouts still use the numeric index).
+  // Default to the composite: band 0 alone is usually just the subwoofer band,
+  // which says little about the layout. On a single-band layout the flag stays
+  // set but no display acts on it (every composite is guarded on having more
+  // than one band) and the selector shows "Full band".
   heatmapBandIndex: 0,
-  heatmapAllBands: false,
+  heatmapAllBands: true,
   // Global energy heatmap: total energy over ALL speakers per grid cell, drawn
   // as a deviation from unit energy (see scene/global-energy-volume.js).
   // Transparent at 0 dB, red above, blue below. Shares the gain-table transport

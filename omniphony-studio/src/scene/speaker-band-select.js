@@ -22,10 +22,26 @@ import { renderBandCursor } from '../controls/band-cursor.js';
 
 /**
  * Refresh the shared crossover-band selector after a layout/band change.
- * Clamps the band index to the band list, rebuilds the options when the
- * labels change (comparing text as well as value: the values are
- * locale-independent, so a value-only check would leave stale wording behind
- * after a locale switch), and re-applies the current selection.
+ * Rebuilds the options when the labels change (comparing text as well as
+ * value: the values are locale-independent, so a value-only check would leave
+ * stale wording behind after a locale switch), and re-applies the current
+ * selection.
+ *
+ * The band list is clamped for *display only* — `app.heatmapBandIndex` and
+ * `app.heatmapAllBands` are never written here. This function runs against
+ * whatever layout is currently known, and at boot that is no layout at all:
+ * `loadEffectiveRenderPrefs` restores the persisted selection and syncs the UI
+ * before the first layout event lands, so `currentLayoutCutoffs` is still
+ * empty and the band list is the one-entry "Full band" fallback. Clamping the
+ * state there would rewrite every restored selection to band 0 with
+ * `heatmapAllBands` cleared, and the preference could never survive a restart.
+ * The same applies to a single-band layout, which would otherwise wipe the
+ * selection the user gets back when a multi-band layout returns.
+ *
+ * Leaving the state unclamped is safe: every consumer range-checks the index
+ * itself (the volume shaders clamp to `nbands - 1`, the readouts fall back to
+ * the full-band gains) and every all-bands composite is guarded on having more
+ * than one band.
  */
 export function syncCrossoverBandSelects() {
   const selectEl = document.getElementById('heatmapBandSelect');
@@ -34,10 +50,12 @@ export function syncCrossoverBandSelects() {
   }) || [t('heatmap.bandFull')];
   const maxIndex = Math.max(0, labels.length - 1);
   const desired = Math.max(0, Math.round(Number(app.heatmapBandIndex) || 0));
-  app.heatmapBandIndex = Math.min(maxIndex, desired);
-  if (labels.length < 2) app.heatmapAllBands = false;
+  // What the controls show for the current band list, without touching state.
+  const shownValue = app.heatmapAllBands && labels.length > 1
+    ? 'all'
+    : String(Math.min(maxIndex, desired));
   // The floating cursor over the 3D view mirrors the same selection.
-  renderBandCursor(labels);
+  renderBandCursor(labels, shownValue);
   if (!selectEl) return labels;
 
   // One option per band, plus "All bands" for multi-band layouts.
@@ -58,9 +76,7 @@ export function syncCrossoverBandSelects() {
       selectEl.appendChild(option);
     });
   }
-  selectEl.value = app.heatmapAllBands && labels.length > 1
-    ? 'all'
-    : String(app.heatmapBandIndex);
+  selectEl.value = shownValue;
   return labels;
 }
 
