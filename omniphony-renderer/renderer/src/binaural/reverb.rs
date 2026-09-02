@@ -161,6 +161,20 @@ impl Fdn {
         self.pre_len = len.clamp(1, self.predelay.len() - 1);
     }
 
+    /// Silence the network in place: lines, damping, pre-delay and crossover
+    /// states zeroed, parameters kept. What the reverb used to get by being
+    /// dropped and rebuilt when switched off — without the free and the
+    /// allocation on the audio thread.
+    pub fn clear(&mut self) {
+        for line in &mut self.lines {
+            line.fill(0.0);
+        }
+        self.damp_state = [0.0; N];
+        self.predelay.fill(0.0);
+        self.xover_state = Default::default();
+        self.cur_delay = self.base_len;
+    }
+
     /// Process one block: read `bus` (mono send sum, one sample per frame) and
     /// ADD the stereo return × `level` into `out` (interleaved L/R).
     pub fn process_block(&mut self, bus: &[f32], level: f32, out: &mut [f32]) {

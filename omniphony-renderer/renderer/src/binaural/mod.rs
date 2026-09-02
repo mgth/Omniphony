@@ -193,6 +193,13 @@ const REVERB_REF_DISTANCE_M: f32 = 1.5;
 const MAX_REVERB_SEND: f32 = 4.0;
 /// Delay-line capacity for the ITD (s) — comfortably above the ~0.7 ms max.
 const ITD_MAX_S: f32 = 0.003;
+/// Input channels whose DSP state is built at construction, so that the
+/// first block of any stream up to this width — and every enable of the
+/// reflections or the reverb — allocates nothing on the audio thread. Wider
+/// streams fall back to allocating the extra slots on first use.
+const PREALLOC_CHANNELS: usize = 64;
+/// Reverb send bus capacity reserved at construction (samples per block).
+const REVERB_BUS_CAPACITY: usize = 8192;
 
 /// Per-input-channel binaural DSP state, lazily created on first use.
 struct ChannelDsp {
@@ -200,9 +207,15 @@ struct ChannelDsp {
     delay_r: DelayLine,
     conv_l: EarConvolver,
     conv_r: EarConvolver,
-    /// Early-reflection bank; allocated lazily when reflections are enabled
-    /// and dropped when disabled (the ring is the big allocation here).
-    refl: Option<ReflectionBank>,
+    /// Early-reflection bank. Allocated with the state (the ring is the big
+    /// allocation here, and it used to come and go with the reflections
+    /// toggle — on the audio thread). While reflections are off the ring is
+    /// still written, so enabling them reads real recent audio.
+    refl: ReflectionBank,
+    /// Whether the bank has been read from since the state last drained:
+    /// decides how much silence a drain has to run (its ring, or just the
+    /// ITD line).
+    refl_live: bool,
     /// Air-absorption one-pole low-pass state (direct path).
     air_state: f32,
     /// Air-absorption smoothing coefficient for the current block
@@ -231,7 +244,8 @@ impl ChannelDsp {
             delay_r: DelayLine::new(max_delay),
             conv_l: EarConvolver::new(),
             conv_r: EarConvolver::new(),
-            refl: None,
+            refl: ReflectionBank::new(sample_rate),
+            refl_live: false,
             air_state: 0.0,
             air_coeff: 0.0,
             last_dir: None,
@@ -243,7 +257,7 @@ impl ChannelDsp {
     /// ring in it (the reflection bank's, when present, otherwise the ITD
     /// line's) plus the convolver window.
     fn flush_len(&self, sample_rate: u32) -> u32 {
-        let ring_s = if self.refl.is_some() {
+        let ring_s = if self.refl_live {
             reflections::RING_CAPACITY_S
         } else {
             ITD_MAX_S
@@ -388,20 +402,30 @@ pub struct BinauralRenderer {
     /// Requests to the long-lived rebuild worker. Dropping the renderer drops
     /// the sender, which terminates the worker.
     rebuild_tx: std::sync::mpsc::Sender<HrirSource>,
-    /// Per-input-channel DSP state, indexed directly by channel (sparse tail is
-    /// fine; reset when the channel count shrinks).
+    /// Grids the audio thread has swapped out, handed to the worker to be
+    /// freed there: the last reference to a grid must not drop on the audio
+    /// thread (half a megabyte and up).
+    retire_tx: std::sync::mpsc::Sender<std::sync::Arc<Grid>>,
+    /// Per-input-channel DSP state, indexed directly by channel. The first
+    /// [`PREALLOC_CHANNELS`] slots are built at construction; a wider stream
+    /// grows the vector and fills the extra slots on first use.
     channels: Vec<Option<ChannelDsp>>,
     /// DSP state for the extra source (the object test), kept apart from
     /// `channels` on purpose: it is not a channel and the input width it would
     /// otherwise be indexed past changes whenever playback starts or stops.
-    extra_dsp: Option<ChannelDsp>,
+    /// Kept across tests and drained like a channel that went silent, so a
+    /// test never starts on a frozen tail — nor on a fresh allocation.
+    extra_dsp: ChannelDsp,
     /// Reusable HRIR scratch so `at()` writes in place (no per-channel alloc).
     hrir_scratch: HrirPair,
     /// Bumped every time a rebuilt grid is swapped in, so the per-channel
     /// direction cache cannot match across two different datasets.
     hrir_generation: u32,
-    /// Shared late-reverb tail; allocated lazily while enabled.
-    fdn: Option<Fdn>,
+    /// Shared late-reverb tail. Allocated with the renderer; cleared in
+    /// place when the reverb is switched off.
+    fdn: Fdn,
+    /// Whether the tail holds anything since it was last cleared.
+    fdn_live: bool,
     /// Mono reverb send bus, one sample per frame (reused).
     reverb_bus: Vec<f32>,
 }
@@ -423,6 +447,7 @@ impl BinauralRenderer {
         // worker drains request bursts to the latest one, builds, and
         // publishes into `incoming` for the audio thread to swap in.
         let (rebuild_tx, rebuild_rx) = std::sync::mpsc::channel::<HrirSource>();
+        let (retire_tx, retire_rx) = std::sync::mpsc::channel::<std::sync::Arc<Grid>>();
         {
             let slot = std::sync::Arc::clone(&incoming);
             let sink = std::sync::Arc::clone(&sink);
@@ -433,6 +458,9 @@ impl BinauralRenderer {
                         while let Ok(newer) = rebuild_rx.try_recv() {
                             req = newer;
                         }
+                        // Free whatever the audio thread has retired, here
+                        // rather than there.
+                        while retire_rx.try_recv().is_ok() {}
                         let grid = Self::build_grid(req, sample_rate);
                         // Reported before the grid is handed over, so the
                         // status is never behind what is being convolved.
@@ -452,15 +480,21 @@ impl BinauralRenderer {
             source,
             incoming,
             rebuild_tx,
-            channels: Vec::new(),
-            extra_dsp: None,
+            retire_tx,
+            // Every state a stream up to PREALLOC_CHANNELS wide can need,
+            // built here on the control thread.
+            channels: (0..PREALLOC_CHANNELS)
+                .map(|_| Some(ChannelDsp::new(sample_rate)))
+                .collect(),
+            extra_dsp: ChannelDsp::new(sample_rate),
             hrir_scratch: HrirPair {
                 left: [0.0; HRIR_LEN],
                 right: [0.0; HRIR_LEN],
             },
             hrir_generation: 0,
-            fdn: None,
-            reverb_bus: Vec::new(),
+            fdn: Fdn::new(sample_rate),
+            fdn_live: false,
+            reverb_bus: Vec::with_capacity(REVERB_BUS_CAPACITY),
         }
     }
 
@@ -579,7 +613,11 @@ impl BinauralRenderer {
     /// the worker's result lands.
     pub fn ensure_source(&mut self, source: &HrirSource) {
         if let Some(grid) = self.incoming.swap(None) {
-            self.hrir = grid;
+            let retired = std::mem::replace(&mut self.hrir, grid);
+            // The old grid goes back to the worker to be freed; dropping it
+            // here would free its megabytes on the audio thread. (`send`
+            // allocates one queue node, as the request below does — rare.)
+            let _ = self.retire_tx.send(retired);
             // Invalidates every channel's cached lattice direction at once —
             // the new grid answers differently for the same key.
             self.hrir_generation = self.hrir_generation.wrapping_add(1);
@@ -641,35 +679,42 @@ impl BinauralRenderer {
         // at `input_channel_count` moves the moment playback begins or ends —
         // landing on a fresh (silent, warming up) DSP, or on the state of a
         // channel that used to live there.
-        let source_count = input_channel_count + usize::from(extra.is_some());
+        // The extra slot also runs with no extra source while its state is
+        // still draining (see `ChannelDsp::flush`), on silence: that is how
+        // the end of one object test leaves nothing behind for the next.
+        let extra_slot = extra.is_some() || self.extra_dsp.flush > 0;
+        let source_count = input_channel_count + usize::from(extra_slot);
         if self.channels.len() < input_channel_count {
+            // Wider than the preallocation: grow, and fill on first use.
             self.channels.resize_with(input_channel_count, || None);
-        }
-        if extra.is_none() {
-            // Nothing to carry over: the next test starts clean rather than
-            // spliced onto the tail of a source that was somewhere else.
-            self.extra_dsp = None;
         }
 
         // Late-reverb bus: per-channel sends accumulate here; the shared FDN
         // turns the mono sum into a decorrelated stereo tail after the loop.
         let reverb_active = reverb.enabled;
         if reverb_active {
-            let fdn = self.fdn.get_or_insert_with(|| Fdn::new(self.sample_rate));
-            fdn.set_params(reverb.rt60_s, reverb.predelay_ms);
+            self.fdn.set_params(reverb.rt60_s, reverb.predelay_ms);
+            self.fdn_live = true;
             self.reverb_bus.clear();
             self.reverb_bus.resize(sample_length, 0.0);
-        } else if self.fdn.is_some() {
-            self.fdn = None;
+        } else if self.fdn_live {
+            // Switched off: silence the tail in place (what dropping and
+            // rebuilding the network used to do, minus the allocation).
+            self.fdn.clear();
+            self.fdn_live = false;
         }
 
         for c in 0..source_count {
             // Past the input channels sits the extra source (the object test).
             // Its PCM is mono, hence the stride of 1 — that triple is the only
             // thing that differs from a channel all the way down.
-            let extra_here = extra.as_ref().filter(|_| c >= input_channel_count);
+            let in_extra_slot = c >= input_channel_count;
+            let extra_here = extra.as_ref().filter(|_| in_extra_slot);
             let (src_pcm, src_stride, src_offset) = match extra_here {
                 Some(e) => (e.pcm, 1usize, 0usize),
+                // The extra slot draining with no source: no PCM to read,
+                // which the silent path below never does.
+                None if in_extra_slot => (&[][..], 1usize, 0usize),
                 None => (input_pcm, input_channel_count, c),
             };
             // How much of the frame this source actually has. Full length for a
@@ -686,6 +731,7 @@ impl BinauralRenderer {
             }
             let gain = match extra_here {
                 Some(e) => ChannelGain::flat(e.gain),
+                None if in_extra_slot => ChannelGain::flat(0.0),
                 None => chan_gain.get(c).copied().unwrap_or(ChannelGain::flat(0.0)),
             };
             let silent = gain.is_silent();
@@ -696,11 +742,14 @@ impl BinauralRenderer {
                 // playing keep arriving at their delays, the convolver and
                 // ITD windows drain, and time keeps moving for this channel
                 // — so nothing is frozen to replay when the gain returns.
-                let draining = match extra_here {
-                    Some(_) => self.extra_dsp.as_ref(),
-                    None => self.channels.get(c).and_then(|s| s.as_ref()),
-                }
-                .is_some_and(|dsp| dsp.flush > 0);
+                let draining = if in_extra_slot {
+                    self.extra_dsp.flush > 0
+                } else {
+                    self.channels
+                        .get(c)
+                        .and_then(|s| s.as_ref())
+                        .is_some_and(|dsp| dsp.flush > 0)
+                };
                 if !draining {
                     continue;
                 }
@@ -714,14 +763,13 @@ impl BinauralRenderer {
             // effect, like real sub-bass.
             // The extra source is never "direct": it is an object by definition,
             // and placing it is the entire point.
-            if extra_here.is_none() && chan_direct.get(c).copied().unwrap_or(false) {
+            if !in_extra_slot && chan_direct.get(c).copied().unwrap_or(false) {
                 if let Some(Some(dsp)) = self.channels.get_mut(c) {
-                    // Drop a stale reflection bank if the channel just
-                    // switched from the spatialized path (same policy as the
-                    // reflections-disabled branch below). Nothing of the
-                    // spatialized state is drained on this path either.
-                    dsp.refl = None;
+                    // Nothing of the spatialized state is drained on this
+                    // path; a channel switching back to it starts its
+                    // histories over.
                     dsp.flush = 0;
+                    dsp.refl_live = false;
                 }
                 for s in 0..span {
                     let g = gain.start + gain.step * s as f32;
@@ -776,9 +824,12 @@ impl BinauralRenderer {
                 ),
             );
             let rate = self.sample_rate;
-            let dsp = match extra_here {
-                Some(_) => self.extra_dsp.get_or_insert_with(|| ChannelDsp::new(rate)),
-                None => self.channels[c].get_or_insert_with(|| ChannelDsp::new(rate)),
+            let dsp = if in_extra_slot {
+                &mut self.extra_dsp
+            } else {
+                // Preallocated up to PREALLOC_CHANNELS; past that, built on
+                // first use (an allocation on this thread, once per slot).
+                self.channels[c].get_or_insert_with(|| ChannelDsp::new(rate))
             };
             if dsp.last_dir != Some(dir) {
                 dsp.last_dir = Some(dir);
@@ -822,9 +873,7 @@ impl BinauralRenderer {
 
             // ── Early reflections: per-block image-source update ─────────────
             if reflections.enabled {
-                let bank = dsp
-                    .refl
-                    .get_or_insert_with(|| ReflectionBank::new(self.sample_rate));
+                let bank = &mut dsp.refl;
                 let phys = [
                     pos[0] as f32 * unit_scale_m,
                     pos[1] as f32 * unit_scale_m,
@@ -870,17 +919,20 @@ impl BinauralRenderer {
                     let g = reflections.level.clamp(0.0, 1.0) * g_dist;
                     bank.set_targets(i, rel_delay_s, g * g_l, g * g_r);
                 }
-            } else if dsp.refl.is_some() {
-                // Drop the bank when disabled — the ring is the big allocation.
-                dsp.refl = None;
             }
 
-            // Signal rearms the drain; silence spends it.
+            // Signal rearms the drain; silence spends it. What the drain has
+            // to cover follows what is being read: the ring while the
+            // reflections are on, the ITD line otherwise.
+            if !silent {
+                dsp.refl_live = reflections.enabled;
+            }
             dsp.flush = if silent {
                 dsp.flush.saturating_sub(span as u32)
             } else {
                 dsp.flush_len(self.sample_rate)
             };
+            let reflections_on = reflections.enabled;
 
             let air = dsp.air_coeff;
             for s in 0..span {
@@ -888,8 +940,13 @@ impl BinauralRenderer {
                 // adds its distance gain, the reflection taps theirs. The air
                 // low-pass applies to the propagated wave, so it feeds the
                 // direct, the reflections and the reverb send alike.
-                let mut raw =
-                    src_pcm[s * src_stride + src_offset] * (gain.start + gain.step * s as f32);
+                // A silent block reads no input at all — the draining extra
+                // slot has none to read.
+                let mut raw = if silent {
+                    0.0
+                } else {
+                    src_pcm[s * src_stride + src_offset] * (gain.start + gain.step * s as f32)
+                };
                 if air > 0.0 {
                     dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
                     raw = dsp.air_state;
@@ -898,10 +955,13 @@ impl BinauralRenderer {
                 let x = raw;
                 let mut yl = dsp.conv_l.process(dsp.delay_l.process(x));
                 let mut yr = dsp.conv_r.process(dsp.delay_r.process(x));
-                if let Some(bank) = dsp.refl.as_mut() {
-                    let (rl, rr) = bank.process(raw);
+                if reflections_on {
+                    let (rl, rr) = dsp.refl.process(raw);
                     yl += rl;
                     yr += rr;
+                } else {
+                    // Keep the ring current for the moment they come back.
+                    dsp.refl.push(raw);
                 }
                 if reverb_active {
                     self.reverb_bus[s] += raw * reverb_send;
@@ -914,9 +974,7 @@ impl BinauralRenderer {
 
         // Shared tail: one FDN pass over the summed sends, added to the mix.
         if reverb_active {
-            if let Some(fdn) = self.fdn.as_mut() {
-                fdn.process_block(&self.reverb_bus, reverb.level, out);
-            }
+            self.fdn.process_block(&self.reverb_bus, reverb.level, out);
         }
     }
 }
@@ -1118,6 +1176,63 @@ mod tests {
             "the extra source dropped from {before} to {after} when the input \
              width changed — its DSP slot moved with the channel count"
         );
+    }
+
+    /// Switching the reflections on after a stretch with them off must read
+    /// the audio that just played, not what was in the ring when they were
+    /// switched off (the ring used to be dropped and rebuilt — which also
+    /// meant an allocation on the audio thread — and now is kept current).
+    #[test]
+    fn reflections_switched_back_on_read_recent_audio() {
+        let mut r = BinauralRenderer::new(48_000);
+        let n = 480;
+        let room = BinauralReflections {
+            enabled: true,
+            room_size_m: [4.0, 5.0, 2.7],
+            level: 0.5,
+        };
+        let on = BinauralFrameParams {
+            reflections: room.clone(),
+            ..dry_params()
+        };
+        let off = BinauralFrameParams {
+            reflections: BinauralReflections {
+                enabled: false,
+                ..room
+            },
+            ..dry_params()
+        };
+        let pos = [[0.0, 1.0, 0.0]];
+        let mut out = vec![0.0f32; n * 2];
+        let mut render = |r: &mut BinauralRenderer, p: &BinauralFrameParams, x: &[f32]| -> f32 {
+            out.iter_mut().for_each(|v| *v = 0.0);
+            r.render_frame(
+                x,
+                1,
+                n,
+                p,
+                &pos,
+                &[ChannelGain::flat(1.0)],
+                &[],
+                None,
+                &mut out,
+            );
+            out[n..].iter().map(|v| v * v).sum::<f32>()
+        };
+        let noise: Vec<f32> = (0..n)
+            .map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0)
+            .collect();
+        let silence = vec![0.0f32; n];
+        // Reflections on with noise, then off with silence for 0.4 s: the
+        // ring must now hold silence, not the noise.
+        render(&mut r, &on, &noise);
+        for _ in 0..40 {
+            render(&mut r, &off, &silence);
+        }
+        // Back on, silent input: the direct path is silent and the ring is
+        // silent, so the second half of the block must be (near) silent.
+        let back = render(&mut r, &on, &silence);
+        assert!(back < 1e-9, "stale ring content replayed: {back}");
     }
 
     /// The extra source must not disturb the input channels' own rendering: it
