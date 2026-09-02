@@ -17,7 +17,9 @@
 //!    the group delay.
 
 use dsp_fixtures::analysis::estimate_lag_samples;
-use dsp_fixtures::scene::{HrirSource, render_single_object_binaural};
+use dsp_fixtures::scene::{
+    HrirSource, render_single_object_binaural, render_single_object_binaural_at,
+};
 
 use super::itd::{DEFAULT_HEAD_RADIUS_M, ear_delays_seconds};
 
@@ -138,6 +140,34 @@ fn itd_magnitude_grows_toward_the_interaural_axis() {
         assert!(
             w[1] > w[0],
             "|ITD| must increase toward the interaural axis, got {mags:?}"
+        );
+    }
+}
+
+/// Height directions. The ITD is a function of the lateral angle
+/// `asin(cos el · sin az)`, and the horizontal plane cannot distinguish that
+/// form from one that scales the azimuth value by `cos el` — the two agree at
+/// el = 0. The side height directions are where they part (+16 % at
+/// (90°, 30°), +22 % at (90°, 45°) for the scaled form), so the chain is
+/// measured there against the closed form, with the same tolerance as the
+/// horizontal gate.
+#[test]
+fn itd_at_elevation_tracks_the_lateral_angle_model() {
+    for (az, el) in [(90.0f32, 30.0f32), (90.0, 45.0), (60.0, 30.0), (30.0, 60.0)] {
+        let (left, right) = render_single_object_binaural_at(az, el, BLOCKS, HrirSource::Synthetic);
+        let measured = estimate_lag_samples(&left, &right, MAX_LAG);
+        let (l, r) = ear_delays_seconds(az.to_radians(), el.to_radians(), DEFAULT_HEAD_RADIUS_M);
+        let model = (r - l) * SAMPLE_RATE;
+        let delta = measured - model;
+        println!(
+            "[measure] itd az={az:+6.1}° el={el:+5.1}°: measured {measured:+7.3}, \
+             model {model:+7.3}, delta {delta:+.3} samples"
+        );
+        assert!(
+            delta.abs() <= MAGNITUDE_TOLERANCE_SAMPLES,
+            "ITD at az={az:+.1}° el={el:+.1}° is {measured:+.3} samples but the \
+             model says {model:+.3} (delta {delta:+.3}, tolerance \
+             ±{MAGNITUDE_TOLERANCE_SAMPLES})"
         );
     }
 }

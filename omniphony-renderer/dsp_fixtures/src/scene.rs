@@ -482,10 +482,25 @@ pub fn render_single_object_binaural(
     blocks: usize,
     hrir_source: HrirSource,
 ) -> (Vec<f32>, Vec<f32>) {
+    render_single_object_binaural_at(azimuth_deg, 0.0, blocks, hrir_source)
+}
+
+/// [`render_single_object_binaural`] with the source raised to `elevation_deg`
+/// (0 = horizon, +90 = overhead): `(cos φ sin θ, cos φ cos θ, sin φ)`. The
+/// ITD off the horizon is a function of the lateral angle, and the horizontal
+/// plane cannot tell that form from an azimuth-scaled one — the height
+/// directions can.
+pub fn render_single_object_binaural_at(
+    azimuth_deg: f32,
+    elevation_deg: f32,
+    blocks: usize,
+    hrir_source: HrirSource,
+) -> (Vec<f32>, Vec<f32>) {
     const PRIME_BLOCKS: usize = 64;
 
     let theta = (azimuth_deg as f64).to_radians();
-    let position = [theta.sin(), theta.cos(), 0.0];
+    let phi = (elevation_deg as f64).to_radians();
+    let position = [phi.cos() * theta.sin(), phi.cos() * theta.cos(), phi.sin()];
 
     let mut r = build_renderer_binaural(
         SpeakerLayout::preset("7.1.4").expect("known preset"),
