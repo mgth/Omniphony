@@ -475,6 +475,41 @@ impl BinauralRenderer {
         extra: Option<ExtraSource<'_>>,
         out: &mut [f32],
     ) {
+        self.render_frame_with_gain_slew(
+            input_pcm,
+            input_channel_count,
+            sample_length,
+            params,
+            chan_pos,
+            chan_gain,
+            chan_direct,
+            None,
+            None,
+            extra,
+            out,
+        );
+    }
+
+    /// Internal production path with an optional exact ChannelState gain
+    /// segment. The sidecars are derived start/rate values; ChannelState
+    /// remains the sole owner of gain state and slew advancement.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_frame_with_gain_slew(
+        &mut self,
+        input_pcm: &[f32],
+        input_channel_count: usize,
+        sample_length: usize,
+        params: &BinauralFrameParams,
+        chan_pos: &[[f64; 3]],
+        chan_gain: &[f32],
+        chan_direct: &[bool],
+        gain_starts: Option<&[f32]>,
+        gain_steps: Option<&[f32]>,
+        extra: Option<ExtraSource<'_>>,
+        out: &mut [f32],
+    ) {
+        debug_assert!(gain_starts.map_or(true, |values| values.len() == input_channel_count));
+        debug_assert!(gain_steps.map_or(true, |values| values.len() == input_channel_count));
         let BinauralFrameParams {
             head_pose,
             unit_scale_m,
@@ -541,11 +576,25 @@ impl BinauralRenderer {
             if span == 0 {
                 continue;
             }
-            let gain = match extra_here {
+            let gain_end = match extra_here {
                 Some(e) => e.gain,
                 None => chan_gain.get(c).copied().unwrap_or(0.0),
             };
-            if gain == 0.0 {
+            let gain_start = match extra_here {
+                Some(e) => e.gain,
+                None => gain_starts
+                    .and_then(|values| values.get(c))
+                    .copied()
+                    .unwrap_or(gain_end),
+            };
+            let gain_step = match extra_here {
+                Some(_) => 0.0,
+                None => gain_steps
+                    .and_then(|values| values.get(c))
+                    .copied()
+                    .unwrap_or(0.0),
+            };
+            if gain_start == 0.0 && gain_end == 0.0 {
                 // Keep an existing reflection bank fading out so a muted
                 // channel does not freeze its taps at full gain.
                 let slot = match extra_here {
@@ -576,6 +625,14 @@ impl BinauralRenderer {
                     dsp.refl = None;
                 }
                 for s in 0..span {
+                    let gain_unclamped = gain_start + gain_step * s as f32;
+                    let gain = if gain_step > 0.0 {
+                        gain_unclamped.min(gain_end)
+                    } else if gain_step < 0.0 {
+                        gain_unclamped.max(gain_end)
+                    } else {
+                        gain_end
+                    };
                     let v = src_pcm[s * src_stride + src_offset]
                         * gain
                         * std::f32::consts::FRAC_1_SQRT_2;
@@ -709,6 +766,14 @@ impl BinauralRenderer {
                 // adds its distance gain, the reflection taps theirs. The air
                 // low-pass applies to the propagated wave, so it feeds the
                 // direct, the reflections and the reverb send alike.
+                let gain_unclamped = gain_start + gain_step * s as f32;
+                let gain = if gain_step > 0.0 {
+                    gain_unclamped.min(gain_end)
+                } else if gain_step < 0.0 {
+                    gain_unclamped.max(gain_end)
+                } else {
+                    gain_end
+                };
                 let mut raw = src_pcm[s * src_stride + src_offset] * gain;
                 if air > 0.0 {
                     dsp.air_state += (raw - dsp.air_state) * (1.0 - air);

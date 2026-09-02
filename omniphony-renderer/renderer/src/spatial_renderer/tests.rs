@@ -1340,6 +1340,120 @@ fn binaural_lfe_bed_feeds_both_ears_equally_and_dry() {
     );
 }
 
+/// Gain slew is source-time state, so callback partitioning must not change
+/// the audible trajectory. The irregular schedule deliberately crosses the
+/// exact slew endpoint inside a callback.
+#[test]
+fn binaural_gain_slew_is_callback_partition_invariant() {
+    fn render(partitions: &[usize]) -> Vec<f32> {
+        let layout = SpeakerLayout::preset("7.1.4").unwrap();
+        let mut r = SpatialRenderer::new(
+            layout,
+            48_000,
+            1,
+            1,
+            0.0,
+            2.0,
+            VbapTableMode::Cartesian {
+                x_size: 21,
+                y_size: 21,
+                z_size: 9,
+                z_neg_size: 9,
+            },
+            false,
+            true,
+            DistanceModel::Linear,
+            false,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            false,
+            [1.0, 2.0, 0.5],
+            2.0,
+            0.5,
+            0.0,
+            0.0,
+            false,
+            false,
+            false,
+            1.0,
+            1.0,
+            PreferredEvaluationMode::PrecomputedCartesian,
+            LiveEvaluationMode::PrecomputedCartesian,
+            21,
+            21,
+            9,
+            9,
+        )
+        .unwrap();
+        r.configure_channel_routing(&[ChannelRoute::Direct(
+            bridge_api::RChannelLabel::LFE,
+        )]);
+        r.control.live.write().binaural.output_mode =
+            crate::live_params::OutputMode::Binaural;
+
+        let event = [SpatialChannelEvent {
+            channel_idx: 0,
+            is_bed: true,
+            gain_db: Some(0.0),
+            ramp_length: Some(0),
+            size: None,
+            position: None,
+            sample_pos: Some(0),
+        }];
+        let mut rendered = Vec::new();
+        for (block_idx, &frames) in partitions.iter().enumerate() {
+            let pcm = vec![1.0f32; frames];
+            let events: &[SpatialChannelEvent] = if block_idx == 0 {
+                &event
+            } else {
+                &[]
+            };
+            let frame = r
+                .render_frame(&pcm, 1, events, Vec::new(), false)
+                .unwrap();
+            rendered.extend_from_slice(&frame.samples);
+        }
+        rendered
+    }
+
+    let uniform = vec![40usize; 30];
+    let irregular = [17usize, 101, 13, 257, 64, 5, 173, 91, 206, 273];
+    assert_eq!(
+        uniform.iter().sum::<usize>(),
+        irregular.iter().sum::<usize>()
+    );
+
+    let a = render(&uniform);
+    let b = render(&irregular);
+    assert_eq!(a.len(), b.len());
+    let max_diff = a
+        .iter()
+        .zip(&b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        max_diff < 2.0e-6,
+        "callback partition changed the binaural gain trajectory: max diff {max_diff}"
+    );
+
+    let ramp_samples = (48_000.0f32 * GAIN_SLEW_SECS) as usize;
+    let halfway = ramp_samples / 2;
+    let expected_half = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+    assert!(
+        (a[halfway * 2] - expected_half).abs() < 2.0e-6,
+        "unexpected midpoint gain: got {} expected {expected_half}",
+        a[halfway * 2]
+    );
+    let settled = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(
+        (a[a.len() - 2] - settled).abs() < 2.0e-6,
+        "gain did not settle to unity: got {} expected {settled}",
+        a[a.len() - 2]
+    );
+}
+
 /// After claiming the FP environment, subnormal arithmetic must flush to
 /// zero on this thread (issue #154) — without FTZ/DAZ the product below
 /// stays a nonzero subnormal.

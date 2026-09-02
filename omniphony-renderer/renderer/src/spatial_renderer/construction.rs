@@ -521,6 +521,8 @@ impl SpatialRenderer {
             crossover_duty_ema: Default::default(),
             binaural_pos_buf: Vec::new(),
             binaural_gain_buf: Vec::new(),
+            binaural_gain_start_buf: Vec::new(),
+            binaural_gain_step_buf: Vec::new(),
             binaural_direct_buf: Vec::new(),
             object_test_source: Default::default(),
         })

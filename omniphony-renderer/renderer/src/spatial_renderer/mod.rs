@@ -314,8 +314,13 @@ pub struct SpatialRenderer {
     /// Scratch per-channel world positions for the binaural path (reused).
     binaural_pos_buf: Vec<[f64; 3]>,
 
-    /// Scratch per-channel gains for the binaural path (reused).
+    /// Scratch per-channel gain end boundaries for the binaural path (reused).
     binaural_gain_buf: Vec<f32>,
+
+    /// Canonical ChannelState gain segment projected into the binaural handoff.
+    /// These are derived scratch values, not a second gain owner.
+    binaural_gain_start_buf: Vec<f32>,
+    binaural_gain_step_buf: Vec<f32>,
 
     /// Scratch per-channel "direct" flags for the binaural path (reused):
     /// beds mapped to a `spatialize: false` speaker (the LFE) feed both ears
@@ -879,6 +884,10 @@ impl SpatialRenderer {
                     .resize(input_channel_count, [0.0, 1.0, 0.0]);
                 self.binaural_gain_buf.clear();
                 self.binaural_gain_buf.resize(input_channel_count, 0.0);
+                self.binaural_gain_start_buf.clear();
+                self.binaural_gain_start_buf.resize(input_channel_count, 0.0);
+                self.binaural_gain_step_buf.clear();
+                self.binaural_gain_step_buf.resize(input_channel_count, 0.0);
                 self.binaural_direct_buf.clear();
                 self.binaural_direct_buf.resize(input_channel_count, false);
                 let num_routed = channel_routing.len();
@@ -899,17 +908,23 @@ impl SpatialRenderer {
                             .map(|s| s.gain_db)
                             .unwrap_or(components::GAIN_DB_NEG_INF);
                         let gain_linear = components::gain_db_to_linear(gain_db);
-                        // Slewed like the VBAP path (block-end value: the binaural
-                        // stage updates per block anyway).
+                        // ChannelState owns the gain timeline. Carry its exact
+                        // start/rate/end projection into the binaural stage so a
+                        // callback crossing the slew endpoint holds the target
+                        // instead of stretching the fade to the callback edge.
                         let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
                         if let Some(state) = states.get_mut(c) {
-                            let (start, step) = state.slew_gain(
+                            let gain_slew = state.slew_gain(
                                 obj_gain * gain_linear,
                                 sample_length,
                                 ramp_samples,
                             );
-                            self.binaural_gain_buf[c] = start + step * sample_length as f32;
+                            self.binaural_gain_start_buf[c] = gain_slew.start();
+                            self.binaural_gain_step_buf[c] = gain_slew.step();
+                            self.binaural_gain_buf[c] = gain_slew.end();
                         } else {
+                            self.binaural_gain_start_buf[c] = 0.0;
+                            self.binaural_gain_step_buf[c] = 0.0;
                             self.binaural_gain_buf[c] = 0.0;
                         }
                         // Same direct/virtual split as the VBAP path.
@@ -962,7 +977,7 @@ impl SpatialRenderer {
                         position: block.position.map(|v| v as f64),
                         gain: 1.0,
                     });
-                self.binaural.render_frame(
+                self.binaural.render_frame_with_gain_slew(
                     input_pcm,
                     input_channel_count,
                     sample_length,
@@ -970,6 +985,8 @@ impl SpatialRenderer {
                     &self.binaural_pos_buf,
                     &self.binaural_gain_buf,
                     &self.binaural_direct_buf,
+                    Some(&self.binaural_gain_start_buf),
+                    Some(&self.binaural_gain_step_buf),
                     extra,
                     &mut output,
                 );
