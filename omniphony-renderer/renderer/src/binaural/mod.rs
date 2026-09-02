@@ -206,6 +206,14 @@ struct ChannelDsp {
     /// the grid under us, and a key alone would then match across two
     /// different datasets and freeze the stale kernels in place.
     last_dir: Option<(u32, DirectionKey)>,
+    /// Samples of silence still to run through this state once the channel
+    /// has gone silent. Every block that carries signal rearms it; a silent
+    /// block runs the DSP on zeros and counts it down; at zero the channel
+    /// is skipped outright. Without it a muted channel froze its histories
+    /// — the ITD lines, the convolver window, and the reflection ring with
+    /// up to a quarter second of audio in it — and replayed them the moment
+    /// its gain came back.
+    flush: u32,
 }
 
 impl ChannelDsp {
@@ -220,7 +228,20 @@ impl ChannelDsp {
             air_state: 0.0,
             air_coeff: 0.0,
             last_dir: None,
+            flush: 0,
         }
+    }
+
+    /// Silence needed to drain every history this state holds: the longest
+    /// ring in it (the reflection bank's, when present, otherwise the ITD
+    /// line's) plus the convolver window.
+    fn flush_len(&self, sample_rate: u32) -> u32 {
+        let ring_s = if self.refl.is_some() {
+            reflections::RING_CAPACITY_S
+        } else {
+            ITD_MAX_S
+        };
+        (ring_s * sample_rate as f32).ceil() as u32 + HRIR_LEN as u32 + 2
     }
 }
 
@@ -545,19 +566,22 @@ impl BinauralRenderer {
                 Some(e) => e.gain,
                 None => chan_gain.get(c).copied().unwrap_or(0.0),
             };
-            if gain == 0.0 {
-                // Keep an existing reflection bank fading out so a muted
-                // channel does not freeze its taps at full gain.
-                let slot = match extra_here {
-                    Some(_) => self.extra_dsp.as_mut(),
-                    None => self.channels.get_mut(c).and_then(|s| s.as_mut()),
-                };
-                if let Some(dsp) = slot {
-                    if let Some(bank) = dsp.refl.as_mut() {
-                        bank.mute_targets();
-                    }
+            let silent = gain == 0.0;
+            if silent {
+                // A silent channel is skipped only once its state has
+                // nothing left to say. While it has, the block runs through
+                // the full path below on zeros: the reflections of what was
+                // playing keep arriving at their delays, the convolver and
+                // ITD windows drain, and time keeps moving for this channel
+                // — so nothing is frozen to replay when the gain returns.
+                let draining = match extra_here {
+                    Some(_) => self.extra_dsp.as_ref(),
+                    None => self.channels.get(c).and_then(|s| s.as_ref()),
                 }
-                continue;
+                .is_some_and(|dsp| dsp.flush > 0);
+                if !draining {
+                    continue;
+                }
             }
             // Direct (non-spatialized) feed — the LFE policy (issue #156):
             // sub-bass carries no usable direction, so the channel goes to
@@ -572,8 +596,10 @@ impl BinauralRenderer {
                 if let Some(Some(dsp)) = self.channels.get_mut(c) {
                     // Drop a stale reflection bank if the channel just
                     // switched from the spatialized path (same policy as the
-                    // reflections-disabled branch below).
+                    // reflections-disabled branch below). Nothing of the
+                    // spatialized state is drained on this path either.
                     dsp.refl = None;
+                    dsp.flush = 0;
                 }
                 for s in 0..span {
                     let v = src_pcm[s * src_stride + src_offset]
@@ -702,6 +728,13 @@ impl BinauralRenderer {
                 // Drop the bank when disabled — the ring is the big allocation.
                 dsp.refl = None;
             }
+
+            // Signal rearms the drain; silence spends it.
+            dsp.flush = if silent {
+                dsp.flush.saturating_sub(span as u32)
+            } else {
+                dsp.flush_len(self.sample_rate)
+            };
 
             let air = dsp.air_coeff;
             for s in 0..span {
@@ -1185,6 +1218,80 @@ mod tests {
         assert!(
             (far - near).abs() <= near * 1e-6,
             "direct object level changed with distance: near={near} far={far}"
+        );
+    }
+
+    /// Noise through a channel with reflections on, then the channel goes
+    /// silent for longer than every history it holds, then its gain returns
+    /// on silent input: the output must be silence. Before the drain, the
+    /// reflection ring (a quarter second of the noise) and the convolver
+    /// and ITD windows were frozen at the mute and played back at the
+    /// unmute.
+    #[test]
+    fn unmuting_does_not_replay_frozen_audio() {
+        let mut r = BinauralRenderer::new(48_000);
+        let n = 480;
+        let params = BinauralFrameParams {
+            reflections: BinauralReflections {
+                enabled: true,
+                room_size_m: [4.0, 5.0, 2.7],
+                level: 0.5,
+            },
+            ..dry_params()
+        };
+        let pos = [[0.6, 0.8, 0.0]];
+        let noise: Vec<f32> = (0..n)
+            .map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0)
+            .collect();
+        let silence = vec![0.0f32; n];
+        let mut out = vec![0.0f32; n * 2];
+        let mut render = |r: &mut BinauralRenderer, input: &[f32], gain: f32| -> f32 {
+            out.iter_mut().for_each(|v| *v = 0.0);
+            r.render_frame(input, 1, n, &params, &pos, &[gain], &[], None, &mut out);
+            out.iter().map(|v| v * v).sum::<f32>()
+        };
+        for _ in 0..10 {
+            render(&mut r, &noise, 1.0);
+        }
+        // Muted for 0.4 s (40 blocks), longer than the 0.25 s reflection ring.
+        for _ in 0..40 {
+            render(&mut r, &silence, 0.0);
+        }
+        let back = render(&mut r, &silence, 1.0);
+        assert!(
+            back < 1e-12,
+            "stale audio replayed at unmute: energy {back}"
+        );
+    }
+
+    /// The other half of the contract: a channel that just went silent must
+    /// keep sounding for a moment — its reflections are still on their way.
+    #[test]
+    fn a_muted_channel_keeps_its_reflection_tail() {
+        let mut r = BinauralRenderer::new(48_000);
+        let n = 480;
+        let params = BinauralFrameParams {
+            reflections: BinauralReflections {
+                enabled: true,
+                room_size_m: [4.0, 5.0, 2.7],
+                level: 0.5,
+            },
+            ..dry_params()
+        };
+        let pos = [[0.0, 1.0, 0.0]];
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let mut out = vec![0.0f32; n * 2];
+        r.render_frame(&input, 1, n, &params, &pos, &[1.0], &[], None, &mut out);
+        // The next block is muted with silent input: the wall reflections
+        // of the impulse (8 ms and beyond) land here and must be audible.
+        let silence = vec![0.0f32; n];
+        out.iter_mut().for_each(|v| *v = 0.0);
+        r.render_frame(&silence, 1, n, &params, &pos, &[0.0], &[], None, &mut out);
+        let energy: f32 = out.iter().map(|v| v * v).sum();
+        assert!(
+            energy > 1e-9,
+            "the reflection tail was cut at the mute: {energy}"
         );
     }
 
