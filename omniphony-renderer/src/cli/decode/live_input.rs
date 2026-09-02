@@ -298,6 +298,12 @@ fn reconcile_live_input(
                     .map(|capture| !capture.config.same_runtime_shape(&config))
                     .unwrap_or(true);
 
+                // Cleared before the capture thread exists: that thread posts
+                // its own diagnostics as soon as it connects (a foreign sink
+                // already holding the node name), and a reset issued after
+                // the spawn would race it and wipe them.
+                input_control.set_input_error(None);
+
                 if needs_restart {
                     if let Some(capture) = current_capture.take() {
                         capture.stop();
@@ -351,7 +357,6 @@ fn reconcile_live_input(
                         );
                     }
                 }
-                input_control.set_input_error(None);
                 match &config {
                     ActiveCaptureConfig::Pcm(config) => log::info!(
                         "Live input active: mode=live backend=pipewire node={} channels={} rate={}Hz",
