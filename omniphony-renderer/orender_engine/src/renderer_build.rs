@@ -725,6 +725,10 @@ pub fn seed_control_from_render_config(
                         live.binaural.tracking.reference =
                             renderer::binaural::HeadPose::from_quat_array(q);
                     }
+                    if let Some(q) = ht.axes_quat {
+                        live.binaural.tracking.axes =
+                            renderer::binaural::HeadPose::from_quat_array(q);
+                    }
                 }
                 // HRIR source: a "sofa" selector resolves its path from
                 // `hrtf_sofa_path` (or an inline "sofa:<path>").

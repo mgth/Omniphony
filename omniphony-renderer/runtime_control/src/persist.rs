@@ -264,6 +264,10 @@ pub fn store_live_into_config(
                 let r = live.binaural.tracking.reference;
                 (r != renderer::binaural::HeadPose::identity()).then(|| r.to_quat_array())
             },
+            axes_quat: {
+                let a = live.binaural.tracking.axes;
+                (a != renderer::binaural::HeadPose::identity()).then(|| a.to_quat_array())
+            },
             extra: Default::default(),
         }),
         reflections: Some(renderer::config::ReflectionsConfig {

@@ -368,6 +368,7 @@ fn main() {
             sofa_upload_to_renderer,
             sofa_download_cancel,
             control_head_recenter,
+            control_head_calibrate,
             control_head_tracking_address,
             control_head_tracking_format,
             control_head_tracking_smoothing,

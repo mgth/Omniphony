@@ -138,6 +138,9 @@ pub const CONTROL_GAIN: &str = "/omniphony/control/gain";
 pub const CONTROL_HEAD_ORIENTATION: &str = "/omniphony/control/head/orientation";
 pub const CONTROL_HEAD_QUAT: &str = "/omniphony/control/head/quat";
 pub const CONTROL_HEAD_RECENTER: &str = "/omniphony/control/head/recenter";
+/// `s`: `front` | `left` | `up` | `reset` — the three-pose sensor axis
+/// calibration, one step per message (`front` also recenters).
+pub const CONTROL_HEAD_CALIBRATE: &str = "/omniphony/control/head/calibrate";
 pub const CONTROL_HEAD_TRACKING_ADDRESS: &str = "/omniphony/control/head/tracking/address";
 pub const CONTROL_HEAD_TRACKING_FORMAT: &str = "/omniphony/control/head/tracking/format";
 pub const CONTROL_HEAD_TRACKING_INVERT: &str = "/omniphony/control/head/tracking/invert";
@@ -638,6 +641,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_HEAD_ORIENTATION,
     CONTROL_HEAD_QUAT,
     CONTROL_HEAD_RECENTER,
+    CONTROL_HEAD_CALIBRATE,
     CONTROL_HEAD_TRACKING_ADDRESS,
     CONTROL_HEAD_TRACKING_FORMAT,
     CONTROL_HEAD_TRACKING_INVERT,

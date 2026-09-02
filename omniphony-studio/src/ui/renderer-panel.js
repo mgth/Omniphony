@@ -214,9 +214,11 @@ export function rendererPanelMarkup() {
               <div style="margin:0;font-size:12px;font-weight:600;color:#ffffff" data-i18n="binaural.headTrackingTitle" data-help-i18n="help.binaural.headTracking">Head tracking (Sensors2OSC)</div>
               <div class="renderer-subpanel-actions" style="display:flex;align-items:center;gap:0.35rem">
                 <button id="binauralRecenter" type="button" class="form-button" data-i18n="binaural.recenter">Recenter</button>
+                <button id="binauralCalibrate" type="button" class="form-button" data-i18n="binaural.calibrateAxes" data-i18n-title="help.binaural.calibrateAxes" title="">Calibrate axes</button>
               </div>
             </div>
             <div class="renderer-subpanel-body" style="margin-top:0.25rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.3rem">
+              <div id="binauralCalibratePrompt" style="display:none;font-size:0.65rem;color:#e8c46a;"></div>
               <div class="inline-toggle" style="margin-top:0">
                 <div data-i18n="binaural.oscAddressLabel" data-help-i18n="help.binaural.oscAddress">OSC address</div>
                 <input id="binauralTrackAddress" type="text" class="form-input" placeholder="/android/rotationvector" style="font-size:0.7rem;width:11rem;" />
