@@ -206,6 +206,27 @@ export function rendererPanelMarkup() {
                 </div>
                 <input id="binauralRevRt60" type="range" min="0.1" max="1.5" step="0.05" value="0.35" style="width:100%;" />
               </div>
+              <div class="binaural-help-row">
+                <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
+                  <span data-i18n="binaural.reverbSize" data-help-i18n="help.binaural.reverbSize" data-help-anchor=".binaural-help-row">Room size (×)</span>
+                  <span id="binauralRevSizeVal">1.00</span>
+                </div>
+                <input id="binauralRevSize" type="range" min="0.5" max="2" step="0.05" value="1" style="width:100%;" />
+              </div>
+              <div class="binaural-help-row">
+                <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
+                  <span data-i18n="binaural.reverbBassDecay" data-help-i18n="help.binaural.reverbBassDecay" data-help-anchor=".binaural-help-row">Bass decay (× RT60)</span>
+                  <span id="binauralRevLowRatioVal">1.00</span>
+                </div>
+                <input id="binauralRevLowRatio" type="range" min="-2" max="2" step="0.1" value="0" style="width:100%;" />
+              </div>
+              <div class="binaural-help-row">
+                <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
+                  <span data-i18n="binaural.reverbTrebleDecay" data-help-i18n="help.binaural.reverbTrebleDecay" data-help-anchor=".binaural-help-row">Treble decay (× RT60)</span>
+                  <span id="binauralRevHighRatioVal">1.00</span>
+                </div>
+                <input id="binauralRevHighRatio" type="range" min="-2" max="2" step="0.1" value="0" style="width:100%;" />
+              </div>
               </div>
             </div>
           </div>

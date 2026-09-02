@@ -116,6 +116,11 @@ pub const CONTROL_BINAURAL_REVERB_ENABLED: &str = "/omniphony/control/binaural/r
 pub const CONTROL_BINAURAL_REVERB_LEVEL: &str = "/omniphony/control/binaural/reverb/level";
 pub const CONTROL_BINAURAL_REVERB_PREDELAY: &str = "/omniphony/control/binaural/reverb/predelay";
 pub const CONTROL_BINAURAL_REVERB_RT60: &str = "/omniphony/control/binaural/reverb/rt60";
+pub const CONTROL_BINAURAL_REVERB_SIZE: &str = "/omniphony/control/binaural/reverb/size";
+pub const CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO: &str =
+    "/omniphony/control/binaural/reverb/rt60_low_ratio";
+pub const CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO: &str =
+    "/omniphony/control/binaural/reverb/rt60_high_ratio";
 pub const CONTROL_BINAURAL_UNIT_SCALE: &str = "/omniphony/control/binaural/unit_scale";
 pub const CONTROL_CONFIG_AUDIO: &str = "/omniphony/control/config/audio";
 pub const CONTROL_CONFIG_AUDIO_APPLY: &str = "/omniphony/control/config/audio/apply";
@@ -637,6 +642,9 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_BINAURAL_REVERB_LEVEL,
     CONTROL_BINAURAL_REVERB_PREDELAY,
     CONTROL_BINAURAL_REVERB_RT60,
+    CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO,
+    CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO,
+    CONTROL_BINAURAL_REVERB_SIZE,
     CONTROL_BINAURAL_UNIT_SCALE,
     CONTROL_HEAD_ORIENTATION,
     CONTROL_HEAD_QUAT,

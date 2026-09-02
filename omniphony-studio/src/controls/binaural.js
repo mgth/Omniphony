@@ -307,6 +307,33 @@ export function initBinauralPanel() {
     });
   }
 
+  const revSize = el('binauralRevSize');
+  if (revSize) {
+    revSize.addEventListener('input', (e) => {
+      if (applying) return;
+      const v = Number(e.target.value);
+      const out = el('binauralRevSizeVal');
+      if (out) out.textContent = v.toFixed(2);
+      send('control_binaural_reverb_size', { value: v });
+    });
+  }
+
+  // The band decay ratios ride log2 sliders (−2…+2 → ×0.25…×4) so ×0.5 and
+  // ×2 sit symmetrically about the flat ×1.
+  const ratioSlider = (id, valId, command) => {
+    const slider = el(id);
+    if (!slider) return;
+    slider.addEventListener('input', (e) => {
+      if (applying) return;
+      const ratio = Math.pow(2, Number(e.target.value));
+      const out = el(valId);
+      if (out) out.textContent = ratio.toFixed(2);
+      send(command, { value: ratio });
+    });
+  };
+  ratioSlider('binauralRevLowRatio', 'binauralRevLowRatioVal', 'control_binaural_reverb_rt60_low_ratio');
+  ratioSlider('binauralRevHighRatio', 'binauralRevHighRatioVal', 'control_binaural_reverb_rt60_high_ratio');
+
   const dfEq = el('binauralDiffuseFieldEq');
   if (dfEq) {
     dfEq.addEventListener('change', (e) => {
@@ -516,6 +543,19 @@ export function applyBinauralState(b) {
         const out = el('binauralRevRt60Val');
         if (out) out.textContent = Number(rev.rt60S).toFixed(2);
       }
+      if (typeof rev.size === 'number') {
+        setVal('binauralRevSize', rev.size);
+        const out = el('binauralRevSizeVal');
+        if (out) out.textContent = Number(rev.size).toFixed(2);
+      }
+      const applyRatio = (ratio, id, valId) => {
+        if (typeof ratio !== 'number' || !(ratio > 0)) return;
+        setVal(id, Math.log2(ratio));
+        const out = el(valId);
+        if (out) out.textContent = Number(ratio).toFixed(2);
+      };
+      applyRatio(rev.rt60LowRatio, 'binauralRevLowRatio', 'binauralRevLowRatioVal');
+      applyRatio(rev.rt60HighRatio, 'binauralRevHighRatio', 'binauralRevHighRatioVal');
     }
     const air = el('binauralAirAbsorption');
     if (air && typeof b.airAbsorption === 'boolean') air.checked = b.airAbsorption;

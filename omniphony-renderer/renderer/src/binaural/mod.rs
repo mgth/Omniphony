@@ -797,7 +797,7 @@ impl BinauralRenderer {
 
         let reverb_active = reverb.enabled;
         if reverb_active {
-            self.fdn.set_params(reverb.rt60_s, reverb.predelay_ms);
+            self.fdn.set_params(reverb);
             self.fdn_live = true;
             self.reverb_bus_l.clear();
             self.reverb_bus_l.resize(sample_length, 0.0);
@@ -1799,6 +1799,7 @@ mod tests {
                     level: 0.3,
                     rt60_s: 0.4,
                     predelay_ms: 20.0,
+                    ..BinauralReverb::default()
                 },
                 ..dry_params()
             };
@@ -1951,6 +1952,7 @@ mod tests {
                 level: 0.3,
                 rt60_s: 0.6,
                 predelay_ms: 5.0,
+                ..BinauralReverb::default()
             },
             ..dry_params()
         };
@@ -2017,6 +2019,7 @@ mod tests {
                 level: 0.3,
                 rt60_s: 0.4,
                 predelay_ms: 20.0,
+                ..BinauralReverb::default()
             },
             ..dry_params()
         };

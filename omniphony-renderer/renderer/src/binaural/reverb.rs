@@ -46,6 +46,22 @@
 //!   average tones out. Above the crossover the decorrelated returns pass
 //!   as-is, preserving envelopment.
 //!
+//! Two more handles shape the tail the way a room's would (S2-15):
+//! - **size** scales every line length together (0.5…2 × the nominal
+//!   21…62 ms set, allocated for the maximum): shorter lines make a small,
+//!   dense room, longer ones a sparser, larger one. The feedback gains are
+//!   recomputed with the lengths so the RT60 stays what was asked, and the
+//!   lines stretch at no more than [`SIZE_SLEW`] samples per sample — a
+//!   size change is a second-long ±2 % pitch drift, not a splice.
+//! - **per-band decay**: the loop gain of each line is a broadband value
+//!   plus two first-order shelves, one below [`LOW_BAND_HZ`] and one above
+//!   [`HIGH_BAND_HZ`], whose gains are the RT60 ratios of those bands
+//!   (`rt60_low_ratio`, `rt60_high_ratio`, relative to the broadband
+//!   RT60). A ratio of 1 leaves a shelf at exactly zero: the default tail
+//!   is arithmetically the one before the shelves existed. The fixed
+//!   one-pole [`DAMPING_48K`] stays underneath as the wall's own
+//!   high-frequency loss; the high ratio acts on top of it.
+//!
 //! In a real room the reverberant field level is roughly independent of
 //! source distance. The direct object level is authored (Atmos) and never
 //! 1/d-attenuated here, so instead the caller raises the per-source reverb
@@ -55,6 +71,7 @@
 use crate::crossover::filter::{
     BiquadCoeffs, BiquadState, biquad, butterworth2_hp, butterworth2_lp,
 };
+use crate::live_params::BinauralReverb;
 
 /// Number of delay lines. Sixteen: dense enough that a sustained tone no
 /// longer parks on one tap's comb peak and the other's notch (issue #145),
@@ -66,6 +83,28 @@ const N: usize = 16;
 const LENGTHS_48K: [usize; N] = [
     1031, 1129, 1201, 1327, 1409, 1523, 1613, 1801, 1907, 2053, 2203, 2311, 2467, 2617, 2749, 2903,
 ];
+
+/// Range of the `size` scale on the line lengths (1 = the nominal set
+/// above). The lines are allocated for [`SIZE_MAX`].
+pub const SIZE_MIN: f32 = 0.5;
+pub const SIZE_MAX: f32 = 2.0;
+
+/// Range of the per-band decay ratios: the RT60 of the band over the
+/// broadband RT60 (1 = the same decay everywhere).
+pub const RT60_RATIO_MIN: f32 = 0.25;
+pub const RT60_RATIO_MAX: f32 = 4.0;
+
+/// Corner (Hz) of the low-band shelf in the loop: below it the feedback
+/// gain settles on the low band's value.
+const LOW_BAND_HZ: f32 = 250.0;
+/// Corner (Hz) of the high-band shelf: above it the gain settles on the
+/// high band's value.
+const HIGH_BAND_HZ: f32 = 4_000.0;
+
+/// Fastest the line lengths follow a size change, in samples per sample:
+/// ±2 % of pitch while the lines stretch, the whole range in about a
+/// second. The modulation LFOs move far slower and never hit it.
+const SIZE_SLEW: f32 = 0.02;
 
 /// Output tap sign patterns for the two returns. Both rows are zero-sum
 /// (rejects the FDN's persistent common mode — the all-ones vector is a
@@ -142,13 +181,29 @@ const COHERENCE_XOVER_HZ: f32 = 300.0;
 
 pub struct Fdn {
     lines: Vec<Vec<f32>>,
-    /// Nominal (unmodulated) delay per line, in samples.
+    /// Nominal delay per line at size 1, in samples.
     base_len: [f32; N],
+    /// Unmodulated delay per line at the current size, in samples: what
+    /// the modulation breathes around and the slew heads for.
+    size_len: [f32; N],
     /// Write position per line.
     pos: [usize; N],
     damp_state: [f32; N],
-    /// Per-line feedback gain derived from the current RT60.
+    /// Per-line broadband feedback gain derived from the current RT60 and
+    /// line length.
     fb_gain: [f32; N],
+    /// What the low band's gain adds to the broadband one (zero at a ratio
+    /// of 1), and the high band's.
+    fb_low: [f32; N],
+    fb_high: [f32; N],
+    /// Integrator states of the two shelves' one-poles (trapezoidal
+    /// form: its low-pass and high-pass are exact complements, zero at
+    /// Nyquist and at DC respectively, which the `exp` form is not).
+    band_lo: [f32; N],
+    band_hi: [f32; N],
+    /// `g/(1+g)`, `g = tan(π·fc/fs)`, of the two one-poles at this rate.
+    k_lo: f32,
+    k_hi: f32,
     mod_phase: [f32; N],
     /// Current (slewed) modulated delay per line, in samples.
     cur_delay: [f32; N],
@@ -163,7 +218,11 @@ pub struct Fdn {
     pre_pos: usize,
     pre_len: usize,
     sample_rate: u32,
-    rt60_cached: f32,
+    /// `(rt60, size, low ratio, high ratio)` the gains were computed for.
+    cached: (f32, f32, f32, f32),
+    /// Whether a block has been processed since the last clear: until then
+    /// a size change snaps the lines to their length instead of slewing.
+    primed: bool,
     /// `1 − damping` for this rate, applied per line per sample.
     damp_mix: f32,
     /// Peak line modulation depth in samples at this rate.
@@ -181,7 +240,9 @@ impl Fdn {
             .map(|(i, &l)| {
                 let base = ((l as f32 * scale) as usize).max(16);
                 base_len[i] = base as f32;
-                vec![0.0f32; base + margin]
+                // Room for the longest size the line may be asked for.
+                let cap = (base as f32 * SIZE_MAX).ceil() as usize + margin;
+                vec![0.0f32; cap]
             })
             .collect();
         let mut mod_phase = [0.0f32; N];
@@ -190,12 +251,23 @@ impl Fdn {
         }
         // 120 ms pre-delay capacity; the active length is set per block.
         let pre_cap = (sample_rate as usize * 120 / 1000).max(16);
+        let one_pole = |hz: f32| {
+            let g = (std::f32::consts::PI * hz / sample_rate as f32).tan();
+            g / (1.0 + g)
+        };
         Self {
             lines,
             base_len,
+            size_len: base_len,
             pos: [0; N],
             damp_state: [0.0; N],
             fb_gain: [0.5; N],
+            fb_low: [0.0; N],
+            fb_high: [0.0; N],
+            band_lo: [0.0; N],
+            band_hi: [0.0; N],
+            k_lo: one_pole(LOW_BAND_HZ),
+            k_hi: one_pole(HIGH_BAND_HZ),
             mod_phase,
             cur_delay: base_len,
             xover_lp: butterworth2_lp(COHERENCE_XOVER_HZ, sample_rate),
@@ -205,7 +277,8 @@ impl Fdn {
             pre_pos: 0,
             pre_len: 1,
             sample_rate,
-            rt60_cached: 0.0,
+            cached: (0.0, 0.0, 0.0, 0.0),
+            primed: false,
             damp_mix: 1.0 - DAMPING_48K.powf(48_000.0 / sample_rate as f32),
             mod_depth: MOD_DEPTH_48K * scale,
         }
@@ -219,19 +292,34 @@ impl Fdn {
         self.mod_depth = depth.min(MOD_DEPTH_CAPACITY_48K) * self.sample_rate as f32 / 48_000.0;
     }
 
-    /// Per-block parameter update: RT60 (s) → per-line feedback gains, and the
-    /// active pre-delay length.
-    pub fn set_params(&mut self, rt60_s: f32, predelay_ms: f32) {
-        let rt60 = rt60_s.clamp(0.1, 3.0);
-        if (rt60 - self.rt60_cached).abs() > 1e-6 {
-            self.rt60_cached = rt60;
+    /// Per-block parameter update: RT60 (s), size and the two band ratios →
+    /// per-line lengths and feedback gains (recomputed only when one of
+    /// them changed), and the active pre-delay length.
+    pub fn set_params(&mut self, p: &BinauralReverb) {
+        let rt60 = p.rt60_s.clamp(0.1, 3.0);
+        let size = p.size.clamp(SIZE_MIN, SIZE_MAX);
+        let low = p.rt60_low_ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
+        let high = p.rt60_high_ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
+        if self.cached != (rt60, size, low, high) {
+            self.cached = (rt60, size, low, high);
+            let fs = self.sample_rate as f32;
             for i in 0..N {
-                // g = 10^(-3 * delay / (rt60 * sr)) → -60 dB after rt60 seconds.
-                let exp = -3.0 * self.base_len[i] / (rt60 * self.sample_rate as f32);
-                self.fb_gain[i] = 10.0f32.powf(exp);
+                self.size_len[i] = self.base_len[i] * size;
+                // g = 10^(-3 * delay / (rt60 * sr)) → -60 dB after rt60
+                // seconds; each band's gain is the same law for its own
+                // RT60, `rt60 · ratio`, stored as what it adds to the
+                // broadband gain — exactly zero at a ratio of 1.
+                let exp = -3.0 * self.size_len[i] / (rt60 * fs);
+                let mid = 10.0f32.powf(exp);
+                self.fb_gain[i] = mid;
+                self.fb_low[i] = 10.0f32.powf(exp / low) - mid;
+                self.fb_high[i] = 10.0f32.powf(exp / high) - mid;
+            }
+            if !self.primed {
+                self.cur_delay = self.size_len;
             }
         }
-        let len = (predelay_ms.clamp(0.0, 100.0) * self.sample_rate as f32 / 1000.0) as usize;
+        let len = (p.predelay_ms.clamp(0.0, 100.0) * self.sample_rate as f32 / 1000.0) as usize;
         self.pre_len = len.clamp(1, self.predelay.len() - 1);
     }
 
@@ -244,9 +332,12 @@ impl Fdn {
             line.fill(0.0);
         }
         self.damp_state = [0.0; N];
+        self.band_lo = [0.0; N];
+        self.band_hi = [0.0; N];
         self.predelay.fill([0.0; 2]);
         self.xover_state = Default::default();
-        self.cur_delay = self.base_len;
+        self.cur_delay = self.size_len;
+        self.primed = false;
     }
 
     /// Process one block: read the two send buses (one sample per frame each,
@@ -262,20 +353,24 @@ impl Fdn {
         let depth = self.mod_depth;
         let (xover_lp, xover_hp) = (self.xover_lp, self.xover_hp);
         let damp_mix = self.damp_mix;
+        let (k_lo, k_hi) = (self.k_lo, self.k_hi);
         let pre_cap = self.predelay.len();
+        self.primed = true;
 
         let mut offset = 0usize;
         for (chunk_l, chunk_r) in bus_l.chunks(MOD_UPDATE).zip(bus_r.chunks(MOD_UPDATE)) {
             let chunk = chunk_l;
             // Advance the line LFOs to the end of this chunk and slew each
-            // delay linearly toward its new target across the chunk.
+            // delay linearly toward its new target across the chunk — at
+            // most `SIZE_SLEW` per sample, which only a size change reaches.
             let mut d_step = [0.0f32; N];
             for i in 0..N {
                 self.mod_phase[i] = (self.mod_phase[i]
                     + std::f32::consts::TAU * MOD_RATES_HZ[i] * chunk.len() as f32 / sr)
                     % std::f32::consts::TAU;
-                let target = self.base_len[i] + depth * self.mod_phase[i].sin();
-                d_step[i] = (target - self.cur_delay[i]) / chunk.len() as f32;
+                let target = self.size_len[i] + depth * self.mod_phase[i].sin();
+                d_step[i] = ((target - self.cur_delay[i]) / chunk.len() as f32)
+                    .clamp(-SIZE_SLEW, SIZE_SLEW);
             }
 
             for (s, (&in_l, &in_r)) in chunk_l.iter().zip(chunk_r).enumerate() {
@@ -295,9 +390,9 @@ impl Fdn {
                 }
 
                 // Read all line outputs at their (modulated) fractional delay.
-                // The modulated delay stays under `base + depth < cap`
-                // (the line has `margin` slots past its base length), so
-                // the same one-lap wrap applies.
+                // The modulated delay stays under `base·SIZE_MAX + depth <
+                // cap` (the line has `margin` slots past its longest
+                // length), so the same one-lap wrap applies.
                 let mut o = [0.0f32; N];
                 let mut sum = 0.0f32;
                 for i in 0..N {
@@ -355,13 +450,27 @@ impl Fdn {
                     let fb = o[i] - k;
                     // One-pole low-pass in the loop: HF dies faster than RT60.
                     self.damp_state[i] += (fb - self.damp_state[i]) * damp_mix;
+                    let x = self.damp_state[i];
+                    // Per-band decay: the broadband gain, plus what the low
+                    // band adds below its corner and the high band above
+                    // its own (two one-pole shelves; both terms are exactly
+                    // zero at a ratio of 1).
+                    let v = (x - self.band_lo[i]) * k_lo;
+                    let lp_lo = v + self.band_lo[i];
+                    self.band_lo[i] = lp_lo + v;
+                    let v = (x - self.band_hi[i]) * k_hi;
+                    let lp_hi = v + self.band_hi[i];
+                    self.band_hi[i] = lp_hi + v;
+                    let y = x * self.fb_gain[i]
+                        + lp_lo * self.fb_low[i]
+                        + (x - lp_hi) * self.fb_high[i];
                     let inject = if i % 2 == 0 {
                         SIGNS_L[i] * xl
                     } else {
                         SIGNS_R[i] * xr
                     };
                     let cap = self.lines[i].len();
-                    self.lines[i][self.pos[i]] = self.damp_state[i] * self.fb_gain[i] + inject;
+                    self.lines[i][self.pos[i]] = y + inject;
                     self.pos[i] += 1;
                     if self.pos[i] == cap {
                         self.pos[i] = 0;
@@ -376,6 +485,15 @@ impl Fdn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RT60 and pre-delay with the size and band ratios at their defaults.
+    fn params(rt60_s: f32, predelay_ms: f32) -> BinauralReverb {
+        BinauralReverb {
+            rt60_s,
+            predelay_ms,
+            ..BinauralReverb::default()
+        }
+    }
 
     fn tail_energy(out: &[f32], from: usize, to: usize) -> f32 {
         out[from * 2..to * 2].iter().map(|x| x * x).sum()
@@ -397,7 +515,7 @@ mod tests {
     /// The same send on both buses (a source in the median plane).
     fn render_stereo(bus: &[f32], rt60: f32) -> (Vec<f32>, Vec<f32>) {
         let mut fdn = Fdn::new(48_000);
-        fdn.set_params(rt60, 5.0);
+        fdn.set_params(&params(rt60, 5.0));
         let mut out = vec![0.0f32; bus.len() * 2];
         fdn.process_block(bus, bus, 1.0, &mut out);
         (
@@ -494,7 +612,7 @@ mod tests {
     fn a_right_send_starts_right_and_ends_diffuse() {
         let n = 48_000; // 1 s
         let mut fdn = Fdn::new(48_000);
-        fdn.set_params(0.6, 5.0);
+        fdn.set_params(&params(0.6, 5.0));
         let silent = vec![0.0f32; n];
         // A 100 ms burst, then decay: a continuous one-sided send would keep
         // feeding fresh first-lap energy on its side, which is right, but
@@ -536,7 +654,7 @@ mod tests {
     #[test]
     fn impulse_produces_a_decaying_tail() {
         let mut fdn = Fdn::new(48_000);
-        fdn.set_params(0.4, 10.0);
+        fdn.set_params(&params(0.4, 10.0));
         let n = 48_000; // 1 s
         let mut bus = vec![0.0f32; n];
         bus[0] = 1.0;
@@ -555,7 +673,7 @@ mod tests {
     fn rt60_controls_decay_speed() {
         let render = |rt60: f32| -> (f32, f32) {
             let mut fdn = Fdn::new(48_000);
-            fdn.set_params(rt60, 5.0);
+            fdn.set_params(&params(rt60, 5.0));
             let n = 48_000;
             let mut bus = vec![0.0f32; n];
             bus[0] = 1.0;
@@ -611,7 +729,7 @@ mod tests {
             .collect();
         for depth in [0.0f32, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0, 24.0, 32.0] {
             let mut fdn = Fdn::new(48_000);
-            fdn.set_params(0.3, 5.0);
+            fdn.set_params(&params(0.3, 5.0));
             fdn.set_modulation_depth_48k(depth);
             let mut out = vec![0.0f32; n * 2];
             fdn.process_block(&bus, &bus, 1.0, &mut out);
@@ -650,6 +768,154 @@ mod tests {
     /// coherent at low frequency and decorrelated higher up. Below the
     /// shaping crossover both ears share the mid; above it the orthogonal
     /// taps keep the returns decorrelated.
+    /// Impulse response of a fresh network at `size`, unmodulated, with
+    /// the given band ratios: the interleaved output over one second.
+    fn impulse_response(size: f32, rt60: f32, low: f32, high: f32) -> Vec<f32> {
+        let mut fdn = Fdn::new(48_000);
+        fdn.set_modulation_depth_48k(0.0);
+        fdn.set_params(&BinauralReverb {
+            rt60_s: rt60,
+            predelay_ms: 5.0,
+            size,
+            rt60_low_ratio: low,
+            rt60_high_ratio: high,
+            ..BinauralReverb::default()
+        });
+        let n = 48_000;
+        let mut bus = vec![0.0f32; n];
+        bus[0] = 1.0;
+        let mut out = vec![0.0f32; n * 2];
+        fdn.process_block(&bus, &bus, 1.0, &mut out);
+        out
+    }
+
+    /// The size scales the line lengths: the first sample out of a fresh
+    /// network lands after the pre-delay plus the shortest line at that
+    /// size, and the RT60 is unchanged — the gains follow the lengths.
+    #[test]
+    fn size_scales_the_lines_and_keeps_the_decay() {
+        let first_out = |out: &[f32]| out.iter().position(|x| x.abs() > 1e-9).unwrap() / 2;
+        let pre = 240; // 5 ms
+        for size in [SIZE_MIN, 1.0, SIZE_MAX] {
+            let out = impulse_response(size, 0.5, 1.0, 1.0);
+            let expected = pre + (LENGTHS_48K[0] as f32 * size) as usize;
+            let got = first_out(&out);
+            assert!(
+                got.abs_diff(expected) <= 2,
+                "size {size}: first output at {got}, expected ≈ {expected}"
+            );
+        }
+        // Decay slope between two late windows, once the tail is dense:
+        // the same at every size, within a couple of dB.
+        let slope_db = |out: &[f32]| {
+            10.0 * (tail_energy(out, 36_000, 40_000) / tail_energy(out, 20_000, 24_000)).log10()
+        };
+        let (small, big) = (
+            slope_db(&impulse_response(SIZE_MIN, 0.5, 1.0, 1.0)),
+            slope_db(&impulse_response(SIZE_MAX, 0.5, 1.0, 1.0)),
+        );
+        assert!(
+            (small - big).abs() < 3.0,
+            "decay slope moved with the size: {small:.1} dB vs {big:.1} dB"
+        );
+    }
+
+    /// A size change on a running network slews the lines at `SIZE_SLEW`
+    /// instead of jumping — and gets there.
+    #[test]
+    fn size_changes_are_slewed() {
+        let mut fdn = Fdn::new(48_000);
+        fdn.set_modulation_depth_48k(0.0);
+        fdn.set_params(&params(0.5, 5.0));
+        let silence = vec![0.0f32; 128];
+        let mut out = vec![0.0f32; 256];
+        fdn.process_block(&silence, &silence, 1.0, &mut out);
+        let before = fdn.cur_delay[0];
+        fdn.set_params(&BinauralReverb {
+            size: SIZE_MAX,
+            ..params(0.5, 5.0)
+        });
+        assert_eq!(fdn.cur_delay[0], before, "a running network must not snap");
+        fdn.process_block(&silence, &silence, 1.0, &mut out);
+        let moved = fdn.cur_delay[0] - before;
+        assert!(
+            moved > 0.0 && moved <= 128.0 * SIZE_SLEW * 1.01,
+            "moved {moved} samples in one block, expected ≤ {}",
+            128.0 * SIZE_SLEW
+        );
+        for _ in 0..(48_000 * 2 / 128) {
+            fdn.process_block(&silence, &silence, 1.0, &mut out);
+        }
+        assert!(
+            (fdn.cur_delay[0] - fdn.size_len[0]).abs() < 1e-2,
+            "never reached the new length: {} vs {}",
+            fdn.cur_delay[0],
+            fdn.size_len[0]
+        );
+    }
+
+    /// Energy of `x[from..to]` between `lo_hz` and `hi_hz`, off a
+    /// Hann-windowed FFT of the window: the one-pole band isolators above
+    /// leak too much of the mid band to see a treble tail that has fallen
+    /// 80 dB.
+    fn band_energy(x: &[f32], from: usize, to: usize, lo_hz: f32, hi_hz: f32) -> f32 {
+        use realfft::RealFftPlanner;
+        let n = to - from;
+        let fft = RealFftPlanner::<f32>::new().plan_fft_forward(n);
+        let mut input: Vec<f32> = x[from..to]
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| v * (0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()))
+            .collect();
+        let mut spec = fft.make_output_vec();
+        fft.process(&mut input, &mut spec).expect("band FFT");
+        let bin = |hz: f32| ((hz * n as f32 / 48_000.0).round() as usize).min(spec.len() - 1);
+        spec[bin(lo_hz)..=bin(hi_hz)]
+            .iter()
+            .map(|c| c.norm_sqr())
+            .sum()
+    }
+
+    /// The band ratios lengthen or shorten the decay of their own band:
+    /// bass at ×4 rings far longer, treble at ×¼ dies far sooner, measured
+    /// as the late/early energy ratio of the band (0.25–0.35 s over
+    /// 0.1–0.2 s, close enough that the treble is still above the
+    /// window's leakage floor).
+    #[test]
+    fn band_ratios_shape_the_decay_by_band() {
+        let mono = |out: &[f32]| -> Vec<f32> { out.chunks_exact(2).map(|f| f[0] + f[1]).collect() };
+        let ratio = |x: &[f32], lo: f32, hi: f32| {
+            band_energy(x, 12_000, 16_800, lo, hi) / band_energy(x, 4_800, 9_600, lo, hi).max(1e-30)
+        };
+        let (bass, treble) = ((40.0, 150.0), (4_000.0, 8_000.0));
+        let flat = mono(&impulse_response(1.0, 0.5, 1.0, 1.0));
+        let bassy = mono(&impulse_response(1.0, 0.5, RT60_RATIO_MAX, 1.0));
+        let (flat_low, bassy_low) = (ratio(&flat, bass.0, bass.1), ratio(&bassy, bass.0, bass.1));
+        assert!(
+            bassy_low > flat_low * 10.0,
+            "bass ratio ×4 did not lengthen the bass: {bassy_low:.3e} vs {flat_low:.3e}"
+        );
+        let dull = mono(&impulse_response(1.0, 0.5, 1.0, RT60_RATIO_MIN));
+        let (flat_high, dull_high) = (
+            ratio(&flat, treble.0, treble.1),
+            ratio(&dull, treble.0, treble.1),
+        );
+        assert!(
+            dull_high < flat_high * 0.1,
+            "treble ratio ×¼ did not shorten the treble: {dull_high:.3e} vs {flat_high:.3e}"
+        );
+        // Each ratio leaves the other band's decay alone (within 3 dB).
+        let bassy_high = ratio(&bassy, treble.0, treble.1);
+        let dull_low = ratio(&dull, bass.0, bass.1);
+        let db = |a: f32, b: f32| 10.0 * (a / b).log10();
+        assert!(
+            db(bassy_high, flat_high).abs() < 3.0 && db(dull_low, flat_low).abs() < 3.0,
+            "a band ratio leaked into the other band: treble {:+.1} dB, bass {:+.1} dB",
+            db(bassy_high, flat_high),
+            db(dull_low, flat_low)
+        );
+    }
+
     #[test]
     fn coherence_is_high_at_low_freq_and_low_at_high_freq() {
         let bus = noise(48_000 * 5);

@@ -699,6 +699,24 @@ pub fn seed_control_from_render_config(
                             r.predelay_ms = pd.clamp(0.0, 100.0);
                         }
                     }
+                    use renderer::binaural::reverb::{
+                        RT60_RATIO_MAX, RT60_RATIO_MIN, SIZE_MAX, SIZE_MIN,
+                    };
+                    if let Some(size) = rev.size {
+                        if size.is_finite() && size > 0.0 {
+                            r.size = size.clamp(SIZE_MIN, SIZE_MAX);
+                        }
+                    }
+                    if let Some(ratio) = rev.rt60_low_ratio {
+                        if ratio.is_finite() && ratio > 0.0 {
+                            r.rt60_low_ratio = ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
+                        }
+                    }
+                    if let Some(ratio) = rev.rt60_high_ratio {
+                        if ratio.is_finite() && ratio > 0.0 {
+                            r.rt60_high_ratio = ratio.clamp(RT60_RATIO_MIN, RT60_RATIO_MAX);
+                        }
+                    }
                 }
                 if let Some(air) = bin.air_absorption {
                     live.binaural.air_absorption = air;

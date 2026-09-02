@@ -1357,6 +1357,42 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == osc_contract::CONTROL_BINAURAL_REVERB_SIZE {
+        if let Some(v) = parse_f32_arg(msg.args.first()) {
+            if v.is_finite() && v > 0.0 {
+                ctx.renderer.live.write().binaural.reverb.size = v.clamp(
+                    renderer::binaural::reverb::SIZE_MIN,
+                    renderer::binaural::reverb::SIZE_MAX,
+                );
+                effects.mark_dirty = true;
+            }
+        }
+        return Some(effects);
+    }
+
+    if let Some(low) = match addr {
+        osc_contract::CONTROL_BINAURAL_REVERB_RT60_LOW_RATIO => Some(true),
+        osc_contract::CONTROL_BINAURAL_REVERB_RT60_HIGH_RATIO => Some(false),
+        _ => None,
+    } {
+        if let Some(v) = parse_f32_arg(msg.args.first()) {
+            if v.is_finite() && v > 0.0 {
+                let v = v.clamp(
+                    renderer::binaural::reverb::RT60_RATIO_MIN,
+                    renderer::binaural::reverb::RT60_RATIO_MAX,
+                );
+                let mut live = ctx.renderer.live.write();
+                if low {
+                    live.binaural.reverb.rt60_low_ratio = v;
+                } else {
+                    live.binaural.reverb.rt60_high_ratio = v;
+                }
+                effects.mark_dirty = true;
+            }
+        }
+        return Some(effects);
+    }
+
     if addr == osc_contract::CONTROL_BINAURAL_DIFFUSE_FIELD_EQ {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().binaural.diffuse_field_eq = v;

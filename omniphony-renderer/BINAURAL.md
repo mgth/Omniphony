@@ -81,6 +81,9 @@ in Studio and over OSC (addresses listed at the end).
 | `reverb.level` | `0.25` | reverb return level (0–1) |
 | `reverb.rt60_s` | `0.35` | broadband decay time (s) — living-room-ish, not a hall |
 | `reverb.predelay_ms` | `20` | gap between direct sound and tail start |
+| `reverb.size` | `1.0` | scale on the network's delay lines (0.5–2): smaller is a denser, smaller-sounding room, larger a sparser, bigger one; the decay time stays `rt60_s` |
+| `reverb.rt60_low_ratio` | `1.0` | decay time below ~250 Hz as a ratio of `rt60_s` (0.25–4): above 1 the bass lingers (hard walls), below 1 it dies first |
+| `reverb.rt60_high_ratio` | `1.0` | decay time above ~4 kHz as a ratio of `rt60_s` (0.25–4): below 1 the treble dies first (air, soft furnishings), on top of the network's fixed wall damping |
 | `air_absorption` | `true` | distance low-pass on the direct path (HF dies with distance — true outdoors too) |
 | `diffuse_field_eq` | `false` | divide the HRIR set by its own diffuse-field response (third-octave smoothed, ±12 dB, 200 Hz–16 kHz) at build time: removes the measured head's tonal signature, keeps every interaural difference |
 
@@ -151,6 +154,12 @@ directly instead.
   work, the early reflections add the room's geometry. Adjust **Reverb
   level** and **Reflection level** by ear — too high colours dialogue and
   sounds echoey, too low collapses back into the head.
+- **Tail character**: `reverb.size` sets how big the tail *sounds* at a
+  given RT60 (denser and smaller below 1, sparser and larger above), and
+  the two band ratios how it decays by band — a real room keeps its bass
+  longer than its treble, so a bass ratio a little above 1 and a treble
+  ratio below 1 (say 1.5 and 0.5) read as more natural than a flat decay.
+  All three are live in the **Late reverb** block of the panel.
 - **Distance**: past ~1 m the brain judges distance mostly from the
   direct/reverb ratio, not loudness. The direct sound keeps its authored
   level at any distance (there is no 1/d on it — the mixer set that level),
@@ -230,6 +239,9 @@ carry no license at all). Accordingly:
 | `/omniphony/control/binaural/reverb/level` | `f` (0–1) | reverb return level |
 | `/omniphony/control/binaural/reverb/rt60` | `f` (s) | decay time |
 | `/omniphony/control/binaural/reverb/predelay` | `f` (ms) | pre-delay |
+| `/omniphony/control/binaural/reverb/size` | `f` (0.5–2) | delay-line length scale |
+| `/omniphony/control/binaural/reverb/rt60_low_ratio` | `f` (0.25–4) | bass decay, as a ratio of RT60 |
+| `/omniphony/control/binaural/reverb/rt60_high_ratio` | `f` (0.25–4) | treble decay, as a ratio of RT60 |
 | `/omniphony/control/binaural/air_absorption` | `i\|f` (bool) | distance HF roll-off |
 | `/omniphony/control/binaural/diffuse_field_eq` | `i\|f` (bool) | diffuse-field equalisation of the HRIR set |
 | `/omniphony/control/head/orientation` | `fff` (euler) | set pose directly |
