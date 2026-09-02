@@ -110,6 +110,9 @@ pub struct HeadTracking {
     pub reference: HeadPose,
     /// Last raw orientation received (captured as the reference on recenter).
     pub last_raw: HeadPose,
+    /// Arrival time of the last packet, for the time-based smoothing step.
+    /// `None` until the first packet.
+    pub last_packet: Option<std::time::Instant>,
 }
 
 impl Default for HeadTracking {
@@ -121,9 +124,20 @@ impl Default for HeadTracking {
             invert: false,
             reference: HeadPose::identity(),
             last_raw: HeadPose::identity(),
+            last_packet: None,
         }
     }
 }
+
+/// Packet rate the `smoothing` setting is defined at: the value keeps the
+/// meaning it always had for a 30 Hz source (Sensors2OSC), and other rates
+/// get the same time constant instead of the same per-packet step.
+pub const SMOOTHING_REFERENCE_HZ: f32 = 30.0;
+
+/// Longest interval a single step may account for. A source that paused
+/// (app in the background, Bluetooth drop) then resumes should converge on
+/// its first packets, not teleport to the target in one.
+const MAX_STEP_S: f32 = 0.25;
 
 impl HeadTracking {
     /// Whether `addr` is the configured tracking address (non-empty match).
@@ -145,13 +159,44 @@ impl HeadTracking {
         .normalized()
     }
 
-    /// Ingest a raw orientation and return the new smoothed pose to render with.
-    /// `current` is the pose currently in use (for exponential smoothing).
-    pub fn ingest(&mut self, raw: HeadPose, current: HeadPose) -> HeadPose {
+    /// Ingest a raw orientation received at `now` and return the new smoothed
+    /// pose to render with. `current` is the pose currently in use.
+    ///
+    /// The smoothing is exponential in **time**, not per packet: the step is
+    /// `1 − exp(−Δt/τ)` with `τ` derived from `smoothing` at
+    /// [`SMOOTHING_REFERENCE_HZ`], so a 100 Hz tracker and a 30 Hz one settle
+    /// in the same milliseconds for the same setting. (Per packet, the same
+    /// setting used to make the fast tracker three times as sluggish.)
+    pub fn ingest(
+        &mut self,
+        raw: HeadPose,
+        current: HeadPose,
+        now: std::time::Instant,
+    ) -> HeadPose {
         self.last_raw = raw;
         let target = self.world_to_head(raw);
-        let t = (1.0 - self.smoothing.clamp(0.0, 0.999)).clamp(0.0, 1.0);
-        current.nlerp(target, t)
+        let dt = match self.last_packet.replace(now) {
+            Some(prev) => now
+                .saturating_duration_since(prev)
+                .as_secs_f32()
+                .min(MAX_STEP_S),
+            // First packet: behave as one reference interval.
+            None => 1.0 / SMOOTHING_REFERENCE_HZ,
+        };
+        current.nlerp(target, Self::step(self.smoothing, dt))
+    }
+
+    /// Fraction of the way to the target to move after `dt` seconds:
+    /// `1 − smoothing` at the reference interval, exactly as before, and the
+    /// same time constant elsewhere. `smoothing` 0 is instant.
+    fn step(smoothing: f32, dt: f32) -> f32 {
+        let s = smoothing.clamp(0.0, 0.999);
+        if s <= 0.0 {
+            return 1.0;
+        }
+        // τ = −1 / (f_ref · ln s), so that 1 − exp(−(1/f_ref)/τ) = 1 − s.
+        let tau = -1.0 / (SMOOTHING_REFERENCE_HZ * s.ln());
+        (1.0 - (-dt / tau).exp()).clamp(0.0, 1.0)
     }
 
     /// Capture the current raw orientation as the new "forward" reference.
@@ -206,9 +251,9 @@ mod tests {
         };
         // Look 40° right, recenter: the rendered pose must become identity.
         let raw = HeadPose::from_euler_deg(40.0, 0.0, 0.0);
-        ht.ingest(raw, HeadPose::identity());
+        ht.ingest(raw, HeadPose::identity(), std::time::Instant::now());
         ht.recenter();
-        let pose = ht.ingest(raw, HeadPose::identity());
+        let pose = ht.ingest(raw, HeadPose::identity(), std::time::Instant::now());
         approx(pose, HeadPose::identity());
     }
 
@@ -219,10 +264,62 @@ mod tests {
             ..Default::default()
         };
         let raw = HeadPose::from_euler_deg(90.0, 0.0, 0.0);
-        let p1 = ht.ingest(raw, HeadPose::identity());
+        let p1 = ht.ingest(raw, HeadPose::identity(), std::time::Instant::now());
         // Halfway: not yet at the target, not still at identity.
         let target = ht.world_to_head(raw);
         approx_between(p1, HeadPose::identity(), target);
+    }
+
+    /// Same setting, same milliseconds, same pose — whatever the packet rate.
+    #[test]
+    fn smoothing_is_a_time_constant_not_a_packet_count() {
+        use std::time::{Duration, Instant};
+        let raw = HeadPose::from_euler_deg(60.0, 0.0, 0.0);
+        let run = |hz: u32| -> HeadPose {
+            let mut ht = HeadTracking {
+                smoothing: 0.8,
+                ..Default::default()
+            };
+            let t0 = Instant::now();
+            let mut pose = HeadPose::identity();
+            let n = hz / 5; // 200 ms of packets
+            for k in 0..=n {
+                let at = t0 + Duration::from_secs_f32(k as f32 / hz as f32);
+                pose = ht.ingest(raw, pose, at);
+            }
+            pose
+        };
+        let (slow, fast) = (run(30), run(100));
+        let d = (slow.w - fast.w).abs()
+            + (slow.x - fast.x).abs()
+            + (slow.y - fast.y).abs()
+            + (slow.z - fast.z).abs();
+        assert!(d < 0.02, "30 Hz and 100 Hz diverged after 200 ms: {d}");
+        // And at the reference rate the per-packet step is what it always was.
+        assert!((HeadTracking::step(0.8, 1.0 / 30.0) - 0.2).abs() < 1e-6);
+        assert!((HeadTracking::step(0.0, 0.01) - 1.0).abs() < 1e-6);
+    }
+
+    /// A source that resumes after a long pause converges instead of
+    /// teleporting: the step is capped at a quarter second's worth.
+    #[test]
+    fn a_long_pause_does_not_teleport() {
+        use std::time::{Duration, Instant};
+        let mut ht = HeadTracking {
+            smoothing: 0.9,
+            ..Default::default()
+        };
+        let raw = HeadPose::from_euler_deg(90.0, 0.0, 0.0);
+        let t0 = Instant::now();
+        let p1 = ht.ingest(raw, HeadPose::identity(), t0);
+        let p2 = ht.ingest(raw, p1, t0 + Duration::from_secs(5));
+        let target = ht.world_to_head(raw);
+        approx_between(p2, HeadPose::identity(), target);
+        let expected = HeadTracking::step(0.9, MAX_STEP_S);
+        assert!(
+            expected < 1.0,
+            "the capped step must still be partial: {expected}"
+        );
     }
 
     fn approx_between(p: HeadPose, a: HeadPose, b: HeadPose) {
