@@ -108,6 +108,9 @@ pub struct SpagnolPrtfHrir {
     /// and resonances (larger pinna), >1 raises them — crude 1-DOF
     /// individualization standing in for the photo-derived notch frequencies.
     pub freq_scale: f32,
+    /// Head radius of the underlying head-shadow stage (see
+    /// [`SyntheticHrir::head_radius_m`]).
+    pub head_radius_m: f32,
 }
 
 impl SpagnolPrtfHrir {
@@ -142,7 +145,10 @@ impl SpagnolPrtfHrir {
 impl HrirProvider for SpagnolPrtfHrir {
     fn render(&self, az_deg: f32, el_deg: f32, sample_rate: u32) -> HrirPair {
         // Base: analytic head shadow + ILD (identical to SyntheticHrir).
-        let mut pair = SyntheticHrir.render(az_deg, el_deg, sample_rate);
+        let head = SyntheticHrir {
+            head_radius_m: self.head_radius_m,
+        };
+        let mut pair = head.render(az_deg, el_deg, sample_rate);
         if self.depth <= 1e-4 {
             return pair;
         }
@@ -197,9 +203,10 @@ mod tests {
         let p = SpagnolPrtfHrir {
             depth: 0.0,
             freq_scale: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         }
         .render(0.0, 0.0, 48_000);
-        let s = SyntheticHrir.render(0.0, 0.0, 48_000);
+        let s = SyntheticHrir::default().render(0.0, 0.0, 48_000);
         assert_eq!(p.left, s.left);
         assert_eq!(p.right, s.right);
     }
@@ -211,9 +218,10 @@ mod tests {
         let p = SpagnolPrtfHrir {
             depth: 1.0,
             freq_scale: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         }
         .render(0.0, 0.0, 48_000);
-        let s = SyntheticHrir.render(0.0, 0.0, 48_000);
+        let s = SyntheticHrir::default().render(0.0, 0.0, 48_000);
         assert!(
             sumsq_diff(&p.left, &s.left) > 1e-3,
             "PRTF did not colour the spectrum"
@@ -226,6 +234,7 @@ mod tests {
         let m = SpagnolPrtfHrir {
             depth: 1.0,
             freq_scale: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         };
         let lo = m.render(0.0, -45.0, 48_000);
         let hi = m.render(0.0, 45.0, 48_000);
@@ -241,11 +250,13 @@ mod tests {
         let a = SpagnolPrtfHrir {
             depth: 1.0,
             freq_scale: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         }
         .render(0.0, 0.0, 48_000);
         let b = SpagnolPrtfHrir {
             depth: 1.0,
             freq_scale: 1.3,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         }
         .render(0.0, 0.0, 48_000);
         assert!(
@@ -261,11 +272,12 @@ mod tests {
         let m = SpagnolPrtfHrir {
             depth: 1.0,
             freq_scale: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         };
         // Relative to each ear's own head-shadow base (see the pinna test).
         let colour = |az: f32, ear: fn(&HrirPair) -> &[f32; HRIR_LEN]| -> f32 {
             let p = m.render(az, 0.0, 48_000);
-            let s = SyntheticHrir.render(az, 0.0, 48_000);
+            let s = SyntheticHrir::default().render(az, 0.0, 48_000);
             let base: f32 = ear(&s).iter().map(|x| x * x).sum();
             sumsq_diff(ear(&p), ear(&s)) / base
         };
@@ -285,6 +297,7 @@ mod tests {
         let m = SpagnolPrtfHrir {
             depth: 1.0,
             freq_scale: 1.5,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         };
         for el in [-45.0, -20.0, 0.0, 20.0, 45.0, 70.0, 90.0] {
             let p = m.render(30.0, el, 48_000);

@@ -106,6 +106,16 @@ pub enum HrirSource {
 }
 
 impl HrirSource {
+    /// Whether the grid built from this source depends on the head radius:
+    /// the analytic head-shadow stage of the parametric models does, a
+    /// measured set does not (its head is the one it was measured on).
+    pub fn uses_head_radius(&self) -> bool {
+        matches!(
+            self,
+            Self::Synthetic | Self::Pinna { .. } | Self::Prtf { .. }
+        )
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Self::Synthetic => "synthetic",
@@ -358,6 +368,20 @@ impl Default for HrirStatus {
     }
 }
 
+/// Head radius quantised to the millimetre: the key a grid build is
+/// identified by alongside its source, so a live radius tweak rebuilds the
+/// parametric grids once per millimetre step, not once per sub-micron wiggle.
+fn head_radius_key(head_radius_m: f32) -> u16 {
+    (head_radius_m.clamp(0.0, 1.0) * 1000.0).round() as u16
+}
+
+/// A grid build request: what to build and, for the parametric sources, with
+/// which head.
+struct HrirRequest {
+    source: HrirSource,
+    head_radius_m: f32,
+}
+
 /// Receives each build's [`HrirStatus`]; the renderer's owner wires it to the
 /// state broadcast. Called on the rebuild worker (or, for the initial grid,
 /// on the constructing thread), never on the audio thread.
@@ -372,6 +396,9 @@ pub type HrirStatusSink = std::sync::Arc<dyn Fn(HrirStatus) + Send + Sync>;
 struct Grid {
     /// The source that was asked for — what `rebuild_pending` compares.
     requested: HrirSource,
+    /// Head radius the grid was built with, in millimetres. Only the
+    /// parametric sources depend on it; see [`HrirSource::uses_head_radius`].
+    head_radius_mm: u16,
     /// The source the set really came from (KEMAR after a failed SOFA load).
     effective: HrirSource,
     /// Why `effective` differs from `requested`, when it does.
@@ -397,11 +424,13 @@ pub struct BinauralRenderer {
     /// HRIR source last *requested* (the active grid may briefly lag it while
     /// the worker builds — see [`Self::ensure_source`]).
     source: HrirSource,
+    /// Head radius last requested, as a millimetre key.
+    head_radius_mm: u16,
     /// Finished grids from the rebuild worker, awaiting the audio-thread swap.
     incoming: std::sync::Arc<arc_swap::ArcSwapOption<Grid>>,
     /// Requests to the long-lived rebuild worker. Dropping the renderer drops
     /// the sender, which terminates the worker.
-    rebuild_tx: std::sync::mpsc::Sender<HrirSource>,
+    rebuild_tx: std::sync::mpsc::Sender<HrirRequest>,
     /// Grids the audio thread has swapped out, handed to the worker to be
     /// freed there: the last reference to a grid must not drop on the audio
     /// thread (half a megabyte and up).
@@ -446,7 +475,7 @@ impl BinauralRenderer {
         // renders, SOFA file I/O) must never run on the audio thread. The
         // worker drains request bursts to the latest one, builds, and
         // publishes into `incoming` for the audio thread to swap in.
-        let (rebuild_tx, rebuild_rx) = std::sync::mpsc::channel::<HrirSource>();
+        let (rebuild_tx, rebuild_rx) = std::sync::mpsc::channel::<HrirRequest>();
         let (retire_tx, retire_rx) = std::sync::mpsc::channel::<std::sync::Arc<Grid>>();
         {
             let slot = std::sync::Arc::clone(&incoming);
@@ -461,7 +490,7 @@ impl BinauralRenderer {
                         // Free whatever the audio thread has retired, here
                         // rather than there.
                         while retire_rx.try_recv().is_ok() {}
-                        let grid = Self::build_grid(req, sample_rate);
+                        let grid = Self::build_grid(req.source, req.head_radius_m, sample_rate);
                         // Reported before the grid is handed over, so the
                         // status is never behind what is being convolved.
                         sink(grid.status());
@@ -472,12 +501,14 @@ impl BinauralRenderer {
         }
         // The initial (default) grid is built synchronously: `new` runs on
         // a control thread, and the renderer must be usable immediately.
-        let initial = Self::build_grid(source.clone(), sample_rate);
+        let head_radius_m = itd::DEFAULT_HEAD_RADIUS_M;
+        let initial = Self::build_grid(source.clone(), head_radius_m, sample_rate);
         sink(initial.status());
         Self {
             sample_rate,
             hrir: std::sync::Arc::new(initial),
             source,
+            head_radius_mm: head_radius_key(head_radius_m),
             incoming,
             rebuild_tx,
             retire_tx,
@@ -513,12 +544,13 @@ impl BinauralRenderer {
     /// attribute its output to a specific HRIR set has to wait on this.
     pub fn rebuild_pending(&self) -> bool {
         self.source != self.hrir.requested
+            || (self.source.uses_head_radius() && self.head_radius_mm != self.hrir.head_radius_mm)
     }
 
     /// Build the grid for `requested`. A SOFA source that cannot be loaded
     /// falls back to the embedded KEMAR set; the grid then records both
     /// sources and the reason, for [`HrirStatus`].
-    fn build_grid(requested: HrirSource, sample_rate: u32) -> Grid {
+    fn build_grid(requested: HrirSource, head_radius_m: f32, sample_rate: u32) -> Grid {
         let (set, effective, error) = match &requested {
             HrirSource::Sofa(path) => match Self::load_sofa(path, sample_rate) {
                 Ok(set) => (set, requested.clone(), None),
@@ -527,25 +559,32 @@ impl BinauralRenderer {
                         "binaural: SOFA source '{path}' unavailable ({reason}); falling back to SAF KEMAR"
                     );
                     (
-                        Self::build_hrir(&HrirSource::SafKemar, sample_rate),
+                        Self::build_hrir(&HrirSource::SafKemar, head_radius_m, sample_rate),
                         HrirSource::SafKemar,
                         Some(reason),
                     )
                 }
             },
-            other => (Self::build_hrir(other, sample_rate), other.clone(), None),
+            other => (
+                Self::build_hrir(other, head_radius_m, sample_rate),
+                other.clone(),
+                None,
+            ),
         };
         Grid {
             requested,
+            head_radius_mm: head_radius_key(head_radius_m),
             effective,
             error,
             set,
         }
     }
 
-    fn build_hrir(source: &HrirSource, sample_rate: u32) -> HrirSet {
+    fn build_hrir(source: &HrirSource, head_radius_m: f32, sample_rate: u32) -> HrirSet {
         match source {
-            HrirSource::Synthetic => HrirSet::synthetic(sample_rate),
+            HrirSource::Synthetic => {
+                HrirSet::new(&hrir::SyntheticHrir { head_radius_m }, sample_rate)
+            }
             HrirSource::Pinna {
                 preset,
                 d_scale_pct,
@@ -557,6 +596,7 @@ impl BinauralRenderer {
                     &ParametricPinnaHrir {
                         d,
                         depth: *depth_pct as f32 / 100.0,
+                        head_radius_m,
                     },
                     sample_rate,
                 )
@@ -568,6 +608,7 @@ impl BinauralRenderer {
                 &SpagnolPrtfHrir {
                     depth: *depth_pct as f32 / 100.0,
                     freq_scale: *freq_scale_pct as f32 / 100.0,
+                    head_radius_m,
                 },
                 sample_rate,
             ),
@@ -605,13 +646,13 @@ impl BinauralRenderer {
         Err("SOFA support not built into this renderer (enable the 'sofa' feature)".to_string())
     }
 
-    /// Track the requested HRIR source. Called once per frame from the audio
+    /// Track the requested HRIR source and head radius. Called once per frame from the audio
     /// thread; the steady-state cost is one compare plus one atomic swap. On
     /// an actual change it only pushes a request to the rebuild worker — the
     /// grid build (allocations, provider renders, SOFA file I/O) never runs
     /// here (issue #153). Frames keep rendering with the previous grid until
     /// the worker's result lands.
-    pub fn ensure_source(&mut self, source: &HrirSource) {
+    pub fn ensure_source(&mut self, source: &HrirSource, head_radius_m: f32) {
         if let Some(grid) = self.incoming.swap(None) {
             let retired = std::mem::replace(&mut self.hrir, grid);
             // The old grid goes back to the worker to be freed; dropping it
@@ -622,11 +663,25 @@ impl BinauralRenderer {
             // the new grid answers differently for the same key.
             self.hrir_generation = self.hrir_generation.wrapping_add(1);
         }
-        if &self.source != source {
+        // The head radius only matters to the parametric sources: a measured
+        // set was measured on its own head, and a live radius tweak must not
+        // rebuild it for nothing.
+        let radius_mm = head_radius_key(head_radius_m);
+        let radius_moved = source.uses_head_radius() && radius_mm != self.head_radius_mm;
+        if &self.source != source || radius_moved {
             self.source = source.clone();
+            self.head_radius_mm = radius_mm;
             // `send` allocates one queue node — rare (a user-initiated source
-            // change), unlike the megabytes+I/O of the build it replaces.
-            let _ = self.rebuild_tx.send(source.clone());
+            // or radius change), unlike the megabytes+I/O of the build it
+            // replaces.
+            let _ = self.rebuild_tx.send(HrirRequest {
+                source: source.clone(),
+                head_radius_m,
+            });
+        } else if radius_mm != self.head_radius_mm {
+            // Measured source: remember the radius so a later switch to a
+            // parametric one builds with the current head, not a stale one.
+            self.head_radius_mm = radius_mm;
         }
     }
 
@@ -1314,18 +1369,51 @@ mod tests {
             "the initial build must report the default set"
         );
         let missing = HrirSource::Sofa("/nonexistent/listener.sofa".to_string());
-        r.ensure_source(&missing);
+        r.ensure_source(&missing, itd::DEFAULT_HEAD_RADIUS_M);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while r.rebuild_pending() {
             assert!(std::time::Instant::now() < deadline, "rebuild never landed");
             std::thread::sleep(std::time::Duration::from_millis(5));
-            r.ensure_source(&missing);
+            r.ensure_source(&missing, itd::DEFAULT_HEAD_RADIUS_M);
         }
         let last = seen.lock().unwrap().last().cloned().expect("a status");
         assert_eq!(last.requested, missing);
         assert_eq!(last.effective, HrirSource::SafKemar);
         let err = last.error.expect("the failure must carry a reason");
         assert!(!err.is_empty());
+    }
+
+    /// A head-radius change rebuilds a parametric grid (its shelf corner
+    /// depends on it) and leaves a measured one alone (it was measured on
+    /// its own head).
+    #[test]
+    fn head_radius_rebuilds_parametric_grids_only() {
+        let mut r = BinauralRenderer::new(48_000);
+        let g0 = r.hrir_grid_id();
+        // Measured (default KEMAR): a radius change is not a rebuild.
+        r.ensure_source(&HrirSource::SafKemar, 0.10);
+        assert!(
+            !r.rebuild_pending(),
+            "KEMAR must not rebuild on a radius change"
+        );
+        assert_eq!(r.hrir_grid_id(), g0);
+        // Parametric: it is.
+        let settle = |r: &mut BinauralRenderer, radius: f32| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            r.ensure_source(&HrirSource::Synthetic, radius);
+            while r.rebuild_pending() {
+                assert!(std::time::Instant::now() < deadline, "rebuild never landed");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                r.ensure_source(&HrirSource::Synthetic, radius);
+            }
+            r.hrir_grid_id()
+        };
+        let g_small = settle(&mut r, 0.07);
+        assert_ne!(g_small, g0);
+        let g_same = settle(&mut r, 0.0703); // same millimetre: no rebuild
+        assert_eq!(g_same, g_small);
+        let g_large = settle(&mut r, 0.10);
+        assert_ne!(g_large, g_small);
     }
 
     /// A source switch must not stall rendering: the frame right after the
@@ -1355,7 +1443,7 @@ mod tests {
         };
 
         let initial_grid = r.hrir_grid_id();
-        r.ensure_source(&HrirSource::Synthetic);
+        r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M);
         // Immediately after the request the old grid must still be active and
         // rendering must work (the build happens on the worker).
         assert_eq!(r.hrir_grid_id(), initial_grid, "swap must be asynchronous");
@@ -1369,7 +1457,7 @@ mod tests {
                 "rebuilt grid never arrived"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
-            r.ensure_source(&HrirSource::Synthetic);
+            r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M);
         }
         assert!(render(&mut r) > 1e-9, "render broken after grid swap");
     }

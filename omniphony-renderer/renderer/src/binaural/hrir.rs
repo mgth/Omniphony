@@ -81,7 +81,20 @@ pub trait HrirProvider {
 /// with the ITD, which is the cue that actually carries lateralisation down
 /// there. Self-contained (no measured data); the base of the parametric
 /// pinna models and the no-pinna A/B reference.
-pub struct SyntheticHrir;
+pub struct SyntheticHrir {
+    /// Head radius `a` for `ω₀ = c / a`: the same radius the ITD model uses,
+    /// so a listener who fits `head_radius_m` moves the shelf corner and
+    /// the interaural delay together.
+    pub head_radius_m: f32,
+}
+
+impl Default for SyntheticHrir {
+    fn default() -> Self {
+        Self {
+            head_radius_m: super::itd::DEFAULT_HEAD_RADIUS_M,
+        }
+    }
+}
 
 impl SyntheticHrir {
     /// `α_min` (Brown & Duda's recommended value): the deepest high-frequency
@@ -90,9 +103,6 @@ impl SyntheticHrir {
     /// `θ_min`: angle of the deepest shadow, past which the bright spot
     /// behind the head brings the level back up.
     const THETA_MIN_DEG: f32 = 150.0;
-    /// Head radius `a` for `ω₀ = c / a` (the ITD model's default; the live
-    /// ITD radius is not wired into the HRIR build).
-    const HEAD_RADIUS_M: f32 = super::itd::DEFAULT_HEAD_RADIUS_M;
     const SPEED_OF_SOUND: f32 = 343.0;
 
     /// `α(θ)`, with `cos_theta` the cosine of the angle from the ear's axis.
@@ -108,8 +118,8 @@ impl SyntheticHrir {
     /// with `p = exp(−2ω₀ / fs)`. The exponential term carries `1 − α` of
     /// the DC gain so the total is exactly 1; at high frequency only the
     /// impulse survives, leaving `α`.
-    fn shelf_ir(alpha: f32, sample_rate: u32, out: &mut [f32; HRIR_LEN]) {
-        let w0 = Self::SPEED_OF_SOUND / Self::HEAD_RADIUS_M;
+    fn shelf_ir(&self, alpha: f32, sample_rate: u32, out: &mut [f32; HRIR_LEN]) {
+        let w0 = Self::SPEED_OF_SOUND / self.head_radius_m.clamp(0.05, 0.15);
         let p = (-2.0 * w0 / sample_rate as f32).exp();
         let mut tail = (1.0 - alpha) * (1.0 - p);
         for (n, slot) in out.iter_mut().enumerate() {
@@ -155,8 +165,8 @@ impl HrirProvider for SyntheticHrir {
         // sine. The left ear sees the supplementary angle.
         let lateral = (az.sin() * el.cos()).clamp(-1.0, 1.0);
         let mut pair = HrirPair::zeroed();
-        Self::shelf_ir(Self::alpha(-lateral), sample_rate, &mut pair.left);
-        Self::shelf_ir(Self::alpha(lateral), sample_rate, &mut pair.right);
+        self.shelf_ir(Self::alpha(-lateral), sample_rate, &mut pair.left);
+        self.shelf_ir(Self::alpha(lateral), sample_rate, &mut pair.right);
         pair
     }
 }
@@ -187,6 +197,9 @@ pub struct ParametricPinnaHrir {
     pub d: [f32; 5],
     /// Echo strength in [0, 1]. 0 ⇒ head shadow only; 1 ⇒ full echoes.
     pub depth: f32,
+    /// Head radius of the underlying head-shadow stage (see
+    /// [`SyntheticHrir::head_radius_m`]).
+    pub head_radius_m: f32,
 }
 
 impl ParametricPinnaHrir {
@@ -290,7 +303,10 @@ impl ParametricPinnaHrir {
 impl HrirProvider for ParametricPinnaHrir {
     fn render(&self, az_deg: f32, el_deg: f32, sample_rate: u32) -> HrirPair {
         // Base: the analytic head shadow + ILD (identical to SyntheticHrir).
-        let mut pair = SyntheticHrir.render(az_deg, el_deg, sample_rate);
+        let head = SyntheticHrir {
+            head_radius_m: self.head_radius_m,
+        };
+        let mut pair = head.render(az_deg, el_deg, sample_rate);
         if self.depth <= 1e-4 {
             return pair; // degenerates to the plain synthetic head model
         }
@@ -438,9 +454,10 @@ impl HrirSet {
         self.len == 0
     }
 
-    /// Convenience constructor for the built-in synthetic model.
+    /// Convenience constructor for the built-in synthetic model at the
+    /// default head radius.
     pub fn synthetic(sample_rate: u32) -> Self {
-        Self::new(&SyntheticHrir, sample_rate)
+        Self::new(&SyntheticHrir::default(), sample_rate)
     }
 
     #[inline]
@@ -695,6 +712,7 @@ mod tests {
                     &ParametricPinnaHrir {
                         d: ParametricPinnaHrir::D_PB_NH,
                         depth: 1.0,
+                        head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
                     },
                     48_000,
                 ),
@@ -705,6 +723,7 @@ mod tests {
                     &crate::binaural::prtf::SpagnolPrtfHrir {
                         depth: 1.0,
                         freq_scale: 1.0,
+                        head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
                     },
                     48_000,
                 ),
@@ -732,9 +751,10 @@ mod tests {
         let p = ParametricPinnaHrir {
             d: ParametricPinnaHrir::D_PB_NH,
             depth: 0.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         }
         .render(30.0, 20.0, 48_000);
-        let s = SyntheticHrir.render(30.0, 20.0, 48_000);
+        let s = SyntheticHrir::default().render(30.0, 20.0, 48_000);
         assert_eq!(p.left, s.left);
         assert_eq!(p.right, s.right);
     }
@@ -747,8 +767,8 @@ mod tests {
         // On the median plane the bare synthetic model is front/back (near-)
         // identical (lateral = sin(az)·cos(el) ≈ 0 at az 0 and 180; only the
         // f32 sin(π) residual differs): effectively no front/back cue.
-        let s_front = SyntheticHrir.render(0.0, 0.0, 48_000);
-        let s_back = SyntheticHrir.render(180.0, 0.0, 48_000);
+        let s_front = SyntheticHrir::default().render(0.0, 0.0, 48_000);
+        let s_back = SyntheticHrir::default().render(180.0, 0.0, 48_000);
         let s_diff = sumsq_diff(&s_front.left, &s_back.left);
         assert!(
             s_diff < 1e-6,
@@ -760,6 +780,7 @@ mod tests {
         let pinna = ParametricPinnaHrir {
             d: ParametricPinnaHrir::D_PB_NH,
             depth: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         };
         let p_front = pinna.render(0.0, 0.0, 48_000);
         let p_back = pinna.render(180.0, 0.0, 48_000);
@@ -778,6 +799,7 @@ mod tests {
         let pinna = ParametricPinnaHrir {
             d: ParametricPinnaHrir::D_PB_NH,
             depth: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         };
         let level = pinna.render(180.0, 0.0, 48_000);
         let high = pinna.render(180.0, 40.0, 48_000);
@@ -797,6 +819,7 @@ mod tests {
         let pinna = ParametricPinnaHrir {
             d: ParametricPinnaHrir::D_PB_NH,
             depth: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         };
         let ahead = pinna.render(0.0, 89.0, 48_000);
         let behind = pinna.render(180.0, 89.0, 48_000);
@@ -819,12 +842,13 @@ mod tests {
         let pinna = ParametricPinnaHrir {
             d: ParametricPinnaHrir::D_PB_NH,
             depth: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         };
         // Colouration energy relative to the ear's own head-shadow base, so
         // the shadowed ear's lower level does not enter the comparison.
         let colour = |az: f32, ear: fn(&HrirPair) -> &[f32; HRIR_LEN]| -> f32 {
             let p = pinna.render(az, 0.0, 48_000);
-            let s = SyntheticHrir.render(az, 0.0, 48_000);
+            let s = SyntheticHrir::default().render(az, 0.0, 48_000);
             let diff: f32 = ear(&p)
                 .iter()
                 .zip(ear(&s).iter())
@@ -852,11 +876,13 @@ mod tests {
         let pbnh = ParametricPinnaHrir {
             d: ParametricPinnaHrir::D_PB_NH,
             depth: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         }
         .render(0.0, 45.0, 48_000);
         let rd = ParametricPinnaHrir {
             d: ParametricPinnaHrir::D_RD,
             depth: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         }
         .render(0.0, 45.0, 48_000);
         let diff: f32 = pbnh
@@ -876,6 +902,7 @@ mod tests {
         let pinna = ParametricPinnaHrir {
             d: ParametricPinnaHrir::D_PB_NH,
             depth: 1.0,
+            head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
         };
         let a = pinna.render(0.0, 30.0, 48_000);
         let b = pinna.render(0.0, 30.5, 48_000);
@@ -901,12 +928,13 @@ mod tests {
     #[test]
     fn modelled_providers_are_left_right_symmetric() {
         let providers: Vec<(&str, Box<dyn HrirProvider>)> = vec![
-            ("synthetic", Box::new(SyntheticHrir)),
+            ("synthetic", Box::new(SyntheticHrir::default())),
             (
                 "pinna",
                 Box::new(ParametricPinnaHrir {
                     d: ParametricPinnaHrir::D_PB_NH,
                     depth: 1.0,
+                    head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
                 }),
             ),
             (
@@ -914,6 +942,7 @@ mod tests {
                 Box::new(crate::binaural::prtf::SpagnolPrtfHrir {
                     depth: 1.0,
                     freq_scale: 1.0,
+                    head_radius_m: crate::binaural::itd::DEFAULT_HEAD_RADIUS_M,
                 }),
             ),
         ];
@@ -1003,7 +1032,7 @@ mod tests {
             (150.0, 0.0),
             (90.0, 45.0),
         ] {
-            let p = SyntheticHrir.render(az, el, 48_000);
+            let p = SyntheticHrir::default().render(az, el, 48_000);
             let dc_l: f32 = p.left.iter().sum();
             let dc_r: f32 = p.right.iter().sum();
             assert!((dc_l - 1.0).abs() < 1e-3, "({az}, {el}) left DC {dc_l}");
@@ -1021,7 +1050,7 @@ mod tests {
                 .map(|(n, &x)| if n % 2 == 0 { x } else { -x })
                 .sum()
         };
-        let p = SyntheticHrir.render(90.0, 0.0, 48_000);
+        let p = SyntheticHrir::default().render(90.0, 0.0, 48_000);
         let (l, r) = (nyquist(&p.left), nyquist(&p.right));
         // The exponential term still contributes (1 − α)(1 − p)/(1 + p) at
         // Nyquist, hence ≈ 1.92 rather than exactly α = 2.
@@ -1032,15 +1061,50 @@ mod tests {
         // The left ear is 180° from the source axis: past θ_min, in the
         // bright spot, α ≈ 0.24 — darker than the median plane's 0.72.
         assert!(l > 0.15 && l < 0.35, "contralateral HF gain {l}");
-        let m = SyntheticHrir.render(0.0, 0.0, 48_000);
+        let m = SyntheticHrir::default().render(0.0, 0.0, 48_000);
         let med = nyquist(&m.left);
         assert!(med > 0.6 && med < 0.85, "median-plane HF gain {med}");
         // Deepest shadow at θ_min = 150° from the ear axis, i.e. 60° past
         // the median plane on the far side.
-        let deep = SyntheticHrir.render(-60.0, 0.0, 48_000);
+        let deep = SyntheticHrir::default().render(-60.0, 0.0, 48_000);
         let d = nyquist(&deep.right);
         // α_min = 0.05 plus the same ≈ 0.08 tail term as above.
         assert!(d < 0.2, "θ_min shadow gain {d}");
+    }
+
+    /// The shelf corner follows the head radius: a larger head has a lower
+    /// corner (2ω₀ = 2c/a), so its shadowed-ear response holds more of its
+    /// energy in the exponential tail and less in the leading impulse.
+    #[test]
+    fn synthetic_shelf_corner_follows_the_head_radius() {
+        let small = SyntheticHrir {
+            head_radius_m: 0.07,
+        }
+        .render(90.0, 0.0, 48_000);
+        let large = SyntheticHrir {
+            head_radius_m: 0.10,
+        }
+        .render(90.0, 0.0, 48_000);
+        // Left ear is shadowed: h[0] = α + (1 − α)(1 − p), p = exp(−2c/(a·fs)).
+        // A larger a → larger p → smaller (1 − p) → smaller h[0].
+        assert!(
+            large.left[0] < small.left[0],
+            "{} vs {}",
+            large.left[0],
+            small.left[0]
+        );
+        // The tail decays as pⁿ: a larger head has the slower decay (lower
+        // corner 2c/a), and the ratio of consecutive taps is p itself.
+        let decay = |h: &[f32; HRIR_LEN]| h[2] / h[1];
+        let (p_small, p_large) = (decay(&small.left), decay(&large.left));
+        assert!(p_large > p_small, "decay {p_large} vs {p_small}");
+        let expected = |a: f32| (-2.0 * 343.0 / (a * 48_000.0)).exp();
+        assert!((p_small - expected(0.07)).abs() < 1e-3, "{p_small}");
+        assert!((p_large - expected(0.10)).abs() < 1e-3, "{p_large}");
+        assert_eq!(
+            SyntheticHrir::default().head_radius_m,
+            crate::binaural::itd::DEFAULT_HEAD_RADIUS_M
+        );
     }
 
     #[test]
