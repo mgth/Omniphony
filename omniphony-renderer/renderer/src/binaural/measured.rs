@@ -3,11 +3,22 @@
 //! A [`MeasuredHrirData`] holds scattered-direction impulse responses. It
 //! implements [`HrirProvider`] by blending the three nearest measurements
 //! (inverse-angular-distance weights, per-ear energy compensation) after
-//! onset-alignment and truncation to [`HRIR_LEN`], so it plugs straight into
+//! truncation to [`HRIR_LEN`], so it plugs straight into
 //! [`HrirSet::new`](super::hrir::HrirSet::new) and reuses the regular-grid
-//! bilinear interpolation. Time alignment (the interaural delay is supplied
-//! analytically, see [`super::itd`]) keeps both the blend and the grid
-//! interpolable without comb-filtering.
+//! bilinear interpolation.
+//!
+//! Every stored impulse response is **minimum-phase** (see
+//! [`minimum_phase`]): the magnitude response of the measurement is kept
+//! exactly, and all of its energy is pulled to the start. That is what makes
+//! the set interpolable — blending two responses whose onsets differ by a few
+//! samples combs their shared content instead of averaging it, and the
+//! threshold-based onset detection this replaced left up to seven samples of
+//! interaural lag on the shadowed ear (see `docs/dsp-validation-report.md`).
+//! The interaural delay itself is supplied analytically ([`super::itd`]), so
+//! nothing of the measurement's phase is needed beyond its magnitude.
+
+use realfft::RealFftPlanner;
+use realfft::num_complex::Complex;
 
 use super::hrir::{HRIR_LEN, HrirPair, HrirProvider};
 
@@ -18,10 +29,17 @@ static SAF_KEMAR_BLOB: &[u8] = include_bytes!("data/saf_kemar.bin");
 
 const BLOB_MAGIC: u32 = 0x4F48_4952; // 'OHIR'
 
-/// Onset detection / alignment parameters (mirror the generator's, used for any
-/// not-yet-aligned source such as SOFA).
+/// Onset detection / alignment parameters (mirror the generator's). Kept for
+/// responses that reach [`align_into`] without going through
+/// [`MeasuredHrirData`] — a minimum-phase response has its onset at zero and
+/// passes through unchanged.
 const PRE_SAMPLES: usize = 8;
 const ONSET_FRAC: f32 = 0.15;
+
+/// Magnitude floor of the minimum-phase reconstruction, relative to the
+/// spectral peak (−100 dB): keeps the log finite where a measurement has no
+/// energy (a band-limited set at Nyquist) without shaping anything audible.
+const MIN_PHASE_FLOOR: f64 = 1e-5;
 
 /// A scattered set of measured HRIR pairs with their directions (renderer
 /// convention: az 0 = front, +az = right; el 0 = horizontal, +90 = up).
@@ -36,9 +54,16 @@ pub struct MeasuredHrirData {
 }
 
 impl MeasuredHrirData {
-    /// Build from raw measurements. `dirs[i]` corresponds to `irs[i]`.
+    /// Build from raw measurements. `dirs[i]` corresponds to `irs[i]`. Every
+    /// response is converted to minimum phase on the way in (see the module
+    /// doc); the measurement's own bulk delay, and any pre-alignment it was
+    /// given, are discarded.
     pub fn new(sample_rate: u32, dirs: Vec<(f32, f32)>, irs: Vec<(Vec<f32>, Vec<f32>)>) -> Self {
         let vecs = dirs.iter().map(|&(az, el)| dir_vec(az, el)).collect();
+        let irs = irs
+            .into_iter()
+            .map(|(l, r)| (minimum_phase(&l), minimum_phase(&r)))
+            .collect();
         Self {
             sample_rate,
             dirs,
@@ -106,6 +131,10 @@ impl MeasuredHrirData {
     /// Runs once at build time, never in the audio loop. Without it the
     /// 48 kHz KEMAR taps play verbatim at any engine rate, shifting every
     /// HRTF feature by the rate ratio (issue #151).
+    ///
+    /// Resampling a minimum-phase response leaves it only approximately so
+    /// (the interpolation kernel is linear-phase), hence the reconstruction
+    /// runs again on the result.
     pub fn resampled_to(self, target: u32) -> Self {
         if self.sample_rate == target {
             return self;
@@ -114,7 +143,12 @@ impl MeasuredHrirData {
         let irs = self
             .irs
             .iter()
-            .map(|(l, r)| (resample_ir(l, from, target), resample_ir(r, from, target)))
+            .map(|(l, r)| {
+                (
+                    minimum_phase(&resample_ir(l, from, target)),
+                    minimum_phase(&resample_ir(r, from, target)),
+                )
+            })
             .collect();
         Self {
             sample_rate: target,
@@ -358,8 +392,71 @@ fn sinc(x: f64) -> f64 {
     if x.abs() < 1e-12 { 1.0 } else { x.sin() / x }
 }
 
+/// Minimum-phase reconstruction of `ir` (real-cepstrum method): same
+/// magnitude response, all energy pulled to the start, no bulk delay.
+///
+/// `ln|H|` is transformed to the cepstrum, folded onto the causal side
+/// (`c[0]`, `2·c[n]` for `0 < n < M/2`, `c[M/2]`), transformed back and
+/// exponentiated; the inverse transform of that spectrum is the minimum-phase
+/// response. The transform size is sixteen times the response length so the
+/// cepstrum does not alias onto itself. Build-time only (`f64`, four
+/// transforms per response).
+pub fn minimum_phase(ir: &[f32]) -> Vec<f32> {
+    let n = ir.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let m = (16 * n).next_power_of_two().max(2048);
+    let half = m / 2;
+    let mut planner = RealFftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(m);
+    let ifft = planner.plan_fft_inverse(m);
+    let scale = 1.0 / m as f64;
+
+    let mut x = fft.make_input_vec();
+    for (dst, &v) in x.iter_mut().zip(ir) {
+        *dst = v as f64;
+    }
+    let mut spec = fft.make_output_vec();
+    fft.process(&mut x, &mut spec).expect("forward FFT");
+
+    let peak = spec.iter().map(|c| c.norm()).fold(0.0f64, f64::max);
+    if peak <= 0.0 {
+        return vec![0.0; n];
+    }
+    let floor = peak * MIN_PHASE_FLOOR;
+    let mut log_mag: Vec<Complex<f64>> = spec
+        .iter()
+        .map(|c| Complex::new(c.norm().max(floor).ln(), 0.0))
+        .collect();
+    let mut cepstrum = ifft.make_output_vec();
+    ifft.process(&mut log_mag, &mut cepstrum)
+        .expect("inverse FFT of the log magnitude");
+
+    let mut folded = fft.make_input_vec();
+    folded[0] = cepstrum[0] * scale;
+    for k in 1..half {
+        folded[k] = 2.0 * cepstrum[k] * scale;
+    }
+    folded[half] = cepstrum[half] * scale;
+    let mut log_h = fft.make_output_vec();
+    fft.process(&mut folded, &mut log_h)
+        .expect("forward FFT of the folded cepstrum");
+
+    let mut h_min: Vec<Complex<f64>> = log_h.iter().map(|c| c.exp()).collect();
+    // A real spectrum has real DC and Nyquist bins; the transforms above
+    // leave rounding noise on them, which the real inverse refuses.
+    h_min[0].im = 0.0;
+    h_min[half].im = 0.0;
+    let mut out = ifft.make_output_vec();
+    ifft.process(&mut h_min, &mut out)
+        .expect("inverse FFT of the minimum-phase spectrum");
+    out.iter().take(n).map(|&v| (v * scale) as f32).collect()
+}
+
 /// Onset-align `ir` and copy `HRIR_LEN` taps into `out`. Idempotent for an
-/// already-aligned IR (onset ≈ 0).
+/// already-aligned IR (onset ≈ 0) — a minimum-phase response passes through
+/// unchanged, so for [`MeasuredHrirData`] this is the truncation only.
 fn align_into(ir: &[f32], out: &mut [f32; HRIR_LEN]) {
     if ir.is_empty() {
         out.fill(0.0);
@@ -418,6 +515,98 @@ mod tests {
         assert!(
             (0.5..2.0).contains(&ratio),
             "front asymmetric L={el} R={er}"
+        );
+    }
+
+    /// Magnitude at a few frequencies by direct projection (no FFT bin grid).
+    fn magnitude_at(x: &[f32], f: f64, fs: f64) -> f64 {
+        let (mut c, mut s) = (0.0f64, 0.0f64);
+        for (i, &v) in x.iter().enumerate() {
+            let ph = 2.0 * std::f64::consts::PI * f * i as f64 / fs;
+            c += v as f64 * ph.cos();
+            s += v as f64 * ph.sin();
+        }
+        (c * c + s * s).sqrt()
+    }
+
+    /// A delayed, decaying response with a couple of notches: the
+    /// reconstruction must keep its magnitude and drop the delay.
+    fn test_ir() -> Vec<f32> {
+        let mut ir = vec![0.0f32; 128];
+        for (i, v) in ir.iter_mut().enumerate().skip(23) {
+            let t = (i - 23) as f32;
+            *v = (-t / 12.0).exp() * (0.7 * t).cos() + 0.3 * (-t / 30.0).exp() * (2.1 * t).sin();
+        }
+        ir
+    }
+
+    #[test]
+    fn minimum_phase_preserves_the_magnitude_response() {
+        let ir = test_ir();
+        let mp = minimum_phase(&ir);
+        assert_eq!(mp.len(), ir.len());
+        for f in [200.0, 1_000.0, 3_700.0, 8_000.0, 14_500.0, 21_000.0] {
+            let a = magnitude_at(&ir, f, 48_000.0);
+            let b = magnitude_at(&mp, f, 48_000.0);
+            assert!(
+                (a - b).abs() <= 2e-3 * a.max(1e-3),
+                "magnitude moved at {f} Hz: {a} → {b}"
+            );
+        }
+    }
+
+    /// The defining property of a minimum-phase response: among all responses
+    /// with the same magnitude, its partial energy `Σ_{k≤n} h[k]²` is the
+    /// largest at every `n`. The original is silent for 23 samples, so the
+    /// reconstruction leads it from the very first tap.
+    #[test]
+    fn minimum_phase_pulls_the_energy_to_the_start() {
+        let ir = test_ir();
+        let mp = minimum_phase(&ir);
+        let total: f32 = ir.iter().map(|x| x * x).sum();
+        let (mut acc_ir, mut acc_mp) = (0.0f32, 0.0f32);
+        for (n, (a, b)) in ir.iter().zip(&mp).enumerate() {
+            acc_ir += a * a;
+            acc_mp += b * b;
+            assert!(
+                acc_mp >= acc_ir - 1e-3 * total,
+                "partial energy fell behind the original at tap {n}: {acc_mp} < {acc_ir}"
+            );
+        }
+        assert!(mp[0].abs() > 0.1, "no energy at the origin: {}", mp[0]);
+        let head: f32 = mp[..24].iter().map(|x| x * x).sum();
+        assert!(
+            head > 0.5 * total,
+            "energy not front-loaded: {head}/{total}"
+        );
+    }
+
+    #[test]
+    fn minimum_phase_of_a_delayed_impulse_is_an_impulse() {
+        let mut ir = vec![0.0f32; 64];
+        ir[17] = 0.5;
+        let mp = minimum_phase(&ir);
+        assert!((mp[0] - 0.5).abs() < 1e-4, "peak not at zero: {}", mp[0]);
+        assert!(mp[1..].iter().all(|x| x.abs() < 1e-4), "not an impulse");
+    }
+
+    /// The stored set carries no bulk delay: the peak of every response is at
+    /// the origin. That is the property the three-nearest blend relies on.
+    #[test]
+    fn stored_kemar_responses_start_at_the_origin() {
+        let d = MeasuredHrirData::saf_kemar();
+        let late = d
+            .irs
+            .iter()
+            .flat_map(|(l, r)| [l, r])
+            .filter(|ir| {
+                let peak = ir.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+                ir.iter().position(|&x| x.abs() >= 0.5 * peak).unwrap_or(0) > 2
+            })
+            .count();
+        assert_eq!(
+            late, 0,
+            "{late} responses reach half their peak after tap 2"
         );
     }
 

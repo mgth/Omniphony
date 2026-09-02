@@ -768,6 +768,22 @@ mod tests {
     fn render_single(pos: [f64; 3]) -> (f32, f32) {
         let mut r = BinauralRenderer::new(48_000);
         let n = 512;
+        // A silent first block lets the kernel crossfade (armed when a channel
+        // first receives its HRIR) run to completion. Probing during the fade
+        // would weight the kernel by the ramp and so measure its tail, not it.
+        let silent = vec![0.0f32; n];
+        let mut warm = vec![0.0f32; n * 2];
+        r.render_frame(
+            &silent,
+            1,
+            n,
+            &dry_params(),
+            &[pos],
+            &[1.0],
+            &[],
+            None,
+            &mut warm,
+        );
         // Single impulse: per-ear output energy then equals the (delay-preserved)
         // HRIR energy — a broadband probe that doesn't over-weight the Nyquist bin
         // the way an alternating ±1 input would on a measured HRIR.
