@@ -153,6 +153,21 @@ impl ReflectionBank {
         }
     }
 
+    /// Write one input sample without reading any tap: the write-only
+    /// counterpart of [`process`](Self::process), for the blocks during
+    /// which reflections are switched off. Keeping the ring current costs a
+    /// store per sample and means that switching them back on reads the
+    /// last quarter second of what actually played, not whatever was in the
+    /// ring when they were switched off.
+    #[inline]
+    pub fn push(&mut self, input: f32) {
+        self.ring[self.write_pos] = input;
+        self.write_pos += 1;
+        if self.write_pos >= self.ring.len() {
+            self.write_pos = 0;
+        }
+    }
+
     /// Fade every tap out (e.g. when the channel goes silent) so re-enabling
     /// does not click.
     pub fn mute_targets(&mut self) {
