@@ -22,7 +22,6 @@ export function inputPanelMarkup() {
               <label for="inputModeSelect" data-i18n="input.mode" data-help-i18n="help.input.mode">Mode</label>
               <select id="inputModeSelect" class="delay-input">
                 <option value="pipe_bridge" data-i18n="input.mode.pipe_bridge">Pipe bridge</option>
-                <option value="pipewire" data-i18n="input.mode.pipewire">PipeWire</option>
                 <option value="pipewire_bridge" data-i18n="input.mode.pipewire_bridge">PipeWire bridge</option>
               </select>
             </div>
@@ -53,11 +52,11 @@ export function inputPanelMarkup() {
             </div>
             <div class="input-panel-row">
               <label for="inputNodeInput" data-i18n="input.node" data-help-i18n="help.input.node">Node</label>
-              <input id="inputNodeInput" class="delay-input" type="text" placeholder="omniphony_input_7_1" />
+              <input id="inputNodeInput" class="delay-input" type="text" placeholder="omniphony" />
             </div>
             <div class="input-panel-row">
               <label for="inputDescriptionInput" data-i18n="input.description" data-help-i18n="help.input.description">Description</label>
-              <input id="inputDescriptionInput" class="delay-input" type="text" placeholder="Omniphony Input 7.1" />
+              <input id="inputDescriptionInput" class="delay-input" type="text" placeholder="Omniphony Bridge Input" />
             </div>
             <div class="input-panel-row">
               <div class="title-with-info">
@@ -80,21 +79,14 @@ export function inputPanelMarkup() {
             <div class="input-panel-inline-grid">
               <div class="input-panel-field">
                 <label for="inputChannelsInput" class="input-panel-inline-label" data-i18n="input.channels" data-help-i18n="help.input.channels" data-help-anchor=".input-panel-inline-grid">Channels</label>
-                <input id="inputChannelsInput" class="delay-input" type="number" min="1" step="1" value="8" />
+                <input id="inputChannelsInput" class="delay-input" type="number" min="1" step="1" value="2" />
               </div>
               <div class="input-panel-field">
                 <label for="inputSampleRateInput" class="input-panel-inline-label" data-i18n="audio.sampleRate" data-help-i18n="help.input.sampleRate" data-help-anchor=".input-panel-inline-grid">Sample rate</label>
-                <input id="inputSampleRateInput" class="delay-input" type="number" min="1" step="1" value="48000" />
+                <input id="inputSampleRateInput" class="delay-input" type="number" min="1" step="1" value="192000" />
               </div>
             </div>
             <div class="input-panel-triple-grid">
-              <div class="input-panel-field">
-                <label for="inputFormatSelect" class="input-panel-inline-label" data-i18n="input.format" data-help-i18n="help.input.format" data-help-anchor=".input-panel-triple-grid">Format</label>
-                <select id="inputFormatSelect" class="delay-input">
-                  <option value="f32">f32</option>
-                  <option value="s16">s16</option>
-                </select>
-              </div>
               <div class="input-panel-field">
                 <label for="inputMapSelect" class="input-panel-inline-label" data-i18n="input.map" data-help-i18n="help.input.map" data-help-anchor=".input-panel-triple-grid">Map</label>
                 <select id="inputMapSelect" class="delay-input">

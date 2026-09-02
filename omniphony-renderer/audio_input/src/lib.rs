@@ -12,5 +12,5 @@ pub mod pipewire_pods;
 
 pub use control::{
     AppliedAudioInputState, InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode,
-    InputMode, InputSampleFormat, RequestedAudioInputConfig,
+    InputMode, RequestedAudioInputConfig,
 };

@@ -568,17 +568,9 @@ fn pump_idle_feed(
             live.speaker_test.is_some() || live.object_test.is_some(),
         )
     };
-    // PipeWire live capture delivers silence frames on the graph clock all by
-    // itself when idle — that mode never needs (or wants) a second driver.
-    let input_self_feeding = handler
-        .input_control
-        .as_ref()
-        .map(|control| control.applied_snapshot().active_mode == audio_input::InputMode::Live)
-        .unwrap_or(false);
     let inputs = IdleFeedInputs {
         arm_gen,
         test_active,
-        input_self_feeding,
         sample_rate: handler.session.final_sample_rate,
     };
     let Some(chunk) = feeder.poll(std::time::Instant::now(), &inputs) else {

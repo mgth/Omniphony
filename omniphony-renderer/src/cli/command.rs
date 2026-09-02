@@ -711,10 +711,6 @@ pub struct InputLiveArgs {
     #[arg(long = "input-sample-rate", value_name = "HZ")]
     pub input_sample_rate: Option<u32>,
 
-    /// Requested input sample format.
-    #[arg(long = "input-format", value_enum)]
-    pub input_format: Option<InputSampleFormatArg>,
-
     /// Channel-to-fixed-object mapping preset.
     #[arg(long = "input-map", value_enum)]
     pub input_map: Option<InputMapModeArg>,
@@ -939,12 +935,6 @@ pub enum InputLfeModeArg {
     Object,
     Direct,
     Drop,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum InputSampleFormatArg {
-    F32,
-    S16,
 }
 
 impl OutputBackend {

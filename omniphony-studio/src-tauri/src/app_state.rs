@@ -383,7 +383,6 @@ pub struct LiveInputState {
     pub channels: Option<u32>,
     #[serde(rename = "sampleRate")]
     pub sample_rate: Option<u32>,
-    pub format: Option<String>,
     pub map: Option<String>,
     #[serde(rename = "lfeMode")]
     pub lfe_mode: Option<String>,

@@ -3,7 +3,7 @@ use crate::cli::command::{EvaluationModeArg, OutputBackend, RenderArgs};
 use anyhow::Result;
 use audio_input::{
     InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode, InputMode,
-    InputSampleFormat, RequestedAudioInputConfig,
+    RequestedAudioInputConfig,
 };
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::{PipewireBufferConfig, list_pipewire_output_devices};
@@ -171,7 +171,6 @@ fn build_requested_input_config(
 
     if let Some(render_cfg) = render_cfg {
         requested.mode = match render_cfg.input_mode {
-            Some(renderer::config::InputModeConfig::Live) => InputMode::Live,
             Some(renderer::config::InputModeConfig::PipewireBridge) => InputMode::PipewireBridge,
             _ => InputMode::Bridge,
         };
@@ -194,13 +193,6 @@ fn build_requested_input_config(
             };
             requested.channels = live_input.channels;
             requested.sample_rate_hz = live_input.sample_rate;
-            requested.sample_format = live_input.sample_format.as_deref().and_then(|format| {
-                match format.trim().to_ascii_lowercase().as_str() {
-                    "f32" => Some(InputSampleFormat::F32),
-                    "s16" => Some(InputSampleFormat::S16),
-                    _ => None,
-                }
-            });
             requested.map_mode = match live_input.map {
                 Some(renderer::config::InputMapModeConfig::SevenOneFixed) | None => {
                     InputMapMode::SevenOneFixed
@@ -486,10 +478,7 @@ fn init_osc_runtime(
             input_requested.sample_rate_hz,
             input_requested.node_name.clone(),
             input_requested.node_description.clone(),
-            input_requested.sample_format.map(|format| match format {
-                InputSampleFormat::F32 => "f32".to_string(),
-                InputSampleFormat::S16 => "s16".to_string(),
-            }),
+            None,
         );
 
         handler.audio_control = Some(Arc::clone(&audio_control));

@@ -339,7 +339,6 @@ export const app = {
     clockMode: 'dac',
     channels: 2,
     sampleRate: 192000,
-    format: 'f32',
     map: '7.1-fixed',
     lfeMode: 'object'
   },

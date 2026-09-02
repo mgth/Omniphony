@@ -157,7 +157,6 @@ pub const CONTROL_INPUT_LIVE_BACKEND: &str = "/omniphony/control/input/live/back
 pub const CONTROL_INPUT_LIVE_CHANNELS: &str = "/omniphony/control/input/live/channels";
 pub const CONTROL_INPUT_LIVE_CLOCK_MODE: &str = "/omniphony/control/input/live/clock_mode";
 pub const CONTROL_INPUT_LIVE_DESCRIPTION: &str = "/omniphony/control/input/live/description";
-pub const CONTROL_INPUT_LIVE_FORMAT: &str = "/omniphony/control/input/live/format";
 pub const CONTROL_INPUT_LIVE_LAYOUT: &str = "/omniphony/control/input/live/layout";
 pub const CONTROL_INPUT_LIVE_LAYOUT_IMPORT: &str = "/omniphony/control/input/live/layout_import";
 pub const CONTROL_INPUT_LIVE_LFE_MODE: &str = "/omniphony/control/input/live/lfe_mode";
@@ -568,7 +567,6 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_INPUT_LIVE_CHANNELS,
     CONTROL_INPUT_LIVE_CLOCK_MODE,
     CONTROL_INPUT_LIVE_DESCRIPTION,
-    CONTROL_INPUT_LIVE_FORMAT,
     CONTROL_INPUT_LIVE_LAYOUT,
     CONTROL_INPUT_LIVE_LAYOUT_IMPORT,
     CONTROL_INPUT_LIVE_LFE_MODE,

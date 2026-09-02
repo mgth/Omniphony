@@ -107,7 +107,6 @@ struct RequestedInputDomainState {
     clock_mode: Option<String>,
     channels: Option<u32>,
     sample_rate: Option<u32>,
-    format: Option<String>,
     map: Option<String>,
     lfe_mode: Option<String>,
 }
@@ -572,7 +571,6 @@ fn apply_input_domain_state(s: &mut AppState, value: &str) -> bool {
         s.live_input.clock_mode = requested.clock_mode;
         s.live_input.channels = requested.channels;
         s.live_input.sample_rate = requested.sample_rate;
-        s.live_input.format = requested.format;
         s.live_input.map = requested.map;
         s.live_input.lfe_mode = requested.lfe_mode;
     }

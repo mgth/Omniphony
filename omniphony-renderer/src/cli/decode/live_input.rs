@@ -5,15 +5,13 @@ use super::decoder_thread::{DecodedAudioData, DecodedSource};
 use super::output::I32_PCM_FULL_SCALE;
 use anyhow::Result;
 #[cfg(target_os = "linux")]
-use anyhow::anyhow;
-#[cfg(target_os = "linux")]
 use audio_input::bridge::{BridgeDecodeDiag, LiveBridgeIngestRuntime, spawn_bridge_decode_worker};
 #[cfg(target_os = "linux")]
 use audio_input::pipewire::{
     PipewireBridgeBackendKind, PipewireBridgeStreamConfig, run_pipewire_bridge_input_stream,
 };
 #[cfg(target_os = "linux")]
-use audio_input::{InputBackend, InputSampleFormat, RequestedAudioInputConfig};
+use audio_input::{InputBackend, RequestedAudioInputConfig};
 use audio_input::{InputClockMode, InputControl, InputMode};
 use audio_output::AudioControl;
 #[cfg(target_os = "linux")]
@@ -22,12 +20,6 @@ use audio_output::pipewire::PipewireBufferConfig;
 use bridge_api::{FormatBridgeBox, RChannelLabel, RDecodedFrame};
 #[cfg(target_os = "linux")]
 use orender_engine::bridge_loader::install_bridge_host_log_sink;
-#[cfg(target_os = "linux")]
-use pipewire as pw;
-#[cfg(target_os = "linux")]
-use pw::spa;
-#[cfg(target_os = "linux")]
-use pw::spa::pod::Pod;
 #[cfg(target_os = "linux")]
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -38,26 +30,16 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::time::Instant;
 
+/// Channel count of the fixed 7.1 input map the sink's linear-PCM
+/// alternative is labelled with.
 const DEFAULT_LIVE_INPUT_CHANNELS: u16 = 8;
-const DEFAULT_LIVE_INPUT_SAMPLE_RATE_HZ: u32 = 48_000;
 const DEFAULT_LIVE_BRIDGE_CHANNELS: u16 = 2;
 const DEFAULT_LIVE_BRIDGE_SAMPLE_RATE_HZ: u32 = 192_000;
-const DEFAULT_LIVE_INPUT_NODE: &str = "omniphony_input_7_1";
-const DEFAULT_LIVE_INPUT_DESCRIPTION: &str = "Omniphony Input 7.1";
 const DEFAULT_LIVE_BRIDGE_NODE: &str = "omniphony";
 const DEFAULT_LIVE_BRIDGE_DESCRIPTION: &str = "Omniphony Bridge Input";
 #[cfg(target_os = "linux")]
 const LIVE_BRIDGE_LOG_INTERVAL: Duration = Duration::from_secs(1);
 // Manager and requested/applied capture configuration.
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PipewirePcmInputConfig {
-    node_name: String,
-    node_description: String,
-    channels: u16,
-    sample_rate_hz: u32,
-    target_latency_ms: u32,
-}
 
 #[derive(Clone)]
 pub struct LiveBridgeRuntimeConfig {
@@ -78,34 +60,17 @@ struct PipewireBridgeInputConfig {
     runtime: LiveBridgeRuntimeConfig,
 }
 
-#[derive(Clone)]
-enum ActiveCaptureConfig {
-    Pcm(PipewirePcmInputConfig),
-    Bridge(PipewireBridgeInputConfig),
-}
-
-impl ActiveCaptureConfig {
-    fn target_latency_ms(&self) -> u32 {
-        match self {
-            Self::Pcm(config) => config.target_latency_ms,
-            Self::Bridge(config) => config.target_latency_ms,
-        }
-    }
-
+impl PipewireBridgeInputConfig {
+    /// Whether a running capture can keep serving `other` without a restart:
+    /// everything the sink advertises or the bridge is built from must match.
     fn same_runtime_shape(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Pcm(lhs), Self::Pcm(rhs)) => lhs == rhs,
-            (Self::Bridge(lhs), Self::Bridge(rhs)) => {
-                lhs.node_name == rhs.node_name
-                    && lhs.node_description == rhs.node_description
-                    && lhs.channels == rhs.channels
-                    && lhs.sample_rate_hz == rhs.sample_rate_hz
-                    && lhs.target_latency_ms == rhs.target_latency_ms
-                    && lhs.clock_mode == rhs.clock_mode
-                    && lhs.runtime.presentation == rhs.runtime.presentation
-            }
-            _ => false,
-        }
+        self.node_name == other.node_name
+            && self.node_description == other.node_description
+            && self.channels == other.channels
+            && self.sample_rate_hz == other.sample_rate_hz
+            && self.target_latency_ms == other.target_latency_ms
+            && self.clock_mode == other.clock_mode
+            && self.runtime.presentation == other.runtime.presentation
     }
 }
 
@@ -122,7 +87,7 @@ impl LiveInputManagerHandle {
 }
 
 struct CaptureThreadHandle {
-    config: ActiveCaptureConfig,
+    config: PipewireBridgeInputConfig,
     stop: Arc<AtomicBool>,
     join: thread::JoinHandle<()>,
 }
@@ -184,7 +149,7 @@ pub fn spawn_live_input_manager(
                 if input_control.requested_snapshot().mode != InputMode::Bridge
                     && current_capture.as_ref().is_some_and(|capture| {
                         requested_live_input_latency_ms(&audio_control)
-                            != Some(capture.config.target_latency_ms())
+                            != Some(capture.config.target_latency_ms)
                     })
                 {
                     reconcile_live_input(
@@ -204,10 +169,7 @@ pub fn spawn_live_input_manager(
                     if let Some(capture) = current_capture.take() {
                         let _ = capture.join.join();
                     }
-                    if matches!(
-                        input_control.requested_snapshot().mode,
-                        InputMode::Live | InputMode::PipewireBridge
-                    ) {
+                    if input_control.requested_snapshot().mode == InputMode::PipewireBridge {
                         input_control.set_input_state(
                             InputMode::Bridge,
                             None,
@@ -333,44 +295,21 @@ fn reconcile_live_input(
                     }
                 }
 
-                match &config {
-                    ActiveCaptureConfig::Pcm(config) => {
-                        input_control.set_input_state(
-                            InputMode::Live,
-                            Some(InputBackend::Pipewire),
-                            Some(config.channels),
-                            Some(config.sample_rate_hz),
-                            Some(config.node_name.clone()),
-                            Some(config.node_description.clone()),
-                            Some("pipewire-f32".to_string()),
-                        );
-                    }
-                    ActiveCaptureConfig::Bridge(config) => {
-                        input_control.set_input_state(
-                            InputMode::PipewireBridge,
-                            Some(InputBackend::Pipewire),
-                            Some(config.channels),
-                            Some(config.sample_rate_hz),
-                            Some(config.node_name.clone()),
-                            Some(config.node_description.clone()),
-                            Some("pipewire-iec61937".to_string()),
-                        );
-                    }
-                }
-                match &config {
-                    ActiveCaptureConfig::Pcm(config) => log::info!(
-                        "Live input active: mode=live backend=pipewire node={} channels={} rate={}Hz",
-                        config.node_name,
-                        config.channels,
-                        config.sample_rate_hz
-                    ),
-                    ActiveCaptureConfig::Bridge(config) => log::info!(
-                        "Live input active: mode=pipewire_bridge backend=pipewire node={} channels={} rate={}Hz",
-                        config.node_name,
-                        config.channels,
-                        config.sample_rate_hz
-                    ),
-                }
+                input_control.set_input_state(
+                    InputMode::PipewireBridge,
+                    Some(InputBackend::Pipewire),
+                    Some(config.channels),
+                    Some(config.sample_rate_hz),
+                    Some(config.node_name.clone()),
+                    Some(config.node_description.clone()),
+                    Some("pipewire-iec61937".to_string()),
+                );
+                log::info!(
+                    "Live input active: mode=pipewire_bridge backend=pipewire node={} channels={} rate={}Hz",
+                    config.node_name,
+                    config.channels,
+                    config.sample_rate_hz
+                );
             }
             Err(err) => {
                 if let Some(capture) = current_capture.take() {
@@ -399,56 +338,13 @@ fn resolve_capture_config(
     requested: &RequestedAudioInputConfig,
     audio_control: &AudioControl,
     bridge_runtime: &LiveBridgeRuntimeConfig,
-) -> Result<ActiveCaptureConfig> {
+) -> Result<PipewireBridgeInputConfig> {
     match requested.mode {
         InputMode::Bridge => anyhow::bail!("bridge mode does not spawn a live PipeWire capture"),
-        InputMode::Live => {
-            resolve_pipewire_pcm_config(requested, audio_control).map(ActiveCaptureConfig::Pcm)
-        }
         InputMode::PipewireBridge => {
             resolve_pipewire_bridge_config(requested, audio_control, bridge_runtime)
-                .map(ActiveCaptureConfig::Bridge)
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-fn resolve_pipewire_pcm_config(
-    requested: &RequestedAudioInputConfig,
-    audio_control: &AudioControl,
-) -> Result<PipewirePcmInputConfig> {
-    let backend = requested.backend.unwrap_or(InputBackend::Pipewire);
-    if backend != InputBackend::Pipewire {
-        anyhow::bail!("only the PipeWire live input backend is implemented on Linux");
-    }
-
-    let sample_format = requested.sample_format.unwrap_or(InputSampleFormat::F32);
-    if sample_format != InputSampleFormat::F32 {
-        anyhow::bail!("PipeWire live input currently supports only f32 interleaved audio");
-    }
-
-    let channels = requested.channels.unwrap_or(DEFAULT_LIVE_INPUT_CHANNELS);
-    if channels != 8 {
-        anyhow::bail!("PipeWire live input currently supports only 8-channel 7.1 mode");
-    }
-
-    Ok(PipewirePcmInputConfig {
-        node_name: requested
-            .node_name
-            .clone()
-            .unwrap_or_else(|| DEFAULT_LIVE_INPUT_NODE.to_string()),
-        node_description: requested
-            .node_description
-            .clone()
-            .unwrap_or_else(|| DEFAULT_LIVE_INPUT_DESCRIPTION.to_string()),
-        channels,
-        sample_rate_hz: requested
-            .sample_rate_hz
-            .unwrap_or(DEFAULT_LIVE_INPUT_SAMPLE_RATE_HZ),
-        target_latency_ms: requested_live_input_latency_ms(audio_control)
-            .unwrap_or(PipewireBufferConfig::default().latency_ms)
-            .max(1),
-    })
 }
 
 #[cfg(target_os = "linux")]
@@ -494,210 +390,27 @@ fn requested_live_input_latency_ms(audio_control: &AudioControl) -> Option<u32> 
     audio_control.requested_latency_target_ms()
 }
 
-// Live PCM and bridge capture entrypoints.
+// Bridge capture entrypoints.
 
 #[cfg(target_os = "linux")]
 fn spawn_pipewire_capture(
     tx: mpsc::SyncSender<Result<DecoderMessage>>,
     input_control: Arc<InputControl>,
-    config: ActiveCaptureConfig,
+    config: PipewireBridgeInputConfig,
 ) -> Result<CaptureThreadHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = Arc::clone(&stop);
-    let thread_name = match &config {
-        ActiveCaptureConfig::Pcm(config) => format!("pw-live-input-{}", config.node_name),
-        ActiveCaptureConfig::Bridge(config) => format!("pw-live-bridge-{}", config.node_name),
-    };
+    let thread_name = format!("pw-live-bridge-{}", config.node_name);
     let config_for_thread = config.clone();
     let join = thread::Builder::new().name(thread_name).spawn(move || {
-        let result = match config_for_thread.clone() {
-            ActiveCaptureConfig::Pcm(config) => {
-                run_pipewire_pcm_capture_loop(tx, input_control, config, stop_for_thread)
-            }
-            ActiveCaptureConfig::Bridge(config) => {
-                run_pipewire_bridge_capture_loop(tx, input_control, config, stop_for_thread)
-            }
-        };
-        if let Err(err) = result {
+        if let Err(err) =
+            run_pipewire_bridge_capture_loop(tx, input_control, config_for_thread, stop_for_thread)
+        {
             log::error!("PipeWire live input thread exited with error: {err}");
         }
     })?;
 
     Ok(CaptureThreadHandle { config, stop, join })
-}
-
-#[cfg(target_os = "linux")]
-fn run_pipewire_pcm_capture_loop(
-    tx: mpsc::SyncSender<Result<DecoderMessage>>,
-    input_control: Arc<InputControl>,
-    config: PipewirePcmInputConfig,
-    stop: Arc<AtomicBool>,
-) -> Result<()> {
-    pw::init();
-
-    let mainloop = pw::main_loop::MainLoopRc::new(None)
-        .map_err(|e| anyhow!("Failed to create PipeWire main loop: {e:?}"))?;
-    let context = pw::context::ContextRc::new(&mainloop, None)
-        .map_err(|e| anyhow!("Failed to create PipeWire context: {e:?}"))?;
-    let core = context
-        .connect_rc(None)
-        .map_err(|e| anyhow!("Failed to connect to PipeWire core: {e:?}"))?;
-
-    let mut props = pw::properties::PropertiesBox::new();
-    props.insert(*pw::keys::MEDIA_TYPE, "Audio");
-    props.insert(*pw::keys::MEDIA_CATEGORY, "Playback");
-    props.insert(*pw::keys::MEDIA_ROLE, "Music");
-    props.insert("media.class", "Audio/Sink");
-    props.insert("node.virtual", "true");
-    props.insert("node.name", config.node_name.clone());
-    props.insert("node.description", config.node_description.clone());
-    props.insert("media.name", config.node_description.clone());
-    props.insert("audio.channels", config.channels.to_string());
-    props.insert("audio.position", "FL,FR,FC,LFE,SL,SR,RL,RR");
-    let requested_latency_frames =
-        ((config.target_latency_ms as u64 * config.sample_rate_hz as u64) / 1000).max(1) as u32;
-    let requested_latency = format!("{}/{}", requested_latency_frames, config.sample_rate_hz);
-    props.insert("node.latency", requested_latency.as_str());
-
-    let stream = pw::stream::StreamBox::new(&core, "omniphony-live-input", props)
-        .map_err(|e| anyhow!("Failed to create PipeWire input stream: {e:?}"))?;
-    log::info!(
-        "Publishing PipeWire live input sink: node={} description={} channels={} rate={}Hz latency={}",
-        config.node_name,
-        config.node_description,
-        config.channels,
-        config.sample_rate_hz,
-        requested_latency
-    );
-
-    struct CaptureUserData {
-        rate_hz: u32,
-        channels: u32,
-    }
-
-    let tx_for_process = tx.clone();
-    let stop_for_process = Arc::clone(&stop);
-    let input_control_for_state = Arc::clone(&input_control);
-    let config_for_state = config.clone();
-    let _listener = stream
-        .add_local_listener_with_user_data(CaptureUserData {
-            rate_hz: config.sample_rate_hz,
-            channels: config.channels as u32,
-        })
-        .state_changed(move |_, _, old, new| {
-            log::info!("PipeWire live input state changed: {:?} -> {:?}", old, new);
-            if matches!(new, pw::stream::StreamState::Error(_)) {
-                input_control_for_state.set_input_error(Some(format!(
-                    "PipeWire live input stream entered error state on {}",
-                    config_for_state.node_name
-                )));
-            }
-        })
-        .param_changed(move |_, user_data, id, param| {
-            let Some(param) = param else {
-                return;
-            };
-            if id != pw::spa::param::ParamType::Format.as_raw() {
-                return;
-            }
-            let (media_type, media_subtype) =
-                match pw::spa::param::format_utils::parse_format(param) {
-                    Ok(v) => v,
-                    Err(_) => return,
-                };
-            if media_type != pw::spa::param::format::MediaType::Audio
-                || media_subtype != pw::spa::param::format::MediaSubtype::Raw
-            {
-                return;
-            }
-
-            let mut format = pw::spa::param::audio::AudioInfoRaw::new();
-            if format.parse(param).is_ok() {
-                if format.rate() != 0 {
-                    user_data.rate_hz = format.rate();
-                }
-                if format.channels() != 0 {
-                    user_data.channels = format.channels();
-                }
-            }
-        })
-        .process(move |stream, user_data| {
-            if stop_for_process.load(Ordering::Relaxed) {
-                return;
-            }
-            let Some(mut buffer) = stream.dequeue_buffer() else {
-                return;
-            };
-            let datas = buffer.datas_mut();
-            if datas.is_empty() {
-                return;
-            }
-            let data = &mut datas[0];
-            let sample_len = (data.chunk().size() as usize) / std::mem::size_of::<f32>();
-            let Some(bytes) = data.data() else {
-                return;
-            };
-            if sample_len == 0 || user_data.channels == 0 {
-                return;
-            }
-            let sample_bytes = &bytes[..sample_len * std::mem::size_of::<f32>()];
-            let frame = build_live_input_frame(
-                sample_bytes,
-                user_data.rate_hz,
-                user_data.channels as usize,
-            );
-
-            let _ = tx_for_process.try_send(Ok(DecoderMessage::AudioData(DecodedAudioData {
-                source: DecodedSource::Live,
-                frame,
-                decode_time_ms: 0.0,
-                sent_at: Instant::now(),
-            })));
-        })
-        .register()
-        .map_err(|e| anyhow!("Failed to register PipeWire live input listeners: {e:?}"))?;
-
-    let mut audio_info = spa::param::audio::AudioInfoRaw::new();
-    audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
-    audio_info.set_rate(config.sample_rate_hz);
-    audio_info.set_channels(config.channels as u32);
-    let obj = spa::pod::Object {
-        type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
-        id: spa::param::ParamType::EnumFormat.as_raw(),
-        properties: audio_info.into(),
-    };
-    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(Vec::new()),
-        &spa::pod::Value::Object(obj),
-    )
-    .map_err(|e| anyhow!("Failed to serialize PipeWire live input format pod: {e:?}"))?
-    .0
-    .into_inner();
-    let pod = Pod::from_bytes(&values).ok_or_else(|| anyhow!("Invalid PipeWire format pod"))?;
-    let mut params = [pod];
-
-    stream
-        .connect(
-            spa::utils::Direction::Input,
-            None,
-            pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS,
-            &mut params,
-        )
-        .map_err(|e| anyhow!("Failed to connect PipeWire live input stream: {e:?}"))?;
-    log::info!(
-        "PipeWire live input sink connected: node={}",
-        config.node_name
-    );
-
-    while !stop.load(Ordering::Relaxed)
-        && !sys::ShutdownHandle::is_requested()
-        && !sys::ShutdownHandle::is_restart_from_config_requested()
-    {
-        let _ = mainloop.loop_().iterate(Duration::from_millis(100));
-    }
-
-    let _ = stream.disconnect();
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]
