@@ -57,25 +57,64 @@ pub trait HrirProvider {
     fn render(&self, az_deg: f32, el_deg: f32, sample_rate: u32) -> HrirPair;
 }
 
-/// Built-in analytic head model: per-ear broadband gain (ILD) plus a one-pole
-/// low-pass whose cutoff drops as the source moves contralateral (head shadow).
-/// Self-contained (no measured data); a stand-in until a measured set is loaded.
+/// Built-in analytic head model: the head-shadow stage of Brown & Duda, *A
+/// Structural Model for Binaural Sound Synthesis* (1998), eq. (3) — a
+/// one-pole, one-zero shelf per ear whose zero moves with the angle of
+/// incidence:
+///
+/// ```text
+/// H(ω, θ) = (1 + j·α(θ)·ω / 2ω₀) / (1 + j·ω / 2ω₀),   ω₀ = c / a
+/// α(θ)    = (1 + α_min/2) + (1 − α_min/2) · cos(θ · 180° / θ_min)
+/// ```
+///
+/// `θ` is the angle between the source and the ear's own axis (0° at the
+/// ear, 90° in the median plane, 180° at the opposite ear), `a` the head
+/// radius. The DC gain is **1 for every direction** — a head diffracts the
+/// bass around itself, so the interaural level difference is nil below a
+/// few hundred hertz and only opens up above the corner `2ω₀` (≈1.25 kHz
+/// for a KEMAR-sized head). Above it the ear facing the source is boosted
+/// (`α → 2`, +6 dB) and the shadowed one cut, down to `α_min` at `θ_min`
+/// and back up a little at 180° (the bright spot behind the head).
+///
+/// The previous model was a one-pole low-pass whose *DC* gain fell to
+/// −14 dB on the shadowed side, panning the bass by level in contradiction
+/// with the ITD, which is the cue that actually carries lateralisation down
+/// there. Self-contained (no measured data); the base of the parametric
+/// pinna models and the no-pinna A/B reference.
 pub struct SyntheticHrir;
 
 impl SyntheticHrir {
-    /// Minimum per-ear gain at full shadow (≈ −14 dB).
-    const GAIN_MIN: f32 = 0.2;
-    /// Low-pass cutoff at full shadow (Hz).
-    const FC_SHADOW: f32 = 1200.0;
+    /// `α_min` (Brown & Duda's recommended value): the deepest high-frequency
+    /// shadow, reached at `θ_min`.
+    const ALPHA_MIN: f32 = 0.05;
+    /// `θ_min`: angle of the deepest shadow, past which the bright spot
+    /// behind the head brings the level back up.
+    const THETA_MIN_DEG: f32 = 150.0;
+    /// Head radius `a` for `ω₀ = c / a` (the ITD model's default; the live
+    /// ITD radius is not wired into the HRIR build).
+    const HEAD_RADIUS_M: f32 = super::itd::DEFAULT_HEAD_RADIUS_M;
+    const SPEED_OF_SOUND: f32 = 343.0;
 
-    fn one_pole_lowpass_ir(gain: f32, cutoff_hz: f32, sample_rate: u32, out: &mut [f32; HRIR_LEN]) {
-        let fc = cutoff_hz.clamp(200.0, sample_rate as f32 * 0.49);
-        let a = (-2.0 * std::f32::consts::PI * fc / sample_rate as f32).exp();
-        // h[n] = gain*(1-a)*a^n — DC gain == `gain`.
-        let mut p = gain * (1.0 - a);
-        for slot in out.iter_mut() {
-            *slot = p;
-            p *= a;
+    /// `α(θ)`, with `cos_theta` the cosine of the angle from the ear's axis.
+    #[inline]
+    fn alpha(cos_theta: f32) -> f32 {
+        let theta_deg = cos_theta.clamp(-1.0, 1.0).acos().to_degrees();
+        (1.0 + Self::ALPHA_MIN / 2.0)
+            + (1.0 - Self::ALPHA_MIN / 2.0)
+                * (theta_deg * 180.0 / Self::THETA_MIN_DEG).to_radians().cos()
+    }
+
+    /// Impulse response of the shelf: `h[n] = α·δ[n] + (1 − α)(1 − p)·pⁿ`
+    /// with `p = exp(−2ω₀ / fs)`. The exponential term carries `1 − α` of
+    /// the DC gain so the total is exactly 1; at high frequency only the
+    /// impulse survives, leaving `α`.
+    fn shelf_ir(alpha: f32, sample_rate: u32, out: &mut [f32; HRIR_LEN]) {
+        let w0 = Self::SPEED_OF_SOUND / Self::HEAD_RADIUS_M;
+        let p = (-2.0 * w0 / sample_rate as f32).exp();
+        let mut tail = (1.0 - alpha) * (1.0 - p);
+        for (n, slot) in out.iter_mut().enumerate() {
+            *slot = if n == 0 { alpha + tail } else { tail };
+            tail *= p;
         }
     }
 }
@@ -84,28 +123,12 @@ impl HrirProvider for SyntheticHrir {
     fn render(&self, az_deg: f32, el_deg: f32, sample_rate: u32) -> HrirPair {
         let az = az_deg.to_radians();
         let el = el_deg.to_radians();
-        // Lateral position: +1 fully right, −1 fully left, 0 median plane.
+        // Cosine of the angle from the right ear's axis (+X): the lateral
+        // sine. The left ear sees the supplementary angle.
         let lateral = (az.sin() * el.cos()).clamp(-1.0, 1.0);
-        let exposure_r = 0.5 * (1.0 + lateral);
-        let exposure_l = 0.5 * (1.0 - lateral);
-
-        let open = sample_rate as f32 * 0.45;
-        let gain = |e: f32| Self::GAIN_MIN + (1.0 - Self::GAIN_MIN) * e;
-        let cutoff = |e: f32| Self::FC_SHADOW + (open - Self::FC_SHADOW) * e;
-
         let mut pair = HrirPair::zeroed();
-        Self::one_pole_lowpass_ir(
-            gain(exposure_l),
-            cutoff(exposure_l),
-            sample_rate,
-            &mut pair.left,
-        );
-        Self::one_pole_lowpass_ir(
-            gain(exposure_r),
-            cutoff(exposure_r),
-            sample_rate,
-            &mut pair.right,
-        );
+        Self::shelf_ir(Self::alpha(-lateral), sample_rate, &mut pair.left);
+        Self::shelf_ir(Self::alpha(lateral), sample_rate, &mut pair.right);
         pair
     }
 }
@@ -824,6 +847,58 @@ mod tests {
             .map(|p| p.left[128..256].iter().map(|x| x * x).sum::<f32>())
             .sum();
         assert!(tail > 0.0, "nothing past tap 128 at 96 kHz");
+    }
+
+    /// Brown & Duda's head shadow keeps the bass: the DC gain of both ears
+    /// is 1 in every direction, including the fully shadowed one, where the
+    /// previous model sat at −14 dB.
+    #[test]
+    fn synthetic_head_has_unity_dc_gain_everywhere() {
+        for (az, el) in [
+            (0.0f32, 0.0f32),
+            (90.0, 0.0),
+            (270.0, 0.0),
+            (150.0, 0.0),
+            (90.0, 45.0),
+        ] {
+            let p = SyntheticHrir.render(az, el, 48_000);
+            let dc_l: f32 = p.left.iter().sum();
+            let dc_r: f32 = p.right.iter().sum();
+            assert!((dc_l - 1.0).abs() < 1e-3, "({az}, {el}) left DC {dc_l}");
+            assert!((dc_r - 1.0).abs() < 1e-3, "({az}, {el}) right DC {dc_r}");
+        }
+    }
+
+    /// High-frequency gain is α(θ): +6 dB on the ear facing the source,
+    /// deep shadow on the other, a small bright spot straight across.
+    #[test]
+    fn synthetic_head_shelves_the_treble_by_incidence() {
+        let nyquist = |h: &[f32; HRIR_LEN]| -> f32 {
+            h.iter()
+                .enumerate()
+                .map(|(n, &x)| if n % 2 == 0 { x } else { -x })
+                .sum()
+        };
+        let p = SyntheticHrir.render(90.0, 0.0, 48_000);
+        let (l, r) = (nyquist(&p.left), nyquist(&p.right));
+        // The exponential term still contributes (1 − α)(1 − p)/(1 + p) at
+        // Nyquist, hence ≈ 1.92 rather than exactly α = 2.
+        assert!(
+            (r - 2.0).abs() < 0.1,
+            "ipsilateral HF gain {r}, expected ≈ 2"
+        );
+        // The left ear is 180° from the source axis: past θ_min, in the
+        // bright spot, α ≈ 0.24 — darker than the median plane's 0.72.
+        assert!(l > 0.15 && l < 0.35, "contralateral HF gain {l}");
+        let m = SyntheticHrir.render(0.0, 0.0, 48_000);
+        let med = nyquist(&m.left);
+        assert!(med > 0.6 && med < 0.85, "median-plane HF gain {med}");
+        // Deepest shadow at θ_min = 150° from the ear axis, i.e. 60° past
+        // the median plane on the far side.
+        let deep = SyntheticHrir.render(-60.0, 0.0, 48_000);
+        let d = nyquist(&deep.right);
+        // α_min = 0.05 plus the same ≈ 0.08 tail term as above.
+        assert!(d < 0.2, "θ_min shadow gain {d}");
     }
 
     #[test]
