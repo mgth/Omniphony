@@ -72,7 +72,7 @@ in Studio and over OSC (addresses listed at the end).
 | `head_tracking.osc_address` | — | OSC address carrying the orientation (empty disables tracking) |
 | `head_tracking.format` | `auto` | `auto` / `quat` / `rotvec` / `euler` |
 | `reflections.enabled` | `false` | shoebox early reflections (externalization) |
-| `reflections.room_width_m` | `4.0` | room extent, x (clamped 1–20 m) |
+| `reflections.room_width_m` | `4.0` | room extent, x (clamped 1–20 m). The three extents are minimums: the room grows to contain the scene (see *Scale* below) |
 | `reflections.room_depth_m` | `5.0` | room extent, y |
 | `reflections.room_height_m` | `2.7` | room extent, z |
 | `reflections.level` | `0.5` | per-reflection wall gain (0–1) |
@@ -164,11 +164,14 @@ directly instead.
   3 m, ~14 kHz cutoff at 10 m, ~5 kHz at 30 m).
 - **Scale**: `unit_scale_m` sets how far "1 ADM unit" is in metres. At the
   default 1.0 the far wall of the mix is one metre from your nose — try 3–4
-  for a room-sized stage. Size the reflection room to contain the scene
-  (half-extents ≥ `unit_scale_m`, i.e. 6–8 m wide and deep for a scale of
-  3–4): the image-source model pulls a source that sits outside the room
-  back inside before mirroring it, which keeps the geometry valid but puts
-  the reflections where the wall is, not where the object is.
+  for a room-sized stage. The reflection room grows on its own to contain
+  the scene: each half-extent is floored at `unit_scale_m + 0.35 m` (6.7 m
+  on every axis at a scale of 3, capped at 20 m), so the dimensions you set
+  are a minimum — a room smaller than the scene it holds has no physical
+  reading. Past the 20 m cap the image-source model pulls a source that
+  sits outside the room back inside before mirroring it, which keeps the
+  geometry valid but puts the reflections where the wall is, not where the
+  object is.
 - **ITD fit**: `head_radius_m` defaults to a KEMAR-ish 8.75 cm. If
   localisation feels smeared, measure ear-to-ear width and set half of it.
 - **HRTF**: the embedded measured KEMAR (`saf`) is the best generic default —

@@ -790,6 +790,11 @@ impl BinauralRenderer {
 
         // Late-reverb bus: per-channel sends accumulate here; the shared FDN
         // turns the mono sum into a decorrelated stereo tail after the loop.
+        // The reflection room, grown to contain the scene (see
+        // `reflections::room_containing_scene`): once per frame, for every
+        // channel's image sources below.
+        let room_m = reflections::room_containing_scene(reflections.room_size_m, unit_scale_m);
+
         let reverb_active = reverb.enabled;
         if reverb_active {
             self.fdn.set_params(reverb.rt60_s, reverb.predelay_ms);
@@ -1000,15 +1005,15 @@ impl BinauralRenderer {
                 // The image sources are mirrors of the source *as pulled
                 // inside the room*, so the direct-path reference for their
                 // relative delays is that clamped source, not the raw one.
-                // With the raw distance, a source outside the room (any
-                // `unit_scale_m` ≥ 2 with the default room) had every
-                // reflection arrive early by the excess, and the near wall's
-                // at zero delay — a coincident copy of the direct sound.
-                let src_m = reflections::clamp_into_room(phys, reflections.room_size_m);
+                // With the raw distance, a source outside the room (a scene
+                // past the 20 m cap of the grown room) had every reflection
+                // arrive early by the excess, and the near wall's at zero
+                // delay — a coincident copy of the direct sound.
+                let src_m = reflections::clamp_into_room(phys, room_m);
                 let d_src = (src_m[0] * src_m[0] + src_m[1] * src_m[1] + src_m[2] * src_m[2])
                     .sqrt()
                     .max(MIN_DISTANCE_M);
-                let images = reflections::first_order_images(src_m, reflections.room_size_m);
+                let images = reflections::first_order_images(src_m, room_m);
                 let c_sound = reflections::speed_of_sound();
                 for (i, img) in images.iter().enumerate() {
                     let d_img = (img[0] * img[0] + img[1] * img[1] + img[2] * img[2])
@@ -1614,19 +1619,22 @@ mod tests {
         );
     }
 
-    /// A source outside the room (unit scale 3, default 4 m width) must not
-    /// get a reflection on top of its direct sound: the first samples of
-    /// the render carry the direct HRIR only, exactly as for the same
-    /// source with reflections off, and the wall copies land later.
+    /// A source outside the room must not get a reflection on top of its
+    /// direct sound: the first samples of the render carry the direct HRIR
+    /// only, exactly as for the same source with reflections off, and the
+    /// wall copies land later. The room grows with the scene (see
+    /// `room_containing_scene`), so a source only gets outside past the
+    /// 20 m cap: unit scale 12 puts it 12 m out in a room capped at 10 m
+    /// of half-extent.
     #[test]
     fn reflections_of_an_outside_source_do_not_coincide_with_the_direct() {
         let n = 2_048;
         let mut input = vec![0.0f32; n];
         input[0] = 1.0;
-        let pos = [[1.0, 0.0, 0.0]]; // 3 m to the right at unit scale 3
+        let pos = [[1.0, 0.0, 0.0]]; // 12 m to the right at unit scale 12
         let render = |enabled: bool| -> Vec<f32> {
             let params = BinauralFrameParams {
-                unit_scale_m: 3.0,
+                unit_scale_m: 12.0,
                 reflections: BinauralReflections {
                     enabled,
                     room_size_m: [4.0, 5.0, 2.7],
@@ -1669,6 +1677,58 @@ mod tests {
             .map(|(a, b)| (a - b) * (a - b))
             .sum();
         assert!(later > 1e-6, "no reflections at all: {later}");
+    }
+
+    /// The room grows to contain the scene: at unit scale 3 in the default
+    /// 4 × 5 × 2.7 m room a source at the ADM boundary (3 m to the right)
+    /// used to be pulled back to the 2 m wall, with the wall's image 0.1 m
+    /// behind it. Now the room is 6.7 m wide, the source is 0.35 m from
+    /// the wall, and the nearest image trails the direct sound by 0.7 m —
+    /// 98 samples at 48 kHz — with nothing before it.
+    #[test]
+    fn room_grows_to_contain_the_scene() {
+        let n = 2_048;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let pos = [[1.0, 0.0, 0.0]];
+        let render = |enabled: bool| -> Vec<f32> {
+            let params = BinauralFrameParams {
+                unit_scale_m: 3.0,
+                reflections: BinauralReflections {
+                    enabled,
+                    room_size_m: [4.0, 5.0, 2.7],
+                    level: 0.5,
+                    wall_cutoff_hz: reflections::MAX_WALL_CUTOFF_HZ,
+                },
+                ..dry_params()
+            };
+            let mut out = vec![0.0f32; n * 2];
+            let mut r = BinauralRenderer::new(48_000);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &params,
+                &pos,
+                &[ChannelGain::flat(1.0)],
+                &[],
+                None,
+                &mut out,
+            );
+            out
+        };
+        let (dry, wet) = (render(false), render(true));
+        let first_diff = wet
+            .chunks_exact(2)
+            .zip(dry.chunks_exact(2))
+            .position(|(w, d)| (w[0] - d[0]).abs() > 1e-6 || (w[1] - d[1]).abs() > 1e-6)
+            .expect("no reflections at all");
+        // 0.7 m of extra path = 98 samples, minus the smoothing of the
+        // tap gain ramping up over the first block.
+        assert!(
+            (80..=100).contains(&first_diff),
+            "nearest reflection lands at sample {first_diff}, expected ≈ 98 (0.7 m)"
+        );
     }
 
     /// Energy of an impulse render split at `split` samples: the direct

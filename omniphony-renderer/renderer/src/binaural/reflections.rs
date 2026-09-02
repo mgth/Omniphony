@@ -28,6 +28,13 @@ pub const RING_CAPACITY_S: f32 = 0.25;
 pub const MIN_ROOM_M: f32 = 1.0;
 pub const MAX_ROOM_M: f32 = 20.0;
 
+/// Half-extent margin (m) the automatic room floor keeps beyond the scene
+/// (see [`room_containing_scene`]): an object at the ADM boundary is then
+/// this far from its wall, and the wall's image trails the direct sound by
+/// twice that — 0.7 m, ≈2 ms — instead of sitting on top of it. 0.35 makes
+/// the default 2.7 m ceiling exactly the floor at unit scale 1.
+pub const ROOM_FLOOR_MARGIN_M: f32 = 0.35;
+
 /// Margin (m) keeping the (clamped) source strictly inside the room so an
 /// image can never coincide with the listener.
 const WALL_MARGIN_M: f32 = 0.05;
@@ -79,6 +86,27 @@ fn half_extents(room_m: [f32; 3]) -> [f32; 3] {
         half[a] = (room_m[a].clamp(MIN_ROOM_M, MAX_ROOM_M)) * 0.5;
     }
     half
+}
+
+/// `room` (full extents, metres) grown, axis by axis, to contain the scene:
+/// the ADM cube spans `±unit_scale_m` on every world axis, and the walls are
+/// world-fixed (the head rotates, the scene does not), so each half-extent
+/// is floored at `unit_scale_m + ROOM_FLOOR_MARGIN_M`, within
+/// [`MAX_ROOM_M`]. An axis the user already sized larger is left alone.
+///
+/// Without the floor, a scene larger than the room had every boundary
+/// object pulled back to the wall by [`clamp_into_room`] — valid geometry,
+/// but the reflections of the wall rather than of the object, and from the
+/// nearest wall a near-coincident copy of the direct sound. The configured
+/// dimensions are therefore a *minimum*: a room smaller than the scene it
+/// holds has no physical reading anyway.
+pub fn room_containing_scene(room_m: [f32; 3], unit_scale_m: f32) -> [f32; 3] {
+    let floor = 2.0 * (unit_scale_m.max(0.0) + ROOM_FLOOR_MARGIN_M);
+    let mut out = room_m;
+    for extent in &mut out {
+        *extent = extent.max(floor).min(MAX_ROOM_M);
+    }
+    out
 }
 
 /// `src` (listener-relative metres, listener at the room centre) pulled just
@@ -334,6 +362,33 @@ mod tests {
                     "{src:?}: the premise of the test fails"
                 );
             }
+        }
+    }
+
+    /// The floor contains the ADM cube with its margin on every axis and
+    /// leaves a generous room alone.
+    #[test]
+    fn room_floor_contains_the_scene() {
+        let default = [4.0, 5.0, 2.7];
+        // Unit scale 1: the default room is already the floor on its height
+        // (2 × (1 + 0.35) = 2.7) and above it elsewhere — unchanged.
+        assert_eq!(room_containing_scene(default, 1.0), default);
+        // Unit scale 3: every axis grows to 6.7 m.
+        let grown = room_containing_scene(default, 3.0);
+        for (a, &g) in grown.iter().enumerate() {
+            assert!((g - 6.7).abs() < 1e-5, "axis {a}: {g}");
+        }
+        // A room the user sized larger keeps its dimensions.
+        let big = [12.0, 15.0, 8.0];
+        assert_eq!(room_containing_scene(big, 3.0), big);
+        // Capped at the largest room the bank models.
+        assert_eq!(room_containing_scene(default, 12.0), [MAX_ROOM_M; 3]);
+        // Every ADM-cube corner sits inside the grown room by the margin.
+        let s = 2.5;
+        let room = room_containing_scene(default, s);
+        for corner in [[s, s, s], [-s, s, -s], [s, -s, s]] {
+            let clamped = clamp_into_room(corner, room);
+            assert_eq!(clamped, corner, "corner {corner:?} was clamped");
         }
     }
 
