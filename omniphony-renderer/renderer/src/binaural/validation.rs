@@ -194,9 +194,9 @@ fn itd_magnitude_tracks_the_model_wide() {
     }
 }
 
-/// A time-aligned HRIR pair carries no bulk interaural delay of its own; ±1
-/// sample allows for interpolation and measurement slop.
-const TIME_ALIGNMENT_TOLERANCE_SAMPLES: f32 = 1.0;
+/// A time-aligned response has its onset at the origin: the first tap to reach
+/// half of the peak must be one of the first three.
+const TIME_ALIGNMENT_ONSET_TAPS: usize = 2;
 
 /// [`HrirProvider`](super::hrir::HrirProvider) documents that implementors
 /// "must return time-aligned FIRs (no bulk interaural delay) for safe
@@ -205,59 +205,60 @@ const TIME_ALIGNMENT_TOLERANCE_SAMPLES: f32 = 1.0;
 /// nearest measurements. Blending FIRs that are not time-aligned combs their
 /// shared content instead of interpolating it.
 ///
-/// This asserts the contract rather than assuming it. It is the invariant whose
-/// violation made the bundled measured set look like an engine defect: the set's
-/// own left/right asymmetry showed up in end-to-end ITD measurements and was
-/// initially misread as the renderer mis-placing sources.
+/// The bundled set is stored minimum-phase, which puts the onset of every
+/// response at the origin by construction. That is the property asserted
+/// here, per ear and per direction, on the grid the engine convolves with.
+///
+/// It used to be measured as the cross-correlation lag between the two ears
+/// against a ±1 sample bound, and deferred: the onset-aligned KEMAR set
+/// carried −6.998 samples at +90° and was unresolvable at −90°. That lag
+/// estimate is not the right instrument for the contract, though. The
+/// shadowed ear's response is a heavily low-passed version of the exposed
+/// one, and the correlation peak between two spectrally dissimilar responses
+/// sits at their group-delay difference — with minimum-phase pairs it still
+/// reads −4.3 samples at +90° while both onsets are at tap 0. That
+/// difference is part of the head shadow, not a bulk delay.
 #[test]
-#[ignore = "SAF KEMAR violates it: intrinsic interaural lag is unresolvable at az=-90 and reaches -6.998 samples at az=+90, against a ±1 sample contract; the set is also left/right asymmetric (-1.103 at +30 vs -0.168 at -30) — tracked deferral, see docs/dsp-validation-report.md"]
 fn hrir_providers_return_time_aligned_pairs() {
     use super::hrir::{HRIR_LEN, HrirPair, HrirSet};
     use super::measured::MeasuredHrirData;
-    use dsp_fixtures::analysis::estimate_lag_checked;
 
     let set = HrirSet::new(&MeasuredHrirData::saf_kemar(), 48_000);
     let mut pair = HrirPair {
         left: [0.0; HRIR_LEN],
         right: [0.0; HRIR_LEN],
     };
-    let mut worst = (0.0f32, 0.0f32);
-    let mut unresolvable = Vec::new();
-
-    for az_i in -6..=6 {
-        let az = az_i as f32 * 30.0;
-        set.at(az, 0.0, &mut pair);
-        match estimate_lag_checked(&pair.left, &pair.right, 40) {
-            Ok(lag) => {
-                println!(
-                    "[measure] hrir_time_alignment az={az:+6.1}: intrinsic lag {lag:+.3} samples"
-                );
-                if lag.abs() > worst.1.abs() {
-                    worst = (az, lag);
+    let onset = |h: &[f32; HRIR_LEN]| -> usize {
+        let peak = h.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        h.iter()
+            .position(|&x| x.abs() >= 0.5 * peak)
+            .unwrap_or(usize::MAX)
+    };
+    let mut worst = (0.0f32, 0.0f32, 0usize);
+    for el_i in -3..=6 {
+        for az_i in 0..36 {
+            let (az, el) = (az_i as f32 * 10.0, el_i as f32 * 15.0);
+            set.at(az, el, &mut pair);
+            for ear in [&pair.left, &pair.right] {
+                let n = onset(ear);
+                if n > worst.2 {
+                    worst = (az, el, n);
                 }
-            }
-            // An unresolvable pair cannot be shown to satisfy the contract
-            // either — record it rather than quietly treating it as a pass.
-            Err(e) => {
-                println!("[measure] hrir_time_alignment az={az:+6.1}: unresolvable — {e}");
-                unresolvable.push(az);
             }
         }
     }
-
-    assert!(
-        unresolvable.is_empty(),
-        "intrinsic interaural lag could not be resolved at azimuths {unresolvable:?}, \
-         so the time-alignment contract cannot be verified there"
+    println!(
+        "[measure] hrir_time_alignment: latest onset {} taps at az={:+.1} el={:+.1}",
+        worst.2, worst.0, worst.1
     );
     assert!(
-        worst.1.abs() <= TIME_ALIGNMENT_TOLERANCE_SAMPLES,
-        "HRIR pair at az={:.1}° carries {:+.3} samples of intrinsic interaural \
-         delay, exceeding the ±{TIME_ALIGNMENT_TOLERANCE_SAMPLES} sample \
-         time-alignment contract. The engine adds Woodworth ITD on top of this, \
-         and HrirSet blends neighbouring measurements — both assume the pair is \
-         time-aligned.",
+        worst.2 <= TIME_ALIGNMENT_ONSET_TAPS,
+        "HRIR at az={:.1}° el={:.1}° reaches half its peak only at tap {}, past the \
+         {TIME_ALIGNMENT_ONSET_TAPS}-tap time-alignment contract. The engine adds \
+         Woodworth ITD on top of the pair, and HrirSet blends neighbouring \
+         measurements — both assume the responses carry no bulk delay.",
         worst.0,
-        worst.1
+        worst.1,
+        worst.2
     );
 }
