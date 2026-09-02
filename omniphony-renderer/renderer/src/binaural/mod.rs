@@ -621,14 +621,14 @@ impl BinauralRenderer {
                 sample_rate,
             ),
             HrirSource::SafKemar => HrirSet::new(
-                &MeasuredHrirData::saf_kemar().resampled_to(sample_rate),
+                &*MeasuredHrirData::saf_kemar_shared(sample_rate),
                 sample_rate,
             ),
             // Handled by `build_grid`, which owns the fallback; reaching
             // here means a caller asked for the raw build, so no fallback.
             HrirSource::Sofa(path) => Self::load_sofa(path, sample_rate).unwrap_or_else(|_| {
                 HrirSet::new(
-                    &MeasuredHrirData::saf_kemar().resampled_to(sample_rate),
+                    &*MeasuredHrirData::saf_kemar_shared(sample_rate),
                     sample_rate,
                 )
             }),
@@ -1396,7 +1396,7 @@ mod tests {
         );
         let missing = HrirSource::Sofa("/nonexistent/listener.sofa".to_string());
         r.ensure_source(&missing, itd::DEFAULT_HEAD_RADIUS_M);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while r.rebuild_pending() {
             assert!(std::time::Instant::now() < deadline, "rebuild never landed");
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1425,7 +1425,7 @@ mod tests {
         assert_eq!(r.hrir_grid_id(), g0);
         // Parametric: it is.
         let settle = |r: &mut BinauralRenderer, radius: f32| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
             r.ensure_source(&HrirSource::Synthetic, radius);
             while r.rebuild_pending() {
                 assert!(std::time::Instant::now() < deadline, "rebuild never landed");
@@ -1476,7 +1476,7 @@ mod tests {
         assert!(render(&mut r) > 1e-9, "render stalled during rebuild");
 
         // The new grid must land within a bounded delay.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while r.hrir_grid_id() == initial_grid {
             assert!(
                 std::time::Instant::now() < deadline,

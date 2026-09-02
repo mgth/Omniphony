@@ -1,11 +1,18 @@
 //! Measured HRIR sets (e.g. the embedded SAF KEMAR data, or a loaded SOFA file).
 //!
 //! A [`MeasuredHrirData`] holds scattered-direction impulse responses. It
-//! implements [`HrirProvider`] by blending the three nearest measurements
-//! (inverse-angular-distance weights, per-ear energy compensation) after
-//! truncation to [`HRIR_LEN`], so it plugs straight into
+//! implements [`HrirProvider`] by blending the three measurements whose
+//! spherical triangle contains the query — the measurement directions are
+//! triangulated once by the convex hull of their unit vectors, and the
+//! weights are the non-negative solution of `V·w = q` normalised to one
+//! (the VBAP gains of that triangle, as barycentric coordinates on the
+//! sphere) — with per-ear energy compensation, after truncation to
+//! [`HRIR_LEN`], so it plugs straight into
 //! [`HrirSet::new`](super::hrir::HrirSet::new) and reuses the regular-grid
-//! bilinear interpolation.
+//! bilinear interpolation. The three *nearest* measurements it used to blend
+//! (inverse-angle weights) can all lie on one side of the query, which
+//! extrapolates rather than interpolates; a set too small or too flat to
+//! triangulate still falls back to them.
 //!
 //! Every stored impulse response is **minimum-phase** (see
 //! [`minimum_phase`]): the magnitude response of the measurement is kept
@@ -51,6 +58,64 @@ pub struct MeasuredHrirData {
     vecs: Vec<[f32; 3]>,
     /// Left/right impulse responses per measurement (arbitrary length).
     irs: Vec<(Vec<f32>, Vec<f32>)>,
+    /// Spherical triangulation of the measurement directions (convex hull
+    /// faces, indices into `vecs`), empty when the set cannot be
+    /// triangulated.
+    tri: Vec<[usize; 3]>,
+    /// Per-triangle inverse of the 3×3 matrix whose columns are its vertex
+    /// directions, row-major: `w = inv · q` are the query's weights.
+    tri_inv: Vec<[f32; 9]>,
+    /// Triangles incident to each vertex: where a query's search starts.
+    vert_tris: Vec<Vec<u32>>,
+}
+
+/// Inverse of a row-major 3×3 matrix, or `None` when singular.
+fn inv3x3(m: &[f32; 9]) -> Option<[f32; 9]> {
+    let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
+        + m[2] * (m[3] * m[7] - m[4] * m[6]);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let d = 1.0 / det;
+    Some([
+        (m[4] * m[8] - m[5] * m[7]) * d,
+        (m[2] * m[7] - m[1] * m[8]) * d,
+        (m[1] * m[5] - m[2] * m[4]) * d,
+        (m[5] * m[6] - m[3] * m[8]) * d,
+        (m[0] * m[8] - m[2] * m[6]) * d,
+        (m[2] * m[3] - m[0] * m[5]) * d,
+        (m[3] * m[7] - m[4] * m[6]) * d,
+        (m[1] * m[6] - m[0] * m[7]) * d,
+        (m[0] * m[4] - m[1] * m[3]) * d,
+    ])
+}
+
+/// Triangulate unit directions by their convex hull and precompute, per face,
+/// the inverse that turns a query direction into its three weights.
+fn triangulate(vecs: &[[f32; 3]]) -> (Vec<[usize; 3]>, Vec<[f32; 9]>, Vec<Vec<u32>>) {
+    let pts: Vec<[f64; 3]> = vecs
+        .iter()
+        .map(|v| [v[0] as f64, v[1] as f64, v[2] as f64])
+        .collect();
+    let Some(faces) = crate::spatial_vbap::convhull::convhull_3d_build(&pts) else {
+        return (Vec::new(), Vec::new(), Vec::new());
+    };
+    let mut tri = Vec::with_capacity(faces.len());
+    let mut tri_inv = Vec::with_capacity(faces.len());
+    let mut vert_tris = vec![Vec::new(); vecs.len()];
+    for f in faces {
+        let (a, b, c) = (vecs[f[0]], vecs[f[1]], vecs[f[2]]);
+        // Columns are the vertex directions: V·w = q.
+        let m = [a[0], b[0], c[0], a[1], b[1], c[1], a[2], b[2], c[2]];
+        let Some(inv) = inv3x3(&m) else { continue };
+        let t = tri.len() as u32;
+        tri.push(f);
+        tri_inv.push(inv);
+        for &v in &f {
+            vert_tris[v].push(t);
+        }
+    }
+    (tri, tri_inv, vert_tris)
 }
 
 impl MeasuredHrirData {
@@ -59,22 +124,54 @@ impl MeasuredHrirData {
     /// doc); the measurement's own bulk delay, and any pre-alignment it was
     /// given, are discarded.
     pub fn new(sample_rate: u32, dirs: Vec<(f32, f32)>, irs: Vec<(Vec<f32>, Vec<f32>)>) -> Self {
-        let vecs = dirs.iter().map(|&(az, el)| dir_vec(az, el)).collect();
+        let vecs: Vec<[f32; 3]> = dirs.iter().map(|&(az, el)| dir_vec(az, el)).collect();
         let irs = irs
             .into_iter()
             .map(|(l, r)| (minimum_phase(&l), minimum_phase(&r)))
             .collect();
+        let (tri, tri_inv, vert_tris) = triangulate(&vecs);
         Self {
             sample_rate,
             dirs,
             vecs,
             irs,
+            tri,
+            tri_inv,
+            vert_tris,
         }
     }
 
-    /// The embedded SAF KEMAR set.
+    /// Whether the set is interpolated over its spherical triangulation
+    /// (false: too few or too flat a set of directions — nearest-three).
+    pub fn is_triangulated(&self) -> bool {
+        !self.tri.is_empty()
+    }
+
+    /// The embedded SAF KEMAR set, freshly parsed (minimum-phase
+    /// reconstruction and triangulation included). Prefer
+    /// [`saf_kemar_shared`](Self::saf_kemar_shared) unless an owned set is
+    /// needed.
     pub fn saf_kemar() -> Self {
         Self::from_blob(SAF_KEMAR_BLOB).expect("embedded SAF KEMAR blob is valid")
+    }
+
+    /// The embedded SAF KEMAR set at `sample_rate`, parsed once per process
+    /// and rate and shared. Parsing the blob is the expensive part of a
+    /// KEMAR grid build — 1 672 minimum-phase reconstructions, the
+    /// resampling, the hull of 836 directions — and it is identical every
+    /// time; only the grid interpolation depends on anything else. A
+    /// switch back to KEMAR, or the fallback after a failed SOFA load, then
+    /// costs the interpolation alone.
+    pub fn saf_kemar_shared(sample_rate: u32) -> std::sync::Arc<Self> {
+        static CACHE: std::sync::Mutex<Vec<(u32, std::sync::Arc<MeasuredHrirData>)>> =
+            std::sync::Mutex::new(Vec::new());
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, set)) = cache.iter().find(|(fs, _)| *fs == sample_rate) {
+            return std::sync::Arc::clone(set);
+        }
+        let set = std::sync::Arc::new(Self::saf_kemar().resampled_to(sample_rate));
+        cache.push((sample_rate, std::sync::Arc::clone(&set)));
+        set
     }
 
     pub fn len(&self) -> usize {
@@ -155,7 +252,68 @@ impl MeasuredHrirData {
             dirs: self.dirs,
             vecs: self.vecs,
             irs,
+            tri: self.tri,
+            tri_inv: self.tri_inv,
+            vert_tris: self.vert_tris,
         }
+    }
+
+    /// Weights of a query inside triangle `t`, if it lies inside (all
+    /// non-negative, within a small tolerance for queries on an edge).
+    fn weights_in(&self, t: usize, q: [f32; 3]) -> Option<[f32; 3]> {
+        let m = &self.tri_inv[t];
+        let w = [
+            m[0] * q[0] + m[1] * q[1] + m[2] * q[2],
+            m[3] * q[0] + m[4] * q[1] + m[5] * q[2],
+            m[6] * q[0] + m[7] * q[1] + m[8] * q[2],
+        ];
+        const EPS: f32 = -1e-4;
+        if w.iter().all(|&x| x >= EPS) {
+            let sum: f32 = w.iter().map(|x| x.max(0.0)).sum();
+            if sum > 1e-9 {
+                return Some([
+                    w[0].max(0.0) / sum,
+                    w[1].max(0.0) / sum,
+                    w[2].max(0.0) / sum,
+                ]);
+            }
+        }
+        None
+    }
+
+    /// The measurements a query direction is blended from, with their
+    /// weights (sum 1): the vertices of the spherical triangle that contains
+    /// it, searched first among the triangles around the nearest
+    /// measurement, then everywhere; failing that (a set that could not be
+    /// triangulated, or a query outside its hull), the three nearest by
+    /// inverse angle, as before.
+    pub fn support(&self, az_deg: f32, el_deg: f32) -> [(usize, f32); 3] {
+        let near = self.nearest3(az_deg, el_deg);
+        if !self.tri.is_empty() {
+            let q = dir_vec(az_deg, el_deg);
+            let local = self.vert_tris[near[0].0].iter().map(|&t| t as usize);
+            let all = 0..self.tri.len();
+            for t in local.chain(all) {
+                if let Some(w) = self.weights_in(t, q) {
+                    let f = self.tri[t];
+                    return [(f[0], w[0]), (f[1], w[1]), (f[2], w[2])];
+                }
+            }
+        }
+        let mut weights = [0.0f32; 3];
+        let mut wsum = 0.0f32;
+        for (k, &(_, ang)) in near.iter().enumerate() {
+            // Floored so a second measurement at (almost) the same direction —
+            // a duplicated point, or one repeated at another radius — cannot
+            // turn the weight infinite and the blend NaN.
+            weights[k] = 1.0 / ang.max(1e-4);
+            wsum += weights[k];
+        }
+        [
+            (near[0].0, weights[0] / wsum),
+            (near[1].0, weights[1] / wsum),
+            (near[2].0, weights[2] / wsum),
+        ]
     }
 
     /// The three measurements nearest to a query direction, as
@@ -215,21 +373,13 @@ impl HrirProvider for MeasuredHrirData {
             return pair;
         }
 
-        let mut weights = [0.0f32; 3];
-        let mut wsum = 0.0f32;
-        for (k, &(_, ang)) in near.iter().enumerate() {
-            // Floored so a second measurement at (almost) the same direction —
-            // a duplicated point, or one repeated at another radius — cannot
-            // turn the weight infinite and the blend NaN.
-            weights[k] = 1.0 / ang.max(1e-4);
-            wsum += weights[k];
-        }
-
         let mut aligned = [0.0f32; HRIR_LEN];
         let mut target_l = 0.0f32;
         let mut target_r = 0.0f32;
-        for (k, &(idx, _)) in near.iter().enumerate() {
-            let w = weights[k] / wsum;
+        for (idx, w) in self.support(az_deg, el_deg) {
+            if w <= 0.0 {
+                continue;
+            }
             let (l, r) = &self.irs[idx];
             align_into(l, &mut aligned);
             target_l += w * energy_of(&aligned);
@@ -757,6 +907,107 @@ mod tests {
         );
     }
 
+    /// A small full-sphere set: the six axis directions and the eight
+    /// octant diagonals (an octahedron with its faces capped).
+    fn octant_set() -> MeasuredHrirData {
+        let mut dirs = vec![
+            (0.0f32, 0.0f32),
+            (90.0, 0.0),
+            (180.0, 0.0),
+            (270.0, 0.0),
+            (0.0, 90.0),
+            (0.0, -90.0),
+        ];
+        for az in [45.0f32, 135.0, 225.0, 315.0] {
+            for el in [35.264f32, -35.264] {
+                dirs.push((az, el));
+            }
+        }
+        let irs = (0..dirs.len())
+            .map(|k| {
+                let mut v = vec![0.0f32; 32];
+                v[0] = 1.0 + 0.1 * k as f32;
+                (v.clone(), v)
+            })
+            .collect();
+        MeasuredHrirData::new(48_000, dirs, irs)
+    }
+
+    /// Weights are a partition of unity, non-negative, and come from the
+    /// triangle that actually contains the query: on a vertex the whole
+    /// weight is that vertex; on an edge only its two ends carry weight.
+    #[test]
+    fn spherical_barycentric_weights_partition_unity() {
+        let d = octant_set();
+        assert!(d.is_triangulated());
+        for (az, el) in [
+            (10.0f32, 5.0f32),
+            (100.0, -20.0),
+            (200.0, 60.0),
+            (300.0, -70.0),
+        ] {
+            let w = d.support(az, el);
+            let sum: f32 = w.iter().map(|(_, x)| x).sum();
+            assert!((sum - 1.0).abs() < 1e-5, "({az},{el}) sum {sum}");
+            assert!(
+                w.iter().all(|(_, x)| *x >= 0.0),
+                "({az},{el}) negative weight: {w:?}"
+            );
+        }
+        // (45°, 0°) is the centre of the rhombus front / upper diagonal /
+        // right / lower diagonal, which the hull splits along one of its two
+        // diagonals: the query sits on that edge and weighs its two ends,
+        // half each, and nothing else.
+        let w = d.support(45.0, 0.0);
+        let mut active: Vec<(usize, f32)> = w.iter().copied().filter(|(_, x)| *x > 1e-4).collect();
+        active.sort_by_key(|(i, _)| *i);
+        let ids: Vec<usize> = active.iter().map(|(i, _)| *i).collect();
+        assert!(
+            ids == vec![0, 1] || ids == vec![6, 7],
+            "edge midpoint must weigh its two ends only: {w:?}"
+        );
+        assert!(active.iter().all(|(_, x)| (x - 0.5).abs() < 1e-3), "{w:?}");
+        // Exactly on a vertex: that vertex alone.
+        let w = d.support(180.0, 0.0);
+        let top = w.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+        assert_eq!(top.0, 2);
+        assert!(top.1 > 0.999);
+    }
+
+    /// The three nearest measurements can all lie on one side of the query;
+    /// the triangle containing it never does. A query between the front
+    /// vertex and the octant diagonals must draw on the front vertex, which
+    /// a nearest-three pick around a diagonal cluster could skip.
+    #[test]
+    fn support_is_the_containing_triangle_not_the_nearest_cluster() {
+        let d = octant_set();
+        // Just off the front vertex, toward the upper-right octant diagonal.
+        let w = d.support(4.0, 3.0);
+        let front = w
+            .iter()
+            .find(|(i, _)| *i == 0)
+            .map(|(_, x)| *x)
+            .unwrap_or(0.0);
+        assert!(front > 0.8, "front vertex should dominate: {w:?}");
+    }
+
+    /// A set too small to triangulate keeps the nearest-three fallback.
+    #[test]
+    fn a_tiny_set_falls_back_to_nearest_three() {
+        let dirs = vec![(0.0f32, 0.0f32), (10.0, 0.0), (0.0, 10.0)];
+        let irs = (0..3)
+            .map(|k| {
+                let mut v = vec![0.0f32; 16];
+                v[0] = 1.0 + k as f32;
+                (v.clone(), v)
+            })
+            .collect();
+        let d = MeasuredHrirData::new(48_000, dirs, irs);
+        assert!(!d.is_triangulated());
+        let p = d.render(5.0, 5.0, 48_000);
+        assert!(p.left.iter().all(|x| x.is_finite()) && p.left[0] > 0.0);
+    }
+
     /// A query landing exactly on a measurement must return that measurement
     /// (aligned), not a blend — interpolation only fills the space between.
     #[test]
@@ -785,6 +1036,7 @@ mod tests {
         let (az0, el0) = d.dirs[100];
         let near = d.nearest3(az0 + 2.0, el0 + 2.0);
         assert!(near[0].1 > 1e-3, "query must sit between measurements");
+        let support = d.support(az0 + 2.0, el0 + 2.0);
         let got = d.render(az0 + 2.0, el0 + 2.0, 48_000);
 
         // Differs from pure nearest-neighbour.
@@ -804,7 +1056,10 @@ mod tests {
         // Energy sits inside the range spanned by its three sources.
         let mut aligned = [0.0f32; HRIR_LEN];
         let mut src_energies = Vec::new();
-        for &(idx, _) in &near {
+        for &(idx, w) in &support {
+            if w <= 0.0 {
+                continue;
+            }
             align_into(&d.irs[idx].0, &mut aligned);
             src_energies.push(energy(&aligned));
         }
