@@ -57,9 +57,12 @@ const LENGTHS_48K: [usize; N] = [1031, 1327, 1523, 1801, 2053, 2311, 2617, 2903]
 const SIGNS_L: [f32; N] = [1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0];
 const SIGNS_R: [f32; N] = [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0];
 
-/// One-pole HF damping coefficient in the feedback path (higher = darker
-/// tail; HF decays faster than the broadband RT60, like physical walls).
-const DAMPING: f32 = 0.35;
+/// One-pole HF damping coefficient in the feedback path at 48 kHz (higher =
+/// darker tail; HF decays faster than the broadband RT60, like physical
+/// walls). Other rates raise the pole to the rate ratio so the damping
+/// corner stays at the same frequency (≈8 kHz) instead of climbing with
+/// the rate.
+const DAMPING_48K: f32 = 0.35;
 
 /// Peak delay-line modulation depth in samples at 48 kHz (scaled with the
 /// engine rate). ±24 samples spreads each mode by ~±1–2 %, enough for a
@@ -104,6 +107,8 @@ pub struct Fdn {
     pre_len: usize,
     sample_rate: u32,
     rt60_cached: f32,
+    /// `1 − damping` for this rate, applied per line per sample.
+    damp_mix: f32,
 }
 
 impl Fdn {
@@ -142,6 +147,7 @@ impl Fdn {
             pre_len: 1,
             sample_rate,
             rt60_cached: 0.0,
+            damp_mix: 1.0 - DAMPING_48K.powf(48_000.0 / sample_rate as f32),
         }
     }
 
@@ -184,6 +190,8 @@ impl Fdn {
         let sr = self.sample_rate as f32;
         let depth = MOD_DEPTH_48K * sr / 48_000.0;
         let (xover_lp, xover_hp) = (self.xover_lp, self.xover_hp);
+        let damp_mix = self.damp_mix;
+        let pre_cap = self.predelay.len();
 
         let mut offset = 0usize;
         for chunk in bus.chunks(MOD_UPDATE) {
@@ -199,14 +207,25 @@ impl Fdn {
             }
 
             for (s, &input) in chunk.iter().enumerate() {
-                // Pre-delay (integer, fixed per block).
-                let read =
-                    (self.pre_pos + self.predelay.len() - self.pre_len) % self.predelay.len();
+                // Pre-delay (integer, fixed per block). `pre_len < pre_cap`,
+                // so the read is at most one lap behind: a conditional add
+                // wraps it, no division per sample.
+                let read = if self.pre_pos >= self.pre_len {
+                    self.pre_pos - self.pre_len
+                } else {
+                    self.pre_pos + pre_cap - self.pre_len
+                };
                 let x = self.predelay[read];
                 self.predelay[self.pre_pos] = input;
-                self.pre_pos = (self.pre_pos + 1) % self.predelay.len();
+                self.pre_pos += 1;
+                if self.pre_pos == pre_cap {
+                    self.pre_pos = 0;
+                }
 
                 // Read all line outputs at their (modulated) fractional delay.
+                // The modulated delay stays under `base + depth < cap`
+                // (the line has `margin` slots past its base length), so
+                // the same one-lap wrap applies.
                 let mut o = [0.0f32; N];
                 let mut sum = 0.0f32;
                 for i in 0..N {
@@ -215,7 +234,11 @@ impl Fdn {
                     let cap = self.lines[i].len();
                     let di = d as usize;
                     let frac = d - di as f32;
-                    let r0 = (self.pos[i] + cap - di) % cap;
+                    let r0 = if self.pos[i] >= di {
+                        self.pos[i] - di
+                    } else {
+                        self.pos[i] + cap - di
+                    };
                     let r1 = if r0 == 0 { cap - 1 } else { r0 - 1 };
                     let line = &self.lines[i];
                     o[i] = line[r0] * (1.0 - frac) + line[r1] * frac;
@@ -256,11 +279,14 @@ impl Fdn {
                 for i in 0..N {
                     let fb = o[i] - k;
                     // One-pole low-pass in the loop: HF dies faster than RT60.
-                    self.damp_state[i] += (fb - self.damp_state[i]) * (1.0 - DAMPING);
+                    self.damp_state[i] += (fb - self.damp_state[i]) * damp_mix;
                     let inject = if i % 2 == 0 { x } else { -x };
                     let cap = self.lines[i].len();
                     self.lines[i][self.pos[i]] = self.damp_state[i] * self.fb_gain[i] + inject;
-                    self.pos[i] = (self.pos[i] + 1) % cap;
+                    self.pos[i] += 1;
+                    if self.pos[i] == cap {
+                        self.pos[i] = 0;
+                    }
                 }
             }
             offset += chunk.len();
@@ -349,6 +375,23 @@ mod tests {
                 .sum();
             assert_eq!(d, 0.0, "{name} must be orthogonal to the injection");
         }
+    }
+
+    /// The damping pole follows the rate: at 48 kHz it is the published
+    /// coefficient exactly, and at 96 kHz the equivalent one-pole corner.
+    #[test]
+    fn damping_corner_is_rate_invariant() {
+        let corner_hz = |sample_rate: u32| -> f32 {
+            let fdn = Fdn::new(sample_rate);
+            let a = 1.0 - fdn.damp_mix;
+            -a.ln() * sample_rate as f32 / std::f32::consts::TAU
+        };
+        assert_eq!(Fdn::new(48_000).damp_mix, 1.0 - DAMPING_48K);
+        let (a, b) = (corner_hz(48_000), corner_hz(96_000));
+        assert!(
+            (a - b).abs() < 1.0,
+            "corner moved with the rate: {a} vs {b} Hz"
+        );
     }
 
     #[test]
