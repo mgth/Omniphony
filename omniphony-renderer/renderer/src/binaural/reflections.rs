@@ -145,15 +145,25 @@ impl ReflectionBank {
         }
     }
 
-    /// Update one reflection's targets: relative delay (s) and per-ear gains.
-    /// Called once per block per reflection.
-    pub fn set_targets(&mut self, idx: usize, delay_s: f32, gain_l: f32, gain_r: f32) {
+    /// Update one reflection's targets: per-ear relative delays (s) and
+    /// per-ear gains. Called once per block per reflection. The two delays
+    /// differ by the interaural time difference of the image's direction —
+    /// the taps are separate per ear precisely so that a reflection can be
+    /// lateralised by time, the cue an ILD pan alone cannot give.
+    pub fn set_targets(
+        &mut self,
+        idx: usize,
+        delay_l_s: f32,
+        delay_r_s: f32,
+        gain_l: f32,
+        gain_r: f32,
+    ) {
         let max = (self.ring.len() - 2) as f32;
-        let d = (delay_s * self.sample_rate as f32).clamp(0.0, max);
-        for (tap, gain) in [
-            (&mut self.taps_l[idx], gain_l),
-            (&mut self.taps_r[idx], gain_r),
+        for (tap, delay_s, gain) in [
+            (&mut self.taps_l[idx], delay_l_s, gain_l),
+            (&mut self.taps_r[idx], delay_r_s, gain_r),
         ] {
+            let d = (delay_s * self.sample_rate as f32).clamp(0.0, max);
             tap.delay_target = d;
             tap.gain_target = gain;
             // While the tap is (near) silent a delay jump is inaudible — snap
@@ -177,14 +187,6 @@ impl ReflectionBank {
         self.write_pos += 1;
         if self.write_pos >= self.ring.len() {
             self.write_pos = 0;
-        }
-    }
-
-    /// Fade every tap out (e.g. when the channel goes silent) so re-enabling
-    /// does not click.
-    pub fn mute_targets(&mut self) {
-        for t in self.taps_l.iter_mut().chain(self.taps_r.iter_mut()) {
-            t.gain_target = 0.0;
         }
     }
 
@@ -318,7 +320,7 @@ mod tests {
         let mut bank = ReflectionBank::new(48_000);
         // One active tap: 10-sample delay, gain 0.5 on the left only. Pre-set
         // current = target by letting it settle on silence first.
-        bank.set_targets(0, 10.0 / 48_000.0, 0.5, 0.0);
+        bank.set_targets(0, 10.0 / 48_000.0, 10.0 / 48_000.0, 0.5, 0.0);
         for _ in 0..4_000 {
             bank.process(0.0);
         }
@@ -346,7 +348,7 @@ mod tests {
     fn gain_smoothing_is_rate_invariant() {
         let settle_after_ms = |sample_rate: u32| -> f32 {
             let mut bank = ReflectionBank::new(sample_rate);
-            bank.set_targets(0, 0.0, 1.0, 1.0);
+            bank.set_targets(0, 0.0, 0.0, 1.0, 1.0);
             let n = (sample_rate as f32 * 0.003) as usize; // 3 ms
             let mut last = 0.0;
             for _ in 0..n {
@@ -362,17 +364,48 @@ mod tests {
         assert!((gain_smooth_for(48_000) - GAIN_SMOOTH_48K).abs() < 1e-6);
     }
 
+    /// The two ears of one reflection read the ring at their own delays: an
+    /// impulse comes out of the left tap at its delay and of the right tap
+    /// at the other — the interaural difference of the reflection.
+    #[test]
+    fn ears_read_at_their_own_delays() {
+        let mut bank = ReflectionBank::new(48_000);
+        bank.set_targets(0, 10.0 / 48_000.0, 24.0 / 48_000.0, 0.5, 0.5);
+        for _ in 0..4_000 {
+            bank.process(0.0);
+        }
+        let mut outs = Vec::new();
+        outs.push(bank.process(1.0));
+        for _ in 0..30 {
+            outs.push(bank.process(0.0));
+        }
+        assert!(
+            (outs[10].0 - 0.5).abs() < 1e-3,
+            "left at 10: {}",
+            outs[10].0
+        );
+        assert!(
+            (outs[24].1 - 0.5).abs() < 1e-3,
+            "right at 24: {}",
+            outs[24].1
+        );
+        assert!(
+            outs[10].1.abs() < 1e-3 && outs[24].0.abs() < 1e-3,
+            "ears bled"
+        );
+    }
+
     #[test]
     fn gain_changes_are_smoothed() {
         let mut bank = ReflectionBank::new(48_000);
-        bank.set_targets(0, 0.0, 1.0, 1.0);
+        bank.set_targets(0, 0.0, 0.0, 1.0, 1.0);
         for _ in 0..4_000 {
             bank.process(1.0); // settle: DC input, gain 1
         }
         let (settled, _) = bank.process(1.0);
         assert!((settled - 1.0).abs() < 1e-2);
         // Drop the gain target to 0: output must move gradually, not jump.
-        bank.set_targets(0, 0.0, 0.0, 0.0);
+        bank.set_targets(0, 0.0, 0.0, 0.0, 0.0);
         let (next, _) = bank.process(1.0);
         assert!(next > 0.9, "gain jumped instead of smoothing: {next}");
     }

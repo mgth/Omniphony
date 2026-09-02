@@ -903,12 +903,17 @@ impl BinauralRenderer {
                     // zero added latency (A/V sync unchanged).
                     let rel_delay_s = (d_img - d_src).max(0.0) / c_sound;
                     // Head-relative direction → broadband ILD pan (no HRIR
-                    // conv per reflection: one tap + one multiply per ear).
+                    // conv per reflection: one tap + one multiply per ear)
+                    // and the image's own ITD, added to each ear's tap delay:
+                    // the reflections then lateralise by time like the direct
+                    // sound does, which an ILD pan alone cannot give and is
+                    // most of what makes them read as coming from a wall.
                     let ih = head_pose.rotate([img[0] as f64, img[1] as f64, img[2] as f64]);
                     let inorm = ((ih[0] * ih[0] + ih[1] * ih[1] + ih[2] * ih[2]) as f32)
                         .sqrt()
                         .max(1e-6);
                     let lat = (ih[0] as f32 / inorm).clamp(-1.0, 1.0);
+                    let (itd_l_img, itd_r_img) = itd::ear_delays_from_lateral(lat, head_radius_m);
                     const SHADOW: f32 = 0.5;
                     let g_r = ((1.0 + SHADOW * lat) / (1.0 + SHADOW)).sqrt();
                     let g_l = ((1.0 - SHADOW * lat) / (1.0 + SHADOW)).sqrt();
@@ -920,7 +925,13 @@ impl BinauralRenderer {
                     // distance — a receding source got *drier*.
                     let g_dist = (d_src / d_img).min(MAX_DISTANCE_GAIN);
                     let g = reflections.level.clamp(0.0, 1.0) * g_dist;
-                    bank.set_targets(i, rel_delay_s, g * g_l, g * g_r);
+                    bank.set_targets(
+                        i,
+                        rel_delay_s + itd_l_img,
+                        rel_delay_s + itd_r_img,
+                        g * g_l,
+                        g * g_r,
+                    );
                 }
             }
 
@@ -1577,6 +1588,58 @@ mod tests {
         assert!(
             far > near * 4.0 && far < near * 20.0,
             "reverb send off the 1/d law: 1 m {near:.3e} vs 3 m {far:.3e}"
+        );
+    }
+
+    /// A reflection arrives at the two ears with the interaural delay of its
+    /// own direction. Source at (0.9, 0.3, 0) in the default room: the first
+    /// image to land is the ceiling's (image at z = 2.7, 1.9 m beyond the
+    /// source: 267 samples), whose lateral sine is 0.9 / 2.86 = 0.31, i.e. an
+    /// ITD of 0.16 ms ≈ 8 samples with the left ear the far one. Before, both
+    /// ears received it at the same instant.
+    #[test]
+    fn reflections_carry_their_own_itd() {
+        let n = 1_024;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let pos = [[0.9, 0.3, 0.0]];
+        let render = |enabled: bool| -> Vec<f32> {
+            let params = BinauralFrameParams {
+                reflections: BinauralReflections {
+                    enabled,
+                    room_size_m: [4.0, 5.0, 2.7],
+                    level: 0.5,
+                },
+                ..dry_params()
+            };
+            let mut out = vec![0.0f32; n * 2];
+            let mut r = BinauralRenderer::new(48_000);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &params,
+                &pos,
+                &[ChannelGain::flat(1.0)],
+                &[],
+                None,
+                &mut out,
+            );
+            out
+        };
+        let (dry, wet) = (render(false), render(true));
+        // First sample where the wet render departs from the dry one, per ear.
+        let onset = |ear: usize| -> usize {
+            (0..n)
+                .find(|&s| (wet[s * 2 + ear] - dry[s * 2 + ear]).abs() > 1e-5)
+                .expect("no reflection energy at all")
+        };
+        let (l, r) = (onset(0), onset(1));
+        assert!((250..290).contains(&r), "right-ear first reflection at {r}");
+        let itd = l as i64 - r as i64;
+        assert!(
+            (5..=11).contains(&itd),
+            "left minus right onset {itd} samples, expected ≈ 8 (L={l}, R={r})"
         );
     }
 

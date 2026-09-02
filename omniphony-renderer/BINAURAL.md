@@ -12,8 +12,8 @@ Per channel, per block:
 position → rotate(head pose) → (azimuth, elevation, distance)
          → air-absorption low-pass (cutoff falls with distance)
          → per-ear ITD delay → per-ear HRIR convolution   (authored level, no 1/d)
-         → + 6 first-order shoebox reflections (delay + ILD pan per ear,
-             level relative to the direct: d_source / d_image)
+         → + 6 first-order shoebox reflections (per-ear delay incl. the image's
+             ITD + ILD pan, level relative to the direct: d_source / d_image)
          → + shared late-reverb tail (stereo FDN, send ∝ distance)
          → mix into [L, R]
 ```

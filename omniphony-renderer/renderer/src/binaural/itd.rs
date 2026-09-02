@@ -33,7 +33,14 @@ const SPEED_OF_SOUND: f32 = 343.0;
 pub fn ear_delays_seconds(azimuth_rad: f32, elevation_rad: f32, head_radius_m: f32) -> (f32, f32) {
     // Signed sine of the lateral angle: +1 at the right ear, −1 at the left,
     // 0 anywhere in the median plane (front, back, overhead alike).
-    let s = (elevation_rad.cos() * azimuth_rad.sin()).clamp(-1.0, 1.0);
+    ear_delays_from_lateral(elevation_rad.cos() * azimuth_rad.sin(), head_radius_m)
+}
+
+/// [`ear_delays_seconds`] for a direction given by the **sine of its lateral
+/// angle** — the `x` component of the unit head-relative vector, which a
+/// caller that already has the vector need not turn back into angles.
+pub fn ear_delays_from_lateral(lateral_sine: f32, head_radius_m: f32) -> (f32, f32) {
+    let s = lateral_sine.clamp(-1.0, 1.0);
     let lateral = s.abs().asin();
     let mag = (head_radius_m / SPEED_OF_SOUND) * (lateral + s.abs());
     if s >= 0.0 {
