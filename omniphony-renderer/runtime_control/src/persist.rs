@@ -272,6 +272,7 @@ pub fn store_live_into_config(
             room_depth_m: Some(live.binaural.reflections.room_size_m[1]),
             room_height_m: Some(live.binaural.reflections.room_size_m[2]),
             level: Some(live.binaural.reflections.level),
+            wall_cutoff_hz: Some(live.binaural.reflections.wall_cutoff_hz),
             extra: Default::default(),
         }),
         reverb: Some(renderer::config::ReverbConfig {

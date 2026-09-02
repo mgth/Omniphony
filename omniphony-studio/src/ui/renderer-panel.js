@@ -175,6 +175,13 @@ export function rendererPanelMarkup() {
                 <input id="binauralReflRoomD" type="range" min="1" max="20" step="0.1" value="5" style="width:100%;" />
                 <input id="binauralReflRoomH" type="range" min="1" max="20" step="0.1" value="2.7" style="width:100%;" />
               </div>
+              <div class="binaural-help-row">
+                <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
+                  <span data-i18n="binaural.wallDamping" data-help-i18n="help.binaural.wallDamping" data-help-anchor=".binaural-help-row">Wall damping (kHz)</span>
+                  <span id="binauralReflWallCutoffVal">6.0</span>
+                </div>
+                <input id="binauralReflWallCutoff" type="range" min="1" max="20" step="0.5" value="6" style="width:100%;" />
+              </div>
               </div>
               <div class="switch-row" style="font-size:0.7rem;color:#8fa6bd;margin-top:0.2rem;border-top:1px solid rgba(255,255,255,0.05);padding-top:0.3rem;">
                 <span data-i18n="binaural.lateReverb" data-help-i18n="help.binaural.lateReverb">Late reverb</span>

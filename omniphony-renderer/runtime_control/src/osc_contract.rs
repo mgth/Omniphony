@@ -109,6 +109,8 @@ pub const CONTROL_BINAURAL_REFLECTIONS_ROOM_HEIGHT: &str =
     "/omniphony/control/binaural/reflections/room_height";
 pub const CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH: &str =
     "/omniphony/control/binaural/reflections/room_width";
+pub const CONTROL_BINAURAL_REFLECTIONS_WALL_CUTOFF: &str =
+    "/omniphony/control/binaural/reflections/wall_cutoff";
 pub const CONTROL_BINAURAL_REVERB_ENABLED: &str = "/omniphony/control/binaural/reverb/enabled";
 pub const CONTROL_BINAURAL_REVERB_LEVEL: &str = "/omniphony/control/binaural/reverb/level";
 pub const CONTROL_BINAURAL_REVERB_PREDELAY: &str = "/omniphony/control/binaural/reverb/predelay";
@@ -625,6 +627,7 @@ pub const ALL_CONTROL: &[&str] = &[
     CONTROL_BINAURAL_REFLECTIONS_ROOM_DEPTH,
     CONTROL_BINAURAL_REFLECTIONS_ROOM_HEIGHT,
     CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH,
+    CONTROL_BINAURAL_REFLECTIONS_WALL_CUTOFF,
     CONTROL_BINAURAL_REVERB_ENABLED,
     CONTROL_BINAURAL_REVERB_LEVEL,
     CONTROL_BINAURAL_REVERB_PREDELAY,

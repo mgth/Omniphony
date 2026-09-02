@@ -262,6 +262,7 @@ pub fn build_renderer_state_json(
                 "enabled": live.binaural.reflections.enabled,
                 "roomM": live.binaural.reflections.room_size_m,
                 "level": live.binaural.reflections.level,
+                "wallCutoffHz": live.binaural.reflections.wall_cutoff_hz,
             },
             "reverb": {
                 "enabled": live.binaural.reverb.enabled,

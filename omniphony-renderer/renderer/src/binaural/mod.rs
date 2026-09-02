@@ -203,6 +203,14 @@ const REVERB_REF_DISTANCE_M: f32 = 1.5;
 const MAX_REVERB_SEND: f32 = 4.0;
 /// Delay-line capacity for the ITD (s) — comfortably above the ~0.7 ms max.
 const ITD_MAX_S: f32 = 0.003;
+
+/// Cutoff (Hz) of the air-absorption low-pass for a path of `dist_m`, or
+/// `None` within the 3 m bypass: ~14 kHz at 10 m, ~5 kHz at 30 m, floored at
+/// 2 kHz. One law for the direct path and for each reflection's own image
+/// path, which is longer and so duller.
+fn air_cutoff_hz(dist_m: f32) -> Option<f32> {
+    (dist_m > 3.0).then(|| (20_000.0 * (-0.05 * (dist_m - 3.0)).exp()).max(2_000.0))
+}
 /// Input channels whose DSP state is built at construction, so that the
 /// first block of any stream up to this width — and every enable of the
 /// reflections or the reverb — allocates nothing on the audio thread. Wider
@@ -906,11 +914,9 @@ impl BinauralRenderer {
             // Air absorption: a one-pole low-pass whose cutoff falls with
             // distance (HF dies in air — true outdoors as much as indoors).
             // Bypass within 3 m; ~14 kHz at 10 m, ~5 kHz at 30 m, floor 2 kHz.
-            dsp.air_coeff = if air_absorption && dist_m > 3.0 {
-                let fc = (20_000.0 * (-0.05 * (dist_m - 3.0)).exp()).max(2_000.0);
-                (-std::f32::consts::TAU * fc / self.sample_rate as f32).exp()
-            } else {
-                0.0
+            dsp.air_coeff = match air_cutoff_hz(dist_m).filter(|_| air_absorption) {
+                Some(fc) => (-std::f32::consts::TAU * fc / self.sample_rate as f32).exp(),
+                None => 0.0,
             };
 
             // Reverb send. In a room the reverberant field barely depends on
@@ -980,12 +986,25 @@ impl BinauralRenderer {
                     // distance — a receding source got *drier*.
                     let g_dist = (d_src / d_img).min(MAX_DISTANCE_GAIN);
                     let g = reflections.level.clamp(0.0, 1.0) * g_dist;
+                    // What takes the treble out of this reflection: the wall
+                    // it bounced off, and the air along its own path — which
+                    // is longer than the direct one, so the reflection is
+                    // duller than the direct sound, not merely as dull.
+                    let wall = reflections.wall_cutoff_hz.clamp(
+                        reflections::MIN_WALL_CUTOFF_HZ,
+                        reflections::MAX_WALL_CUTOFF_HZ,
+                    );
+                    let cutoff = match air_cutoff_hz(d_img).filter(|_| air_absorption) {
+                        Some(fc) => wall.min(fc),
+                        None => wall,
+                    };
                     bank.set_targets(
                         i,
                         rel_delay_s + itd_l_img,
                         rel_delay_s + itd_r_img,
                         g * g_l,
                         g * g_r,
+                        cutoff,
                     );
                 }
             }
@@ -1008,7 +1027,8 @@ impl BinauralRenderer {
                 // `raw` carries the object/metadata gain only; the direct path
                 // adds its distance gain, the reflection taps theirs. The air
                 // low-pass applies to the propagated wave, so it feeds the
-                // direct, the reflections and the reverb send alike.
+                // direct and the reverb send; the reflections filter their
+                // own paths (see below).
                 // A silent block reads no input at all — the draining extra
                 // slot has none to read.
                 let mut raw = if silent {
@@ -1016,6 +1036,11 @@ impl BinauralRenderer {
                 } else {
                     src_pcm[s * src_stride + src_offset] * (gain.start + gain.step * s as f32)
                 };
+                // The reflections take the un-absorbed signal: each tap
+                // carries its own low-pass for its own path (wall + air over
+                // the image distance), so the direct path's air filter must
+                // not be applied to them a second time.
+                let raw_dry = raw;
                 if air > 0.0 {
                     dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
                     raw = dsp.air_state;
@@ -1025,12 +1050,12 @@ impl BinauralRenderer {
                 let mut yl = dsp.conv_l.process(dsp.delay_l.process(x));
                 let mut yr = dsp.conv_r.process(dsp.delay_r.process(x));
                 if reflections_on {
-                    let (rl, rr) = dsp.refl.process(raw);
+                    let (rl, rr) = dsp.refl.process(raw_dry);
                     yl += rl;
                     yr += rr;
                 } else {
                     // Keep the ring current for the moment they come back.
-                    dsp.refl.push(raw);
+                    dsp.refl.push(raw_dry);
                 }
                 if reverb_active {
                     self.reverb_bus[s] += raw * reverb_send;
@@ -1259,6 +1284,7 @@ mod tests {
             enabled: true,
             room_size_m: [4.0, 5.0, 2.7],
             level: 0.5,
+            wall_cutoff_hz: reflections::MAX_WALL_CUTOFF_HZ,
         };
         let on = BinauralFrameParams {
             reflections: room.clone(),
@@ -1506,6 +1532,7 @@ mod tests {
                 enabled: true,
                 room_size_m: [4.0, 4.0, 4.0],
                 level: 0.5,
+                wall_cutoff_hz: reflections::MAX_WALL_CUTOFF_HZ,
             },
             ..dry_params()
         };
@@ -1548,6 +1575,7 @@ mod tests {
                     enabled,
                     room_size_m: [4.0, 5.0, 2.7],
                     level: 0.5,
+                    wall_cutoff_hz: reflections::MAX_WALL_CUTOFF_HZ,
                 },
                 ..dry_params()
             };
@@ -1611,6 +1639,7 @@ mod tests {
                     enabled: true,
                     room_size_m: [4.0, 5.0, 2.7],
                     level: 0.5,
+                    wall_cutoff_hz: reflections::MAX_WALL_CUTOFF_HZ,
                 },
                 ..dry_params()
             };
@@ -1697,6 +1726,7 @@ mod tests {
                     enabled,
                     room_size_m: [4.0, 5.0, 2.7],
                     level: 0.5,
+                    wall_cutoff_hz: reflections::MAX_WALL_CUTOFF_HZ,
                 },
                 ..dry_params()
             };
@@ -1728,6 +1758,64 @@ mod tests {
         assert!(
             (5..=11).contains(&itd),
             "left minus right onset {itd} samples, expected ≈ 8 (L={l}, R={r})"
+        );
+    }
+
+    /// The wall cutoff dulls the reflections and leaves the direct sound
+    /// alone: with a Nyquist-rate input, the reflections' own energy (wet
+    /// minus dry) falls with the cutoff while the dry render does not move.
+    #[test]
+    fn wall_cutoff_dulls_reflections_not_the_direct_sound() {
+        let n = 2_048;
+        let input: Vec<f32> = (0..n)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let render = |enabled: bool, wall_cutoff_hz: f32| -> Vec<f32> {
+            let params = BinauralFrameParams {
+                reflections: BinauralReflections {
+                    enabled,
+                    room_size_m: [4.0, 5.0, 2.7],
+                    level: 0.5,
+                    wall_cutoff_hz,
+                },
+                ..dry_params()
+            };
+            let mut out = vec![0.0f32; n * 2];
+            let mut r = BinauralRenderer::new(48_000);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &params,
+                &[[0.0, 1.0, 0.0]],
+                &[ChannelGain::flat(1.0)],
+                &[],
+                None,
+                &mut out,
+            );
+            out
+        };
+        let dry = render(false, reflections::MAX_WALL_CUTOFF_HZ);
+        let dry_dull = render(false, 2_000.0);
+        assert_eq!(
+            dry, dry_dull,
+            "the wall cutoff must not touch the direct sound"
+        );
+        let refl_energy = |cutoff: f32| -> f32 {
+            render(true, cutoff)
+                .iter()
+                .zip(&dry)
+                .map(|(w, d)| (w - d) * (w - d))
+                .sum()
+        };
+        let (bright, dull) = (
+            refl_energy(reflections::MAX_WALL_CUTOFF_HZ),
+            refl_energy(2_000.0),
+        );
+        assert!(bright > 1e-6, "no reflections at all");
+        assert!(
+            dull < 0.2 * bright,
+            "reflections not dulled: {dull} vs {bright}"
         );
     }
 
@@ -1852,6 +1940,7 @@ mod tests {
                 enabled: true,
                 room_size_m: [4.0, 5.0, 2.7],
                 level: 0.5,
+                wall_cutoff_hz: reflections::MAX_WALL_CUTOFF_HZ,
             },
             ..dry_params()
         };
@@ -1901,6 +1990,7 @@ mod tests {
                 enabled: true,
                 room_size_m: [4.0, 5.0, 2.7],
                 level: 0.5,
+                wall_cutoff_hz: reflections::MAX_WALL_CUTOFF_HZ,
             },
             ..dry_params()
         };

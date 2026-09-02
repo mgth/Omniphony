@@ -670,6 +670,14 @@ pub fn seed_control_from_render_config(
                             r.level = level.clamp(0.0, 1.0);
                         }
                     }
+                    if let Some(fc) = refl.wall_cutoff_hz {
+                        if fc.is_finite() {
+                            r.wall_cutoff_hz = fc.clamp(
+                                renderer::binaural::reflections::MIN_WALL_CUTOFF_HZ,
+                                renderer::binaural::reflections::MAX_WALL_CUTOFF_HZ,
+                            );
+                        }
+                    }
                 }
                 if let Some(rev) = bin.reverb.as_ref() {
                     let r = &mut live.binaural.reverb;

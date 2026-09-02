@@ -501,6 +501,10 @@ pub struct BinauralReflections {
     /// Per-reflection wall gain (0..1) applied on top of the distance law
     /// (`d_source / d_image`, the image's 1/d relative to the direct sound).
     pub level: f32,
+    /// High-frequency cutoff of the walls (Hz): each reflection is low-passed
+    /// here, combined with the air absorption along its own image path. 20 kHz
+    /// is bit-transparent (bare plaster); 6 kHz is a furnished room.
+    pub wall_cutoff_hz: f32,
 }
 
 impl Default for BinauralReflections {
@@ -511,6 +515,7 @@ impl Default for BinauralReflections {
             enabled: false,
             room_size_m: [4.0, 5.0, 2.7],
             level: 0.5,
+            wall_cutoff_hz: 6_000.0,
         }
     }
 }
