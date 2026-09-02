@@ -797,8 +797,11 @@ impl SpatialRenderer {
                 // Compare against the live source in place: no per-frame clone
                 // (the `Sofa` variant carries a heap path), and any rebuild is
                 // pushed to the worker inside `ensure_source`.
-                self.binaural
-                    .ensure_source(&g.binaural.hrir_source, g.binaural.head_radius_m);
+                self.binaural.ensure_source(
+                    &g.binaural.hrir_source,
+                    g.binaural.head_radius_m,
+                    g.binaural.diffuse_field_eq,
+                );
                 (
                     crate::binaural::BinauralFrameParams {
                         head_pose: g.binaural.head_pose,

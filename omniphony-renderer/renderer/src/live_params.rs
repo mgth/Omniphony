@@ -591,6 +591,10 @@ pub struct BinauralLiveParams {
     /// Distance low-pass on the direct path (air absorption): physically
     /// true indoors and outdoors, the natural "far sounds dull" cue.
     pub air_absorption: bool,
+    /// Divide the HRIR set by its own diffuse-field response at build time
+    /// (see `binaural::diffuse_field`): takes the measured head's tonal
+    /// signature out while keeping every interaural difference. Opt-in.
+    pub diffuse_field_eq: bool,
 }
 
 impl Default for BinauralLiveParams {
@@ -608,6 +612,7 @@ impl Default for BinauralLiveParams {
             reflections: BinauralReflections::default(),
             reverb: BinauralReverb::default(),
             air_absorption: true,
+            diffuse_field_eq: false,
         }
     }
 }

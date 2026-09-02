@@ -74,6 +74,10 @@ export function rendererPanelMarkup() {
             </div>
             <div class="renderer-subpanel-body" style="margin-top:0.25rem;padding:0.3rem 0.4rem;background:rgba(255,255,255,0.03);border-radius:6px;display:grid;gap:0.3rem">
               <div id="binauralSofaInfo" style="display:none;font-size:0.65rem;word-break:break-all;"></div>
+              <div class="inline-toggle" style="margin-top:0">
+                <div data-i18n="binaural.diffuseFieldEq" data-help-i18n="help.binaural.diffuseFieldEq">Diffuse-field EQ</div>
+                <input id="binauralDiffuseFieldEq" type="checkbox" />
+              </div>
               <div class="binaural-help-row">
                 <div style="font-size:0.65rem;color:#888;margin-bottom:0.15rem;display:flex;justify-content:space-between;">
                   <span data-i18n="binaural.headRadius" data-help-i18n="help.binaural.headRadius" data-help-anchor=".binaural-help-row">Head radius (cm)</span>

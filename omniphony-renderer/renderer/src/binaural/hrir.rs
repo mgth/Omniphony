@@ -331,7 +331,7 @@ const TRUNCATION_FADE_TAPS: usize = 8;
 /// raised cosine first; a response that was already silent there is left
 /// bit-for-bit alone (the embedded KEMAR set is exactly the kernel length
 /// at 48 kHz, so it is unaffected).
-fn truncate_with_fade(h: &mut [f32; HRIR_LEN], len: usize) {
+pub(super) fn truncate_with_fade(h: &mut [f32; HRIR_LEN], len: usize) {
     let cut = h[len..].iter().any(|&x| x != 0.0);
     h[len..].fill(0.0);
     if !cut {
@@ -358,6 +358,8 @@ pub struct HrirSet {
     /// in `grid` is zero from this index on, and [`at`](Self::at) only
     /// interpolates this many.
     len: usize,
+    /// Rate the set was built at.
+    sample_rate: u32,
     /// Row-major `[el_idx * az_count + az_idx]`. Azimuth wraps; elevation clamps.
     grid: Vec<HrirPair>,
 }
@@ -400,8 +402,17 @@ impl HrirSet {
     const EL_MIN_DEG: f32 = -40.0;
     const EL_MAX_DEG: f32 = 90.0;
 
-    /// Precompute the grid from `provider` at `sample_rate`.
+    /// Precompute the grid from `provider` at `sample_rate`, without
+    /// diffuse-field equalisation (see [`build`](Self::build)).
     pub fn new(provider: &dyn HrirProvider, sample_rate: u32) -> Self {
+        Self::build(provider, sample_rate, false)
+    }
+
+    /// Precompute the grid from `provider` at `sample_rate`. With
+    /// `diffuse_field_eq` the set is divided by its own diffuse-field
+    /// response before the level normalisation (see
+    /// [`diffuse_field`](super::diffuse_field)).
+    pub fn build(provider: &dyn HrirProvider, sample_rate: u32, diffuse_field_eq: bool) -> Self {
         let az_count = (360.0 / Self::AZ_STEP_DEG).round() as usize; // wrap: no duplicate at 360
         let el_count =
             ((Self::EL_MAX_DEG - Self::EL_MIN_DEG) / Self::EL_STEP_DEG).round() as usize + 1;
@@ -418,6 +429,13 @@ impl HrirSet {
                 truncate_with_fade(&mut pair.left, len);
                 truncate_with_fade(&mut pair.right, len);
                 grid.push(pair);
+            }
+        }
+
+        if diffuse_field_eq {
+            let weights = Self::node_weights(az_count, el_count);
+            if super::diffuse_field::equalise(&mut grid, &weights, len, sample_rate) {
+                log::debug!("HRIR set diffuse-field equalised");
             }
         }
 
@@ -468,6 +486,7 @@ impl HrirSet {
             el_min_deg: Self::EL_MIN_DEG,
             el_max_deg: Self::EL_MAX_DEG,
             len,
+            sample_rate,
             grid,
         }
     }
@@ -481,6 +500,36 @@ impl HrirSet {
     /// A set with no taps in use; never true of a built set.
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// cos(el) weight of every grid node, row-major like `grid`: the
+    /// sphere-area compensation both the level normalisation and the
+    /// diffuse-field average use.
+    fn node_weights(az_count: usize, el_count: usize) -> Vec<f32> {
+        let mut w = Vec::with_capacity(az_count * el_count);
+        for ei in 0..el_count {
+            let el = Self::EL_MIN_DEG + ei as f32 * Self::EL_STEP_DEG;
+            let cw = el.to_radians().cos().max(0.0);
+            w.extend(std::iter::repeat_n(cw, az_count));
+        }
+        w
+    }
+
+    /// Diffuse-field power response of the set, `(hz, power)` per bin —
+    /// the quantity [`build`](Self::build) flattens.
+    pub fn diffuse_field_response(&self) -> Vec<(f32, f32)> {
+        let weights = Self::node_weights(self.az_count, self.el_count);
+        super::diffuse_field::diffuse_field_power(
+            &self.grid,
+            &weights,
+            self.len,
+            self.sample_rate(),
+        )
+    }
+
+    /// Sample rate the set was built for (recovered from its kernel length).
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
     }
 
     /// Convenience constructor for the built-in synthetic model at the

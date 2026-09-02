@@ -271,6 +271,7 @@ pub fn build_renderer_state_json(
                 "predelayMs": live.binaural.reverb.predelay_ms,
             },
             "airAbsorption": live.binaural.air_absorption,
+            "diffuseFieldEq": live.binaural.diffuse_field_eq,
             "hrirSource": live.binaural.hrir_source.as_str(),
             "hrtfSofaPath": match &live.binaural.hrir_source {
                 renderer::binaural::HrirSource::Sofa(p) => p.as_str(),

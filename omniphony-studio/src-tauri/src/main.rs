@@ -358,6 +358,7 @@ fn main() {
             control_binaural_reverb_level,
             control_binaural_reverb_rt60,
             control_binaural_air_absorption,
+            control_binaural_diffuse_field_eq,
             sofa_browse,
             sofa_download,
             sofa_list_local,
