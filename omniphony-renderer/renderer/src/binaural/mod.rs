@@ -245,6 +245,38 @@ impl ChannelDsp {
     }
 }
 
+/// One input channel's gain over a block: `start + step · sample_index`.
+///
+/// The gain is slewed upstream (20 ms toward the authored value); handing
+/// the ramp down as a start and a per-sample step lets the block apply it
+/// per sample, as the speaker path does. Applying the block-end value as a
+/// constant instead stepped a 40 dB change in 24 stairs of 1.7 dB on
+/// 40-sample blocks — zipper noise on every fast object fade.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChannelGain {
+    /// Linear gain at the first sample of the block.
+    pub start: f32,
+    /// Change per sample across the block.
+    pub step: f32,
+}
+
+impl ChannelGain {
+    /// A gain that holds `gain` for the whole block.
+    pub const fn flat(gain: f32) -> Self {
+        Self {
+            start: gain,
+            step: 0.0,
+        }
+    }
+
+    /// Whether the block is silent throughout: nothing in, and no ramp
+    /// bringing anything in.
+    #[inline]
+    fn is_silent(&self) -> bool {
+        self.start == 0.0 && self.step == 0.0
+    }
+}
+
 /// A source rendered alongside the input channels, from its own mono block.
 ///
 /// Exists for the object test, which has no input channel to ride on: it is a
@@ -474,7 +506,8 @@ impl BinauralRenderer {
     /// Render one frame to interleaved stereo.
     ///
     /// - `chan_pos[c]`: world (ADM) position of input channel `c`.
-    /// - `chan_gain[c]`: linear gain for channel `c` (object mute/gain folded in).
+    /// - `chan_gain[c]`: linear gain ramp for channel `c` over the block
+    ///   (object mute/gain folded in), applied per sample.
     /// - `chan_direct[c]`: `true` for channels that keep their direct-routing
     ///   intent (beds mapped to a `spatialize: false` speaker — the LFE): fed
     ///   to both ears equally, bypassing HRIR/ITD/air/reflections/reverb.
@@ -491,7 +524,7 @@ impl BinauralRenderer {
         sample_length: usize,
         params: &BinauralFrameParams,
         chan_pos: &[[f64; 3]],
-        chan_gain: &[f32],
+        chan_gain: &[ChannelGain],
         chan_direct: &[bool],
         extra: Option<ExtraSource<'_>>,
         out: &mut [f32],
@@ -563,10 +596,10 @@ impl BinauralRenderer {
                 continue;
             }
             let gain = match extra_here {
-                Some(e) => e.gain,
-                None => chan_gain.get(c).copied().unwrap_or(0.0),
+                Some(e) => ChannelGain::flat(e.gain),
+                None => chan_gain.get(c).copied().unwrap_or(ChannelGain::flat(0.0)),
             };
-            let silent = gain == 0.0;
+            let silent = gain.is_silent();
             if silent {
                 // A silent channel is skipped only once its state has
                 // nothing left to say. While it has, the block runs through
@@ -602,9 +635,9 @@ impl BinauralRenderer {
                     dsp.flush = 0;
                 }
                 for s in 0..span {
-                    let v = src_pcm[s * src_stride + src_offset]
-                        * gain
-                        * std::f32::consts::FRAC_1_SQRT_2;
+                    let g = gain.start + gain.step * s as f32;
+                    let v =
+                        src_pcm[s * src_stride + src_offset] * g * std::f32::consts::FRAC_1_SQRT_2;
                     let o = s * 2;
                     out[o] += v;
                     out[o + 1] += v;
@@ -742,7 +775,8 @@ impl BinauralRenderer {
                 // adds its distance gain, the reflection taps theirs. The air
                 // low-pass applies to the propagated wave, so it feeds the
                 // direct, the reflections and the reverb send alike.
-                let mut raw = src_pcm[s * src_stride + src_offset] * gain;
+                let mut raw =
+                    src_pcm[s * src_stride + src_offset] * (gain.start + gain.step * s as f32);
                 if air > 0.0 {
                     dsp.air_state += (raw - dsp.air_state) * (1.0 - air);
                     raw = dsp.air_state;
@@ -812,7 +846,7 @@ mod tests {
             n,
             &dry_params(),
             &[pos],
-            &[1.0],
+            &[ChannelGain::flat(1.0)],
             &[],
             None,
             &mut warm,
@@ -829,7 +863,7 @@ mod tests {
             n,
             &dry_params(),
             &[pos],
-            &[1.0],
+            &[ChannelGain::flat(1.0)],
             &[],
             None,
             &mut out,
@@ -869,7 +903,7 @@ mod tests {
             n,
             &dry_params(),
             &[[0.0, 1.0, 0.0]],
-            &[0.0],
+            &[ChannelGain::flat(0.0)],
             &[],
             Some(ExtraSource {
                 pcm: &extra_pcm,
@@ -907,7 +941,7 @@ mod tests {
             n,
             &dry_params(),
             &[[0.0, 1.0, 0.0]],
-            &[0.0],
+            &[ChannelGain::flat(0.0)],
             &[],
             Some(ExtraSource {
                 pcm: &extra_pcm,
@@ -944,7 +978,7 @@ mod tests {
                 n,
                 &dry_params(),
                 &vec![[0.0, 1.0, 0.0]; channels],
-                &vec![0.0; channels],
+                &vec![ChannelGain::flat(0.0); channels],
                 &vec![false; channels],
                 Some(ExtraSource {
                     pcm: &extra_pcm,
@@ -989,7 +1023,7 @@ mod tests {
             n,
             &dry_params(),
             &pos,
-            &[1.0],
+            &[ChannelGain::flat(1.0)],
             &[],
             None,
             &mut without,
@@ -1003,7 +1037,7 @@ mod tests {
             n,
             &dry_params(),
             &pos,
-            &[1.0],
+            &[ChannelGain::flat(1.0)],
             &[],
             Some(ExtraSource {
                 pcm: &extra_pcm,
@@ -1038,7 +1072,7 @@ mod tests {
                 n,
                 &dry_params(),
                 &pos,
-                &[1.0],
+                &[ChannelGain::flat(1.0)],
                 &[],
                 None,
                 &mut out,
@@ -1099,7 +1133,7 @@ mod tests {
             n,
             &dry_params(),
             &pos,
-            &[1.0],
+            &[ChannelGain::flat(1.0)],
             &[],
             None,
             &mut dry,
@@ -1115,7 +1149,17 @@ mod tests {
         };
         let mut wet = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], None, &mut wet);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &wet_params,
+            &pos,
+            &[ChannelGain::flat(1.0)],
+            &[],
+            None,
+            &mut wet,
+        );
 
         assert!(tail(&dry) < 1e-9, "dry render must have no late energy");
         assert!(
@@ -1142,7 +1186,7 @@ mod tests {
             n,
             &dry_params(),
             &pos,
-            &[1.0],
+            &[ChannelGain::flat(1.0)],
             &[],
             None,
             &mut dry,
@@ -1160,7 +1204,17 @@ mod tests {
         };
         let mut wet = vec![0.0f32; n * 2];
         let mut r = BinauralRenderer::new(48_000);
-        r.render_frame(&input, 1, n, &wet_params, &pos, &[1.0], &[], None, &mut wet);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &wet_params,
+            &pos,
+            &[ChannelGain::flat(1.0)],
+            &[],
+            None,
+            &mut wet,
+        );
         assert!(tail(&wet) > 1e-7, "no reverb tail: {}", tail(&wet));
     }
 
@@ -1185,7 +1239,7 @@ mod tests {
                 n,
                 &params,
                 &[[0.0, dist, 0.0]],
-                &[1.0],
+                &[ChannelGain::flat(1.0)],
                 &[],
                 None,
                 &mut out,
@@ -1247,7 +1301,17 @@ mod tests {
         let mut out = vec![0.0f32; n * 2];
         let mut render = |r: &mut BinauralRenderer, input: &[f32], gain: f32| -> f32 {
             out.iter_mut().for_each(|v| *v = 0.0);
-            r.render_frame(input, 1, n, &params, &pos, &[gain], &[], None, &mut out);
+            r.render_frame(
+                input,
+                1,
+                n,
+                &params,
+                &pos,
+                &[ChannelGain::flat(gain)],
+                &[],
+                None,
+                &mut out,
+            );
             out.iter().map(|v| v * v).sum::<f32>()
         };
         for _ in 0..10 {
@@ -1282,16 +1346,99 @@ mod tests {
         let mut input = vec![0.0f32; n];
         input[0] = 1.0;
         let mut out = vec![0.0f32; n * 2];
-        r.render_frame(&input, 1, n, &params, &pos, &[1.0], &[], None, &mut out);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &params,
+            &pos,
+            &[ChannelGain::flat(1.0)],
+            &[],
+            None,
+            &mut out,
+        );
         // The next block is muted with silent input: the wall reflections
         // of the impulse (8 ms and beyond) land here and must be audible.
         let silence = vec![0.0f32; n];
         out.iter_mut().for_each(|v| *v = 0.0);
-        r.render_frame(&silence, 1, n, &params, &pos, &[0.0], &[], None, &mut out);
+        r.render_frame(
+            &silence,
+            1,
+            n,
+            &params,
+            &pos,
+            &[ChannelGain::flat(0.0)],
+            &[],
+            None,
+            &mut out,
+        );
         let energy: f32 = out.iter().map(|v| v * v).sum();
         assert!(
             energy > 1e-9,
             "the reflection tail was cut at the mute: {energy}"
+        );
+    }
+
+    /// A ramped block applies `start + step·s` per sample: DC through a
+    /// front source with a gain ramping 0 → 1 over the block comes out as
+    /// a ramp, not as the block-end constant.
+    #[test]
+    fn gain_ramps_per_sample_within_the_block() {
+        let n = 256;
+        let input = vec![1.0f32; n];
+        let pos = [[0.0, 1.0, 0.0]];
+        let mut ramped = vec![0.0f32; n * 2];
+        let mut r = BinauralRenderer::new(48_000);
+        // Settle the kernel crossfade first, at gain 0 (silent, no drain).
+        let mut warm = vec![0.0f32; n * 2];
+        r.render_frame(
+            &vec![0.0f32; n],
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[ChannelGain::flat(0.0)],
+            &[],
+            None,
+            &mut warm,
+        );
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &dry_params(),
+            &pos,
+            &[ChannelGain {
+                start: 0.0,
+                step: 1.0 / n as f32,
+            }],
+            &[],
+            None,
+            &mut ramped,
+        );
+        // The pre-convolution signal is s/n; after the settled front kernel
+        // (unity-ish DC gain) the output must grow across the block, with
+        // its first quarter well below its last quarter.
+        let quarter = n / 4;
+        let head: f32 = ramped[..quarter * 2].iter().map(|v| v.abs()).sum::<f32>() / quarter as f32;
+        let tail: f32 = ramped[(n - quarter) * 2..]
+            .iter()
+            .map(|v| v.abs())
+            .sum::<f32>()
+            / quarter as f32;
+        assert!(
+            tail > 0.0 && head < 0.4 * tail,
+            "no per-sample ramp: head {head} tail {tail}"
+        );
+        // And the ramp is monotonic in the large: the left-ear output at
+        // sample 64 sits between those at 32 and 128 (after the HRIR settles).
+        let l = |s: usize| ramped[s * 2].abs();
+        assert!(
+            l(32) < l(64) && l(64) < l(128),
+            "{} {} {}",
+            l(32),
+            l(64),
+            l(128)
         );
     }
 
@@ -1307,7 +1454,7 @@ mod tests {
             n,
             &dry_params(),
             &[[1.0, 0.0, 0.0]],
-            &[0.0],
+            &[ChannelGain::flat(0.0)],
             &[],
             None,
             &mut out,
