@@ -218,7 +218,10 @@ impl HrirProvider for MeasuredHrirData {
         let mut weights = [0.0f32; 3];
         let mut wsum = 0.0f32;
         for (k, &(_, ang)) in near.iter().enumerate() {
-            weights[k] = 1.0 / ang;
+            // Floored so a second measurement at (almost) the same direction —
+            // a duplicated point, or one repeated at another radius — cannot
+            // turn the weight infinite and the blend NaN.
+            weights[k] = 1.0 / ang.max(1e-4);
             wsum += weights[k];
         }
 
@@ -259,9 +262,18 @@ fn energy_of(h: &[f32; HRIR_LEN]) -> f32 {
 }
 
 /// Build an [`HrirSet`](super::hrir::HrirSet) from a SOFA file, resampled to
-/// `sample_rate`. `sofar` does the spatial interpolation and delay extraction,
-/// so the returned per-ear IRs are time-aligned (the renderer adds the analytic
-/// ITD). Requires the `sofa` build feature.
+/// `sample_rate`. Requires the `sofa` build feature.
+///
+/// The file's measurements are read **raw** and go through the same
+/// [`MeasuredHrirData`] path as the embedded set — the three-nearest blend
+/// over responses that have been time-aligned first. `sofar`'s own
+/// interpolation is deliberately not used: it sums the neighbouring
+/// responses as stored and averages their `Data.Delay` separately, which is
+/// only sound when the delay actually lives in `Data.Delay`. In most of the
+/// public sets (HUTUBS, ARI, CIPIC, the MIT KEMAR) it lives in the response
+/// itself and `Data.Delay` is zero, so blending before aligning combs the
+/// shared content of the neighbours. Aligning after the blend cannot undo
+/// that.
 #[cfg(feature = "sofa")]
 pub fn hrir_set_from_sofa(path: &str, sample_rate: u32) -> anyhow::Result<super::hrir::HrirSet> {
     use sofar::reader::OpenOptions;
@@ -271,10 +283,104 @@ pub fn hrir_set_from_sofa(path: &str, sample_rate: u32) -> anyhow::Result<super:
         .open(path)
         .map_err(|e| anyhow::anyhow!("open SOFA '{path}': {e:?}"))?;
     let filter_len = sofa.filter_len();
-    let provider = SofaProvider { sofa, filter_len };
-    let set = super::hrir::HrirSet::new(&provider, sample_rate);
+    let data = MeasuredHrirData::from_sofa(&sofa, sample_rate)
+        .map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))?;
+    let set = super::hrir::HrirSet::new(&data, sample_rate);
     check_loaded_set(&set, path, filter_len)?;
     Ok(set)
+}
+
+#[cfg(feature = "sofa")]
+impl MeasuredHrirData {
+    /// The raw measurements of an opened SOFA file: one `(left, right)` pair
+    /// per source position, at the rate `sofar` was asked to deliver. Any
+    /// `Data.Delay` is ignored on purpose — a pure delay is exactly what the
+    /// alignment discards, and the interaural delay is supplied analytically.
+    fn from_sofa(sofa: &sofar::reader::Sofar, sample_rate: u32) -> anyhow::Result<Self> {
+        let hrtf = sofa.hrtf();
+        let dims = hrtf.dimensions();
+        let (m, r, n, c) = (
+            dims.m as usize,
+            dims.r as usize,
+            dims.n as usize,
+            dims.c as usize,
+        );
+        if r < 2 {
+            anyhow::bail!("{r} receiver(s); a binaural set needs the two ears");
+        }
+        if m == 0 || n == 0 {
+            anyhow::bail!("no measurements (M = {m}, N = {n})");
+        }
+        let pos = &hrtf.source_position.values;
+        let ir = &hrtf.data_ir.values;
+        if pos.len() < m * c || c < 3 {
+            anyhow::bail!("SourcePosition holds {} values for M = {m}", pos.len());
+        }
+        if ir.len() < m * r * n {
+            anyhow::bail!(
+                "Data.IR holds {} values for M×R×N = {}",
+                ir.len(),
+                m * r * n
+            );
+        }
+        let mut positions = Vec::with_capacity(m);
+        let mut irs = Vec::with_capacity(m);
+        for i in 0..m {
+            positions.push([pos[i * c], pos[i * c + 1], pos[i * c + 2]]);
+            let base = i * r * n;
+            irs.push((
+                ir[base..base + n].to_vec(),
+                ir[base + n..base + 2 * n].to_vec(),
+            ));
+        }
+        Ok(Self::from_sofa_measurements(sample_rate, &positions, irs))
+    }
+}
+
+impl MeasuredHrirData {
+    /// Build from measurements given in SOFA Cartesian coordinates (metres;
+    /// `x` front, `y` left, `z` up), converted to the renderer's direction
+    /// convention (`az` 0 = front, +`az` = right; `el` +90 = up).
+    ///
+    /// A set measured at several distances repeats each direction once per
+    /// radius. Only the radius band of the median measurement is kept
+    /// (within 10 %): the free-field set is a function of direction alone,
+    /// and duplicated directions would otherwise pair up in the blend.
+    pub fn from_sofa_measurements(
+        sample_rate: u32,
+        positions: &[[f32; 3]],
+        irs: Vec<(Vec<f32>, Vec<f32>)>,
+    ) -> Self {
+        let radius = |p: &[f32; 3]| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        let mut radii: Vec<f32> = positions.iter().map(radius).collect();
+        radii.sort_by(|a, b| a.total_cmp(b));
+        let median = radii.get(radii.len() / 2).copied().unwrap_or(1.0);
+        let keep = |p: &[f32; 3]| {
+            let r = radius(p);
+            median <= 0.0 || (r - median).abs() <= 0.1 * median
+        };
+        let mut dirs = Vec::with_capacity(positions.len());
+        let mut kept = Vec::with_capacity(positions.len());
+        for (p, pair) in positions.iter().zip(irs) {
+            if !keep(p) {
+                continue;
+            }
+            let (x, y, z) = (p[0], p[1], p[2]);
+            // SOFA +y is the listener's left; the renderer's +az is right.
+            let az = (-y).atan2(x).to_degrees().rem_euclid(360.0);
+            let el = z.atan2((x * x + y * y).sqrt()).to_degrees();
+            dirs.push((az, el));
+            kept.push(pair);
+        }
+        if kept.len() != positions.len() {
+            log::info!(
+                "SOFA: kept {} of {} measurements at radius {median:.2} m (±10 %)",
+                kept.len(),
+                positions.len()
+            );
+        }
+        Self::new(sample_rate, dirs, kept)
+    }
 }
 
 /// Below this peak a set is silence: [`HrirSet::new`](super::hrir::HrirSet::new)
@@ -318,37 +424,6 @@ fn check_loaded_set(
         );
     }
     Ok(())
-}
-
-/// Adapts a loaded SOFA file to [`HrirProvider`]: maps the renderer's direction
-/// convention to SOFA Cartesian (x = front, y = left, z = up) and lets `sofar`
-/// interpolate the nearest measurements.
-#[cfg(feature = "sofa")]
-struct SofaProvider {
-    sofa: sofar::reader::Sofar,
-    filter_len: usize,
-}
-
-#[cfg(feature = "sofa")]
-impl HrirProvider for SofaProvider {
-    fn render(&self, az_deg: f32, el_deg: f32, _sample_rate: u32) -> HrirPair {
-        let az = az_deg.to_radians();
-        let el = el_deg.to_radians();
-        let ce = el.cos();
-        // renderer (+az=right, +Y=front) → SOFA (x=front, y=left, z=up).
-        let x = az.cos() * ce;
-        let y = -(az.sin() * ce);
-        let z = el.sin();
-        let mut filter = sofar::reader::Filter::new(self.filter_len);
-        self.sofa.filter(x, y, z, &mut filter);
-        let mut pair = HrirPair {
-            left: [0.0; HRIR_LEN],
-            right: [0.0; HRIR_LEN],
-        };
-        align_into(&filter.left, &mut pair.left);
-        align_into(&filter.right, &mut pair.right);
-        pair
-    }
 }
 
 /// Unit vector for a direction (az 0 = front/+Y, +az = right/+X; el up = +Z).
@@ -742,6 +817,59 @@ mod tests {
             e >= lo * 0.99 && e <= hi * 1.01,
             "blend energy {e} outside source range [{lo}, {hi}]"
         );
+    }
+
+    /// SOFA Cartesian (x front, y left, z up) lands on the renderer's
+    /// convention (+az right, +el up), and a set measured at two distances
+    /// keeps one radius band only.
+    #[test]
+    fn sofa_measurements_map_to_renderer_directions_and_one_radius() {
+        let ir = |k: usize| {
+            let mut v = vec![0.0f32; 32];
+            v[k] = 1.0;
+            (v.clone(), v)
+        };
+        let positions = [
+            [1.0f32, 0.0, 0.0], // front
+            [0.0, -1.0, 0.0],   // SOFA right (−y)
+            [0.0, 1.0, 0.0],    // SOFA left (+y)
+            [0.0, 0.0, 1.0],    // up
+            [-1.0, 0.0, 0.0],   // back
+            [3.0, 0.0, 0.0],    // front again, at 3 m: dropped
+        ];
+        let irs: Vec<_> = (0..positions.len()).map(|k| ir(k % 4)).collect();
+        let d = MeasuredHrirData::from_sofa_measurements(48_000, &positions, irs);
+        assert_eq!(d.len(), 5, "the 3 m duplicate must be dropped");
+        let dir = |i: usize| (d.dirs[i].0.round(), d.dirs[i].1.round());
+        assert_eq!(dir(0), (0.0, 0.0));
+        assert_eq!(dir(1), (90.0, 0.0), "SOFA −y is the renderer's right");
+        assert_eq!(dir(2), (270.0, 0.0));
+        assert_eq!(dir(3).1, 90.0);
+        assert_eq!(dir(4), (180.0, 0.0));
+    }
+
+    /// Two measurements at the same direction (one file, two radii within
+    /// the band, or a plain duplicate) must not turn a blend weight infinite.
+    #[test]
+    fn a_duplicated_direction_does_not_poison_the_blend() {
+        let mut dirs = vec![(0.0f32, 0.0f32), (10.0, 0.0), (20.0, 0.0), (0.0, 10.0)];
+        dirs.push(dirs[1]); // exact duplicate of the 10° point
+        let irs: Vec<_> = (0..dirs.len())
+            .map(|k| {
+                let mut v = vec![0.0f32; 32];
+                v[2] = 0.5 + 0.1 * k as f32;
+                (v.clone(), v)
+            })
+            .collect();
+        let d = MeasuredHrirData::new(48_000, dirs, irs);
+        // Query next to the duplicated point: it and its twin are both among
+        // the three nearest, at an identical (tiny) angle.
+        let p = d.render(10.5, 0.3, 48_000);
+        assert!(
+            p.left.iter().chain(p.right.iter()).all(|x| x.is_finite()),
+            "blend produced a non-finite tap"
+        );
+        assert!(energy(&p.left) > 0.0);
     }
 
     /// What `sofar` hands back for every direction once it has failed to
