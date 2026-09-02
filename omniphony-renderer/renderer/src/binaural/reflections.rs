@@ -37,8 +37,17 @@ const WALL_MARGIN_M: f32 = 0.05;
 /// completes in at most the delay span itself.
 const DELAY_RAMP_RATE: f32 = 1.0;
 
-/// One-pole smoothing coefficient for tap gains (~1.5 ms at 48 kHz).
-const GAIN_SMOOTH: f32 = 0.015;
+/// One-pole smoothing coefficient for tap gains at 48 kHz (~1.5 ms). Other
+/// rates get the coefficient with the same time constant, see
+/// [`gain_smooth_for`].
+const GAIN_SMOOTH_48K: f32 = 0.015;
+
+/// Per-sample gain smoothing coefficient at `sample_rate`, with the time
+/// constant of [`GAIN_SMOOTH_48K`]: the pole is raised to the rate ratio,
+/// so the fade takes the same milliseconds at 96 kHz as at 48.
+fn gain_smooth_for(sample_rate: u32) -> f32 {
+    1.0 - (1.0 - GAIN_SMOOTH_48K).powf(48_000.0 / sample_rate as f32)
+}
 
 /// Number of first-order images of a shoebox (one per wall).
 pub const NUM_REFLECTIONS: usize = 6;
@@ -100,14 +109,14 @@ struct Tap {
 
 impl Tap {
     #[inline]
-    fn step(&mut self) {
+    fn step(&mut self, gain_smooth: f32) {
         let d = self.delay_target - self.delay;
         if d.abs() <= DELAY_RAMP_RATE {
             self.delay = self.delay_target;
         } else {
             self.delay += DELAY_RAMP_RATE * d.signum();
         }
-        self.gain += (self.gain_target - self.gain) * GAIN_SMOOTH;
+        self.gain += (self.gain_target - self.gain) * gain_smooth;
     }
 }
 
@@ -119,6 +128,8 @@ pub struct ReflectionBank {
     taps_l: [Tap; NUM_REFLECTIONS],
     taps_r: [Tap; NUM_REFLECTIONS],
     sample_rate: u32,
+    /// Per-sample gain smoothing coefficient for this rate.
+    gain_smooth: f32,
 }
 
 impl ReflectionBank {
@@ -130,6 +141,7 @@ impl ReflectionBank {
             taps_l: Default::default(),
             taps_r: Default::default(),
             sample_rate,
+            gain_smooth: gain_smooth_for(sample_rate),
         }
     }
 
@@ -185,12 +197,13 @@ impl ReflectionBank {
 
         let mut l = 0.0f32;
         let mut r = 0.0f32;
+        let gain_smooth = self.gain_smooth;
         for i in 0..NUM_REFLECTIONS {
             let tl = &mut self.taps_l[i];
-            tl.step();
+            tl.step(gain_smooth);
             l += tl.gain * read_frac(&self.ring, cap, self.write_pos, tl.delay);
             let tr = &mut self.taps_r[i];
-            tr.step();
+            tr.step(gain_smooth);
             r += tr.gain * read_frac(&self.ring, cap, self.write_pos, tr.delay);
         }
 
@@ -204,13 +217,24 @@ impl ReflectionBank {
 
 /// Linear-interpolated read at `delay` samples behind `write_pos` (which still
 /// points at the sample just written).
+///
+/// `delay` is clamped to `cap − 2` by [`ReflectionBank::set_targets`] and
+/// ramps between such values, so the read sits less than one lap behind the
+/// write: one conditional subtraction wraps it. This runs twelve times per
+/// channel per sample; the three integer divisions it used to do per call
+/// were the dearest thing in the bank.
 #[inline]
 fn read_frac(ring: &[f32], cap: usize, write_pos: usize, delay: f32) -> f32 {
     let lo = delay.floor();
     let frac = delay - lo;
     let lo = lo as usize;
-    let idx0 = (write_pos + cap - lo % cap) % cap;
-    let idx1 = (idx0 + cap - 1) % cap;
+    debug_assert!(lo < cap);
+    let idx0 = if write_pos >= lo {
+        write_pos - lo
+    } else {
+        write_pos + cap - lo
+    };
+    let idx1 = if idx0 == 0 { cap - 1 } else { idx0 - 1 };
     ring[idx0] * (1.0 - frac) + ring[idx1] * frac
 }
 
@@ -313,6 +337,29 @@ mod tests {
                 assert!(l.abs() < 1e-3, "leak at {i}: {l}");
             }
         }
+    }
+
+    /// The gain fade is a time constant, not a sample count: the tap
+    /// reaches the same fraction of its target after the same milliseconds
+    /// at 48 and 96 kHz.
+    #[test]
+    fn gain_smoothing_is_rate_invariant() {
+        let settle_after_ms = |sample_rate: u32| -> f32 {
+            let mut bank = ReflectionBank::new(sample_rate);
+            bank.set_targets(0, 0.0, 1.0, 1.0);
+            let n = (sample_rate as f32 * 0.003) as usize; // 3 ms
+            let mut last = 0.0;
+            for _ in 0..n {
+                last = bank.process(1.0).0;
+            }
+            last
+        };
+        let (a, b) = (settle_after_ms(48_000), settle_after_ms(96_000));
+        assert!((a - b).abs() < 0.01, "48 kHz {a} vs 96 kHz {b} after 3 ms");
+        assert!(a > 0.8 && a < 0.95, "unexpected settling {a}");
+        // `1 − 0.985` in f32 lands one ulp under the literal 0.015: the
+        // 48 kHz coefficient is the published one to 1e-8.
+        assert!((gain_smooth_for(48_000) - GAIN_SMOOTH_48K).abs() < 1e-6);
     }
 
     #[test]

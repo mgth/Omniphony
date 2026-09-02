@@ -75,7 +75,10 @@ impl DelayLine {
             "push_history is only the identity while bypassed",
         );
         self.buf[self.write_pos] = input;
-        self.write_pos = (self.write_pos + 1) % self.buf.len();
+        self.write_pos += 1;
+        if self.write_pos == self.buf.len() {
+            self.write_pos = 0;
+        }
     }
 
     /// Process one sample through the delay line.
@@ -98,21 +101,31 @@ impl DelayLine {
             self.current += RAMP_RATE * delta.signum();
         }
 
-        // Fractional read (linear interpolation).
-        let mut read_f = (self.write_pos as f32 - self.current).rem_euclid(cap as f32);
-        // f32 edge: rem_euclid of a tiny negative (current a hair above
-        // write_pos) rounds to exactly `cap`, which floor()s to an
-        // out-of-bounds index. `cap` is the same position as 0 — wrap it.
+        // Fractional read (linear interpolation). `current` is clamped to
+        // `[0, cap - 2]`, so the read position is at most one lap behind the
+        // write position: one conditional add wraps it, with no division in
+        // the per-sample path (this runs twice per channel per sample for
+        // the ITD alone).
+        let mut read_f = self.write_pos as f32 - self.current;
+        if read_f < 0.0 {
+            read_f += cap as f32;
+        }
+        // f32 edge: a tiny negative (current a hair above write_pos) rounds
+        // to exactly `cap` after the add, which floor()s to an out-of-bounds
+        // index. `cap` is the same position as 0 — wrap it.
         if read_f >= cap as f32 {
             read_f = 0.0;
         }
         let i0 = read_f as usize;
-        let i1 = (i0 + 1) % cap;
+        let i1 = if i0 + 1 == cap { 0 } else { i0 + 1 };
         let frac = read_f - i0 as f32;
         let output = self.buf[i0] + frac * (self.buf[i1] - self.buf[i0]);
 
         // Advance write pointer.
-        self.write_pos = (self.write_pos + 1) % cap;
+        self.write_pos += 1;
+        if self.write_pos == cap {
+            self.write_pos = 0;
+        }
 
         output
     }
@@ -121,6 +134,30 @@ impl DelayLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fractional delay reads back the impulse at the right place, on
+    /// every lap of the ring — the wrap of both the write pointer and the
+    /// read position is exercised many times over.
+    #[test]
+    fn fractional_delay_is_exact_across_ring_laps() {
+        let mut dl = DelayLine::new(30);
+        dl.set_target_ms(5.5 / 48.0, 48_000);
+        // Settle the ramp on silence.
+        for _ in 0..64 {
+            dl.process(0.0);
+        }
+        for lap in 0..7 {
+            let mut out = Vec::new();
+            for t in 0..40 {
+                out.push(dl.process(if t == 0 { 1.0 } else { 0.0 }));
+            }
+            // 5.5 samples: half the impulse at 5, half at 6, nothing else.
+            for (t, &y) in out.iter().enumerate() {
+                let expected = if t == 5 || t == 6 { 0.5 } else { 0.0 };
+                assert!((y - expected).abs() < 1e-6, "lap {lap} t {t}: {y}");
+            }
+        }
+    }
 
     /// Regression: a fractional target a hair above an integer write position
     /// makes `(write_pos - current)` a tiny negative; `rem_euclid(cap)` then
