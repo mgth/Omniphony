@@ -198,6 +198,39 @@ pub fn control_binaural_reverb_rt60(state: State<SharedState>, value: f32) {
 }
 
 #[tauri::command]
+pub fn control_binaural_reverb_size(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/binaural/reverb/size".to_string(),
+            value: value.clamp(0.5, 2.0),
+        },
+    );
+}
+
+#[tauri::command]
+pub fn control_binaural_reverb_rt60_low_ratio(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/binaural/reverb/rt60_low_ratio".to_string(),
+            value: value.clamp(0.25, 4.0),
+        },
+    );
+}
+
+#[tauri::command]
+pub fn control_binaural_reverb_rt60_high_ratio(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/binaural/reverb/rt60_high_ratio".to_string(),
+            value: value.clamp(0.25, 4.0),
+        },
+    );
+}
+
+#[tauri::command]
 pub fn control_binaural_diffuse_field_eq(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,

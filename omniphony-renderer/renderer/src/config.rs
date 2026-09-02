@@ -442,6 +442,15 @@ pub struct ReverbConfig {
     /// Pre-delay (ms).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub predelay_ms: Option<f32>,
+    /// Scale on the delay-line lengths (0.5–2, 1 = nominal).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<f32>,
+    /// Decay time below ~250 Hz as a ratio of `rt60_s` (0.25–4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rt60_low_ratio: Option<f32>,
+    /// Decay time above ~4 kHz as a ratio of `rt60_s` (0.25–4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rt60_high_ratio: Option<f32>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,

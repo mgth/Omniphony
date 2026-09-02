@@ -537,6 +537,18 @@ pub struct BinauralReverb {
     pub rt60_s: f32,
     /// Pre-delay (ms) between the direct sound and the start of the tail.
     pub predelay_ms: f32,
+    /// Scale on the network's delay-line lengths (0.5–2, 1 = nominal):
+    /// smaller is a denser, smaller-sounding room, larger a sparser, bigger
+    /// one. The decay time stays `rt60_s` at any size.
+    pub size: f32,
+    /// Decay time below ~250 Hz as a ratio of `rt60_s` (0.25–4, 1 = the same
+    /// decay everywhere): above 1 the bass lingers as in a hard-walled
+    /// room, below 1 it dies first.
+    pub rt60_low_ratio: f32,
+    /// Decay time above ~4 kHz as a ratio of `rt60_s` (0.25–4): below 1 the
+    /// treble dies first, as air and soft furnishings make it. Acts on top
+    /// of the network's fixed wall damping.
+    pub rt60_high_ratio: f32,
 }
 
 impl Default for BinauralReverb {
@@ -549,6 +561,9 @@ impl Default for BinauralReverb {
             level: 0.25,
             rt60_s: 0.35,
             predelay_ms: 20.0,
+            size: 1.0,
+            rt60_low_ratio: 1.0,
+            rt60_high_ratio: 1.0,
         }
     }
 }
