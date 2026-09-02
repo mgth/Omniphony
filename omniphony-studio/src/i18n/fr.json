@@ -780,6 +780,7 @@
   "binaural.hrtfSource.prtf": "PRTF (Spagnol)",
   "binaural.hrtfSource.sofa": "Fichier SOFA",
   "binaural.sofaBrowseTitle": "Parcourir la base de données HRTF de sofacoustics.org",
+  "binaural.hrtfFallback": "{effective} en service : la HRTF choisie n'a pas pu être chargée (survolez pour la raison).",
   "binaural.headRadius": "Rayon de tête (cm)",
   "binaural.pinnaPreset": "Préréglage pavillon (D)",
   "binaural.pinnaPreset.pbnh": "PB & NH",

@@ -780,6 +780,7 @@
   "binaural.hrtfSource.prtf": "PRTF（Spagnol）",
   "binaural.hrtfSource.sofa": "SOFA 文件",
   "binaural.sofaBrowseTitle": "浏览 sofacoustics.org 的 HRTF 数据库",
+  "binaural.hrtfFallback": "正在使用 {effective}：所选 HRTF 无法加载（悬停查看原因）。",
   "binaural.headRadius": "头部半径（cm）",
   "binaural.pinnaPreset": "耳廓预设（D）",
   "binaural.pinnaPreset.pbnh": "PB & NH",

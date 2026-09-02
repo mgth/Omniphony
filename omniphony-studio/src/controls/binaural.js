@@ -7,11 +7,16 @@
 // guarded so a missing node never throws.
 
 import { invoke } from '@tauri-apps/api/core';
+import { t, tf } from '../i18n.js';
 import { initSofaBrowser, setActiveSofaPath } from './sofa-browser.js';
 import { setSpeakersGhosted } from '../speakers.js';
 import { applyEarState, initHeadphoneChannels } from './headphone-meter.js';
 
 const el = (id) => document.getElementById(id);
+
+// Renderer source ids → i18n suffix of their option label.
+const HRTF_SOURCE_I18N = { saf: 'kemar', synthetic: 'synthetic', pinna: 'pinna', prtf: 'prtf', sofa: 'sofa' };
+const hrtfSourceLabel = (source) => t(`binaural.hrtfSource.${HRTF_SOURCE_I18N[source] ?? source}`);
 
 // Guard against re-binding listeners if the panel is initialised twice.
 let bound = false;
@@ -394,12 +399,21 @@ export function applyBinauralState(b) {
       if (pinnaBox) pinnaBox.style.display = b.hrirSource === 'pinna' ? 'grid' : 'none';
       const prtfBox = el('binauralPrtfControls');
       if (prtfBox) prtfBox.style.display = b.hrirSource === 'prtf' ? 'grid' : 'none';
-      // Info line under the source zone: chosen file name, or the
-      // KEMAR-fallback notice while no file is selected yet.
+      // Info line under the source zone. First, the set actually in use when
+      // it is not the one selected: a SOFA file that failed to load falls
+      // back to KEMAR, and the renderer says so through `hrirEffective` /
+      // `hrirError` — without this line the panel claimed the file was
+      // playing. Otherwise the chosen file name, or the no-file notice.
       setActiveSofaPath(typeof b.hrtfSofaPath === 'string' ? b.hrtfSofaPath : '');
       const info = el('binauralSofaInfo');
       if (info) {
-        if (b.hrirSource !== 'sofa') {
+        const effective = typeof b.hrirEffective === 'string' ? b.hrirEffective : b.hrirSource;
+        if (effective !== b.hrirSource) {
+          info.style.display = '';
+          info.textContent = tf('binaural.hrtfFallback', { effective: hrtfSourceLabel(effective) });
+          info.title = typeof b.hrirError === 'string' ? b.hrirError : '';
+          info.style.color = '#e8c46a';
+        } else if (b.hrirSource !== 'sofa') {
           info.style.display = 'none';
         } else {
           const path = typeof b.hrtfSofaPath === 'string' ? b.hrtfSofaPath : '';

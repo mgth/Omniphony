@@ -780,6 +780,7 @@
   "binaural.hrtfSource.prtf": "PRTF（Spagnol）",
   "binaural.hrtfSource.sofa": "SOFA ファイル",
   "binaural.sofaBrowseTitle": "sofacoustics.org の HRTF データベースを参照",
+  "binaural.hrtfFallback": "{effective} を使用中：選択した HRTF を読み込めませんでした（理由はマウスオーバーで表示）。",
   "binaural.headRadius": "頭の半径（cm）",
   "binaural.pinnaPreset": "耳介プリセット（D）",
   "binaural.pinnaPreset.pbnh": "PB & NH",
