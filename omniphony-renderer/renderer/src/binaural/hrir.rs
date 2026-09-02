@@ -119,6 +119,34 @@ impl SyntheticHrir {
     }
 }
 
+/// How much of a source each ear "sees", `(left, right)` in `[0, 1]`: the
+/// exposure the head model shades by, `(1 ∓ lateral) / 2`, with `lateral`
+/// the sine of the lateral angle. 0.5 for both ears anywhere in the median
+/// plane, 1 for the ear on the source's side of the interaural axis.
+pub fn ear_exposure(az_deg: f32, el_deg: f32) -> (f32, f32) {
+    let lateral = (az_deg.to_radians().sin() * el_deg.to_radians().cos()).clamp(-1.0, 1.0);
+    (0.5 * (1.0 - lateral), 0.5 * (1.0 + lateral))
+}
+
+/// Pinna colouration left on the ear that faces away from the source.
+///
+/// The pinna's cavities are what carve the elevation notches, and they face
+/// outward: the shadowed ear's pinna receives only what diffracts around the
+/// head, and its notches are correspondingly shallow. The parametric models
+/// used to apply their full colouration to both ears in every direction —
+/// right near the median plane, wrong at 90°, where the hidden ear was
+/// coloured as if it saw the source.
+pub const PINNA_SHADOW_FLOOR: f32 = 0.3;
+
+/// Factor on the pinna depth for an ear of the given exposure: 1 in the
+/// median plane (exposure 0.5) and on the facing side, falling linearly to
+/// [`PINNA_SHADOW_FLOOR`] for the fully shadowed ear. Continuous, and the
+/// mirror of the source mirrors the factors.
+#[inline]
+pub fn pinna_shade(exposure: f32) -> f32 {
+    (PINNA_SHADOW_FLOOR + (1.0 - PINNA_SHADOW_FLOOR) * 2.0 * exposure).min(1.0)
+}
+
 impl HrirProvider for SyntheticHrir {
     fn render(&self, az_deg: f32, el_deg: f32, sample_rate: u32) -> HrirPair {
         let az = az_deg.to_radians();
@@ -268,8 +296,10 @@ impl HrirProvider for ParametricPinnaHrir {
         }
         let (taus, rear_scale) = Self::echo_train(az_deg, el_deg, sample_rate, &self.d);
         let depth = self.depth * rear_scale;
-        pair.left = Self::apply_pinna(&pair.left, &taus, depth);
-        pair.right = Self::apply_pinna(&pair.right, &taus, depth);
+        // Each ear gets the echoes to the extent it faces the source.
+        let (exp_l, exp_r) = ear_exposure(az_deg, el_deg);
+        pair.left = Self::apply_pinna(&pair.left, &taus, depth * pinna_shade(exp_l));
+        pair.right = Self::apply_pinna(&pair.right, &taus, depth * pinna_shade(exp_r));
         pair
     }
 }
@@ -777,6 +807,42 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         assert!(max_diff < 0.05, "discontinuity at the zenith: {max_diff}");
+    }
+
+    /// The shadowed ear keeps a shallower version of the pinna colouration;
+    /// the median plane is untouched (both ears at exposure 0.5 → factor 1).
+    #[test]
+    fn pinna_is_shallower_on_the_shadowed_ear() {
+        assert_eq!(pinna_shade(0.5), 1.0);
+        assert_eq!(pinna_shade(1.0), 1.0);
+        assert!((pinna_shade(0.0) - PINNA_SHADOW_FLOOR).abs() < 1e-6);
+        let pinna = ParametricPinnaHrir {
+            d: ParametricPinnaHrir::D_PB_NH,
+            depth: 1.0,
+        };
+        // Colouration energy relative to the ear's own head-shadow base, so
+        // the shadowed ear's lower level does not enter the comparison.
+        let colour = |az: f32, ear: fn(&HrirPair) -> &[f32; HRIR_LEN]| -> f32 {
+            let p = pinna.render(az, 0.0, 48_000);
+            let s = SyntheticHrir.render(az, 0.0, 48_000);
+            let diff: f32 = ear(&p)
+                .iter()
+                .zip(ear(&s).iter())
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
+            diff / energy(ear(&s))
+        };
+        // Source hard right: the right ear's colouration is the full one, the
+        // left ear's is scaled by the floor (energy ratio ≈ floor² = 0.09).
+        let (right, left) = (colour(90.0, |p| &p.right), colour(90.0, |p| &p.left));
+        let ratio = left / right;
+        assert!(
+            ratio < 0.2 && ratio > 0.04,
+            "shadowed/facing colouration energy ratio {ratio}, expected ≈ 0.09"
+        );
+        // Median plane: both ears equally coloured.
+        let (fl, fr) = (colour(0.0, |p| &p.left), colour(0.0, |p| &p.right));
+        assert!((fl - fr).abs() < 1e-6 * fl.max(1e-12));
     }
 
     #[test]

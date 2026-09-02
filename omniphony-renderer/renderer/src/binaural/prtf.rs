@@ -17,7 +17,7 @@
 //! are NOT the exact (unpublished) order-5 polynomials — a representative
 //! generic set, individualizable later from a pinna photo.
 
-use super::hrir::{HRIR_LEN, HrirPair, HrirProvider, SyntheticHrir};
+use super::hrir::{HRIR_LEN, HrirPair, HrirProvider, SyntheticHrir, ear_exposure, pinna_shade};
 
 const PI: f32 = std::f32::consts::PI;
 
@@ -116,8 +116,9 @@ impl SpagnolPrtfHrir {
     }
 
     /// Resonance (parallel) + notch (cascade) blocks on one ear's head-shadow
-    /// IR, then dry/wet-mixed by `depth`.
-    fn apply(&self, base: &[f32; HRIR_LEN], b: &PrtfBlocks) -> [f32; HRIR_LEN] {
+    /// IR, then dry/wet-mixed by `depth` (this ear's, see
+    /// [`pinna_shade`]).
+    fn apply(&self, base: &[f32; HRIR_LEN], b: &PrtfBlocks, depth: f32) -> [f32; HRIR_LEN] {
         // Resonance block: H_res1 (unity + peak) in parallel with H_res2 (pure
         // bandpass), summed.
         let r1 = b.res1.process(base);
@@ -129,7 +130,7 @@ impl SpagnolPrtfHrir {
         // Reflection block: three notches in series.
         let wet = b.n3.process(&b.n2.process(&b.n1.process(&res)));
         // Dry/wet mix — `depth` is the amount of pinna coloration.
-        let d = self.depth.clamp(0.0, 1.0);
+        let d = depth.clamp(0.0, 1.0);
         let mut out = [0.0f32; HRIR_LEN];
         for n in 0..HRIR_LEN {
             out[n] = (1.0 - d) * base[n] + d * wet[n];
@@ -173,8 +174,12 @@ impl HrirProvider for SpagnolPrtfHrir {
             n3: Biquad::peak_notch(cf(10000.0 + 4000.0 * t), nd, bw, fs, true),
         };
 
-        pair.left = self.apply(&pair.left, &blocks);
-        pair.right = self.apply(&pair.right, &blocks);
+        // Each ear gets the pinna colouration to the extent it faces the
+        // source; the blocks themselves are shared (the PRTF is azimuth-
+        // invariant near the median plane).
+        let (exp_l, exp_r) = ear_exposure(az_deg, el_deg);
+        pair.left = self.apply(&pair.left, &blocks, self.depth * pinna_shade(exp_l));
+        pair.right = self.apply(&pair.right, &blocks, self.depth * pinna_shade(exp_r));
         pair
     }
 }
@@ -247,6 +252,31 @@ mod tests {
             sumsq_diff(&a.left, &b.left) > 1e-4,
             "freq_scale had no effect"
         );
+    }
+
+    /// The shadowed ear keeps a shallower version of the PRTF colouration
+    /// (dry/wet at the floor); the median plane is untouched.
+    #[test]
+    fn prtf_is_shallower_on_the_shadowed_ear() {
+        let m = SpagnolPrtfHrir {
+            depth: 1.0,
+            freq_scale: 1.0,
+        };
+        // Relative to each ear's own head-shadow base (see the pinna test).
+        let colour = |az: f32, ear: fn(&HrirPair) -> &[f32; HRIR_LEN]| -> f32 {
+            let p = m.render(az, 0.0, 48_000);
+            let s = SyntheticHrir.render(az, 0.0, 48_000);
+            let base: f32 = ear(&s).iter().map(|x| x * x).sum();
+            sumsq_diff(ear(&p), ear(&s)) / base
+        };
+        let (right, left) = (colour(90.0, |p| &p.right), colour(90.0, |p| &p.left));
+        let ratio = left / right;
+        assert!(
+            ratio < 0.2 && ratio > 0.04,
+            "shadowed/facing ratio {ratio}, expected ≈ 0.09"
+        );
+        let (fl, fr) = (colour(0.0, |p| &p.left), colour(0.0, |p| &p.right));
+        assert!((fl - fr).abs() < 1e-6 * fl.max(1e-12));
     }
 
     #[test]
