@@ -318,6 +318,19 @@ impl MeasuredHrirData {
 
     /// The three measurements nearest to a query direction, as
     /// `(index, angle_rad)` sorted nearest-first.
+    /// The measurement nearest `(az_deg, el_deg)`: its own direction and
+    /// its (minimum-phase, resampled) left and right responses. For
+    /// offline analysis of a set — the PRTF fit reads the KEMAR median
+    /// plane through it — not a render-path lookup.
+    pub(super) fn nearest_measurement(
+        &self,
+        az_deg: f32,
+        el_deg: f32,
+    ) -> ((f32, f32), (&[f32], &[f32])) {
+        let (i, _) = self.nearest3(az_deg, el_deg)[0];
+        (self.dirs[i], (&self.irs[i].0, &self.irs[i].1))
+    }
+
     fn nearest3(&self, az_deg: f32, el_deg: f32) -> [(usize, f32); 3] {
         let q = dir_vec(az_deg, el_deg);
         // (dot, index): best three by dot product in one pass.
