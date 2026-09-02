@@ -8,9 +8,31 @@
 //! keeps all grid FIRs time-aligned so they can be linearly interpolated without
 //! comb-filtering.
 
-/// FIR length per ear. 128 taps @ 48 kHz (≈2.7 ms) captures the synthetic
-/// head-shadow response and a time-aligned measured (KEMAR) HRIR.
-pub const HRIR_LEN: usize = 128;
+/// Kernel **capacity** per ear, in taps: the fixed size of every
+/// [`HrirPair`] and of the convolver state. The number of taps actually
+/// convolved is [`hrir_len`], which scales with the sample rate so the
+/// kernel always spans the same [`HRIR_SPAN_S`] of response; this is the
+/// span at 192 kHz.
+pub const HRIR_LEN: usize = 512;
+
+/// Time span of the convolved kernel: 128 taps at 48 kHz (≈2.7 ms), which
+/// holds the head-shadow and pinna part of a time-aligned measured response.
+/// A fixed tap count instead would shrink to 1.3 ms at 96 kHz and 0.7 ms at
+/// 192 kHz, cutting the concha resonances (1–2 ms) mid-decay.
+pub const HRIR_SPAN_S: f32 = 128.0 / 48_000.0;
+
+/// Shortest kernel: the 48 kHz length, so rates at or below it are
+/// bit-for-bit what they were with a fixed 128-tap kernel.
+const HRIR_MIN_LEN: usize = 128;
+
+/// Taps convolved at `sample_rate`: [`HRIR_SPAN_S`] worth, rounded up to a
+/// multiple of 8 (the tap loop consumes the kernel in eight-lane chunks) and
+/// clamped to `[128, HRIR_LEN]`. 128 at 44.1 and 48 kHz, 240 at 88.2 kHz,
+/// 256 at 96 kHz, 472 at 176.4 kHz, 512 at 192 kHz.
+pub fn hrir_len(sample_rate: u32) -> usize {
+    let taps = (HRIR_SPAN_S * sample_rate as f32).ceil() as usize;
+    taps.next_multiple_of(8).clamp(HRIR_MIN_LEN, HRIR_LEN)
+}
 
 /// A left/right pair of (minimum-delay) impulse responses.
 #[derive(Clone)]
@@ -200,6 +222,10 @@ pub struct HrirSet {
     el_count: usize,
     el_min_deg: f32,
     el_max_deg: f32,
+    /// Taps in use per kernel ([`hrir_len`] at the build rate). Every pair
+    /// in `grid` is zero from this index on, and [`at`](Self::at) only
+    /// interpolates this many.
+    len: usize,
     /// Row-major `[el_idx * az_count + az_idx]`. Azimuth wraps; elevation clamps.
     grid: Vec<HrirPair>,
 }
@@ -243,12 +269,19 @@ impl HrirSet {
         let az_count = (360.0 / Self::AZ_STEP_DEG).round() as usize; // wrap: no duplicate at 360
         let el_count =
             ((Self::EL_MAX_DEG - Self::EL_MIN_DEG) / Self::EL_STEP_DEG).round() as usize + 1;
+        let len = hrir_len(sample_rate);
         let mut grid = Vec::with_capacity(az_count * el_count);
         for ei in 0..el_count {
             let el = Self::EL_MIN_DEG + ei as f32 * Self::EL_STEP_DEG;
             for ai in 0..az_count {
                 let az = ai as f32 * Self::AZ_STEP_DEG;
-                grid.push(provider.render(az, el, sample_rate));
+                let mut pair = provider.render(az, el, sample_rate);
+                // Providers fill the capacity; the set is what gets
+                // convolved, so truncate here — before the level
+                // normalization, which must weigh the taps in use.
+                pair.left[len..].fill(0.0);
+                pair.right[len..].fill(0.0);
+                grid.push(pair);
             }
         }
 
@@ -298,8 +331,20 @@ impl HrirSet {
             el_count,
             el_min_deg: Self::EL_MIN_DEG,
             el_max_deg: Self::EL_MAX_DEG,
+            len,
             grid,
         }
+    }
+
+    /// Taps in use per kernel — what the convolvers must run over.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// A set with no taps in use; never true of a built set.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     /// Convenience constructor for the built-in synthetic model.
@@ -388,7 +433,9 @@ impl HrirSet {
         let w01 = (1.0 - fa) * fe;
         let w11 = fa * fe;
 
-        for n in 0..HRIR_LEN {
+        // Only the taps in use: past `len` every node is zero, and the
+        // convolvers never read that far.
+        for n in 0..self.len {
             out.left[n] =
                 w00 * p00.left[n] + w10 * p10.left[n] + w01 * p01.left[n] + w11 * p11.left[n];
             out.right[n] =
@@ -731,6 +778,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The kernel spans 2.67 ms at every rate: 128 taps up to 48 kHz (so
+    /// those rates are unchanged), then proportionally more, in multiples
+    /// of eight, up to the capacity at 192 kHz.
+    #[test]
+    fn kernel_length_follows_the_sample_rate() {
+        assert_eq!(hrir_len(44_100), 128);
+        assert_eq!(hrir_len(48_000), 128);
+        assert_eq!(hrir_len(88_200), 240);
+        assert_eq!(hrir_len(96_000), 256);
+        assert_eq!(hrir_len(176_400), 472);
+        assert_eq!(hrir_len(192_000), 512);
+        for fs in [44_100, 48_000, 88_200, 96_000, 176_400, 192_000] {
+            assert_eq!(
+                hrir_len(fs) % 8,
+                0,
+                "{fs}: not a multiple of the lane count"
+            );
+            assert!(hrir_len(fs) <= HRIR_LEN);
+        }
+    }
+
+    /// A set built at 96 kHz convolves 256 taps, and every node is zero past
+    /// them — the convolver's contract for the taps it does not read.
+    #[test]
+    fn a_96k_set_uses_256_taps_and_is_silent_beyond() {
+        let set = HrirSet::new(
+            &crate::binaural::measured::MeasuredHrirData::saf_kemar().resampled_to(96_000),
+            96_000,
+        );
+        assert_eq!(set.len(), 256);
+        assert!(set.grid.iter().all(|p| {
+            p.left[256..]
+                .iter()
+                .chain(&p.right[256..])
+                .all(|&x| x == 0.0)
+        }));
+        // The measured response really extends past the old 128-tap cut at
+        // this rate: taps 128..256 must carry energy somewhere on the grid.
+        let tail: f32 = set
+            .grid
+            .iter()
+            .map(|p| p.left[128..256].iter().map(|x| x * x).sum::<f32>())
+            .sum();
+        assert!(tail > 0.0, "nothing past tap 128 at 96 kHz");
     }
 
     #[test]

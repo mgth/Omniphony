@@ -1,6 +1,10 @@
 //! Direct-form FIR convolver for one ear of one object.
 //!
-//! Length is fixed at [`HRIR_LEN`]. The input history persists across
+//! Capacity is [`HRIR_LEN`]; the number of taps actually run is the length
+//! of the kernel handed to [`set_coeffs`](EarConvolver::set_coeffs) /
+//! [`set_coeffs_smooth`](EarConvolver::set_coeffs_smooth) — the set's
+//! [`hrir_len`](super::hrir::hrir_len) for the engine rate — so the cost
+//! scales with the rate rather than the span shrinking. The input history persists across
 //! coefficient swaps, so updating the HRIR between frames (as the object or
 //! head moves) keeps the *state* continuous — and a kernel change is
 //! additionally crossfaded over a caller-chosen ramp
@@ -19,8 +23,8 @@
 //! per sample *per ear per object* — so its shape is deliberate on two counts:
 //!
 //! * **The history is linear and double-written**, not a ring walked backwards.
-//!   Each input lands at both `pos` and `pos + HRIR_LEN`, which makes
-//!   `hist[pos + 1 ..= pos + HRIR_LEN]` the last `HRIR_LEN` inputs in
+//!   Each input lands at both `pos` and `pos + len`, which makes
+//!   `hist[pos + 1 ..= pos + len]` the last `len` inputs in
 //!   oldest→newest order, contiguous and ascending whatever `pos` is. The
 //!   kernel is stored reversed to match, so the loop is a plain forward dot
 //!   product over two contiguous slices — no wrap test and no descending index
@@ -64,7 +68,7 @@ const _: () = assert!(
 
 /// Forward dot product of a reversed kernel with the ascending history window.
 #[inline(always)]
-fn dot(coeffs: &[f32; HRIR_LEN], win: &[f32]) -> f32 {
+fn dot(coeffs: &[f32], win: &[f32]) -> f32 {
     let mut acc = [0.0f32; ACC_LANES];
     for (c, h) in coeffs
         .chunks_exact(ACC_LANES)
@@ -80,7 +84,7 @@ fn dot(coeffs: &[f32; HRIR_LEN], win: &[f32]) -> f32 {
 /// Both kernels of a running crossfade over the same window, in one pass — the
 /// history loads are shared between them.
 #[inline(always)]
-fn dot2(new_c: &[f32; HRIR_LEN], old_c: &[f32; HRIR_LEN], win: &[f32]) -> (f32, f32) {
+fn dot2(new_c: &[f32], old_c: &[f32], win: &[f32]) -> (f32, f32) {
     let mut acc_new = [0.0f32; ACC_LANES];
     let mut acc_old = [0.0f32; ACC_LANES];
     for ((cn, co), h) in new_c
@@ -98,12 +102,18 @@ fn dot2(new_c: &[f32; HRIR_LEN], old_c: &[f32; HRIR_LEN], win: &[f32]) -> (f32, 
 }
 
 pub struct EarConvolver {
-    /// Past inputs, each written twice (`pos` and `pos + HRIR_LEN`) so the
+    /// Past inputs, each written twice (`pos` and `pos + len`) so the
     /// live window is always a contiguous ascending slice. `pos` marks the
     /// primary slot of the most recent sample.
     hist: [f32; 2 * HRIR_LEN],
     pos: usize,
-    /// Current kernel, stored **reversed** (`rcoeffs[j] == coeffs[N - 1 - j]`)
+    /// Taps in use: the length of the last kernel set, `HRIR_LEN` until
+    /// then. Fixed for the life of a stream — it decides where the history
+    /// wraps, so it is adopted from the first kernel and expected to hold.
+    len: usize,
+    /// Whether any sample has been processed since the length was adopted.
+    started: bool,
+    /// Current kernel, stored **reversed** (`rcoeffs[j] == coeffs[len - 1 - j]`)
     /// to match the oldest→newest history window.
     rcoeffs: [f32; HRIR_LEN],
     /// Fade-out kernel of a running crossfade (valid while `fade_pos <
@@ -124,6 +134,8 @@ impl EarConvolver {
         Self {
             hist: [0.0; 2 * HRIR_LEN],
             pos: 0,
+            len: HRIR_LEN,
+            started: false,
             rcoeffs: [0.0; HRIR_LEN],
             prev_rcoeffs: [0.0; HRIR_LEN],
             fade_pos: 0,
@@ -131,12 +143,46 @@ impl EarConvolver {
         }
     }
 
+    /// Taps currently run per sample.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Never empty: a fresh convolver runs the full capacity of zeros.
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Adopt the kernel length. The history wraps at `len`, so a change
+    /// after samples have flowed would misalign the window; the length is
+    /// a property of the engine rate and is expected to be set once, on the
+    /// first kernel, before the first sample.
+    #[inline]
+    fn adopt_len(&mut self, len: usize) {
+        if len == self.len {
+            return;
+        }
+        debug_assert!(len > 0 && len <= HRIR_LEN && len.is_multiple_of(ACC_LANES));
+        debug_assert!(
+            !self.started,
+            "kernel length changed from {} to {len} on a running convolver",
+            self.len
+        );
+        self.len = len;
+        self.pos = 0;
+        self.hist.fill(0.0);
+        self.fade_pos = 0;
+        self.fade_len = 0;
+    }
+
     /// Replace the FIR kernel immediately (no crossfade). The history is
     /// untouched, so the *state* remains continuous through the swap, but the
     /// transfer function jumps — prefer [`set_coeffs_smooth`](Self::set_coeffs_smooth)
-    /// on live update paths.
+    /// on live update paths. `coeffs.len()` is the number of taps to run.
     #[inline]
-    pub fn set_coeffs(&mut self, coeffs: &[f32; HRIR_LEN]) {
+    pub fn set_coeffs(&mut self, coeffs: &[f32]) {
+        self.adopt_len(coeffs.len());
         for (dst, &c) in self.rcoeffs.iter_mut().zip(coeffs.iter().rev()) {
             *dst = c;
         }
@@ -147,8 +193,8 @@ impl EarConvolver {
     /// Whether `coeffs` is the kernel already loaded (compared in natural
     /// order against the reversed store — no temporary).
     #[inline]
-    fn kernel_is(&self, coeffs: &[f32; HRIR_LEN]) -> bool {
-        self.rcoeffs.iter().eq(coeffs.iter().rev())
+    fn kernel_is(&self, coeffs: &[f32]) -> bool {
+        coeffs.len() == self.len && self.rcoeffs[..self.len].iter().eq(coeffs.iter().rev())
     }
 
     /// Replace the FIR kernel, crossfading from the current one over the next
@@ -157,7 +203,7 @@ impl EarConvolver {
     /// compare and keeps the single dot product). Restarting mid-fade departs
     /// from the currently *effective* (blended) kernel, so back-to-back
     /// changes stay click-free too.
-    pub fn set_coeffs_smooth(&mut self, coeffs: &[f32; HRIR_LEN], fade_len: usize) {
+    pub fn set_coeffs_smooth(&mut self, coeffs: &[f32], fade_len: usize) {
         if self.kernel_is(coeffs) {
             return;
         }
@@ -165,14 +211,16 @@ impl EarConvolver {
             self.set_coeffs(coeffs);
             return;
         }
+        self.adopt_len(coeffs.len());
+        let len = self.len;
         if self.fade_pos < self.fade_len {
             // Freeze the running blend as the new fade-out kernel.
             let w = self.fade_pos as f32 / self.fade_len as f32;
-            for i in 0..HRIR_LEN {
+            for i in 0..len {
                 self.prev_rcoeffs[i] += (self.rcoeffs[i] - self.prev_rcoeffs[i]) * w;
             }
         } else {
-            self.prev_rcoeffs.copy_from_slice(&self.rcoeffs);
+            self.prev_rcoeffs[..len].copy_from_slice(&self.rcoeffs[..len]);
         }
         for (dst, &c) in self.rcoeffs.iter_mut().zip(coeffs.iter().rev()) {
             *dst = c;
@@ -184,25 +232,23 @@ impl EarConvolver {
     /// Push one input sample and return the filtered output.
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
+        let len = self.len;
+        self.started = true;
         // Advance first, then write both copies: the window below is then the
-        // last HRIR_LEN inputs, oldest→newest, with `x` as its final element.
-        self.pos = if self.pos + 1 == HRIR_LEN {
-            0
-        } else {
-            self.pos + 1
-        };
+        // last `len` inputs, oldest→newest, with `x` as its final element.
+        self.pos = if self.pos + 1 == len { 0 } else { self.pos + 1 };
         self.hist[self.pos] = x;
-        self.hist[self.pos + HRIR_LEN] = x;
-        let win = &self.hist[self.pos + 1..self.pos + 1 + HRIR_LEN];
+        self.hist[self.pos + len] = x;
+        let win = &self.hist[self.pos + 1..self.pos + 1 + len];
 
         if self.fade_pos < self.fade_len {
             // Crossfade: both kernels over the shared history, linear blend.
             self.fade_pos += 1;
             let w = self.fade_pos as f32 / self.fade_len as f32;
-            let (acc_new, acc_old) = dot2(&self.rcoeffs, &self.prev_rcoeffs, win);
+            let (acc_new, acc_old) = dot2(&self.rcoeffs[..len], &self.prev_rcoeffs[..len], win);
             acc_old + (acc_new - acc_old) * w
         } else {
-            dot(&self.rcoeffs, win)
+            dot(&self.rcoeffs[..len], win)
         }
     }
 }
@@ -272,6 +318,26 @@ mod tests {
             }
             assert_eq!(hits, vec![tap], "tap {tap} landed at the wrong delay");
         }
+    }
+
+    /// A shorter kernel runs, wraps and delays on its own length: the last
+    /// tap of a 256-tap kernel lands at 255, through several laps of the
+    /// 256-slot history.
+    #[test]
+    fn a_shorter_kernel_wraps_on_its_own_length() {
+        let mut c = EarConvolver::new();
+        let mut k = [0.0; 256];
+        k[255] = 1.0;
+        c.set_coeffs(&k);
+        assert_eq!(c.len(), 256);
+        let mut hits = Vec::new();
+        for t in 0..(3 * 256) {
+            let y = c.process(if t == 0 { 1.0 } else { 0.0 });
+            if y != 0.0 {
+                hits.push((t, y));
+            }
+        }
+        assert_eq!(hits, vec![(255, 1.0)]);
     }
 
     #[test]
