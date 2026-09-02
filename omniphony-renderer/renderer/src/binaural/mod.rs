@@ -177,13 +177,20 @@ impl HrirSource {
     }
 }
 
-/// Reference distance (m) at which an early reflection's 1/d gain is unity.
-const REF_DISTANCE_M: f32 = 1.0;
-/// Closest image-source distance (m) for the reflection 1/d law, bounding the
-/// near-source boost. (The direct path is deliberately not distance-attenuated.)
+/// Closest distance (m) the reflection and reverb laws see, for the source
+/// and for its images alike: bounds the near-field ratios below.
 const MIN_DISTANCE_M: f32 = 0.25;
-/// Maximum reflection distance gain, so an image at the origin can't blow up.
+/// Maximum reflection gain relative to the direct sound (`d_src / d_img`,
+/// which nears 1 for a source against a wall), so an image can't blow up.
 const MAX_DISTANCE_GAIN: f32 = 4.0;
+/// Source distance (m) at which the reverb send is unity. The direct sound
+/// keeps its authored level whatever the distance, so the send has to grow
+/// with it to move the direct/reverberant ratio the way a room does: send
+/// ∝ distance, unity at this reference.
+const REVERB_REF_DISTANCE_M: f32 = 1.5;
+/// Cap on the distance-driven reverb send (reached at 6 m), so a far object
+/// cannot flood the tail.
+const MAX_REVERB_SEND: f32 = 4.0;
 /// Delay-line capacity for the ITD (s) — comfortably above the ~0.7 ms max.
 const ITD_MAX_S: f32 = 0.003;
 
@@ -660,7 +667,9 @@ impl BinauralRenderer {
             // scale-invariant. Object/bed levels are authored upstream (Atmos
             // object gain), so the direct path applies NO inverse-distance gain;
             // dist_m only drives the distance *cues* (air absorption, reverb
-            // send, early reflections), never the direct object level.
+            // send, early reflections), never the direct object level. Those
+            // cues are therefore expressed relative to the direct sound: the
+            // 1/d the direct path does not apply is folded into them.
             let dist_norm = ((pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt()) as f32;
             let dist_m = (dist_norm * unit_scale_m).max(0.0);
 
@@ -713,13 +722,18 @@ impl BinauralRenderer {
                 0.0
             };
 
-            // Reverb send: distance-independent (a real room's reverberant
-            // field barely depends on source distance — the 1/d on the direct
-            // is what moves the direct/reverb ratio), with a near-field
-            // roll-in so sources at the listener stay dry.
+            // Reverb send. In a room the reverberant field barely depends on
+            // the source distance while the direct sound falls as 1/d, so
+            // the direct/reverberant ratio — the dominant distance cue past
+            // a metre — falls with distance. The direct path here keeps its
+            // authored level instead of falling, so the send must rise in
+            // its place: proportional to the distance, unity at the
+            // reference, capped. (The previous `d / (d + 0.5)` saturated at
+            // 1: +3 dB from 1 m to 10 m against a physical 20 dB, so the cue
+            // stopped at arm's length.)
             let reverb_send = if reverb_active {
                 // Multiplier on the (already gain-scaled) channel signal.
-                dist_m / (dist_m + 0.5)
+                (dist_m / REVERB_REF_DISTANCE_M).min(MAX_REVERB_SEND)
             } else {
                 0.0
             };
@@ -764,7 +778,13 @@ impl BinauralRenderer {
                     const SHADOW: f32 = 0.5;
                     let g_r = ((1.0 + SHADOW * lat) / (1.0 + SHADOW)).sqrt();
                     let g_l = ((1.0 - SHADOW * lat) / (1.0 + SHADOW)).sqrt();
-                    let g_dist = (REF_DISTANCE_M / d_img).clamp(0.0, MAX_DISTANCE_GAIN);
+                    // Level relative to the direct sound: the 1/d law of the
+                    // image over the 1/d the direct path would have had
+                    // (`d_src / d_img`), because the direct sound keeps its
+                    // authored level. An absolute `1 / d_img` was only right
+                    // for a source at 1 m and moved the wrong way with
+                    // distance — a receding source got *drier*.
+                    let g_dist = (d_src / d_img).min(MAX_DISTANCE_GAIN);
                     let g = reflections.level.clamp(0.0, 1.0) * g_dist;
                     bank.set_targets(i, rel_delay_s, g * g_l, g * g_r);
                 }
@@ -1234,6 +1254,98 @@ mod tests {
             .map(|(a, b)| (a - b) * (a - b))
             .sum();
         assert!(later > 1e-6, "no reflections at all: {later}");
+    }
+
+    /// Energy of an impulse render split at `split` samples: the direct
+    /// HRIR (and, for the second half, whatever arrives later).
+    fn head_tail_energy(out: &[f32], split: usize) -> (f32, f32) {
+        let head: f32 = out[..split * 2].iter().map(|x| x * x).sum();
+        let tail: f32 = out[split * 2..].iter().map(|x| x * x).sum();
+        (head, tail)
+    }
+
+    /// The early reflections must get *louder relative to the direct sound*
+    /// as the source recedes — that is the distance cue they exist for.
+    /// Source straight ahead at 1 m then 2.4 m in the default room: before
+    /// the fix the ratio fell from −18.3 dB to −19.4 dB; the physics (direct
+    /// in 1/d) says −18.3 → −11.8 dB.
+    #[test]
+    fn reflection_to_direct_ratio_rises_with_distance() {
+        let n = 4_096;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let ratio = |dist: f64| -> f32 {
+            let params = BinauralFrameParams {
+                reflections: BinauralReflections {
+                    enabled: true,
+                    room_size_m: [4.0, 5.0, 2.7],
+                    level: 0.5,
+                },
+                ..dry_params()
+            };
+            let mut out = vec![0.0f32; n * 2];
+            let mut r = BinauralRenderer::new(48_000);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &params,
+                &[[0.0, dist, 0.0]],
+                &[ChannelGain::flat(1.0)],
+                &[],
+                None,
+                &mut out,
+            );
+            // The nearest image (front wall) of the 2.4 m source is 0.2 m
+            // beyond it: 28 samples. Split after the direct HRIR but before
+            // that: 20 samples — the direct kernel's head holds its energy.
+            let (direct, refl) = head_tail_energy(&out, 20);
+            refl / direct
+        };
+        let (near, far) = (ratio(1.0), ratio(2.4));
+        assert!(
+            far > near * 2.0,
+            "reflections did not rise with distance: 1 m {near:.4} vs 2.4 m {far:.4}"
+        );
+    }
+
+    /// Likewise the reverb send: three times the distance, three times the
+    /// send (nine times the tail energy), where it used to gain 30 %.
+    #[test]
+    fn reverb_send_grows_with_distance() {
+        let n = 24_000;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let tail = |dist: f64| -> f32 {
+            let params = BinauralFrameParams {
+                reverb: BinauralReverb {
+                    enabled: true,
+                    level: 0.3,
+                    rt60_s: 0.4,
+                    predelay_ms: 20.0,
+                },
+                ..dry_params()
+            };
+            let mut out = vec![0.0f32; n * 2];
+            let mut r = BinauralRenderer::new(48_000);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &params,
+                &[[0.0, dist, 0.0]],
+                &[ChannelGain::flat(1.0)],
+                &[],
+                None,
+                &mut out,
+            );
+            head_tail_energy(&out, 4_000).1
+        };
+        let (near, far) = (tail(1.0), tail(3.0));
+        assert!(
+            far > near * 4.0 && far < near * 20.0,
+            "reverb send off the 1/d law: 1 m {near:.3e} vs 3 m {far:.3e}"
+        );
     }
 
     #[test]
