@@ -9,9 +9,10 @@ use sys::diag::DiagRegistry;
 pub enum InputMode {
     #[serde(rename = "pipe_bridge", alias = "bridge")]
     Bridge,
-    #[serde(rename = "pipewire", alias = "live")]
-    Live,
-    #[serde(rename = "pipewire_bridge")]
+    /// The PipeWire sink. `pipewire` and `live` named the removed PCM-only
+    /// sink; they resolve here because this sink negotiates linear PCM too,
+    /// so a configuration saved for that mode keeps working.
+    #[serde(rename = "pipewire_bridge", alias = "pipewire", alias = "live")]
     PipewireBridge,
 }
 
@@ -38,13 +39,6 @@ pub enum InputLfeMode {
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum InputSampleFormat {
-    F32,
-    S16,
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum InputClockMode {
     Dac,
     Pipewire,
@@ -62,7 +56,6 @@ pub struct RequestedAudioInputConfig {
     pub clock_mode: InputClockMode,
     pub channels: Option<u16>,
     pub sample_rate_hz: Option<u32>,
-    pub sample_format: Option<InputSampleFormat>,
     pub map_mode: InputMapMode,
     pub lfe_mode: InputLfeMode,
 }
@@ -79,7 +72,6 @@ impl Default for RequestedAudioInputConfig {
             clock_mode: InputClockMode::Dac,
             channels: None,
             sample_rate_hz: None,
-            sample_format: None,
             map_mode: InputMapMode::SevenOneFixed,
             lfe_mode: InputLfeMode::Direct,
         }
@@ -363,10 +355,6 @@ impl InputControl {
 
     pub fn set_requested_sample_rate_hz(&self, value: Option<u32>) {
         self.update_requested(|requested| requested.sample_rate_hz = value);
-    }
-
-    pub fn set_requested_sample_format(&self, value: Option<InputSampleFormat>) {
-        self.update_requested(|requested| requested.sample_format = value);
     }
 
     pub fn set_requested_map_mode(&self, value: InputMapMode) {

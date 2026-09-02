@@ -230,7 +230,6 @@ impl DecodeHandler {
         matches!(
             (active_mode, source),
             (InputMode::Bridge, DecodedSource::Bridge)
-                | (InputMode::Live, DecodedSource::Live)
                 // The PipeWire sink advertises PCM alongside IEC 61937, so this
                 // mode legitimately produces either source depending on what the
                 // client negotiated.

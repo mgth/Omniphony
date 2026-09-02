@@ -541,10 +541,11 @@ export function applyInitState(payload) {
   if (typeof payload.audioError === 'string') {
     app.audioError = payload.audioError.trim() || null;
   }
-  // The protocol's two historical aliases (`bridge` for `pipe_bridge`, `live`
-  // for `pipewire`) are resolved by `normalize_input_mode` in the backend, on
-  // the way in as well as the way out. An unrecognised mode never reaches the
-  // snapshot, so there is nothing to test for here.
+  // The protocol's historical aliases (`bridge` for `pipe_bridge`; `live` and
+  // `pipewire`, the removed PCM-only mode, for `pipewire_bridge`) are resolved
+  // by `normalize_input_mode` in the backend, on the way in as well as the way
+  // out. An unrecognised mode never reaches the snapshot, so there is nothing
+  // to test for here.
   if (typeof payload.inputMode === 'string') {
     if (!app.inputModeDirty || payload.inputMode === app.inputMode) {
       app.inputMode = payload.inputMode;
@@ -649,9 +650,6 @@ export function applyInitState(payload) {
     }
     if (typeof payload.liveInput.sampleRate === 'number' && payload.liveInput.sampleRate > 0) {
       app.liveInput.sampleRate = payload.liveInput.sampleRate;
-    }
-    if (typeof payload.liveInput.format === 'string') {
-      app.liveInput.format = payload.liveInput.format.trim().toLowerCase() || app.liveInput.format;
     }
     if (typeof payload.liveInput.map === 'string') {
       app.liveInput.map = payload.liveInput.map.trim().toLowerCase() || app.liveInput.map;

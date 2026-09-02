@@ -512,9 +512,10 @@ pub struct HeadTrackingConfig {
 pub enum InputModeConfig {
     #[serde(rename = "pipe_bridge", alias = "bridge")]
     Bridge,
-    #[serde(rename = "pipewire", alias = "live")]
-    Live,
-    #[serde(rename = "pipewire_bridge")]
+    /// The PipeWire sink. `pipewire` and `live` named the removed PCM-only
+    /// sink and still deserialize here, so a config saved for it keeps
+    /// loading instead of falling back to defaults.
+    #[serde(rename = "pipewire_bridge", alias = "pipewire", alias = "live")]
     PipewireBridge,
 }
 
@@ -566,8 +567,6 @@ pub struct LiveInputConfig {
     pub channels: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_rate: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sample_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub map: Option<InputMapModeConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]

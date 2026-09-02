@@ -15,7 +15,6 @@ function getInputLayoutInputEl() { return inInputPanel('inputLayoutInput'); }
 function getInputLayoutBrowseBtnEl() { return inInputPanel('inputLayoutBrowseBtn'); }
 function getInputChannelsInputEl() { return inInputPanel('inputChannelsInput'); }
 function getInputSampleRateInputEl() { return inInputPanel('inputSampleRateInput'); }
-function getInputFormatSelectEl() { return inInputPanel('inputFormatSelect'); }
 function getInputMapSelectEl() { return inInputPanel('inputMapSelect'); }
 function getInputLfeModeSelectEl() { return inInputPanel('inputLfeModeSelect'); }
 function getInputStatusInfoEl() { return inInputPanel('inputStatusInfo'); }
@@ -35,18 +34,9 @@ function formatInputModeLabel(value) {
       return t('input.mode.pipe_bridge');
     case 'pipewire_bridge':
       return t('input.mode.pipewire_bridge');
-    case 'live':
-    case 'pipewire':
-      return t('input.mode.pipewire');
     default:
       return value || '—';
   }
-}
-
-function formatInputBackendLabel(value) {
-  if (value === 'asio') return t('input.backend.asio');
-  if (value === 'pipewire') return t('input.backend.pipewire');
-  return value || '—';
 }
 
 function formatClockModeLabel(value) {
@@ -56,23 +46,12 @@ function formatClockModeLabel(value) {
   return value || '—';
 }
 
-function defaultNodePlaceholder(requestedMode) {
-  return requestedMode === 'pipewire_bridge' ? 'omniphony' : 'omniphony_input_7_1';
-}
-
-function defaultDescriptionPlaceholder(requestedMode) {
-  return requestedMode === 'pipewire_bridge'
-    ? 'Omniphony Bridge Input'
-    : 'Omniphony Input 7.1';
-}
-
-function defaultInputChannels(requestedMode) {
-  return requestedMode === 'pipewire_bridge' ? 2 : 8;
-}
-
-function defaultInputSampleRate(requestedMode) {
-  return requestedMode === 'pipewire_bridge' ? 192000 : 48000;
-}
+// Defaults of the PipeWire bridge sink, the only live input left; they mirror
+// the renderer's `DEFAULT_LIVE_BRIDGE_*` constants.
+const DEFAULT_LIVE_NODE = 'omniphony';
+const DEFAULT_LIVE_DESCRIPTION = 'Omniphony Bridge Input';
+const DEFAULT_LIVE_CHANNELS = 2;
+const DEFAULT_LIVE_SAMPLE_RATE = 192000;
 
 function bridgePathMissingMessage(requestedMode) {
   if (requestedMode !== 'pipe_bridge' && requestedMode !== 'pipewire_bridge') {
@@ -98,9 +77,8 @@ export function buildInputConfigPayload() {
       description: app.liveInput.description || null,
       layout: app.liveInput.layout || null,
       clockMode: app.liveInput.clockMode || 'dac',
-      channels: app.liveInput.channels || defaultInputChannels(requestedMode),
-      sampleRate: app.liveInput.sampleRate || defaultInputSampleRate(requestedMode),
-      format: app.liveInput.format || null,
+      channels: app.liveInput.channels || DEFAULT_LIVE_CHANNELS,
+      sampleRate: app.liveInput.sampleRate || DEFAULT_LIVE_SAMPLE_RATE,
       map: app.liveInput.map || '7.1-fixed',
       lfeMode: app.liveInput.lfeMode || 'object'
     }
@@ -128,7 +106,6 @@ export function updateInputControlUI() {
   const inputLayoutBrowseBtnEl = getInputLayoutBrowseBtnEl();
   const inputChannelsInputEl = getInputChannelsInputEl();
   const inputSampleRateInputEl = getInputSampleRateInputEl();
-  const inputFormatSelectEl = getInputFormatSelectEl();
   const inputMapSelectEl = getInputMapSelectEl();
   const inputLfeModeSelectEl = getInputLfeModeSelectEl();
   const inputStatusInfoEl = getInputStatusInfoEl();
@@ -144,7 +121,6 @@ export function updateInputControlUI() {
   const inputLayoutRowEl = inputLayoutInputEl?.closest('.input-panel-row') || null;
   const inputChannelsRowEl = inputChannelsInputEl?.closest('.input-panel-field') || null;
   const inputSampleRateRowEl = inputSampleRateInputEl?.closest('.input-panel-field') || null;
-  const inputFormatRowEl = inputFormatSelectEl?.closest('.input-panel-field') || null;
   const inputMapRowEl = inputMapSelectEl?.closest('.input-panel-field') || null;
   const inputLfeModeRowEl = inputLfeModeSelectEl?.closest('.input-panel-field') || null;
   const requestedMode = app.inputMode || 'pipe_bridge';
@@ -153,7 +129,7 @@ export function updateInputControlUI() {
   // is the decoder bridge path. Show just that and hide the rest of the panel.
   const embedded = isEmbeddedProducer();
   if (inputModeSelectEl) {
-    inputModeSelectEl.value = ['pipewire', 'pipewire_bridge', 'pipe_bridge'].includes(app.inputMode)
+    inputModeSelectEl.value = ['pipewire_bridge', 'pipe_bridge'].includes(app.inputMode)
       ? app.inputMode
       : 'pipe_bridge';
     inputModeSelectEl.disabled = !hasInputDomain;
@@ -169,11 +145,11 @@ export function updateInputControlUI() {
   }
   if (inputNodeInputEl && document.activeElement !== inputNodeInputEl) {
     inputNodeInputEl.value = stringOrEmpty(app.liveInput.node || app.inputNode);
-    inputNodeInputEl.placeholder = defaultNodePlaceholder(requestedMode);
+    inputNodeInputEl.placeholder = DEFAULT_LIVE_NODE;
   }
   if (inputDescriptionInputEl && document.activeElement !== inputDescriptionInputEl) {
     inputDescriptionInputEl.value = stringOrEmpty(app.liveInput.description || app.inputDescription);
-    inputDescriptionInputEl.placeholder = defaultDescriptionPlaceholder(requestedMode);
+    inputDescriptionInputEl.placeholder = DEFAULT_LIVE_DESCRIPTION;
   }
   if (inputClockModeSelectEl) {
     inputClockModeSelectEl.value = ['dac', 'pipewire', 'upstream'].includes(app.liveInput.clockMode)
@@ -184,13 +160,10 @@ export function updateInputControlUI() {
     inputLayoutInputEl.value = stringOrEmpty(app.liveInput.layout);
   }
   if (inputChannelsInputEl) {
-    inputChannelsInputEl.value = String(app.liveInput.channels || defaultInputChannels(requestedMode));
+    inputChannelsInputEl.value = String(app.liveInput.channels || DEFAULT_LIVE_CHANNELS);
   }
   if (inputSampleRateInputEl) {
-    inputSampleRateInputEl.value = String(app.liveInput.sampleRate || defaultInputSampleRate(requestedMode));
-  }
-  if (inputFormatSelectEl) {
-    inputFormatSelectEl.value = app.liveInput.format === 's16' ? 's16' : 'f32';
+    inputSampleRateInputEl.value = String(app.liveInput.sampleRate || DEFAULT_LIVE_SAMPLE_RATE);
   }
   if (inputMapSelectEl) {
     inputMapSelectEl.value = app.liveInput.map === '7.1-fixed' ? '7.1-fixed' : '7.1-fixed';
@@ -202,14 +175,11 @@ export function updateInputControlUI() {
 
   const showApplyPending = requestedMode !== 'pipe_bridge' && app.inputApplyPending;
   const bridgePathMissing = bridgePathMissingMessage(requestedMode);
-  const bridgeRequested = requestedMode !== 'live';
-  const liveRequested = requestedMode === 'pipewire';
   const pipewireBridgeRequested = requestedMode === 'pipewire_bridge';
-  const endpointRequested = liveRequested || pipewireBridgeRequested;
 
+  // Both remaining modes decode through the bridge, so its fields always show.
   if (inputBridgeFieldsEl) {
-    inputBridgeFieldsEl.style.display =
-      embedded || (hasInputDomain && bridgeRequested) ? '' : 'none';
+    inputBridgeFieldsEl.style.display = embedded || hasInputDomain ? '' : 'none';
   }
   // In embedded mode the panel becomes the "Decoder bridge" section: relabel
   // the header and keep only the bridge path — hide the mode selector, the
@@ -243,51 +213,40 @@ export function updateInputControlUI() {
     oscBridgePathInputEl.classList.toggle('input-panel-danger', Boolean(bridgePathMissing));
   }
   if (inputLiveFieldsEl) {
-    inputLiveFieldsEl.style.display = hasInputDomain && endpointRequested ? '' : 'none';
-    inputLiveFieldsEl.style.opacity = hasInputDomain && endpointRequested ? '1' : '0.55';
+    inputLiveFieldsEl.style.display = hasInputDomain && pipewireBridgeRequested ? '' : 'none';
+    inputLiveFieldsEl.style.opacity = hasInputDomain && pipewireBridgeRequested ? '1' : '0.55';
   }
   if (inputPipeRowEl) inputPipeRowEl.style.display = hasInputDomain && requestedMode === 'pipe_bridge' ? '' : 'none';
-  if (inputBackendRowEl) inputBackendRowEl.style.display = hasInputDomain && liveRequested ? '' : 'none';
-  if (inputNodeRowEl) inputNodeRowEl.style.display = hasInputDomain && endpointRequested ? '' : 'none';
-  if (inputDescriptionRowEl) inputDescriptionRowEl.style.display = hasInputDomain && endpointRequested ? '' : 'none';
+  if (inputNodeRowEl) inputNodeRowEl.style.display = hasInputDomain && pipewireBridgeRequested ? '' : 'none';
+  if (inputDescriptionRowEl) inputDescriptionRowEl.style.display = hasInputDomain && pipewireBridgeRequested ? '' : 'none';
   if (inputClockModeRowEl) inputClockModeRowEl.style.display = hasInputDomain && pipewireBridgeRequested ? '' : 'none';
-  if (inputLayoutRowEl) inputLayoutRowEl.style.display = hasInputDomain && liveRequested ? '' : 'none';
-  if (inputChannelsRowEl) inputChannelsRowEl.style.display = hasInputDomain && liveRequested ? '' : 'none';
-  if (inputSampleRateRowEl) inputSampleRateRowEl.style.display = hasInputDomain && liveRequested ? '' : 'none';
-  if (inputFormatRowEl) inputFormatRowEl.style.display = hasInputDomain && liveRequested ? '' : 'none';
-  if (inputMapRowEl) inputMapRowEl.style.display = hasInputDomain && liveRequested ? '' : 'none';
-  if (inputLfeModeRowEl) inputLfeModeRowEl.style.display = hasInputDomain && liveRequested ? '' : 'none';
+  // Rows of the removed PCM-only live mode. The bridge sink negotiates its
+  // own format and fixes the input map, so it reads none of these; they stay
+  // in the DOM, hidden, until the PipeWire-mode rework decides which return.
+  [
+    inputBackendRowEl,
+    inputLayoutRowEl,
+    inputChannelsRowEl,
+    inputSampleRateRowEl,
+    inputMapRowEl,
+    inputLfeModeRowEl
+  ].forEach((el) => {
+    if (el) el.style.display = 'none';
+  });
+  [inputNodeInputEl, inputDescriptionInputEl, inputClockModeSelectEl].forEach((el) => {
+    if (el) el.disabled = !hasInputDomain || !pipewireBridgeRequested;
+  });
   [
     inputBackendSelectEl,
-    inputNodeInputEl,
-    inputDescriptionInputEl,
-    inputClockModeSelectEl,
     inputChannelsInputEl,
     inputSampleRateInputEl,
-    inputFormatSelectEl,
     inputMapSelectEl,
-    inputLfeModeSelectEl
+    inputLfeModeSelectEl,
+    inputLayoutInputEl,
+    inputLayoutBrowseBtnEl
   ].forEach((el) => {
-    if (el) {
-      if (!hasInputDomain) {
-        el.disabled = true;
-        return;
-      }
-      if (el === inputNodeInputEl || el === inputDescriptionInputEl) {
-        el.disabled = !endpointRequested;
-      } else if (el === inputClockModeSelectEl) {
-        el.disabled = !pipewireBridgeRequested;
-      } else {
-        el.disabled = !liveRequested;
-      }
-    }
+    if (el) el.disabled = true;
   });
-  if (inputLayoutInputEl) {
-    inputLayoutInputEl.disabled = !hasInputDomain || !liveRequested;
-  }
-  if (inputLayoutBrowseBtnEl) {
-    inputLayoutBrowseBtnEl.disabled = !hasInputDomain || !liveRequested;
-  }
 
   if (inputStatusInfoEl) {
     const activeMode = app.inputActiveMode || 'pipe_bridge';
@@ -295,32 +254,16 @@ export function updateInputControlUI() {
     const activeModeLabel = formatInputModeLabel(activeMode);
     const sync = showApplyPending ? t('input.sync.pending') : t('input.sync.synced');
     const error = app.inputError ? tf('input.status.error', { error: app.inputError }) : '';
-    if (liveRequested) {
-      const backend = formatInputBackendLabel(app.inputBackend || app.liveInput.backend || '');
-      const channels = app.inputChannels || app.liveInput.channels || '—';
-      const sampleRate = app.inputSampleRate || app.liveInput.sampleRate || '—';
-      const format = app.inputStreamFormat || app.liveInput.format || '—';
-      inputStatusInfoEl.textContent = tf('input.status.live', {
-        requested: requestedModeLabel,
-        active: activeModeLabel,
-        backend,
-        channels,
-        sampleRate,
-        format,
-        sync
-      }) + error;
-    } else {
-      const pipe = app.orenderInputPipe || '—';
-      const clock = pipewireBridgeRequested
-        ? tf('input.status.clock', { clock: formatClockModeLabel(app.liveInput.clockMode || 'dac') })
-        : '';
-      inputStatusInfoEl.textContent = tf('input.status.bridge', {
-        requested: requestedModeLabel,
-        active: activeModeLabel,
-        pipe,
-        sync
-      }) + clock + error;
-    }
+    const pipe = app.orenderInputPipe || '—';
+    const clock = pipewireBridgeRequested
+      ? tf('input.status.clock', { clock: formatClockModeLabel(app.liveInput.clockMode || 'dac') })
+      : '';
+    inputStatusInfoEl.textContent = tf('input.status.bridge', {
+      requested: requestedModeLabel,
+      active: activeModeLabel,
+      pipe,
+      sync
+    }) + clock + error;
   }
 
   if (inputSummaryEl) {
@@ -332,14 +275,6 @@ export function updateInputControlUI() {
       // active mode summary is meaningless. Show the bridge path instead.
       const bridgePath = String(app.renderBridgePath || '').trim();
       inputSummaryEl.textContent = bridgePath || t('input.autoDetect');
-    } else if (liveRequested) {
-      const backend = formatInputBackendLabel(app.liveInput.backend || 'pipewire');
-      const layoutSuffix = app.liveInput.layout ? t('input.summary.liveLayout') : '';
-      inputSummaryEl.textContent = tf('input.summary.live', {
-        requested: requestedModeLabel,
-        active: activeModeLabel,
-        backend
-      }) + layoutSuffix;
     } else if (pipewireBridgeRequested) {
       inputSummaryEl.textContent = tf('input.summary.pipewireBridge', {
         requested: requestedModeLabel,

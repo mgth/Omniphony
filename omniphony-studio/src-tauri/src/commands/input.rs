@@ -1,5 +1,5 @@
 //! Audio input controls: bridged-input config and the live device/backend path
-//! (node, layout, channel format, mapping, clock, LFE handling), plus importing
+//! (node, layout, mapping, clock, LFE handling), plus importing
 //! a layout file for the live input.
 //!
 //! Each command forwards a value to the renderer over OSC.
@@ -37,16 +37,16 @@ pub fn control_input_config_apply(state: State<SharedState>) {
 
 /// Canonical spelling of an input mode, or `None` if it is not one.
 ///
-/// The protocol carries two historical aliases — `bridge` for `pipe_bridge`
-/// and `live` for `pipewire`. Both directions go through here: the frontend
-/// used to re-implement this table when reading a snapshot, which meant the
-/// same aliases were resolved in two places and only one of them was the
+/// The protocol carries historical aliases — `bridge` for `pipe_bridge`, and
+/// `live` / `pipewire` (the removed PCM-only sink) for `pipewire_bridge`, the
+/// sink that replaced it. Both directions go through here: the frontend used
+/// to re-implement this table when reading a snapshot, which meant the same
+/// aliases were resolved in two places and only one of them was the
 /// authority.
 pub fn normalize_input_mode(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "bridge" | "pipe_bridge" => Some("pipe_bridge"),
-        "live" | "pipewire" => Some("pipewire"),
-        "pipewire_bridge" => Some("pipewire_bridge"),
+        "live" | "pipewire" | "pipewire_bridge" => Some("pipewire_bridge"),
         _ => None,
     }
 }
@@ -161,21 +161,6 @@ pub fn control_input_live_sample_rate(state: State<SharedState>, value: i32) {
         OscControlMsg::SendInt {
             address: "/omniphony/control/input/live/sample_rate".to_string(),
             value: value.max(1),
-        },
-    );
-}
-
-#[tauri::command]
-pub fn control_input_live_format(state: State<SharedState>, value: String) {
-    let trimmed = value.trim().to_ascii_lowercase();
-    if !matches!(trimmed.as_str(), "f32" | "s16") {
-        return;
-    }
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/format".to_string(),
-            value: trimmed,
         },
     );
 }

@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use audio_input::{
     InputBackend, InputClockMode, InputControl, InputLfeMode, InputMapMode, InputMode,
-    InputSampleFormat,
 };
 use audio_output::AudioControl;
 use renderer::live_params::RendererControl;
@@ -85,7 +84,6 @@ struct LiveInputPatch {
     clock_mode: Option<InputClockMode>,
     channels: Option<Option<u16>>,
     sample_rate: Option<Option<u32>>,
-    format: Option<Option<InputSampleFormat>>,
     map: Option<InputMapMode>,
     lfe_mode: Option<InputLfeMode>,
 }
@@ -102,7 +100,6 @@ struct InputConfigPatch {
 fn input_mode_name(mode: InputMode) -> &'static str {
     match mode {
         InputMode::Bridge => "pipe_bridge",
-        InputMode::Live => "pipewire",
         InputMode::PipewireBridge => "pipewire_bridge",
     }
 }
@@ -125,13 +122,6 @@ fn input_lfe_mode_name(mode: InputLfeMode) -> &'static str {
         InputLfeMode::Object => "object",
         InputLfeMode::Direct => "direct",
         InputLfeMode::Drop => "drop",
-    }
-}
-
-fn input_sample_format_name(format: InputSampleFormat) -> &'static str {
-    match format {
-        InputSampleFormat::F32 => "f32",
-        InputSampleFormat::S16 => "s16",
     }
 }
 
@@ -215,7 +205,6 @@ fn build_input_state_json(input: &InputControl) -> String {
             "clockMode": requested.clock_mode,
             "channels": requested.channels,
             "sampleRate": requested.sample_rate_hz,
-            "format": requested.sample_format,
             "map": requested.map_mode,
             "lfeMode": requested.lfe_mode
         },
@@ -487,9 +476,6 @@ impl HostControlHandler for HostAudio {
                     if let Some(sample_rate) = live_input.sample_rate {
                         input.set_requested_sample_rate_hz(sample_rate.filter(|value| *value > 0));
                     }
-                    if let Some(sample_format) = live_input.format {
-                        input.set_requested_sample_format(sample_format);
-                    }
                     if let Some(map_mode) = live_input.map {
                         input.set_requested_map_mode(map_mode);
                     }
@@ -564,8 +550,7 @@ impl HostControlHandler for HostAudio {
             let requested = parse_string_arg(msg.args.first()).and_then(|value| {
                 match value.to_ascii_lowercase().as_str() {
                     "bridge" | "pipe_bridge" => Some(InputMode::Bridge),
-                    "live" | "pipewire" => Some(InputMode::Live),
-                    "pipewire_bridge" => Some(InputMode::PipewireBridge),
+                    "live" | "pipewire" | "pipewire_bridge" => Some(InputMode::PipewireBridge),
                     _ => None,
                 }
             });
@@ -636,21 +621,6 @@ impl HostControlHandler for HostAudio {
         if addr == osc_contract::CONTROL_INPUT_LIVE_SAMPLE_RATE {
             if let Some(requested) = parse_positive_u32_arg(msg.args.first()) {
                 input.set_requested_sample_rate_hz(Some(requested));
-                effects.mark_dirty = true;
-            }
-            return Some(effects);
-        }
-
-        if addr == osc_contract::CONTROL_INPUT_LIVE_FORMAT {
-            let requested = parse_string_arg(msg.args.first()).and_then(|value| {
-                match value.to_ascii_lowercase().as_str() {
-                    "f32" => Some(InputSampleFormat::F32),
-                    "s16" => Some(InputSampleFormat::S16),
-                    _ => None,
-                }
-            });
-            if let Some(requested) = requested {
-                input.set_requested_sample_format(Some(requested));
                 effects.mark_dirty = true;
             }
             return Some(effects);
@@ -915,7 +885,6 @@ impl HostControlHandler for HostAudio {
                         "clockMode": input_clock_mode_name(requested.clock_mode),
                         "channels": requested.channels,
                         "sampleRate": requested.sample_rate_hz,
-                        "format": requested.sample_format.map(input_sample_format_name),
                         "map": input_map_mode_name(requested.map_mode),
                         "lfeMode": input_lfe_mode_name(requested.lfe_mode)
                     },
@@ -994,7 +963,6 @@ impl HostControlHandler for HostAudio {
         let requested = input.requested_snapshot();
         render.input_mode = Some(match requested.mode {
             InputMode::Bridge => renderer::config::InputModeConfig::Bridge,
-            InputMode::Live => renderer::config::InputModeConfig::Live,
             InputMode::PipewireBridge => renderer::config::InputModeConfig::PipewireBridge,
         });
         render.live_input = Some(renderer::config::LiveInputConfig {
@@ -1013,10 +981,6 @@ impl HostControlHandler for HostAudio {
             }),
             channels: requested.channels,
             sample_rate: requested.sample_rate_hz,
-            sample_format: requested.sample_format.map(|format| match format {
-                InputSampleFormat::F32 => "f32".to_string(),
-                InputSampleFormat::S16 => "s16".to_string(),
-            }),
             map: Some(match requested.map_mode {
                 InputMapMode::SevenOneFixed => renderer::config::InputMapModeConfig::SevenOneFixed,
             }),

@@ -16,7 +16,6 @@ export function setupInputPanelListeners() {
   const inputLayoutBrowseBtnEl = document.getElementById('inputLayoutBrowseBtn');
   const inputChannelsInputEl = document.getElementById('inputChannelsInput');
   const inputSampleRateInputEl = document.getElementById('inputSampleRateInput');
-  const inputFormatSelectEl = document.getElementById('inputFormatSelect');
   const inputMapSelectEl = document.getElementById('inputMapSelect');
   const inputLfeModeSelectEl = document.getElementById('inputLfeModeSelect');
   const inputApplyBtnEl = document.getElementById('inputApplyBtn');
@@ -24,7 +23,7 @@ export function setupInputPanelListeners() {
   if (inputModeSelectEl) {
     inputModeSelectEl.addEventListener('change', () => {
       const previousMode = app.inputMode;
-      const value = ['pipewire', 'pipewire_bridge', 'pipe_bridge'].includes(inputModeSelectEl.value)
+      const value = ['pipewire_bridge', 'pipe_bridge'].includes(inputModeSelectEl.value)
         ? inputModeSelectEl.value
         : 'pipe_bridge';
       app.inputMode = value;
@@ -32,9 +31,6 @@ export function setupInputPanelListeners() {
       if (value === 'pipewire_bridge' && previousMode !== 'pipewire_bridge') {
         app.liveInput.channels = 2;
         app.liveInput.sampleRate = 192000;
-      } else if (value === 'pipewire' && previousMode !== 'pipewire') {
-        app.liveInput.channels = 8;
-        app.liveInput.sampleRate = 48000;
       }
       updateInputControlUI();
       sendInputConfig();
@@ -141,7 +137,7 @@ export function setupInputPanelListeners() {
 
   if (inputChannelsInputEl) {
     inputChannelsInputEl.addEventListener('change', () => {
-      const fallback = app.inputMode === 'pipewire_bridge' ? 2 : 8;
+      const fallback = 2;
       const value = Math.max(1, Math.round(Number(inputChannelsInputEl.value) || fallback));
       app.liveInput.channels = value;
       updateInputControlUI();
@@ -151,18 +147,9 @@ export function setupInputPanelListeners() {
 
   if (inputSampleRateInputEl) {
     inputSampleRateInputEl.addEventListener('change', () => {
-      const fallback = app.inputMode === 'pipewire_bridge' ? 192000 : 48000;
+      const fallback = 192000;
       const value = Math.max(1, Math.round(Number(inputSampleRateInputEl.value) || fallback));
       app.liveInput.sampleRate = value;
-      updateInputControlUI();
-      sendInputConfig();
-    });
-  }
-
-  if (inputFormatSelectEl) {
-    inputFormatSelectEl.addEventListener('change', () => {
-      const value = inputFormatSelectEl.value === 's16' ? 's16' : 'f32';
-      app.liveInput.format = value;
       updateInputControlUI();
       sendInputConfig();
     });

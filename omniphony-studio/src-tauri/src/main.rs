@@ -393,7 +393,6 @@ fn main() {
             import_input_layout_from_path,
             control_input_live_channels,
             control_input_live_sample_rate,
-            control_input_live_format,
             control_input_live_clock_mode,
             control_input_live_map,
             control_input_live_lfe_mode,
