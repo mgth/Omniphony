@@ -366,8 +366,12 @@ impl DirectionKey {
 }
 
 impl HrirSet {
-    const AZ_STEP_DEG: f32 = 10.0;
-    const EL_STEP_DEG: f32 = 10.0;
+    /// Grid pitch. 5° follows the density of the embedded KEMAR set (836
+    /// directions, ~7° apart): at 10° the set was decimated onto 504 nodes
+    /// and then interpolated, which smoothed the elevation notches twice.
+    /// 72 × 27 = 1 944 nodes of a 4 KB pair ≈ 8 MB per grid.
+    const AZ_STEP_DEG: f32 = 5.0;
+    const EL_STEP_DEG: f32 = 5.0;
     const EL_MIN_DEG: f32 = -40.0;
     const EL_MAX_DEG: f32 = 90.0;
 
@@ -474,7 +478,7 @@ impl HrirSet {
     /// Both costs are wasted whenever an object barely turned.
     ///
     /// The grid is measured every [`AZ_STEP_DEG`](Self::AZ_STEP_DEG) /
-    /// [`EL_STEP_DEG`](Self::EL_STEP_DEG) — 10° — but `fa`/`fe` below are
+    /// [`EL_STEP_DEG`](Self::EL_STEP_DEG) — 5° — but `fa`/`fe` below are
     /// continuous, so today a 0.01° move yields a numerically different kernel
     /// and arms a full crossfade. That is precision the measurements do not
     /// contain: below the lattice we are only interpolating measurement noise.
@@ -592,7 +596,7 @@ mod tests {
         let set = HrirSet::synthetic(48_000);
         let mut a = HrirPair::zeroed();
         let mut b = HrirPair::zeroed();
-        // Two directions a hair apart — well inside one lattice step (0.31°).
+        // Two directions a hair apart — well inside one lattice step (0.16°).
         let k1 = set.key_at(31.700, 12.400, Some(32));
         let k2 = set.key_at(31.705, 12.402, Some(32));
         assert_eq!(k1, k2, "directions within a lattice step must share a key");
@@ -658,7 +662,7 @@ mod tests {
     }
 
     /// Snapping must stay within half a lattice step of the true direction —
-    /// the bound that makes the approximation defensible against a 10° grid.
+    /// the bound that makes the approximation defensible against a 5° grid.
     #[test]
     fn snapping_error_stays_under_half_a_lattice_step() {
         let set = HrirSet::synthetic(48_000);
@@ -1105,6 +1109,28 @@ mod tests {
             SyntheticHrir::default().head_radius_m,
             crate::binaural::itd::DEFAULT_HEAD_RADIUS_M
         );
+    }
+
+    /// The grid has the pitch it says. The KEMAR build time is printed for
+    /// the record (85 ms in a release build on a desktop; several seconds in
+    /// a debug test build on a loaded CI runner) and deliberately not gated:
+    /// a wall-clock bound in a debug build under a parallel suite is a coin
+    /// toss, and it runs on the rebuild worker anyway.
+    #[test]
+    fn five_degree_grid_has_1944_nodes() {
+        let t0 = std::time::Instant::now();
+        let set = HrirSet::new(
+            &crate::binaural::measured::MeasuredHrirData::saf_kemar(),
+            48_000,
+        );
+        let elapsed = t0.elapsed();
+        println!(
+            "[measure] 5° KEMAR grid: {} nodes in {elapsed:?}",
+            set.grid.len()
+        );
+        assert_eq!(set.az_count, 72);
+        assert_eq!(set.el_count, 27);
+        assert_eq!(set.grid.len(), 1_944);
     }
 
     #[test]

@@ -399,21 +399,24 @@ impl BinauralMode {
 ///
 /// Interpolating a fresh HRIR pair is the most expensive per-block operation of
 /// the binaural stage, and it is repeated for a move of a hundredth of a degree
-/// — precision the measured grid (10° steps) does not contain. Snapping
+/// — precision the measured grid (5° steps) does not contain. Snapping
 /// directions onto a coarser lattice lets an object that barely turned keep its
 /// kernel, which also leaves no crossfade armed and so halves that block's tap
 /// loop.
 ///
 /// This is a **quality/cost trade, not a free optimisation**: every setting
 /// other than [`Exact`](Self::Exact) changes the rendered output. Measured on
-/// the `drifting` bench at 16 objects, against the binaural golden:
+/// the `drifting` bench at 16 objects, against the binaural golden, when the
+/// grid pitch was 10° (the lattice is a fraction of a cell, so each rung is
+/// now twice as fine in degrees; the residuals below are the 10° figures and
+/// have not been re-measured on the 5° grid):
 ///
-/// | setting    | lattice | peak residual | direct/16 |
-/// |------------|---------|---------------|-----------|
-/// | `exact`    | —       | bit-exact     | 49.3 µs   |
-/// | `fine`     | 0.020°  | −53.3 dBFS    | 47.5 µs   |
-/// | `balanced` | 0.078°  | −43.9 dBFS    | 35.1 µs   |
-/// | `coarse`   | 0.313°  | −30.9 dBFS    | 20.8 µs   |
+/// | setting    | lattice (5° grid) | peak residual (10° grid) | direct/16 |
+/// |------------|-------------------|--------------------------|-----------|
+/// | `exact`    | —                 | bit-exact                | 49.3 µs   |
+/// | `fine`     | 0.0098°           | −53.3 dBFS               | 47.5 µs   |
+/// | `balanced` | 0.039°            | −43.9 dBFS               | 35.1 µs   |
+/// | `coarse`   | 0.156°            | −30.9 dBFS               | 20.8 µs   |
 ///
 /// `exact` is the default: it still skips the rebuild whenever nothing moved
 /// (static objects, and every virtual speaker of the cascaded mode), which
