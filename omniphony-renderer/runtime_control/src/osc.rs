@@ -1354,6 +1354,15 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == osc_contract::CONTROL_BINAURAL_DIFFUSE_FIELD_EQ {
+        if let Some(v) = parse_bool_arg(msg.args.first()) {
+            ctx.renderer.live.write().binaural.diffuse_field_eq = v;
+            effects.mark_dirty = true;
+            effects.log_message = Some(format!("OSC: binaural/diffuse_field_eq -> {v}"));
+        }
+        return Some(effects);
+    }
+
     if addr == osc_contract::CONTROL_BINAURAL_AIR_ABSORPTION {
         if let Some(v) = parse_bool_arg(msg.args.first()) {
             ctx.renderer.live.write().binaural.air_absorption = v;

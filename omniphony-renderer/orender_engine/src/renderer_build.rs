@@ -703,6 +703,9 @@ pub fn seed_control_from_render_config(
                 if let Some(air) = bin.air_absorption {
                     live.binaural.air_absorption = air;
                 }
+                if let Some(eq) = bin.diffuse_field_eq {
+                    live.binaural.diffuse_field_eq = eq;
+                }
                 if let Some(ht) = bin.head_tracking.as_ref() {
                     if let Some(addr) = ht.osc_address.as_ref() {
                         live.binaural.tracking.address = (!addr.is_empty()).then(|| addr.clone());

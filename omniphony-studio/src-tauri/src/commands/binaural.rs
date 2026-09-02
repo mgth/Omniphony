@@ -198,6 +198,17 @@ pub fn control_binaural_reverb_rt60(state: State<SharedState>, value: f32) {
 }
 
 #[tauri::command]
+pub fn control_binaural_diffuse_field_eq(state: State<SharedState>, enable: i32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendInt {
+            address: "/omniphony/control/binaural/diffuse_field_eq".to_string(),
+            value: if enable != 0 { 1 } else { 0 },
+        },
+    );
+}
+
+#[tauri::command]
 pub fn control_binaural_air_absorption(state: State<SharedState>, enable: i32) {
     send_control(
         &state.osc_tx,

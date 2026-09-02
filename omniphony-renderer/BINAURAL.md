@@ -82,6 +82,7 @@ in Studio and over OSC (addresses listed at the end).
 | `reverb.rt60_s` | `0.35` | broadband decay time (s) — living-room-ish, not a hall |
 | `reverb.predelay_ms` | `20` | gap between direct sound and tail start |
 | `air_absorption` | `true` | distance low-pass on the direct path (HF dies with distance — true outdoors too) |
+| `diffuse_field_eq` | `false` | divide the HRIR set by its own diffuse-field response (third-octave smoothed, ±12 dB, 200 Hz–16 kHz) at build time: removes the measured head's tonal signature, keeps every interaural difference |
 
 ## Head tracking
 
@@ -217,6 +218,7 @@ carry no license at all). Accordingly:
 | `/omniphony/control/binaural/reverb/rt60` | `f` (s) | decay time |
 | `/omniphony/control/binaural/reverb/predelay` | `f` (ms) | pre-delay |
 | `/omniphony/control/binaural/air_absorption` | `i\|f` (bool) | distance HF roll-off |
+| `/omniphony/control/binaural/diffuse_field_eq` | `i\|f` (bool) | diffuse-field equalisation of the HRIR set |
 | `/omniphony/control/head/orientation` | `fff` (euler) | set pose directly |
 | `/omniphony/control/head/quat` | `ffff` | set pose directly |
 | `/omniphony/control/head/recenter` | — | current orientation becomes "front" |

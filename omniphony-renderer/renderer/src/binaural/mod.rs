@@ -21,6 +21,7 @@
 //! [`OutputMode`]: crate::live_params::OutputMode
 
 pub mod convolver;
+pub mod diffuse_field;
 pub mod head_pose;
 pub mod hrir;
 pub mod itd;
@@ -388,6 +389,7 @@ fn head_radius_key(head_radius_m: f32) -> u16 {
 struct HrirRequest {
     source: HrirSource,
     head_radius_m: f32,
+    diffuse_field_eq: bool,
 }
 
 /// Receives each build's [`HrirStatus`]; the renderer's owner wires it to the
@@ -407,6 +409,9 @@ struct Grid {
     /// Head radius the grid was built with, in millimetres. Only the
     /// parametric sources depend on it; see [`HrirSource::uses_head_radius`].
     head_radius_mm: u16,
+    /// Whether the grid was diffuse-field equalised (see
+    /// [`diffuse_field`]).
+    diffuse_field_eq: bool,
     /// The source the set really came from (KEMAR after a failed SOFA load).
     effective: HrirSource,
     /// Why `effective` differs from `requested`, when it does.
@@ -434,6 +439,8 @@ pub struct BinauralRenderer {
     source: HrirSource,
     /// Head radius last requested, as a millimetre key.
     head_radius_mm: u16,
+    /// Diffuse-field equalisation last requested.
+    diffuse_field_eq: bool,
     /// Finished grids from the rebuild worker, awaiting the audio-thread swap.
     incoming: std::sync::Arc<arc_swap::ArcSwapOption<Grid>>,
     /// Requests to the long-lived rebuild worker. Dropping the renderer drops
@@ -501,7 +508,12 @@ impl BinauralRenderer {
                         // Free whatever the audio thread has retired, here
                         // rather than there.
                         while retire_rx.try_recv().is_ok() {}
-                        let grid = Self::build_grid(req.source, req.head_radius_m, sample_rate);
+                        let grid = Self::build_grid(
+                            req.source,
+                            req.head_radius_m,
+                            req.diffuse_field_eq,
+                            sample_rate,
+                        );
                         // Reported before the grid is handed over, so the
                         // status is never behind what is being convolved.
                         sink(grid.status());
@@ -513,13 +525,14 @@ impl BinauralRenderer {
         // The initial (default) grid is built synchronously: `new` runs on
         // a control thread, and the renderer must be usable immediately.
         let head_radius_m = itd::DEFAULT_HEAD_RADIUS_M;
-        let initial = Self::build_grid(source.clone(), head_radius_m, sample_rate);
+        let initial = Self::build_grid(source.clone(), head_radius_m, false, sample_rate);
         sink(initial.status());
         Self {
             sample_rate,
             hrir: std::sync::Arc::new(initial),
             source,
             head_radius_mm: head_radius_key(head_radius_m),
+            diffuse_field_eq: false,
             incoming,
             rebuild_tx,
             retire_tx,
@@ -557,28 +570,39 @@ impl BinauralRenderer {
     pub fn rebuild_pending(&self) -> bool {
         self.source != self.hrir.requested
             || (self.source.uses_head_radius() && self.head_radius_mm != self.hrir.head_radius_mm)
+            || self.diffuse_field_eq != self.hrir.diffuse_field_eq
     }
 
     /// Build the grid for `requested`. A SOFA source that cannot be loaded
     /// falls back to the embedded KEMAR set; the grid then records both
     /// sources and the reason, for [`HrirStatus`].
-    fn build_grid(requested: HrirSource, head_radius_m: f32, sample_rate: u32) -> Grid {
+    fn build_grid(
+        requested: HrirSource,
+        head_radius_m: f32,
+        diffuse_field_eq: bool,
+        sample_rate: u32,
+    ) -> Grid {
         let (set, effective, error) = match &requested {
-            HrirSource::Sofa(path) => match Self::load_sofa(path, sample_rate) {
+            HrirSource::Sofa(path) => match Self::load_sofa(path, diffuse_field_eq, sample_rate) {
                 Ok(set) => (set, requested.clone(), None),
                 Err(reason) => {
                     log::warn!(
                         "binaural: SOFA source '{path}' unavailable ({reason}); falling back to SAF KEMAR"
                     );
                     (
-                        Self::build_hrir(&HrirSource::SafKemar, head_radius_m, sample_rate),
+                        Self::build_hrir(
+                            &HrirSource::SafKemar,
+                            head_radius_m,
+                            diffuse_field_eq,
+                            sample_rate,
+                        ),
                         HrirSource::SafKemar,
                         Some(reason),
                     )
                 }
             },
             other => (
-                Self::build_hrir(other, head_radius_m, sample_rate),
+                Self::build_hrir(other, head_radius_m, diffuse_field_eq, sample_rate),
                 other.clone(),
                 None,
             ),
@@ -586,17 +610,22 @@ impl BinauralRenderer {
         Grid {
             requested,
             head_radius_mm: head_radius_key(head_radius_m),
+            diffuse_field_eq,
             effective,
             error,
             set,
         }
     }
 
-    fn build_hrir(source: &HrirSource, head_radius_m: f32, sample_rate: u32) -> HrirSet {
+    fn build_hrir(
+        source: &HrirSource,
+        head_radius_m: f32,
+        diffuse_field_eq: bool,
+        sample_rate: u32,
+    ) -> HrirSet {
+        let build = |p: &dyn hrir::HrirProvider| HrirSet::build(p, sample_rate, diffuse_field_eq);
         match source {
-            HrirSource::Synthetic => {
-                HrirSet::new(&hrir::SyntheticHrir { head_radius_m }, sample_rate)
-            }
+            HrirSource::Synthetic => build(&hrir::SyntheticHrir { head_radius_m }),
             HrirSource::Pinna {
                 preset,
                 d_scale_pct,
@@ -604,57 +633,52 @@ impl BinauralRenderer {
             } => {
                 let scale = *d_scale_pct as f32 / 100.0;
                 let d = preset.d_base().map(|x| x * scale);
-                HrirSet::new(
-                    &ParametricPinnaHrir {
-                        d,
-                        depth: *depth_pct as f32 / 100.0,
-                        head_radius_m,
-                    },
-                    sample_rate,
-                )
+                build(&ParametricPinnaHrir {
+                    d,
+                    depth: *depth_pct as f32 / 100.0,
+                    head_radius_m,
+                })
             }
             HrirSource::Prtf {
                 freq_scale_pct,
                 depth_pct,
-            } => HrirSet::new(
-                &SpagnolPrtfHrir {
-                    depth: *depth_pct as f32 / 100.0,
-                    freq_scale: *freq_scale_pct as f32 / 100.0,
-                    head_radius_m,
-                },
-                sample_rate,
-            ),
-            HrirSource::SafKemar => HrirSet::new(
-                &*MeasuredHrirData::saf_kemar_shared(sample_rate),
-                sample_rate,
-            ),
+            } => build(&SpagnolPrtfHrir {
+                depth: *depth_pct as f32 / 100.0,
+                freq_scale: *freq_scale_pct as f32 / 100.0,
+                head_radius_m,
+            }),
+            HrirSource::SafKemar => build(&*MeasuredHrirData::saf_kemar_shared(sample_rate)),
             // Handled by `build_grid`, which owns the fallback; reaching
             // here means a caller asked for the raw build, so no fallback.
-            HrirSource::Sofa(path) => Self::load_sofa(path, sample_rate).unwrap_or_else(|_| {
-                HrirSet::new(
-                    &*MeasuredHrirData::saf_kemar_shared(sample_rate),
-                    sample_rate,
-                )
-            }),
+            HrirSource::Sofa(path) => Self::load_sofa(path, diffuse_field_eq, sample_rate)
+                .unwrap_or_else(|_| build(&*MeasuredHrirData::saf_kemar_shared(sample_rate))),
         }
     }
 
     /// The set from a SOFA file, or the reason it could not be loaded — the
     /// text that reaches the control surface.
-    fn load_sofa(path: &str, sample_rate: u32) -> Result<HrirSet, String> {
+    fn load_sofa(path: &str, diffuse_field_eq: bool, sample_rate: u32) -> Result<HrirSet, String> {
         if path.trim().is_empty() {
             return Err("no SOFA file selected".to_string());
         }
-        Self::load_sofa_file(path, sample_rate)
+        Self::load_sofa_file(path, diffuse_field_eq, sample_rate)
     }
 
     #[cfg(feature = "sofa")]
-    fn load_sofa_file(path: &str, sample_rate: u32) -> Result<HrirSet, String> {
-        measured::hrir_set_from_sofa(path, sample_rate).map_err(|e| e.to_string())
+    fn load_sofa_file(
+        path: &str,
+        diffuse_field_eq: bool,
+        sample_rate: u32,
+    ) -> Result<HrirSet, String> {
+        measured::hrir_set_from_sofa(path, sample_rate, diffuse_field_eq).map_err(|e| e.to_string())
     }
 
     #[cfg(not(feature = "sofa"))]
-    fn load_sofa_file(_path: &str, _sample_rate: u32) -> Result<HrirSet, String> {
+    fn load_sofa_file(
+        _path: &str,
+        _diffuse_field_eq: bool,
+        _sample_rate: u32,
+    ) -> Result<HrirSet, String> {
         Err("SOFA support not built into this renderer (enable the 'sofa' feature)".to_string())
     }
 
@@ -664,7 +688,12 @@ impl BinauralRenderer {
     /// grid build (allocations, provider renders, SOFA file I/O) never runs
     /// here (issue #153). Frames keep rendering with the previous grid until
     /// the worker's result lands.
-    pub fn ensure_source(&mut self, source: &HrirSource, head_radius_m: f32) {
+    pub fn ensure_source(
+        &mut self,
+        source: &HrirSource,
+        head_radius_m: f32,
+        diffuse_field_eq: bool,
+    ) {
         if let Some(grid) = self.incoming.swap(None) {
             let retired = std::mem::replace(&mut self.hrir, grid);
             // The old grid goes back to the worker to be freed; dropping it
@@ -680,15 +709,18 @@ impl BinauralRenderer {
         // rebuild it for nothing.
         let radius_mm = head_radius_key(head_radius_m);
         let radius_moved = source.uses_head_radius() && radius_mm != self.head_radius_mm;
-        if &self.source != source || radius_moved {
+        let eq_moved = diffuse_field_eq != self.diffuse_field_eq;
+        if &self.source != source || radius_moved || eq_moved {
             self.source = source.clone();
             self.head_radius_mm = radius_mm;
-            // `send` allocates one queue node — rare (a user-initiated source
-            // or radius change), unlike the megabytes+I/O of the build it
-            // replaces.
+            self.diffuse_field_eq = diffuse_field_eq;
+            // `send` allocates one queue node — rare (a user-initiated source,
+            // radius or equalisation change), unlike the megabytes+I/O of the
+            // build it replaces.
             let _ = self.rebuild_tx.send(HrirRequest {
                 source: source.clone(),
                 head_radius_m,
+                diffuse_field_eq,
             });
         } else if radius_mm != self.head_radius_mm {
             // Measured source: remember the radius so a later switch to a
@@ -1419,12 +1451,12 @@ mod tests {
             "the initial build must report the default set"
         );
         let missing = HrirSource::Sofa("/nonexistent/listener.sofa".to_string());
-        r.ensure_source(&missing, itd::DEFAULT_HEAD_RADIUS_M);
+        r.ensure_source(&missing, itd::DEFAULT_HEAD_RADIUS_M, false);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while r.rebuild_pending() {
             assert!(std::time::Instant::now() < deadline, "rebuild never landed");
             std::thread::sleep(std::time::Duration::from_millis(5));
-            r.ensure_source(&missing, itd::DEFAULT_HEAD_RADIUS_M);
+            r.ensure_source(&missing, itd::DEFAULT_HEAD_RADIUS_M, false);
         }
         let last = seen.lock().unwrap().last().cloned().expect("a status");
         assert_eq!(last.requested, missing);
@@ -1441,7 +1473,7 @@ mod tests {
         let mut r = BinauralRenderer::new(48_000);
         let g0 = r.hrir_grid_id();
         // Measured (default KEMAR): a radius change is not a rebuild.
-        r.ensure_source(&HrirSource::SafKemar, 0.10);
+        r.ensure_source(&HrirSource::SafKemar, 0.10, false);
         assert!(
             !r.rebuild_pending(),
             "KEMAR must not rebuild on a radius change"
@@ -1450,11 +1482,11 @@ mod tests {
         // Parametric: it is.
         let settle = |r: &mut BinauralRenderer, radius: f32| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-            r.ensure_source(&HrirSource::Synthetic, radius);
+            r.ensure_source(&HrirSource::Synthetic, radius, false);
             while r.rebuild_pending() {
                 assert!(std::time::Instant::now() < deadline, "rebuild never landed");
                 std::thread::sleep(std::time::Duration::from_millis(5));
-                r.ensure_source(&HrirSource::Synthetic, radius);
+                r.ensure_source(&HrirSource::Synthetic, radius, false);
             }
             r.hrir_grid_id()
         };
@@ -1493,7 +1525,7 @@ mod tests {
         };
 
         let initial_grid = r.hrir_grid_id();
-        r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M);
+        r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M, false);
         // Immediately after the request the old grid must still be active and
         // rendering must work (the build happens on the worker).
         assert_eq!(r.hrir_grid_id(), initial_grid, "swap must be asynchronous");
@@ -1507,7 +1539,7 @@ mod tests {
                 "rebuilt grid never arrived"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
-            r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M);
+            r.ensure_source(&HrirSource::Synthetic, itd::DEFAULT_HEAD_RADIUS_M, false);
         }
         assert!(render(&mut r) > 1e-9, "render broken after grid swap");
     }

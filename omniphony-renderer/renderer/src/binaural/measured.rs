@@ -425,7 +425,11 @@ fn energy_of(h: &[f32; HRIR_LEN]) -> f32 {
 /// shared content of the neighbours. Aligning after the blend cannot undo
 /// that.
 #[cfg(feature = "sofa")]
-pub fn hrir_set_from_sofa(path: &str, sample_rate: u32) -> anyhow::Result<super::hrir::HrirSet> {
+pub fn hrir_set_from_sofa(
+    path: &str,
+    sample_rate: u32,
+    diffuse_field_eq: bool,
+) -> anyhow::Result<super::hrir::HrirSet> {
     use sofar::reader::OpenOptions;
     let mut opts = OpenOptions::new();
     opts.sample_rate(sample_rate as f32);
@@ -435,7 +439,7 @@ pub fn hrir_set_from_sofa(path: &str, sample_rate: u32) -> anyhow::Result<super:
     let filter_len = sofa.filter_len();
     let data = MeasuredHrirData::from_sofa(&sofa, sample_rate)
         .map_err(|e| anyhow::anyhow!("SOFA '{path}': {e}"))?;
-    let set = super::hrir::HrirSet::new(&data, sample_rate);
+    let set = super::hrir::HrirSet::build(&data, sample_rate, diffuse_field_eq);
     check_loaded_set(&set, path, filter_len)?;
     Ok(set)
 }

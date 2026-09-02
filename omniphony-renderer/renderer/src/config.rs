@@ -410,6 +410,9 @@ pub struct BinauralConfig {
     /// Distance low-pass on the direct path (air absorption). Default true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub air_absorption: Option<bool>,
+    /// Diffuse-field equalisation of the HRIR set. Default false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diffuse_field_eq: Option<bool>,
     /// How finely a direction must change before its HRIR is rebuilt:
     /// `"exact"` (default, bit-exact) | `"fine"` | `"balanced"` | `"coarse"`.
     /// Anything but `exact` trades fidelity for speed — see

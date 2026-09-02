@@ -283,6 +283,7 @@ pub fn store_live_into_config(
             extra: Default::default(),
         }),
         air_absorption: Some(live.binaural.air_absorption),
+        diffuse_field_eq: Some(live.binaural.diffuse_field_eq),
         // Written just below through its descriptor, so the skip-if-default
         // rule lives in one place — this wholesale rebuild of the section runs
         // *after* `store_live_to_config` and would otherwise clobber it.

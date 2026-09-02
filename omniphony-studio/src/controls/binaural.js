@@ -304,6 +304,14 @@ export function initBinauralPanel() {
     });
   }
 
+  const dfEq = el('binauralDiffuseFieldEq');
+  if (dfEq) {
+    dfEq.addEventListener('change', (e) => {
+      if (applying) return;
+      send('control_binaural_diffuse_field_eq', { enable: e.target.checked ? 1 : 0 });
+    });
+  }
+
   const airAbs = el('binauralAirAbsorption');
   if (airAbs) {
     airAbs.addEventListener('change', (e) => {
@@ -498,6 +506,8 @@ export function applyBinauralState(b) {
     }
     const air = el('binauralAirAbsorption');
     if (air && typeof b.airAbsorption === 'boolean') air.checked = b.airAbsorption;
+    const eq = el('binauralDiffuseFieldEq');
+    if (eq && typeof b.diffuseFieldEq === 'boolean') eq.checked = b.diffuseFieldEq;
 
     // The renderer's enabled state drives the param blocks' visibility.
     syncBinauralParamVisibility();
