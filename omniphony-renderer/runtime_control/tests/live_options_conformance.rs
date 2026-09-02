@@ -192,6 +192,7 @@ fn snapshot_json(control: &Arc<RendererControl>) -> serde_json::Value {
         "[]",
         "{}",
         control.crossover_info(),
+        &control.binaural_hrir_status(),
     );
     serde_json::from_str(&json).expect("snapshot is valid JSON")
 }

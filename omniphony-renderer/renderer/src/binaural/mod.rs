@@ -318,6 +318,37 @@ pub struct BinauralFrameParams {
     pub hrir_update_lattice: crate::live_params::HrirUpdateLattice,
 }
 
+/// What the last HRIR grid build produced, for the control surface.
+///
+/// `requested` is the source that was asked for, `effective` the one the
+/// grid actually holds — they differ when a SOFA file could not be loaded
+/// and the build fell back to the embedded KEMAR set, in which case `error`
+/// says why. Published by the rebuild worker as each build completes (a few
+/// milliseconds before the audio thread swaps the grid in), so a client
+/// comparing two HRTFs can see that it is not listening to the one it
+/// selected, instead of a log line nobody reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HrirStatus {
+    pub requested: HrirSource,
+    pub effective: HrirSource,
+    pub error: Option<String>,
+}
+
+impl Default for HrirStatus {
+    fn default() -> Self {
+        Self {
+            requested: HrirSource::default(),
+            effective: HrirSource::default(),
+            error: None,
+        }
+    }
+}
+
+/// Receives each build's [`HrirStatus`]; the renderer's owner wires it to the
+/// state broadcast. Called on the rebuild worker (or, for the initial grid,
+/// on the constructing thread), never on the audio thread.
+pub type HrirStatusSink = std::sync::Arc<dyn Fn(HrirStatus) + Send + Sync>;
+
 /// An HRIR grid together with the source it was built from.
 ///
 /// The two travel as one allocation so that swapping a grid in also swaps the
@@ -325,8 +356,23 @@ pub struct BinauralFrameParams {
 /// [`BinauralRenderer::rebuild_pending`]. Keeping them in separate fields would
 /// let the pair disagree, which is exactly what this type exists to prevent.
 struct Grid {
-    source: HrirSource,
+    /// The source that was asked for — what `rebuild_pending` compares.
+    requested: HrirSource,
+    /// The source the set really came from (KEMAR after a failed SOFA load).
+    effective: HrirSource,
+    /// Why `effective` differs from `requested`, when it does.
+    error: Option<String>,
     set: HrirSet,
+}
+
+impl Grid {
+    fn status(&self) -> HrirStatus {
+        HrirStatus {
+            requested: self.requested.clone(),
+            effective: self.effective.clone(),
+            error: self.error.clone(),
+        }
+    }
 }
 
 /// Owns the per-channel binaural DSP state and the HRIR set; renders all input
@@ -361,7 +407,14 @@ pub struct BinauralRenderer {
 }
 
 impl BinauralRenderer {
+    /// A renderer whose build status goes nowhere (tests, hosts without a
+    /// control surface). See [`Self::with_status_sink`].
     pub fn new(sample_rate: u32) -> Self {
+        Self::with_status_sink(sample_rate, std::sync::Arc::new(|_| {}))
+    }
+
+    /// A renderer that reports every HRIR build's [`HrirStatus`] to `sink`.
+    pub fn with_status_sink(sample_rate: u32, sink: HrirStatusSink) -> Self {
         let source = HrirSource::default();
         let incoming: std::sync::Arc<arc_swap::ArcSwapOption<Grid>> =
             std::sync::Arc::new(arc_swap::ArcSwapOption::empty());
@@ -372,6 +425,7 @@ impl BinauralRenderer {
         let (rebuild_tx, rebuild_rx) = std::sync::mpsc::channel::<HrirSource>();
         {
             let slot = std::sync::Arc::clone(&incoming);
+            let sink = std::sync::Arc::clone(&sink);
             std::thread::Builder::new()
                 .name("binaural-hrir-rebuild".into())
                 .spawn(move || {
@@ -379,20 +433,22 @@ impl BinauralRenderer {
                         while let Ok(newer) = rebuild_rx.try_recv() {
                             req = newer;
                         }
-                        let set = Self::build_hrir(&req, sample_rate);
-                        slot.store(Some(std::sync::Arc::new(Grid { source: req, set })));
+                        let grid = Self::build_grid(req, sample_rate);
+                        // Reported before the grid is handed over, so the
+                        // status is never behind what is being convolved.
+                        sink(grid.status());
+                        slot.store(Some(std::sync::Arc::new(grid)));
                     }
                 })
                 .expect("spawn binaural HRIR rebuild worker");
         }
+        // The initial (default) grid is built synchronously: `new` runs on
+        // a control thread, and the renderer must be usable immediately.
+        let initial = Self::build_grid(source.clone(), sample_rate);
+        sink(initial.status());
         Self {
             sample_rate,
-            // The initial (default) grid is built synchronously: `new` runs on
-            // a control thread, and the renderer must be usable immediately.
-            hrir: std::sync::Arc::new(Grid {
-                set: Self::build_hrir(&source, sample_rate),
-                source: source.clone(),
-            }),
+            hrir: std::sync::Arc::new(initial),
             source,
             incoming,
             rebuild_tx,
@@ -422,7 +478,35 @@ impl BinauralRenderer {
     /// and "live" are genuinely different questions. Anything that must
     /// attribute its output to a specific HRIR set has to wait on this.
     pub fn rebuild_pending(&self) -> bool {
-        self.source != self.hrir.source
+        self.source != self.hrir.requested
+    }
+
+    /// Build the grid for `requested`. A SOFA source that cannot be loaded
+    /// falls back to the embedded KEMAR set; the grid then records both
+    /// sources and the reason, for [`HrirStatus`].
+    fn build_grid(requested: HrirSource, sample_rate: u32) -> Grid {
+        let (set, effective, error) = match &requested {
+            HrirSource::Sofa(path) => match Self::load_sofa(path, sample_rate) {
+                Ok(set) => (set, requested.clone(), None),
+                Err(reason) => {
+                    log::warn!(
+                        "binaural: SOFA source '{path}' unavailable ({reason}); falling back to SAF KEMAR"
+                    );
+                    (
+                        Self::build_hrir(&HrirSource::SafKemar, sample_rate),
+                        HrirSource::SafKemar,
+                        Some(reason),
+                    )
+                }
+            },
+            other => (Self::build_hrir(other, sample_rate), other.clone(), None),
+        };
+        Grid {
+            requested,
+            effective,
+            error,
+            set,
+        }
     }
 
     fn build_hrir(source: &HrirSource, sample_rate: u32) -> HrirSet {
@@ -457,36 +541,34 @@ impl BinauralRenderer {
                 &MeasuredHrirData::saf_kemar().resampled_to(sample_rate),
                 sample_rate,
             ),
-            HrirSource::Sofa(path) => match Self::load_sofa(path, sample_rate) {
-                Some(set) => set,
-                None => {
-                    log::warn!(
-                        "binaural: SOFA source '{path}' unavailable; falling back to SAF KEMAR"
-                    );
-                    HrirSet::new(
-                        &MeasuredHrirData::saf_kemar().resampled_to(sample_rate),
-                        sample_rate,
-                    )
-                }
-            },
+            // Handled by `build_grid`, which owns the fallback; reaching
+            // here means a caller asked for the raw build, so no fallback.
+            HrirSource::Sofa(path) => Self::load_sofa(path, sample_rate).unwrap_or_else(|_| {
+                HrirSet::new(
+                    &MeasuredHrirData::saf_kemar().resampled_to(sample_rate),
+                    sample_rate,
+                )
+            }),
         }
+    }
+
+    /// The set from a SOFA file, or the reason it could not be loaded — the
+    /// text that reaches the control surface.
+    fn load_sofa(path: &str, sample_rate: u32) -> Result<HrirSet, String> {
+        if path.trim().is_empty() {
+            return Err("no SOFA file selected".to_string());
+        }
+        Self::load_sofa_file(path, sample_rate)
     }
 
     #[cfg(feature = "sofa")]
-    fn load_sofa(path: &str, sample_rate: u32) -> Option<HrirSet> {
-        match measured::hrir_set_from_sofa(path, sample_rate) {
-            Ok(set) => Some(set),
-            Err(e) => {
-                log::warn!("binaural: failed to load SOFA '{path}': {e}");
-                None
-            }
-        }
+    fn load_sofa_file(path: &str, sample_rate: u32) -> Result<HrirSet, String> {
+        measured::hrir_set_from_sofa(path, sample_rate).map_err(|e| e.to_string())
     }
 
     #[cfg(not(feature = "sofa"))]
-    fn load_sofa(_path: &str, _sample_rate: u32) -> Option<HrirSet> {
-        log::warn!("binaural: SOFA support not built (enable the 'sofa' feature)");
-        None
+    fn load_sofa_file(_path: &str, _sample_rate: u32) -> Result<HrirSet, String> {
+        Err("SOFA support not built into this renderer (enable the 'sofa' feature)".to_string())
     }
 
     /// Track the requested HRIR source. Called once per frame from the audio
@@ -1083,6 +1165,38 @@ mod tests {
             "adding a silent extra source changed the channel rendering — the \
              slot is not as separate as it looks"
         );
+    }
+
+    /// A SOFA file that cannot be loaded must not pretend it was: the status
+    /// names the set actually convolved (KEMAR) and says why, while
+    /// `rebuild_pending` still clears — the request was served, by the
+    /// fallback.
+    #[test]
+    fn a_failed_sofa_load_reports_the_fallback() {
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<HrirStatus>>> = Default::default();
+        let sink: HrirStatusSink = {
+            let seen = std::sync::Arc::clone(&seen);
+            std::sync::Arc::new(move |st| seen.lock().unwrap().push(st))
+        };
+        let mut r = BinauralRenderer::with_status_sink(48_000, sink);
+        assert_eq!(
+            seen.lock().unwrap().last().cloned(),
+            Some(HrirStatus::default()),
+            "the initial build must report the default set"
+        );
+        let missing = HrirSource::Sofa("/nonexistent/listener.sofa".to_string());
+        r.ensure_source(&missing);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while r.rebuild_pending() {
+            assert!(std::time::Instant::now() < deadline, "rebuild never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            r.ensure_source(&missing);
+        }
+        let last = seen.lock().unwrap().last().cloned().expect("a status");
+        assert_eq!(last.requested, missing);
+        assert_eq!(last.effective, HrirSource::SafKemar);
+        let err = last.error.expect("the failure must carry a reason");
+        assert!(!err.is_empty());
     }
 
     /// A source switch must not stall rendering: the frame right after the
