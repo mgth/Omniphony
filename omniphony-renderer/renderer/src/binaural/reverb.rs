@@ -8,10 +8,25 @@
 //! loudspeaker setup) — NOT the acoustics of the scene, which are already in
 //! the mix and pass through untouched.
 //!
-//! Topology: one mono input bus (per-channel sends, summed by the caller) →
-//! pre-delay → 8 mutually-prime delay lines with one-pole HF damping in the
-//! feedback path, mixed by a Householder matrix (O(N) per sample) → two
-//! sign-pattern output taps → interaural-coherence shaping → L/R.
+//! Topology: two input buses (per-channel sends, panned by each source's
+//! lateral position and summed by the caller) → pre-delay → 8 mutually-prime
+//! delay lines with one-pole HF damping in the feedback path, mixed by a
+//! Householder matrix (O(N) per sample) → two sign-pattern output taps →
+//! interaural-coherence shaping → L/R.
+//!
+//! The left bus is injected into the even lines, the right bus into the odd
+//! lines (each with its ear's tap signs, zero-sum, so neither excites the
+//! network's persistent common mode). Laterality is then a matter of
+//! **weights**, not signs — sign patterns alone cannot lateralise a
+//! broadband signal, since delayed copies with opposite signs do not
+//! cancel: each ear reads the lines of its own side at full weight and the
+//! other side's at [`SIDE_WEIGHT`]. On the first lap a source on the right
+//! is therefore heard mostly on the right; the Householder mixing then
+//! spreads it over every line and the tail goes diffuse and balanced. The
+//! weighted rows keep the properties issue #145 relies on: zero-sum, equal
+//! norms, and orthogonal to each other. (A mono bus used to be injected with
+//! alternating signs: the tail was identical for a source on the left and
+//! one on the right.)
 //!
 //! Three properties keep the tail centred and natural (issue #145):
 //! - The two tap sign vectors are zero-sum and mutually orthogonal, so the
@@ -56,6 +71,22 @@ const LENGTHS_48K: [usize; N] = [1031, 1327, 1523, 1801, 2053, 2311, 2617, 2903]
 /// the right ear only (issue #145).
 const SIGNS_L: [f32; N] = [1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0];
 const SIGNS_R: [f32; N] = [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0];
+
+/// Weight with which an ear reads the lines of the *other* side (its own
+/// side's lines are read at 1). 0.35 puts a first-lap source ≈ 9 dB on its
+/// own side; 1 would be the old, side-blind tail.
+const SIDE_WEIGHT: f32 = 0.35;
+
+/// Output weight of line `i` for the left ear (even lines are the left
+/// side) and for the right ear (odd lines).
+#[inline]
+fn side_weights(i: usize) -> (f32, f32) {
+    if i % 2 == 0 {
+        (1.0, SIDE_WEIGHT)
+    } else {
+        (SIDE_WEIGHT, 1.0)
+    }
+}
 
 /// One-pole HF damping coefficient in the feedback path at 48 kHz (higher =
 /// darker tail; HF decays faster than the broadband RT60, like physical
@@ -102,7 +133,8 @@ pub struct Fdn {
     xover_hp: BiquadCoeffs,
     /// States: [mid lp1, mid lp2, L hp1, L hp2, R hp1, R hp2].
     xover_state: [BiquadState; 6],
-    predelay: Vec<f32>,
+    /// Pre-delay ring, one `[left, right]` pair per sample.
+    predelay: Vec<[f32; 2]>,
     pre_pos: usize,
     pre_len: usize,
     sample_rate: u32,
@@ -142,7 +174,7 @@ impl Fdn {
             xover_lp: butterworth2_lp(COHERENCE_XOVER_HZ, sample_rate),
             xover_hp: butterworth2_hp(COHERENCE_XOVER_HZ, sample_rate),
             xover_state: Default::default(),
-            predelay: vec![0.0; pre_cap],
+            predelay: vec![[0.0; 2]; pre_cap],
             pre_pos: 0,
             pre_len: 1,
             sample_rate,
@@ -176,17 +208,20 @@ impl Fdn {
             line.fill(0.0);
         }
         self.damp_state = [0.0; N];
-        self.predelay.fill(0.0);
+        self.predelay.fill([0.0; 2]);
         self.xover_state = Default::default();
         self.cur_delay = self.base_len;
     }
 
-    /// Process one block: read `bus` (mono send sum, one sample per frame) and
-    /// ADD the stereo return × `level` into `out` (interleaved L/R).
-    pub fn process_block(&mut self, bus: &[f32], level: f32, out: &mut [f32]) {
-        debug_assert!(out.len() >= bus.len() * 2);
-        // Normalise the output taps (N lines, ±1 signs) and fold the level in.
-        let out_gain = level / (N as f32).sqrt();
+    /// Process one block: read the two send buses (one sample per frame each,
+    /// `bus_l` and `bus_r` the same length) and ADD the stereo return ×
+    /// `level` into `out` (interleaved L/R).
+    pub fn process_block(&mut self, bus_l: &[f32], bus_r: &[f32], level: f32, out: &mut [f32]) {
+        debug_assert_eq!(bus_l.len(), bus_r.len());
+        debug_assert!(out.len() >= bus_l.len() * 2);
+        // Normalise the output taps (N/2 lines at weight 1, N/2 at
+        // SIDE_WEIGHT, ±1 signs) and fold the level in.
+        let out_gain = level / ((N as f32 / 2.0) * (1.0 + SIDE_WEIGHT * SIDE_WEIGHT)).sqrt();
         let sr = self.sample_rate as f32;
         let depth = MOD_DEPTH_48K * sr / 48_000.0;
         let (xover_lp, xover_hp) = (self.xover_lp, self.xover_hp);
@@ -194,7 +229,8 @@ impl Fdn {
         let pre_cap = self.predelay.len();
 
         let mut offset = 0usize;
-        for chunk in bus.chunks(MOD_UPDATE) {
+        for (chunk_l, chunk_r) in bus_l.chunks(MOD_UPDATE).zip(bus_r.chunks(MOD_UPDATE)) {
+            let chunk = chunk_l;
             // Advance the line LFOs to the end of this chunk and slew each
             // delay linearly toward its new target across the chunk.
             let mut d_step = [0.0f32; N];
@@ -206,7 +242,7 @@ impl Fdn {
                 d_step[i] = (target - self.cur_delay[i]) / chunk.len() as f32;
             }
 
-            for (s, &input) in chunk.iter().enumerate() {
+            for (s, (&in_l, &in_r)) in chunk_l.iter().zip(chunk_r).enumerate() {
                 // Pre-delay (integer, fixed per block). `pre_len < pre_cap`,
                 // so the read is at most one lap behind: a conditional add
                 // wraps it, no division per sample.
@@ -215,8 +251,8 @@ impl Fdn {
                 } else {
                     self.pre_pos + pre_cap - self.pre_len
                 };
-                let x = self.predelay[read];
-                self.predelay[self.pre_pos] = input;
+                let [xl, xr] = self.predelay[read];
+                self.predelay[self.pre_pos] = [in_l, in_r];
                 self.pre_pos += 1;
                 if self.pre_pos == pre_cap {
                     self.pre_pos = 0;
@@ -250,8 +286,9 @@ impl Fdn {
                 let mut l = 0.0f32;
                 let mut r = 0.0f32;
                 for i in 0..N {
-                    l += SIGNS_L[i] * o[i];
-                    r += SIGNS_R[i] * o[i];
+                    let (wl, wr) = side_weights(i);
+                    l += wl * SIGNS_L[i] * o[i];
+                    r += wr * SIGNS_R[i] * o[i];
                 }
                 let mid = (l + r) * std::f32::consts::FRAC_1_SQRT_2;
                 let lo = biquad(
@@ -274,13 +311,19 @@ impl Fdn {
                 out[oidx + 1] += (lo + hr) * out_gain;
 
                 // Householder feedback: H·o = o − (2/N)·Σo, then damping + gain,
-                // plus the (sign-alternated) input injection.
+                // plus the injection: left bus on the even lines with the left
+                // tap's signs, right bus on the odd lines with the right tap's
+                // (see the module doc).
                 let k = 2.0 / N as f32 * sum;
                 for i in 0..N {
                     let fb = o[i] - k;
                     // One-pole low-pass in the loop: HF dies faster than RT60.
                     self.damp_state[i] += (fb - self.damp_state[i]) * damp_mix;
-                    let inject = if i % 2 == 0 { x } else { -x };
+                    let inject = if i % 2 == 0 {
+                        SIGNS_L[i] * xl
+                    } else {
+                        SIGNS_R[i] * xr
+                    };
                     let cap = self.lines[i].len();
                     self.lines[i][self.pos[i]] = self.damp_state[i] * self.fb_gain[i] + inject;
                     self.pos[i] += 1;
@@ -315,11 +358,12 @@ mod tests {
             .collect()
     }
 
+    /// The same send on both buses (a source in the median plane).
     fn render_stereo(bus: &[f32], rt60: f32) -> (Vec<f32>, Vec<f32>) {
         let mut fdn = Fdn::new(48_000);
         fdn.set_params(rt60, 5.0);
         let mut out = vec![0.0f32; bus.len() * 2];
-        fdn.process_block(bus, 1.0, &mut out);
+        fdn.process_block(bus, bus, 1.0, &mut out);
         (
             out.iter().step_by(2).copied().collect(),
             out.iter().skip(1).step_by(2).copied().collect(),
@@ -365,16 +409,75 @@ mod tests {
         assert_eq!(sum_r, 0.0, "SIGNS_R must be zero-sum (common-mode reject)");
         let dot: f32 = SIGNS_L.iter().zip(&SIGNS_R).map(|(a, b)| a * b).sum();
         assert_eq!(dot, 0.0, "tap rows must be orthogonal (decorrelated ears)");
-        // Both rows must also ignore the alternating input-injection pattern,
-        // so neither ear favours the freshly injected signal.
-        for (name, row) in [("SIGNS_L", &SIGNS_L), ("SIGNS_R", &SIGNS_R)] {
-            let d: f32 = row
-                .iter()
-                .enumerate()
-                .map(|(i, v)| if i % 2 == 0 { *v } else { -*v })
-                .sum();
-            assert_eq!(d, 0.0, "{name} must be orthogonal to the injection");
-        }
+        // The injection patterns (left bus: SIGNS_L on the even lines; right
+        // bus: SIGNS_R on the odd lines) must be zero-sum so they do not
+        // excite the common mode.
+        let u_l: Vec<f32> = (0..N)
+            .map(|i| if i % 2 == 0 { SIGNS_L[i] } else { 0.0 })
+            .collect();
+        let u_r: Vec<f32> = (0..N)
+            .map(|i| if i % 2 == 1 { SIGNS_R[i] } else { 0.0 })
+            .collect();
+        assert_eq!(
+            u_l.iter().sum::<f32>(),
+            0.0,
+            "left injection must be zero-sum"
+        );
+        assert_eq!(
+            u_r.iter().sum::<f32>(),
+            0.0,
+            "right injection must be zero-sum"
+        );
+        // The *weighted* output rows keep the three properties: zero-sum,
+        // orthogonal, equal norms — the side weights must not undo #145.
+        let row_l: Vec<f32> = (0..N).map(|i| side_weights(i).0 * SIGNS_L[i]).collect();
+        let row_r: Vec<f32> = (0..N).map(|i| side_weights(i).1 * SIGNS_R[i]).collect();
+        let dot = |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
+        assert!(
+            row_l.iter().sum::<f32>().abs() < 1e-6,
+            "weighted L row not zero-sum"
+        );
+        assert!(
+            row_r.iter().sum::<f32>().abs() < 1e-6,
+            "weighted R row not zero-sum"
+        );
+        assert!(
+            dot(&row_l, &row_r).abs() < 1e-6,
+            "weighted rows not orthogonal"
+        );
+        assert!(
+            (dot(&row_l, &row_l) - dot(&row_r, &row_r)).abs() < 1e-6,
+            "unequal norms"
+        );
+    }
+
+    /// A send on the right bus alone starts its tail in the right ear and
+    /// ends diffuse: early on the right dominates, late on the two ears are
+    /// within a few dB.
+    #[test]
+    fn a_right_send_starts_right_and_ends_diffuse() {
+        let n = 48_000; // 1 s
+        let mut fdn = Fdn::new(48_000);
+        fdn.set_params(0.6, 5.0);
+        let silent = vec![0.0f32; n];
+        // A 100 ms burst, then decay: a continuous one-sided send would keep
+        // feeding fresh first-lap energy on its side, which is right, but
+        // is not what "diffuse late tail" is about.
+        let mut bus_r = noise(n);
+        bus_r[4_800..].fill(0.0);
+        let mut out = vec![0.0f32; n * 2];
+        fdn.process_block(&silent, &bus_r, 1.0, &mut out);
+        let (l, r): (Vec<f32>, Vec<f32>) = (
+            out.iter().step_by(2).copied().collect(),
+            out.iter().skip(1).step_by(2).copied().collect(),
+        );
+        let db = |a: &[f32], b: &[f32]| 20.0 * (rms(a) / rms(b)).log10();
+        // Early: the first 40 ms, within the first lap of every line.
+        let early = db(&r[..1_920], &l[..1_920]);
+        assert!(early > 6.0, "early tail not on the right: {early:+.1} dB");
+        // Late: the steady state, once the mixing has spread both buses.
+        let late = db(&r[24_000..], &l[24_000..]);
+        assert!(late.abs() < 3.0, "late tail not diffuse: {late:+.1} dB");
     }
 
     /// The damping pole follows the rate: at 48 kHz it is the published
@@ -402,7 +505,7 @@ mod tests {
         let mut bus = vec![0.0f32; n];
         bus[0] = 1.0;
         let mut out = vec![0.0f32; n * 2];
-        fdn.process_block(&bus, 1.0, &mut out);
+        fdn.process_block(&bus, &bus, 1.0, &mut out);
 
         // Dense energy well past the early-reflection window…
         let mid = tail_energy(&out, 5_000, 15_000); // ~104…312 ms
@@ -421,7 +524,7 @@ mod tests {
             let mut bus = vec![0.0f32; n];
             bus[0] = 1.0;
             let mut out = vec![0.0f32; n * 2];
-            fdn.process_block(&bus, 1.0, &mut out);
+            fdn.process_block(&bus, &bus, 1.0, &mut out);
             (
                 tail_energy(&out, 4_000, 8_000),
                 tail_energy(&out, 24_000, 28_000),

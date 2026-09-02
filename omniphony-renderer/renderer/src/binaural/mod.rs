@@ -463,8 +463,11 @@ pub struct BinauralRenderer {
     fdn: Fdn,
     /// Whether the tail holds anything since it was last cleared.
     fdn_live: bool,
-    /// Mono reverb send bus, one sample per frame (reused).
-    reverb_bus: Vec<f32>,
+    /// Reverb send buses, one sample per frame each (reused): each source's
+    /// send is panned between them by its lateral position, so the tail
+    /// starts on the source's side before it goes diffuse.
+    reverb_bus_l: Vec<f32>,
+    reverb_bus_r: Vec<f32>,
 }
 
 impl BinauralRenderer {
@@ -533,7 +536,8 @@ impl BinauralRenderer {
             hrir_generation: 0,
             fdn: Fdn::new(sample_rate),
             fdn_live: false,
-            reverb_bus: Vec::with_capacity(REVERB_BUS_CAPACITY),
+            reverb_bus_l: Vec::with_capacity(REVERB_BUS_CAPACITY),
+            reverb_bus_r: Vec::with_capacity(REVERB_BUS_CAPACITY),
         }
     }
 
@@ -758,8 +762,10 @@ impl BinauralRenderer {
         if reverb_active {
             self.fdn.set_params(reverb.rt60_s, reverb.predelay_ms);
             self.fdn_live = true;
-            self.reverb_bus.clear();
-            self.reverb_bus.resize(sample_length, 0.0);
+            self.reverb_bus_l.clear();
+            self.reverb_bus_l.resize(sample_length, 0.0);
+            self.reverb_bus_r.clear();
+            self.reverb_bus_r.resize(sample_length, 0.0);
         } else if self.fdn_live {
             // Switched off: silence the tail in place (what dropping and
             // rebuilding the network used to do, minus the allocation).
@@ -934,6 +940,22 @@ impl BinauralRenderer {
             } else {
                 0.0
             };
+            // Panned between the two send buses by the source's lateral
+            // position (head-relative), at constant total send energy: a
+            // source in the median plane feeds both alike, one at the ear
+            // feeds that side's bus with √2 of the send.
+            let (send_l, send_r) = {
+                let norm = (hx * hx + hy * hy + hz * hz).sqrt();
+                let lat = if norm > 1e-6 {
+                    (hx / norm).clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
+                (
+                    reverb_send * (1.0 - lat).sqrt(),
+                    reverb_send * (1.0 + lat).sqrt(),
+                )
+            };
 
             // ── Early reflections: per-block image-source update ─────────────
             if reflections.enabled {
@@ -1058,7 +1080,8 @@ impl BinauralRenderer {
                     dsp.refl.push(raw_dry);
                 }
                 if reverb_active {
-                    self.reverb_bus[s] += raw * reverb_send;
+                    self.reverb_bus_l[s] += raw * send_l;
+                    self.reverb_bus_r[s] += raw * send_r;
                 }
                 let o = s * 2;
                 out[o] += yl;
@@ -1068,7 +1091,8 @@ impl BinauralRenderer {
 
         // Shared tail: one FDN pass over the summed sends, added to the mix.
         if reverb_active {
-            self.fdn.process_block(&self.reverb_bus, reverb.level, out);
+            self.fdn
+                .process_block(&self.reverb_bus_l, &self.reverb_bus_r, reverb.level, out);
         }
     }
 }
@@ -1817,6 +1841,58 @@ mod tests {
             dull < 0.2 * bright,
             "reflections not dulled: {dull} vs {bright}"
         );
+    }
+
+    /// A source on the right starts its reverb tail on the right: over the
+    /// first lap of the network the right ear leads, and by the late tail
+    /// the two ears are within a few dB.
+    #[test]
+    fn reverb_tail_starts_on_the_source_side() {
+        let n = 48_000;
+        let mut input = vec![0.0f32; n];
+        for (i, v) in input.iter_mut().enumerate().take(480) {
+            *v = ((i * 7919) % 1000) as f32 / 500.0 - 1.0; // a 10 ms burst
+        }
+        let params = BinauralFrameParams {
+            reverb: BinauralReverb {
+                enabled: true,
+                level: 0.3,
+                rt60_s: 0.6,
+                predelay_ms: 5.0,
+            },
+            ..dry_params()
+        };
+        let mut out = vec![0.0f32; n * 2];
+        let mut r = BinauralRenderer::new(48_000);
+        r.render_frame(
+            &input,
+            1,
+            n,
+            &params,
+            &[[3.0, 0.0, 0.0]], // 3 m to the right: send ≈ 2, all of it on the right bus
+            &[ChannelGain::flat(1.0)],
+            &[],
+            None,
+            &mut out,
+        );
+        let ear = |e: usize, from: usize, to: usize| -> f32 {
+            (out[from * 2 + e..to * 2]
+                .iter()
+                .step_by(2)
+                .map(|v| v * v)
+                .sum::<f32>()
+                / (to - from) as f32)
+                .sqrt()
+        };
+        // 30–70 ms: the burst (10 ms) and its HRIR tail are over; the tail's
+        // first lap (pre-delay 5 ms + lines from 21 ms) is what remains.
+        let early = 20.0 * (ear(1, 1_440, 3_360) / ear(0, 1_440, 3_360)).log10();
+        assert!(
+            early > 3.0,
+            "early tail not on the source side: {early:+.1} dB"
+        );
+        let late = 20.0 * (ear(1, 30_000, 48_000) / ear(0, 30_000, 48_000)).log10();
+        assert!(late.abs() < 3.0, "late tail not diffuse: {late:+.1} dB");
     }
 
     #[test]
