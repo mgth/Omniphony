@@ -838,9 +838,12 @@ impl BinauralRenderer {
                 // block — capped at HRIR_LEN samples for large offline blocks
                 // — so the transfer function never jumps at a block boundary
                 // (issue #155).
-                let fade = sample_length.min(HRIR_LEN);
-                dsp.conv_l.set_coeffs_smooth(&self.hrir_scratch.left, fade);
-                dsp.conv_r.set_coeffs_smooth(&self.hrir_scratch.right, fade);
+                let len = self.hrir.set.len();
+                let fade = sample_length.min(len);
+                dsp.conv_l
+                    .set_coeffs_smooth(&self.hrir_scratch.left[..len], fade);
+                dsp.conv_r
+                    .set_coeffs_smooth(&self.hrir_scratch.right[..len], fade);
             }
             dsp.delay_l.set_target_ms(itd_l * 1000.0, self.sample_rate);
             dsp.delay_r.set_target_ms(itd_r * 1000.0, self.sample_rate);
