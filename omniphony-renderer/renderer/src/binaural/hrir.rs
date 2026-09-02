@@ -320,6 +320,31 @@ impl HrirProvider for ParametricPinnaHrir {
     }
 }
 
+/// Taps over which a response that runs past the kernel length is faded
+/// out before the cut (a raised cosine), instead of being cut dead. A hard
+/// cut where the response is still non-zero is a step, and a step is
+/// spectral ripple; eight taps at 48 kHz is 0.17 ms, well inside the tail.
+const TRUNCATION_FADE_TAPS: usize = 8;
+
+/// Zero `h` from `len` on. If the response actually extended past `len`,
+/// its last [`TRUNCATION_FADE_TAPS`] taps before the cut are shaped by a
+/// raised cosine first; a response that was already silent there is left
+/// bit-for-bit alone (the embedded KEMAR set is exactly the kernel length
+/// at 48 kHz, so it is unaffected).
+fn truncate_with_fade(h: &mut [f32; HRIR_LEN], len: usize) {
+    let cut = h[len..].iter().any(|&x| x != 0.0);
+    h[len..].fill(0.0);
+    if !cut {
+        return;
+    }
+    let fade = TRUNCATION_FADE_TAPS.min(len);
+    for j in 0..fade {
+        // From ≈1 at the first faded tap to ≈0 at the last.
+        let w = 0.5 * (1.0 + (std::f32::consts::PI * (j + 1) as f32 / (fade + 1) as f32).cos());
+        h[len - fade + j] *= w;
+    }
+}
+
 /// A direction-indexed grid of HRIR pairs with bilinear (az × el) interpolation.
 ///
 /// Built once from an [`HrirProvider`]; queried per object per frame on the
@@ -390,8 +415,8 @@ impl HrirSet {
                 // Providers fill the capacity; the set is what gets
                 // convolved, so truncate here — before the level
                 // normalization, which must weigh the taps in use.
-                pair.left[len..].fill(0.0);
-                pair.right[len..].fill(0.0);
+                truncate_with_fade(&mut pair.left, len);
+                truncate_with_fade(&mut pair.right, len);
                 grid.push(pair);
             }
         }
@@ -1131,6 +1156,32 @@ mod tests {
         assert_eq!(set.az_count, 72);
         assert_eq!(set.el_count, 27);
         assert_eq!(set.grid.len(), 1_944);
+    }
+
+    /// A response that runs past the kernel length is faded over its last
+    /// taps before the cut; one that was already silent there is untouched.
+    #[test]
+    fn truncation_fades_only_what_it_cuts() {
+        let len = 128;
+        // Runs to the capacity: faded.
+        let mut long = [1.0f32; HRIR_LEN];
+        truncate_with_fade(&mut long, len);
+        assert!(long[len..].iter().all(|&x| x == 0.0));
+        assert_eq!(long[len - TRUNCATION_FADE_TAPS - 1], 1.0);
+        let tail = &long[len - TRUNCATION_FADE_TAPS..len];
+        assert!(
+            tail.windows(2).all(|w| w[1] < w[0]),
+            "fade not monotonic: {tail:?}"
+        );
+        assert!(tail[0] > 0.9 && *tail.last().unwrap() < 0.1, "{tail:?}");
+        // Silent past the cut: bit-identical.
+        let mut short = [0.0f32; HRIR_LEN];
+        for (i, v) in short.iter_mut().enumerate().take(len) {
+            *v = (i as f32 * 0.37).sin();
+        }
+        let before = short;
+        truncate_with_fade(&mut short, len);
+        assert_eq!(short, before);
     }
 
     #[test]
