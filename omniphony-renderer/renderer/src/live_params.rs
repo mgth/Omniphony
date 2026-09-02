@@ -495,7 +495,8 @@ pub struct BinauralReflections {
     pub enabled: bool,
     /// Room extents in metres: [width (x), depth (y), height (z)].
     pub room_size_m: [f32; 3],
-    /// Per-reflection wall gain (0..1) applied on top of the 1/d law.
+    /// Per-reflection wall gain (0..1) applied on top of the distance law
+    /// (`d_source / d_image`, the image's 1/d relative to the direct sound).
     pub level: f32,
 }
 
@@ -514,8 +515,9 @@ impl Default for BinauralReflections {
 /// Late-reverb (FDN) settings for the binaural stage. Models the LISTENING
 /// room — a small, dry, constant space like the room around a loudspeaker
 /// setup — not the scene's acoustics (those are in the content and pass
-/// through). The reverberant field level is distance-independent while the
-/// direct falls as 1/d, so the direct/reverb ratio carries distance.
+/// through). The direct sound keeps its authored level at any distance, so
+/// the per-source send grows in proportion to the distance instead: the
+/// direct/reverb ratio carries distance the way it does in a room.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinauralReverb {
     /// Master enable for the late tail.
@@ -558,8 +560,9 @@ pub struct BinauralLiveParams {
     pub mode: BinauralMode,
     /// Headphone L/R output gain/mute (dedicated — see [`EarLiveParams`]).
     pub ears: [EarLiveParams; 2],
-    /// Metres represented by one ADM unit; scales physical distance for the
-    /// 1/d gain and ITD/ILD without altering object directions.
+    /// Metres represented by one ADM unit; scales the physical distance the
+    /// distance cues see (reflections, reverb send, air absorption) without
+    /// altering object directions or the direct level.
     pub unit_scale_m: f32,
     /// Effective head radius (m) for the Woodworth ITD model — half the
     /// inter-ear distance. Per-listener fit; default is KEMAR-ish.

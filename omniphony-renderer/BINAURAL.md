@@ -11,11 +11,19 @@ Per channel, per block:
 ```
 position → rotate(head pose) → (azimuth, elevation, distance)
          → air-absorption low-pass (cutoff falls with distance)
-         → 1/d gain → per-ear ITD delay → per-ear HRIR convolution
-         → + 6 first-order shoebox reflections (delay + ILD pan per ear)
-         → + shared late-reverb tail (stereo FDN, distance-driven DRR)
+         → per-ear ITD delay → per-ear HRIR convolution   (authored level, no 1/d)
+         → + 6 first-order shoebox reflections (delay + ILD pan per ear,
+             level relative to the direct: d_source / d_image)
+         → + shared late-reverb tail (stereo FDN, send ∝ distance)
          → mix into [L, R]
 ```
+
+The direct path applies **no distance attenuation**: object and bed levels
+are authored by the mixer (Atmos object gain) and are respected as such.
+Distance is carried by the *cues* around the direct sound instead — the
+reflections and the reverb send are expressed relative to it, so their ratio
+to the direct sound falls with distance the way it does in a room, and the
+air absorption dulls far sources.
 
 Measured cost: ~0.09 ms per 40-sample block for a 16-channel Atmos stream
 (~11 % of the realtime budget), reflections included.
@@ -129,14 +137,23 @@ directly instead.
   level** and **Reflection level** by ear — too high colours dialogue and
   sounds echoey, too low collapses back into the head.
 - **Distance**: past ~1 m the brain judges distance mostly from the
-  direct/reverb ratio, not loudness. The reverberant field is
-  distance-independent (like a real room) while the direct falls as 1/d, so
-  raising `unit_scale_m` makes far objects genuinely *sound* far. Air
-  absorption adds the matching "far sounds dull" high-frequency roll-off
-  (bypassed within 3 m, ~14 kHz cutoff at 10 m, ~5 kHz at 30 m).
+  direct/reverb ratio, not loudness. The direct sound keeps its authored
+  level at any distance (there is no 1/d on it — the mixer set that level),
+  so the renderer moves the ratio from the other side: the reverb send grows
+  in proportion to the distance (unity at 1.5 m, capped at 6 m) and each
+  early reflection is levelled relative to the direct sound
+  (`d_source / d_image`), exactly as if the direct had fallen as 1/d and
+  been brought back up. Raising `unit_scale_m` therefore makes far objects
+  genuinely *sound* far without making them quieter. Air absorption adds
+  the matching "far sounds dull" high-frequency roll-off (bypassed within
+  3 m, ~14 kHz cutoff at 10 m, ~5 kHz at 30 m).
 - **Scale**: `unit_scale_m` sets how far "1 ADM unit" is in metres. At the
   default 1.0 the far wall of the mix is one metre from your nose — try 3–4
-  for a room-sized stage.
+  for a room-sized stage. Size the reflection room to contain the scene
+  (half-extents ≥ `unit_scale_m`, i.e. 6–8 m wide and deep for a scale of
+  3–4): the image-source model pulls a source that sits outside the room
+  back inside before mirroring it, which keeps the geometry valid but puts
+  the reflections where the wall is, not where the object is.
 - **ITD fit**: `head_radius_m` defaults to a KEMAR-ish 8.75 cm. If
   localisation feels smeared, measure ear-to-ear width and set half of it.
 - **HRTF**: the embedded measured KEMAR (`saf`) is the best generic default —
