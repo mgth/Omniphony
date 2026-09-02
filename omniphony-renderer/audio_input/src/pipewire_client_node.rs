@@ -1,6 +1,7 @@
 use crate::InputControl;
 use crate::bridge::LiveBridgeIngestRuntime;
 use crate::pipewire::PipewireBridgeStreamConfig;
+use crate::pipewire_node_conflict::warn_on_duplicate_live_input_node;
 use crate::pipewire_pods::{
     build_pipewire_bridge_buffers_pod, build_pipewire_bridge_enum_port_config_pod,
     build_pipewire_bridge_format_pod, build_pipewire_bridge_io_buffers_pod,
@@ -136,6 +137,11 @@ pub fn run_pipewire_bridge_client_node_backend(
     let core = context
         .connect_rc(None)
         .map_err(|e| anyhow!("Failed to connect to PipeWire core: {e:?}"))?;
+
+    // Same check as the pw_stream backend: a foreign sink under this name
+    // hijacks the default-sink resolution. One registry round trip on this
+    // main loop before the client node is created; warn only, never rename.
+    warn_on_duplicate_live_input_node(&mainloop, &core, input_control.as_ref(), &config.node_name);
 
     let requested_latency_frames =
         ((config.target_latency_ms as u64 * config.sample_rate_hz as u64) / 1000).max(1) as u32;

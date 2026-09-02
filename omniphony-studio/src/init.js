@@ -687,13 +687,15 @@ export function applyInitState(payload) {
   updateOutputChannelMappingUI();
   updateInputControlUI();
   renderDrcUI();
-  // Auto-surface the Audio Input section on a bridge-class error, but only on
-  // the error's rising edge: this runs on EVERY state snapshot, and while the
-  // error persists it would otherwise reopen the panel each time the user
-  // closes it (re-armed per connection in setOscStatus).
+  // Auto-surface the Audio Input section on a bridge-class error or on a
+  // duplicate live-input sink (another renderer already publishing the node
+  // name), but only on the error's rising edge: this runs on EVERY state
+  // snapshot, and while the error persists it would otherwise reopen the
+  // panel each time the user closes it (re-armed per connection in
+  // setOscStatus).
   if (
     app.inputError
-    && /bridge path missing|no bridge plugin found|render\.bridge_path/i.test(app.inputError)
+    && /bridge path missing|no bridge plugin found|render\.bridge_path|duplicate PipeWire sink/i.test(app.inputError)
   ) {
     if (app.lastAutoOpenedInputError !== app.inputError) {
       app.lastAutoOpenedInputError = app.inputError;
