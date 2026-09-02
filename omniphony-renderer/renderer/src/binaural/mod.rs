@@ -734,7 +734,18 @@ impl BinauralRenderer {
                     pos[1] as f32 * unit_scale_m,
                     pos[2] as f32 * unit_scale_m,
                 ];
-                let images = reflections::first_order_images(phys, reflections.room_size_m);
+                // The image sources are mirrors of the source *as pulled
+                // inside the room*, so the direct-path reference for their
+                // relative delays is that clamped source, not the raw one.
+                // With the raw distance, a source outside the room (any
+                // `unit_scale_m` ≥ 2 with the default room) had every
+                // reflection arrive early by the excess, and the near wall's
+                // at zero delay — a coincident copy of the direct sound.
+                let src_m = reflections::clamp_into_room(phys, reflections.room_size_m);
+                let d_src = (src_m[0] * src_m[0] + src_m[1] * src_m[1] + src_m[2] * src_m[2])
+                    .sqrt()
+                    .max(MIN_DISTANCE_M);
+                let images = reflections::first_order_images(src_m, reflections.room_size_m);
                 let c_sound = reflections::speed_of_sound();
                 for (i, img) in images.iter().enumerate() {
                     let d_img = (img[0] * img[0] + img[1] * img[1] + img[2] * img[2])
@@ -742,7 +753,7 @@ impl BinauralRenderer {
                         .max(MIN_DISTANCE_M);
                     // Relative to the direct path so the direct sound keeps
                     // zero added latency (A/V sync unchanged).
-                    let rel_delay_s = (d_img - dist_m).max(0.0) / c_sound;
+                    let rel_delay_s = (d_img - d_src).max(0.0) / c_sound;
                     // Head-relative direction → broadband ILD pan (no HRIR
                     // conv per reflection: one tap + one multiply per ear).
                     let ih = head_pose.rotate([img[0] as f64, img[1] as f64, img[2] as f64]);
@@ -1167,6 +1178,62 @@ mod tests {
             "reflections produced no late energy: {}",
             tail(&wet)
         );
+    }
+
+    /// A source outside the room (unit scale 3, default 4 m width) must not
+    /// get a reflection on top of its direct sound: the first samples of
+    /// the render carry the direct HRIR only, exactly as for the same
+    /// source with reflections off, and the wall copies land later.
+    #[test]
+    fn reflections_of_an_outside_source_do_not_coincide_with_the_direct() {
+        let n = 2_048;
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+        let pos = [[1.0, 0.0, 0.0]]; // 3 m to the right at unit scale 3
+        let render = |enabled: bool| -> Vec<f32> {
+            let params = BinauralFrameParams {
+                unit_scale_m: 3.0,
+                reflections: BinauralReflections {
+                    enabled,
+                    room_size_m: [4.0, 5.0, 2.7],
+                    level: 0.5,
+                },
+                ..dry_params()
+            };
+            let mut out = vec![0.0f32; n * 2];
+            let mut r = BinauralRenderer::new(48_000);
+            r.render_frame(
+                &input,
+                1,
+                n,
+                &params,
+                &pos,
+                &[ChannelGain::flat(1.0)],
+                &[],
+                None,
+                &mut out,
+            );
+            out
+        };
+        let (dry, wet) = (render(false), render(true));
+        // The near wall's image sits 2·margin = 0.1 m beyond the clamped
+        // source: 14 samples at 48 kHz. Before that, wet == dry.
+        let head = 10 * 2;
+        let diff: f32 = dry[..head]
+            .iter()
+            .zip(&wet[..head])
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(
+            diff < 1e-6,
+            "a reflection coincides with the direct sound: {diff}"
+        );
+        let later: f32 = wet[head..]
+            .iter()
+            .zip(&dry[head..])
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum();
+        assert!(later > 1e-6, "no reflections at all: {later}");
     }
 
     #[test]
