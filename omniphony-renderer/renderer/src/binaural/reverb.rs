@@ -9,7 +9,7 @@
 //! the mix and pass through untouched.
 //!
 //! Topology: two input buses (per-channel sends, panned by each source's
-//! lateral position and summed by the caller) → pre-delay → 8 mutually-prime
+//! lateral position and summed by the caller) → pre-delay → 16 mutually-prime
 //! delay lines with one-pole HF damping in the feedback path, mixed by a
 //! Householder matrix (O(N) per sample) → two sign-pattern output taps →
 //! interaural-coherence shaping → L/R.
@@ -34,7 +34,7 @@
 //!   mixer preserves) reaches neither ear unevenly, and the two returns are
 //!   decorrelated with equal broadband energy.
 //! - The line lengths are slowly modulated (staggered sub-Hz LFOs, ~±0.05 %
-//!   pitch). A sparse 8-line FDN has a comb-like per-tap response: a
+//!   pitch). A sparse FDN has a comb-like per-tap response: a
 //!   sustained tone parks on one tap's peak and the other's notch and reads
 //!   as a hard L/R bias (measured −7.7 dB on a 440+660 Hz signal).
 //!   Modulation sweeps each mode so tones time-average the combs; it also
@@ -56,12 +56,16 @@ use crate::crossover::filter::{
     BiquadCoeffs, BiquadState, biquad, butterworth2_hp, butterworth2_lp,
 };
 
-/// Number of delay lines.
-const N: usize = 8;
+/// Number of delay lines. Sixteen: dense enough that a sustained tone no
+/// longer parks on one tap's comb peak and the other's notch (issue #145),
+/// which eight lines only managed under a deep, audible modulation.
+const N: usize = 16;
 
 /// Delay line lengths in samples at 48 kHz (mutually prime, ~21…62 ms),
 /// scaled linearly for other rates.
-const LENGTHS_48K: [usize; N] = [1031, 1327, 1523, 1801, 2053, 2311, 2617, 2903];
+const LENGTHS_48K: [usize; N] = [
+    1031, 1129, 1201, 1327, 1409, 1523, 1613, 1801, 1907, 2053, 2203, 2311, 2467, 2617, 2749, 2903,
+];
 
 /// Output tap sign patterns for the two returns. Both rows are zero-sum
 /// (rejects the FDN's persistent common mode — the all-ones vector is a
@@ -69,8 +73,16 @@ const LENGTHS_48K: [usize; N] = [1031, 1327, 1523, 1801, 2053, 2311, 2617, 2903]
 /// orthogonal to the alternating input-injection pattern. An earlier
 /// `SIGNS_R` had sum +2 and dot(L,R) = −2, which leaked the common mode into
 /// the right ear only (issue #145).
-const SIGNS_L: [f32; N] = [1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0];
-const SIGNS_R: [f32; N] = [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0];
+/// Both rows are the eight-line patterns of #145 laid over each side of the
+/// network — line `2k` and line `2k+1` share pattern index `k` — so every
+/// property holds on the even lines and on the odd lines separately, which
+/// is what the side weights and the per-side injection need.
+const SIGNS_L: [f32; N] = [
+    1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0,
+];
+const SIGNS_R: [f32; N] = [
+    1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0,
+];
 
 /// Weight with which an ear reads the lines of the *other* side (its own
 /// side's lines are read at 1). 0.35 puts a first-lap source ≈ 9 dB on its
@@ -96,14 +108,27 @@ fn side_weights(i: usize) -> (f32, f32) {
 const DAMPING_48K: f32 = 0.35;
 
 /// Peak delay-line modulation depth in samples at 48 kHz (scaled with the
-/// engine rate). ±24 samples spreads each mode by ~±1–2 %, enough for a
-/// sustained mid/high tone to average over the comb period; peak pitch
-/// deviation is depth·2π·rate/sr ≈ 0.4 % (~7 cents) on the fastest line.
-const MOD_DEPTH_48K: f32 = 24.0;
+/// engine rate). With sixteen lines the combs are dense enough that the
+/// #145 tone signal sits at +0.5 dB of L/R bias with no modulation at all,
+/// and — measured by the `tonal_bias_sweep_over_modulation_depth`
+/// instrumentation — the bias *grows* with depth once the side weights read
+/// the two halves of the network differently. What is left is the
+/// classic reason to modulate at all: breaking the periodicity of the
+/// tail. ±3 samples does that at a peak pitch deviation of
+/// depth·2π·rate/sr ≈ 0.04 % (under a cent) on the fastest line; the ±24
+/// the eight-line network needed for balance (~7 cents) were audible as
+/// chorus on held notes.
+const MOD_DEPTH_48K: f32 = 3.0;
+
+/// Largest depth the lines are allocated for (samples at 48 kHz): the
+/// production depth and anything the sweep instrumentation tries must fit.
+const MOD_DEPTH_CAPACITY_48K: f32 = 32.0;
 
 /// Per-line modulation rates in Hz, mutually detuned so no two lines
 /// breathe in step.
-const MOD_RATES_HZ: [f32; N] = [0.31, 0.41, 0.53, 0.67, 0.79, 0.97, 1.13, 1.31];
+const MOD_RATES_HZ: [f32; N] = [
+    0.23, 0.29, 0.31, 0.37, 0.41, 0.43, 0.47, 0.53, 0.59, 0.61, 0.67, 0.71, 0.79, 0.83, 0.97, 1.13,
+];
 
 /// Modulation targets are recomputed every this many samples and slewed
 /// linearly in between, making the tail independent of the caller's block
@@ -141,12 +166,14 @@ pub struct Fdn {
     rt60_cached: f32,
     /// `1 − damping` for this rate, applied per line per sample.
     damp_mix: f32,
+    /// Peak line modulation depth in samples at this rate.
+    mod_depth: f32,
 }
 
 impl Fdn {
     pub fn new(sample_rate: u32) -> Self {
         let scale = sample_rate as f32 / 48_000.0;
-        let margin = (MOD_DEPTH_48K * scale).ceil() as usize + 2;
+        let margin = (MOD_DEPTH_CAPACITY_48K * scale).ceil() as usize + 2;
         let mut base_len = [0.0f32; N];
         let lines: Vec<Vec<f32>> = LENGTHS_48K
             .iter()
@@ -180,7 +207,16 @@ impl Fdn {
             sample_rate,
             rt60_cached: 0.0,
             damp_mix: 1.0 - DAMPING_48K.powf(48_000.0 / sample_rate as f32),
+            mod_depth: MOD_DEPTH_48K * scale,
         }
+    }
+
+    /// Override the modulation depth (samples at 48 kHz, scaled to the
+    /// rate). Test instrumentation for the tonal-balance sweep; the
+    /// production depth is [`MOD_DEPTH_48K`].
+    #[cfg(test)]
+    fn set_modulation_depth_48k(&mut self, depth: f32) {
+        self.mod_depth = depth.min(MOD_DEPTH_CAPACITY_48K) * self.sample_rate as f32 / 48_000.0;
     }
 
     /// Per-block parameter update: RT60 (s) → per-line feedback gains, and the
@@ -223,7 +259,7 @@ impl Fdn {
         // SIDE_WEIGHT, ±1 signs) and fold the level in.
         let out_gain = level / ((N as f32 / 2.0) * (1.0 + SIDE_WEIGHT * SIDE_WEIGHT)).sqrt();
         let sr = self.sample_rate as f32;
-        let depth = MOD_DEPTH_48K * sr / 48_000.0;
+        let depth = self.mod_depth;
         let (xover_lp, xover_hp) = (self.xover_lp, self.xover_hp);
         let damp_mix = self.damp_mix;
         let pre_cap = self.predelay.len();
@@ -555,6 +591,36 @@ mod tests {
             bias_db.abs() < 0.5,
             "broadband L/R bias too large: {bias_db:+.2} dB"
         );
+    }
+
+    /// Instrumentation, not a gate: the tonal L/R bias of the #145 signal
+    /// for a range of modulation depths, to choose the production depth
+    /// from data rather than by feel. Run with `-- --ignored --nocapture`.
+    /// Last sweep (16 lines, side weight 0.35): +0.47 dB at 0, +0.96 at ±4,
+    /// +1.51 at ±6, +2.11 at ±8, +2.65 at ±10, +3.03 at ±12.
+    #[test]
+    #[ignore = "instrumentation: prints the bias per depth, asserts nothing"]
+    fn tonal_bias_sweep_over_modulation_depth() {
+        let n = 48_000 * 6;
+        let bus: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 48_000.0;
+                0.5 * (std::f32::consts::TAU * 440.0 * t).sin()
+                    + 0.44 * (std::f32::consts::TAU * 660.0 * t).sin()
+            })
+            .collect();
+        for depth in [0.0f32, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0, 24.0, 32.0] {
+            let mut fdn = Fdn::new(48_000);
+            fdn.set_params(0.3, 5.0);
+            fdn.set_modulation_depth_48k(depth);
+            let mut out = vec![0.0f32; n * 2];
+            fdn.process_block(&bus, &bus, 1.0, &mut out);
+            let l: Vec<f32> = out.iter().step_by(2).copied().collect();
+            let r: Vec<f32> = out.iter().skip(1).step_by(2).copied().collect();
+            let skip = 48_000;
+            let bias_db = 20.0 * (rms(&l[skip..]) / rms(&r[skip..])).log10();
+            println!("[measure] tonal bias at depth ±{depth:>4.1}: {bias_db:+.2} dB");
+        }
     }
 
     /// The issue #145 signature: sustained tones (the demo asset's 440 Hz
