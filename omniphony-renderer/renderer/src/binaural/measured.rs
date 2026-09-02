@@ -147,9 +147,31 @@ impl MeasuredHrirData {
         !self.tri.is_empty()
     }
 
-    /// The embedded SAF KEMAR set.
+    /// The embedded SAF KEMAR set, freshly parsed (minimum-phase
+    /// reconstruction and triangulation included). Prefer
+    /// [`saf_kemar_shared`](Self::saf_kemar_shared) unless an owned set is
+    /// needed.
     pub fn saf_kemar() -> Self {
         Self::from_blob(SAF_KEMAR_BLOB).expect("embedded SAF KEMAR blob is valid")
+    }
+
+    /// The embedded SAF KEMAR set at `sample_rate`, parsed once per process
+    /// and rate and shared. Parsing the blob is the expensive part of a
+    /// KEMAR grid build — 1 672 minimum-phase reconstructions, the
+    /// resampling, the hull of 836 directions — and it is identical every
+    /// time; only the grid interpolation depends on anything else. A
+    /// switch back to KEMAR, or the fallback after a failed SOFA load, then
+    /// costs the interpolation alone.
+    pub fn saf_kemar_shared(sample_rate: u32) -> std::sync::Arc<Self> {
+        static CACHE: std::sync::Mutex<Vec<(u32, std::sync::Arc<MeasuredHrirData>)>> =
+            std::sync::Mutex::new(Vec::new());
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, set)) = cache.iter().find(|(fs, _)| *fs == sample_rate) {
+            return std::sync::Arc::clone(set);
+        }
+        let set = std::sync::Arc::new(Self::saf_kemar().resampled_to(sample_rate));
+        cache.push((sample_rate, std::sync::Arc::clone(&set)));
+        set
     }
 
     pub fn len(&self) -> usize {
