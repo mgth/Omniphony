@@ -221,6 +221,9 @@ carry no license at all). Accordingly:
 | `/omniphony/control/head/tracking/invert` | `i` (bool) | mirror the rotation |
 
 State broadcast: the `binaural` object inside `/omniphony/state/renderer`
-(10 Hz when the pose moves), plus a dedicated lightweight
+(10 Hz when the pose moves) — including `hrirEffective`, the set actually
+being convolved, and `hrirError`: when a SOFA file cannot be loaded the
+renderer falls back to the embedded KEMAR set, and these two say so
+(`hrirSource` keeps the request) — plus a dedicated lightweight
 `/omniphony/state/head_pose` (`ffff` = w x y z, ~30 Hz) for low-latency pose
 consumers such as the Studio 3D head.

@@ -125,6 +125,7 @@ pub fn build_renderer_state_json(
     fixed_channel_catalog_json: &str,
     fixed_channel_processing_json: &str,
     crossover_info: Option<renderer::live_params::CrossoverInfo>,
+    hrir_status: &renderer::binaural::HrirStatus,
 ) -> String {
     let effective_backend = active_topology.backend.backend_id();
     let effective_evaluation_mode = active_topology.backend.evaluation_mode().as_str();
@@ -274,6 +275,11 @@ pub fn build_renderer_state_json(
                 renderer::binaural::HrirSource::Sofa(p) => p.as_str(),
                 _ => "",
             },
+            // What is actually convolved: differs from `hrirSource` when the
+            // SOFA file failed to load and the build fell back to KEMAR, in
+            // which case `hrirError` says why.
+            "hrirEffective": hrir_status.effective.as_str(),
+            "hrirError": hrir_status.error,
             "headPose": {
                 "w": live.binaural.head_pose.w,
                 "x": live.binaural.head_pose.x,
@@ -440,6 +446,7 @@ pub fn build_live_state_bundle(
         &control.fixed_channel_catalog(),
         &control.fixed_channel_processing(),
         control.crossover_info(),
+        &control.binaural_hrir_status(),
     );
 
     let mut messages = vec![

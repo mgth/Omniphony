@@ -1515,6 +1515,12 @@ pub struct RendererControl {
     /// Reset to `false` by a successful `/omniphony/control/save_config`.
     pub config_dirty: AtomicBool,
 
+    /// What the last binaural HRIR grid build produced: the requested
+    /// source, the one actually in use, and the error when they differ (a
+    /// SOFA file that failed to load falls back to the embedded KEMAR set).
+    /// Written by the renderer's rebuild worker, read by the state snapshot.
+    pub binaural_hrir_status: ArcSwap<crate::binaural::HrirStatus>,
+
     /// Bumped whenever per-object live params change.
     /// Render sample rate, published so control-thread work that has to produce
     /// samples — loading a test clip, which is resampled once on the way in —
@@ -1686,6 +1692,7 @@ impl RendererControl {
             recomputing: AtomicBool::new(false),
             recompute_pending: AtomicBool::new(false),
             config_dirty: AtomicBool::new(false),
+            binaural_hrir_status: ArcSwap::from_pointee(crate::binaural::HrirStatus::default()),
             object_params_generation: std::sync::atomic::AtomicU64::new(1),
             speaker_params_generation: std::sync::atomic::AtomicU64::new(1),
             live_state_generation: std::sync::atomic::AtomicU64::new(0),
@@ -2027,6 +2034,11 @@ impl RendererControl {
     pub fn mark_speaker_params_dirty(&self) {
         self.speaker_params_generation
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The last binaural HRIR build's outcome (see the field).
+    pub fn binaural_hrir_status(&self) -> Arc<crate::binaural::HrirStatus> {
+        self.binaural_hrir_status.load_full()
     }
 
     /// Signal that live state changed and should be re-broadcast to clients.
