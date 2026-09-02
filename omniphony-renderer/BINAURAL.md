@@ -102,7 +102,9 @@ the phone strapped to the headband:
    "front".
 5. If the scene rotates the wrong way, toggle **Invert rotation**.
 
-`smoothing` (0–0.99, default 0.2) trades a little latency for pose stability;
+`smoothing` (0–0.99, default 0.2) trades a little latency for pose stability.
+It is a time constant, defined for a 30 Hz source: a 100 Hz tracker settles in
+the same milliseconds for the same value, not three times slower;
 with Game Rotation Vector you can usually lower it.
 
 ### Other sources

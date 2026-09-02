@@ -943,7 +943,10 @@ fn apply_head_tracking_packet(packet: &OscPacket, ctrl: &RendererControl) -> boo
                 {
                     let mut live = ctrl.live.write();
                     let current = live.binaural.head_pose;
-                    live.binaural.head_pose = live.binaural.tracking.ingest(raw, current);
+                    live.binaural.head_pose =
+                        live.binaural
+                            .tracking
+                            .ingest(raw, current, std::time::Instant::now());
                 }
                 // The moving pose rides the dedicated ~30 Hz `/state/head_pose`
                 // channel (see `maybe_broadcast_head_pose`); the full live-state
