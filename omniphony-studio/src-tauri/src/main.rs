@@ -353,6 +353,7 @@ fn main() {
             control_binaural_reflections_enabled,
             control_binaural_reflections_level,
             control_binaural_reflections_room,
+            control_binaural_reflections_wall_cutoff,
             control_binaural_reverb_enabled,
             control_binaural_reverb_level,
             control_binaural_reverb_rt60,

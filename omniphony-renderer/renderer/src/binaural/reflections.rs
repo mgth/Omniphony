@@ -52,6 +52,25 @@ fn gain_smooth_for(sample_rate: u32) -> f32 {
 /// Number of first-order images of a shoebox (one per wall).
 pub const NUM_REFLECTIONS: usize = 6;
 
+/// Range of the wall high-frequency cutoff (Hz). At [`MAX_WALL_CUTOFF_HZ`]
+/// the wall filter is bypassed exactly (bare plaster); lower values absorb
+/// the treble the way carpet and curtains do.
+pub const MIN_WALL_CUTOFF_HZ: f32 = 1_000.0;
+pub const MAX_WALL_CUTOFF_HZ: f32 = 20_000.0;
+
+/// One-pole low-pass coefficient for `cutoff_hz` at `sample_rate`, in the
+/// `state += (x − state)·(1 − a)` form: `a = exp(−2π·fc/fs)`. A cutoff at or
+/// above [`MAX_WALL_CUTOFF_HZ`] gives exactly 0, i.e. the filter passes its
+/// input untouched, so "no absorption" is bit-transparent rather than a
+/// 20 kHz roll-off that still shaves the top octave at 48 kHz.
+pub fn lowpass_coeff(cutoff_hz: f32, sample_rate: u32) -> f32 {
+    if cutoff_hz >= MAX_WALL_CUTOFF_HZ {
+        0.0
+    } else {
+        (-std::f32::consts::TAU * cutoff_hz.max(1.0) / sample_rate as f32).exp()
+    }
+}
+
 /// Half-extents of a `room` (full extents, metres), each axis clamped to
 /// [`MIN_ROOM_M`]..[`MAX_ROOM_M`].
 fn half_extents(room_m: [f32; 3]) -> [f32; 3] {
@@ -105,6 +124,11 @@ struct Tap {
     delay_target: f32,
     gain: f32,
     gain_target: f32,
+    /// One-pole low-pass state: the wall's absorption plus the air along
+    /// the image path, both of which take the treble out of a reflection.
+    lp: f32,
+    /// Its coefficient (`exp(−2π·fc/fs)`, 0 = bypass), set per block.
+    lp_a: f32,
 }
 
 impl Tap {
@@ -145,11 +169,13 @@ impl ReflectionBank {
         }
     }
 
-    /// Update one reflection's targets: per-ear relative delays (s) and
-    /// per-ear gains. Called once per block per reflection. The two delays
-    /// differ by the interaural time difference of the image's direction —
-    /// the taps are separate per ear precisely so that a reflection can be
-    /// lateralised by time, the cue an ILD pan alone cannot give.
+    /// Update one reflection's targets: per-ear relative delays (s), per-ear
+    /// gains, and the high-frequency cutoff (Hz) of this reflection — the
+    /// wall's absorption combined with the air along the image path. Called
+    /// once per block per reflection. The two delays differ by the
+    /// interaural time difference of the image's direction — the taps are
+    /// separate per ear precisely so that a reflection can be lateralised by
+    /// time, the cue an ILD pan alone cannot give.
     pub fn set_targets(
         &mut self,
         idx: usize,
@@ -157,8 +183,10 @@ impl ReflectionBank {
         delay_r_s: f32,
         gain_l: f32,
         gain_r: f32,
+        cutoff_hz: f32,
     ) {
         let max = (self.ring.len() - 2) as f32;
+        let lp_a = lowpass_coeff(cutoff_hz, self.sample_rate);
         for (tap, delay_s, gain) in [
             (&mut self.taps_l[idx], delay_l_s, gain_l),
             (&mut self.taps_r[idx], delay_r_s, gain_r),
@@ -166,6 +194,7 @@ impl ReflectionBank {
             let d = (delay_s * self.sample_rate as f32).clamp(0.0, max);
             tap.delay_target = d;
             tap.gain_target = gain;
+            tap.lp_a = lp_a;
             // While the tap is (near) silent a delay jump is inaudible — snap
             // instead of sweeping, so a fresh tap doesn't chirp its way from
             // delay 0 to the target while tracking the live signal.
@@ -203,10 +232,14 @@ impl ReflectionBank {
         for i in 0..NUM_REFLECTIONS {
             let tl = &mut self.taps_l[i];
             tl.step(gain_smooth);
-            l += tl.gain * read_frac(&self.ring, cap, self.write_pos, tl.delay);
+            let xl = read_frac(&self.ring, cap, self.write_pos, tl.delay);
+            tl.lp += (xl - tl.lp) * (1.0 - tl.lp_a);
+            l += tl.gain * tl.lp;
             let tr = &mut self.taps_r[i];
             tr.step(gain_smooth);
-            r += tr.gain * read_frac(&self.ring, cap, self.write_pos, tr.delay);
+            let xr = read_frac(&self.ring, cap, self.write_pos, tr.delay);
+            tr.lp += (xr - tr.lp) * (1.0 - tr.lp_a);
+            r += tr.gain * tr.lp;
         }
 
         self.write_pos += 1;
@@ -320,7 +353,14 @@ mod tests {
         let mut bank = ReflectionBank::new(48_000);
         // One active tap: 10-sample delay, gain 0.5 on the left only. Pre-set
         // current = target by letting it settle on silence first.
-        bank.set_targets(0, 10.0 / 48_000.0, 10.0 / 48_000.0, 0.5, 0.0);
+        bank.set_targets(
+            0,
+            10.0 / 48_000.0,
+            10.0 / 48_000.0,
+            0.5,
+            0.0,
+            MAX_WALL_CUTOFF_HZ,
+        );
         for _ in 0..4_000 {
             bank.process(0.0);
         }
@@ -348,7 +388,7 @@ mod tests {
     fn gain_smoothing_is_rate_invariant() {
         let settle_after_ms = |sample_rate: u32| -> f32 {
             let mut bank = ReflectionBank::new(sample_rate);
-            bank.set_targets(0, 0.0, 0.0, 1.0, 1.0);
+            bank.set_targets(0, 0.0, 0.0, 1.0, 1.0, MAX_WALL_CUTOFF_HZ);
             let n = (sample_rate as f32 * 0.003) as usize; // 3 ms
             let mut last = 0.0;
             for _ in 0..n {
@@ -370,7 +410,14 @@ mod tests {
     #[test]
     fn ears_read_at_their_own_delays() {
         let mut bank = ReflectionBank::new(48_000);
-        bank.set_targets(0, 10.0 / 48_000.0, 24.0 / 48_000.0, 0.5, 0.5);
+        bank.set_targets(
+            0,
+            10.0 / 48_000.0,
+            24.0 / 48_000.0,
+            0.5,
+            0.5,
+            MAX_WALL_CUTOFF_HZ,
+        );
         for _ in 0..4_000 {
             bank.process(0.0);
         }
@@ -395,17 +442,52 @@ mod tests {
         );
     }
 
+    /// A tap's low-pass takes the treble out of its reflection and leaves
+    /// the bass: at the maximum cutoff it is bit-transparent.
+    #[test]
+    fn taps_absorb_treble_at_the_wall_cutoff() {
+        assert_eq!(lowpass_coeff(MAX_WALL_CUTOFF_HZ, 48_000), 0.0);
+        let energy_at = |cutoff: f32, period: usize| -> f32 {
+            let mut bank = ReflectionBank::new(48_000);
+            bank.set_targets(0, 0.0, 0.0, 1.0, 0.0, cutoff);
+            let mut e = 0.0f32;
+            for n in 0..4_000 {
+                // Square wave of the given period; measure after settling.
+                let x = if (n / period) % 2 == 0 { 1.0 } else { -1.0 };
+                let (l, _) = bank.process(x);
+                if n >= 2_000 {
+                    e += l * l;
+                }
+            }
+            e
+        };
+        // Nyquist-rate alternation: crushed by a 2 kHz wall, untouched at max.
+        let bright = energy_at(MAX_WALL_CUTOFF_HZ, 1);
+        let dull = energy_at(2_000.0, 1);
+        assert!(
+            dull < 0.1 * bright,
+            "treble not absorbed: {dull} vs {bright}"
+        );
+        // 100 Hz square (period 240 samples): the bass gets through either way.
+        let bass_bright = energy_at(MAX_WALL_CUTOFF_HZ, 240);
+        let bass_dull = energy_at(2_000.0, 240);
+        assert!(
+            bass_dull > 0.8 * bass_bright,
+            "bass lost: {bass_dull} vs {bass_bright}"
+        );
+    }
+
     #[test]
     fn gain_changes_are_smoothed() {
         let mut bank = ReflectionBank::new(48_000);
-        bank.set_targets(0, 0.0, 0.0, 1.0, 1.0);
+        bank.set_targets(0, 0.0, 0.0, 1.0, 1.0, MAX_WALL_CUTOFF_HZ);
         for _ in 0..4_000 {
             bank.process(1.0); // settle: DC input, gain 1
         }
         let (settled, _) = bank.process(1.0);
         assert!((settled - 1.0).abs() < 1e-2);
         // Drop the gain target to 0: output must move gradually, not jump.
-        bank.set_targets(0, 0.0, 0.0, 0.0, 0.0);
+        bank.set_targets(0, 0.0, 0.0, 0.0, 0.0, MAX_WALL_CUTOFF_HZ);
         let (next, _) = bank.process(1.0);
         assert!(next > 0.9, "gain jumped instead of smoothing: {next}");
     }

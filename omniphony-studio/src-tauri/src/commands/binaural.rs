@@ -136,6 +136,17 @@ pub fn control_binaural_reflections_level(state: State<SharedState>, value: f32)
 }
 
 #[tauri::command]
+pub fn control_binaural_reflections_wall_cutoff(state: State<SharedState>, value: f32) {
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendFloat {
+            address: "/omniphony/control/binaural/reflections/wall_cutoff".to_string(),
+            value: value.clamp(1_000.0, 20_000.0),
+        },
+    );
+}
+
+#[tauri::command]
 pub fn control_binaural_reflections_room(state: State<SharedState>, axis: String, value: f32) {
     // axis: "width" | "depth" | "height"; value in metres.
     let address = match axis.as_str() {

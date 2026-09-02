@@ -463,6 +463,9 @@ pub struct ReflectionsConfig {
     /// Per-reflection wall gain (0..1).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<f32>,
+    /// High-frequency cutoff of the walls (Hz, 1000–20000; 20000 = none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wall_cutoff_hz: Option<f32>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,

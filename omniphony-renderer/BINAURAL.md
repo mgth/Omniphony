@@ -13,7 +13,8 @@ position → rotate(head pose) → (azimuth, elevation, distance)
          → air-absorption low-pass (cutoff falls with distance)
          → per-ear ITD delay → per-ear HRIR convolution   (authored level, no 1/d)
          → + 6 first-order shoebox reflections (per-ear delay incl. the image's
-             ITD + ILD pan, level relative to the direct: d_source / d_image)
+             ITD + ILD pan, level relative to the direct: d_source / d_image,
+             low-passed by the wall and by the air over the image path)
          → + shared late-reverb tail (stereo FDN, send ∝ distance)
          → mix into [L, R]
 ```
@@ -75,6 +76,7 @@ in Studio and over OSC (addresses listed at the end).
 | `reflections.room_depth_m` | `5.0` | room extent, y |
 | `reflections.room_height_m` | `2.7` | room extent, z |
 | `reflections.level` | `0.5` | per-reflection wall gain (0–1) |
+| `reflections.wall_cutoff_hz` | `6000` | high-frequency cutoff of the walls (1000–20000; 20000 = none). Each reflection is low-passed here, combined with the air absorption over its own image path |
 | `reverb.enabled` | `false` | late-reverb tail (stereo FDN) |
 | `reverb.level` | `0.25` | reverb return level (0–1) |
 | `reverb.rt60_s` | `0.35` | broadband decay time (s) — living-room-ish, not a hall |
@@ -209,6 +211,7 @@ carry no license at all). Accordingly:
 | `/omniphony/control/binaural/reflections/room_width` | `f` (m) | room x |
 | `/omniphony/control/binaural/reflections/room_depth` | `f` (m) | room y |
 | `/omniphony/control/binaural/reflections/room_height` | `f` (m) | room z |
+| `/omniphony/control/binaural/reflections/wall_cutoff` | `f` (Hz) | wall high-frequency cutoff |
 | `/omniphony/control/binaural/reverb/enabled` | `i\|f` (bool) | late tail on/off |
 | `/omniphony/control/binaural/reverb/level` | `f` (0–1) | reverb return level |
 | `/omniphony/control/binaural/reverb/rt60` | `f` (s) | decay time |

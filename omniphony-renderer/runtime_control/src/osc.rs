@@ -1278,6 +1278,24 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
+    if addr == osc_contract::CONTROL_BINAURAL_REFLECTIONS_WALL_CUTOFF {
+        if let Some(v) = parse_f32_arg(msg.args.first()) {
+            if v.is_finite() {
+                ctx.renderer
+                    .live
+                    .write()
+                    .binaural
+                    .reflections
+                    .wall_cutoff_hz = v.clamp(
+                    renderer::binaural::reflections::MIN_WALL_CUTOFF_HZ,
+                    renderer::binaural::reflections::MAX_WALL_CUTOFF_HZ,
+                );
+                effects.mark_dirty = true;
+            }
+        }
+        return Some(effects);
+    }
+
     if let Some(axis) = match addr {
         osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_WIDTH => Some(0usize),
         osc_contract::CONTROL_BINAURAL_REFLECTIONS_ROOM_DEPTH => Some(1),

@@ -240,6 +240,17 @@ export function initBinauralPanel() {
     });
   }
 
+  const wallCutoff = el('binauralReflWallCutoff');
+  if (wallCutoff) {
+    wallCutoff.addEventListener('input', (e) => {
+      if (applying) return;
+      const khz = Number(e.target.value);
+      const out = el('binauralReflWallCutoffVal');
+      if (out) out.textContent = khz.toFixed(1);
+      send('control_binaural_reflections_wall_cutoff', { value: khz * 1000 });
+    });
+  }
+
   const updateRoomReadout = () => {
     const out = el('binauralReflRoomVal');
     if (!out) return;
@@ -452,6 +463,12 @@ export function applyBinauralState(b) {
         setVal('binauralReflLevel', refl.level);
         const out = el('binauralReflLevelVal');
         if (out) out.textContent = Number(refl.level).toFixed(2);
+      }
+      if (typeof refl.wallCutoffHz === 'number') {
+        const khz = refl.wallCutoffHz / 1000;
+        setVal('binauralReflWallCutoff', khz);
+        const out = el('binauralReflWallCutoffVal');
+        if (out) out.textContent = khz.toFixed(1);
       }
       if (Array.isArray(refl.roomM) && refl.roomM.length === 3) {
         setVal('binauralReflRoomW', refl.roomM[0]);
