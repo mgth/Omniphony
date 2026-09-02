@@ -19,6 +19,11 @@ use crate::RChannelLabel;
 /// This table is the union of the historical matchers it replaces; parity
 /// with both is pinned by tests here and in the consuming crates
 /// (`renderer::speaker_layout` keeps the legacy-alias parity net).
+///
+/// The `orender_engine` virtual-bed planner keeps a context-dependent matcher
+/// (5.1 vs 7.1 bed shape); its unconditional spellings must stay within this
+/// table, so names it accepts in user beds also resolve through
+/// [`label_for_name`] and reach Studio via the fixed-channel catalogue.
 const ALIASES: &[(RChannelLabel, &[&str])] = &[
     (RChannelLabel::L, &["FL", "L", "FRONTLEFT", "LEFTFRONT"]),
     (RChannelLabel::R, &["FR", "R", "FRONTRIGHT", "RIGHTFRONT"]),
@@ -89,6 +94,7 @@ const ALIASES: &[(RChannelLabel, &[&str])] = &[
             "TFL",
             "TPFL",
             "TOPFRONTLEFT",
+            "UPPERFRONTLEFT",
             "UFL",
             "LTF",
             "LEFTTOPFRONT",
@@ -102,6 +108,7 @@ const ALIASES: &[(RChannelLabel, &[&str])] = &[
             "TFR",
             "TPFR",
             "TOPFRONTRIGHT",
+            "UPPERFRONTRIGHT",
             "UFR",
             "RTF",
             "RIGHTTOPFRONT",
@@ -109,21 +116,45 @@ const ALIASES: &[(RChannelLabel, &[&str])] = &[
             "HR",
         ],
     ),
-    (RChannelLabel::Tsl, &["TSL", "TPSL", "TOPSIDELEFT", "USL"]),
-    (RChannelLabel::Tsr, &["TSR", "TPSR", "TOPSIDERIGHT", "USR"]),
+    (
+        RChannelLabel::Tsl,
+        &["TSL", "TPSL", "TOPSIDELEFT", "UPPERSIDELEFT", "USL"],
+    ),
+    (
+        RChannelLabel::Tsr,
+        &["TSR", "TPSR", "TOPSIDERIGHT", "UPPERSIDERIGHT", "USR"],
+    ),
     (
         RChannelLabel::Tbl,
-        &["TBL", "TPBL", "TOPBACKLEFT", "UBL", "TRL"],
+        &[
+            "TBL",
+            "TPBL",
+            "TOPBACKLEFT",
+            "TOPREARLEFT",
+            "UBL",
+            "TRL",
+            "LTR",
+            "UPPERBACKLEFT",
+        ],
     ),
     (
         RChannelLabel::Tbr,
-        &["TBR", "TPBR", "TOPBACKRIGHT", "UBR", "TRR"],
+        &[
+            "TBR",
+            "TPBR",
+            "TOPBACKRIGHT",
+            "TOPREARRIGHT",
+            "UBR",
+            "TRR",
+            "RTR",
+            "UPPERBACKRIGHT",
+        ],
     ),
     (
         RChannelLabel::Tc,
         &["TC", "TPC", "TOPCENTER", "TOPMIDDLECENTER"],
     ),
-    (RChannelLabel::Tfc, &["TFC", "TOPFRONTCENTER"]),
+    (RChannelLabel::Tfc, &["TFC", "TPFC", "TOPFRONTCENTER"]),
 ];
 
 /// Canonical short name for a label — the form used in bundled layout YAMLs,
@@ -160,6 +191,17 @@ pub fn canonical_name(label: RChannelLabel) -> &'static str {
         Object => "Object",
         Unknown => "Unknown",
     }
+}
+
+/// Accepted spellings for a label in normalised form (uppercase, no
+/// whitespace/`_`/`-`) — the same list [`label_for_name`] matches against,
+/// including the short canonical forms. Non-fixed labels ([`RChannelLabel::Object],
+/// [`RChannelLabel::Unknown`]) have no aliases and get an empty slice.
+pub fn aliases_for(label: RChannelLabel) -> &'static [&'static str] {
+    ALIASES
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map_or(&[], |(_, aliases)| *aliases)
 }
 
 /// Resolve a speaker/channel name to its label. Case-insensitive and
@@ -217,6 +259,31 @@ mod tests {
         assert_eq!(label_for_name("TOP_FRONT_LEFT"), Tfl);
         assert_eq!(label_for_name("tfl"), Tfl);
         assert_eq!(label_for_name("height-right"), Tfr);
+        // Height-tier spellings accepted by the bed-planner matcher and by
+        // hand-edited beds must resolve through this table too.
+        assert_eq!(label_for_name("UpperFrontLeft"), Tfl);
+        assert_eq!(label_for_name("UpperSideLeft"), Tsl);
+        assert_eq!(label_for_name("upper side right"), Tsr);
+        assert_eq!(label_for_name("upper back right"), Tbr);
+        assert_eq!(label_for_name("LTR"), Tbl);
+        assert_eq!(label_for_name("RTR"), Tbr);
+        assert_eq!(label_for_name("TopMiddleCenter"), Tc);
         assert_eq!(label_for_name("nonsense"), Unknown);
+    }
+
+    #[test]
+    fn aliases_for_matches_the_alias_table() {
+        for (label, aliases) in ALIASES {
+            assert_eq!(aliases_for(*label), *aliases);
+            for alias in *aliases {
+                assert_eq!(
+                    label_for_name(alias),
+                    *label,
+                    "alias {alias:?} must resolve back to its own label"
+                );
+            }
+        }
+        assert!(aliases_for(Object).is_empty());
+        assert!(aliases_for(Unknown).is_empty());
     }
 }
