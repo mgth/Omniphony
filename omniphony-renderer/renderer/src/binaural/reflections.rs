@@ -22,7 +22,7 @@ const SPEED_OF_SOUND: f32 = 343.0;
 /// Ring capacity in seconds. Bounds the relative reflection delay; with room
 /// dimensions clamped to [`MAX_ROOM_M`] the longest first-order detour stays
 /// well below this.
-const RING_CAPACITY_S: f32 = 0.25;
+pub const RING_CAPACITY_S: f32 = 0.25;
 
 /// Per-axis room size clamp (m).
 pub const MIN_ROOM_M: f32 = 1.0;
