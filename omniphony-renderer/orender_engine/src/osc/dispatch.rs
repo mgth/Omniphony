@@ -751,6 +751,24 @@ fn persist_head_center_to_path(path: &Path, reference_quat: [f32; 4]) {
     });
 }
 
+/// Persist the sensor-to-head axis calibration next to the recenter
+/// reference, with the same targeted write.
+fn persist_head_axes(control: &Arc<RendererControl>, axes_quat: [f32; 4]) {
+    let Some(path) = control.config_path() else {
+        return;
+    };
+    persist_head_axes_to_path(&path, axes_quat);
+}
+
+fn persist_head_axes_to_path(path: &Path, axes_quat: [f32; 4]) {
+    persist_render_field_to_path(path, "head axes", |render| {
+        let bin = render.binaural.get_or_insert_with(Default::default);
+        let ht = bin.head_tracking.get_or_insert_with(Default::default);
+        let identity = renderer::binaural::HeadPose::identity().to_quat_array();
+        ht.axes_quat = (axes_quat != identity).then_some(axes_quat);
+    });
+}
+
 fn apply_control_effects(
     effects: ControlEffects,
     control: &Arc<RendererControl>,
@@ -766,6 +784,9 @@ fn apply_control_effects(
     }
     if let Some(reference_quat) = effects.persist_head_center {
         persist_head_center(control, reference_quat);
+    }
+    if let Some(axes_quat) = effects.persist_head_axes {
+        persist_head_axes(control, axes_quat);
     }
     for update in effects.broadcasts {
         match update.value {

@@ -488,6 +488,12 @@ pub struct HeadTrackingConfig {
     /// Absent until the tracker has been recentered (identity = uncentered).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_quat: Option<[f32; 4]>,
+    /// Sensor-to-head axis calibration quaternion `[w, x, y, z]` (see the
+    /// three-pose calibration in `BINAURAL.md`), persisted like the
+    /// reference. Absent until calibrated (identity = sensor axes are the
+    /// head's).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub axes_quat: Option<[f32; 4]>,
     /// See `Config::extra` — preserve unknown keys through round-trips.
     #[serde(flatten, default, skip_serializing_if = "Mapping::is_empty")]
     pub extra: Mapping,

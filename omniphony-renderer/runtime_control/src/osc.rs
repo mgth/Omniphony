@@ -60,6 +60,9 @@ pub struct ControlEffects {
     /// `config.yaml` (systematic save, like `surround_placement`). The engine
     /// layer performs the I/O in `apply_control_effects`.
     pub persist_head_center: Option<[f32; 4]>,
+    /// Sensor-to-head axis calibration `[w, x, y, z]` to write straight to
+    /// `config.yaml`, same mechanism (identity = drop the key).
+    pub persist_head_axes: Option<[f32; 4]>,
 }
 
 // AdaptiveResamplingPatch / AudioConfigPatch / LiveInputPatch / InputConfigPatch
@@ -1368,6 +1371,43 @@ pub fn apply_simple_osc_control(
             ctx.renderer.live.write().binaural.air_absorption = v;
             effects.mark_dirty = true;
             effects.log_message = Some(format!("OSC: binaural/air_absorption -> {v}"));
+        }
+        return Some(effects);
+    }
+
+    if addr == osc_contract::CONTROL_HEAD_CALIBRATE {
+        let step = msg.args.first().and_then(|a| match a {
+            rosc::OscType::String(s) => renderer::binaural::CalibrationStep::from_str(s),
+            _ => None,
+        });
+        let Some(step) = step else {
+            effects.log_message =
+                Some("OSC: head/calibrate expects front | left | up | reset".to_string());
+            return Some(effects);
+        };
+        let mut live = ctx.renderer.live.write();
+        match live.binaural.tracking.calibrate(step) {
+            Ok(done) => {
+                if step == renderer::binaural::CalibrationStep::Front {
+                    // Looking ahead is the recenter: snap and persist it.
+                    live.binaural.head_pose = renderer::binaural::HeadPose::identity();
+                    effects.persist_head_center =
+                        Some(live.binaural.tracking.reference.to_quat_array());
+                }
+                if done || step == renderer::binaural::CalibrationStep::Reset {
+                    effects.persist_head_axes = Some(live.binaural.tracking.axes.to_quat_array());
+                }
+                effects.mark_dirty = true;
+                effects.log_message = Some(format!(
+                    "OSC: head/calibrate {step:?}{}",
+                    if done { " — axes calibrated" } else { "" }
+                ));
+            }
+            Err(reason) => {
+                effects.mark_dirty = true;
+                effects.log_message =
+                    Some(format!("OSC: head/calibrate {step:?} refused: {reason}"));
+            }
         }
         return Some(effects);
     }

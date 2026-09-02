@@ -220,6 +220,18 @@ pub fn control_binaural_air_absorption(state: State<SharedState>, enable: i32) {
 }
 
 #[tauri::command]
+pub fn control_head_calibrate(state: State<SharedState>, step: String) {
+    // step: "front" | "left" | "up" | "reset".
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendString {
+            address: "/omniphony/control/head/calibrate".to_string(),
+            value: step,
+        },
+    );
+}
+
+#[tauri::command]
 pub fn control_head_recenter(state: State<SharedState>) {
     send_control(
         &state.osc_tx,

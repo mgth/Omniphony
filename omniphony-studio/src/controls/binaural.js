@@ -14,6 +14,9 @@ import { applyEarState, initHeadphoneChannels } from './headphone-meter.js';
 
 const el = (id) => document.getElementById(id);
 
+// Renderer-reported step of the three-pose axis calibration (see the button).
+let calibrationStep = 0;
+
 // Renderer source ids → i18n suffix of their option label.
 const HRTF_SOURCE_I18N = { saf: 'kemar', synthetic: 'synthetic', pinna: 'pinna', prtf: 'prtf', sofa: 'sofa' };
 const hrtfSourceLabel = (source) => t(`binaural.hrtfSource.${HRTF_SOURCE_I18N[source] ?? source}`);
@@ -325,6 +328,16 @@ export function initBinauralPanel() {
     recenter.addEventListener('click', () => send('control_head_recenter', {}));
   }
 
+  // Three-pose axis calibration: one button, the renderer's reported step
+  // says which pose comes next (0: look ahead, 1: turn left, 2: look up).
+  const calibrate = el('binauralCalibrate');
+  if (calibrate) {
+    calibrate.addEventListener('click', () => {
+      const step = ['front', 'left', 'up'][calibrationStep] ?? 'front';
+      send('control_head_calibrate', { step });
+    });
+  }
+
   const addr = el('binauralTrackAddress');
   if (addr) {
     const commit = () => {
@@ -522,6 +535,22 @@ export function applyBinauralState(b) {
     }
     const inv = el('binauralTrackInvert');
     if (inv && typeof t.invert === 'boolean') inv.checked = t.invert;
+    if (typeof t.calibrationStep === 'number') calibrationStep = t.calibrationStep;
+    const prompt = el('binauralCalibratePrompt');
+    if (prompt) {
+      const key =
+        calibrationStep === 1
+          ? 'binaural.calibratePromptLeft'
+          : calibrationStep === 2
+            ? 'binaural.calibratePromptUp'
+            : t.axesCalibrated === true
+              ? 'binaural.calibrateDone'
+              : null;
+      prompt.style.display = key ? '' : 'none';
+      // `t` is the tracking object here; `tf` is the i18n lookup.
+      prompt.textContent = key ? tf(key) : '';
+      prompt.style.color = calibrationStep ? '#e8c46a' : '#8fa6bd';
+    }
 
     // Head-pose readout as yaw/pitch/roll degrees, derived from the quaternion.
     const pose = b.headPose;

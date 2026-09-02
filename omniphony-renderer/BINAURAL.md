@@ -104,6 +104,16 @@ the phone strapped to the headband:
    panel or `/omniphony/control/head/recenter`). That direction becomes
    "front".
 5. If the scene rotates the wrong way, toggle **Invert rotation**.
+6. If it rotates about the wrong axis — the phone is strapped on in some
+   other orientation than "screen up, top forward" — run the **axis
+   calibration** (Studio button **Calibrate axes**, or
+   `/omniphony/control/head/calibrate` with `front`, `left`, `up`): look
+   straight ahead and press, turn your head to the **left** and press, look
+   **up** and press. The turn gives the head's up axis in the sensor's frame,
+   the nod its right axis, and the result is stored next to the recenter
+   reference (`axes_quat`). `reset` forgets it. Three poses because a turn
+   alone cannot tell which horizontal direction is ahead, and this way
+   nothing is assumed about how the sensor is mounted.
 
 `smoothing` (0–0.99, default 0.2) trades a little latency for pose stability.
 It is a time constant, defined for a 30 Hz source: a 100 Hz tracker settles in
@@ -222,6 +232,7 @@ carry no license at all). Accordingly:
 | `/omniphony/control/head/orientation` | `fff` (euler) | set pose directly |
 | `/omniphony/control/head/quat` | `ffff` | set pose directly |
 | `/omniphony/control/head/recenter` | — | current orientation becomes "front" |
+| `/omniphony/control/head/calibrate` | `s: front\|left\|up\|reset` | three-pose sensor axis calibration (`front` also recenters) |
 | `/omniphony/control/head/tracking/address` | `s` | tracking OSC address ("" disables) |
 | `/omniphony/control/head/tracking/format` | `s` | `auto\|quat\|rotvec\|euler` |
 | `/omniphony/control/head/tracking/smoothing` | `f` (0–0.99) | pose smoothing |

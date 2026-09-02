@@ -35,7 +35,7 @@ pub mod tracking;
 mod validation;
 
 pub use head_pose::HeadPose;
-pub use tracking::{HeadTracking, HeadTrackingFormat};
+pub use tracking::{CalibrationStep, HeadTracking, HeadTrackingFormat};
 
 use crate::delay_line::DelayLine;
 use crate::live_params::{BinauralReflections, BinauralReverb};

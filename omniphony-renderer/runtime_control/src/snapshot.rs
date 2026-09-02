@@ -292,7 +292,12 @@ pub fn build_renderer_state_json(
                 "address": live.binaural.tracking.address,
                 "format": live.binaural.tracking.format.as_str(),
                 "smoothing": live.binaural.tracking.smoothing,
-                "invert": live.binaural.tracking.invert
+                "invert": live.binaural.tracking.invert,
+                // Three-pose axis calibration: 0 idle, 1 = turn left next,
+                // 2 = look up next; and whether axes are calibrated at all.
+                "calibrationStep": live.binaural.tracking.calibration.step(),
+                "axesCalibrated": live.binaural.tracking.axes
+                    != renderer::binaural::HeadPose::identity()
             }
         }
     })
