@@ -314,8 +314,8 @@ pub struct SpatialRenderer {
     /// Scratch per-channel world positions for the binaural path (reused).
     binaural_pos_buf: Vec<[f64; 3]>,
 
-    /// Scratch per-channel gains for the binaural path (reused).
-    binaural_gain_buf: Vec<f32>,
+    /// Scratch per-channel gain ramps for the binaural path (reused).
+    binaural_gain_buf: Vec<crate::binaural::ChannelGain>,
 
     /// Scratch per-channel "direct" flags for the binaural path (reused):
     /// beds mapped to a `spatialize: false` speaker (the LFE) feed both ears
@@ -878,7 +878,8 @@ impl SpatialRenderer {
                 self.binaural_pos_buf
                     .resize(input_channel_count, [0.0, 1.0, 0.0]);
                 self.binaural_gain_buf.clear();
-                self.binaural_gain_buf.resize(input_channel_count, 0.0);
+                self.binaural_gain_buf
+                    .resize(input_channel_count, crate::binaural::ChannelGain::flat(0.0));
                 self.binaural_direct_buf.clear();
                 self.binaural_direct_buf.resize(input_channel_count, false);
                 let num_routed = channel_routing.len();
@@ -899,8 +900,9 @@ impl SpatialRenderer {
                             .map(|s| s.gain_db)
                             .unwrap_or(components::GAIN_DB_NEG_INF);
                         let gain_linear = components::gain_db_to_linear(gain_db);
-                        // Slewed like the VBAP path (block-end value: the binaural
-                        // stage updates per block anyway).
+                        // Slewed like the VBAP path, and handed down as the
+                        // ramp so the binaural stage applies it per sample
+                        // rather than stepping the block-end value.
                         let ramp_samples = self.sample_rate as f32 * GAIN_SLEW_SECS;
                         if let Some(state) = states.get_mut(c) {
                             let (start, step) = state.slew_gain(
@@ -908,9 +910,10 @@ impl SpatialRenderer {
                                 sample_length,
                                 ramp_samples,
                             );
-                            self.binaural_gain_buf[c] = start + step * sample_length as f32;
+                            self.binaural_gain_buf[c] =
+                                crate::binaural::ChannelGain { start, step };
                         } else {
-                            self.binaural_gain_buf[c] = 0.0;
+                            self.binaural_gain_buf[c] = crate::binaural::ChannelGain::flat(0.0);
                         }
                         // Same direct/virtual split as the VBAP path.
                         let direct_label = match channel_routing.get(c) {

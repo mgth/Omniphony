@@ -41,7 +41,7 @@ pub(super) struct CascadeStage {
     /// LFE) are flagged direct: both ears, −3 dB, no HRTF — the binaural
     /// stage's standing policy (issue #156).
     pub(super) bin_pos: Vec<[f64; 3]>,
-    pub(super) bin_gain: Vec<f32>,
+    pub(super) bin_gain: Vec<crate::binaural::ChannelGain>,
     pub(super) bin_direct: Vec<bool>,
     /// Interleaved virtual-speaker bus the binaural stage consumes as its PCM
     /// input. Reused every frame; exposed to the host for virtual metering
@@ -66,7 +66,7 @@ impl CascadeStage {
                 .collect(),
             // Per-channel level shaping happens in the virtual mix (including
             // the per-speaker rows); the binaural stage sees unity buses.
-            bin_gain: vec![1.0f32; speakers.len()],
+            bin_gain: vec![crate::binaural::ChannelGain::flat(1.0); speakers.len()],
             bin_direct: speakers.iter().map(|s| !s.spatialize).collect(),
             bus: Vec::new(),
         }
