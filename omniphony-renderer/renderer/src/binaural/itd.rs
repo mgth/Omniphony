@@ -9,7 +9,7 @@
 /// `BinauralLiveParams::head_radius_m` for per-listener ITD fit.
 pub const DEFAULT_HEAD_RADIUS_M: f32 = 0.0875;
 /// Speed of sound (m/s).
-const SPEED_OF_SOUND: f32 = 343.0;
+pub(super) const SPEED_OF_SOUND: f32 = 343.0;
 
 /// Per-ear delays in seconds for a source at the given azimuth/elevation.
 ///
