@@ -43,18 +43,40 @@ const GAIN_SMOOTH: f32 = 0.015;
 /// Number of first-order images of a shoebox (one per wall).
 pub const NUM_REFLECTIONS: usize = 6;
 
+/// Half-extents of a `room` (full extents, metres), each axis clamped to
+/// [`MIN_ROOM_M`]..[`MAX_ROOM_M`].
+fn half_extents(room_m: [f32; 3]) -> [f32; 3] {
+    let mut half = [0.0f32; 3];
+    for a in 0..3 {
+        half[a] = (room_m[a].clamp(MIN_ROOM_M, MAX_ROOM_M)) * 0.5;
+    }
+    half
+}
+
+/// `src` (listener-relative metres, listener at the room centre) pulled just
+/// inside the walls of `room`, by [`WALL_MARGIN_M`]. The image-source
+/// geometry is only meaningful for a source inside the room; this is the
+/// source [`first_order_images`] actually mirrors, and therefore the one the
+/// direct-path reference (distance, hence the relative delays) must use too
+/// — a source that is outside the room and left there makes its own images
+/// arrive *before* it.
+pub fn clamp_into_room(src_m: [f32; 3], room_m: [f32; 3]) -> [f32; 3] {
+    let half = half_extents(room_m);
+    let mut s = src_m;
+    for a in 0..3 {
+        s[a] = s[a].clamp(-(half[a] - WALL_MARGIN_M), half[a] - WALL_MARGIN_M);
+    }
+    s
+}
+
 /// Mirror `src` (listener-relative metres, listener at the room centre)
 /// across each of the six walls of a `room` (full extents, metres).
 ///
-/// Sources outside the room are first clamped just inside the walls — the
-/// geometry stays valid for any `unit_scale_m`.
+/// Sources outside the room are first clamped just inside the walls (see
+/// [`clamp_into_room`]) — the geometry stays valid for any `unit_scale_m`.
 pub fn first_order_images(src_m: [f32; 3], room_m: [f32; 3]) -> [[f32; 3]; NUM_REFLECTIONS] {
-    let mut half = [0.0f32; 3];
-    let mut s = src_m;
-    for a in 0..3 {
-        half[a] = (room_m[a].clamp(MIN_ROOM_M, MAX_ROOM_M)) * 0.5;
-        s[a] = s[a].clamp(-(half[a] - WALL_MARGIN_M), half[a] - WALL_MARGIN_M);
-    }
+    let half = half_extents(room_m);
+    let s = clamp_into_room(src_m, room_m);
     let mut out = [[0.0f32; 3]; NUM_REFLECTIONS];
     for a in 0..3 {
         let mut pos = s;
@@ -198,6 +220,47 @@ mod tests {
         assert_eq!(images[3][1], -6.0);
         assert_eq!(images[4][2], 3.0);
         assert_eq!(images[5][2], -3.0);
+    }
+
+    /// Every image of a source is farther from the listener than the
+    /// (clamped) source itself, so every relative delay is positive — for a
+    /// source well outside the room included, where the raw distance would
+    /// exceed the near-wall image's.
+    #[test]
+    fn images_are_never_closer_than_the_clamped_source() {
+        let room = [4.0, 5.0, 2.7];
+        let dist = |p: [f32; 3]| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        for src in [
+            [0.0f32, 1.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [0.0, 4.0, 0.0],
+            [2.0, 3.0, 1.0],
+        ] {
+            let clamped = clamp_into_room(src, room);
+            let d_src = dist(clamped);
+            for (i, img) in first_order_images(src, room).iter().enumerate() {
+                let d_img = dist(*img);
+                // Mirroring pushes one coordinate outward (|2h − s| > |s|
+                // for |s| < h), so the image is strictly farther — by 2 ×
+                // the margin along the axis for a source against that wall,
+                // less in norm when the source is off that axis.
+                assert!(
+                    d_img > d_src + 1e-4,
+                    "src {src:?} image {i}: {d_img} not beyond the source at {d_src}"
+                );
+            }
+            if dist(src) > d_src {
+                // The raw distance would have put the near-wall image *ahead*.
+                let nearest = first_order_images(src, room)
+                    .iter()
+                    .map(|img| dist(*img))
+                    .fold(f32::MAX, f32::min);
+                assert!(
+                    nearest < dist(src),
+                    "{src:?}: the premise of the test fails"
+                );
+            }
+        }
     }
 
     #[test]
