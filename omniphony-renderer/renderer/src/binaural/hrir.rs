@@ -200,6 +200,65 @@ impl ParametricPinnaHrir {
     }
 }
 
+impl ParametricPinnaHrir {
+    /// Echo amplitude factor directly behind the head, relative to the
+    /// front. The published model covers the frontal hemisphere only; behind
+    /// it the pinna's cavities face away from the source and the reflections
+    /// that carve the notches are weaker. Our extrapolation, not the paper's.
+    const REAR_DEPTH: f32 = 0.5;
+
+    /// Brown & Duda (8): `τ_n = A_n·cos(θ/2)·sin(D_n·(90° − φ)) + B_n`, in
+    /// **interaural-polar** coordinates — `θ` the lateral angle between the
+    /// source and the median plane (−90°…90°), `φ` the angle around the
+    /// interaural axis (0 ahead, 90 overhead, ±180 behind). That is the
+    /// system the paper's head model is written in (its shadow depends on
+    /// `θ` alone), and it is what makes `cos(θ/2)` stay within
+    /// `[cos 45°, 1]`: the echo spread narrows toward the ears, never
+    /// collapses.
+    ///
+    /// The formula is stated for the frontal hemisphere (`|φ| ≤ 90°`). Its
+    /// analytic continuation behind the head sends echoes *ahead* of the
+    /// direct sound (`τ < 0`, clamped to 0, where a `ρ = −1` echo would
+    /// cancel the direct path outright), so the rear is not that. It is the
+    /// frontal pattern at the mirrored elevation `180° − φ` — the elevation
+    /// cue survives behind the head — with the echo amplitudes scaled toward
+    /// [`REAR_DEPTH`](Self::REAR_DEPTH) as the source moves back. Both the
+    /// delays and the scale are continuous through the overhead and
+    /// underneath planes (`|φ| = 90°`), where the two halves meet.
+    ///
+    /// Returns the five delays in samples at `sample_rate`, and the echo
+    /// amplitude factor.
+    fn echo_train(az_deg: f32, el_deg: f32, sample_rate: u32, d: &[f32; 5]) -> ([f32; 5], f32) {
+        let (az, el) = (az_deg.to_radians(), el_deg.to_radians());
+        let lateral = (az.sin() * el.cos()).clamp(-1.0, 1.0);
+        let theta = lateral.asin();
+        // Angle around the interaural axis, from the front, in (−180°, 180°].
+        let phi = el.sin().atan2(az.cos() * el.cos());
+        let phi_front = if phi.abs() <= std::f32::consts::FRAC_PI_2 {
+            phi
+        } else {
+            // Mirror through the vertical: 180° − φ, sign-preserving.
+            phi.signum() * (std::f32::consts::PI - phi.abs())
+        };
+        // How far behind the source is: the rear component of its direction,
+        // 0 anywhere on the frontal hemisphere's edge (sides, overhead) → 1
+        // straight back. Taken from the direction itself rather than from
+        // φ, which is undefined on the interaural axis and would flip the
+        // factor at the sides.
+        let rear = (-(az.cos() * el.cos())).max(0.0);
+        let front = (0.5 * theta).cos();
+        let el_term = std::f32::consts::FRAC_PI_2 - phi_front;
+        let fs_scale = sample_rate as f32 / Self::REF_FS;
+        let mut taus = [0.0f32; 5];
+        for n in 0..5 {
+            let tau = Self::B[n] + Self::A[n] * front * (d[n] * el_term).sin();
+            taus[n] = (tau * fs_scale).max(0.0);
+        }
+        let scale = 1.0 - (1.0 - Self::REAR_DEPTH) * rear;
+        (taus, scale)
+    }
+}
+
 impl HrirProvider for ParametricPinnaHrir {
     fn render(&self, az_deg: f32, el_deg: f32, sample_rate: u32) -> HrirPair {
         // Base: the analytic head shadow + ILD (identical to SyntheticHrir).
@@ -207,31 +266,10 @@ impl HrirProvider for ParametricPinnaHrir {
         if self.depth <= 1e-4 {
             return pair; // degenerates to the plain synthetic head model
         }
-
-        // Brown & Duda (8): τ_n = A_n·cos(θ/2)·sin(D_n·(90°−φ)) + B_n, with θ the
-        // azimuth and φ the elevation. cos(az/2) is 1 ahead and 0 behind, so the
-        // delay spread — hence the notch pattern — collapses behind the head:
-        // that is the front/back cue. (8) is validated for the frontal half
-        // space only; the rear is our extrapolation.
-        //
-        // `abs`, not a [0, 1] clamp: the formula assumes a signed azimuth in
-        // [-180°, 180°], but the grid feeds [0°, 360°), where cos(az/2) goes
-        // negative over the whole left hemisphere. Clamping that to 0 rendered
-        // the entire left side with the collapsed "behind the head" notch
-        // pattern (audibly brighter on the left); |cos(az/2)| is the same even,
-        // 360°-periodic function under both conventions.
-        let az = az_deg.to_radians();
-        let front = (0.5 * az).cos().abs();
-        let el_term = (90.0 - el_deg).to_radians(); // 0 overhead, grows downward
-        let fs_scale = sample_rate as f32 / Self::REF_FS;
-        let mut taus = [0.0f32; 5];
-        for n in 0..5 {
-            let d = Self::B[n] + Self::A[n] * front * (self.d[n] * el_term).sin();
-            taus[n] = (d * fs_scale).max(0.0);
-        }
-
-        pair.left = Self::apply_pinna(&pair.left, &taus, self.depth);
-        pair.right = Self::apply_pinna(&pair.right, &taus, self.depth);
+        let (taus, rear_scale) = Self::echo_train(az_deg, el_deg, sample_rate, &self.d);
+        let depth = self.depth * rear_scale;
+        pair.left = Self::apply_pinna(&pair.left, &taus, depth);
+        pair.right = Self::apply_pinna(&pair.right, &taus, depth);
         pair
     }
 }
@@ -701,6 +739,44 @@ mod tests {
             p_diff > s_diff * 1e3,
             "pinna cue not dominant: p={p_diff} s={s_diff}"
         );
+    }
+
+    /// Behind the head the elevation cue must survive: the rear is the
+    /// mirrored frontal pattern, not a collapse to a single echo train.
+    #[test]
+    fn pinna_keeps_an_elevation_cue_behind_the_head() {
+        let pinna = ParametricPinnaHrir {
+            d: ParametricPinnaHrir::D_PB_NH,
+            depth: 1.0,
+        };
+        let level = pinna.render(180.0, 0.0, 48_000);
+        let high = pinna.render(180.0, 40.0, 48_000);
+        let diff: f32 = level
+            .left
+            .iter()
+            .zip(high.left.iter())
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum();
+        assert!(diff > 1e-3, "no elevation cue behind the head: {diff}");
+    }
+
+    /// The front and rear halves meet overhead: a source just ahead of the
+    /// zenith and one just behind it must render (nearly) the same pair.
+    #[test]
+    fn pinna_is_continuous_through_the_zenith() {
+        let pinna = ParametricPinnaHrir {
+            d: ParametricPinnaHrir::D_PB_NH,
+            depth: 1.0,
+        };
+        let ahead = pinna.render(0.0, 89.0, 48_000);
+        let behind = pinna.render(180.0, 89.0, 48_000);
+        let max_diff = ahead
+            .left
+            .iter()
+            .zip(behind.left.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_diff < 0.05, "discontinuity at the zenith: {max_diff}");
     }
 
     #[test]
