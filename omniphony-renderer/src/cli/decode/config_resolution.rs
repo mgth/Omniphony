@@ -681,7 +681,7 @@ mod tests {
                 node: Some("omniphony_live".to_string()),
                 ..Default::default()
             }),
-            input_mode: Some(renderer::config::InputModeConfig::PipewireBridge),
+            input_mode: Some(renderer::config::InputModeConfig::Pipewire),
             current_layout: Some(renderer::speaker_layout::SpeakerLayout {
                 radius_m: 1.5,
                 speakers: vec![],
@@ -703,7 +703,7 @@ mod tests {
         assert!(render.live_input.is_some(), "live_input erased");
         assert_eq!(
             render.input_mode,
-            Some(renderer::config::InputModeConfig::PipewireBridge)
+            Some(renderer::config::InputModeConfig::Pipewire)
         );
         assert_eq!(
             render.current_layout.map(|l| l.radius_m),

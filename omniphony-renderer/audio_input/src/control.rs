@@ -9,11 +9,12 @@ use sys::diag::DiagRegistry;
 pub enum InputMode {
     #[serde(rename = "pipe_bridge", alias = "bridge")]
     Bridge,
-    /// The PipeWire sink. `pipewire` and `live` named the removed PCM-only
-    /// sink; they resolve here because this sink negotiates linear PCM too,
-    /// so a configuration saved for that mode keeps working.
-    #[serde(rename = "pipewire_bridge", alias = "pipewire", alias = "live")]
-    PipewireBridge,
+    /// The PipeWire sink. `pipewire_bridge` was its name while a PCM-only
+    /// sink held `pipewire` / `live`; that sink is gone and this one
+    /// negotiates linear PCM too, so all three spellings resolve here and a
+    /// configuration saved under any of them keeps working.
+    #[serde(rename = "pipewire", alias = "pipewire_bridge", alias = "live")]
+    Pipewire,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
