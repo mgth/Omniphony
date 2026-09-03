@@ -14,7 +14,9 @@
 //! This is a **non-realtime** sink: there is no device clock, no adaptive
 //! resampling and no pacer. Flow control comes from blocking writes — when the
 //! downstream consumer (e.g. a network relay) stalls, the pipe fills and the
-//! write blocks, pacing the producer.
+//! write blocks, pacing the producer. A consumer that goes away instead of
+//! stalling makes the write fail with `BrokenPipe`; that is the end of the
+//! output rather than an error, and the decode layer ends the run on it.
 
 use std::fs::OpenOptions;
 use std::io::{self, BufWriter, Write};

@@ -213,6 +213,19 @@ impl InputControl {
         }
     }
 
+    /// Drop the installed pacer handle. Called from the decode lifecycle when
+    /// the audio writer that owns the pacer is retired (backend switch, device
+    /// or rate change, standby, stream restart), so the input thread stops
+    /// draining a FIFO nothing feeds any more into a ring nothing plays. Left
+    /// in place, every chunk would burn `drain_samples` failed pops and pushes
+    /// on the RT thread and pile phantom underruns into the pacer telemetry.
+    /// The next writer installs its own handle when it is built.
+    pub fn clear_output_pacer(&self) {
+        if let Ok(mut guard) = self.output_pacer.lock() {
+            *guard = None;
+        }
+    }
+
     /// Clone the currently-installed pacer handle, if any.
     pub fn output_pacer(&self) -> Option<audio_output::PacerHandle> {
         self.output_pacer

@@ -1,5 +1,6 @@
 use super::output::AudioWriter;
 use crate::cli::command::{OutputBackend, OutputFileFormatArg};
+use audio_input::InputControl;
 use audio_output::AdaptiveResamplingConfig;
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
@@ -212,9 +213,22 @@ impl Default for OutputState {
 }
 
 impl OutputState {
-    pub fn invalidate_writer(&mut self) -> Option<AudioWriter> {
+    /// Retire the audio writer so the next frame builds a fresh one.
+    ///
+    /// The writer's cross-crate wiring goes with it: a PipeWire writer leaves
+    /// its pacer handle on the `InputControl`, and the input thread keeps
+    /// draining that handle on every chunk until something replaces it. The
+    /// control is taken here so the handle is cleared in the same step; the
+    /// next writer installs its own when it is built.
+    pub fn invalidate_writer(
+        &mut self,
+        input_control: Option<&InputControl>,
+    ) -> Option<AudioWriter> {
         self.output_init_failed = false;
         self.audio_writer_channels = None;
+        if let Some(control) = input_control {
+            control.clear_output_pacer();
+        }
         self.audio_writer.take()
     }
 
