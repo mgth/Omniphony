@@ -156,15 +156,6 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                     channel_names,
                 ) {
                     Ok(writer) => {
-                        // Wire the post-rendering pacer into the input
-                        // control before stashing the writer, so the input
-                        // PwStream callback can drain the FIFO on its next
-                        // tick.
-                        if let (Some(ic), Some(handle)) =
-                            (self.input_control, writer.pacer_handle())
-                        {
-                            ic.install_output_pacer(handle);
-                        }
                         self.output.audio_writer = Some(writer);
                         self.output.audio_writer_channels = Some(channel_count);
                         self.output.bootstrap_frames_seen = 0;
@@ -288,7 +279,7 @@ impl<'a> WriterLifecycleCoordinator<'a> {
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         let _ = (output_backend, sample_rate, channel_count);
 
-        match output_backend {
+        let writer = match output_backend {
             #[cfg(target_os = "linux")]
             OutputBackend::Pipewire => {
                 if let Some(reason) = bridge_input_loop_reason(
@@ -368,7 +359,17 @@ impl<'a> WriterLifecycleCoordinator<'a> {
                 )
             }
             OutputBackend::Unsupported => Err(anyhow!("No supported realtime output backend")),
+        }?;
+        // Wire the post-rendering pacer into the input control before the
+        // writer is handed back, so the input PwStream callback can drain the
+        // FIFO on its next tick. Done here rather than by the callers so every
+        // path that builds a writer (first frame, live switch, stream restart)
+        // installs the handle of the writer it is about to play through, and
+        // none leaves the input thread draining the one just retired.
+        if let (Some(control), Some(handle)) = (self.input_control, writer.pacer_handle()) {
+            control.install_output_pacer(handle);
         }
+        Ok(writer)
     }
 
     /// Build the cpal-backed realtime writer — ASIO on Windows, CoreAudio on
