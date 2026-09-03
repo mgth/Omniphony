@@ -100,7 +100,7 @@ struct InputConfigPatch {
 fn input_mode_name(mode: InputMode) -> &'static str {
     match mode {
         InputMode::Bridge => "pipe_bridge",
-        InputMode::PipewireBridge => "pipewire_bridge",
+        InputMode::Pipewire => "pipewire",
     }
 }
 
@@ -550,7 +550,7 @@ impl HostControlHandler for HostAudio {
             let requested = parse_string_arg(msg.args.first()).and_then(|value| {
                 match value.to_ascii_lowercase().as_str() {
                     "bridge" | "pipe_bridge" => Some(InputMode::Bridge),
-                    "live" | "pipewire" | "pipewire_bridge" => Some(InputMode::PipewireBridge),
+                    "pipewire" | "pipewire_bridge" | "live" => Some(InputMode::Pipewire),
                     _ => None,
                 }
             });
@@ -963,7 +963,7 @@ impl HostControlHandler for HostAudio {
         let requested = input.requested_snapshot();
         render.input_mode = Some(match requested.mode {
             InputMode::Bridge => renderer::config::InputModeConfig::Bridge,
-            InputMode::PipewireBridge => renderer::config::InputModeConfig::PipewireBridge,
+            InputMode::Pipewire => renderer::config::InputModeConfig::Pipewire,
         });
         render.live_input = Some(renderer::config::LiveInputConfig {
             backend: requested.backend.map(|backend| match backend {

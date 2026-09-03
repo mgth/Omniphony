@@ -176,8 +176,7 @@ impl DecodeHandler {
             .as_ref()
             .map(|control| {
                 let requested = control.requested_snapshot();
-                requested.mode == InputMode::PipewireBridge
-                    && requested.clock_mode == InputClockMode::Dac
+                requested.mode == InputMode::Pipewire && requested.clock_mode == InputClockMode::Dac
             })
             .unwrap_or(false)
     }
@@ -194,7 +193,7 @@ impl DecodeHandler {
         if matches!(source, DecodedSource::Bridge)
             && matches!(
                 applied_before.active_mode,
-                InputMode::Bridge | InputMode::PipewireBridge
+                InputMode::Bridge | InputMode::Pipewire
             )
         {
             let channels = Some(frame.channel_count as u16);
@@ -233,7 +232,7 @@ impl DecodeHandler {
                 // The PipeWire sink advertises PCM alongside IEC 61937, so this
                 // mode legitimately produces either source depending on what the
                 // client negotiated.
-                | (InputMode::PipewireBridge, DecodedSource::Bridge | DecodedSource::Live)
+                | (InputMode::Pipewire, DecodedSource::Bridge | DecodedSource::Live)
         )
     }
 

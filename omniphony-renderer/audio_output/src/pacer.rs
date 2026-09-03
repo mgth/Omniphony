@@ -103,7 +103,7 @@ impl PacerHandle {
     /// channel interleaving stays aligned.
     ///
     /// Callers gate on [`PacerHandle::enabled`] before invoking this. Both the
-    /// PipeWire input RT callback (Live / PipewireBridge modes) and the pure
+    /// PipeWire input RT callback (Pipewire mode) and the pure
     /// pipe-bridge drain thread share this single drain implementation; the
     /// difference is only how each computes `drain_samples` and what clock
     /// drives the call.
