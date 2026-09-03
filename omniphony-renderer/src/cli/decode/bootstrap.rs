@@ -171,7 +171,7 @@ fn build_requested_input_config(
 
     if let Some(render_cfg) = render_cfg {
         requested.mode = match render_cfg.input_mode {
-            Some(renderer::config::InputModeConfig::PipewireBridge) => InputMode::PipewireBridge,
+            Some(renderer::config::InputModeConfig::Pipewire) => InputMode::Pipewire,
             _ => InputMode::Bridge,
         };
 
@@ -188,7 +188,7 @@ fn build_requested_input_config(
                 Some(renderer::config::InputClockModeConfig::Pipewire) => InputClockMode::Pipewire,
                 Some(renderer::config::InputClockModeConfig::Upstream) => InputClockMode::Upstream,
                 Some(renderer::config::InputClockModeConfig::Dac) => InputClockMode::Dac,
-                None if requested.mode == InputMode::PipewireBridge => InputClockMode::Upstream,
+                None if requested.mode == InputMode::Pipewire => InputClockMode::Upstream,
                 None => InputClockMode::Dac,
             };
             requested.channels = live_input.channels;

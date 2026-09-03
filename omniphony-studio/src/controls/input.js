@@ -32,8 +32,8 @@ function formatInputModeLabel(value) {
     case 'bridge':
     case 'pipe_bridge':
       return t('input.mode.pipe_bridge');
-    case 'pipewire_bridge':
-      return t('input.mode.pipewire_bridge');
+    case 'pipewire':
+      return t('input.mode.pipewire');
     default:
       return value || '—';
   }
@@ -54,7 +54,7 @@ const DEFAULT_LIVE_CHANNELS = 2;
 const DEFAULT_LIVE_SAMPLE_RATE = 192000;
 
 function bridgePathMissingMessage(requestedMode) {
-  if (requestedMode !== 'pipe_bridge' && requestedMode !== 'pipewire_bridge') {
+  if (requestedMode !== 'pipe_bridge' && requestedMode !== 'pipewire') {
     return '';
   }
   const error = String(app.inputError || '').trim();
@@ -129,7 +129,7 @@ export function updateInputControlUI() {
   // is the decoder bridge path. Show just that and hide the rest of the panel.
   const embedded = isEmbeddedProducer();
   if (inputModeSelectEl) {
-    inputModeSelectEl.value = ['pipewire_bridge', 'pipe_bridge'].includes(app.inputMode)
+    inputModeSelectEl.value = ['pipewire', 'pipe_bridge'].includes(app.inputMode)
       ? app.inputMode
       : 'pipe_bridge';
     inputModeSelectEl.disabled = !hasInputDomain;
@@ -175,7 +175,7 @@ export function updateInputControlUI() {
 
   const showApplyPending = requestedMode !== 'pipe_bridge' && app.inputApplyPending;
   const bridgePathMissing = bridgePathMissingMessage(requestedMode);
-  const pipewireBridgeRequested = requestedMode === 'pipewire_bridge';
+  const pipewireRequested = requestedMode === 'pipewire';
 
   // Both remaining modes decode through the bridge, so its fields always show.
   if (inputBridgeFieldsEl) {
@@ -213,13 +213,13 @@ export function updateInputControlUI() {
     oscBridgePathInputEl.classList.toggle('input-panel-danger', Boolean(bridgePathMissing));
   }
   if (inputLiveFieldsEl) {
-    inputLiveFieldsEl.style.display = hasInputDomain && pipewireBridgeRequested ? '' : 'none';
-    inputLiveFieldsEl.style.opacity = hasInputDomain && pipewireBridgeRequested ? '1' : '0.55';
+    inputLiveFieldsEl.style.display = hasInputDomain && pipewireRequested ? '' : 'none';
+    inputLiveFieldsEl.style.opacity = hasInputDomain && pipewireRequested ? '1' : '0.55';
   }
   if (inputPipeRowEl) inputPipeRowEl.style.display = hasInputDomain && requestedMode === 'pipe_bridge' ? '' : 'none';
-  if (inputNodeRowEl) inputNodeRowEl.style.display = hasInputDomain && pipewireBridgeRequested ? '' : 'none';
-  if (inputDescriptionRowEl) inputDescriptionRowEl.style.display = hasInputDomain && pipewireBridgeRequested ? '' : 'none';
-  if (inputClockModeRowEl) inputClockModeRowEl.style.display = hasInputDomain && pipewireBridgeRequested ? '' : 'none';
+  if (inputNodeRowEl) inputNodeRowEl.style.display = hasInputDomain && pipewireRequested ? '' : 'none';
+  if (inputDescriptionRowEl) inputDescriptionRowEl.style.display = hasInputDomain && pipewireRequested ? '' : 'none';
+  if (inputClockModeRowEl) inputClockModeRowEl.style.display = hasInputDomain && pipewireRequested ? '' : 'none';
   // Rows of the removed PCM-only live mode. The bridge sink negotiates its
   // own format and fixes the input map, so it reads none of these; they stay
   // in the DOM, hidden, until the PipeWire-mode rework decides which return.
@@ -234,7 +234,7 @@ export function updateInputControlUI() {
     if (el) el.style.display = 'none';
   });
   [inputNodeInputEl, inputDescriptionInputEl, inputClockModeSelectEl].forEach((el) => {
-    if (el) el.disabled = !hasInputDomain || !pipewireBridgeRequested;
+    if (el) el.disabled = !hasInputDomain || !pipewireRequested;
   });
   [
     inputBackendSelectEl,
@@ -255,7 +255,7 @@ export function updateInputControlUI() {
     const sync = showApplyPending ? t('input.sync.pending') : t('input.sync.synced');
     const error = app.inputError ? tf('input.status.error', { error: app.inputError }) : '';
     const pipe = app.orenderInputPipe || '—';
-    const clock = pipewireBridgeRequested
+    const clock = pipewireRequested
       ? tf('input.status.clock', { clock: formatClockModeLabel(app.liveInput.clockMode || 'dac') })
       : '';
     inputStatusInfoEl.textContent = tf('input.status.bridge', {
@@ -275,8 +275,8 @@ export function updateInputControlUI() {
       // active mode summary is meaningless. Show the bridge path instead.
       const bridgePath = String(app.renderBridgePath || '').trim();
       inputSummaryEl.textContent = bridgePath || t('input.autoDetect');
-    } else if (pipewireBridgeRequested) {
-      inputSummaryEl.textContent = tf('input.summary.pipewireBridge', {
+    } else if (pipewireRequested) {
+      inputSummaryEl.textContent = tf('input.summary.pipewire', {
         requested: requestedModeLabel,
         active: activeModeLabel,
         clock: formatClockModeLabel(app.liveInput.clockMode || 'dac')

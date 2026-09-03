@@ -541,11 +541,11 @@ export function applyInitState(payload) {
   if (typeof payload.audioError === 'string') {
     app.audioError = payload.audioError.trim() || null;
   }
-  // The protocol's historical aliases (`bridge` for `pipe_bridge`; `live` and
-  // `pipewire`, the removed PCM-only mode, for `pipewire_bridge`) are resolved
-  // by `normalize_input_mode` in the backend, on the way in as well as the way
-  // out. An unrecognised mode never reaches the snapshot, so there is nothing
-  // to test for here.
+  // The protocol's historical aliases (`bridge` for `pipe_bridge`;
+  // `pipewire_bridge`, the sink's former name, and `live`, the removed
+  // PCM-only mode, for `pipewire`) are resolved by `normalize_input_mode` in
+  // the backend, on the way in as well as the way out. An unrecognised mode
+  // never reaches the snapshot, so there is nothing to test for here.
   if (typeof payload.inputMode === 'string') {
     if (!app.inputModeDirty || payload.inputMode === app.inputMode) {
       app.inputMode = payload.inputMode;

@@ -22,7 +22,7 @@ export function inputPanelMarkup() {
               <label for="inputModeSelect" data-i18n="input.mode" data-help-i18n="help.input.mode">Mode</label>
               <select id="inputModeSelect" class="delay-input">
                 <option value="pipe_bridge" data-i18n="input.mode.pipe_bridge">Pipe bridge</option>
-                <option value="pipewire_bridge" data-i18n="input.mode.pipewire_bridge">PipeWire bridge</option>
+                <option value="pipewire" data-i18n="input.mode.pipewire">PipeWire</option>
               </select>
             </div>
           </div>

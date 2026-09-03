@@ -512,11 +512,12 @@ pub struct HeadTrackingConfig {
 pub enum InputModeConfig {
     #[serde(rename = "pipe_bridge", alias = "bridge")]
     Bridge,
-    /// The PipeWire sink. `pipewire` and `live` named the removed PCM-only
-    /// sink and still deserialize here, so a config saved for it keeps
-    /// loading instead of falling back to defaults.
-    #[serde(rename = "pipewire_bridge", alias = "pipewire", alias = "live")]
-    PipewireBridge,
+    /// The PipeWire sink. `pipewire_bridge` was its name while a PCM-only
+    /// sink held `pipewire` / `live`; all three still deserialize here, so a
+    /// config saved under any of them keeps loading instead of falling back
+    /// to defaults.
+    #[serde(rename = "pipewire", alias = "pipewire_bridge", alias = "live")]
+    Pipewire,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

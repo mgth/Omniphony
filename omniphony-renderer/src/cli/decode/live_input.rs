@@ -169,7 +169,7 @@ pub fn spawn_live_input_manager(
                     if let Some(capture) = current_capture.take() {
                         let _ = capture.join.join();
                     }
-                    if input_control.requested_snapshot().mode == InputMode::PipewireBridge {
+                    if input_control.requested_snapshot().mode == InputMode::Pipewire {
                         input_control.set_input_state(
                             InputMode::Bridge,
                             None,
@@ -296,7 +296,7 @@ fn reconcile_live_input(
                 }
 
                 input_control.set_input_state(
-                    InputMode::PipewireBridge,
+                    InputMode::Pipewire,
                     Some(InputBackend::Pipewire),
                     Some(config.channels),
                     Some(config.sample_rate_hz),
@@ -305,7 +305,7 @@ fn reconcile_live_input(
                     Some("pipewire-iec61937".to_string()),
                 );
                 log::info!(
-                    "Live input active: mode=pipewire_bridge backend=pipewire node={} channels={} rate={}Hz",
+                    "Live input active: mode=pipewire backend=pipewire node={} channels={} rate={}Hz",
                     config.node_name,
                     config.channels,
                     config.sample_rate_hz
@@ -341,7 +341,7 @@ fn resolve_capture_config(
 ) -> Result<PipewireBridgeInputConfig> {
     match requested.mode {
         InputMode::Bridge => anyhow::bail!("bridge mode does not spawn a live PipeWire capture"),
-        InputMode::PipewireBridge => {
+        InputMode::Pipewire => {
             resolve_pipewire_bridge_config(requested, audio_control, bridge_runtime)
         }
     }

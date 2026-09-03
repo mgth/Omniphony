@@ -742,7 +742,7 @@ fn finalize_render_run(
 ///
 /// Only one component may own the FIFO drain at a time, so this thread acts
 /// only when pacing is enabled AND the active input mode is `Bridge`; in
-/// Live / PipewireBridge the input RT callback owns it and tokens are dropped.
+/// `Pipewire` the input RT callback owns it and tokens are dropped.
 fn spawn_pacer_drain_thread(
     input_control: std::sync::Arc<audio_input::InputControl>,
     drain_rx: mpsc::Receiver<u64>,
