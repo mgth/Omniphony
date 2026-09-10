@@ -64,6 +64,18 @@ impl StudioSpike {
         let (rect, _) =
             ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), egui::Sense::hover());
         let painter = ui.painter().with_clip_rect(rect);
+        self.resample_traces(&painter, rect, window_ms);
+    }
+
+    /// The two traces on one rectangle. The auto-tune wizard draws the same
+    /// picture beside its own controls: the run is the controller being
+    /// pulled, and this is what that looks like.
+    pub(crate) fn resample_traces(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        window_ms: f64,
+    ) {
         painter.rect_filled(rect, 2.0, BG);
         let font = egui::FontId::proportional(theme::FONT_SIZE_SMALL);
         if self.resample_series.len() < 2 {
@@ -196,7 +208,7 @@ impl StudioSpike {
     }
 
     /// Poll the three values the plot draws, and keep the window repainting.
-    fn poll_resample_sample(&mut self, ctx: &egui::Context) {
+    pub(crate) fn poll_resample_sample(&mut self, ctx: &egui::Context) {
         ctx.request_repaint();
         let t = self.diag_started.elapsed().as_secs_f64() * 1000.0;
         let sample = {

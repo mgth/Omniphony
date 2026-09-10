@@ -175,6 +175,8 @@ pub struct StudioSpike {
     pub(crate) sofa_browser: Option<crate::panels::sofa_browser::SofaBrowser>,
     /// The backend file editor, while it is open.
     pub(crate) script_editor: Option<crate::panels::script_editor::ScriptEditor>,
+    /// The auto-tune wizard, while it is open.
+    pub(crate) auto_tune: Option<crate::panels::auto_tune::Wizard>,
     /// Handle on the renderer: every control the panels expose goes through it.
     pub(crate) ctl: Ctl,
     /// The host's own `SharedState`, kept for the whole session because the
@@ -406,6 +408,7 @@ impl StudioSpike {
             ctx: cc.egui_ctx.clone(),
             sofa_browser: None,
             script_editor: None,
+            auto_tune: None,
             ctl,
             last_subscribe: None,
         })
@@ -666,6 +669,8 @@ impl StudioSpike {
         self.info_modal(ctx);
         self.sofa_browser_modal(ctx);
         self.script_editor_modal(ctx);
+        self.auto_tune_modal(ctx);
+        self.auto_tune_quit_guard(ctx);
         if !layout_eq(&layout, &self.layout) {
             self.layout = layout;
             self.prefs.side_panels = layout;

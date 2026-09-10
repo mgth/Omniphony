@@ -485,6 +485,11 @@ impl StudioSpike {
                 self.ctl
                     .send_int("/omniphony/control/adaptive_resampling/reset_ratio", 1);
             }
+            // The wizard patches this controller live, so it only makes sense
+            // while there is one running to patch.
+            if adaptive_on && !paused {
+                self.auto_tune_button(ui);
+            }
         });
 
         // The far mode fires when any of its three actions is armed.
