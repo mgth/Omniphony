@@ -102,6 +102,10 @@ pub struct StudioSpike {
     pub(crate) pinna_depth: f32,
     pub(crate) prtf_depth: f32,
     pub(crate) prtf_freq_scale: f32,
+    /// Target latency being typed, until Apply.
+    pub(crate) latency_target_edit: Option<f64>,
+    /// Adaptive-controller fields edited but not yet applied.
+    pub(crate) adaptive_edits: std::collections::BTreeMap<&'static str, f64>,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
     /// Handle on the renderer: every control the panels expose goes through it.
@@ -260,6 +264,8 @@ impl StudioSpike {
             pinna_depth: 100.0,
             prtf_depth: 100.0,
             prtf_freq_scale: 100.0,
+            latency_target_edit: None,
+            adaptive_edits: Default::default(),
             config_dir,
             ctl,
             last_subscribe: None,
@@ -504,6 +510,7 @@ impl StudioSpike {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     self.audio_output_section(ui);
+                    self.latency_section(ui);
                     self.master_section(ui);
                     self.renderer_section(ui);
                     self.objects_section(ui);

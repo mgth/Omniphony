@@ -9,6 +9,7 @@ pub mod binaural;
 pub mod connection;
 pub mod display;
 pub mod drc;
+pub mod latency;
 pub mod lists;
 pub mod log;
 pub mod renderer;
