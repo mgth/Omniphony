@@ -26,6 +26,7 @@ pub mod renderer_perf;
 pub mod resample_plot;
 pub mod room;
 pub mod row_glyphs;
+pub mod scene_fx;
 pub mod sources_2d;
 pub mod speaker_editor;
 pub mod speaker_layouts;

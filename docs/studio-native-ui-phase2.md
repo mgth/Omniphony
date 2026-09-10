@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Scene-effects bar | Seven quick toggles over the viewport for the display switches reached for most often, and the two nature flyouts (object marker, trail kind) | nothing, except the mpv overlay's own enable |
 | Resample sparkline | The smoothed latency against its target and the rate adjustment in ppm, stacked on one canvas over the diagnostics plot's own window | nothing |
 | Host services | The local-renderer auto-start watchdog, and Launch / Stop / install / restart for the renderer and its OS service | `/omniphony/control/quit` on Stop; the rest is process control, not OSC |
 | Language | All eight of the web's catalogues, the picker in the Display section, and `auto` following the environment | nothing — the language is this host's own |
@@ -102,6 +103,20 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The scene-effects bar holds no effect logic of its own: it drives the same state
+the panels do, so a toggle made from either place is the same toggle. It exists
+because the display switches are the ones reached for most often while looking
+at the scene, and reaching for them should not mean opening a panel over the
+thing being looked at. Picking a nature from a flyout also turns its layer on,
+because choosing how something should look is asking to see it. The mpv
+overlay's button is the exception to "same state": that one lives in the engine
+and can be toggled from an mpv keybind Studio never sees, so the button reflects
+what the engine last published rather than a local flag. Its icons are glyphs
+rather than the web's inline SVG — rasterising SVG would mean a dependency for
+seven icons — and the two carets are painted, because the bundled faces have no
+dependable small triangle and a missing glyph draws as a hollow box that reads
+as another toggle.
 
 The resample sparkline puts the smoothed latency and the rate adjustment in one
 picture because they are cause and effect — the controller pulls the rate to
@@ -347,9 +362,8 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   host needs its own HTTP client) and the dead rows of the audio input panel
   (backend, imported layout, channel count, sample rate, map, LFE mode) which
   belong to the legacy PCM mode.
-- **Elsewhere**: the scene-effects bar, the modals, the gradient editor, the
-  resample plot, the code editor, the SOFA browser, the auto-tune wizard, mpv
-  overlay mirroring.
+- **Elsewhere**: the info modals, the gradient editor, the code editor, the SOFA
+  browser, the auto-tune wizard, mpv overlay mirroring.
 - **Host services** the native app does not have yet: the derived master meter.
 
 ## The gate

@@ -127,6 +127,8 @@ pub struct StudioSpike {
     pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// Which scene-effects flyout is open, if any.
+    pub(crate) scene_fx_flyout_open: Option<crate::panels::scene_fx::Flyout>,
     /// Resample sparkline: whether it is showing, and what it has sampled.
     pub(crate) resample_plot_open: bool,
     pub(crate) resample_series: crate::panels::resample_plot::ResampleSeries,
@@ -340,6 +342,7 @@ impl StudioSpike {
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
             // executable's own directory.
+            scene_fx_flyout_open: None,
             resample_plot_open: false,
             resample_series: Default::default(),
             diag_series: Default::default(),
@@ -623,6 +626,7 @@ impl StudioSpike {
                 });
         });
         self.log_overlay(ctx, &layout);
+        self.scene_fx_bar(ctx);
         self.save_footer(ctx);
         self.band_cursor(ctx, &layout);
         self.about_modal(ctx);
