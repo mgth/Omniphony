@@ -95,6 +95,13 @@ pub struct StudioSpike {
     /// one that last changed them.
     pub(crate) room_edit: Option<crate::panels::room::RoomDimensions>,
     pub(crate) room_editing: bool,
+    /// The parametric HRTF settings. They travel inside the source string, so
+    /// the renderer never echoes them: this side owns them, as the web does.
+    pub(crate) pinna_preset: String,
+    pub(crate) pinna_d_scale: f32,
+    pub(crate) pinna_depth: f32,
+    pub(crate) prtf_depth: f32,
+    pub(crate) prtf_freq_scale: f32,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
     /// Handle on the renderer: every control the panels expose goes through it.
@@ -248,6 +255,11 @@ impl StudioSpike {
             last_speaker_selection: None,
             room_edit: None,
             room_editing: false,
+            pinna_preset: "pbnh".to_owned(),
+            pinna_d_scale: 100.0,
+            pinna_depth: 100.0,
+            prtf_depth: 100.0,
+            prtf_freq_scale: 100.0,
             config_dir,
             ctl,
             last_subscribe: None,

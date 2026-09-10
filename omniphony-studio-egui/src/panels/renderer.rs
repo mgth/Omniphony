@@ -124,13 +124,7 @@ impl StudioSpike {
                         self.distance_diffuse_block(ui);
                         self.distance_model_block(ui);
                     }
-                    RendererTab::Binaural => {
-                        widgets::note(
-                            ui,
-                            "The binaural subpanels (HRTF, distance, listening room, head \
-                             tracking) are not ported yet.",
-                        );
-                    }
+                    RendererTab::Binaural => self.binaural_tab(ui),
                 }
                 // Shown on both tabs.
                 self.crossover_block(ui);
