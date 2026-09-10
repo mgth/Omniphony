@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Headphone rows, drag and clip | The two ear rows with their meters and ear mute, drag-to-reorder on a speaker's id strip, and the clip flash the renderer's `clip:detected` lights | `/omniphony/control/binaural/ear_mute`, `/omniphony/control/config/layout` (`moveSpeaker`) and its apply |
 | Speaker row glyphs | The plan thumbnail with height in its colour, the crossover shape with its two cutoffs, the selected object's contribution painted over the level, and the per-band contribution bars | nothing |
 | Layout actions | Presets, Import layout, Export layout and Add on the speakers header, each refused while the backend has the speakers frozen | `/omniphony/control/config/layout` (`replaceLayout`, `addSpeaker`) and its apply; the pickers and the file I/O are host-side |
 | Renderer performance | One bar for the frame split into decode, crossover, render and write end to end, cumulative worst-case markers, and a readout per stage against the frame budget — shown only while metering is on | nothing |
@@ -96,6 +97,12 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+Which of the two lists is shown follows the output mode, and the middle case is
+the one worth stating: binaural-direct hides the speakers because they are not
+the output, but the virtual-room mode shows both, because it renders through the
+speakers into the ears. The ear rows are addressed by ear rather than by layout
+index, so their mute is its own message.
 
 A speaker row has to say *where* the speaker is and *what band* it carries
 without becoming a table, so each answer is a glyph read at a glance and hovered
@@ -271,8 +278,8 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Renderer panel**: the hybrid backend's own controls, the file-parameter
   Browse and Edit buttons, the info modals, and the SOFA browser the binaural
   tab's file source needs.
-- **Speakers**: drag-to-reorder, the clip flash on a row's id strip, the
-  headphone channel rows and their ear mute.
+- **Speakers**: the 3D per-speaker frequency gauge and the band cursor that
+  share the row's band colours.
 - **Left overlay**: updates (the web fetches GitHub from the webview; a native
   host needs its own HTTP client) and the dead rows of the audio input panel
   (backend, imported layout, channel count, sample rate, map, LFE mode) which
