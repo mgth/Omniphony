@@ -64,7 +64,7 @@ const KEYWORDS: &[&str] = &[
 pub fn tokenize(src: &str) -> Vec<(usize, usize, Tok)> {
     let bytes = src.as_bytes();
     let mut out: Vec<(usize, usize, Tok)> = Vec::new();
-    let mut push = |out: &mut Vec<(usize, usize, Tok)>, start: usize, end: usize, tok: Tok| {
+    let push = |out: &mut Vec<(usize, usize, Tok)>, start: usize, end: usize, tok: Tok| {
         if start >= end {
             return;
         }

@@ -96,6 +96,7 @@ config, debounced 600 ms so a drag writes once.
 | Renderer | Output mode, the Renderer/Binaural tab pair, the evaluation mode with its cartesian and polar grids and their step readouts, position interpolation, object size intervals, ramp mode, the backend with its status and its schema-generated parameters, distance diffuse, the distance model, the crossover with what the engine built | `/omniphony/control/output_mode`, `…/binaural_mode`, `…/render_evaluation_mode`, `…/render_evaluation/*`, `…/ramp_mode`, `…/render_backend`, `…/backend/param`, `…/distance_diffuse/*`, `…/distance_model*`, `…/option` |
 | SOFA browser | The HRTF file dialog: the local cache with each file's embedded licence, its Import and Delete, and the upload that sends one to a renderer on another machine; and, behind a per-session consent, the sofacoustics.org index navigated folder by folder, downloaded with a progress bar and a Cancel, and activated | `/omniphony/control/binaural/hrir_source` (`sofa:<path>`), `…/binaural/hrtf_upload/{begin,chunk,end}`; the browsing, the download and the cache are host-side |
 | Backend file editor | Browse and Edit beside a backend's file parameter, and the editor itself: the managed-file picker, the name field, New, Reload and Save, and a Lua highlighter over the buffer | `/omniphony/control/backend/file/{get,list,put}`; the content travels over OSC, never a path |
+| Auto-tune (procedure) | The detectors and the state machine of the PI auto-tune run: the kp sweep and its oscillation test, saturation, convergence, source loss, and the long-run statistics that size the rate limit | none yet — the wizard that drives it is the next increment |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped by
@@ -154,6 +155,17 @@ interpolated rather than dropped, since a gap left in place would shift every
 bin after it. The transform length is bounded by both the history collected and
 the window the user chose, which is what makes a shorter window a coarser
 spectrum.
+
+The auto-tune procedure came over as two pure modules, ahead of the screen that
+drives them. That order is deliberate: the whole value of the thing is whether
+it *decides* correctly, and a decision made from a table of samples can be
+tested where one made from a live link cannot. The tests drive the machine
+through a synthetic link that starts ringing once the gain passes a threshold,
+and check what it concluded — the sweep doubles until the loop rings, the
+critical gain is the palier that rang, what ships is the Ziegler-Nichols
+fraction of it, a link that never rings ends the run instead of doubling for
+ever, an outage suspends it where it stands, and the long run sizes the rate
+limit from the drift it actually saw.
 
 Dragging a rectangle over a panel measures it. In the time domain that is only
 offered while the plot is paused — a rectangle over a trace that is still
@@ -500,7 +512,8 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Left overlay**: the dead rows of the audio input panel (backend, imported
   layout, channel count, sample rate, map, LFE mode), which belong to the legacy
   PCM mode and are deliberately not ported.
-- **Elsewhere**: the auto-tune wizard.
+- **Elsewhere**: the auto-tune wizard's own screen (its procedure is ported and
+  tested; what is missing is the dialog that runs it).
 - **Host services**: all ported.
 
 ## The gate
