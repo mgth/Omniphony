@@ -15,9 +15,9 @@ pub const PAGE_BG: Color32 = Color32::from_rgb(0x0a, 0x0b, 0x10);
 /// cannot do; the fill is darkened to keep text contrast without it.
 pub const PANEL_BG: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 199);
 /// `border: 1px solid rgba(255,255,255,.2)`.
-pub const PANEL_BORDER: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 51);
+pub const PANEL_BORDER: Color32 = Color32::from_rgba_premultiplied(51, 51, 51, 51);
 /// `border-top: 1px solid rgba(255,255,255,.12)` between sections.
-pub const SECTION_RULE: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 31);
+pub const SECTION_RULE: Color32 = Color32::from_rgba_premultiplied(31, 31, 31, 31);
 
 /// Body text (`color: #d9ecff`).
 pub const TEXT: Color32 = Color32::from_rgb(0xd9, 0xec, 0xff);
@@ -45,12 +45,19 @@ pub const CLIP: Color32 = Color32::from_rgb(0xff, 0x3b, 0x30);
 /// "Initializing" status dot (`#89a3ff`).
 pub const INFO: Color32 = Color32::from_rgb(0x89, 0xa3, 0xff);
 
+// egui stores colours premultiplied, so a white at `a` percent alpha is
+// `(a, a, a, a)` — never `(255, 255, 255, a)`, which is a fully bright white
+// carrying a low alpha and composites additively. Every fill and rule here was
+// written the second way, which is why the controls read white-hot instead of
+// like `app.css`'s eight-percent wash. `Color32::from_white_alpha` says this in
+// one word but is not `const`.
+
 /// Control fills: rest, hover, active (`rgba(255,255,255,.08/.12/.18)`).
-pub const FILL: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 20);
-pub const FILL_HOVER: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 31);
-pub const FILL_ACTIVE: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 46);
+pub const FILL: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
+pub const FILL_HOVER: Color32 = Color32::from_rgba_premultiplied(31, 31, 31, 31);
+pub const FILL_ACTIVE: Color32 = Color32::from_rgba_premultiplied(46, 46, 46, 46);
 /// Control outline (`rgba(255,255,255,.2)`).
-pub const CONTROL_BORDER: Color32 = Color32::from_rgba_premultiplied(255, 255, 255, 51);
+pub const CONTROL_BORDER: Color32 = Color32::from_rgba_premultiplied(51, 51, 51, 51);
 
 /// The stylesheet's workhorse size: selects, buttons, editor labels, list
 /// rows. `#overlay` itself is 14 px, but almost every control inside is 12.
@@ -99,8 +106,8 @@ pub fn install(ctx: &egui::Context) {
     let v = &mut style.visuals;
     v.panel_fill = PANEL_BG;
     v.window_fill = PANEL_BG;
-    v.extreme_bg_color = Color32::from_rgba_premultiplied(255, 255, 255, 10);
-    v.faint_bg_color = Color32::from_rgba_premultiplied(255, 255, 255, 10);
+    v.extreme_bg_color = Color32::from_white_alpha(10);
+    v.faint_bg_color = Color32::from_white_alpha(10);
     v.override_text_color = Some(TEXT);
     v.hyperlink_color = ACCENT;
     v.selection.bg_fill = Color32::from_rgba_unmultiplied(0x7c, 0xe7, 0xff, 60);
@@ -114,8 +121,7 @@ pub fn install(ctx: &egui::Context) {
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
     v.widgets.hovered.bg_fill = FILL_HOVER;
     v.widgets.hovered.weak_bg_fill = FILL_HOVER;
-    v.widgets.hovered.bg_stroke =
-        Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 72));
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_white_alpha(72));
     v.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT_STRONG);
     v.widgets.active.bg_fill = FILL_ACTIVE;
     v.widgets.active.weak_bg_fill = FILL_ACTIVE;
@@ -164,4 +170,38 @@ pub fn install(ctx: &egui::Context) {
     // prefers light gets the same look rather than an unstyled one.
     ctx.set_style_of(egui::Theme::Light, style);
     ctx.set_theme(egui::Theme::Dark);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every translucent white in the token set must round-trip to a *white*
+    /// with its own alpha. The bug this pins wrote `(255, 255, 255, a)` into a
+    /// premultiplied constructor, which is not an eight-percent wash but a
+    /// full-brightness white composited additively — the controls glowed.
+    #[test]
+    fn the_translucent_whites_are_actually_white_at_their_own_alpha() {
+        for (colour, alpha) in [
+            (PANEL_BORDER, 51),
+            (SECTION_RULE, 31),
+            (FILL, 20),
+            (FILL_HOVER, 31),
+            (FILL_ACTIVE, 46),
+            (CONTROL_BORDER, 51),
+        ] {
+            assert_eq!(
+                colour.to_srgba_unmultiplied(),
+                [255, 255, 255, alpha],
+                "a token is not a plain white at its stated alpha"
+            );
+        }
+    }
+
+    /// The panel ground is a translucent *black*, where premultiplying leaves
+    /// the channels at zero — the one case the wrong form would have got right.
+    #[test]
+    fn the_panel_ground_stays_black() {
+        assert_eq!(PANEL_BG.to_srgba_unmultiplied(), [0, 0, 0, 199]);
+    }
 }

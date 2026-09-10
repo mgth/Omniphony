@@ -154,6 +154,14 @@ native box: the version it reports is this crate's own (the Tauri Studio is at
 it becomes the right number at the cutover; and there is no logo, because the
 web's is an SVG and one image is not worth a rasteriser dependency.
 
+One defect worth recording because it was invisible in code review and obvious
+on screen: every translucent white in the token set was written as
+`from_rgba_premultiplied(255, 255, 255, a)`. egui stores colours premultiplied,
+so that is not an eight-percent wash — it is a full-brightness white carrying a
+low alpha, which composites additively. Every control fill, panel border and
+section rule in the port glowed white-hot instead of tinting. The tokens now
+premultiply properly and a test pins the invariant.
+
 Modals get an opaque frame rather than the side panels' 78 %: a dialog painted
 at that transparency lets the scene and the controls behind it show through its
 own text, and a box that has to be read is the one place the translucency costs
