@@ -11,6 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::host::peak_hold::PeakHolds;
+use crate::host::timing_stats::{TimeWindow, WindowStats};
 use crate::model::app_state::{AppState, Meter};
 use crate::model::layouts::Speaker;
 use crate::osc::apply::{
@@ -94,6 +95,11 @@ pub struct Live {
     pub last_frame_reset: Option<Instant>,
     /// Bumped on every `Change::Snapshot`; the UI compares it to rebuild caches.
     pub snapshot_epoch: u64,
+    /// Origin of the millisecond clock the rolling windows are keyed on.
+    pub started: Instant,
+    /// Instant latency over the last four seconds, so the meter can show the
+    /// spread the host used to compute for the web (`LATENCY_RAW_WINDOW_MS`).
+    pub latency_window: TimeWindow,
     /// Peak-hold cursors of every meter, keyed as the host keys them
     /// (`master`, `spk:<id>`, `src:<id>`, `ear:<id>`).
     pub peaks: PeakHolds,
@@ -175,6 +181,9 @@ pub struct BackendFile {
     pub content: String,
 }
 
+/// The host's `LATENCY_RAW_WINDOW_MS`.
+const LATENCY_RAW_WINDOW_MS: u64 = 4000;
+
 /// `LOG_ENTRY_LIMIT` of `src/log.js`.
 const LOG_ENTRY_LIMIT: usize = 120;
 
@@ -254,6 +263,21 @@ impl Live {
         self.peak_hold_db.get(key).copied()
     }
 
+    /// Record one instant-latency sample in the rolling window.
+    pub fn record_latency(&mut self, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        self.latency_window.record(now_ms, value);
+    }
+
+    /// Spread of the instant latency over the window, if it has samples.
+    pub fn latency_stats(&self) -> Option<WindowStats> {
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        self.latency_window.stats(now_ms, LATENCY_RAW_WINDOW_MS)
+    }
+
     /// `pushLog`: drop empty messages, coerce the level, keep the newest 120.
     pub fn push_log(&mut self, level: &str, target: &str, message: impl Into<String>) {
         let message: String = message.into();
@@ -285,6 +309,7 @@ impl Live {
             gaintable_unavailable: None,
             overlay: None,
             object_test_position: None,
+            latency_window: TimeWindow::new(LATENCY_RAW_WINDOW_MS),
             peaks: PeakHolds::new(),
             peak_hold_db: HashMap::new(),
             log: VecDeque::new(),
@@ -300,6 +325,7 @@ impl Live {
             clip: None,
             last_frame_reset: None,
             snapshot_epoch: 0,
+            started: Instant::now(),
         }
     }
 
@@ -696,6 +722,7 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateLatencyInstant { value } => {
             live.app.set_latency_instant_value(value);
+            live.record_latency(value);
             Change::None
         }
         OscEvent::StateLatencyControl { value } => {
