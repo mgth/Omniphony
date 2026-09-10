@@ -20,7 +20,7 @@ the code wins: treat these as a map, not as a normative reference.
 | [`design.md`](design.md) | The visual system: colour, type and spacing tokens, layout geometry, every generic widget and its states, animation, i18n rules | phase 2 |
 | [`host_contract.md`](host_contract.md) | Every event the Tauri host emits, the numbers it derives first, the connection and auto-start state machine, the `app` state object, the repaint scheduling, the log pipeline, the `get_state` snapshot | phase 2 |
 | [`panels_left.md`](panels_left.md) | The left overlay: about and profiles, updates, OSC, audio input, fixed-channel sources, room geometry, display, DRC, objects and the pinned editors | phase 2 |
-| [`panels_right.md`](panels_right.md) | The right overlay: the audio panel, the renderer panel, and the save footer, scene-effects bar and band cursor | phase 2 |
+| [`panels_right.md`](panels_right.md) | The right overlay: the audio panel, the renderer panel, the speakers section and the speaker editor | phase 2 |
 
 Each document ends with a section listing what its author could not determine
 from the sources. Those are open questions, not settled facts.

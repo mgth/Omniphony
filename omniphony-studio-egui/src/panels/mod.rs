@@ -9,4 +9,5 @@ pub mod display;
 pub mod lists;
 pub mod log;
 pub mod renderer;
+pub mod speaker_editor;
 pub mod tools;

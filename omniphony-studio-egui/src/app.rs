@@ -79,6 +79,18 @@ pub struct StudioSpike {
     pub(crate) recompute_deadline: Option<Instant>,
     /// Named-pipe path remembered while the file output is switched off.
     pub(crate) audio_pipe_path: String,
+    /// Speaker editor: tab, and the test pane's own settings (the web keeps
+    /// these in `localStorage`, keyed `speakerTest.*`).
+    pub(crate) speaker_tab: crate::panels::speaker_editor::SpeakerTab,
+    pub(crate) speaker_test_mode: String,
+    pub(crate) speaker_test_isolation: String,
+    pub(crate) speaker_test_level_db: f32,
+    pub(crate) speaker_test_running: Option<usize>,
+    pub(crate) speaker_test_deadline: Option<Instant>,
+    /// When the speaker-test idle feed was last armed (None = not armed).
+    pub(crate) idle_feed_armed_at: Option<Instant>,
+    /// Speaker selection of the previous frame, to notice a change.
+    pub(crate) last_speaker_selection: Option<usize>,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
     /// Handle on the renderer: every control the panels expose goes through it.
@@ -222,6 +234,14 @@ impl StudioSpike {
             renderer_tab: Default::default(),
             recompute_deadline: None,
             audio_pipe_path: String::new(),
+            speaker_tab: Default::default(),
+            speaker_test_mode: "toggle".to_owned(),
+            speaker_test_isolation: "test_only".to_owned(),
+            speaker_test_level_db: -8.0,
+            speaker_test_running: None,
+            speaker_test_deadline: None,
+            idle_feed_armed_at: None,
+            last_speaker_selection: None,
             config_dir,
             ctl,
             last_subscribe: None,
@@ -466,6 +486,7 @@ impl StudioSpike {
                     self.renderer_section(ui);
                     self.objects_section(ui);
                     self.speakers_section(ui);
+                    self.speaker_editor(ui);
                 });
         });
         self.log_overlay(ctx, &layout);
@@ -547,6 +568,11 @@ impl eframe::App for StudioSpike {
             .show(ui, |ui| self.viewport(ui));
         let ctx = ui.ctx().clone();
         self.overlays(&ctx);
+        if self.last_speaker_selection != self.selection.speaker {
+            self.last_speaker_selection = self.selection.speaker;
+            self.follow_speaker_selection();
+        }
+        self.maintain_test_idle_feed();
         self.check_recompute_ack();
         self.maintain_gaintable_subscriptions();
         self.persist_prefs();

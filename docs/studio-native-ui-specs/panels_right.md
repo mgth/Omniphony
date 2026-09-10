@@ -1187,3 +1187,902 @@ recompute, `control_distance_model_metric` → `/omniphony/control/distance_mode
 | Config status / path | About modal `#aboutConfigPath`, `#aboutRendererVersion` (`controls/config.js:55-108`): path in red `#ff7676` with `about.configMissing` / `about.configParseError` when `renderConfigStatus` is `missing`/`parse_error`; `about.configDefaults` in `#ffb347` when connected with no path | ← events `render:config_path`, `render:config_status`, `render:version`, `render:executable`, `render:abi` |
 
 ---
+## 4. Speakers section and speaker editor
+
+Sources (all under `omniphony-studio/`, line numbers as read on 2026-09-10):
+
+| File | Role |
+|---|---|
+| `src/index.html:779-950` | static markup: `#speakersSection` (779-799), `#speakerEditSection` (802-948) |
+| `src/speakers.js` (2557 l.) | list rows, editor render, layout mutations, OSC patches |
+| `src/listeners/speaker-editor-listeners.js` | every editor input handler |
+| `src/listeners/layout-listeners.js` | Presets / Import / Export buttons |
+| `src/controls/speaker-test.js` | Test tab (trigger modes, level, start/stop) |
+| `src/controls/test-idle-feed.js` | refcounted idle-feed arming shared with the object test |
+| `src/controls/headphone-meter.js` | `#hpChannelsList` L/R rows |
+| `src/scene/speaker-band-select.js`, `src/crossover-bands.js` | band edges + labels used by the row band bars |
+| `src/coordinates.js` | every conversion the editor performs |
+| `src/mute-solo.js` | meter painting, M/S semantics, gain send |
+| `src-tauri/src/commands/speakers.rs`, `commands/gain.rs`, `commands/layout_io.rs`, `src/layouts.rs` | host side |
+
+The native crate already ports these commands to
+`omniphony-studio-egui/src/host/commands/speakers.rs`, `gain.rs`,
+`layout_io.rs`, `binaural.rs` under the **same function names**, so below the
+command is named and the OSC address/arguments quoted, but the bodies are not
+re-documented.
+
+DOM order inside the right overlay: `#speakersSection` is the third and last
+child of `#speakersOverlayScroll`; `#speakerEditSection` is a sibling **outside**
+the scroll (§1).
+
+---
+
+### 4.1 Speakers section (`#speakersSection`, `index.html:779-799`)
+
+`.info-section` (see §0.3). `updateSectionProportions()` (`speakers.js:2001-2010`)
+writes the **inline** style `flex: 1 1 0%` on it after every list render, which
+overrides the `#speakersOverlayScroll > * { flex: 0 0 auto }` rule
+(`app.css:220-226`) — so the speakers section is the one section that absorbs
+the leftover height of the scroll area.
+
+Children in order:
+
+1. `.panel-header.speakers-header-binaural` — Headphones header
+2. `#hpChannelsList.info-list` — §4.2
+3. `.panel-header.speakers-header-speakers` — Speakers header + layout actions
+4. `#speakersList.info-list` — §4.3
+
+**There is no collapse toggle and no summary for this section.** Neither header
+carries a `.panel-toggle-btn` nor a `.panel-summary`, and no `.conditional-params`
+body wraps the lists. The egui port must not invent one: the two lists are always
+expanded, and their visibility is decided only by the output-mode body classes
+below.
+
+#### 4.1.1 The two header variants
+
+| Header | Title element | Text | i18n |
+|---|---|---|---|
+| `.speakers-header-binaural` | `.info-title.panel-title.speakers-title-binaural` | `Headphones` | **none — hardcoded English (not i18n)**; no `data-i18n` attribute |
+| `.speakers-header-speakers` | `.info-title.panel-title.speakers-title-speakers` | `Speakers` | `data-i18n="section.speakers"` → "Speakers" |
+
+Visibility (`app.css:2760-2773`, driven by `src/controls/binaural.js:423-451`):
+
+| Output mode | body classes | `.speakers-header-binaural` + `#hpChannelsList` | `.speakers-header-speakers` + `#speakersList` |
+|---|---|---|---|
+| Speakers | (neither class) | hidden (`display:none !important`) | shown |
+| Binaural **direct** | `output-binaural` | shown | hidden (`display:none !important`) |
+| Binaural **cascaded** ("virtual room") | `output-binaural output-cascaded` | shown | shown |
+
+`.speakers-header-speakers` gets `margin-top: 0.35rem` so the second header tucks
+under the ear rows when both are visible. In binaural modes the 3-D speaker
+meshes are also ghosted (`setSpeakersGhosted(true)`, opacity ×0.18, labels
+opacity 0.3 — `speakers.js:989-1012`).
+
+#### 4.1.2 Layout actions (`.speakers-layout-actions`, `index.html:786-791`)
+
+Inline `display:flex; align-items:center; gap:0.35rem`, right side of the
+Speakers header. Order left→right:
+
+| # | id | Class | Label (i18n key) | Tooltip | Action |
+|---|---|---|---|---|---|
+| 1 | `presetsBtn` | `.ui-btn.ui-btn-primary` | `config.presets` = "Presets" | `data-i18n-title="config.presetsHint"` = "Import a bundled speaker-layout preset (opens the presets folder)" | `runLayoutImport('pick_preset_layout_path')` |
+| 2 | `importLayoutBtn` | `.ui-btn.ui-btn-primary` | `config.import` = "Import layout" | — | `runLayoutImport('pick_import_layout_path')` |
+| 3 | `exportLayoutBtn` | `.ui-btn.ui-btn-primary` | `config.export` = "Export layout" | — | export flow below |
+| 4 | `speakerAddBtn` | `.toggle-btn` | literal `+ ` + `<span data-i18n="speaker.add">Add</span>` | — | `requestAddSpeaker()` (§4.5.7) |
+
+**Import flow** (`layout-listeners.js:15-40`): early-return if
+`isSpeakerLayoutFrozen()`; `invoke(pickCommand)` → path string (empty/undefined
+cancels silently) → log `log.layoutImportRequested` → `import_layout_from_path
+{ path }` → `hydrateLayoutSelect(payload.layouts, payload.selectedLayoutKey)` →
+`applyLayoutToRenderer(payload.selectedLayoutKey)` → `app.configSaved = false` +
+`updateConfigSavedUI()` → `refreshOverlayLists()` → `renderSpeakerEditor()` →
+log `log.layoutImported`. Failure logs `log.layoutImportFailed`.
+
+`applyLayoutToRenderer(key)` (`speakers.js:360-367`) is a no-op when frozen, when
+`key` is falsy, or when `key === 'omniphony-live'` (the renderer's own mirror).
+Otherwise it sends the whole layout as one `replaceLayout` patch then applies
+(§4.8).
+
+**Export flow** (`layout-listeners.js:47-69`): frozen → no-op;
+`serializeCurrentLayoutForExport()` (`speakers.js:303-326`, camel/snake mix:
+`radius_m`, `delay_ms`, `azimuthDeg`, `elevationDeg`, `distanceM`, `coordMode`,
+`spatialize`, `freqLow`, `freqHigh`) → `default_layout_export_name { layout }` →
+`pick_export_layout_path { suggestedName }` → `export_layout_to_path { path,
+layout }` → log `log.layoutExported`; failure `log.layoutExportFailed`. The
+default name is `<ear-level>.<non-spatialized>.<height>` (e.g. `7.1.4`), computed
+by `layouts::default_export_name` from `spatialize == 0` and `z >
+HEIGHT_SPEAKER_Z`, then sanitized (`layouts.rs:580-602`). None of these three
+commands emits OSC.
+
+Enable rules: `renderVbapStatus`'s sibling `renderRenderBackend`
+(`controls/vbap.js:661-671`) sets `importLayoutBtn.disabled = exportLayoutBtn.disabled =
+frozenSpeakers`; `renderSpeakerEditor` sets `speakerAddBtn.disabled = frozen`
+(`speakers.js:1202`). `presetsBtn` is **not** disabled by the freeze — only its
+handler's early return protects it (inconsistency, flagged in §4.9). All four are
+also disabled by the global runtime lock (§0.4 rule 1).
+
+#### 4.1.3 The layout selector
+
+`#layoutSelect` is referenced by `speakers.js:2513-2556`,
+`tauri-bridge.js:161-162`, `controls/vbap.js:662-668` and styled at
+`app.css:877-880`, **but it no longer exists in `index.html`** — every access is
+null-guarded. Layout selection is therefore driven only by the host
+(`select_layout`, `layouts:update`, `layout:selected`) and by the import buttons.
+The egui port needs no combo box here; it must still implement
+`hydrateLayoutSelect`'s state logic:
+
+- fills `layoutsByKey` from the payload;
+- if the selected key exists and `canPatchCurrentLayout()` (same key, same
+  speaker count, same ids in the same order — `speakers.js:2467-2484`) then
+  `patchCurrentLayout()` (in-place refresh, keeps meshes and selection);
+  otherwise `renderLayout()` (full rebuild of meshes/labels/band bars);
+- no selected key and a non-empty list → same on `layouts[0].key`;
+- empty list → `currentLayoutKey = null`, `currentLayoutSpeakers = []`,
+  `currentLayoutCutoffs = []`, re-render list and editor.
+
+`renderLayout(key)` preserves the selection **only** when the key is unchanged
+(`preserveSelection`), matching first by speaker id string then by index; it also
+re-seeds `speakerDelays` from `speaker.delay_ms`, sets
+`sceneState.metersPerUnit = max(0.01, layout.radius_m || 1)`, and drops
+`speakerMuted` / `speakerManualMuted` / `speakerBaseGains` entries whose index no
+longer exists (`speakers.js:2229-2377`).
+
+---
+
+### 4.2 Headphone channels list (`#hpChannelsList`)
+
+Built once by `initHeadphoneChannels()` (`headphone-meter.js:123-131`, called
+from `controls/binaural.js:65`); idempotent. Exactly **two** rows, in order
+`L` (ear id `0`) then `R` (ear id `1`). Rows are never rebuilt.
+
+Row markup = the speaker row minus the crossover glyph and minus the
+contribution/band-bars block: `.info-item.speaker-item` > `.id-strip.flip` +
+`.speaker-content` > `.meter-row.speaker-meter-row.hp-meter-row`
+(grid `auto 8ch 1fr auto`, `app.css:2375-2377`).
+
+| Element | Content | Notes |
+|---|---|---|
+| `.id-strip span` | `L` / `R` | vertical text, rotated 180° by `.flip` |
+| `.speaker-position-icon` | inline SVG headphone glyph, 16×16, viewBox 0 0 20 20 | arc `M3 12 a7 7 0 0 1 14 0` stroke `#9eb4c8` w1.6; two cups `rect` 4×6 r1.2 at x=2 and x=14, y=11, stroke `#9eb4c8` w1.2; the **active cup** (left for L, right for R) filled `#8cd6ff`, the other `none` |
+| `.fixed-metric` | `<rms>.toFixed(1) dB` | same painter as speakers (`updateMeterUI`) |
+| `.meter-bar.level-meter` | `.meter-fill` + `.meter-peak` | **no** `.meter-fill.contribution` element — ear rows never show an object contribution |
+| `.speaker-meter-actions` | `M` then `S`, both `.toggle-btn` | |
+
+Meters: event `ear:meter` → `updateHeadphoneMeter(index, { peakDbfs, rmsDbfs })`
+(defaults `-100` each) → `updateMeterUI` (`tauri-bridge.js:282-288`,
+`handleBatched` case `'ear:meter'` at `:110-115`). Ear meters carry **no**
+`peakHoldDbfs`, so the peak cursor tracks `peakDbfs`. Ear meters are not part of
+the `decayMeters` loop (§4.3.5) — they only move when the renderer sends.
+
+Mute/solo (`headphone-meter.js:24-47`):
+
+- `M` → `toggleEarMute(id)`: clears the client-side solo, then
+  `control_ear_mute { ear, muted: !earMuted.has(id) }`. **Not optimistic**: the
+  `M` lamp only lights when the engine echoes `binaural.ears[i].muted`.
+- `S` → `toggleEarSolo(id)`: solo is *sugar over the two mutes*, held only in
+  the JS variable `earSolo`. Engaging: `control_ear_mute(id,false)` +
+  `control_ear_mute(other,true)`. Releasing the same ear: `control_ear_mute(other,false)`.
+- `applyEarState(b.ears)` (from the state broadcast's `binaural.ears` array)
+  updates `earMuted`, and **drops** the solo interpretation when the mute pattern
+  no longer matches it (`earMuted.has(earSolo) || !earMuted.has(other)`).
+- Row classes: `.active` on the pressed button; `updateItemClasses(entry, muted,
+  earSolo && earSolo !== id)` → `.is-muted` (opacity .35) / `.is-dimmed`
+  (opacity .45).
+
+OSC: `/omniphony/control/binaural/ear_mute` with `Int(ear)`, `Int(muted?1:0)`;
+`ear > 1` is rejected host-side (`commands/binaural.rs:63-77`).
+
+The ear rows are **not** selectable (no click handler on the root) and never
+appear in `speakerItems`.
+
+---
+
+### 4.3 Speaker list rows (`#speakersList`)
+
+`renderSpeakersList()` (`speakers.js:1552-1599`). Empty layout → the container's
+text is `t('speakers.none')` = "No speakers." and `speakerItems` is cleared.
+Otherwise one row per entry of `app.currentLayoutSpeakers`, keyed by the
+**string index** (`'0'`, `'1'`, …) — never by the speaker name. Rows are reused
+across renders (`speakerItems` map); rows whose id disappeared are removed.
+
+Each render also refreshes the 3-D per-speaker frequency gauge
+(`updateSpeakerBandBar`) and re-seeds each cube's base colour from its crossover
+band (`applySpeakerBandBaseColor` → `bandColor(speakerBandIndex(speaker, edges),
+edges.length-1)`), then calls `updateSpeakerColorsFromSelection()`.
+
+#### 4.3.1 Row anatomy
+
+`.info-item.speaker-item` — grid `18px 1fr`, gap `0.45rem`, `align-items:stretch`,
+`position:relative`, `user-select:none` (`app.css:2140-2156`). Clicking anywhere
+on the row does `setSelectedSource(null)` then `setSelectedSpeaker(Number(id))`.
+`.fixed-metric`, `.speaker-position-icon` and `.speaker-filter-icon` are
+`pointer-events:none` so their continuously-rewritten text cannot swallow the
+click; the M/S buttons and the drag handle keep their own pointer events.
+
+Row state classes: `.is-selected` (bg `rgba(46,110,64,0.45)`, border
+`1px rgba(90,200,120,0.35)`), `.is-muted` (opacity .35), `.is-dimmed`
+(opacity .45), `.is-dragging` (bg `rgba(72,140,92,0.55)`, border
+`1px rgba(120,225,150,0.65)`, opacity 1).
+
+Children: `.id-strip.flip` (column 1) and `.speaker-content` (column 2, grid gap
+`0.2rem`) containing `.meter-row.speaker-meter-row` then `.speaker-contrib-row`.
+
+`.speaker-meter-row` grid is `auto auto 8ch 1fr auto` (`app.css:2370-2373`), i.e.
+in order: **position thumbnail, filter glyph, level readout, meter bar, M/S**.
+
+#### 4.3.2 Id strip and clip flash
+
+`.id-strip.flip` — bg `rgba(0,0,0,0.55)`, radius 6, centered; its `span` is
+`writing-mode: vertical-rl; text-orientation: mixed; font-weight:600;
+font-size:11px; letter-spacing:0.02em; color:#d9ecff`, rotated 180° by `.flip`
+(so the name reads bottom-to-top). Text = `String(speaker.id ?? index)`.
+`title = 'Drag to reorder'` (**hardcoded English, not i18n**), `draggable = true`,
+`cursor: grab` / `grabbing` while active.
+
+Clip flash (`speakers.js:769-804`): the renderer's `clip:detected` event carries
+`payload.speaker`; `flashSpeakerClip(index)` removes `.clip-flash`, forces a
+reflow, re-adds it, and clears it after **1000 ms** with a per-id timer (repeat
+clips restart the animation instead of stacking). Animation
+`speaker-clip-flash 1s ease-out`: 0 % `background-color rgba(255,59,48,0.85)` +
+`inset 0 0 0 1px rgba(255,59,48,0.9)` → 100 % back to `rgba(0,0,0,0.55)` with a
+transparent inset. Independent of the auto-gain toggle. Ignored for non-integer
+or negative indices.
+
+#### 4.3.3 Position thumbnail (`.speaker-position-icon`)
+
+`positionIconMarkup(speaker)` (`speakers.js:849-868`), rebuilt on every
+`updateSpeakerItem` / `updateSpeakerVisualsFromState`:
+
+- SVG 16×16, viewBox `0 0 16 16`.
+- Frame: `rect x=0.6 y=0.6 w=14.8 h=14.8 rx=1.2 fill=none stroke-width=0.9`.
+  Stroke is `currentColor` (`.speaker-position-icon { color:#5d6b7d }`) normally,
+  and **`#000` when `speaker.spatialize === 0`** — a non-spatialized (direct/LFE)
+  feed sits outside the room model.
+- Marker: `rect` 3.2×3.2 `rx=0.5` centred at `cx = 2 + ((x+1)/2)*12`,
+  `cy = 2 + ((1-y)/2)*12` with `x`,`y` clamped to [-1,1] — normalized Omniphony
+  X left→right, Y rear→front with **front up**. Coordinates written with
+  `.toFixed(2)`.
+- Fill = `heightToColor(z)` = `hsl(<240*(1-clamp(z,0,1))>, 75%, 52%)` with the
+  hue printed `.toFixed(0)`: blue at z ≤ 0, green at 0.5, red at 1.0.
+- `title = \`X ${x.toFixed(2)}  Y ${y.toFixed(2)}  Z ${z.toFixed(2)}\`` (two
+  spaces between groups, not i18n).
+
+The same markup is reused for object rows (`applyObjectPositionIcon`).
+
+#### 4.3.4 Crossover filter glyph (`.speaker-filter-icon`)
+
+Column layout `filter-freq-top` / `filter-glyph` / `filter-freq-bottom`
+(`app.css:2392-2435`), colour `#8fb0d0`, and `#5d6b7d` when
+`[data-filter='full']` (the common "nothing configured" case is de-emphasised).
+
+Type from `freqLow`/`freqHigh` (finite and > 0):
+
+| freqLow | freqHigh | `data-filter` | Path (viewBox `0 0 16 11`, w16 h11, stroke `currentColor` 1.4, round caps/joins) | `title` |
+|---|---|---|---|---|
+| — | — | `full` | `M1,5.5 L15,5.5` | `speaker.filter.full` = "Full band" |
+| — | set | `low` | `M1,4 L8.5,4 L14,9.5` | `speaker.filter.low` = "Low-pass" |
+| set | — | `high` | `M2,9.5 L7.5,4 L15,4` | `speaker.filter.high` = "High-pass" |
+| set | set | `band` | `M1,9.5 L5,4 L11,4 L15,9.5` | `speaker.filter.band` = "Band-pass" |
+
+Cutoff labels (`font-size:7px; line-height:1; color:#9fb6cf; tabular-nums;
+letter-spacing:-0.02em`; `:empty { display:none }` so an absent label reserves no
+height and the glyph group stays vertically centred):
+
+- **top** = `freqHigh` (the low-pass edge), **bottom** = `freqLow` (the high-pass
+  edge) — note the inversion relative to the field order in the editor.
+- `formatCutoffHz(hz)`: `hz >= 1000` → `k = hz/1000`, `${Number.isInteger(k) ?
+  k.toFixed(0) : k.toFixed(1)}k` (80 → `"80"`, 1500 → `"1.5k"`, 2000 → `"2k"`);
+  otherwise `String(Math.round(hz))`.
+
+The SVG is only re-rendered when the type changes (`entry.filterType` cache); the
+labels and the `title` are rewritten every refresh so a locale change is picked up.
+
+#### 4.3.5 Level readout, meter, peak cursor, contribution overlay
+
+`updateMeterUI(entry, speakerLevels.get(id), 'speaker', id)`
+(`mute-solo.js:90-112`):
+
+- `.fixed-metric` (monospace, `width:8ch`, tabular, right-aligned) =
+  `` `${formatNumber(rmsDbfs, 1)} dB` `` → e.g. `-23.4 dB`; non-number rms →
+  `— dB` (em dash from `formatNumber`).
+- `.meter-fill` `--level` = `dbToMeterPercent(peakDbfs).toFixed(1)%`. Scale
+  `METER_DB_MIN = -60`, `METER_DB_MAX = +6`; 0 dBFS = 90.909 %. **The bar shows
+  peak, the number shows RMS** (deliberate: the fill reaches the hold marker on
+  transients).
+- `.meter-peak` `--level` = `dbToMeterPercent(peakHoldDbfs ?? peakDbfs)`,
+  `opacity` `'1'` when > 0.1 %, else `'0'`, `.over` when the held peak ≥ 0 dBFS
+  (solid `#ff3b3b` + glow). The hold and its decay are computed host-side
+  (`src-tauri/src/peak_hold.rs`) and arrive as `peakHoldDbfs`.
+- `.meter-fill.contribution` (`app.css:2365-2368`, gradient
+  `rgba(138,240,255,0.92) → rgba(255,226,122,0.92)`, glow
+  `0 0 8px rgba(138,240,255,0.24)`) is painted by
+  `updateSpeakerContributionUI(entry, id)` (`sources.js:638-651`): when **an
+  object is selected** and it has a gain for this speaker, `--level` =
+  `contribution.percent.toFixed(1)%` and the normal `.meter-fill` is dimmed to
+  `opacity: 0.38`; otherwise contribution `--level` = `0%` and the fill returns
+  to opacity 1. `percent = meterToPercent({ rmsDbfs: sourceRms + linearToDb(gain) })`,
+  i.e. the object's RMS through that speaker's panning gain; `null` when the gain
+  is ≤ 0 or the source has no meter.
+
+Decay (`speakers.js:2410-2461`): a level that has not been refreshed for
+`METER_DECAY_START_MS = 250` ms falls by `METER_DECAY_DB_PER_SEC = 45` dB/s,
+floored at `-100` dBFS, for both peak and rms.
+
+#### 4.3.6 M and S buttons (`.speaker-meter-actions`)
+
+Two `.toggle-btn` with literal text `M` and `S` (not i18n), flex gap `0.25rem`.
+`event.preventDefault()` then `toggleMute('speaker', id)` / `toggleSolo('speaker', id)`.
+
+- **M** (`mute-solo.js:205-222`): toggles the id in `speakerMuted` *and*
+  `speakerManualMuted` **optimistically**, sends `control_speaker_mute
+  { id: Number(id), muted: 0|1 }`, then `updateSpeakerControlsUI()`.
+- **S** (`mute-solo.js:224-293`): solo is derived, not stored.
+  `getSoloTarget('speaker')` returns the single unmuted id when there is more
+  than one speaker and every other one is muted, else `null`. Pressing S when
+  another speaker is soloed moves the solo (2 messages). Pressing S on the
+  current solo un-mutes every other speaker (n-1 messages). Otherwise it mutes
+  every other unmuted speaker.
+- Lamp: `.active` on M while `speakerMuted.has(id)`, on S while
+  `getSoloTarget('speaker') === id`. Row gets `.is-muted` when muted and
+  `.is-dimmed` when a *different* speaker is soloed.
+- The engine echo `speaker:mute` (`tauri-bridge.js:306-313`) re-syncs
+  `speakerMuted`; an un-mute also clears `speakerManualMuted`.
+
+#### 4.3.7 Band contribution bars (`.speaker-contrib-row > .band-contrib-bars`)
+
+`updateSpeakerBandBars(entry, speakerIndex)` (`speakers.js:921-977`). Shown only
+when an **object is selected** and `getSelectedSourceBandContributions(index)`
+returns a non-empty array (per-band gains for that speaker); otherwise both the
+row and the container are `display:none`.
+
+One `.band-row` per band, created lazily and never destroyed (extra rows are
+hidden with `display:none`). Row = `.band-label` + `.band-bar` + `.band-db`
+(flex, gap 5px):
+
+| Part | Content / style |
+|---|---|
+| `.band-label` | `crossoverBandLabels(app.currentLayoutCutoffs, { useUnicodeGte:true, useUnicodeDash:true })[b]`, fallback `t('heatmap.bandFull')` for a single band or `tf('heatmap.bandIndex', { index: b })`. Labels: `"< 100 Hz"`, `"1k–4k Hz"` (U+2013), `"≥ 4k Hz"` (U+2265); `formatHz` = `${(v/1000).toFixed(v%1000===0?0:1)}k` above 1000, else the integer. `font-size:9px; color:#8a9ab0; min-width:52px; tabular-nums; nowrap` |
+| `.band-bar` | `flex:1; height:6px; radius:3px; bg rgba(255,255,255,0.08)`; `::after` clipped `inset(0 calc(100% - var(--level)) 0 0)` with `background: var(--band-color)`. `--level = Math.min(100, gain*100).toFixed(1)%`, `--band-color = bandColor(b, count)` |
+| `.band-db` | `formatLinearAsDb(gain)` → `"-12.3 dB"`, or `"-∞ dB"` for gain ≤ 0. `font-size:9px; min-width:40px; right-aligned; tabular-nums` |
+
+`bandColor(index, count)` (`scene/speaker-band-bars.js:39-43`): single band → the
+full-band blue constant; otherwise `hsl(${(8 + 248*index/(count-1)).toFixed(0)},
+68%, 56%)`, i.e. red (lowest band) → blue (highest). Same palette as the 3-D
+gauges and the band cursor (§7).
+
+`crossoverBandEdges(cutoffs) = [0, ...cutoffs, Infinity]`; the interior cutoffs
+are derived host-side by `layouts::crossover_cutoffs` from every **spatialized**
+speaker's `freqLow`/`freqHigh` > 0, sorted and deduped at 0.1 Hz, and shipped as
+`layout.crossoverCutoffs` (`layouts.rs:564-578`) — never stored in the file.
+
+#### 4.3.8 Drag to reorder
+
+Handle = the `.id-strip` only (`draggable`); the row itself is the drop target.
+
+- `dragstart` on the strip: records `app.draggedSpeakerIndex`,
+  `draggedSpeakerInitialIndex`, `draggedSpeakerRoot`, clears
+  `draggedSpeakerDidDrop`, marks `.is-dragging`, sets
+  `dataTransfer.effectAllowed='move'` and `text/plain` = the index.
+- `dragover` on a row: inserts the dragged node before/after that row depending
+  on whether the pointer is past its vertical midpoint, then recomputes
+  `draggedSpeakerIndex` from the DOM position. `dragover` on the list container
+  handles the gaps; a document-level `dragover` keeps the "move" cursor over any
+  child node.
+- Each DOM move goes through `animateSpeakerListReorder(mutate)`
+  (`speakers.js:2087-2131`): FLIP animation of every non-dragged row,
+  `translateY(dy) → 0`, **120 ms**, `cubic-bezier(0.2, 0.8, 0.2, 1)`,
+  `fill:'none'`, skipped under 0.5 px, previous animation cancelled.
+- `drop` sets `draggedSpeakerDidDrop = true`.
+- `dragend`: on a real drop with a changed index →
+  `requestMoveSpeakerTo(initialIndex, currentIndex, true)`; on a cancelled drag →
+  `renderSpeakersList()` to restore the logical order. All drag state is reset and
+  `.is-dragging` cleared.
+
+`requestMoveSpeakerTo(from, to, sendOsc)` (`speakers.js:2133-2162`): no-op when
+frozen, when either index is not an integer or out of range, or `from === to`;
+splices the layout array, remaps the current selection (`from` → `to`, and the
+usual shift for indices between the two), calls `renderLayout(currentKey)` +
+`setSelectedSpeaker(nextSelected)`, then sends `{ moveSpeaker: { from, to } }`
+plus the apply (§4.8).
+
+In egui a drag-and-drop list with the same 120 ms settle animation is expected;
+the semantics that matter are (a) the sent message is a single **from/to** move,
+not a full reorder, and (b) the array is mutated locally first.
+
+---
+
+### 4.4 Speaker editor container (`#speakerEditSection`, `index.html:802-948`)
+
+`.info-section`, baked `style="display:none"`. Pinned **below**
+`#speakersOverlayScroll` (`app.css:228-244`): `flex:0 0 auto; width:100%;
+box-sizing:border-box; scrollbar-gutter:stable both-edges; scrollbar-width:thin;
+padding-right:var(--overlay-scroll-inset); **max-height:45vh; overflow-y:auto**`.
+This is the CLAUDE.md rule in force: the editor grows into its own bounded
+scroller, never into the overlay, so the 3-D viewport geometry never changes.
+
+Open/close (`renderSpeakerEditor`, `speakers.js:1159-1298`) — there is **no dirty
+state and no Apply/Revert**: every control commits on `change`/`input`.
+
+| Condition | `#speakerEditSection` | `#speakerEditBody` | Up/Down/Delete |
+|---|---|---|---|
+| `selectedSpeakerIndex === null` or that index is absent from `currentLayoutSpeakers` | `display:none` | `display:none` | all `disabled = true` |
+| a valid speaker is selected | `display:''` | `display:''` | see §4.5.7 |
+
+`setSelectedSpeaker(index)` (`speakers.js:1855-1874`) additionally: clears both
+gizmo arm flags when `index === null`; refreshes source/speaker selection styles,
+the gizmo, `updateSpeakerControlsUI()` and `updateControlsForEditMode()`; and on
+a non-null index schedules (next rAF) `entry.root.scrollIntoView({ block:
+'nearest' })` because the editor opening at the bottom shrinks the scroll area
+and can hide the selected row. Clicking a row selects; selecting an **object**
+(`setSelectedSource(id)`) does not itself deselect the speaker — the row click
+handler does it explicitly. `renderLayout` on a *different* layout key clears the
+selection (hence closes the editor).
+
+Children in order:
+
+1. `#speakerEditTitle.info-title`, `data-i18n="section.speakerEditor"` ("Speaker
+   Editor") — but `renderSpeakerEditor` overwrites it with the **hardcoded**
+   `` `Speaker ${idx}` `` (`speakers.js:1229`), so the visible title is always
+   `Speaker 3` and never translated. See §4.9.
+2. `#speakerTabsBar` — Edit / Test tabs.
+3. The **Layout row** (Up / Down / Delete) — *outside* `#speakerEditBody`, so it
+   stays visible on **both** tabs.
+4. `#speakerEditBody.editor-body` (`display:grid; gap:0.35rem`, baked
+   `display:none`) containing `#speakerEditTabEdit` and `#speakerEditTabTest`.
+
+**Tabs** (`index.html:807-810`, `controls/speaker-test.js:169-189`): two
+`.toggle-btn.renderer-tab-btn` in a flex row (`gap:0.25rem; padding:0 0.1rem;
+margin-bottom:0.3rem`), `#speakerTabEditBtn` (`speakerTabs.edit` = "Edit") then
+`#speakerTabTestBtn` (`speakerTabs.test` = "Test"). Selection is a **body class**
+`speaker-tab-test`: `body.speaker-tab-test #speakerEditTabEdit` and
+`body:not(.speaker-tab-test) #speakerEditTabTest` are `display:none`
+(`app.css:2748-2754`); the buttons only mirror it with `.active` (active =
+`border-color rgba(86,156,255,0.8); background rgba(86,156,255,0.18); color
+#cfe4ff`, `app.css:2742-2747`). Nothing re-renders on a tab change. Switching
+**to Edit stops any running test**. Both tabs are `disabled` unless a speaker is
+selected, and they are *not* exempt from the runtime lock (§0.4).
+
+---
+
+### 4.5 Edit tab (`#speakerEditTabEdit`, `index.html:812-895`)
+
+Order of rows: name → coordinates (cartesian block, polar block) → gain → delay
+ms → delay samples → delay tools → **spatialize** → freq low → freq high.
+(Note that spatialize sits *between* the delay tools and the frequency fields.)
+
+#### 4.5.1 Control inventory
+
+| # | Element | id | Type | Label (i18n) | Help (`data-help-i18n`) | Range / step / unit | Displayed value | Reflects |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Name | `speakerEditNameInput` | text `.name-input` | `common.name` = "Name:" | — | free text | `String(speaker.id ?? idx)`, written on **every** render (no "unless editing" guard) | `Layout.speakers[i].id` |
+| 2 | Coord mode: cartesian | `speakerEditCartesianMode` | radio, `name="speakerCoordMode"`, value `cartesian` | `common.cartesian` = "Cartesian:" | `help.speaker.position` (anchored on `.editor-meta`, carried by the `speaker.coordinates` label) | — | checked when `getSpeakerCoordMode(speaker)==='cartesian'` | `speaker.coordMode` |
+| 3 | X norm. | `speakerEditXInput` | number | column head `X`, row label `speaker.normalizedCoords` = "Norm." | — | `step="0.001"`, no min/max (clamped to ±1 downstream) | `formatNumber(speaker.x, 3)` | `speaker.x` |
+| 4 | Y norm. | `speakerEditYInput` | number | — | — | `step="0.001"` | `formatNumber(speaker.y, 3)` | `speaker.y` |
+| 5 | Z norm. | `speakerEditZInput` | number | — | — | `step="0.001"` | `formatNumber(speaker.z, 3)` | `speaker.z` |
+| 6 | X metres | `speakerEditXMetersInput` | number | row label `speaker.metersCoords` = "Real (m)" | `help.speaker.positionMeters` | `step="0.01"`, metres | `formatNumber(normalizedToMeters(speaker).x, 2)` | derived |
+| 7 | Y metres | `speakerEditYMetersInput` | number | — | — | `step="0.01"` | `.y`, 2 dp | derived |
+| 8 | Z metres | `speakerEditZMetersInput` | number | — | — | `step="0.01"` | `.z`, 2 dp | derived |
+| 9 | 3D Edit (cartesian) | `speakerEditCartesianGizmoBtn` | `.toggle-btn` | `speaker.edit3d` = "3D Edit" | — | — | `.active` while `app.cartesianEditArmed && app.activeEditMode==='cartesian'` | UI-only |
+| 10 | Coord mode: polar | `speakerEditPolarMode` | radio, same group, value `polar` | `common.polar` = "Polar:" | — | — | checked when mode is `polar` | `speaker.coordMode` |
+| 11 | Azimuth | `speakerEditAzInput` | number | head `Az°` | — | `step="0.1"`, degrees | `formatNumber(az, 1)` | `speaker.azimuthDeg` |
+| 12 | Elevation | `speakerEditElInput` | number | head `El°` | — | `step="0.1"`, degrees | `formatNumber(el, 1)` | `speaker.elevationDeg` |
+| 13 | Distance | `speakerEditRInput` | number | head `Dist` | — | `step="0.001"`, `min="0.01"`, scene units | `formatNumber(r, 3)` | `speaker.distanceM` |
+| 14 | Distance (m) | `speakerEditRMetersInput` | number | row label "Real (m)" (the Az/El cells of that row are empty `<span aria-hidden>`) | — | `step="0.01"`, `min="0.01"`, metres | `formatNumber(hypot(metres.x,y,z), 2)` | derived |
+| 15 | 3D Edit (polar) | `speakerEditPolarGizmoBtn` | `.toggle-btn` | `speaker.edit3d` | — | — | `.active` while `app.polarEditArmed && app.activeEditMode==='polar'` | UI-only |
+| 16 | Gain | `speakerEditGainSlider` | range `.gain-slider` | `speaker.gain` = "Gain" | `help.speaker.gain` | `min=0 max=2 step=0.01`, **default 1**, linear factor | box `speakerEditGainBox` `.gain-box` = `formatLinearAsDb(gain)` → `"0.0 dB"`, `"-∞ dB"` at 0 | `speakerBaseGains` / `speakerGainCache` (`AppState.speaker_gains`) |
+| 17 | Delay (ms) | `speakerEditDelayMsInput` | number `.delay-input` | `speaker.delayMs` = "Delay (ms)" | `help.speaker.delayMs` | `min=0 step=0.1`, ms, baked value `0` | `String(Math.max(0, delayMs))` — raw JS number, **not** fixed-decimal | `speakerDelays` / `speaker.delay_ms` |
+| 18 | Delay samples | `speakerEditDelaySamplesInput` | number `.delay-input` | `speaker.delaySamples` = "Delay samples" | `help.speaker.delaySamples` | `min=0 step=1`, samples, baked `0` | `String(delayMsToSamples(delayMs))` = `round(ms/1000 * 48000)` | derived |
+| 19 | Calc delays | `speakerEditAutoDelayBtn` | `.toggle-btn` | `speaker.calcDelays` = "Calc delays" | row label `speaker.delayTools` = "Delay tools" / `help.speaker.delayTools` | — | — | bulk action |
+| 20 | Delay → Dist | `speakerEditDelayToDistanceBtn` | `.toggle-btn` | `speaker.delayToDist` = "Delay → Dist" | — | — | — | bulk action |
+| 21 | Spatialize | `speakerEditSpatializeToggle` | checkbox in `.inline-toggle` → **render as a switch** (§0.3) | `speaker.spatialize` = "Spatialize" | `help.speaker.spatialize` | boolean | `getSpeakerSpatializeValue(speaker) !== 0` | `speaker.spatialize` (u8) |
+| 22 | Freq. min | `speakerEditFreqLowInput` | number `.delay-input` | `speaker.freqLow` = "Freq. min (Hz)" | `help.speaker.freqLow` | `min=0 step=10`, Hz, `placeholder="full range"` | `String(freqLow)` when `> 0`, else `''` | `speaker.freqLow` (`Option<f32>`) |
+| 23 | Freq. max | `speakerEditFreqHighInput` | number `.delay-input` | **hardcoded "Freq. max (Hz)" — no `data-i18n`** (only `data-help-i18n="help.speaker.freqHigh"`) | `help.speaker.freqHigh` | `min=0 step=10`, Hz, `placeholder="full range"` | `String(freqHigh)` when `> 0`, else `''` | `speaker.freqHigh` |
+
+Every one of #1-#15 and #16-#23 (plus the two 3D-Edit buttons and the two delay
+tool buttons) is set `disabled = isSpeakerLayoutFrozen()` at the end of
+`renderSpeakerEditor` (`speakers.js:1265-1291`), and every handler additionally
+early-returns when frozen.
+
+All numeric readouts except the name, the gain slider and the two delay fields go
+through `syncInputValueUnlessEditing(el, next)` (`speakers.js:282-288`): the value
+is **not** overwritten while `document.activeElement === el`, and only written
+when it actually differs. The name, gain and delay fields are written
+unconditionally — a known typing hazard at the ~10 Hz state echo rate.
+
+Layout of the coordinate blocks: `.coord-mode-row` (grid `auto 1fr auto`) holding
+the radio + bold label, then `.coord-table-row` (flex, gap 0.4rem) holding a
+`.cart-coord-table` (grid `auto repeat(3, minmax(0,1fr))`, gaps `0.2rem 0.35rem`)
+and the 3D Edit button. First grid row = empty corner + three
+`.cart-coord-head` (`font-size:11px; color:#9fb6cf; centered`) with native
+`title`s: `"Omniphony X (left/right)"`, `"Omniphony Y (rear/front)"`,
+`"Omniphony Z (down/up)"` for the cartesian table and `"Azimuth (degrees)"`,
+`"Elevation (degrees)"`, `"Distance"` for the polar one (all **hardcoded
+English**). Inputs: `width:100%`, right-aligned, 11 px, bg
+`rgba(255,255,255,0.08)`, border `1px rgba(255,255,255,0.2)`, radius 6, focus
+border `rgba(255,255,255,0.45)`.
+
+#### 4.5.2 What each coordinate edit does
+
+Handlers are all `change` (not `input`), bound through `bindSpeakerCoordChange`
+(early-return when frozen or nothing selected). **Only the field that fired is
+read from the DOM**; the other axes come from the canonical speaker state — reading
+them back would re-inject the 3-decimal display rounding and drift the untouched
+axes (`speaker-editor-listeners.js:202-204`).
+
+- **X/Y/Z norm.** → `applySpeakerCartesianEdit(idx, x, y, z, true)` =
+  `normalizedOmniphonyToScenePosition` then `applySpeakerSceneCartesianEdit`.
+- **X/Y/Z metres** → the metre vector `normalizedToMeters(speaker)` with the one
+  edited component replaced, then `metersToSceneUnits()` →
+  `applySpeakerSceneCartesianEdit`.
+- **Az/El/Dist** → `applySpeakerPolarEdit(idx, az, el, r, true)`: writes
+  `azimuthDeg`, `elevationDeg`, `distanceM = max(0.01, r)` then converts through
+  `sphericalToCartesianDeg` into the same scene-cartesian path.
+- **Dist (m)** → same, with `r = rMeters / metersPerUnit()`.
+
+`applySpeakerSceneCartesianEdit(index, x, y, z, sendOsc)`
+(`speakers.js:1096-1134`) is the single funnel: frozen → no-op; non-finite
+component → no-op; writes `speaker.{x,y,z} = scenePositionToNormalizedOmniphony(…)`
+(inverse room warp, clamp to ±1, snap to {-1,0,1} within 1e-5) and
+`speaker.{azimuthDeg, elevationDeg, distanceM} = cartesianToSpherical(scene)` with
+`distanceM = max(0.01, dist)`; refreshes mesh/label/band-bar/list thumbnail/gizmo;
+then — **only the block matching the active `coordMode`** is sent:
+
+```
+mode = getSpeakerCoordMode(speaker)          // 'cartesian' | 'polar'
+patch = { coordMode: mode }
+if cartesian: patch.x, patch.y, patch.z
+else:         patch.azimuth, patch.elevation, patch.distance
+updateSpeakerLayoutPatch(index, patch, { apply: true })
+```
+
+Sending both representations in one patch is explicitly forbidden (the renderer
+would apply them sequentially and the second would win — documented bug at
+`speakers.js:1114-1119`).
+
+Conversions (`coordinates.js`), for the egui port:
+
+- axis swizzle: scene `(x,y,z)` = Omniphony `(y, z, x)`; inverse
+  `sceneToOmniphonyCartesian` = `(z, x, y)`.
+- `cartesianToSpherical` (scene axes): `az = atan2(z, x)·180/π`;
+  `el = atan2(y, hypot(x,z))·180/π`, forced to exactly ±90/0 when
+  `hypot(x,z) < 1e-6`; `dist = ‖v‖`.
+- `sphericalToCartesianDeg(az, el, d)`: `x = d·cos el·cos az`, `y = d·sin el`,
+  `z = d·cos el·sin az`.
+- room warp: `mapRoomPosition` scales scene z by `roomRatio.width`, scene y by
+  `roomRatio.height` (y ≥ 0) or `roomRatio.lower` (y < 0), and scene x by the
+  cubic `depthWarpWithRatios(x, length, rear, centerBlend)`; the inverse depth is
+  a **28-iteration bisection**.
+- `normalizedToMeters(p)` = `sceneToOmniphonyCartesian(scenePos · metersPerUnit)`;
+  `metersToSceneUnits(m)` = `omniphonyToSceneCartesian(m) / metersPerUnit`;
+  `metersPerUnit() = max(0.001, app.metersPerUnit || 1)`.
+- `hydrateSpeakerCoordinateState(speaker)` re-derives the *other* representation
+  from the authoritative one, per `coordMode`, and is called on every layout
+  load, coord-mode switch, and `replaceLayout` build.
+
+#### 4.5.3 Coordinate-mode radios
+
+`change` (only when `.checked`) → `setSpeakerCoordMode(index, mode)`
+(`speakers.js:468-486`): frozen → no-op; writes `speaker.coordMode`, re-hydrates,
+sends **one patch with all six values plus `coordMode`** and applies, then
+refreshes the visuals and the editor. This is the only place both representations
+are sent together — legitimate here because nothing is being moved.
+
+The help text (`help.speaker.position`) is the normative description: both views
+stay in sync on screen; the radio picks which one is *authoritative*, i.e. stored
+in the layout and sent on a move, so its values stay exact instead of drifting
+through round-trips.
+
+#### 4.5.4 3D Edit buttons
+
+`speaker-editor-listeners.js:55-68` / `98-111`. Frozen or no selection → no-op.
+Sets `app.activeEditMode` to `'cartesian'` / `'polar'`, **toggles** the matching
+`app.cartesianEditArmed` / `app.polarEditArmed`, clears the other when arming,
+then `renderSpeakerEditor()` + `updateSpeakerGizmo()`. Purely local state — no
+OSC. `app.activeEditMode` defaults to `'polar'` (`state.js:409-416`); both armed
+flags default false and are cleared whenever the selection becomes null or the
+layout is replaced.
+
+They mirror a `#editModeSelect` element that **no longer exists in the DOM** (all
+accesses are null-guarded) — see §4.9.
+
+The gizmos themselves (polar ring/arc/distance, cartesian face grid) are the 3-D
+scene's business (`scene/gizmos.js`, `speakers.js:1717-1854`) and are **out of
+scope for the panels phase**; only the two buttons and their `.active` state
+belong here.
+
+#### 4.5.5 Gain
+
+`.editor-row.gain-row` = grid `auto 1fr auto` (label, slider, box).
+
+- `input` → clamp-free `Number(slider.value)`; non-finite ignored; writes
+  `speakerBaseGains.set(id, value)` (optimistic) then **`applySpeakerGroupGains()`**,
+  which re-sends `control_speaker_gain` for **every** speaker in the layout
+  (`mute-solo.js:194-199`) — one OSC message per speaker per slider tick. Flagged
+  in §4.9 as a hot-path concern for the native port.
+- `dblclick` → resets the slider to `1`, sets the base gain to 1, same group send.
+- Display: `formatLinearAsDb(gain)` = `${(20·log10 g).toFixed(1)} dB`, `-∞ dB` for
+  g ≤ 0. Value read back by `getBaseGain(speakerBaseGains, speakerGainCache, id)`:
+  local override first, then the engine cache (`speaker:gain` event /
+  `AppState.speaker_gains`), else `1`.
+- OSC: `/omniphony/control/realtime/speaker_gain` `Int(id) Float(gain clamped
+  0..2) Int(seq)` — `seq` is a monotonic counter from `SharedState.realtime_seq`
+  used by the renderer to drop out-of-order realtime updates.
+
+#### 4.5.6 Delay
+
+- **ms** (`change`): `value = max(0, Number(input.value) || 0)`; writes
+  `speakerDelays`, rewrites the field with `String(value)`, sends
+  `sendSpeakersPatch({ speakerEdits: [{ id, delayMs: value }] })` — the
+  **speakers** address, no separate apply.
+- **samples** (`change`): `samples = max(0, round(Number(value) || 0))`,
+  `delayMs = samplesToDelayMs(samples) = samples*1000/48000`; same patch. The
+  sample rate is the module constant `DEFAULT_SAMPLE_RATE_HZ = 48000`, **not** the
+  real output rate — the two fields are therefore only consistent at 48 kHz
+  (§4.9).
+- **Calc delays** (`speakerEditAutoDelayBtn`): `window.confirm(t('confirm.calcDelays'))`
+  first ("Calculate delays from distances? … This overwrites the delay of EVERY
+  speaker…"). Then `computeAndApplySpeakerDelays()` (`speakers.js:396-419`):
+  `d_i = distanceM_i · metersPerUnit`, `delay_i = max(0, (max d − d_i)/343.0·1000)`
+  rounded to 3 decimals (`round(ms*1000)/1000`); writes every `speakerDelays`
+  entry and sends **one** `speakerEdits` array covering all speakers.
+- **Delay → Dist** (`speakerEditDelayToDistanceBtn`): `window.confirm(t('confirm.delayToDist'))`.
+  Then `adjustSpeakerDistancesFromDelays()` (`speakers.js:421-462`): reference =
+  `max(0.01, max current distance in metres)`; for each speaker
+  `target = max(0.01, (refMax − delayMs/1000·343.0)/metersPerUnit)` applied along
+  its current unit direction (fallback direction `(1,0,0)` when the position is
+  degenerate), via `applySpeakerCartesianEdit(..., sendOsc=false)`; then **one**
+  layout patch with `{ id, azimuth, elevation, distance }` for every speaker plus
+  the apply. Speed of sound is the literal `343.0` m/s in both.
+
+#### 4.5.7 Layout row: Up / Down / Delete, and Add
+
+`.editor-row` with label `speaker.layout` = "Layout" /
+`help.speaker.layout`, and three right-aligned `.toggle-btn` in a flex
+(`gap:0.3rem`): `speakerMoveUpBtn` (`speaker.up` = "Up"),
+`speakerMoveDownBtn` (`speaker.down` = "Down"), `speakerRemoveBtn`
+(`speaker.delete` = "Delete").
+
+| Button | `disabled` when | Action |
+|---|---|---|
+| Up | `frozen \|\| idx <= 0` (and always when nothing is selected) | `requestMoveSpeaker(-1)` |
+| Down | `frozen \|\| idx >= speakers.length - 1` | `requestMoveSpeaker(+1)` |
+| Delete | `frozen \|\| speakers.length === 0` | `requestRemoveSpeaker()` — **no confirmation dialog** |
+| Add (header) | `frozen` | `requestAddSpeaker()` |
+
+- `requestMoveSpeaker(delta)` clamps `to` into range and calls
+  `requestMoveSpeakerTo(from, to, true)` (§4.3.8).
+- `requestRemoveSpeaker()` (`speakers.js:2056-2069`): splices the layout array,
+  `renderLayout(currentKey)`, selects `max(0, idx-1)` (or `null` when the layout
+  is now empty), sends `{ removeSpeaker: idx }` + apply.
+- `requestAddSpeaker()` (`speakers.js:2021-2054`): copies the **selected**
+  speaker as the template (or zeros when nothing is selected), id
+  `` `spk-${layout.speakers.length}` ``, `distanceM = max(0.01, base||1)`,
+  `coordMode = getSpeakerCoordMode(base)` (i.e. `'polar'` when there is no base),
+  `spatialize = base?1:0`, `delay_ms = max(0, base||0)`; pushes, re-renders the
+  layout, selects the new last index, then sends
+  `{ addSpeaker: { name, azimuth, elevation, distance, spatialize (bool),
+  delayMs } }` + apply. Note the add patch carries **only the polar block** —
+  `freqLow`/`freqHigh` and the cartesian values are not sent.
+
+#### 4.5.8 Name, spatialize, frequency limits
+
+- **Name** (`change`): `nextName = value.trim() || \`spk-${idx}\``; writes
+  `speaker.id` optimistically, sends `{ name }` + apply, refreshes the 3-D label
+  and the row chip. Host-side `control_speaker_name` additionally drops an
+  all-whitespace name.
+- **Spatialize** (`change`): `setSpeakerSpatializeLocal(index, 0|1)`
+  (`speakers.js:1014-1030`) writes `speaker.spatialize`, updates the mesh opacity
+  (`getSpeakerBaseOpacity` = **0.3** when 0, **0.65** otherwise, times the 0.18
+  ghost factor in binaural), re-syncs the crossover band selector (a
+  non-spatialized speaker's cutoffs are not band edges) and the colours; then the
+  listener sends `{ spatialize: bool }` + apply. Also flips the row thumbnail's
+  frame to black (§4.3.3).
+- **freqLow / freqHigh** (`bindSpeakerFrequencyInput`,
+  `speaker-editor-listeners.js:320-363`): empty string → `0`; otherwise
+  `max(0, Number(raw))`. Stored as the number when finite and > 0, else **`null`**.
+  Sends `{ freqLow|freqHigh: value|null }` + apply, then
+  `syncCrossoverBandSelects()`, `renderSpeakerEditor()` **and**
+  `renderSpeakersList()` (so the row's filter glyph and every cube's band colour
+  refresh immediately). Enter is handled explicitly: `preventDefault`, apply,
+  arm `skipNextChange`, `blur()` — so the browser's own `change` on blur does not
+  apply twice. Reproduce that once-only semantics in egui.
+
+---
+
+### 4.6 Test tab (`#speakerEditTabTest`, `index.html:896-941`)
+
+Policy lives entirely in `controls/speaker-test.js`; the renderer contract is
+just "play on speaker N at level L with isolation I", or stop.
+
+| # | Element | id | Type | Label (i18n) | Help | Values / default | Persistence |
+|---|---|---|---|---|---|---|---|
+| 1 | Test button | `speakerTestBtn` | `.toggle-btn` | row label `speaker.test` = "Test" | `help.speaker.test` | text `speaker.testPlay` = "Pink noise", or `speaker.testStop` = "Stop" while this speaker is under test; `.active` then | — |
+| 2 | Trigger | `speakerTestModeSelect` | `<select>` (`width:auto; min-width:7rem`) | `speaker.testMode` = "Test trigger" | `help.speaker.testMode` | `toggle` ("Toggle", **default**), `burst` ("2 s burst"), `hold` ("Hold") | `localStorage` `speakerTest.mode.v1` |
+| 3 | Isolation | `speakerTestIsolationSelect` | `<select>` | `speaker.testIsolation` = "Test isolation" | `help.speaker.testIsolation` | `test_only` ("Test only", **default**), `with_programme` ("Test + programme"), `test_only_solo` ("Test only, others muted") | `speakerTest.isolation.v1` |
+| 4 | Level | `speakerTestLevelSlider` | range `.gain-slider` in a `.gain-row` | `speaker.testLevel` = "Test level" | `help.speaker.testLevel` | `min=-60 max=0 step=1`, **peak dBFS**, default **-8** | `speakerTest.levelDb.v2` (v2 because the reference changed from RMS to peak) |
+| 5 | Level box | `speakerTestLevelBox` | `.gain-box` | — | — | `` `${levelDb()} dBFS` `` — integer, no decimals | — |
+
+All five (including the two tabs) are `disabled` unless a speaker is selected
+(`renderSpeakerTestUI`, `speaker-test.js:137-163`). The level slider is not
+overwritten while it has focus.
+
+Behaviour:
+
+- **toggle**: click starts, click stops; a `TOGGLE_SAFETY_MS = 60_000` ms timer
+  stops it unattended. **hold**: `pointerdown` starts, a **window**-level
+  `pointerup` stops (so releasing off the button still stops). **burst**:
+  `BURST_MS = 2000` ms auto-stop. A click event is ignored in hold mode and the
+  pointer events are ignored in the other two.
+- Changing the trigger mode **stops** any running test; changing the isolation
+  **re-sends** the start message (isolation travels in it); moving the level
+  slider saves, re-renders and re-sends while running.
+- `onSpeakerSelectionChanged()` (called at the top of every
+  `renderSpeakerEditor`): if a test is running on a *different* speaker, in
+  `toggle` mode the test **follows the new selection** (start on the new index),
+  otherwise it stops.
+- `stopSpeakerTest({force})` always sends the stop, even when the module believes
+  nothing is running (the renderer's state is authoritative). `beforeunload`
+  forces a stop and releases the idle feed.
+- OSC: `/omniphony/control/speaker_test` `Int(id)` `Float(level)` `String(isolation)`,
+  with `id = -1` meaning stop and `level = 10^(dB/20)` clamped host-side to
+  `0..1` (`commands/gain.rs:207-221`).
+
+**Idle feed** (`test-idle-feed.js`): the renderer's input→output chain is kept
+warm while (the Test pane is visible **and** a speaker is selected), so a test is
+audible immediately with nothing playing. The request is **refcounted by key**
+(`'speaker-test'` here, the object-injection panel uses another) so whichever
+panel closes first cannot disarm the other. Only the transitions
+nobody-wants ⇄ somebody-wants reach the wire, and while armed a
+`REARM_MS = 120_000` ms interval re-sends `true` because the renderer expires the
+arm after a keepalive window. OSC: `/omniphony/control/speaker_test/idle_feed`
+`Int(0|1)`.
+
+---
+
+### 4.7 Freeze and VBAP recompute signals
+
+**Frozen layout** — `app.renderBackendState.frozenSpeakers`
+(`AppState.render_backend_state.frozen_speakers`, hydrated at
+`init.js:189` and by the render-backend events). `isSpeakerLayoutFrozen()`
+(`state.js:585-587`) gates, as a *guard inside every handler* as well as through
+the `disabled` flags:
+
+| Disabled while frozen | Where |
+|---|---|
+| `speakerAddBtn`, Up / Down / Delete | `speakers.js:1202`, `1216-1218` |
+| every Edit-tab input and both 3D-Edit buttons (list at `speakers.js:1265-1291`) | `renderSpeakerEditor` |
+| `importLayoutBtn`, `exportLayoutBtn`, `renderBackendSelect` | `controls/vbap.js:661-671` |
+| `#layoutSelect` (if it existed) | `speakers.js:2555`, `vbap.js:667` |
+| **not** disabled: `presetsBtn`, the Test-tab controls, M/S, drag-to-reorder handles | — (drag and the layout mutators are blocked by their handler guards; `presetsBtn` only by `runLayoutImport`'s guard) |
+
+Also no-ops while frozen: `applyLayoutToRenderer`, `setSpeakerCoordMode`,
+`applySpeakerSceneCartesianEdit` (hence every coordinate edit and every gizmo
+drag), `requestAddSpeaker`, `requestRemoveSpeaker`, `requestMoveSpeaker(To)`.
+
+**`vbap:recomputing`** (`tauri-bridge.js:487-496`): clears the ack watchdog, sets
+`app.vbapRecomputing = payload.enabled === true`, clears `app.recomputeError` when
+starting, then `renderVbapStatus()`.
+
+**`speakers:recompute_error`** (`:498-505`): `app.recomputeError = payload.message`
+trimmed (empty → `null`); a non-null error forces `vbapRecomputing = false`.
+
+Both surface in the renderer panel's `.vbap-status` line (§3), never inside the
+speakers section — the speakers section has **no** status line of its own:
+
+| State | Text | Class / colour |
+|---|---|---|
+| error set | the message (also as `title`) | `.error`, inline `color:#ff7676` |
+| `vbapRecomputing === true` | `vbap.status.computing` = "computing..." | `.computing` → `#ffbf66` |
+| `vbapRecomputing === false` | `vbap.status.ready` = "up to date" | `.ready` → `#78e08f` |
+| `null` (never reported) | `vbap.status.idle` = "—" | none |
+
+`markRecomputePending()` sets the pending state optimistically when a control is
+sent and arms a watchdog that, on timeout, reports
+`vbap.status.noAck` = "engine did not answer — is it the renderer you expected?".
+Layout edits from this section go through `control_layout_config` /
+`…/apply` and do **not** call `markRecomputePending` themselves; the engine's own
+`vbap:recomputing` broadcast is what lights the status.
+
+**`vbap:allow_negative_z`** (`tauri-bridge.js:560-563`) sets
+`app.vbapAllowNegativeZ` and only re-renders the renderer panel's polar section:
+it changes the displayed elevation range (`0..90` vs `-90..90`), the elevation
+step maths (range 90° vs 180°) and whether the cartesian −Z grid step is shown
+(`vbap.js:785-789`, `838-851`). **It imposes no clamp on the speaker editor's
+elevation field** — `speakerEditElInput` has no `min`/`max` and no handler check.
+Worth preserving as-is unless the port deliberately changes it (§4.9).
+
+---
+
+### 4.8 OSC produced by this section
+
+`send_json_control(address, payload)` encodes the JSON payload as **one OSC
+string argument**; `send_control` sends typed args.
+
+| Action | Command | OSC address | Argument(s) |
+|---|---|---|---|
+| any layout patch (`sendLayoutPatch`) | `control_layout_config` | `/omniphony/control/config/layout` | `String(json)` |
+| commit a layout patch | `control_layout_config_apply` (= `control_speakers_apply`) | `/omniphony/control/config/layout/apply` | none |
+| any speakers patch (`sendSpeakersPatch`) | `control_speakers_config` | `/omniphony/control/config/speakers` | `String(json)` |
+| coordinate edit | via `control_layout_config` | as above | `{"speakerEdits":[{"id":i,"coordMode":"cartesian","x":…,"y":…,"z":…}]}` **or** `{"…","coordMode":"polar","azimuth":…,"elevation":…,"distance":…}` — then apply |
+| coord-mode radio | idem | idem | `{"speakerEdits":[{"id":i,"coordMode":m,"x","y","z","azimuth","elevation","distance"}]}` + apply |
+| name | idem | idem | `{"speakerEdits":[{"id":i,"name":"…"}]}` + apply |
+| spatialize | idem | idem | `{"speakerEdits":[{"id":i,"spatialize":true|false}]}` + apply |
+| freqLow / freqHigh | idem | idem | `{"speakerEdits":[{"id":i,"freqLow":Hz|null}]}` / `"freqHigh"` + apply |
+| delay (ms or samples) | `control_speakers_config` | `/omniphony/control/config/speakers` | `{"speakerEdits":[{"id":i,"delayMs":ms}]}` — **no apply** |
+| Calc delays | idem | idem | one `speakerEdits` array with every speaker's `delayMs` |
+| Delay → Dist | `control_layout_config` + apply | `/omniphony/control/config/layout` | one array of `{id, azimuth, elevation, distance}` |
+| Add | `control_layout_config` + apply | idem | `{"addSpeaker":{"name","azimuth","elevation","distance","spatialize":bool,"delayMs"}}` |
+| Delete | idem | idem | `{"removeSpeaker": idx}` |
+| Move (buttons or drag) | idem | idem | `{"moveSpeaker":{"from":f,"to":t}}` |
+| Import / preset applied | idem | idem | `{"replaceLayout":{"radiusM":…,"speakers":[{name,coordMode,x,y,z,azimuth,elevation,distance,spatialize:bool,delayMs,freqLow,freqHigh}]}}` + apply |
+| speaker gain | `control_speaker_gain` | `/omniphony/control/realtime/speaker_gain` | `Int(id) Float(0..2) Int(seq)` |
+| speaker mute | `control_speaker_mute` | `/omniphony/control/config/speakers` | `String({"speakerEdits":[{"id":i,"muted":bool}]})` |
+| ear mute | `control_ear_mute` | `/omniphony/control/binaural/ear_mute` | `Int(ear 0|1) Int(0|1)` |
+| speaker test | `control_speaker_test` | `/omniphony/control/speaker_test` | `Int(id or -1) Float(level 0..1) String(isolation)` |
+| test idle feed | `control_speaker_test_idle_feed` | `/omniphony/control/speaker_test/idle_feed` | `Int(0|1)` |
+| Import / Export / Presets pickers | `pick_*_layout_path`, `import_layout_from_path`, `export_layout_to_path`, `default_layout_export_name`, `select_layout` | — | no OSC (file I/O + state) |
+
+Clamps applied host-side in `commands/speakers.rs` for the single-field helpers
+(`control_speaker_x/y/z` clamp ±1, `control_speaker_distance` `max(0.01)`,
+`control_speaker_delay` `max(0)`, `control_speaker_coord_mode` normalises to
+`cartesian`/`polar`, `control_speaker_name` drops blanks). Note the web UI uses
+those helpers **nowhere** — it always goes through `control_layout_config` /
+`control_speakers_config` with a hand-built payload, so the *frontend* clamps
+(`clampNumber(±1)`, `max(0.01)` distance, `max(0)` delay,
+`freq > 0 ? freq : null`) are the ones that matter and must be reproduced in the
+egui panel code.
+
+Incoming events consumed here: `layouts:update`, `layout:selected`,
+`speaker:meter`, `ear:meter`, `speaker:gain`, `speaker:delay`, `speaker:mute`,
+`clip:detected`, `source:gains`, `source:band_gains`, `vbap:recomputing`,
+`speakers:recompute_error`, plus the `state:snapshot_ready` fields
+`layouts`, `selectedLayoutKey`, `speakerLevels`, `speakerGains`, `speakerMutes`,
+`objectSpeakerGains`, `renderBackendState.frozenSpeakers`, `binaural.ears`.
+
+---
+
+### 4.9 Findings, dead code and open points
+
+1. **Editor title is never translated.** `#speakerEditTitle` carries
+   `data-i18n="section.speakerEditor"` but `renderSpeakerEditor` overwrites it
+   with the hardcoded `` `Speaker ${idx}` `` on every render. Decide in the port
+   whether to keep the index-only title (recommended: it is the only place the
+   index is shown) and, if so, translate it.
+2. **"Freq. max (Hz)" has no `data-i18n`** while "Freq. min (Hz)" has
+   `speaker.freqLow`; there is no `speaker.freqHigh` key in `en.json`. Same class
+   of gap: the Headphones header title, the `Drag to reorder` tooltip, the
+   coordinate-column `title`s, and the `M`/`S` button labels are all hardcoded
+   English.
+3. **Dead DOM references**: `#layoutSelect` and `#editModeSelect` are read in
+   four modules but exist nowhere in `index.html`. The port should drop them, but
+   must keep `hydrateLayoutSelect`'s patch-vs-rebuild logic (§4.1.3) and
+   `app.activeEditMode` (§4.5.4).
+4. **Delay-samples conversion is hardwired to 48 kHz**
+   (`DEFAULT_SAMPLE_RATE_HZ`), independent of the real output rate: the ms and
+   samples fields disagree at any other rate. Candidate fix in the port: use the
+   reported output sample rate.
+5. **The gain slider re-sends every speaker's gain on every tick**
+   (`applySpeakerGroupGains` loops the whole layout). On a 24-speaker layout a
+   slider drag is ~24 OSC messages per frame. Per CLAUDE.md's performance rule the
+   port should send only the edited speaker unless the group behaviour is
+   load-bearing (it appears not to be: the renderer echoes per-speaker gains).
+6. **`presetsBtn` is not disabled when the layout is frozen**, unlike Import and
+   Export; only its handler's early return protects it, so it looks clickable and
+   silently does nothing.
+7. **Name / gain / delay fields are written on every render** without the
+   `syncInputValueUnlessEditing` guard the coordinate fields use; at the ~10 Hz
+   state echo this can fight the user's typing. The egui port should apply the
+   focus guard uniformly.
+8. **Delete has no confirmation** while the two bulk delay tools do
+   (`window.confirm` with `confirm.calcDelays` / `confirm.delayToDist`). Keep the
+   two confirmations (they overwrite every speaker); the egui port needs a modal
+   for them since there is no `window.confirm`.
+9. **Out of scope for the panels phase, entry points only**: the polar/cartesian
+   3-D gizmos behind the two "3D Edit" buttons; the per-speaker 3-D band gauge and
+   cube colouring driven from `renderSpeakersList`; the band cursor
+   (`#bandCursor`, §7) that mirrors `syncCrossoverBandSelects`; the gaintable
+   subscription refreshed by `set_selectedSpeakerIndex`.
+10. **Unverified**: whether the renderer tolerates a `speakerEdits` delay patch
+    without a following `apply` (the ms/samples fields send none while every
+    layout edit does) — behaviour inferred from the code, not observed on a
+    running renderer.
