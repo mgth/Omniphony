@@ -1,0 +1,52 @@
+[package]
+name = "omniphony-studio-egui"
+version = "0.1.0"
+edition = "2024"
+# egui 0.36 requires 1.95; the repo's default toolchain may be older, see
+# rust-toolchain.toml next to this file.
+rust-version = "1.95"
+license = "GPL-3.0-or-later"
+description = "Spike: native egui/wgpu host for Omniphony Studio (phase 0 of the frontend replacement study)"
+publish = false
+
+[[bin]]
+name = "omniphony-studio-egui"
+path = "src/main.rs"
+
+[dependencies]
+# Canonical coordinate math shared with the renderer; dependency-free by design.
+omniphony-geometry = { path = "../omniphony-renderer/omniphony-geometry" }
+
+# UI + windowing. wgpu is the only backend the spike supports: the whole point
+# is the wgpu paint callback that hosts the 3D viewport.
+eframe = { version = "0.36.2", default-features = false, features = [
+    "wgpu",
+    "default_fonts",
+    "x11",
+    "wayland",
+    "accesskit",
+] }
+egui = "0.36.2"
+egui-wgpu = "0.36.2"
+# Must match egui-wgpu's wgpu major.
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+glam = { version = "0.30", features = ["bytemuck"] }
+
+# OSC transport, same crate/version as the Tauri Studio.
+rosc = "0.11"
+
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+# Same YAML crate as the renderer, so layouts parse identically.
+serde_yaml_ng = "0.10"
+log = "0.4"
+env_logger = "0.11"
+# Cross-platform RSS readout for the stats panel (also used by the Tauri Studio).
+memory-stats = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
