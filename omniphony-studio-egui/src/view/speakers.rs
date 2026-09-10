@@ -34,6 +34,11 @@ pub struct SpeakerVisual {
     pub scale: f32,
     pub color: [f32; 3],
     pub opacity: f32,
+    /// The crossover band this speaker belongs to, and how many there are:
+    /// the gauge's lit segment takes its colour from the pair.
+    pub band: (usize, usize),
+    /// The pass-band in hertz, zero where the layout does not cut.
+    pub pass_band: (f32, f32),
 }
 
 /// `bandColor(i, n)`: `#8ec8ff` for a single band, else an HSL ramp from red
@@ -117,6 +122,8 @@ pub fn collect(
                 scale,
                 color,
                 opacity,
+                band: (speaker_band_index(s.freq_low, &edges), band_count),
+                pass_band: (s.freq_low.unwrap_or(0.0), s.freq_high.unwrap_or(0.0)),
             }
         })
         .collect()
