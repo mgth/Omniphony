@@ -66,6 +66,7 @@ impl StudioSpike {
                 ui.ctx().content_rect().height(),
             ))
             .show(ui, |ui| {
+                self.layout_actions(ui);
                 if rows.is_empty() {
                     widgets::note(ui, t("speakers.none"));
                 }
