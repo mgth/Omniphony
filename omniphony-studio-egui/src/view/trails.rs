@@ -19,6 +19,8 @@ pub enum TrailMode {
 }
 
 impl TrailMode {
+    pub const ALL: [TrailMode; 2] = [TrailMode::Diffuse, TrailMode::Line];
+
     pub fn label(self) -> &'static str {
         match self {
             TrailMode::Diffuse => "Diffuse",
