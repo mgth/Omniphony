@@ -13,53 +13,112 @@ use crate::view::volumes::{Colormap, DiscontinuityMode};
 
 impl StudioSpike {
     pub(crate) fn display_sections(&mut self, ui: &mut egui::Ui) {
-        let s = &mut self.settings;
         let max_height = open_max_height(ui.ctx().content_rect().height());
-        Section::new("displaySection", "section.display")
-            .default_open(true)
-            .max_height(max_height)
-            .show(ui, |ui| {
-                widgets::switch_row(ui, t("display.showObjects"), &mut s.objects_visible);
-                ui.horizontal(|ui| {
-                    ui.label(t("display.objectDisplayMode"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        egui::ComboBox::from_id_salt("object-display-mode")
-                            .selected_text(s.object_display_mode.label())
-                            .width(150.0)
-                            .show_ui(ui, |ui| {
-                                for mode in ObjectDisplayMode::ALL {
-                                    ui.selectable_value(
-                                        &mut s.object_display_mode,
-                                        mode,
-                                        mode.label(),
-                                    );
-                                }
-                            });
+        let mut locale_choice: Option<String> = None;
+        let locale = self
+            .prefs
+            .locale
+            .clone()
+            .unwrap_or_else(|| "auto".to_owned());
+        {
+            let s = &mut self.settings;
+            Section::new("displaySection", "section.display")
+                .default_open(true)
+                .max_height(max_height)
+                .show(ui, |ui| {
+                    // The language row heads the Display section, as in the web.
+                    ui.horizontal(|ui| {
+                        ui.label(t("app.language"));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            egui::ComboBox::from_id_salt("locale")
+                                .selected_text(
+                                    crate::i18n::LOCALE_OPTIONS
+                                        .iter()
+                                        .find(|(id, _)| *id == locale)
+                                        .map(|(_, label)| *label)
+                                        .unwrap_or("Auto"),
+                                )
+                                .width(150.0)
+                                .show_ui(ui, |ui| {
+                                    for (id, label) in crate::i18n::LOCALE_OPTIONS {
+                                        if ui.selectable_label(*id == locale, *label).clicked()
+                                            && *id != locale
+                                        {
+                                            locale_choice = Some((*id).to_owned());
+                                        }
+                                    }
+                                });
+                            // "Auto" does not say which language it picked, and
+                            // that is exactly what a reader checks when the UI
+                            // is not in the language they expected.
+                            if locale == "auto" {
+                                ui.label(
+                                    egui::RichText::new(crate::i18n::active_locale())
+                                        .size(crate::ui::theme::FONT_SIZE_SMALL)
+                                        .color(crate::ui::theme::TEXT_MUTED),
+                                );
+                            }
+                        });
                     });
+                    widgets::switch_row(ui, t("display.showObjects"), &mut s.objects_visible);
+                    ui.horizontal(|ui| {
+                        ui.label(t("display.objectDisplayMode"));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            egui::ComboBox::from_id_salt("object-display-mode")
+                                .selected_text(s.object_display_mode.label())
+                                .width(150.0)
+                                .show_ui(ui, |ui| {
+                                    for mode in ObjectDisplayMode::ALL {
+                                        ui.selectable_value(
+                                            &mut s.object_display_mode,
+                                            mode,
+                                            mode.label(),
+                                        );
+                                    }
+                                });
+                        });
+                    });
+                    ui.add(
+                        egui::Slider::new(&mut s.object_sphere_size, 0.03..=0.2)
+                            .step_by(0.002)
+                            .text(t("display.objectSphereSize")),
+                    );
+                    widgets::switch_row(
+                        ui,
+                        t("display.objectColors"),
+                        &mut s.object_colors_enabled,
+                    );
+                    widgets::switch_row(
+                        ui,
+                        t("display.objectLabels"),
+                        &mut s.object_labels_enabled,
+                    );
+                    widgets::switch_row(ui, "Effective render", &mut s.effective_render_enabled);
+                    widgets::switch_row(ui, t("display.grid"), &mut s.vbap_grid);
+                    ui.separator();
+                    widgets::switch_row(ui, t("display.speakers"), &mut s.speakers_visible);
+                    widgets::switch_row(
+                        ui,
+                        t("display.speakerLabels"),
+                        &mut s.speaker_labels_enabled,
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut s.speaker_size, 0.04..=0.2)
+                            .step_by(0.002)
+                            .text(t("display.speakerSize")),
+                    );
                 });
-                ui.add(
-                    egui::Slider::new(&mut s.object_sphere_size, 0.03..=0.2)
-                        .step_by(0.002)
-                        .text(t("display.objectSphereSize")),
-                );
-                widgets::switch_row(ui, t("display.objectColors"), &mut s.object_colors_enabled);
-                widgets::switch_row(ui, t("display.objectLabels"), &mut s.object_labels_enabled);
-                widgets::switch_row(ui, "Effective render", &mut s.effective_render_enabled);
-                widgets::switch_row(ui, t("display.grid"), &mut s.vbap_grid);
-                ui.separator();
-                widgets::switch_row(ui, t("display.speakers"), &mut s.speakers_visible);
-                widgets::switch_row(
-                    ui,
-                    t("display.speakerLabels"),
-                    &mut s.speaker_labels_enabled,
-                );
-                ui.add(
-                    egui::Slider::new(&mut s.speaker_size, 0.04..=0.2)
-                        .step_by(0.002)
-                        .text(t("display.speakerSize")),
-                );
-            });
+        }
 
+        if let Some(choice) = locale_choice {
+            // The renderer is not told: the language is this host's own, and
+            // nothing on the wire carries a string the user reads.
+            crate::i18n::set_locale(&choice);
+            self.prefs.locale = Some(choice);
+            self.mark_prefs_dirty();
+        }
+
+        let s = &mut self.settings;
         Section::new("trailSection", "trail.title")
             .default_open(true)
             .max_height(max_height)
