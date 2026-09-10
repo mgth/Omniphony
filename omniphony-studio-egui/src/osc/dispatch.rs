@@ -10,6 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+use crate::host::peak_hold::PeakHolds;
 use crate::model::app_state::{AppState, Meter};
 use crate::model::layouts::Speaker;
 use crate::osc::apply::{
@@ -92,6 +93,12 @@ pub struct Live {
     pub last_frame_reset: Option<Instant>,
     /// Bumped on every `Change::Snapshot`; the UI compares it to rebuild caches.
     pub snapshot_epoch: u64,
+    /// Peak-hold cursors of every meter, keyed as the host keys them
+    /// (`master`, `spk:<id>`, `src:<id>`, `ear:<id>`).
+    pub peaks: PeakHolds,
+    /// Held peak in dBFS per meter key, the value the host would have put in
+    /// `peakHoldDbfs`.
+    pub peak_hold_db: HashMap<String, f64>,
     /// Log ring shown by the log overlay (`src/log.js`, 120 entries).
     pub log: VecDeque<LogLine>,
     /// Set while a config save is in flight (`app.saveRequested`).
@@ -183,6 +190,18 @@ impl std::ops::DerefMut for Live {
 }
 
 impl Live {
+    /// Feed one meter to its peak-hold cursor, the way the host does before
+    /// emitting `peakHoldDbfs`.
+    fn hold(&mut self, key: String, peak_dbfs: f64) {
+        let held = self.peaks.update(&key, peak_dbfs, Instant::now());
+        self.peak_hold_db.insert(key, held);
+    }
+
+    /// Held peak of one meter key, if it has ever had a sample.
+    pub fn peak_hold(&self, key: &str) -> Option<f64> {
+        self.peak_hold_db.get(key).copied()
+    }
+
     /// `pushLog`: drop empty messages, coerce the level, keep the newest 120.
     pub fn push_log(&mut self, level: &str, target: &str, message: impl Into<String>) {
         let message: String = message.into();
@@ -214,6 +233,8 @@ impl Live {
             gaintable_unavailable: None,
             overlay: None,
             object_test_position: None,
+            peaks: PeakHolds::new(),
+            peak_hold_db: HashMap::new(),
             log: VecDeque::new(),
             save_requested: false,
             object_test_clip: None,
@@ -415,6 +436,8 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::Remove { id } => {
             live.remove_source(&id);
+            live.peaks.forget(&format!("src:{id}"));
+            live.peak_hold_db.remove(&format!("src:{id}"));
             live.app.object_mutes.remove(&id);
             Change::Scene
         }
@@ -433,6 +456,7 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             );
             // Sent even when empty: "no crossover" must clear a stale band level.
             live.source_level_seen.insert(id.clone(), Instant::now());
+            live.hold(format!("src:{id}"), peak_dbfs);
             live.object_band_rms.insert(id, band_rms_dbfs);
             Change::Scene
         }
@@ -454,6 +478,7 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             rms_dbfs,
         } => {
             live.speaker_level_seen.insert(id.clone(), Instant::now());
+            live.hold(format!("spk:{id}"), peak_dbfs);
             live.app.speaker_levels.insert(
                 id,
                 Meter {
@@ -468,6 +493,7 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             peak_dbfs,
             rms_dbfs,
         } => {
+            live.hold(format!("ear:{id}"), peak_dbfs);
             live.ear_levels.insert(
                 id,
                 Meter {
@@ -481,6 +507,7 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             peak_dbfs,
             rms_dbfs,
         } => {
+            live.hold("master".to_owned(), peak_dbfs);
             live.app.master_level = Some(Meter {
                 peak_dbfs,
                 rms_dbfs,

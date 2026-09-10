@@ -70,6 +70,12 @@ pub struct StudioSpike {
     /// Log overlay: expanded state and the filter box's text.
     pub(crate) log_expanded: bool,
     pub(crate) log_filter: String,
+    /// `SharedState::realtime_seq`: monotonic stamp on realtime controls, so
+    /// the renderer can drop updates that arrive out of order.
+    pub(crate) realtime_seq: i32,
+    /// OSC form fields (`osc_config.json`, shared with the Tauri Studio).
+    pub(crate) osc_host: String,
+    pub(crate) osc_port: u16,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
     /// Handle on the renderer: every control the panels expose goes through it.
@@ -158,6 +164,19 @@ impl StudioSpike {
         layout.clamp_all(cc.egui_ctx.content_rect().width().max(800.0));
         prefs.side_panels = layout;
         let ctl = Ctl::new(control.clone());
+        // The OSC form starts from the same file the Tauri Studio writes, so
+        // both hosts point at the same renderer by default.
+        let osc_config = crate::host::config::load_config(&config_dir);
+        let (osc_host, osc_port) = match &args.register {
+            Some(spec) => match spec.rsplit_once(':') {
+                Some((host, port)) => (
+                    host.to_owned(),
+                    port.parse().unwrap_or(osc_config.osc_rx_port),
+                ),
+                None => (spec.clone(), osc_config.osc_rx_port),
+            },
+            None => (osc_config.host.clone(), osc_config.osc_rx_port),
+        };
 
         let object_field = args.object_field;
         let mut settings = ViewSettings::default();
@@ -194,6 +213,9 @@ impl StudioSpike {
             prefs_dirty_since: None,
             log_expanded: false,
             log_filter: String::new(),
+            realtime_seq: 0,
+            osc_host,
+            osc_port,
             config_dir,
             ctl,
             last_subscribe: None,
@@ -421,6 +443,7 @@ impl StudioSpike {
                 .max_height(height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    self.osc_section(ui);
                     self.display_sections(ui);
                     self.tool_sections(ui);
                 });
@@ -431,7 +454,11 @@ impl StudioSpike {
                 .id_salt("overlay-right-scroll")
                 .max_height(height)
                 .auto_shrink([false, false])
-                .show(ui, |ui| self.object_and_speaker_lists(ui));
+                .show(ui, |ui| {
+                    self.master_section(ui);
+                    self.objects_section(ui);
+                    self.speakers_section(ui);
+                });
         });
         self.log_overlay(ctx, &layout);
         if !layout_eq(&layout, &self.layout) {
@@ -458,6 +485,12 @@ impl StudioSpike {
             }
             None => self.prefs_dirty_since = Some(Instant::now()),
         }
+    }
+
+    /// Next value of the realtime sequence counter.
+    pub(crate) fn next_realtime_seq(&mut self) -> i32 {
+        self.realtime_seq = self.realtime_seq.wrapping_add(1);
+        self.realtime_seq
     }
 
     fn maybe_print_stats(&mut self) {
