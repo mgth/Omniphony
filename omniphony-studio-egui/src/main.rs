@@ -8,10 +8,14 @@
 //! panels over the viewport so panel expansion can never resize the scene.
 
 mod app;
+mod host;
+mod i18n;
 mod model;
 mod osc;
+mod panels;
 mod render;
 mod stats;
+mod ui;
 mod view;
 mod widgets;
 
@@ -124,6 +128,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             install_fonts(&cc.egui_ctx, args.cjk_font.as_deref());
+            ui::theme::install(&cc.egui_ctx);
             Ok(Box::new(app::StudioSpike::new(cc, args)?))
         }),
     )
