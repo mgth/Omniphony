@@ -65,6 +65,7 @@ config, debounced 600 ms so a drag writes once.
 | Speakers | One row per speaker of the live layout: name, gain offset, meter, RMS, mute, solo | `/omniphony/control/config/speakers` (`speakerEdits`) |
 | Display, Trails, Heatmaps | The phase 1 view controls, now in Studio sections with the web's labels | nothing (client-side view state) |
 | Audio output | Format line, output backend, device with its refresh, named pipe and its destination and format, channel mapping with the unroutable-speaker warning, sample rate | `/omniphony/control/audio/output_backend`, `…/output_file`, `…/output_file_format`, `…/output_devices/refresh`, and the batched `/omniphony/control/config/audio` + its apply |
+| Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Renderer | Output mode, the Renderer/Binaural tab pair, the evaluation mode with its cartesian and polar grids and their step readouts, position interpolation, object size intervals, ramp mode, the backend with its status and its schema-generated parameters, distance diffuse, the distance model, the crossover with what the engine built | `/omniphony/control/output_mode`, `…/binaural_mode`, `…/render_evaluation_mode`, `…/render_evaluation/*`, `…/ramp_mode`, `…/render_backend`, `…/backend/param`, `…/distance_diffuse/*`, `…/distance_model*`, `…/option` |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
@@ -107,8 +108,9 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Renderer panel**: the binaural tab in full (HRTF, distance, listening
   room, head tracking), the hybrid backend's own controls, the file-parameter
   Browse and Edit buttons, the performance gauges, the info modals.
-- **Speaker editor**: the coordinate tables, gain, delay, band limits,
-  spatialise flag, reordering, the test tab, layout import and export.
+- **Speakers**: layout import, export and presets, the position thumbnail and
+  filter glyph of a list row, the band contribution bars, drag-to-reorder, the
+  headphone channel rows and their ear mute.
 - **Left overlay**: profiles, updates, the audio input panel, the
   fixed-channel-sources section with its schema-declared options, room
   geometry, DRC, the channel and object-test editors.
