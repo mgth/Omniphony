@@ -43,6 +43,9 @@ pub struct ViewSettings {
     pub speaker_labels_enabled: bool,
     /// `app.speakerBandBarsEnabled`: the per-speaker frequency-extent gauge.
     pub speaker_band_bars_enabled: bool,
+    /// `app.speakerFaceListenerEnabled`: aim the cubes at the listener and
+    /// show the driver face.
+    pub speaker_face_listener_enabled: bool,
     /// `app.speakerSize` (default 0.08).
     pub speaker_size: f32,
     /// `app.vbapCartesianFaceGridEnabled` ("Grid", default false).
@@ -63,6 +66,7 @@ impl Default for ViewSettings {
             speakers_visible: true,
             speaker_labels_enabled: false,
             speaker_band_bars_enabled: false,
+            speaker_face_listener_enabled: false,
             speaker_size: 0.08,
             vbap_grid: false,
             trails: TrailSettings::default(),
@@ -330,7 +334,7 @@ pub fn build_frame(
         .collect();
     if settings.speakers_visible {
         for sp in &speaker_visuals {
-            speakers::emit(sp, &mut frame);
+            speakers::emit(sp, settings, &mut frame);
             pick_speakers.push((
                 sp.index,
                 sp.scene_pos,

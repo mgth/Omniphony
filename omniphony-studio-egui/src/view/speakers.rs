@@ -16,6 +16,14 @@ use crate::render::{
 use super::objects::hsl_to_rgb;
 use super::{ViewSettings, dbfs_to_scale, decayed_level, scene_position};
 
+/// The driver disc's radius as a fraction of the cube's side (`materials.js`:
+/// `CircleGeometry(0.08 × 0.36)` against a 0.08 cube).
+const DRIVER_RADIUS: f32 = 0.36;
+/// How far the disc sits off the cube's +Z face, in cube sides: half the cube
+/// plus a hair, so it never z-fights with the face it is on.
+const DRIVER_OFFSET: f32 = 0.5 + 0.01;
+const DRIVER_COLOR: u32 = 0x0c1118;
+
 /// `SPEAKER_BASE_SIZE` (materials.js).
 pub const SPEAKER_BASE_SIZE: f32 = 0.08;
 const SPEAKER_COLOR: u32 = 0x8ec8ff;
@@ -39,6 +47,30 @@ pub struct SpeakerVisual {
     pub band: (usize, usize),
     /// The pass-band in hertz, zero where the layout does not cut.
     pub pass_band: (f32, f32),
+}
+
+/// `applySpeakerOrientation`: the rotation that aims the cube's +Z face — the
+/// one the driver disc is on — at the listener, with no roll on elevated
+/// speakers.
+///
+/// three.js `Matrix4.lookAt(eye = origin, target = p, up = +Y)`: the local +Z
+/// axis lands on `normalize(eye − target)`, which points from the speaker back
+/// to the origin. A speaker straight overhead has no unique answer, so the
+/// same nudge three.js applies is applied here rather than leaving a
+/// degenerate basis.
+pub fn face_listener_rotation(p: Vec3) -> Quat {
+    if p.length_squared() < 1e-8 {
+        return Quat::IDENTITY;
+    }
+    let mut z = -p.normalize();
+    let up = Vec3::Y;
+    if up.cross(z).length_squared() < 1e-12 {
+        z.x += 1e-4;
+        z = z.normalize();
+    }
+    let x = up.cross(z).normalize();
+    let y = z.cross(x);
+    Quat::from_mat3(&glam::Mat3::from_cols(x, y, z))
 }
 
 /// `bandColor(i, n)`: `#8ec8ff` for a single band, else an HSL ramp from red
@@ -131,12 +163,14 @@ pub fn collect(
 
 /// Cube with `MeshStandardMaterial` look: depth-written even though blended
 /// (three.js keeps `depthWrite` on for the speaker material).
-pub fn emit(sp: &SpeakerVisual, frame: &mut FrameData) {
-    let model = Mat4::from_scale_rotation_translation(
-        Vec3::splat(SPEAKER_BASE_SIZE * sp.scale),
-        Quat::IDENTITY,
-        sp.scene_pos,
-    );
+pub fn emit(sp: &SpeakerVisual, settings: &ViewSettings, frame: &mut FrameData) {
+    let side = SPEAKER_BASE_SIZE * sp.scale;
+    let rotation = if settings.speaker_face_listener_enabled {
+        face_listener_rotation(sp.scene_pos)
+    } else {
+        Quat::IDENTITY
+    };
+    let model = Mat4::from_scale_rotation_translation(Vec3::splat(side), rotation, sp.scene_pos);
     let e = hex_linear(SPEAKER_EMISSIVE);
     frame.meshes.push(MeshItem {
         kind: MeshKind::Cube,
@@ -149,4 +183,62 @@ pub fn emit(sp: &SpeakerVisual, frame: &mut FrameData) {
         depth_test: true,
         order: 0,
     });
+    // The driver: a dark disc on the face that is aimed at the listener, so
+    // which way a speaker points is visible rather than inferred. It only
+    // means anything when the cubes are oriented, and the web shows it only
+    // then.
+    if !settings.speaker_face_listener_enabled {
+        return;
+    }
+    let disc = Mat4::from_scale_rotation_translation(Vec3::splat(side), rotation, sp.scene_pos)
+        * Mat4::from_translation(Vec3::new(0.0, 0.0, DRIVER_OFFSET))
+        * Mat4::from_scale(Vec3::splat(DRIVER_RADIUS));
+    let colour = hex_linear(DRIVER_COLOR);
+    frame.meshes.push(MeshItem {
+        kind: MeshKind::Disc,
+        instance: MeshInstance::new(disc, with_alpha(colour, 0.85), [0.0, 0.0, 0.0, 0.0]),
+        blend: true,
+        depth_test: true,
+        order: 1,
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The face the driver is on ends up pointing at the listener, wherever
+    /// the speaker is, and the cube keeps no roll: its local +Y stays in the
+    /// vertical plane through it.
+    #[test]
+    fn the_driver_face_aims_at_the_listener() {
+        for p in [
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-0.7, 0.5, 0.7),
+            Vec3::new(0.0, 1.0, 0.0001),
+        ] {
+            let rotation = face_listener_rotation(p);
+            let forward = rotation * Vec3::Z;
+            let to_listener = -p.normalize();
+            assert!(
+                forward.dot(to_listener) > 0.999,
+                "the driver face does not aim at the listener from {p:?}"
+            );
+            // No roll: the local X axis stays horizontal.
+            let right = rotation * Vec3::X;
+            assert!(right.y.abs() < 1e-4, "the cube is rolled at {p:?}");
+        }
+    }
+
+    /// A speaker straight overhead has no unique answer; three.js nudges the
+    /// basis rather than producing a degenerate one, and so does this.
+    #[test]
+    fn a_speaker_overhead_still_gets_a_rotation() {
+        let rotation = face_listener_rotation(Vec3::Y);
+        assert!(rotation.is_finite() && rotation.is_normalized());
+        assert!((rotation * Vec3::Z).dot(-Vec3::Y) > 0.999);
+        // And one on the listener itself is not rotated at all.
+        assert_eq!(face_listener_rotation(Vec3::ZERO), Quat::IDENTITY);
+    }
 }
