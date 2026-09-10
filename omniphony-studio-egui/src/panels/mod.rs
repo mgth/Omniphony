@@ -12,6 +12,7 @@ pub mod connection;
 pub mod diag_plot;
 pub mod display;
 pub mod drc;
+pub mod footer;
 pub mod latency;
 pub mod lists;
 pub mod log;
