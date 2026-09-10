@@ -9,6 +9,7 @@ pub mod audio_output;
 pub mod binaural;
 pub mod channel_editor;
 pub mod connection;
+pub mod diag_plot;
 pub mod display;
 pub mod drc;
 pub mod latency;
