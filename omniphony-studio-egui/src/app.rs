@@ -155,6 +155,9 @@ pub struct StudioSpike {
     pub(crate) gizmo_target: Option<(crate::view::gizmos::GizmoTarget, glam::Vec3)>,
     /// A gizmo drag in progress.
     pub(crate) gizmo_drag: Option<crate::panels::gizmo_drag::GizmoDrag>,
+    /// The object the editor is holding in place, and until when: `None` is a
+    /// pin that lasts as long as the drag does.
+    pub(crate) channel_edit_pin: Option<(String, glam::Vec3, Option<Instant>)>,
     /// Where the frequency gauges were drawn last frame, so a click on one
     /// selects its speaker the way a click on the cube does.
     pub(crate) band_bar_hits: Vec<(usize, Rect)>,
@@ -389,6 +392,7 @@ impl StudioSpike {
             diag_keepalive_at: None,
             gizmo_target: None,
             gizmo_drag: None,
+            channel_edit_pin: None,
             band_bar_hits: Vec::new(),
             diag_selection: None,
             expected_orender_path: crate::host::commands::orender::expected_orender_path(
@@ -574,6 +578,20 @@ impl StudioSpike {
         // The curve editor's selection is the scene's too: the shape it draws
         // is what that point means.
         self.settings.hybrid_point = self.hybrid_point;
+        // An expired pin is dropped here rather than in the drawing, so the
+        // object goes back to the stream on the frame the pin runs out.
+        if self
+            .channel_edit_pin
+            .as_ref()
+            .and_then(|(_, _, until)| *until)
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            self.channel_edit_pin = None;
+        }
+        self.settings.channel_edit_pin = self
+            .channel_edit_pin
+            .as_ref()
+            .map(|(id, at, _)| (id.clone(), *at));
         let ppp = ui.ctx().pixels_per_point();
         let out = {
             let live = self.live.lock().unwrap();

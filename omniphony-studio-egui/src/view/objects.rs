@@ -290,13 +290,23 @@ pub fn collect(
         if src.gain_db.is_some_and(|g| g <= -128) {
             continue;
         }
-        // Position: snapped onto its direct speaker, else room-warped.
-        let scene_pos = match src
-            .direct_speaker_index
-            .and_then(|i| speakers.get(i as usize))
-        {
-            Some(sp) => sp.scene_pos,
-            None => scene_position([src.x, src.y, src.z], room),
+        // Position: the editor's pin if it holds this one, else snapped onto
+        // its direct speaker, else room-warped. The pin exists because a
+        // stream packet arriving mid-drag carries the position the object had
+        // before the drag started, and would put it back there.
+        let pinned = settings
+            .channel_edit_pin
+            .as_ref()
+            .filter(|(pinned, _)| pinned == id)
+            .map(|(_, at)| *at);
+        let scene_pos = match (
+            pinned,
+            src.direct_speaker_index
+                .and_then(|i| speakers.get(i as usize)),
+        ) {
+            (Some(at), _) => at,
+            (None, Some(sp)) => sp.scene_pos,
+            (None, None) => scene_position([src.x, src.y, src.z], room),
         };
 
         let rms = live

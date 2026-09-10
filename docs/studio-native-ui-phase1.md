@@ -78,14 +78,14 @@ sizes to whole points fixed both figures.
 
 ## Not covered by this pass
 
-- Edit gizmos (polar ring/arc/ticks/labels, cartesian handles, distance
-  gizmo), drag editing and the wheel distance edit.
-- Room dimension guides, speaker band bars, the driver disc and the
-  face-the-listener orientation, the hybrid iso-distance shape, binaural
-  ghosting of speakers, the injected test object's marker style, the virtual
-  bed's synthetic at-rest objects, editor pins.
-- Preference persistence, the custom gradient editor, the band cursor, the
-  scene-effects toolbar, mpv overlay mirroring: panels-phase work.
+All of the viewport work listed here as missing was finished in the panels
+phase; see [`studio-native-ui-phase2.md`](studio-native-ui-phase2.md) for the
+gizmos and their dragging, the room dimension guides, the speaker band bars and
+the driver disc, the hybrid iso-distance shape, binaural ghosting, the editor
+pin, and the panels-phase items (preference persistence, the gradient editor,
+the band cursor, the scene-effects toolbar, mpv overlay mirroring). What remains
+below is what was still true when this pass ended:
+
 - Material fidelity: `MeshPhysicalMaterial` (clearcoat, sheen) is
   approximated by a Blinn-Phong with a rim term; label text is egui's
   proportional face rather than a bold sans sprite.
