@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Update check | The switch and the banner, with the release check on its own thread | nothing — it talks to GitHub, not to the renderer |
 | Custom gradient editor | The heatmaps' "Custom" colormap: the gradient itself as the control, a handle per stop, and a colour well for the selected one | nothing (the shader reads the stops directly) |
 | mpv overlay mirroring | Studio's object, label, heatmap and trail choices pushed to the overlay whenever they change, and the whole set pushed again on every fresh connection | `/omniphony/control/overlay/*` |
 | Info modals | The long-form explanations of eight sections, opened by clicking the section's own title | nothing |
@@ -106,6 +107,17 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The update check is the crate's only HTTP, and it brings the only new
+dependency of the phase (`ureq`, the same crate and major the Tauri host uses,
+on rustls so the three CI targets build the same way). Two rules matter more
+than the request. It runs on its own thread and answers through a channel: a
+release check on a slow link would otherwise freeze the window for as long as it
+takes. And it is off until asked for — a program that phones home on first start
+without being asked is a program that surprised its user. The tag filter is the
+web's, and it exists for a concrete reason: the dev tags (`v0.x.y.nnn`) and the
+library's own (`liborender-v*`) are not Studio releases, and offering one would
+send the user to a tag that builds no Studio.
 
 The gradient editor makes the bar the control. A table of positions and hex
 triplets says nothing about what the volume will look like, which is the only
@@ -396,10 +408,9 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   modals, and the SOFA browser the binaural tab's file source needs.
 - **Speakers**: the 3D per-speaker frequency gauge and the band cursor that
   share the row's band colours.
-- **Left overlay**: updates (the web fetches GitHub from the webview; a native
-  host needs its own HTTP client) and the dead rows of the audio input panel
-  (backend, imported layout, channel count, sample rate, map, LFE mode) which
-  belong to the legacy PCM mode.
+- **Left overlay**: the dead rows of the audio input panel (backend, imported
+  layout, channel count, sample rate, map, LFE mode), which belong to the legacy
+  PCM mode and are deliberately not ported.
 - **Elsewhere**: the code editor, the SOFA browser, the auto-tune wizard, and
   the overlay's custom gradient stops (the editor exists now; mirroring them is
   one more message).
