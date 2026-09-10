@@ -279,7 +279,7 @@ pub fn emit_axes(
                     ((hex >> 8) & 0xff) as u8,
                     (hex & 0xff) as u8,
                 ),
-                size: (0.052 * ppu).clamp(6.0, 40.0),
+                size: (0.052 * ppu).clamp(6.0, 40.0).round(),
                 depth,
             });
         }

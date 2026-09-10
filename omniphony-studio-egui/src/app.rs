@@ -129,13 +129,15 @@ impl StudioSpike {
         }
 
         let object_field = args.object_field;
+        let mut settings = ViewSettings::default();
+        settings.trails.enabled = !args.no_trails;
         Ok(Self {
             args,
             live,
             osc_stats,
             camera: OrbitCamera::new(),
             selection: Selection::default(),
-            settings: ViewSettings::default(),
+            settings,
             options: OPTION_SCHEMA.iter().map(|s| s.default.to_value()).collect(),
             ime_text: String::new(),
             frame_stats: FrameStats::new(),

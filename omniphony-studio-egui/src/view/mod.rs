@@ -238,7 +238,7 @@ pub fn build_frame(
                     pos: p + egui::vec2(0.0, 0.03 * points_per_unit(depth)),
                     text: sp.name.clone(),
                     color: egui::Color32::WHITE,
-                    size: (0.06 * points_per_unit(depth)).clamp(6.0, 48.0),
+                    size: (0.06 * points_per_unit(depth)).clamp(6.0, 48.0).round(),
                     depth,
                 });
             }
@@ -274,7 +274,7 @@ pub fn build_frame(
                     pos: p + egui::vec2(0.0, 0.03 * points_per_unit(depth)),
                     text: obj.label.clone(),
                     color: egui::Color32::WHITE,
-                    size: (0.06 * points_per_unit(depth)).clamp(6.0, 48.0),
+                    size: (0.06 * points_per_unit(depth)).clamp(6.0, 48.0).round(),
                     depth,
                 });
             }

@@ -81,6 +81,10 @@ pub struct Args {
     )]
     pub head_model: PathBuf,
 
+    /// Start with trails disabled (measurements).
+    #[arg(long, default_value_t = false)]
+    pub no_trails: bool,
+
     /// Start with the object energy field volume enabled (for tests and
     /// measurements; it is off by default like in the Studio).
     #[arg(long, default_value_t = false)]
