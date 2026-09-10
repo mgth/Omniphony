@@ -47,6 +47,8 @@ log = "0.4"
 env_logger = "0.11"
 # Cross-platform RSS readout for the stats panel (also used by the Tauri Studio).
 memory-stats = "1"
+# Native file dialogs (layout import/export), same crate as the Tauri host.
+rfd = "0.16"
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 
 [profile.release]

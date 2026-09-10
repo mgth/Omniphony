@@ -94,6 +94,19 @@ pub struct Live {
     pub snapshot_epoch: u64,
 }
 
+impl std::ops::Deref for Live {
+    type Target = AppState;
+    fn deref(&self) -> &AppState {
+        &self.app
+    }
+}
+
+impl std::ops::DerefMut for Live {
+    fn deref_mut(&mut self) -> &mut AppState {
+        &mut self.app
+    }
+}
+
 impl Live {
     pub fn new(app: AppState) -> Self {
         Self {

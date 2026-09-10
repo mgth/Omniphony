@@ -32,6 +32,8 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// three-heartbeat window).
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(16);
 const REPAINT_COALESCE: Duration = Duration::from_micros(2500);
+/// While `osc_snapshot_ready` is false, re-register this often (host value).
+const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_BUF: usize = 65_536;
 
 pub type SharedLive = Arc<Mutex<Live>>;
@@ -47,6 +49,8 @@ pub struct OscStats {
     /// Milliseconds since `start` at the last received packet.
     pub last_packet_ms: AtomicU64,
     pub start: Instant,
+    /// Renderer the client is registered with (None = listen only).
+    pub target: Mutex<Option<SocketAddr>>,
 }
 
 impl OscStats {
@@ -61,6 +65,7 @@ impl OscStats {
             listen_port: AtomicU64::new(0),
             last_packet_ms: AtomicU64::new(0),
             start: Instant::now(),
+            target: Mutex::new(None),
         })
     }
 
@@ -76,12 +81,31 @@ impl OscStats {
 pub struct ListenerConfig {
     pub listen_port: u16,
     pub register: Option<SocketAddr>,
+    /// Ask the renderer for meter streams right after registering
+    /// (`/omniphony/control/metering`, the host's `osc_metering_enabled`).
+    pub metering: bool,
 }
 
-/// Messages the UI can send to the renderer through the listener's socket.
-/// Only debug/state subscriptions: the port never sends audio controls.
+/// Messages the UI sends to the renderer through the listener's socket: the
+/// control messages of the Tauri host's `OscControlMsg`, plus the debug
+/// subscriptions of the energy volumes.
 #[derive(Debug, Clone)]
 pub enum Control {
+    /// One OSC message to the registered renderer (dropped when there is no
+    /// target). Every `control_*` command of the host ends up here.
+    Send {
+        address: String,
+        args: Vec<OscType>,
+    },
+    /// Point the client at another renderer: register there, request the
+    /// snapshot, restate the metering choice.
+    Reconnect {
+        target: SocketAddr,
+    },
+    /// Toggle the meter streams (sent now and again after every register).
+    SetMetering {
+        enabled: bool,
+    },
     SubscribeGainTable {
         have_version: i32,
         speaker_index: i32,
@@ -106,10 +130,22 @@ pub fn spawn_listener(
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("osc-listener".into())
-        .spawn(move || listener_loop(socket, port, live, ctx, stats, cfg.register, rx))?;
+        .spawn(move || {
+            listener_loop(
+                socket,
+                port,
+                live,
+                ctx,
+                stats,
+                cfg.register,
+                cfg.metering,
+                rx,
+            )
+        })?;
     Ok((port, tx))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn listener_loop(
     socket: UdpSocket,
     port: u16,
@@ -117,16 +153,20 @@ fn listener_loop(
     ctx: egui::Context,
     stats: Arc<OscStats>,
     register: Option<SocketAddr>,
+    metering: bool,
     control: Receiver<Control>,
 ) {
     let mut buf = vec![0u8; RECV_BUF];
     let mut last_heartbeat = Instant::now();
     let mut last_ack = Instant::now();
     let mut last_repaint = Instant::now() - REPAINT_COALESCE;
+    let mut last_snapshot_request = Instant::now();
+    let mut register = register;
+    let mut metering = metering;
+    *stats.target.lock().unwrap() = register;
 
     if let Some(addr) = register {
-        send_int(&socket, addr, "/omniphony/register", i32::from(port));
-        log::info!("[osc] register sent to {addr} (listen_port={port})");
+        send_register(&socket, addr, port, metering);
     }
 
     loop {
@@ -147,7 +187,7 @@ fn listener_loop(
                             && let Some(addr) = register
                         {
                             log::warn!("[osc] renderer does not know this client; re-registering");
-                            send_int(&socket, addr, "/omniphony/register", i32::from(port));
+                            send_register(&socket, addr, port, metering);
                         }
                         if outcome.ack {
                             last_ack = Instant::now();
@@ -173,27 +213,73 @@ fn listener_loop(
             }
         }
 
-        if let Some(addr) = register {
-            while let Ok(msg) = control.try_recv() {
-                match msg {
-                    Control::SubscribeGainTable {
-                        have_version,
-                        speaker_index,
-                    } => send_ints(
-                        &socket,
-                        addr,
-                        "/omniphony/control/debug/speaker_gaintable/subscribe",
-                        &[have_version, speaker_index],
-                    ),
-                    Control::UnsubscribeGainTable => send_ints(
-                        &socket,
-                        addr,
-                        "/omniphony/control/debug/speaker_gaintable/unsubscribe",
-                        &[],
-                    ),
+        // Drain the control channel. `Reconnect` works without a target;
+        // everything else needs one and is dropped otherwise (the host does
+        // the same: no socket target, no send).
+        while let Ok(msg) = control.try_recv() {
+            match msg {
+                Control::Reconnect { target } => {
+                    register = Some(target);
+                    *stats.target.lock().unwrap() = register;
+                    stats.registered.store(false, Ordering::Relaxed);
+                    last_ack = Instant::now();
+                    last_snapshot_request = Instant::now();
+                    live.lock().unwrap().app.osc_snapshot_ready = false;
+                    send_register(&socket, target, port, metering);
+                }
+                Control::SetMetering { enabled } => {
+                    metering = enabled;
+                    if let Some(addr) = register {
+                        send_ints(
+                            &socket,
+                            addr,
+                            "/omniphony/control/metering",
+                            &[i32::from(enabled)],
+                        );
+                    }
+                }
+                Control::Send { address, args } => {
+                    if let Some(addr) = register {
+                        send_args(&socket, addr, &address, args);
+                    }
+                }
+                Control::SubscribeGainTable {
+                    have_version,
+                    speaker_index,
+                } => {
+                    if let Some(addr) = register {
+                        send_ints(
+                            &socket,
+                            addr,
+                            "/omniphony/control/debug/speaker_gaintable/subscribe",
+                            &[have_version, speaker_index],
+                        );
+                    }
+                }
+                Control::UnsubscribeGainTable => {
+                    if let Some(addr) = register {
+                        send_ints(
+                            &socket,
+                            addr,
+                            "/omniphony/control/debug/speaker_gaintable/unsubscribe",
+                            &[],
+                        );
+                    }
                 }
             }
+        }
+
+        if let Some(addr) = register {
             let now = Instant::now();
+            // Until the renderer's state bundle has fully arrived, keep asking
+            // for it (the host's `SNAPSHOT_REQUEST_INTERVAL`).
+            if now.duration_since(last_snapshot_request) >= SNAPSHOT_REQUEST_INTERVAL
+                && !live.lock().unwrap().app.osc_snapshot_ready
+            {
+                last_snapshot_request = now;
+                log::debug!("[osc] snapshot not ready yet, re-requesting the live state bundle");
+                send_register(&socket, addr, port, metering);
+            }
             if now.duration_since(last_heartbeat) >= HEARTBEAT_INTERVAL {
                 last_heartbeat = now;
                 send_int(&socket, addr, "/omniphony/heartbeat", i32::from(port));
@@ -202,7 +288,7 @@ fn listener_loop(
                 {
                     log::warn!("[osc] heartbeat timeout, re-registering");
                     stats.registered.store(false, Ordering::Relaxed);
-                    send_int(&socket, addr, "/omniphony/register", i32::from(port));
+                    send_register(&socket, addr, port, metering);
                 }
             }
             // Recover lost gain-table chunks (remote renderer case).
@@ -280,14 +366,37 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
     }
 }
 
+/// Register with a renderer: `/omniphony/register <listen_port>` followed by
+/// the metering choice, exactly like the host's `send_register` +
+/// `send_metering_enabled` pair.
+fn send_register(socket: &UdpSocket, to: SocketAddr, listen_port: u16, metering: bool) {
+    send_int(socket, to, "/omniphony/register", i32::from(listen_port));
+    send_int(
+        socket,
+        to,
+        "/omniphony/control/metering",
+        i32::from(metering),
+    );
+    log::info!("[osc] register sent to {to} (listen_port={listen_port}, metering={metering})");
+}
+
 fn send_int(socket: &UdpSocket, to: SocketAddr, addr: &str, value: i32) {
     send_ints(socket, to, addr, &[value]);
 }
 
 fn send_ints(socket: &UdpSocket, to: SocketAddr, addr: &str, values: &[i32]) {
+    send_args(
+        socket,
+        to,
+        addr,
+        values.iter().map(|v| OscType::Int(*v)).collect(),
+    );
+}
+
+fn send_args(socket: &UdpSocket, to: SocketAddr, addr: &str, args: Vec<OscType>) {
     let msg = OscPacket::Message(OscMessage {
         addr: addr.to_owned(),
-        args: values.iter().map(|v| OscType::Int(*v)).collect(),
+        args,
     });
     match encoder::encode(&msg) {
         Ok(bytes) => {

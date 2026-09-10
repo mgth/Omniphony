@@ -8,6 +8,8 @@
 //! panels over the viewport so panel expansion can never resize the scene.
 
 mod app;
+mod host;
+mod i18n;
 mod model;
 mod osc;
 mod render;

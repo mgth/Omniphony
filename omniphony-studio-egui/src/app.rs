@@ -119,6 +119,7 @@ impl StudioSpike {
             osc::ListenerConfig {
                 listen_port: args.listen_port,
                 register,
+                metering: false,
             },
         )?;
         log::info!("[osc] listening on udp/{port}");
