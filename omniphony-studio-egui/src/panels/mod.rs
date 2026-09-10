@@ -31,6 +31,7 @@ pub mod resample_plot;
 pub mod room;
 pub mod row_glyphs;
 pub mod scene_fx;
+pub mod sofa_browser;
 pub mod sources_2d;
 pub mod speaker_editor;
 pub mod speaker_layouts;

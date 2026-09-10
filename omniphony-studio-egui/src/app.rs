@@ -166,6 +166,11 @@ pub struct StudioSpike {
     pub(crate) synthetic_bed_signature: Option<u64>,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
+    /// A handle on the context, so a worker thread can ask for the frame that
+    /// shows what it found.
+    pub(crate) ctx: egui::Context,
+    /// The SOFA browser, while it is open.
+    pub(crate) sofa_browser: Option<crate::panels::sofa_browser::SofaBrowser>,
     /// Handle on the renderer: every control the panels expose goes through it.
     pub(crate) ctl: Ctl,
     /// The host's own `SharedState`, kept for the whole session because the
@@ -393,6 +398,8 @@ impl StudioSpike {
             service_status: None,
             disconnected_since: Some(Instant::now()),
             config_dir,
+            ctx: cc.egui_ctx.clone(),
+            sofa_browser: None,
             ctl,
             last_subscribe: None,
         })
@@ -651,6 +658,7 @@ impl StudioSpike {
         self.band_cursor(ctx, &layout);
         self.about_modal(ctx);
         self.info_modal(ctx);
+        self.sofa_browser_modal(ctx);
         if !layout_eq(&layout, &self.layout) {
             self.layout = layout;
             self.prefs.side_panels = layout;

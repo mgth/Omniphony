@@ -101,6 +101,17 @@ impl StudioSpike {
                 if chosen != source {
                     self.send_hrir_source(&chosen);
                 }
+                // The browser is only reachable while a SOFA file is what the
+                // renderer would use — picking one otherwise would download a
+                // file nothing plays.
+                if source == "sofa"
+                    && ui
+                        .button(t("backend.file.browse"))
+                        .on_hover_text(t("binaural.sofaBrowseTitle"))
+                        .clicked()
+                {
+                    self.open_sofa_browser();
+                }
             });
         });
 
@@ -120,17 +131,25 @@ impl StudioSpike {
             }
             let _ = label;
         } else if source == "sofa" {
-            let file = text(doc, &["hrirSource"]).and_then(|s| {
-                s.strip_prefix("sofa:")
-                    .map(|path| path.rsplit('/').next().unwrap_or(path).to_owned())
-            });
-            match file {
-                Some(file) => widgets::note(ui, &format!("File: {file}")),
+            // The path is its own field: `hrirSource` is the bare word "sofa"
+            // once the renderer has parsed the `sofa:<path>` control, so the
+            // file name has to come from `hrtfSofaPath`.
+            let path = text(doc, &["hrtfSofaPath"]);
+            match path {
+                Some(path) => {
+                    let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+                    ui.label(
+                        RichText::new(format!("File: {name}"))
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(theme::TEXT_MUTED),
+                    )
+                    .on_hover_text(path);
+                }
                 None => {
                     ui.label(
                         RichText::new(
                             "No SOFA file selected — using the embedded KEMAR until you pick \
-                             one. The SOFA browser is not ported yet.",
+                             one (Browse…).",
                         )
                         .size(theme::FONT_SIZE_SMALL)
                         .color(theme::WARN),
