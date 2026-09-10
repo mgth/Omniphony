@@ -231,6 +231,9 @@ impl StudioSpike {
             .map(|dir| dir.join("studio"))
             .unwrap_or_else(|| args.layouts_dir.join(".studio-egui"));
         let mut prefs = crate::host::prefs::load(&config_dir);
+        // The language is applied before the first frame, so nothing is drawn
+        // in English and then redrawn.
+        crate::i18n::set_locale(prefs.locale.as_deref().unwrap_or("auto"));
         let mut layout = prefs.side_panels;
         layout.clamp_all(cc.egui_ctx.content_rect().width().max(800.0));
         prefs.side_panels = layout;

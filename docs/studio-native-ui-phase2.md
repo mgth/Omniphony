@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Language | All eight of the web's catalogues, the picker in the Display section, and `auto` following the environment | nothing — the language is this host's own |
 | Hybrid backend | The Mix / inner-backend tabs, the external and internal backends, the distance metric, the curve smoothing, and the blend-curve editor with its point editor | `/omniphony/control/hybrid/external_backend`, `…/internal_backend`, `…/metric`, `…/curve_smoothing`, `…/curve` |
 | Save footer and band cursor | Save and Reload with what the renderer last said about its configuration file, and the band picker that chooses which crossover band the scene's heatmaps are drawn for | `/omniphony/control/save_config`, `…/reload_config` |
 | Headphone rows, drag and clip | The two ear rows with their meters and ear mute, drag-to-reorder on a speaker's id strip, and the clip flash the renderer's `clip:detected` lights | `/omniphony/control/binaural/ear_mute`, `/omniphony/control/config/layout` (`moveSpeaker`) and its apply |
@@ -99,6 +100,18 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The eight locales are the web Studio's own JSON, embedded the way English
+already was, and each one is English overridden by its own entries — exactly as
+the web spreads `{...enTranslations, ...frTranslations}` — so a key a translator
+has not reached yet reads in English rather than as a raw key. `auto` follows the
+environment: where the web reads `navigator.languages`, a native process reads
+the POSIX variables, most specific first. Region matters for exactly two
+catalogues, Brazilian Portuguese and simplified Chinese, so those match on the
+full tag and everything else on the language alone. When `auto` is chosen the row
+also shows which language it resolved to, because "Auto" alone does not say —
+and that is exactly what a reader checks when the interface is not in the
+language they expected.
 
 A hybrid backend renders the same object twice — once through an "external"
 model and once through an "internal" one — and crossfades by distance. The curve
@@ -315,8 +328,7 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   resample plot, the code editor, the SOFA browser, the auto-tune wizard, mpv
   overlay mirroring.
 - **Host services** the native app does not have yet: the local-renderer
-  auto-start watchdog, the OS-service controls, the derived master meter, and
-  the eight locales.
+  auto-start watchdog, the OS-service controls, and the derived master meter.
 
 ## The gate
 
