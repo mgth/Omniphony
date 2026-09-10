@@ -97,6 +97,7 @@ config, debounced 600 ms so a drag writes once.
 | SOFA browser | The HRTF file dialog: the local cache with each file's embedded licence, its Import and Delete, and the upload that sends one to a renderer on another machine; and, behind a per-session consent, the sofacoustics.org index navigated folder by folder, downloaded with a progress bar and a Cancel, and activated | `/omniphony/control/binaural/hrir_source` (`sofa:<path>`), `…/binaural/hrtf_upload/{begin,chunk,end}`; the browsing, the download and the cache are host-side |
 | Backend file editor | Browse and Edit beside a backend's file parameter, and the editor itself: the managed-file picker, the name field, New, Reload and Save, and a Lua highlighter over the buffer | `/omniphony/control/backend/file/{get,list,put}`; the content travels over OSC, never a path |
 | Auto-tune | The whole run: the detectors and the state machine (the kp sweep and its oscillation test, saturation, convergence, source loss, the long-run statistics that size the rate limit), and the wizard that drives them — preparation, the five steps with the resample traces beside them, the disturbance prompt, the summary, and the guard that will not let Studio close mid-run | the four controller values ride the batched `/omniphony/control/config/audio` + its apply, like any other adaptive setting |
+| Speaker frequency gauge | The per-speaker pass-band gauge beside each speaker: a log-frequency track from 20 Hz to 20 kHz with the crossover pass-band lit in the band's own colour, its decade ticks, and a click target that selects the speaker | nothing |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped by
@@ -155,6 +156,14 @@ interpolated rather than dropped, since a gap left in place would shift every
 bin after it. The transform length is bounded by both the history collected and
 the window the user chose, which is what makes a shorter window a coarser
 spectrum.
+
+The speaker frequency gauge is the last of the phase-1 leftovers that belongs
+to a panel's world rather than the scene's. The web makes it a billboard sprite
+with the depth test off, which is a screen-space overlay by another name, so it
+is drawn by egui over the viewport instead of carrying a texture through the
+renderer for four rectangles and three ticks. It is a pick target too, as in the
+web: it sits beside its speaker precisely so it can be hit, and it is tested
+before the scene because it is drawn over it.
 
 The wizard is the machine's only caller: it feeds it telemetry at the web's
 fifty-millisecond cadence, applies the patches it asks for to the live
@@ -518,8 +527,6 @@ a transient stays readable after it has passed.
 Specifications for all of it were extracted from the web sources first and are
 in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
-- **Speakers**: the 3D per-speaker frequency gauge and the band cursor that
-  share the row's band colours.
 - **Left overlay**: the dead rows of the audio input panel (backend, imported
   layout, channel count, sample rate, map, LFE mode), which belong to the legacy
   PCM mode and are deliberately not ported.

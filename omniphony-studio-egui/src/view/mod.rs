@@ -41,6 +41,8 @@ pub struct ViewSettings {
     pub speakers_visible: bool,
     /// `app.speakerLabelsEnabled` (default false in the Studio).
     pub speaker_labels_enabled: bool,
+    /// `app.speakerBandBarsEnabled`: the per-speaker frequency-extent gauge.
+    pub speaker_band_bars_enabled: bool,
     /// `app.speakerSize` (default 0.08).
     pub speaker_size: f32,
     /// `app.vbapCartesianFaceGridEnabled` ("Grid", default false).
@@ -60,6 +62,7 @@ impl Default for ViewSettings {
             heatmap_band_index: 0,
             speakers_visible: true,
             speaker_labels_enabled: false,
+            speaker_band_bars_enabled: false,
             speaker_size: 0.08,
             vbap_grid: false,
             trails: TrailSettings::default(),
@@ -85,9 +88,110 @@ pub struct Label {
     pub depth: f32,
 }
 
+/// A speaker's frequency-extent gauge, drawn over the viewport.
+///
+/// The web makes it a billboard sprite with the depth test off, which is a
+/// screen-space overlay by another name; egui draws it directly rather than
+/// carrying a texture through the renderer for four rectangles and three
+/// ticks.
+pub struct BandBar {
+    /// The speaker it belongs to: the bar is a pick target too, as in the web.
+    pub speaker: usize,
+    /// Centre, in screen points.
+    pub pos: Pos2,
+    /// Height in points, from the sprite's world height at this depth.
+    pub height: f32,
+    /// The pass-band in hertz; zero means "open at this end".
+    pub low: f32,
+    pub high: f32,
+    /// The lit segment's colour, the band's own.
+    pub color: egui::Color32,
+    pub depth: f32,
+}
+
+impl BandBar {
+    /// The canvas the web draws on is 64×256, and every number below is one of
+    /// its pixels scaled to this bar's height.
+    const CANVAS_W: f32 = 64.0;
+    const CANVAS_H: f32 = 256.0;
+    const PAD_Y: f32 = 10.0;
+    const TRACK_W: f32 = 22.0;
+    const TRACK_H: f32 = 236.0;
+    const RADIUS: f32 = 8.0;
+
+    /// Where a frequency sits on the track, 0 at the bottom (20 Hz) and 1 at
+    /// the top (20 kHz), on a log axis.
+    pub fn log_pos(hz: f32) -> f32 {
+        let hz = hz.clamp(20.0, 20_000.0);
+        (hz.ln() - 20.0f32.ln()) / (20_000.0f32.ln() - 20.0f32.ln())
+    }
+
+    /// The pass-band as drawn: an end the layout does not cut is open, and
+    /// reads as the end of the axis.
+    pub fn pass_band(low: f32, high: f32) -> (f32, f32) {
+        (
+            if low > 0.0 { low } else { 20.0 },
+            if high > 0.0 { high } else { 20_000.0 },
+        )
+    }
+
+    /// The bar's extent in screen points.
+    pub fn rect(&self) -> egui::Rect {
+        let h = self.height;
+        egui::Rect::from_center_size(self.pos, egui::vec2(Self::CANVAS_W * h / Self::CANVAS_H, h))
+    }
+
+    pub fn paint(&self, painter: &egui::Painter) {
+        let h = self.height;
+        let scale = h / Self::CANVAS_H;
+        let w = Self::CANVAS_W * scale;
+        let top_left = self.rect().min;
+        let track = egui::Rect::from_min_size(
+            top_left + egui::vec2((w - Self::TRACK_W * scale) * 0.5, Self::PAD_Y * scale),
+            egui::vec2(Self::TRACK_W * scale, Self::TRACK_H * scale),
+        );
+        let radius =
+            egui::CornerRadius::same((Self::RADIUS * scale).round().clamp(0.0, 255.0) as u8);
+        let y_for = |hz: f32| track.top() + (1.0 - Self::log_pos(hz)) * track.height();
+        painter.rect_filled(
+            track,
+            radius,
+            egui::Color32::from_rgba_unmultiplied(16, 22, 30, 209),
+        );
+        let (low, high) = Self::pass_band(self.low, self.high);
+        // The lit segment is the speaker's role at a glance: a sub fills the
+        // bottom, a tweeter the top, a mid a floating middle.
+        let lit = egui::Rect::from_min_max(
+            egui::pos2(track.left() + 2.0 * scale, y_for(high)),
+            egui::pos2(
+                track.right() - 2.0 * scale,
+                (y_for(low)).max(y_for(high) + 2.0 * scale),
+            ),
+        );
+        painter.rect_filled(lit.intersect(track), radius, self.color);
+        painter.rect_stroke(
+            track,
+            radius,
+            egui::Stroke::new(2.0 * scale, egui::Color32::from_white_alpha(71)),
+            egui::StrokeKind::Inside,
+        );
+        // Decade ticks, so a segment can be read against the axis rather than
+        // only compared with its neighbours.
+        for hz in [100.0, 1000.0, 10_000.0] {
+            let y = y_for(hz);
+            painter.hline(
+                (track.left() + 3.0 * scale)..=(track.right() - 3.0 * scale),
+                y,
+                egui::Stroke::new(scale.max(0.5), egui::Color32::from_white_alpha(56)),
+            );
+        }
+    }
+}
+
 pub struct FrameOutput {
     pub frame: FrameData,
     pub labels: Vec<Label>,
+    pub band_bars: Vec<BandBar>,
     /// `(id, scene position, pick radius)` for objects.
     pub pick_objects: Vec<(String, Vec3, f32)>,
     /// `(index, scene position, pick radius)` for speakers.
@@ -144,6 +248,7 @@ pub fn build_frame(
     frame.clear = [bg[0] as f64, bg[1] as f64, bg[2] as f64, 1.0];
 
     let mut labels: Vec<Label> = Vec::with_capacity(128);
+    let mut band_bars: Vec<BandBar> = Vec::new();
     let mut pick_objects = Vec::new();
     let mut pick_speakers = Vec::new();
 
@@ -231,6 +336,24 @@ pub fn build_frame(
                 sp.scene_pos,
                 speakers::SPEAKER_BASE_SIZE * sp.scale * 0.87,
             ));
+            // `SPEAKER_BAND_BAR_OFFSET`: beside the speaker along the depth
+            // axis, so the gauge never sits on the cube it belongs to.
+            if settings.speaker_band_bars_enabled
+                && let Some((p, depth)) = project(sp.scene_pos + Vec3::new(0.11, 0.0, 0.0))
+            {
+                let rgb =
+                    crate::render::linear_to_srgb_u8(speakers::band_color(sp.band.0, sp.band.1));
+                band_bars.push(BandBar {
+                    speaker: sp.index,
+                    pos: p,
+                    // The sprite is 0.22 world units tall.
+                    height: 0.22 * points_per_unit(depth),
+                    low: sp.pass_band.0,
+                    high: sp.pass_band.1,
+                    color: egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+                    depth,
+                });
+            }
             if settings.speaker_labels_enabled
                 && let Some((p, depth)) = project(sp.scene_pos + Vec3::new(0.0, 0.12, 0.0))
             {
@@ -324,6 +447,7 @@ pub fn build_frame(
     FrameOutput {
         frame,
         labels,
+        band_bars,
         pick_objects,
         pick_speakers,
     }
@@ -371,5 +495,36 @@ pub fn decayed_level(level: f64, seen: Option<Instant>, now: Instant) -> f64 {
         level
     } else {
         (level - 45.0 * (idle - 0.25)).max(-100.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The axis is logarithmic between 20 Hz and 20 kHz, and a decade is a
+    /// third of it: that is what makes the three tick lines evenly spaced.
+    #[test]
+    fn the_track_is_three_decades_of_log_frequency() {
+        assert!((BandBar::log_pos(20.0) - 0.0).abs() < 1e-6);
+        assert!((BandBar::log_pos(20_000.0) - 1.0).abs() < 1e-6);
+        let (a, b, c) = (
+            BandBar::log_pos(100.0),
+            BandBar::log_pos(1000.0),
+            BandBar::log_pos(10_000.0),
+        );
+        assert!(((b - a) - (c - b)).abs() < 1e-4, "decades are not even");
+        // Anything off the axis is clamped onto it rather than drawn outside.
+        assert_eq!(BandBar::log_pos(1.0), BandBar::log_pos(20.0));
+        assert_eq!(BandBar::log_pos(96_000.0), BandBar::log_pos(20_000.0));
+    }
+
+    /// A speaker the layout does not cut is full-band, and its bar is lit end
+    /// to end rather than empty.
+    #[test]
+    fn an_uncut_end_is_open() {
+        assert_eq!(BandBar::pass_band(0.0, 0.0), (20.0, 20_000.0));
+        assert_eq!(BandBar::pass_band(0.0, 120.0), (20.0, 120.0));
+        assert_eq!(BandBar::pass_band(2000.0, 0.0), (2000.0, 20_000.0));
     }
 }

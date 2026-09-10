@@ -1189,6 +1189,13 @@ pub fn hex_linear(hex: u32) -> [f32; 3] {
     )
 }
 
+/// Linear RGB back to the sRGB bytes egui paints with, for the few places a
+/// scene colour has to be handed to the overlay.
+pub fn linear_to_srgb_u8(rgb: [f32; 3]) -> [u8; 3] {
+    let f = |v: f32| (v.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as u8;
+    [f(rgb[0]), f(rgb[1]), f(rgb[2])]
+}
+
 /// Linear interpolation of linear RGB (three.js `Color.lerp` interpolates the
 /// stored linear components).
 pub fn lerp_rgb(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {

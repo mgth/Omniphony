@@ -150,6 +150,9 @@ pub struct StudioSpike {
     pub(crate) diag_started: Instant,
     pub(crate) diag_paused: bool,
     pub(crate) diag_keepalive_at: Option<Instant>,
+    /// Where the frequency gauges were drawn last frame, so a click on one
+    /// selects its speaker the way a click on the cube does.
+    pub(crate) band_bar_hits: Vec<(usize, Rect)>,
     /// The measuring rectangle on the diagnostics plot, while one is drawn.
     pub(crate) diag_selection: Option<crate::panels::diag_plot::DiagSelection>,
     /// The orender binary this Studio would launch, resolved once at start-up.
@@ -379,6 +382,7 @@ impl StudioSpike {
             diag_started: Instant::now(),
             diag_paused: false,
             diag_keepalive_at: None,
+            band_bar_hits: Vec::new(),
             diag_selection: None,
             expected_orender_path: crate::host::commands::orender::expected_orender_path(
                 &crate::host::commands::HostPaths::default(),
@@ -554,6 +558,15 @@ impl StudioSpike {
         ));
 
         let painter = ui.painter().with_clip_rect(rect);
+        // The gauges go under the labels, and far ones first, so a near
+        // speaker's bar is not hidden behind a distant one's.
+        let mut bars = out.band_bars;
+        bars.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+        self.band_bar_hits.clear();
+        for bar in &bars {
+            bar.paint(&painter);
+            self.band_bar_hits.push((bar.speaker, bar.rect()));
+        }
         let mut labels = out.labels;
         labels.sort_by(|a, b| b.depth.total_cmp(&a.depth));
         for l in labels {
@@ -569,6 +582,18 @@ impl StudioSpike {
 
     /// `picking.js`: speakers first, then objects; empty hit deselects.
     fn pick(&mut self, pointer: Pos2, rect: Rect, aspect: f32) {
+        // A gauge is drawn over everything and picked before everything: it
+        // sits beside its speaker precisely so it can be hit.
+        if let Some((index, _)) = self
+            .band_bar_hits
+            .iter()
+            .rev()
+            .find(|(_, bar)| bar.contains(pointer))
+        {
+            self.selection.speaker = Some(*index);
+            self.selection.object = None;
+            return;
+        }
         let ndc_x = (pointer.x - rect.min.x) / rect.width() * 2.0 - 1.0;
         let ndc_y = 1.0 - (pointer.y - rect.min.y) / rect.height() * 2.0;
         let (origin, dir) = self

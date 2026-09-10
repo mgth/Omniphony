@@ -102,6 +102,11 @@ impl StudioSpike {
                         t("display.speakerLabels"),
                         &mut s.speaker_labels_enabled,
                     );
+                    widgets::switch_row(
+                        ui,
+                        t("display.speakerBands"),
+                        &mut s.speaker_band_bars_enabled,
+                    );
                     ui.add(
                         egui::Slider::new(&mut s.speaker_size, 0.04..=0.2)
                             .step_by(0.002)
