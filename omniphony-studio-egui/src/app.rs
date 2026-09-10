@@ -171,6 +171,8 @@ pub struct StudioSpike {
     pub(crate) ctx: egui::Context,
     /// The SOFA browser, while it is open.
     pub(crate) sofa_browser: Option<crate::panels::sofa_browser::SofaBrowser>,
+    /// The backend file editor, while it is open.
+    pub(crate) script_editor: Option<crate::panels::script_editor::ScriptEditor>,
     /// Handle on the renderer: every control the panels expose goes through it.
     pub(crate) ctl: Ctl,
     /// The host's own `SharedState`, kept for the whole session because the
@@ -400,6 +402,7 @@ impl StudioSpike {
             config_dir,
             ctx: cc.egui_ctx.clone(),
             sofa_browser: None,
+            script_editor: None,
             ctl,
             last_subscribe: None,
         })
@@ -659,6 +662,7 @@ impl StudioSpike {
         self.about_modal(ctx);
         self.info_modal(ctx);
         self.sofa_browser_modal(ctx);
+        self.script_editor_modal(ctx);
         if !layout_eq(&layout, &self.layout) {
             self.layout = layout;
             self.prefs.side_panels = layout;

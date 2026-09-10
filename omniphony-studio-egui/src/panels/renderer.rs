@@ -644,22 +644,64 @@ impl StudioSpike {
                 "path" | "file" => {
                     let mut text = value.as_str().unwrap_or("").to_owned();
                     let mut changed = false;
+                    let extensions: Vec<String> = kind
+                        .and_then(|k| k.get("extensions"))
+                        .and_then(|v| v.as_array())
+                        .map(|list| {
+                            list.iter()
+                                .filter_map(|e| e.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let editable = kind
+                        .and_then(|k| k.get("editable"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let language = kind
+                        .and_then(|k| k.get("language"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned);
+                    // A path only means something to the renderer when it is
+                    // the renderer's own filesystem, so Browse is offered only
+                    // then; the editor works either way, because it moves the
+                    // bytes rather than the path.
+                    let local = crate::host::commands::app::renderer_is_local(&self.host);
+                    let mut browse = false;
+                    let mut edit = false;
                     ui.horizontal(|ui| {
                         ui.label(&label);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if editable {
+                                edit = ui.button(t("backend.file.edit")).clicked();
+                            }
+                            if local {
+                                browse = ui.button(t("backend.file.browse")).clicked();
+                            }
                             changed = ui
                                 .add(
                                     egui::TextEdit::singleline(&mut text)
-                                        .desired_width(170.0)
-                                        .hint_text(if kind_type == "path" {
-                                            "/path/to/backend.lua"
-                                        } else {
-                                            "name.ext"
+                                        .desired_width(120.0)
+                                        .hint_text(match extensions.first() {
+                                            Some(ext) => format!("name.{ext}"),
+                                            None if kind_type == "path" => {
+                                                "/path/to/backend.lua".to_owned()
+                                            }
+                                            None => "name.ext".to_owned(),
                                         }),
                                 )
                                 .lost_focus();
                         });
                     });
+                    if edit {
+                        self.open_script_editor(backend, key, language, extensions.clone());
+                    }
+                    if browse
+                        && let Some(path) =
+                            crate::host::commands::layout_io::pick_backend_file_path(extensions)
+                    {
+                        text = path;
+                        changed = true;
+                    }
                     changed.then(|| serde_json::json!(text.trim()))
                 }
                 _ => {

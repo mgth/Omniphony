@@ -95,6 +95,7 @@ config, debounced 600 ms so a drag writes once.
 | Object injection | The feature switch on the objects list, and the editor: transport, stimulus, the WAV clip with what the renderer says about it, the ADM/room view, the CAD sheet with its three views, gutter sliders, snap grid and orbit path, the level, the orbit's axis, radius and turn time, the programme isolation and the centre button | `/omniphony/control/object_test`, `…/object_test/rotation`, `…/object_test/clip`, `…/speaker_test/idle_feed` |
 | Renderer | Output mode, the Renderer/Binaural tab pair, the evaluation mode with its cartesian and polar grids and their step readouts, position interpolation, object size intervals, ramp mode, the backend with its status and its schema-generated parameters, distance diffuse, the distance model, the crossover with what the engine built | `/omniphony/control/output_mode`, `…/binaural_mode`, `…/render_evaluation_mode`, `…/render_evaluation/*`, `…/ramp_mode`, `…/render_backend`, `…/backend/param`, `…/distance_diffuse/*`, `…/distance_model*`, `…/option` |
 | SOFA browser | The HRTF file dialog: the local cache with each file's embedded licence, its Import and Delete, and the upload that sends one to a renderer on another machine; and, behind a per-session consent, the sofacoustics.org index navigated folder by folder, downloaded with a progress bar and a Cancel, and activated | `/omniphony/control/binaural/hrir_source` (`sofa:<path>`), `…/binaural/hrtf_upload/{begin,chunk,end}`; the browsing, the download and the cache are host-side |
+| Backend file editor | Browse and Edit beside a backend's file parameter, and the editor itself: the managed-file picker, the name field, New, Reload and Save, and a Lua highlighter over the buffer | `/omniphony/control/backend/file/{get,list,put}`; the content travels over OSC, never a path |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped by
@@ -134,6 +135,22 @@ renderer publishes separately from `hrirSource` — the latter is the bare word
 "sofa" once the control has been parsed. The panel's file line was reading the
 path out of `hrirSource` and so never found one; it now reads the field that
 carries it, and says which file is playing instead of claiming none was chosen.
+
+The backend file editor moves bytes, not paths: the file lives on the renderer,
+so the editor asks for its content over OSC and saves it the same way, and
+editing a scriptable backend keeps working when orender runs on another
+machine. That is also why the native Browse dialog appears only when the
+renderer is this machine — anywhere else the path it returns would mean nothing
+at the other end.
+
+The web hosts CodeMirror there and offers eleven of its colour themes, because
+CodeMirror's default is a light editor dropped into a dark panel. Here the
+editor is drawn in the Studio's own palette, so there is nothing to correct and
+the theme picker has no port. What it replaces is a Lua lexer of about a hundred
+lines: it has to be right about where a comment or a string *ends*, since that
+is what mis-colours the rest of a file, and an unterminated quote stops at the
+line rather than painting everything after it — a half-typed quote is the normal
+state of a buffer being edited.
 
 Two meter behaviours were the host's, and the OSC stream carries neither. Both
 exist because a meter has to keep saying something true between messages. A
@@ -443,15 +460,13 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
 - **Audio panel**: the diagnostics plot's FFT, difference and measurement
   modes.
-- **Renderer panel**: the file-parameter Browse and Edit buttons.
 - **Speakers**: the 3D per-speaker frequency gauge and the band cursor that
   share the row's band colours.
 - **Left overlay**: the dead rows of the audio input panel (backend, imported
   layout, channel count, sample rate, map, LFE mode), which belong to the legacy
   PCM mode and are deliberately not ported.
-- **Elsewhere**: the code editor, the auto-tune wizard, and the overlay's
-  custom gradient stops (the editor exists now; mirroring them is one more
-  message).
+- **Elsewhere**: the auto-tune wizard, and the overlay's custom gradient stops
+  (the editor exists now; mirroring them is one more message).
 - **Host services**: all ported.
 
 ## The gate
