@@ -155,6 +155,17 @@ bin after it. The transform length is bounded by both the history collected and
 the window the user chose, which is what makes a shorter window a coarser
 spectrum.
 
+Dragging a rectangle over a panel measures it. In the time domain that is only
+offered while the plot is paused — a rectangle over a trace that is still
+scrolling would be measuring a moment that has already left — and it reports
+the interval it spans, the frequency a cycle of that length would have, and the
+value it crosses, which is how a ripple's period is read off the plot. In the
+frequency domain the axis is not time, so it is always available: it reports the
+band's ends and the peak between them, all read out of the spectrum at those
+frequencies rather than from where the pointer happened to be, because the
+vertical position of a drag says nothing about the signal. A drag of under fifty
+millihertz is not a band but a probe of one bin, and says so.
+
 The overlay mirrors the custom gradient as well, because the colormap alone is
 not the picture: pushing "Custom" without its stops shows the overlay's own
 gradient under Studio's choice. The stops are a list and the mirrored set is one
@@ -484,7 +495,6 @@ a transient stays readable after it has passed.
 Specifications for all of it were extracted from the web sources first and are
 in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
-- **Audio panel**: the diagnostics plot's paused-selection measurement.
 - **Speakers**: the 3D per-speaker frequency gauge and the band cursor that
   share the row's band colours.
 - **Left overlay**: the dead rows of the audio input panel (backend, imported
