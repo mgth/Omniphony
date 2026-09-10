@@ -100,6 +100,7 @@ config, debounced 600 ms so a drag writes once.
 | Speaker frequency gauge | The per-speaker pass-band gauge beside each speaker: a log-frequency track from 20 Hz to 20 kHz with the crossover pass-band lit in the band's own colour, its decade ticks, and a click target that selects the speaker | nothing |
 | Speaker orientation | Aim at listener: the cubes turn their driver face toward the listening position, with no roll on elevated speakers, and that face carries the dark driver disc | nothing |
 | Room dimension guides | Seven measured guides outside the box — width, front, rear, total depth, height, lower and total height — each a line with end ticks and its length in metres, shown while the room panel is open | nothing |
+| Edit gizmos | The polar gizmo (azimuth ring with its degree scale, elevation arc turned into the speaker's azimuth plane, and the measured distance line) and the cartesian one (three axes and three handles), each shown only while the editor has armed its mode | nothing — they draw what the editor's own fields send |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped by
@@ -158,6 +159,18 @@ interpolated rather than dropped, since a gap left in place would shift every
 bin after it. The transform length is bounded by both the history collected and
 the window the user chose, which is what makes a shorter window a coarser
 spectrum.
+
+The edit gizmos draw the coordinates as things you can read off the scene: the
+polar one puts a ring at the speaker's distance with a scale in degrees, an
+elevation arc turned into that speaker's azimuth plane, and a measured line from
+the listening position; the cartesian one puts three axes and three handles on
+the speaker, scaled by the camera distance so they keep their size on screen.
+Only one mode is armed at a time, because two sets of handles on one speaker
+would be two answers to the same question, and both are drawn without the depth
+test so a gizmo is never hidden behind the room or behind a speaker in front of
+it. They follow what the editor moves: the selected speaker, or a selected
+object that is a virtual bed channel — a real object's position belongs to
+whatever is playing it.
 
 The room dimension guides follow the room panel rather than a switch of their
 own, as in the web: they exist to be read while those numbers are being edited,

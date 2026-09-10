@@ -12,6 +12,7 @@ use crate::app::StudioSpike;
 use crate::i18n::t;
 use crate::model::layouts::Speaker;
 use crate::ui::{theme, widgets};
+use crate::view::gizmos::EditMode;
 
 /// Which tab of the editor is showing (`body.speaker-tab-test`).
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -193,6 +194,7 @@ impl StudioSpike {
                     self.polar_table(ui, id, speaker, scale_m);
                 }
             }
+            self.gizmo_button(ui, mode, frozen);
 
             // Gain is realtime, like the master and the list rows.
             let gain = {
@@ -242,6 +244,46 @@ impl StudioSpike {
             // optional in the model and sent as zero to clear.
             self.frequency_row(ui, id, t("speaker.freqLow"), "freqLow", speaker.freq_low);
             self.frequency_row(ui, id, "Freq. max (Hz)", "freqHigh", speaker.freq_high);
+        });
+    }
+
+    /// The editor's "3D Edit" toggle: it arms the gizmo for the mode being
+    /// edited, and only one mode is ever armed — two sets of handles on one
+    /// speaker would be two answers to the same question.
+    fn gizmo_button(&mut self, ui: &mut Ui, mode: CoordMode, frozen: bool) {
+        let wanted = match mode {
+            CoordMode::Cartesian => EditMode::Cartesian,
+            CoordMode::Polar => EditMode::Polar,
+        };
+        let gizmo = self.settings.gizmo;
+        let armed = gizmo.mode == wanted
+            && match wanted {
+                EditMode::Cartesian => gizmo.cartesian_armed,
+                EditMode::Polar => gizmo.polar_armed,
+            };
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        !frozen,
+                        egui::Button::selectable(armed, t("speaker.edit3d")),
+                    )
+                    .clicked()
+                {
+                    let gizmo = &mut self.settings.gizmo;
+                    gizmo.mode = wanted;
+                    match wanted {
+                        EditMode::Cartesian => {
+                            gizmo.cartesian_armed = !armed;
+                            gizmo.polar_armed = false;
+                        }
+                        EditMode::Polar => {
+                            gizmo.polar_armed = !armed;
+                            gizmo.cartesian_armed = false;
+                        }
+                    }
+                }
+            });
         });
     }
 
