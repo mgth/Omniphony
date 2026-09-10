@@ -150,6 +150,8 @@ pub struct StudioSpike {
     pub(crate) diag_started: Instant,
     pub(crate) diag_paused: bool,
     pub(crate) diag_keepalive_at: Option<Instant>,
+    /// The measuring rectangle on the diagnostics plot, while one is drawn.
+    pub(crate) diag_selection: Option<crate::panels::diag_plot::DiagSelection>,
     /// The orender binary this Studio would launch, resolved once at start-up.
     /// A renderer answering from anywhere else is not one we started.
     pub(crate) expected_orender_path: Option<String>,
@@ -375,6 +377,7 @@ impl StudioSpike {
             diag_started: Instant::now(),
             diag_paused: false,
             diag_keepalive_at: None,
+            diag_selection: None,
             expected_orender_path: crate::host::commands::orender::expected_orender_path(
                 &crate::host::commands::HostPaths::default(),
                 None,
