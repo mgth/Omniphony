@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Speaker row glyphs | The plan thumbnail with height in its colour, the crossover shape with its two cutoffs, the selected object's contribution painted over the level, and the per-band contribution bars | nothing |
 | Layout actions | Presets, Import layout, Export layout and Add on the speakers header, each refused while the backend has the speakers frozen | `/omniphony/control/config/layout` (`replaceLayout`, `addSpeaker`) and its apply; the pickers and the file I/O are host-side |
 | Renderer performance | One bar for the frame split into decode, crossover, render and write end to end, cumulative worst-case markers, and a readout per stage against the frame budget — shown only while metering is on | nothing |
 | Diagnostics | The metrics plot: the renderer's published schema as a chip row grouped and tiered the way it registered them, the window and publication rate, pause, and one stacked panel per selected metric on its own y scale, with the time grid and the mean reference line | `/omniphony/control/diag/enabled` (with the web's one-second keep-alive), `…/diag/rate_hz` |
@@ -95,6 +96,20 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+A speaker row has to say *where* the speaker is and *what band* it carries
+without becoming a table, so each answer is a glyph read at a glance and hovered
+for the number. The thumbnail is a plan view with front up and the height in the
+marker's colour — blue on the floor, red at the ceiling — and a non-spatialized
+feed is framed in black rather than grey, because it sits outside the room model
+and a thumbnail like the others would claim it is placed somewhere it is not.
+The filter glyph's two cutoff labels are inverted relative to the editor's field
+order on purpose: the top one is the low-pass edge, where the band stops, so
+reading the glyph downwards matches reading the frequency axis. The contribution
+overlay and the band bars appear only while an object is selected, because they
+answer "where does *this* object go", which is not a question a speaker has on
+its own; the overlay shows the object's own RMS through that speaker's panning
+gain, not the gain alone.
 
 Importing a layout is two things, and doing only the first is the bug the web
 had: the file has to land in Studio's list *and* be pushed to the renderer,
@@ -256,9 +271,8 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Renderer panel**: the hybrid backend's own controls, the file-parameter
   Browse and Edit buttons, the info modals, and the SOFA browser the binaural
   tab's file source needs.
-- **Speakers**: the position thumbnail and filter glyph of a list row, the band
-  contribution bars, drag-to-reorder, the headphone channel rows and their ear
-  mute.
+- **Speakers**: drag-to-reorder, the clip flash on a row's id strip, the
+  headphone channel rows and their ear mute.
 - **Left overlay**: updates (the web fetches GitHub from the webview; a native
   host needs its own HTTP client) and the dead rows of the audio input panel
   (backend, imported layout, channel count, sample rate, map, LFE mode) which

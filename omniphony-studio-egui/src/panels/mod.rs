@@ -21,6 +21,7 @@ pub mod profiles;
 pub mod renderer;
 pub mod renderer_perf;
 pub mod room;
+pub mod row_glyphs;
 pub mod sources_2d;
 pub mod speaker_editor;
 pub mod speaker_layouts;

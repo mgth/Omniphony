@@ -24,11 +24,26 @@ struct Row {
     colour: Color32,
     /// Extra note shown after the label (bed channels, gain).
     detail: Option<String>,
+    /// Normalised position, for the plan thumbnail.
+    position: Option<[f64; 3]>,
+    /// False for a direct feed, which sits outside the room model.
+    spatialize: bool,
+    /// Band limits, for the crossover glyph. Only a speaker has one: an
+    /// object is not filtered, and a "full band" glyph on every object row
+    /// would be a column of noise.
+    speaker: bool,
+    freq_low: Option<f32>,
+    freq_high: Option<f32>,
+    /// How much of the selected object this entry carries, 0..1, and the same
+    /// split per crossover band. Both empty unless an object is selected.
+    contribution: Option<f64>,
+    band_gains: Vec<f64>,
 }
 
 impl StudioSpike {
     pub(crate) fn objects_section(&mut self, ui: &mut Ui) {
         let rows = self.object_rows();
+        let cutoffs = self.crossover_cutoffs();
         Section::new("objectsSection", "section.objects")
             .default_open(true)
             .summary(format!("{}", rows.len()))
@@ -42,7 +57,7 @@ impl StudioSpike {
                 }
                 for row in &rows {
                     let selected = self.selection.object.as_deref() == Some(row.id.as_str());
-                    let action = list_row(ui, row, selected);
+                    let action = list_row(ui, row, selected, &cutoffs);
                     self.apply_row_action(action, row, false);
                 }
             });
@@ -50,6 +65,7 @@ impl StudioSpike {
 
     pub(crate) fn speakers_section(&mut self, ui: &mut Ui) {
         let rows = self.speaker_rows();
+        let cutoffs = self.crossover_cutoffs();
         let layout_name = {
             let live = self.live.lock().unwrap();
             live.app
@@ -73,10 +89,17 @@ impl StudioSpike {
                 for row in &rows {
                     let index: Option<usize> = row.id.parse().ok();
                     let selected = index.is_some() && self.selection.speaker == index;
-                    let action = list_row(ui, row, selected);
+                    let action = list_row(ui, row, selected, &cutoffs);
                     self.apply_row_action(action, row, true);
                 }
             });
+    }
+
+    /// The band edges the layout's spatialized speakers imply. Derived, never
+    /// stored: a stored copy goes stale the moment a band limit is edited.
+    fn crossover_cutoffs(&self) -> Vec<f64> {
+        let live = self.live.lock().unwrap();
+        crate::model::layouts::crossover_cutoffs(&live.selected_speakers())
     }
 
     fn object_rows(&self) -> Vec<Row> {
@@ -99,6 +122,13 @@ impl StudioSpike {
                         (base[2].powf(1.0 / 2.2) * 255.0) as u8,
                     ),
                     detail: src.fixed.unwrap_or(false).then(|| "bed".to_owned()),
+                    position: Some([src.x, src.y, src.z]),
+                    spatialize: true,
+                    speaker: false,
+                    freq_low: None,
+                    freq_high: None,
+                    contribution: None,
+                    band_gains: Vec::new(),
                 }
             })
             .collect();
@@ -122,6 +152,14 @@ impl StudioSpike {
 
     fn speaker_rows(&self) -> Vec<Row> {
         let live = self.live.lock().unwrap();
+        // The contribution overlay answers "where does *this* object go", so it
+        // exists only while one is selected.
+        let selected = self.selection.object.as_deref();
+        let speaker_gains = selected.and_then(|id| live.app.object_speaker_gains.get(id));
+        let band_gains = selected.and_then(|id| live.app.object_band_gains.get(id));
+        let source_rms = selected
+            .and_then(|id| live.app.source_levels.get(id))
+            .map(|m| m.rms_dbfs);
         live.selected_speakers()
             .iter()
             .enumerate()
@@ -138,6 +176,21 @@ impl StudioSpike {
                     detail: gain
                         .filter(|g| (*g - 1.0).abs() > 1e-3)
                         .map(|g| crate::panels::audio::format_linear_as_db(Some(g))),
+                    position: Some([speaker.x, speaker.y, speaker.z]),
+                    spatialize: speaker.spatialize != 0,
+                    speaker: true,
+                    freq_low: speaker.freq_low,
+                    freq_high: speaker.freq_high,
+                    // The object's own RMS through this speaker's panning gain
+                    // — what it actually contributes, not what it was asked for.
+                    contribution: speaker_gains
+                        .and_then(|gains| gains.get(index).copied())
+                        .filter(|g| *g > 0.0)
+                        .zip(source_rms)
+                        .map(|(g, rms)| meter_fraction(rms + 20.0 * g.log10()) as f64),
+                    band_gains: band_gains
+                        .and_then(|bands| bands.get(index).cloned())
+                        .unwrap_or_default(),
                 }
             })
             .collect()
@@ -288,7 +341,7 @@ enum RowAction {
 }
 
 /// One `.info-item`: name chip, meter, readout, M and S.
-fn list_row(ui: &mut Ui, row: &Row, selected: bool) -> RowAction {
+fn list_row(ui: &mut Ui, row: &Row, selected: bool, cutoffs: &[f64]) -> RowAction {
     let mut action = RowAction::None;
     let fill = if selected {
         Color32::from_rgba_unmultiplied(46, 110, 64, 115)
@@ -307,6 +360,12 @@ fn list_row(ui: &mut Ui, row: &Row, selected: bool) -> RowAction {
         .inner_margin(egui::Margin::symmetric(7, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
+                if let Some(position) = row.position {
+                    crate::panels::row_glyphs::position_icon(ui, position, row.spatialize);
+                }
+                if row.speaker {
+                    crate::panels::row_glyphs::filter_icon(ui, row.freq_low, row.freq_high);
+                }
                 ui.add(
                     egui::Label::new(RichText::new(&row.label).size(theme::FONT_SIZE).color(
                         if row.muted {
@@ -344,14 +403,29 @@ fn list_row(ui: &mut Ui, row: &Row, selected: bool) -> RowAction {
                     );
                     let peak = row.meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
                     let hold = row.hold.unwrap_or(peak);
-                    widgets::meter(
+                    let response = widgets::meter(
                         ui,
                         meter_fraction(peak),
                         (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
                         hold >= 0.0,
                     );
+                    // The selected object's own share of this speaker, painted
+                    // over the level so the two are read against one scale.
+                    if let Some(contribution) = row.contribution {
+                        let rect = response.rect;
+                        let mut fill = rect;
+                        fill.set_width(rect.width() * contribution.clamp(0.0, 1.0) as f32);
+                        ui.painter().rect_filled(
+                            fill,
+                            3.0,
+                            Color32::from_rgba_unmultiplied(138, 240, 255, 235),
+                        );
+                    }
                 });
             });
+            if !row.band_gains.is_empty() {
+                crate::panels::row_glyphs::band_bars(ui, cutoffs, &row.band_gains);
+            }
         })
         .response
         .interact(Sense::click());
