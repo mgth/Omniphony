@@ -48,6 +48,7 @@ pub struct Section<'a> {
     title: String,
     summary: Option<String>,
     help_key: Option<&'a str>,
+    info_key: Option<&'a str>,
     default_open: bool,
     max_height: f32,
 }
@@ -61,6 +62,7 @@ impl<'a> Section<'a> {
             title: crate::i18n::t(title_key).to_owned(),
             summary: None,
             help_key: None,
+            info_key: None,
             default_open: false,
             max_height: 420.0,
         }
@@ -74,6 +76,15 @@ impl<'a> Section<'a> {
 
     pub fn help(mut self, key: &'a str) -> Self {
         self.help_key = Some(key);
+        self
+    }
+
+    /// The prefix of an `<id>.infoTitle` / `<id>.infoBody` pair. The web
+    /// promotes the title itself into the trigger — a dotted underline and a
+    /// pointer — rather than hanging an "i" button beside it, so the thing you
+    /// click is the thing you are asking about.
+    pub fn info(mut self, key: &'a str) -> Self {
+        self.info_key = Some(key);
         self
     }
 
@@ -101,15 +112,28 @@ impl<'a> Section<'a> {
             let (rect, chevron) =
                 ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
             paint_chevron(ui, rect, openness);
+            let mut text = egui::RichText::new(&self.title)
+                .size(theme::FONT_SIZE_SECTION)
+                .color(theme::TEXT_STRONG);
+            if self.info_key.is_some() {
+                text = text.underline();
+            }
             let title = ui.add(
-                egui::Label::new(
-                    egui::RichText::new(&self.title)
-                        .size(theme::FONT_SIZE_SECTION)
-                        .color(theme::TEXT_STRONG),
-                )
-                .sense(egui::Sense::click())
-                .selectable(false),
+                egui::Label::new(text)
+                    .sense(egui::Sense::click())
+                    .selectable(false),
             );
+            if let Some(key) = self.info_key {
+                // Opening it is a click on the title; the request travels back
+                // through the response so the section stays a pure widget.
+                if title.clicked() {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(egui::Id::new("info-modal"), key.to_owned()));
+                }
+                title
+                    .clone()
+                    .on_hover_text(crate::i18n::t(&format!("{key}.infoTitle")));
+            }
             if let Some(key) = self.help_key {
                 super::widgets::help(ui, key);
             }
@@ -126,7 +150,14 @@ impl<'a> Section<'a> {
                     );
                 });
             }
-            chevron.union(title)
+            // A title that opens a modal is the modal's trigger, not the
+            // section's: the chevron keeps the disclosure to itself, or one
+            // click would both explain the section and close it.
+            if self.info_key.is_some() {
+                chevron
+            } else {
+                chevron.union(title)
+            }
         });
         if header.inner.clicked() {
             state.toggle(ui);

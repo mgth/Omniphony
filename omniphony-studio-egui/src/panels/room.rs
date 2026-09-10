@@ -83,6 +83,7 @@ impl StudioSpike {
             edit.height + edit.lower
         );
         Section::new("roomGeometrySection", "room.title")
+            .info("room")
             .summary(summary)
             .show(ui, |ui| {
                 ui.add_enabled_ui(!frozen, |ui| {

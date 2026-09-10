@@ -67,6 +67,7 @@ impl StudioSpike {
             )
         };
         Section::new("audioInputSection", "section.audioInput")
+            .info("input")
             .summary(summary)
             .show(ui, |ui| {
                 // Status: what was asked for, what is running, and whether a

@@ -15,6 +15,7 @@ pub mod drc;
 pub mod footer;
 pub mod host_services;
 pub mod hybrid;
+pub mod info_modal;
 pub mod latency;
 pub mod lists;
 pub mod log;

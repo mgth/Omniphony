@@ -210,6 +210,7 @@ impl StudioSpike {
             live.app.osc_metering_enabled.unwrap_or(0) != 0
         };
         Section::new("oscSection", "osc.configTitle")
+            .info("osc")
             .summary(format!("{}:{}", self.osc_host, self.osc_port))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
