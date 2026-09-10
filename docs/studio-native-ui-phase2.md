@@ -65,6 +65,7 @@ config, debounced 600 ms so a drag writes once.
 | Speakers | One row per speaker of the live layout: name, gain offset, meter, RMS, mute, solo | `/omniphony/control/config/speakers` (`speakerEdits`) |
 | Display, Trails, Heatmaps | The phase 1 view controls, now in Studio sections with the web's labels | nothing (client-side view state) |
 | Audio output | Format line, output backend, device with its refresh, named pipe and its destination and format, channel mapping with the unroutable-speaker warning, sample rate | `/omniphony/control/audio/output_backend`, `…/output_file`, `…/output_file_format`, `…/output_devices/refresh`, and the batched `/omniphony/control/config/audio` + its apply |
+| Binaural | The HRTF source with its parametric pinna and PRTF variants, diffuse-field EQ, head radius, the HRIR update lattice, distance scale and air absorption, early reflections and late reverb with their room, and head tracking with recentre, axis calibration, address, format, smoothing, inversion and the live pose | `/omniphony/control/binaural/*`, `/omniphony/control/head/*` |
 | Audio input | The status line, the mode, the bridge path, the pipe or the PipeWire node, description and clock, and Apply with its two paths | `/omniphony/control/render/bridge_path`, `…/render/input_pipe`, `…/config/input` and its apply, `…/input/live/clock_mode`, `…/save_config`, `…/reload_config` |
 | Fixed-channel sources | Stream state, rear-channel placement, the synthetic-objects switch, the height generator and the phantom extractor with the parameters each declares, and why each stage is or is not running | `/omniphony/control/option`, `…/object_generator/param`, `…/phantom_extract/param` |
 | Room geometry | The five metre dimensions, the derived scale, and the front/rear blend when the two depths differ | `/omniphony/control/config/layout` (`radiusM`), `…/room_ratio`, `…/room_ratio_rear`, `…/room_ratio_lower`, `…/room_ratio_center_blend` |
@@ -109,9 +110,9 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Audio panel**: latency controls and their readouts, adaptive resampling,
   the diagnostics block, the timing readouts, the sample-rate preset menu (the
   native select offers the presets but not a free-text rate).
-- **Renderer panel**: the binaural tab in full (HRTF, distance, listening
-  room, head tracking), the hybrid backend's own controls, the file-parameter
-  Browse and Edit buttons, the performance gauges, the info modals.
+- **Renderer panel**: the hybrid backend's own controls, the file-parameter
+  Browse and Edit buttons, the performance gauges, the info modals, and the
+  SOFA browser the binaural tab's file source needs.
 - **Speakers**: layout import, export and presets, the position thumbnail and
   filter glyph of a list row, the band contribution bars, drag-to-reorder, the
   headphone channel rows and their ear mute.

@@ -5,6 +5,7 @@
 pub mod audio;
 pub mod audio_input;
 pub mod audio_output;
+pub mod binaural;
 pub mod connection;
 pub mod display;
 pub mod drc;
