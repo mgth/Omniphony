@@ -98,6 +98,10 @@ pub struct Live {
     /// Origin of the millisecond clock the rolling windows are keyed on.
     pub started: Instant,
     /// Instant latency over the last four seconds, so the meter can show the
+    /// Per-stage timing rings, in the order decode, crossover, render, write.
+    /// The host used to compute these and broadcast them as `latency:stats`;
+    /// here the panel reads them where they are made.
+    pub stage_windows: [TimeWindow; 4],
     /// spread the host used to compute for the web (`LATENCY_RAW_WINDOW_MS`).
     pub latency_window: TimeWindow,
     /// When the last spatial frame arrived. The channel editor's at-rest
@@ -186,6 +190,31 @@ pub struct BackendFile {
 
 /// The host's `LATENCY_RAW_WINDOW_MS`.
 const LATENCY_RAW_WINDOW_MS: u64 = 4000;
+/// The host's `RENDER_TIME_WINDOW_MS`: how far back a stage's worst case is
+/// remembered.
+pub const RENDER_TIME_WINDOW_MS: u64 = 5000;
+/// The host's `RENDER_TIME_AVERAGE_WINDOW_MS`: what the readouts average over.
+pub const RENDER_TIME_AVERAGE_WINDOW_MS: u64 = 1000;
+
+/// The four stages of the renderer's frame, in the order they are drawn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Decode,
+    Crossover,
+    Render,
+    Write,
+}
+
+impl Stage {
+    fn index(self) -> usize {
+        match self {
+            Stage::Decode => 0,
+            Stage::Crossover => 1,
+            Stage::Render => 2,
+            Stage::Write => 3,
+        }
+    }
+}
 
 /// `LOG_ENTRY_LIMIT` of `src/log.js`.
 const LOG_ENTRY_LIMIT: usize = 120;
@@ -276,6 +305,26 @@ impl Live {
     }
 
     /// Spread of the instant latency over the window, if it has samples.
+    /// Feed one stage sample. Non-finite values are dropped rather than
+    /// poisoning the window's mean.
+    pub fn record_stage(&mut self, stage: Stage, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        self.stage_windows[stage.index()].record(now_ms, value);
+    }
+
+    /// A stage's one-second mean and five-second worst case.
+    pub fn stage_stats(&self, stage: Stage) -> (Option<WindowStats>, Option<WindowStats>) {
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let window = &self.stage_windows[stage.index()];
+        (
+            window.stats(now_ms, RENDER_TIME_AVERAGE_WINDOW_MS),
+            window.stats(now_ms, RENDER_TIME_WINDOW_MS),
+        )
+    }
+
     pub fn latency_stats(&self) -> Option<WindowStats> {
         let now_ms = self.started.elapsed().as_millis() as u64;
         self.latency_window.stats(now_ms, LATENCY_RAW_WINDOW_MS)
@@ -313,6 +362,7 @@ impl Live {
             overlay: None,
             object_test_position: None,
             last_spatial_frame_at: None,
+            stage_windows: std::array::from_fn(|_| TimeWindow::new(RENDER_TIME_WINDOW_MS)),
             latency_window: TimeWindow::new(LATENCY_RAW_WINDOW_MS),
             peaks: PeakHolds::new(),
             peak_hold_db: HashMap::new(),
@@ -800,18 +850,22 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateDecodeTimeMs { value } => {
             live.app.decode_time_ms = Some(value);
+            live.record_stage(Stage::Decode, value);
             Change::None
         }
         OscEvent::StateRenderTimeMs { value } => {
             live.app.render_time_ms = Some(value);
+            live.record_stage(Stage::Render, value);
             Change::None
         }
         OscEvent::StateCrossoverTimeMs { value } => {
             live.app.crossover_time_ms = Some(value);
+            live.record_stage(Stage::Crossover, value);
             Change::None
         }
         OscEvent::StateWriteTimeMs { value } => {
             live.app.write_time_ms = Some(value);
+            live.record_stage(Stage::Write, value);
             Change::None
         }
         OscEvent::StateFrameDurationMs { value } => {

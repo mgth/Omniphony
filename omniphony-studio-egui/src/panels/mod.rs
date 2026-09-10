@@ -19,6 +19,7 @@ pub mod object_test;
 pub mod object_test_sheet;
 pub mod profiles;
 pub mod renderer;
+pub mod renderer_perf;
 pub mod room;
 pub mod sources_2d;
 pub mod speaker_editor;
