@@ -20,6 +20,7 @@ pub mod info_modal;
 pub mod latency;
 pub mod lists;
 pub mod log;
+pub mod meters;
 pub mod mpv_overlay;
 pub mod object_test;
 pub mod object_test_sheet;

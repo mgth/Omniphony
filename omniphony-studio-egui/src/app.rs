@@ -739,6 +739,7 @@ impl eframe::App for StudioSpike {
         }
         self.refresh_channel_catalog();
         self.sync_virtual_bed_objects(false);
+        self.maintain_meters();
         self.maintain_mpv_overlay();
         self.maintain_renderer_watchdog();
         self.maintain_object_test_source();

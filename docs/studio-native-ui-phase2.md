@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Derived master meter and decay | A master level reconstructed from the speakers when the renderer never published one, and the fall a meter takes when its source goes quiet | nothing |
 | Update check | The switch and the banner, with the release check on its own thread | nothing — it talks to GitHub, not to the renderer |
 | Custom gradient editor | The heatmaps' "Custom" colormap: the gradient itself as the control, a handle per stop, and a colour well for the selected one | nothing (the shader reads the stops directly) |
 | mpv overlay mirroring | Studio's object, label, heatmap and trail choices pushed to the overlay whenever they change, and the whole set pushed again on every fresh connection | `/omniphony/control/overlay/*` |
@@ -107,6 +108,19 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+Two meter behaviours were the host's, and the OSC stream carries neither. Both
+exist because a meter has to keep saying something true between messages. A
+renderer that never publishes a master level still publishes speaker levels, so
+one is reconstructed from them — peak from the loudest speaker, RMS as a *power*
+sum, which is what makes N speakers carrying the same signal read as that
+signal rather than as N times it. It stands down for good the moment the
+renderer publishes a real one, because a reconstruction competing with the real
+thing would flicker between two answers. And a meter whose source went quiet
+falls at 45 dB a second after a quarter-second hold, rather than freezing on its
+last value: a frozen meter reads as signal. Both are applied to the model rather
+than in each panel, so the list rows, the master section and the 3D scene read
+the same numbers.
 
 The update check is the crate's only HTTP, and it brings the only new
 dependency of the phase (`ureq`, the same crate and major the Tauri host uses,
@@ -414,7 +428,7 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Elsewhere**: the code editor, the SOFA browser, the auto-tune wizard, and
   the overlay's custom gradient stops (the editor exists now; mirroring them is
   one more message).
-- **Host services** the native app does not have yet: the derived master meter.
+- **Host services**: all ported.
 
 ## The gate
 

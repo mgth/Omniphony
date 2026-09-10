@@ -70,6 +70,9 @@ pub struct Live {
     pub app: AppState,
     /// When each object's / speaker's meter last arrived, for the display
     /// decay (`decayMeters`).
+    /// Whether the renderer has ever published a master level. Until it has,
+    /// the host derives one from the speakers.
+    pub master_reported: bool,
     pub source_level_seen: HashMap<String, Instant>,
     pub speaker_level_seen: HashMap<String, Instant>,
     pub trails: HashMap<String, Trail>,
@@ -285,7 +288,7 @@ impl Live {
 
     /// Feed one meter to its peak-hold cursor, the way the host does before
     /// emitting `peakHoldDbfs`.
-    fn hold(&mut self, key: String, peak_dbfs: f64) {
+    pub(crate) fn hold(&mut self, key: String, peak_dbfs: f64) {
         let held = self.peaks.update(&key, peak_dbfs, Instant::now());
         self.peak_hold_db.insert(key, held);
     }
@@ -351,6 +354,7 @@ impl Live {
     pub fn new(app: AppState) -> Self {
         Self {
             app,
+            master_reported: false,
             source_level_seen: HashMap::new(),
             speaker_level_seen: HashMap::new(),
             trails: HashMap::new(),
@@ -640,6 +644,10 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             peak_dbfs,
             rms_dbfs,
         } => {
+            // Once the renderer has published one, the derived meter stands
+            // down for good: a reconstruction competing with the real thing
+            // would flicker between two answers.
+            live.master_reported = true;
             live.hold("master".to_owned(), peak_dbfs);
             live.app.master_level = Some(Meter {
                 peak_dbfs,
