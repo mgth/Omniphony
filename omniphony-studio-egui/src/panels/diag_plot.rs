@@ -154,6 +154,7 @@ impl StudioSpike {
             format!("{}", self.prefs.diag_plot.selected.len())
         };
         let open = Section::new("diagSection", "section.diagnostics")
+            .info("telemetry")
             .summary(summary)
             .max_height(CANVAS_HEIGHT + 160.0)
             .show(ui, |ui| {

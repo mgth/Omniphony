@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Info modals | The long-form explanations of eight sections, opened by clicking the section's own title | nothing |
 | Scene-effects bar | Seven quick toggles over the viewport for the display switches reached for most often, and the two nature flyouts (object marker, trail kind) | nothing, except the mpv overlay's own enable |
 | Resample sparkline | The smoothed latency against its target and the rate adjustment in ppm, stacked on one canvas over the diagnostics plot's own window | nothing |
 | Host services | The local-renderer auto-start watchdog, and Launch / Stop / install / restart for the renderer and its OS service | `/omniphony/control/quit` on Stop; the rest is process control, not OSC |
@@ -103,6 +104,19 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The `*.infoBody` strings are written as web markup, because the web drops them
+into a modal with `innerHTML`. Stripping the tags would lose the structure —
+these texts are lists of "term: explanation" pairs, and the terms carry the
+scanning — so `ui/markup.rs` turns the few tags they use into egui rich text
+instead. One detail is worth naming because the first attempt got it wrong: a
+line's text and bold runs go into a single layout job rather than one label
+each. Separate labels can only wrap *between* themselves, so a bold term
+followed by its explanation broke the line at the comma after the term instead
+of where the paragraph ran out of width. The trigger is the section's own title,
+as in the web, so the thing clicked is the thing being asked about — and the
+chevron keeps the disclosure to itself, or one click would both explain the
+section and close it.
 
 The scene-effects bar holds no effect logic of its own: it drives the same state
 the panels do, so a toggle made from either place is the same toggle. It exists
@@ -362,8 +376,8 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   host needs its own HTTP client) and the dead rows of the audio input panel
   (backend, imported layout, channel count, sample rate, map, LFE mode) which
   belong to the legacy PCM mode.
-- **Elsewhere**: the info modals, the gradient editor, the code editor, the SOFA
-  browser, the auto-tune wizard, mpv overlay mirroring.
+- **Elsewhere**: the gradient editor, the code editor, the SOFA browser, the
+  auto-tune wizard, mpv overlay mirroring.
 - **Host services** the native app does not have yet: the derived master meter.
 
 ## The gate

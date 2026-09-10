@@ -339,6 +339,7 @@ impl StudioSpike {
             None => "—".to_owned(),
         };
         Section::new("latencySection", "section.latency")
+            .info("adaptive")
             .summary(summary)
             .max_height(crate::ui::section::open_max_height_large(
                 ui.ctx().content_rect().height(),

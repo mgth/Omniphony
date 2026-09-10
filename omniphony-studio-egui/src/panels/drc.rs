@@ -45,6 +45,7 @@ impl StudioSpike {
             if loudness { "ON" } else { "OFF" }
         );
         Section::new("drcSection", "section.drc")
+            .info("drc")
             .summary(summary)
             .show(ui, |ui| {
                 // The gauge only means something while the renderer is

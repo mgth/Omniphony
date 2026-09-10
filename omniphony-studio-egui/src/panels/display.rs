@@ -120,6 +120,7 @@ impl StudioSpike {
 
         let s = &mut self.settings;
         Section::new("trailSection", "trail.title")
+            .info("trail")
             .default_open(true)
             .max_height(max_height)
             .show(ui, |ui| {
@@ -157,6 +158,7 @@ impl StudioSpike {
 
         let v = &mut self.volume_settings;
         Section::new("heatmapsSection", "display.heatmaps")
+            .info("heatmap")
             .help("help.heatmaps")
             .max_height(max_height)
             .show(ui, |ui| {
