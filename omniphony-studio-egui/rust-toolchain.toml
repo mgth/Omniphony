@@ -1,0 +1,4 @@
+# egui 0.36 needs Rust >= 1.95. This file only applies when cargo runs from
+# inside this crate directory; the renderer workspace keeps its own toolchain.
+[toolchain]
+channel = "1.97.1"
