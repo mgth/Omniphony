@@ -3,6 +3,7 @@
 //! message through the listener's socket; the panels call these instead of
 //! `invoke(...)`.
 
+#![allow(dead_code)] // one method per host command, ported ahead of its panel
 use std::net::SocketAddr;
 
 use rosc::OscType;

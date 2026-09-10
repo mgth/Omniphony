@@ -6,7 +6,7 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::StudioSpike;
-use crate::host::peak_hold::{METER_DB_MAX, METER_DB_MIN, db_to_meter_percent};
+use crate::host::peak_hold::{METER_DB_MIN, db_to_meter_percent};
 use crate::i18n::t;
 use crate::model::app_state::Meter;
 use crate::ui::section::Section;
@@ -173,6 +173,3 @@ fn clip_indicator(ui: &mut Ui, active: bool) {
     }
     response.on_hover_text("Clip");
 }
-
-/// The meter scale, re-exported so the panels agree on the ends.
-pub const METER_RANGE: (f64, f64) = (METER_DB_MIN, METER_DB_MAX);

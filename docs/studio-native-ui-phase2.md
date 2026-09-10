@@ -64,10 +64,24 @@ config, debounced 600 ms so a drag writes once.
 | Objects | One row per source: name in its scene colour, bed tag, meter, RMS, mute, solo | `/omniphony/control/object/<id>/mute` |
 | Speakers | One row per speaker of the live layout: name, gain offset, meter, RMS, mute, solo | `/omniphony/control/config/speakers` (`speakerEdits`) |
 | Display, Trails, Heatmaps | The phase 1 view controls, now in Studio sections with the web's labels | nothing (client-side view state) |
+| Audio output | Format line, output backend, device with its refresh, named pipe and its destination and format, channel mapping with the unroutable-speaker warning, sample rate | `/omniphony/control/audio/output_backend`, `…/output_file`, `…/output_file_format`, `…/output_devices/refresh`, and the batched `/omniphony/control/config/audio` + its apply |
+| Renderer | Output mode, the Renderer/Binaural tab pair, the evaluation mode with its cartesian and polar grids and their step readouts, position interpolation, object size intervals, ramp mode, the backend with its status and its schema-generated parameters, distance diffuse, the distance model, the crossover with what the engine built | `/omniphony/control/output_mode`, `…/binaural_mode`, `…/render_evaluation_mode`, `…/render_evaluation/*`, `…/ramp_mode`, `…/render_backend`, `…/backend/param`, `…/distance_diffuse/*`, `…/distance_model*`, `…/option` |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped
 because it is addressed by name rather than by index.
+
+Two rules from the web are worth naming because they are easy to lose. The
+backend parameters are generated from the schema the renderer publishes, so a
+new parameter appears without a line of UI code; a translated label wins over
+the schema's own, as in `vbap.js`. And every control that forces a gain
+recompute arms the same eight-second watchdog: the panel says "computing"
+immediately and, if no broadcast comes back, says the engine never answered
+rather than lying about being up to date.
+
+The batched audio configuration goes through the host's own resolver
+(`audio_config.rs`, copied verbatim), so the values sent on the wire are the
+ones the Tauri host would have sent, clamps and defaults included.
 
 ## Model events the panels needed
 
@@ -87,12 +101,12 @@ a transient stays readable after it has passed.
 Specifications for all of it were extracted from the web sources first and are
 in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
-- **Audio panel**: output backend and device, the staged-config apply flow, the
-  file/pipe output, latency controls and their readouts, adaptive resampling,
-  the diagnostics block, the timing readouts.
-- **Renderer panel**: the tab pair, backend selection and its schema-generated
-  parameters, the evaluation mode and its resolutions, distance model and
-  diffuse, the hybrid backend, ramp mode, crossover, HRTF and head tracking.
+- **Audio panel**: latency controls and their readouts, adaptive resampling,
+  the diagnostics block, the timing readouts, the sample-rate preset menu (the
+  native select offers the presets but not a free-text rate).
+- **Renderer panel**: the binaural tab in full (HRTF, distance, listening
+  room, head tracking), the hybrid backend's own controls, the file-parameter
+  Browse and Edit buttons, the performance gauges, the info modals.
 - **Speaker editor**: the coordinate tables, gain, delay, band limits,
   spatialise flag, reordering, the test tab, layout import and export.
 - **Left overlay**: profiles, updates, the audio input panel, the

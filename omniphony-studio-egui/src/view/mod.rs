@@ -22,7 +22,7 @@ use crate::render::{FrameData, MeshInstance, MeshItem, MeshKind, hex_linear, wit
 
 pub use objects::{ObjectDisplayMode, SpeakerRef};
 pub use room::RoomBounds;
-pub use trails::{TrailMode, TrailSettings};
+pub use trails::TrailSettings;
 pub use volumes::{VolumeSettings, VolumeState};
 
 /// Display toggles the Studio persists as `spatialviz.effective_render_prefs`

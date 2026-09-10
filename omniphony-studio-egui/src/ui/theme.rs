@@ -6,6 +6,7 @@
 //! and friends) are kept as alpha so the same colour works over the panel and
 //! over the viewport.
 
+#![allow(dead_code)] // the token set is the stylesheet's, not today's uses
 use egui::{Color32, CornerRadius, Margin, Stroke};
 
 /// `body { background: #0a0b10 }` — behind the viewport, never painted over it.
