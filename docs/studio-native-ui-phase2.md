@@ -103,6 +103,7 @@ config, debounced 600 ms so a drag writes once.
 | Edit gizmos | The polar gizmo (azimuth ring with its degree scale, elevation arc turned into the speaker's azimuth plane, and the measured distance line) and the cartesian one (three axes and three handles), each shown only while the editor has armed its mode | nothing — they draw what the editor's own fields send |
 | Gizmo dragging | Dragging the ring turns the speaker around the listener, the arc raises it in its own plane, a cartesian handle slides it along one axis, and the wheel held with a modifier moves it closer or further | `/omniphony/control/config/layout` (`speakerEdits`) + apply on release for a speaker; `control_virtual_bed` per move for a channel |
 | Scene feedback for the renderer's mode | Speakers ghosted while the renderer is in binaural output, and the hybrid backend's iso-distance surface for the selected blend-curve point | nothing |
+| Editor pin | A dragged bed channel is held where the editor put it until the renderer has echoed the new bed back | nothing |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped by
@@ -161,6 +162,14 @@ interpolated rather than dropped, since a gap left in place would shift every
 bin after it. The transform length is bounded by both the history collected and
 the window the user chose, which is what makes a shorter window a coarser
 spectrum.
+
+Dragging a virtual bed channel needs one more thing to look right: the object's
+position comes from the live stream, and a packet arriving mid-drag carries
+where the object was before the drag started. So the editor pins it — held where
+the editor put it while the pointer is down, and for a further six hundred
+milliseconds after release, which is the window in which a stale packet would
+otherwise snap it back. The pin expires on the frame loop rather than in the
+drawing, so the object returns to the stream the moment it runs out.
 
 Two things the scene says about what the renderer is doing. In binaural output
 nothing is going to the speakers, so they and their labels are ghosted: they are

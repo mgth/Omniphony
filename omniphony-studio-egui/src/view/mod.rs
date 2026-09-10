@@ -55,6 +55,9 @@ pub struct ViewSettings {
     /// Which blend-curve point the hybrid panel has selected, if any: it is
     /// what the iso-distance shape is drawn for.
     pub hybrid_point: Option<usize>,
+    /// `channelEditPinId` / `channelEditPinPos`: an object whose position the
+    /// editor owns for the moment, so the live stream cannot fight a drag.
+    pub channel_edit_pin: Option<(String, Vec3)>,
     /// `app.speakerSize` (default 0.08).
     pub speaker_size: f32,
     /// `app.vbapCartesianFaceGridEnabled` ("Grid", default false).
@@ -79,6 +82,7 @@ impl Default for ViewSettings {
             room_guides_visible: false,
             gizmo: gizmos::GizmoState::default(),
             hybrid_point: None,
+            channel_edit_pin: None,
             speaker_size: 0.08,
             vbap_grid: false,
             trails: TrailSettings::default(),
@@ -307,8 +311,9 @@ pub fn build_frame(
         && let Some(stop) = live.app.render_backend_state.hybrid.curve.get(index)
     {
         let spherical = live.app.render_backend_state.hybrid.metric.as_deref() == Some("spherical");
-        // A spherical metric measures the radius; a cubic one measures the
-        // half-side, and the corner of that cube is √3 further out.
+        // The curve's x runs over the whole range of the metric it is written
+        // in: for a cubic metric that is the half-side, and for a spherical
+        // one the corner distance, which is √3 further out.
         let radius = stop[0] as f32 * if spherical { 3.0f32.sqrt() } else { 1.0 };
         room::emit_hybrid_distance(radius, spherical, &room, &mut frame);
     }

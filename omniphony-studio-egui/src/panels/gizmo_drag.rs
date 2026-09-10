@@ -11,6 +11,8 @@
 //! a virtual bed channel's is sent continuously, because the renderer's bed
 //! would otherwise snap the channel back between updates.
 
+use std::time::{Duration, Instant};
+
 use egui::{Pos2, Rect};
 use glam::Vec3;
 
@@ -227,6 +229,14 @@ impl StudioSpike {
                 }
             }
             GizmoTarget::Channel(name) => {
+                // Hold the object here until the renderer has had time to echo
+                // the new bed back: 600 ms, as in the web, and no expiry at all
+                // while the pointer is still down.
+                self.channel_edit_pin = Some((
+                    name.clone(),
+                    scene,
+                    send.then(|| Instant::now() + Duration::from_millis(600)),
+                ));
                 let (az, el, dist) = spherical(scene);
                 self.set_channel_polar_from_drag(
                     &name,
