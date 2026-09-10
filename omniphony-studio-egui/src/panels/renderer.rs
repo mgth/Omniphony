@@ -114,6 +114,7 @@ impl StudioSpike {
                 ui.ctx().content_rect().height(),
             ))
             .show(ui, |ui| {
+                self.renderer_perf(ui);
                 self.output_mode_row(ui);
                 self.renderer_tabs(ui);
                 match self.renderer_tab {

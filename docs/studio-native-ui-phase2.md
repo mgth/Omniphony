@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Renderer performance | One bar for the frame split into decode, crossover, render and write end to end, cumulative worst-case markers, and a readout per stage against the frame budget — shown only while metering is on | nothing |
 | Diagnostics | The metrics plot: the renderer's published schema as a chip row grouped and tiered the way it registered them, the window and publication rate, pause, and one stacked panel per selected metric on its own y scale, with the time grid and the mean reference line | `/omniphony/control/diag/enabled` (with the web's one-second keep-alive), `…/diag/rate_hz` |
 | OSC status and banners | The status line reports the four states with the web's colours and names the connected renderer's flavour; the three banners say a renderer is missing, that one came up without its decoder bridge, or that the one answering is not the one this Studio would start | nothing |
 | About | The brand row and the `?` beside the connection line open it: name, description, version, licence, repository link, which renderer is answering (with its ABI, and its executable in the tooltip) and which configuration that renderer is running on — including that it read none and is on built-in defaults | nothing |
@@ -93,6 +94,20 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The performance gauges answer one question — is the renderer keeping up, and
+which stage is spending the time — and they answer it against the frame budget
+rather than in the abstract, which is why the bar's scale is the frame duration
+whenever the renderer reports one. Two rules are easy to get wrong. Crossover
+time is *contained* in render time, so it is carved out of it rather than added,
+or the four segments would sum to more than the frame really costs; and the
+readouts show the one-second average rather than the instantaneous value, which
+at frame rate is unreadable. The windows behind them are the host's own
+`TimeWindow` rings, which the Tauri host used to aggregate and broadcast as
+`latency:stats`; here the panel reads them where they are made, so there is one
+producer instead of a producer and a message. The gauges hide with metering off:
+the renderer stops sending timings then, and a gauge frozen on its last values
+is worse than no gauge.
 
 The diagnostics plot is schema-driven end to end: the renderer's `DiagRegistry`
 publishes what it exposes and a flat map of current values, so a metric added on
@@ -211,13 +226,13 @@ a transient stays readable after it has passed.
 Specifications for all of it were extracted from the web sources first and are
 in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
-- **Audio panel**: the per-stage timing readouts, the resample plot, the
+- **Audio panel**: the resample plot, the
   sample-rate preset menu (the native select offers the presets but not a
   free-text rate), and the diagnostics plot's FFT, difference and measurement
   modes.
 - **Renderer panel**: the hybrid backend's own controls, the file-parameter
-  Browse and Edit buttons, the performance gauges, the info modals, and the
-  SOFA browser the binaural tab's file source needs.
+  Browse and Edit buttons, the info modals, and the SOFA browser the binaural
+  tab's file source needs.
 - **Speakers**: layout import, export and presets, the position thumbnail and
   filter glyph of a list row, the band contribution bars, drag-to-reorder, the
   headphone channel rows and their ear mute.
@@ -229,8 +244,8 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   modals, the gradient editor, the plots, the code editor, the SOFA browser,
   the auto-tune wizard, mpv overlay mirroring.
 - **Host services** the native app does not have yet: the local-renderer
-  auto-start watchdog, the OS-service controls, the timing statistics, the
-  derived master meter, and the eight locales.
+  auto-start watchdog, the OS-service controls, the derived master meter, and
+  the eight locales.
 
 ## Running
 
