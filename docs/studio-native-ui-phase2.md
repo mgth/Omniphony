@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Save footer and band cursor | Save and Reload with what the renderer last said about its configuration file, and the band picker that chooses which crossover band the scene's heatmaps are drawn for | `/omniphony/control/save_config`, `…/reload_config` |
 | Headphone rows, drag and clip | The two ear rows with their meters and ear mute, drag-to-reorder on a speaker's id strip, and the clip flash the renderer's `clip:detected` lights | `/omniphony/control/binaural/ear_mute`, `/omniphony/control/config/layout` (`moveSpeaker`) and its apply |
 | Speaker row glyphs | The plan thumbnail with height in its colour, the crossover shape with its two cutoffs, the selected object's contribution painted over the level, and the per-band contribution bars | nothing |
 | Layout actions | Presets, Import layout, Export layout and Add on the speakers header, each refused while the backend has the speakers frozen | `/omniphony/control/config/layout` (`replaceLayout`, `addSpeaker`) and its apply; the pickers and the file I/O are host-side |
@@ -97,6 +98,16 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The save footer and the band cursor float over the viewport in screen
+coordinates rather than inside a panel — the footer centred at the bottom
+because saving is about the whole session and not about whichever panel is open,
+the cursor against the right overlay because it filters what the scene draws.
+The footer's indicator is its point: a renderer whose live state has drifted
+from its configuration file comes back as the file after a restart, and nothing
+else on screen says so. A save error outranks the "modified" label, because it
+is the one state that label would hide. The band cursor hides below two bands,
+where there is nothing to choose between.
 
 Which of the two lists is shown follows the output mode, and the middle case is
 the one worth stating: binaural-direct hides the speakers because they are not
@@ -284,9 +295,9 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   host needs its own HTTP client) and the dead rows of the audio input panel
   (backend, imported layout, channel count, sample rate, map, LFE mode) which
   belong to the legacy PCM mode.
-- **Elsewhere**: the save footer, the scene-effects bar, the band cursor, the
-  modals, the gradient editor, the plots, the code editor, the SOFA browser,
-  the auto-tune wizard, mpv overlay mirroring.
+- **Elsewhere**: the scene-effects bar, the modals, the gradient editor, the
+  resample plot, the code editor, the SOFA browser, the auto-tune wizard, mpv
+  overlay mirroring.
 - **Host services** the native app does not have yet: the local-renderer
   auto-start watchdog, the OS-service controls, the derived master meter, and
   the eight locales.

@@ -583,6 +583,8 @@ impl StudioSpike {
                 });
         });
         self.log_overlay(ctx, &layout);
+        self.save_footer(ctx);
+        self.band_cursor(ctx, &layout);
         self.about_modal(ctx);
         if !layout_eq(&layout, &self.layout) {
             self.layout = layout;
