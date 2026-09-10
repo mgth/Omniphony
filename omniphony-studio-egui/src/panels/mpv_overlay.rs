@@ -13,6 +13,7 @@
 
 use crate::app::StudioSpike;
 use crate::view::trails::TrailMode;
+use crate::view::volumes::GradientStop;
 
 /// Everything Studio mirrors, as one comparable value. A struct rather than a
 /// pile of fields so "did anything change" is one comparison.
@@ -27,6 +28,30 @@ pub struct OverlayPrefs {
     trail_ttl_ms: i64,
     trail_line: bool,
     teleport_threshold: f32,
+    /// The custom gradient, as one number. The stops themselves are a list, so
+    /// they cannot sit in a `Copy` value the whole struct is compared by; what
+    /// matters here is only whether they changed since the last push.
+    stops_signature: u64,
+}
+
+/// The custom stops as the renderer takes them: `[pos, r, g, b, …]`.
+fn stops_flat(stops: &[GradientStop]) -> Vec<f32> {
+    stops
+        .iter()
+        .flat_map(|stop| [stop.pos, stop.rgb[0], stop.rgb[1], stop.rgb[2]])
+        .collect()
+}
+
+/// A signature of the flattened stops. Bit patterns rather than floats so the
+/// value is hashable, and so a stop moved by a pixel is a change.
+fn stops_signature(flat: &[f32]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    flat.len().hash(&mut hasher);
+    for value in flat {
+        value.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 impl StudioSpike {
@@ -61,6 +86,16 @@ impl StudioSpike {
             "/omniphony/control/overlay/heatmap_colormap",
             wanted.colormap,
         );
+        // The custom stops go with the colormap that uses them: pushing the
+        // colormap without them would show the overlay's own gradient under
+        // Studio's choice of "Custom".
+        self.ctl.send(
+            "/omniphony/control/overlay/heatmap_custom_stops",
+            stops_flat(&self.volume_settings.object_stops)
+                .into_iter()
+                .map(rosc::OscType::Float)
+                .collect(),
+        );
         self.ctl.send(
             "/omniphony/control/overlay/trails",
             vec![
@@ -90,6 +125,7 @@ impl StudioSpike {
             trail_ttl_ms: (trails.ttl.as_millis() as i64).max(500),
             trail_line: trails.mode == TrailMode::Line,
             teleport_threshold: trails.teleport_threshold.clamp(0.05, 2.0),
+            stops_signature: stops_signature(&stops_flat(&self.volume_settings.object_stops)),
         }
     }
 }
@@ -109,6 +145,7 @@ mod tests {
             trail_ttl_ms: 7000,
             trail_line: false,
             teleport_threshold: 0.5,
+            stops_signature: 0,
         }
     }
 
@@ -122,5 +159,30 @@ mod tests {
         let mut c = prefs();
         c.teleport_threshold = 0.6;
         assert_ne!(a, c);
+    }
+
+    /// The gradient is mirrored too, so moving a stop has to reach the push.
+    #[test]
+    fn a_moved_stop_is_a_change() {
+        let stops = vec![
+            GradientStop {
+                pos: 0.0,
+                rgb: [0.0, 0.0, 1.0],
+            },
+            GradientStop {
+                pos: 1.0,
+                rgb: [1.0, 0.0, 0.0],
+            },
+        ];
+        let flat = stops_flat(&stops);
+        assert_eq!(flat, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0]);
+        let mut moved = stops.clone();
+        moved[0].pos = 0.01;
+        assert_ne!(stops_signature(&flat), stops_signature(&stops_flat(&moved)));
+        // Dropping a stop is a change even when the remaining numbers repeat.
+        assert_ne!(
+            stops_signature(&flat),
+            stops_signature(&stops_flat(&stops[..1]))
+        );
     }
 }
