@@ -28,9 +28,9 @@ use dispatch::{Change, Live, apply_event};
 use parser::{CoordinateFormat, HeartbeatResponse, is_heartbeat_address, parse_osc_message};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-/// Re-register when no ack came back for this long (the host uses the same
-/// three-heartbeat window).
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(16);
+/// Re-register when no heartbeat ack came back for this long. The host's
+/// `HEARTBEAT_ACK_TIMEOUT`, so both clients give up after the same delay.
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 const REPAINT_COALESCE: Duration = Duration::from_micros(2500);
 /// While `osc_snapshot_ready` is false, re-register this often (host value).
 const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);

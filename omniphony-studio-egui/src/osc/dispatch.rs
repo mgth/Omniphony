@@ -92,7 +92,82 @@ pub struct Live {
     pub last_frame_reset: Option<Instant>,
     /// Bumped on every `Change::Snapshot`; the UI compares it to rebuild caches.
     pub snapshot_epoch: u64,
+    /// Log ring shown by the log overlay (`src/log.js`, 120 entries).
+    pub log: VecDeque<LogLine>,
+    /// Set while a config save is in flight (`app.saveRequested`).
+    pub save_requested: bool,
+    /// Decoded `state:object_test:clip` document.
+    pub object_test_clip: Option<serde_json::Value>,
+    /// Script files declared by each backend, and the last one fetched.
+    pub backend_files: HashMap<String, Vec<String>>,
+    pub backend_file_content: Option<BackendFile>,
 }
+
+/// One rendered log line. `src/log.js` keeps the newest 120 and prefixes the
+/// target in brackets unless the message already carries one.
+#[derive(Clone, Debug)]
+pub struct LogLine {
+    pub level: LogLevel,
+    pub target: String,
+    pub message: String,
+    pub at: Instant,
+}
+
+impl LogLine {
+    /// `buildRenderedMessage`: `[target] message`, unless the message already
+    /// starts with a bracket or there is no target.
+    pub fn rendered(&self) -> String {
+        if self.message.starts_with('[') || self.target.is_empty() {
+            self.message.clone()
+        } else {
+            format!("[{}] {}", self.target, self.message)
+        }
+    }
+}
+
+/// The levels `log.js` renders. Anything else it receives becomes `Info`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "error" => LogLevel::Error,
+            "warn" => LogLevel::Warn,
+            "debug" => LogLevel::Debug,
+            "trace" => LogLevel::Trace,
+            _ => LogLevel::Info,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LogLevel::Error => "error",
+            LogLevel::Warn => "warn",
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+            LogLevel::Trace => "trace",
+        }
+    }
+}
+
+/// A backend script file fetched for the editor.
+#[derive(Clone, Debug)]
+pub struct BackendFile {
+    pub backend: String,
+    pub key: String,
+    pub name: String,
+    pub content: String,
+}
+
+/// `LOG_ENTRY_LIMIT` of `src/log.js`.
+const LOG_ENTRY_LIMIT: usize = 120;
 
 impl std::ops::Deref for Live {
     type Target = AppState;
@@ -108,6 +183,24 @@ impl std::ops::DerefMut for Live {
 }
 
 impl Live {
+    /// `pushLog`: drop empty messages, coerce the level, keep the newest 120.
+    pub fn push_log(&mut self, level: &str, target: &str, message: impl Into<String>) {
+        let message: String = message.into();
+        let message = message.trim().to_owned();
+        if message.is_empty() {
+            return;
+        }
+        self.log.push_back(LogLine {
+            level: LogLevel::parse(level),
+            target: target.trim().to_owned(),
+            message,
+            at: Instant::now(),
+        });
+        while self.log.len() > LOG_ENTRY_LIMIT {
+            self.log.pop_front();
+        }
+    }
+
     pub fn new(app: AppState) -> Self {
         Self {
             app,
@@ -121,6 +214,11 @@ impl Live {
             gaintable_unavailable: None,
             overlay: None,
             object_test_position: None,
+            log: VecDeque::new(),
+            save_requested: false,
+            object_test_clip: None,
+            backend_files: HashMap::new(),
+            backend_file_content: None,
             options_schema: None,
             object_generators_schema: None,
             phantom_schema: None,
@@ -641,10 +739,195 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             live.app.render_bridge_error = non_empty(value);
             Change::None
         }
-        // Log lines, recompute status and anything else the viewport does not
-        // draw are ignored here; the panels phase picks them up.
+
+        // ── panels: renderer evaluation grid ──────────────────────────────
+        // `0` means "not set" for every size but `z_neg_size`, where the
+        // renderer's zero is a real value (`tauri-bridge.js`).
+        OscEvent::StateRenderEvaluationCartesianXSize { value } => {
+            live.app.vbap_cartesian.x_size = positive(value);
+            Change::Snapshot
+        }
+        OscEvent::StateRenderEvaluationCartesianYSize { value } => {
+            live.app.vbap_cartesian.y_size = positive(value);
+            Change::Snapshot
+        }
+        OscEvent::StateRenderEvaluationCartesianZSize { value } => {
+            live.app.vbap_cartesian.z_size = positive(value);
+            Change::Snapshot
+        }
+        OscEvent::StateRenderEvaluationCartesianZNegSize { value } => {
+            live.app.vbap_cartesian.z_neg_size = Some(value);
+            Change::Snapshot
+        }
+        OscEvent::StateRenderEvaluationPolarAzimuthResolution { value } => {
+            live.app.vbap_polar.azimuth_resolution = positive(value);
+            Change::Snapshot
+        }
+        OscEvent::StateRenderEvaluationPolarElevationResolution { value } => {
+            live.app.vbap_polar.elevation_resolution = positive(value);
+            Change::Snapshot
+        }
+        OscEvent::StateRenderEvaluationPolarDistanceRes { value } => {
+            live.app.vbap_polar.distance_res = positive(value);
+            Change::Snapshot
+        }
+        OscEvent::StateRenderEvaluationPolarDistanceMax { value } => {
+            live.app.vbap_polar.distance_max = (value > 0.0).then_some(value);
+            Change::Snapshot
+        }
+        OscEvent::StateRenderEvaluationPositionInterpolation { enabled } => {
+            live.app.vbap_polar.position_interpolation = Some(enabled);
+            Change::Snapshot
+        }
+        OscEvent::StateVbapAllowNegativeZ { enabled } => {
+            live.app.vbap_allow_negative_z = Some(enabled);
+            Change::Snapshot
+        }
+        OscEvent::StateSpeakersRecomputing { enabled } => {
+            live.app.vbap_recomputing = Some(enabled);
+            if enabled {
+                live.app.recompute_error = None;
+            }
+            Change::Snapshot
+        }
+        OscEvent::StateSpeakersRecomputeError { message } => {
+            live.app.recompute_error = non_empty(message);
+            if live.app.recompute_error.is_some() {
+                live.app.vbap_recomputing = Some(false);
+            }
+            Change::Snapshot
+        }
+
+        // ── panels: configuration save feedback ──────────────────────────
+        OscEvent::StateConfigSaved { saved } => {
+            live.app.config_saved = Some(u8::from(saved));
+            live.app.save_error = None;
+            live.save_requested = false;
+            Change::Snapshot
+        }
+        OscEvent::StateConfigSaveError { message } => {
+            let message = non_empty(message);
+            if let Some(text) = &message {
+                live.push_log("error", "config", text.clone());
+            }
+            live.app.save_error = message;
+            live.save_requested = false;
+            Change::Snapshot
+        }
+
+        // ── panels: object test, log ─────────────────────────────────────
+        OscEvent::StateObjectTestClip { value } => {
+            live.object_test_clip = serde_json::from_str(&value).ok();
+            Change::Snapshot
+        }
+        OscEvent::StateLogLevel { value } => {
+            live.app.log_level = non_empty(value);
+            Change::Snapshot
+        }
+        OscEvent::Log { entry } => {
+            live.push_log(&entry.level, &entry.target, entry.message);
+            Change::Snapshot
+        }
+
+        // ── panels: adaptive resampling ──────────────────────────────────
+        OscEvent::StateAdaptiveResampling { enabled } => {
+            live.app.adaptive_resampling = Some(u8::from(enabled));
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingEnableFarMode { enabled } => {
+            live.app.adaptive_resampling_enable_far_mode = Some(u8::from(enabled));
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingForceSilenceInFarMode { enabled } => {
+            live.app.adaptive_resampling_force_silence_in_far_mode = Some(u8::from(enabled));
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingHardRecoverHighInFarMode { enabled } => {
+            live.app.adaptive_resampling_hard_recover_high_in_far_mode = Some(u8::from(enabled));
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingHardRecoverLowInFarMode { enabled } => {
+            live.app.adaptive_resampling_hard_recover_low_in_far_mode = Some(u8::from(enabled));
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingFarModeReturnFadeInMs { value } => {
+            live.app.adaptive_resampling_far_mode_return_fade_in_ms = Some(value.round() as i64);
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingKpNear { value } => {
+            live.app.adaptive_resampling_kp_near = Some(value);
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingKi { value } => {
+            live.app.adaptive_resampling_ki = Some(value);
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingIntegralDischargeRatio { value } => {
+            live.app.adaptive_resampling_integral_discharge_ratio = Some(value);
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingMaxAdjust { value } => {
+            live.app.adaptive_resampling_max_adjust = Some(value);
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks { value } => {
+            live.app.adaptive_resampling_update_interval_callbacks = Some(value.round() as i64);
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingHighRecoverEntryMarginMs { value } => {
+            live.app.adaptive_resampling_high_recover_entry_margin_ms = Some(value.round() as i64);
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingBand { value } => {
+            live.app.adaptive_resampling_band = non_empty(value);
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingState { value } => {
+            live.app.adaptive_resampling_state = non_empty(value);
+            Change::Snapshot
+        }
+        OscEvent::StateAdaptiveResamplingPaused { enabled } => {
+            live.app.adaptive_resampling_paused = Some(u8::from(enabled));
+            Change::Snapshot
+        }
+
+        // ── panels: backend script files (editor phase) ──────────────────
+        OscEvent::StateBackendFileList { backend, json } => {
+            let names: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+            live.backend_files.insert(backend, names);
+            Change::Snapshot
+        }
+        OscEvent::StateBackendFileContent {
+            backend,
+            key,
+            name,
+            content,
+        } => {
+            live.backend_file_content = Some(BackendFile {
+                backend,
+                key,
+                name,
+                content,
+            });
+            Change::Snapshot
+        }
+        OscEvent::StateBackendFileError {
+            backend,
+            key,
+            message,
+        } => {
+            live.push_log("error", "backend", format!("{backend}/{key}: {message}"));
+            Change::Snapshot
+        }
+
+        // Events the viewport does not draw and no panel reads yet.
         _ => Change::None,
     }
+}
+
+/// `0` means "unset" for the evaluation-grid sizes (`tauri-bridge.js`).
+fn positive(value: u32) -> Option<u32> {
+    (value > 0).then_some(value)
 }
 
 fn snapshot_if(changed: bool) -> Change {
@@ -652,5 +935,112 @@ fn snapshot_if(changed: bool) -> Change {
         Change::Snapshot
     } else {
         Change::None
+    }
+}
+
+#[cfg(test)]
+mod panel_event_tests {
+    use super::*;
+    use crate::osc::parser::LogEntry;
+
+    fn live() -> Live {
+        Live::new(AppState::new(Vec::new()))
+    }
+
+    #[test]
+    fn evaluation_sizes_treat_zero_as_unset_except_the_negative_z_one() {
+        let mut l = live();
+        apply_event(
+            &mut l,
+            OscEvent::StateRenderEvaluationCartesianXSize { value: 0 },
+        );
+        apply_event(
+            &mut l,
+            OscEvent::StateRenderEvaluationCartesianYSize { value: 9 },
+        );
+        apply_event(
+            &mut l,
+            OscEvent::StateRenderEvaluationCartesianZNegSize { value: 0 },
+        );
+        assert_eq!(l.app.vbap_cartesian.x_size, None);
+        assert_eq!(l.app.vbap_cartesian.y_size, Some(9));
+        assert_eq!(l.app.vbap_cartesian.z_neg_size, Some(0));
+    }
+
+    #[test]
+    fn a_recompute_error_stops_the_recomputing_flag_and_the_reverse() {
+        let mut l = live();
+        apply_event(&mut l, OscEvent::StateSpeakersRecomputing { enabled: true });
+        assert_eq!(l.app.vbap_recomputing, Some(true));
+        apply_event(
+            &mut l,
+            OscEvent::StateSpeakersRecomputeError {
+                message: "no hull".to_owned(),
+            },
+        );
+        assert_eq!(l.app.recompute_error.as_deref(), Some("no hull"));
+        assert_eq!(l.app.vbap_recomputing, Some(false));
+        apply_event(&mut l, OscEvent::StateSpeakersRecomputing { enabled: true });
+        assert_eq!(l.app.recompute_error, None);
+    }
+
+    #[test]
+    fn a_save_error_is_logged_and_clears_the_pending_save() {
+        let mut l = live();
+        l.save_requested = true;
+        apply_event(
+            &mut l,
+            OscEvent::StateConfigSaveError {
+                message: "read-only".to_owned(),
+            },
+        );
+        assert!(!l.save_requested);
+        assert_eq!(l.app.save_error.as_deref(), Some("read-only"));
+        assert_eq!(l.log.len(), 1);
+        assert_eq!(l.log[0].level, LogLevel::Error);
+    }
+
+    #[test]
+    fn the_log_ring_keeps_the_newest_entries_and_renders_the_target() {
+        let mut l = live();
+        for i in 0..LOG_ENTRY_LIMIT + 5 {
+            apply_event(
+                &mut l,
+                OscEvent::Log {
+                    entry: LogEntry {
+                        seq: i as u64,
+                        level: "warn".to_owned(),
+                        target: "render".to_owned(),
+                        message: format!("line {i}"),
+                    },
+                },
+            );
+        }
+        assert_eq!(l.log.len(), LOG_ENTRY_LIMIT);
+        assert_eq!(l.log.back().unwrap().rendered(), "[render] line 124");
+        assert_eq!(l.log.front().unwrap().message, "line 5");
+    }
+
+    #[test]
+    fn an_empty_log_message_is_dropped_and_a_bracketed_one_is_kept_verbatim() {
+        let mut l = live();
+        l.push_log("info", "render", "   ");
+        assert!(l.log.is_empty());
+        l.push_log("nonsense", "render", "[osc] already tagged");
+        assert_eq!(l.log[0].level, LogLevel::Info);
+        assert_eq!(l.log[0].rendered(), "[osc] already tagged");
+    }
+
+    #[test]
+    fn adaptive_resampling_values_round_to_the_stored_integer_type() {
+        let mut l = live();
+        apply_event(
+            &mut l,
+            OscEvent::StateAdaptiveResamplingUpdateIntervalCallbacks { value: 12.6 },
+        );
+        assert_eq!(
+            l.app.adaptive_resampling_update_interval_callbacks,
+            Some(13)
+        );
     }
 }
