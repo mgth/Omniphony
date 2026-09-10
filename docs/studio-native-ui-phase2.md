@@ -423,7 +423,10 @@ the renderer workspace and the web Studio, and the native Studio is neither. The
 whole port had no gate at all — the green runs on every phase-2 pull request were
 verifying code the port does not touch.
 
-The Linux job now checks the crate's formatting, builds it and runs its tests.
+The Linux job now checks the crate's formatting, builds it and runs its tests,
+with its build tree cached separately from the renderer's — a different
+toolchain and a disjoint dependency set, and one entry holding both would be
+evicted by whichever changed last.
 Two details make that work. The crate pins a newer toolchain than the renderer
 workspace (egui 0.36 needs it), and rustup installs a pinned toolchain without
 components, so rustfmt has to be asked for by name — with the version read from

@@ -166,6 +166,19 @@ jobs:
       # here, but a pinned toolchain comes without components: rustfmt has to
       # be asked for by name. The version is read from the pin file so the two
       # cannot drift apart.
+      # The native Studio's own build tree, cached separately from the
+      # renderer's. It is a different toolchain and a disjoint dependency set —
+      # egui, wgpu and their graphics stack are nobody else's — and one entry
+      # holding both would be evicted by whichever changed last. Its Cargo.lock
+      # is tracked, so the key can be exact rather than a guess from manifests.
+      - name: Cache the native Studio build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: ${{ runner.os }}-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-studio-egui-
+
       - name: Install rustfmt for the native Studio toolchain
         working-directory: omniphony-studio-egui
         run: |
