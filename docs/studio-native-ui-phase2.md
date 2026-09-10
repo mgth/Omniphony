@@ -94,6 +94,7 @@ config, debounced 600 ms so a drag writes once.
 | Channel editor | The per-channel gain, Virtual/Direct, the destination speaker of a direct channel, and the cartesian and polar coordinate tables in normalised units and metres; plus the layout reset in the fixed-channel section and the at-rest bed markers that make a channel selectable with nothing playing | `/omniphony/control/virtual_bed` (the whole bed, as the renderer takes a layout rather than a diff) |
 | Object injection | The feature switch on the objects list, and the editor: transport, stimulus, the WAV clip with what the renderer says about it, the ADM/room view, the CAD sheet with its three views, gutter sliders, snap grid and orbit path, the level, the orbit's axis, radius and turn time, the programme isolation and the centre button | `/omniphony/control/object_test`, `…/object_test/rotation`, `…/object_test/clip`, `…/speaker_test/idle_feed` |
 | Renderer | Output mode, the Renderer/Binaural tab pair, the evaluation mode with its cartesian and polar grids and their step readouts, position interpolation, object size intervals, ramp mode, the backend with its status and its schema-generated parameters, distance diffuse, the distance model, the crossover with what the engine built | `/omniphony/control/output_mode`, `…/binaural_mode`, `…/render_evaluation_mode`, `…/render_evaluation/*`, `…/ramp_mode`, `…/render_backend`, `…/backend/param`, `…/distance_diffuse/*`, `…/distance_model*`, `…/option` |
+| SOFA browser | The HRTF file dialog: the local cache with each file's embedded licence, its Import and Delete, and the upload that sends one to a renderer on another machine; and, behind a per-session consent, the sofacoustics.org index navigated folder by folder, downloaded with a progress bar and a Cancel, and activated | `/omniphony/control/binaural/hrir_source` (`sofa:<path>`), `…/binaural/hrtf_upload/{begin,chunk,end}`; the browsing, the download and the cache are host-side |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped by
@@ -115,6 +116,24 @@ renderer accepts any of them — the presets are a shortcut, not the set. The
 field is not overwritten while it is being typed in, and returns to the
 renderer's answer as soon as it is left, so an abandoned edit does not linger as
 a claim about the device.
+
+The SOFA browser opens on what is already on this machine, not on the network.
+Nothing is fetched until the online view is asked for and agreed to, once per
+session — a dialog that reached across the internet the moment it opened would
+be doing it before anyone asked. Each cached file carries the licence its own
+global attributes declare, classified into the few cases that matter and warned
+about when it is non-commercial or absent, because that is the question anyone
+redistributing a render has to answer. Reading it is a full parse of a file that
+may be hundreds of megabytes, so the answer is cached in a sidecar beside the
+file and every listing, browse, download, upload and import runs on a worker
+thread: on the frame loop any one of them would stop the window for as long as
+it took.
+
+The active file's highlight comes from `binaural.hrtfSofaPath`, which the
+renderer publishes separately from `hrirSource` — the latter is the bare word
+"sofa" once the control has been parsed. The panel's file line was reading the
+path out of `hrirSource` and so never found one; it now reads the field that
+carries it, and says which file is playing instead of claiming none was chosen.
 
 Two meter behaviours were the host's, and the OSC stream carries neither. Both
 exist because a meter has to keep saying something true between messages. A
@@ -424,16 +443,15 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
 - **Audio panel**: the diagnostics plot's FFT, difference and measurement
   modes.
-- **Renderer panel**: the file-parameter Browse and Edit buttons, the info
-  modals, and the SOFA browser the binaural tab's file source needs.
+- **Renderer panel**: the file-parameter Browse and Edit buttons.
 - **Speakers**: the 3D per-speaker frequency gauge and the band cursor that
   share the row's band colours.
 - **Left overlay**: the dead rows of the audio input panel (backend, imported
   layout, channel count, sample rate, map, LFE mode), which belong to the legacy
   PCM mode and are deliberately not ported.
-- **Elsewhere**: the code editor, the SOFA browser, the auto-tune wizard, and
-  the overlay's custom gradient stops (the editor exists now; mirroring them is
-  one more message).
+- **Elsewhere**: the code editor, the auto-tune wizard, and the overlay's
+  custom gradient stops (the editor exists now; mirroring them is one more
+  message).
 - **Host services**: all ported.
 
 ## The gate

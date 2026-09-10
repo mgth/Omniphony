@@ -54,6 +54,10 @@ rfd = "0.16"
 # targets build the same way.
 ureq = { version = "2", default-features = false, features = ["tls", "json", "gzip"] }
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
+# SOFA global attributes for the HRTF browser's licence line. Same pin as the
+# renderer and the Tauri host; pure Rust, and without the default features it
+# brings no DSP (we read three strings, never convolve).
+sofar = { git = "https://github.com/mgth/sofar", rev = "c03ff5cfd997d316ae330e2735e82311769b45a3", default-features = false }
 
 [profile.release]
 opt-level = 3

@@ -19,6 +19,7 @@ pub mod orender;
 pub mod profiles;
 pub mod render;
 pub mod resampling;
+pub mod sofa;
 pub mod speakers;
 
 use std::path::PathBuf;
