@@ -108,6 +108,8 @@ jobs:
               libayatana-appindicator3-dev \
               librsvg2-dev \
               libpipewire-0.3-dev \
+              libxkbcommon-dev \
+              libwayland-dev \
               pkg-config; then
               break
             fi
@@ -150,6 +152,37 @@ jobs:
           cc -Wall -Werror -I orender_ffi/include orender_ffi/examples/smoke.c \
              -L target/debug -lorender -o target/debug/orender_smoke
           LD_LIBRARY_PATH=target/debug target/debug/orender_smoke
+
+      # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
+      # The phase-2 replacement of the web frontend. It is a separate crate
+      # with its own toolchain pin (egui 0.36 needs a newer rustc than the
+      # renderer workspace uses), so it gets its own steps rather than joining
+      # the workspace build above. Without them the whole port would have no
+      # gate at all: the renderer steps do not compile a line of it.
+      #
+      # The tests are pure — coordinate round-trips, formatting rules, layout
+      # arithmetic — so no display is needed. Nothing here opens a window.
+      # The crate's toolchain pin is auto-installed by rustup when cargo runs
+      # here, but a pinned toolchain comes without components: rustfmt has to
+      # be asked for by name. The version is read from the pin file so the two
+      # cannot drift apart.
+      - name: Install rustfmt for the native Studio toolchain
+        working-directory: omniphony-studio-egui
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install --profile minimal --component rustfmt "$channel"
+
+      - name: Check native Studio formatting
+        working-directory: omniphony-studio-egui
+        run: cargo fmt --check
+
+      - name: Build native Studio
+        working-directory: omniphony-studio-egui
+        run: cargo build
+
+      - name: Test native Studio
+        working-directory: omniphony-studio-egui
+        run: cargo test
 
       # ── Studio frontend build (no Tauri bundling / no sidecar) ─────────────
       - name: Install Studio npm dependencies

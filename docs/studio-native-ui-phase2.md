@@ -302,6 +302,22 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   auto-start watchdog, the OS-service controls, the derived master meter, and
   the eight locales.
 
+## The gate
+
+Until this pass the CI workflow did not compile a line of the crate: it builds
+the renderer workspace and the web Studio, and the native Studio is neither. The
+whole port had no gate at all — the green runs on every phase-2 pull request were
+verifying code the port does not touch.
+
+The Linux job now checks the crate's formatting, builds it and runs its tests.
+Two details make that work. The crate pins a newer toolchain than the renderer
+workspace (egui 0.36 needs it), and rustup installs a pinned toolchain without
+components, so rustfmt has to be asked for by name — with the version read from
+the pin file, so the two cannot drift. And eframe needs `libxkbcommon` and
+`libwayland` headers at build time, which the Tauri dependency set did not
+already pull in. The tests are pure — coordinate round-trips, formatting rules,
+layout arithmetic — so nothing opens a window.
+
 ## Running
 
 ```bash
