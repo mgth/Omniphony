@@ -127,6 +127,9 @@ pub struct StudioSpike {
     pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// The orender binary this Studio would launch, resolved once at start-up.
+    /// A renderer answering from anywhere else is not one we started.
+    pub(crate) expected_orender_path: Option<String>,
     /// Whether the About box is showing.
     pub(crate) about_open: bool,
     /// The at-rest bed markers this host owns, and what they were built from.
@@ -304,6 +307,13 @@ impl StudioSpike {
             object_test_grid_cache: None,
             channel_catalog: Default::default(),
             channel_coord_mode: crate::panels::channel_editor::CoordMode::Cartesian,
+            // No bundle here, so the resolver falls through to the paths a
+            // native build actually has: the repo's own build, then the
+            // executable's own directory.
+            expected_orender_path: crate::host::commands::orender::expected_orender_path(
+                &crate::host::commands::HostPaths::default(),
+                None,
+            ),
             about_open: false,
             synthetic_bed_ids: Vec::new(),
             synthetic_bed_signature: None,
