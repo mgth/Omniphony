@@ -136,6 +136,8 @@ pub struct StudioSpike {
     /// The orender binary this Studio would launch, resolved once at start-up.
     /// A renderer answering from anywhere else is not one we started.
     pub(crate) expected_orender_path: Option<String>,
+    /// The speaker a drag picked up, until it is dropped on another row.
+    pub(crate) speaker_drag: Option<usize>,
     /// Whether the About box is showing.
     pub(crate) about_open: bool,
     /// The at-rest bed markers this host owns, and what they were built from.
@@ -324,6 +326,7 @@ impl StudioSpike {
                 &crate::host::commands::HostPaths::default(),
                 None,
             ),
+            speaker_drag: None,
             about_open: false,
             synthetic_bed_ids: Vec::new(),
             synthetic_bed_signature: None,
@@ -574,6 +577,7 @@ impl StudioSpike {
                     self.objects_section(ui);
                     self.channel_editor(ui);
                     self.object_test_editor(ui);
+                    self.headphones_section(ui);
                     self.speakers_section(ui);
                     self.speaker_editor(ui);
                 });

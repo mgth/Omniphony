@@ -39,7 +39,7 @@ impl OutputMode {
 
     /// `applyBinauralState`: read the flattened value out of the binaural
     /// document.
-    fn from_state(binaural: Option<&serde_json::Value>) -> Self {
+    pub(crate) fn from_state(binaural: Option<&serde_json::Value>) -> Self {
         let output = binaural
             .and_then(|b| b.get("outputMode"))
             .and_then(|v| v.as_str());

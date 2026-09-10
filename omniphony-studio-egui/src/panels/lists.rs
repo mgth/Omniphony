@@ -57,15 +57,118 @@ impl StudioSpike {
                 }
                 for row in &rows {
                     let selected = self.selection.object.as_deref() == Some(row.id.as_str());
-                    let action = list_row(ui, row, selected, &cutoffs);
+                    let (action, _) = list_row(
+                        ui,
+                        row,
+                        RowState {
+                            selected,
+                            dragging: false,
+                            flash: false,
+                        },
+                        &cutoffs,
+                    );
                     self.apply_row_action(action, row, false);
                 }
             });
     }
 
+    /// The two ear rows (`#hpChannelsList`). They are the output in binaural
+    /// mode, so they carry the same meter and mute a speaker row does — but
+    /// they are addressed by ear, not by layout index.
+    pub(crate) fn headphones_section(&mut self, ui: &mut Ui) {
+        let mode = {
+            let live = self.live.lock().unwrap();
+            crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
+        };
+        if mode == crate::panels::renderer::OutputMode::Speaker {
+            return;
+        }
+        let rows = self.ear_rows();
+        ui.add_space(theme::PANEL_GAP);
+        ui.separator();
+        // Hardcoded English in the web too: this header has no i18n key.
+        ui.label(
+            RichText::new("Headphones")
+                .size(theme::FONT_SIZE_SECTION)
+                .color(theme::TEXT_STRONG),
+        );
+        for (ear, row) in rows.iter().enumerate() {
+            let (action, _) = list_row(ui, row, RowState::default(), &[]);
+            if matches!(action, RowAction::Mute) {
+                self.set_ear_muted(ear, !row.muted);
+            }
+        }
+    }
+
+    fn ear_rows(&self) -> Vec<Row> {
+        let live = self.live.lock().unwrap();
+        let muted = |ear: usize| {
+            live.app
+                .binaural
+                .as_ref()
+                .and_then(|b| b.get("ears"))
+                .and_then(|e| e.get(ear))
+                .and_then(|e| e.get("muted"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        };
+        ["L", "R"]
+            .into_iter()
+            .enumerate()
+            .map(|(ear, label)| {
+                let key = ear.to_string();
+                Row {
+                    id: key.clone(),
+                    label: label.to_owned(),
+                    meter: live.ear_levels.get(&key).cloned(),
+                    hold: live.peak_hold(&format!("ear:{key}")),
+                    muted: muted(ear),
+                    colour: theme::TEXT,
+                    detail: None,
+                    position: None,
+                    spatialize: true,
+                    speaker: false,
+                    freq_low: None,
+                    freq_high: None,
+                    contribution: None,
+                    band_gains: Vec::new(),
+                }
+            })
+            .collect()
+    }
+
+    /// `control_ear_mute`: the ear is the argument, not an index into a layout.
+    fn set_ear_muted(&mut self, ear: usize, muted: bool) {
+        self.ctl.send(
+            "/omniphony/control/binaural/ear_mute",
+            vec![
+                rosc::OscType::Int(ear as i32),
+                rosc::OscType::Int(i32::from(muted)),
+            ],
+        );
+    }
+
     pub(crate) fn speakers_section(&mut self, ui: &mut Ui) {
+        // In binaural-direct mode the speakers are not the output, so the list
+        // stands down; the virtual-room mode shows both because it renders
+        // through the speakers into the ears.
+        let mode = {
+            let live = self.live.lock().unwrap();
+            crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
+        };
+        if mode == crate::panels::renderer::OutputMode::BinauralDirect {
+            return;
+        }
         let rows = self.speaker_rows();
         let cutoffs = self.crossover_cutoffs();
+        // A clip lights the speaker's own chip for a second, restarting rather
+        // than stacking when clips repeat.
+        let clip = {
+            let live = self.live.lock().unwrap();
+            live.clip
+                .filter(|(_, at)| at.elapsed() < CLIP_FLASH)
+                .map(|(index, _)| index)
+        };
         let layout_name = {
             let live = self.live.lock().unwrap();
             live.app
@@ -86,11 +189,37 @@ impl StudioSpike {
                 if rows.is_empty() {
                     widgets::note(ui, t("speakers.none"));
                 }
+                let pointer = ui.ctx().pointer_interact_pos();
+                let mut drop_on: Option<usize> = None;
                 for row in &rows {
                     let index: Option<usize> = row.id.parse().ok();
                     let selected = index.is_some() && self.selection.speaker == index;
-                    let action = list_row(ui, row, selected, &cutoffs);
+                    let dragging = self.speaker_drag == index && index.is_some();
+                    let flash = index.is_some_and(|i| clip == Some(i as i32));
+                    let (action, rect) = list_row(
+                        ui,
+                        row,
+                        RowState {
+                            selected,
+                            dragging,
+                            flash,
+                        },
+                        &cutoffs,
+                    );
+                    if matches!(action, RowAction::DragStart) {
+                        self.speaker_drag = index;
+                    }
+                    // The row under the pointer is the one a release lands on.
+                    if pointer.is_some_and(|p| rect.contains(p)) {
+                        drop_on = index;
+                    }
                     self.apply_row_action(action, row, true);
+                }
+                if ui.input(|i| i.pointer.any_released())
+                    && let (Some(from), Some(to)) = (self.speaker_drag.take(), drop_on)
+                    && from != to
+                {
+                    self.move_speaker(from, to);
                 }
             });
     }
@@ -199,7 +328,8 @@ impl StudioSpike {
     /// Apply what the row's controls asked for: selection, mute, solo.
     fn apply_row_action(&mut self, action: RowAction, row: &Row, speaker: bool) {
         match action {
-            RowAction::None => {}
+            // The drag is bookkept by the caller, which knows the drop target.
+            RowAction::None | RowAction::DragStart => {}
             RowAction::Select => {
                 let index: Option<usize> = row.id.parse().ok();
                 let already = if speaker {
@@ -338,17 +468,39 @@ enum RowAction {
     Select,
     Mute,
     Solo,
+    /// The id strip was picked up: this row is now the one being reordered.
+    DragStart,
 }
 
-/// One `.info-item`: name chip, meter, readout, M and S.
-fn list_row(ui: &mut Ui, row: &Row, selected: bool, cutoffs: &[f64]) -> RowAction {
+/// How a row should draw itself.
+#[derive(Clone, Copy, Default)]
+struct RowState {
+    selected: bool,
+    /// Being dragged to a new position in the layout.
+    dragging: bool,
+    /// The renderer reported a clip on this speaker within the last second.
+    flash: bool,
+}
+
+/// How long a clip lights a row's id strip. Repeat clips restart it rather
+/// than stacking, so a run of them reads as one continuous warning.
+const CLIP_FLASH: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// One `.info-item`: id strip, glyphs, meter, readout, M and S. Returns what
+/// the row asked for and where it was drawn, so the caller can use it as a
+/// drop target.
+fn list_row(ui: &mut Ui, row: &Row, state: RowState, cutoffs: &[f64]) -> (RowAction, egui::Rect) {
     let mut action = RowAction::None;
-    let fill = if selected {
+    let fill = if state.dragging {
+        Color32::from_rgba_unmultiplied(72, 140, 92, 140)
+    } else if state.selected {
         Color32::from_rgba_unmultiplied(46, 110, 64, 115)
     } else {
         Color32::from_rgba_unmultiplied(255, 255, 255, 10)
     };
-    let stroke = if selected {
+    let stroke = if state.dragging {
+        egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 225, 150, 166))
+    } else if state.selected {
         egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(90, 200, 120, 89))
     } else {
         egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 20))
@@ -366,7 +518,9 @@ fn list_row(ui: &mut Ui, row: &Row, selected: bool, cutoffs: &[f64]) -> RowActio
                 if row.speaker {
                     crate::panels::row_glyphs::filter_icon(ui, row.freq_low, row.freq_high);
                 }
-                ui.add(
+                // The id strip is the drag handle, as in the web: the row
+                // itself stays clickable for selection.
+                let strip = ui.add(
                     egui::Label::new(RichText::new(&row.label).size(theme::FONT_SIZE).color(
                         if row.muted {
                             theme::TEXT_DIM
@@ -375,8 +529,33 @@ fn list_row(ui: &mut Ui, row: &Row, selected: bool, cutoffs: &[f64]) -> RowActio
                         },
                     ))
                     .truncate()
-                    .selectable(false),
+                    .selectable(false)
+                    .sense(if row.speaker {
+                        Sense::click_and_drag()
+                    } else {
+                        Sense::click()
+                    }),
                 );
+                if state.flash {
+                    ui.painter().rect_filled(
+                        strip.rect.expand(2.0),
+                        theme::CONTROL_RADIUS,
+                        Color32::from_rgba_unmultiplied(255, 59, 48, 217),
+                    );
+                    ui.painter().text(
+                        strip.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &row.label,
+                        egui::FontId::proportional(theme::FONT_SIZE),
+                        Color32::WHITE,
+                    );
+                }
+                if strip.drag_started() {
+                    action = RowAction::DragStart;
+                }
+                if row.speaker {
+                    strip.on_hover_text("Drag to reorder");
+                }
                 if let Some(detail) = &row.detail {
                     ui.label(
                         RichText::new(detail)
@@ -432,7 +611,7 @@ fn list_row(ui: &mut Ui, row: &Row, selected: bool, cutoffs: &[f64]) -> RowActio
     if response.clicked() && matches!(action, RowAction::None) {
         action = RowAction::Select;
     }
-    action
+    (action, response.rect)
 }
 
 /// The `.toggle-btn` M / S squares of a row.

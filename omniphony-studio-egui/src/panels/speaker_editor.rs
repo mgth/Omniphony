@@ -583,7 +583,7 @@ impl StudioSpike {
         self.apply_layout();
     }
 
-    fn move_speaker(&mut self, from: usize, to: usize) {
+    pub(crate) fn move_speaker(&mut self, from: usize, to: usize) {
         self.ctl.send_json(
             "/omniphony/control/config/layout",
             &serde_json::json!({ "moveSpeaker": { "from": from, "to": to } }),
