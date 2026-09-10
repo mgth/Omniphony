@@ -177,6 +177,20 @@ impl Severity {
 
 /// A tinted, outlined block of text.
 pub fn banner(ui: &mut Ui, severity: Severity, title: &str, detail: Option<&str>) {
+    banner_with(ui, severity, title, |ui| {
+        if let Some(detail) = detail {
+            ui.label(
+                egui::RichText::new(detail)
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(theme::TEXT_MUTED),
+            );
+        }
+    });
+}
+
+/// A banner whose body the caller draws — for the ones that carry a link or a
+/// control rather than a line of prose.
+pub fn banner_with(ui: &mut Ui, severity: Severity, title: &str, body: impl FnOnce(&mut Ui)) {
     let colour = severity.colour();
     egui::Frame::new()
         .fill(colour.gamma_multiply(0.12))
@@ -186,13 +200,7 @@ pub fn banner(ui: &mut Ui, severity: Severity, title: &str, detail: Option<&str>
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.label(egui::RichText::new(title).color(colour));
-                if let Some(detail) = detail {
-                    ui.label(
-                        egui::RichText::new(detail)
-                            .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::TEXT_MUTED),
-                    );
-                }
+                body(ui);
             });
         });
 }

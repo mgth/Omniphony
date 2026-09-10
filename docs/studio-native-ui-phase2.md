@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| OSC status and banners | The status line reports the four states with the web's colours and names the connected renderer's flavour; the three banners say a renderer is missing, that one came up without its decoder bridge, or that the one answering is not the one this Studio would start | nothing |
 | About | The brand row and the `?` beside the connection line open it: name, description, version, licence, repository link, which renderer is answering (with its ABI, and its executable in the tooltip) and which configuration that renderer is running on — including that it read none and is on built-in defaults | nothing |
 | Channel editor | The per-channel gain, Virtual/Direct, the destination speaker of a direct channel, and the cartesian and polar coordinate tables in normalised units and metres; plus the layout reset in the fixed-channel section and the at-rest bed markers that make a channel selectable with nothing playing | `/omniphony/control/virtual_bed` (the whole bed, as the renderer takes a layout rather than a diff) |
 | Object injection | The feature switch on the objects list, and the editor: transport, stimulus, the WAV clip with what the renderer says about it, the ADM/room view, the CAD sheet with its three views, gutter sliders, snap grid and orbit path, the level, the orbit's axis, radius and turn time, the programme isolation and the centre button | `/omniphony/control/object_test`, `…/object_test/rotation`, `…/object_test/clip`, `…/speaker_test/idle_feed` |
@@ -91,6 +92,26 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The status line is where the web is told its state by its own connection
+machinery; this host derives the same four states from what its listener
+actually knows, which is the same information one layer down. Three banners sit
+under it, and each answers a different question. *No renderer connected* says
+how to bring one up, and stands down when there is something more specific to
+say. *Decoder bridge not found* is the one that matters most: the renderer is
+running, the connection is healthy, and there is no spatial audio — without the
+banner that reads as a bug in everything else. *Connected to a renderer this
+Studio did not start* is the same shape of problem: the connection looks
+perfectly healthy, so it has to be said out loud or every control that renderer
+does not implement simply vanishes. The expected binary it compares against is
+resolved once at start-up, and a half-known comparison is reported as no answer
+rather than as a mismatch.
+
+Two pieces of the web's line are not here yet: the "service" flavour, which
+reads a flag refreshed by a host command that shells out to the service manager
+and belongs with the service controls themselves, and the `error` state, which
+only the auto-start watchdog can distinguish from a renderer that has not come
+up yet.
 
 Half of the About box is fixed at build time and half of it is whatever the
 renderer last said about itself. That second half is why the box is worth
@@ -192,8 +213,8 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   modals, the gradient editor, the plots, the code editor, the SOFA browser,
   the auto-tune wizard, mpv overlay mirroring.
 - **Host services** the native app does not have yet: the local-renderer
-  auto-start watchdog, foreign-renderer detection, the bridge-error banner, the
-  timing statistics, the derived master meter, and the eight locales.
+  auto-start watchdog, the OS-service controls, the timing statistics, the
+  derived master meter, and the eight locales.
 
 ## Running
 
