@@ -197,6 +197,23 @@ pub fn banner(ui: &mut Ui, severity: Severity, title: &str, detail: Option<&str>
         });
 }
 
+/// The frame a modal sits in (`.modal-card`).
+///
+/// Opaque, unlike the side overlays: a dialog painted at the panels' 78 % lets
+/// the scene and the controls behind it show through its own text, and a box
+/// that has to be read is the one place the translucency costs more than it
+/// buys.
+pub fn modal_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme::PAGE_BG)
+        .stroke(egui::Stroke::new(1.0, theme::PANEL_BORDER))
+        .corner_radius(theme::PANEL_RADIUS)
+        .inner_margin(egui::Margin::symmetric(
+            theme::PANEL_PADDING_X as i8,
+            theme::PANEL_PADDING_Y as i8,
+        ))
+}
+
 /// `.option-status-note`: 11 px muted text under a control.
 pub fn note(ui: &mut Ui, text: &str) {
     ui.label(
