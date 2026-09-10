@@ -52,6 +52,9 @@ pub struct ViewSettings {
     pub room_guides_visible: bool,
     /// Which edit gizmo the editor has armed, if any.
     pub gizmo: gizmos::GizmoState,
+    /// Which blend-curve point the hybrid panel has selected, if any: it is
+    /// what the iso-distance shape is drawn for.
+    pub hybrid_point: Option<usize>,
     /// `app.speakerSize` (default 0.08).
     pub speaker_size: f32,
     /// `app.vbapCartesianFaceGridEnabled` ("Grid", default false).
@@ -75,6 +78,7 @@ impl Default for ViewSettings {
             speaker_face_listener_enabled: false,
             room_guides_visible: false,
             gizmo: gizmos::GizmoState::default(),
+            hybrid_point: None,
             speaker_size: 0.08,
             vbap_grid: false,
             trails: TrailSettings::default(),
@@ -297,6 +301,17 @@ pub fn build_frame(
         );
     }
     room::emit_axes(&mut frame, &project, &points_per_unit, &mut labels);
+    // The hybrid backend's iso-distance surface, for the selected curve point.
+    if live.app.render_backend_state.selection.as_deref() == Some("hybrid")
+        && let Some(index) = settings.hybrid_point
+        && let Some(stop) = live.app.render_backend_state.hybrid.curve.get(index)
+    {
+        let spherical = live.app.render_backend_state.hybrid.metric.as_deref() == Some("spherical");
+        // A spherical metric measures the radius; a cubic one measures the
+        // half-side, and the corner of that cube is √3 further out.
+        let radius = stop[0] as f32 * if spherical { 3.0f32.sqrt() } else { 1.0 };
+        room::emit_hybrid_distance(radius, spherical, &room, &mut frame);
+    }
     if settings.room_guides_visible {
         room::emit_dimension_guides(
             &bounds,
@@ -384,7 +399,11 @@ pub fn build_frame(
                 labels.push(Label {
                     pos: p + egui::vec2(0.0, 0.03 * points_per_unit(depth)),
                     text: sp.name.clone(),
-                    color: egui::Color32::WHITE,
+                    color: if sp.ghosted {
+                        egui::Color32::from_white_alpha(77)
+                    } else {
+                        egui::Color32::WHITE
+                    },
                     size: (0.06 * points_per_unit(depth)).clamp(6.0, 48.0).round(),
                     depth,
                 });

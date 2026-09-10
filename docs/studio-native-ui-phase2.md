@@ -102,6 +102,7 @@ config, debounced 600 ms so a drag writes once.
 | Room dimension guides | Seven measured guides outside the box — width, front, rear, total depth, height, lower and total height — each a line with end ticks and its length in metres, shown while the room panel is open | nothing |
 | Edit gizmos | The polar gizmo (azimuth ring with its degree scale, elevation arc turned into the speaker's azimuth plane, and the measured distance line) and the cartesian one (three axes and three handles), each shown only while the editor has armed its mode | nothing — they draw what the editor's own fields send |
 | Gizmo dragging | Dragging the ring turns the speaker around the listener, the arc raises it in its own plane, a cartesian handle slides it along one axis, and the wheel held with a modifier moves it closer or further | `/omniphony/control/config/layout` (`speakerEdits`) + apply on release for a speaker; `control_virtual_bed` per move for a channel |
+| Scene feedback for the renderer's mode | Speakers ghosted while the renderer is in binaural output, and the hybrid backend's iso-distance surface for the selected blend-curve point | nothing |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped by
@@ -160,6 +161,19 @@ interpolated rather than dropped, since a gap left in place would shift every
 bin after it. The transform length is bounded by both the history collected and
 the window the user chose, which is what makes a shorter window a coarser
 spectrum.
+
+Two things the scene says about what the renderer is doing. In binaural output
+nothing is going to the speakers, so they and their labels are ghosted: they are
+a reference for where the objects are, not things being fed. The web writes the
+base opacity back on the next selection or gains update and loses the ghosting
+until the next mode change; here the ghost factor is applied last, which is the
+same rule stated once and it holds. And selecting a point on the hybrid
+backend's blend curve draws the surface that distance stands for, so it is a
+place in the room rather than a number on an axis — as a warped wire grid rather
+than the web's translucent solid, because the renderer here takes instanced unit
+shapes and the room's depth warp is a curve, not a scale. Every vertex is warped
+exactly the way a position is, which is what makes the shape line up with the
+speakers.
 
 Dragging them is where the two commit rules matter. A speaker's edit is sent
 once, on release: the layout is applied as a whole and a stream of applies per
