@@ -100,6 +100,9 @@ pub struct Live {
     /// Instant latency over the last four seconds, so the meter can show the
     /// spread the host used to compute for the web (`LATENCY_RAW_WINDOW_MS`).
     pub latency_window: TimeWindow,
+    /// When the last spatial frame arrived. The channel editor's at-rest
+    /// markers stand down while a stream owns the scene.
+    pub last_spatial_frame_at: Option<Instant>,
     /// Peak-hold cursors of every meter, keyed as the host keys them
     /// (`master`, `spk:<id>`, `src:<id>`, `ear:<id>`).
     pub peaks: PeakHolds,
@@ -309,6 +312,7 @@ impl Live {
             gaintable_unavailable: None,
             overlay: None,
             object_test_position: None,
+            last_spatial_frame_at: None,
             latency_window: TimeWindow::new(LATENCY_RAW_WINDOW_MS),
             peaks: PeakHolds::new(),
             peak_hold_db: HashMap::new(),
@@ -417,6 +421,7 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             object_count,
             coordinate_format,
         } => {
+            live.last_spatial_frame_at = Some(Instant::now());
             let s = &mut live.app;
             let generation_changed = s
                 .current_content_generation
