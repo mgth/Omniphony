@@ -552,16 +552,16 @@ impl StudioSpike {
         };
         // `hybrid` has a bespoke panel of its own, not a generated one.
         if visible == "hybrid" {
-            widgets::note(ui, "The hybrid backend's own controls are not ported yet.");
+            self.hybrid_block(ui, &available, &values);
             return;
         }
-        self.backend_params(ui, &visible, &available, &values);
+        self.backend_params_for(ui, &visible, &available, &values);
     }
 
     /// One control per declared parameter of the visible backend
     /// (`renderGenericBackendParams`). The schema is the renderer's; nothing
     /// here is hard-coded per backend.
-    fn backend_params(
+    pub(crate) fn backend_params_for(
         &mut self,
         ui: &mut Ui,
         backend: &str,
@@ -1089,7 +1089,7 @@ fn crossover_info(crossover: Option<&serde_json::Value>) -> String {
 }
 
 /// The backend list the engine published, or the four built-in ids.
-fn backend_list(available: &serde_json::Value) -> Vec<(String, String)> {
+pub(crate) fn backend_list(available: &serde_json::Value) -> Vec<(String, String)> {
     if let Some(list) = available.as_array().filter(|l| !l.is_empty()) {
         return list
             .iter()

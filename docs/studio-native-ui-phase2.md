@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Hybrid backend | The Mix / inner-backend tabs, the external and internal backends, the distance metric, the curve smoothing, and the blend-curve editor with its point editor | `/omniphony/control/hybrid/external_backend`, `…/internal_backend`, `…/metric`, `…/curve_smoothing`, `…/curve` |
 | Save footer and band cursor | Save and Reload with what the renderer last said about its configuration file, and the band picker that chooses which crossover band the scene's heatmaps are drawn for | `/omniphony/control/save_config`, `…/reload_config` |
 | Headphone rows, drag and clip | The two ear rows with their meters and ear mute, drag-to-reorder on a speaker's id strip, and the clip flash the renderer's `clip:detected` lights | `/omniphony/control/binaural/ear_mute`, `/omniphony/control/config/layout` (`moveSpeaker`) and its apply |
 | Speaker row glyphs | The plan thumbnail with height in its colour, the crossover shape with its two cutoffs, the selected object's contribution painted over the level, and the per-band contribution bars | nothing |
@@ -98,6 +99,22 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+A hybrid backend renders the same object twice — once through an "external"
+model and once through an "internal" one — and crossfades by distance. The curve
+*is* the backend: it says, for every distance from the listener, how much of
+each model is heard, and everything else on that panel exists to make it
+editable. Two rules keep it evaluable: the endpoints are locked to x = 0 and
+x = 1 because the curve has to answer for every distance, and an interior point
+is kept strictly between its neighbours because the evaluator inverts x, and two
+points at one distance would ask it which of two ratios is the answer. The
+preview is the host's own sampling of the curve rather than a second
+implementation, so the drawing cannot disagree with what is heard, and the point
+editor shows the distance in the metric's own units — 0.58 means nothing without
+knowing where the far corner of the room is. The inner backends are tuned
+through the same schema-generated controls as any other backend, addressed with
+the `backend` argument, so a hybrid's VBAP half can be sharpened without
+touching a plain VBAP.
 
 The save footer and the band cursor float over the viewport in screen
 coordinates rather than inside a panel — the footer centred at the bottom
@@ -286,9 +303,8 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   sample-rate preset menu (the native select offers the presets but not a
   free-text rate), and the diagnostics plot's FFT, difference and measurement
   modes.
-- **Renderer panel**: the hybrid backend's own controls, the file-parameter
-  Browse and Edit buttons, the info modals, and the SOFA browser the binaural
-  tab's file source needs.
+- **Renderer panel**: the file-parameter Browse and Edit buttons, the info
+  modals, and the SOFA browser the binaural tab's file source needs.
 - **Speakers**: the 3D per-speaker frequency gauge and the band cursor that
   share the row's band colours.
 - **Left overlay**: updates (the web fetches GitHub from the webview; a native
