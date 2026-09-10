@@ -123,6 +123,13 @@ pub struct StudioSpike {
     pub(crate) object_test_orbit: Vec<[f64; 3]>,
     /// Snap grid, keyed on the published interval counts it was built from.
     pub(crate) object_test_grid_cache: Option<([u32; 4], [Vec<f64>; 3])>,
+    /// The renderer's fixed-channel catalogue, digested once per publication.
+    pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
+    /// Which coordinate table the channel editor is showing.
+    pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// The at-rest bed markers this host owns, and what they were built from.
+    pub(crate) synthetic_bed_ids: Vec<String>,
+    pub(crate) synthetic_bed_signature: Option<u64>,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
     /// Handle on the renderer: every control the panels expose goes through it.
@@ -293,6 +300,10 @@ impl StudioSpike {
             object_test_focus: None,
             object_test_orbit: Vec::new(),
             object_test_grid_cache: None,
+            channel_catalog: Default::default(),
+            channel_coord_mode: crate::panels::channel_editor::CoordMode::Cartesian,
+            synthetic_bed_ids: Vec::new(),
+            synthetic_bed_signature: None,
             config_dir,
             ctl,
             last_subscribe: None,
@@ -542,6 +553,7 @@ impl StudioSpike {
                     self.master_section(ui);
                     self.renderer_section(ui);
                     self.objects_section(ui);
+                    self.channel_editor(ui);
                     self.object_test_editor(ui);
                     self.speakers_section(ui);
                     self.speaker_editor(ui);
@@ -637,6 +649,8 @@ impl eframe::App for StudioSpike {
             self.last_speaker_selection = self.selection.speaker;
             self.follow_speaker_selection();
         }
+        self.refresh_channel_catalog();
+        self.sync_virtual_bed_objects(false);
         self.maintain_object_test_source();
         self.maintain_test_idle_feed();
         self.check_recompute_ack();

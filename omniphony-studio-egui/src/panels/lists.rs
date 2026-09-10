@@ -101,9 +101,20 @@ impl StudioSpike {
                 }
             })
             .collect();
+        // Numbered objects keep the stream's order; bed channels take the
+        // classic 5.1/7.1 channel order rather than an alphabetical one, and
+        // the injected test source sorts last because it is neither.
+        let rank = |row: &Row| self.channel_catalog.rank(&live.app, &row.label);
         rows.sort_by(|a, b| match (a.id.parse::<u32>(), b.id.parse::<u32>()) {
             (Ok(x), Ok(y)) => x.cmp(&y),
-            _ => a.id.cmp(&b.id),
+            (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+            (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+            _ => match (rank(a), rank(b)) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                _ => a.id.cmp(&b.id),
+            },
         });
         rows
     }

@@ -130,6 +130,14 @@ impl StudioSpike {
                 {
                     self.phantom_params(ui, schema);
                 }
+
+                // The channel layout every fixed channel is placed by. The
+                // editor for one channel opens from the objects list.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(t("virtualBed.reset")).clicked() {
+                        self.reset_virtual_bed();
+                    }
+                });
             });
     }
 
