@@ -127,6 +127,9 @@ pub struct StudioSpike {
     pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// Which gradient stop each custom-colormap editor has selected.
+    pub(crate) object_stop_selected: Option<usize>,
+    pub(crate) speaker_stop_selected: Option<usize>,
     /// What was last mirrored onto the mpv overlay, and for which snapshot.
     pub(crate) overlay_pushed: Option<crate::panels::mpv_overlay::OverlayPrefs>,
     pub(crate) overlay_pushed_epoch: Option<u64>,
@@ -347,6 +350,8 @@ impl StudioSpike {
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
             // executable's own directory.
+            object_stop_selected: None,
+            speaker_stop_selected: None,
             overlay_pushed: None,
             overlay_pushed_epoch: None,
             info_modal_open: None,
