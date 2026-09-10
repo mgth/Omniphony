@@ -22,6 +22,7 @@ use crate::osc::apply::{
 use crate::osc::parser::OscEvent;
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // read by the object-test editor, a later panel
 pub struct ObjectTestPosition {
     pub x: f64,
     pub y: f64,
@@ -166,6 +167,7 @@ impl LogLevel {
 
 /// A backend script file fetched for the editor.
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // read by the script editor, a later panel
 pub struct BackendFile {
     pub backend: String,
     pub key: String,
@@ -190,6 +192,56 @@ impl std::ops::DerefMut for Live {
 }
 
 impl Live {
+    /// One declared live option, falling back to the published schema's
+    /// default when the renderer has not sent a snapshot yet
+    /// (`getLiveOption`).
+    pub fn option(&self, key: &str) -> Option<serde_json::Value> {
+        if let Some(value) = self
+            .app
+            .options
+            .as_ref()
+            .and_then(|o| o.get(key))
+            .filter(|v| !v.is_null())
+        {
+            return Some(value.clone());
+        }
+        self.options_schema
+            .as_ref()
+            .and_then(|s| s.as_array())
+            .and_then(|specs| {
+                specs
+                    .iter()
+                    .find(|spec| spec.get("key").and_then(|k| k.as_str()) == Some(key))
+            })
+            .and_then(|spec| spec.get("default").cloned())
+    }
+
+    pub fn option_str(&self, key: &str) -> Option<String> {
+        self.option(key)
+            .and_then(|v| v.as_str().map(|s| s.to_owned()))
+    }
+
+    pub fn option_f64(&self, key: &str) -> Option<f64> {
+        self.option(key).and_then(|v| v.as_f64())
+    }
+
+    #[allow(dead_code)] // used by the bool options of panels not ported yet
+    pub fn option_bool(&self, key: &str) -> Option<bool> {
+        self.option(key).and_then(|v| v.as_bool())
+    }
+
+    /// Optimistic write into the option store, so a control does not lag the
+    /// click while the renderer echoes the canonical value.
+    pub fn set_option(&mut self, key: &str, value: serde_json::Value) {
+        let options = self
+            .app
+            .options
+            .get_or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if let Some(map) = options.as_object_mut() {
+            map.insert(key.to_owned(), value);
+        }
+    }
+
     /// Feed one meter to its peak-hold cursor, the way the host does before
     /// emitting `peakHoldDbfs`.
     fn hold(&mut self, key: String, peak_dbfs: f64) {

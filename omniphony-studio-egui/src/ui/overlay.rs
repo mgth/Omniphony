@@ -6,7 +6,7 @@
 
 use egui::{Align2, Color32, Context, CornerRadius, Id, Sense, Stroke, Ui, vec2};
 
-use super::layout::{COLLAPSED_WIDTH, OverlayLayout, Side};
+use super::layout::{OverlayLayout, Side};
 use super::theme;
 
 /// Height of the visual grip inside the drag handle, and its hover height.
@@ -191,9 +191,4 @@ fn drag_handle(
             let grip = egui::Rect::from_center_size(rect.center(), vec2(2.0, height));
             ui.painter().rect_filled(grip, 1.0, colour);
         });
-}
-
-/// Width the collapsed strip occupies, for callers that need the geometry.
-pub fn collapsed_width() -> f32 {
-    COLLAPSED_WIDTH
 }

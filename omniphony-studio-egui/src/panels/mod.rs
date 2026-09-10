@@ -3,8 +3,10 @@
 //! replaces while the state stays in one place.
 
 pub mod audio;
+pub mod audio_output;
 pub mod connection;
 pub mod display;
 pub mod lists;
 pub mod log;
+pub mod renderer;
 pub mod tools;

@@ -2,10 +2,8 @@
 //! registry-driven option rows, the CJK/IME check and the frame/OSC stats.
 
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use crate::app::StudioSpike;
-use crate::ui::{section::Section, theme, widgets};
 use crate::widgets::{OPTION_SCHEMA, option_row};
 
 impl StudioSpike {

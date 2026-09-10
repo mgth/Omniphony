@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use egui::{Align2, Color32, Pos2, Rect};
+use egui::{Align2, Pos2, Rect};
 use glam::{Quat, Vec3};
 
 use crate::Args;
@@ -20,11 +20,8 @@ use crate::render::camera::OrbitCamera;
 use crate::render::{SceneRenderer, ViewportCallback};
 use crate::stats::{FrameStats, ProcStats};
 use crate::ui::layout::{OverlayLayout, Side};
-use crate::view::volumes::{Colormap, DiscontinuityMode};
-use crate::view::{
-    self, ObjectDisplayMode, Selection, TrailMode, ViewSettings, VolumeSettings, VolumeState,
-};
-use crate::widgets::{self, OPTION_SCHEMA, OptionValue};
+use crate::view::{self, Selection, ViewSettings, VolumeSettings, VolumeState};
+use crate::widgets::{OPTION_SCHEMA, OptionValue};
 
 /// True when two layouts describe the same panels (they hold only floats and
 /// flags, so a field-wise comparison is enough to know whether to persist).
@@ -76,6 +73,12 @@ pub struct StudioSpike {
     /// OSC form fields (`osc_config.json`, shared with the Tauri Studio).
     pub(crate) osc_host: String,
     pub(crate) osc_port: u16,
+    /// Which half of the renderer panel is showing.
+    pub(crate) renderer_tab: crate::panels::renderer::RendererTab,
+    /// When an unanswered recompute request becomes an error.
+    pub(crate) recompute_deadline: Option<Instant>,
+    /// Named-pipe path remembered while the file output is switched off.
+    pub(crate) audio_pipe_path: String,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
     /// Handle on the renderer: every control the panels expose goes through it.
@@ -216,6 +219,9 @@ impl StudioSpike {
             realtime_seq: 0,
             osc_host,
             osc_port,
+            renderer_tab: Default::default(),
+            recompute_deadline: None,
+            audio_pipe_path: String::new(),
             config_dir,
             ctl,
             last_subscribe: None,
@@ -455,7 +461,9 @@ impl StudioSpike {
                 .max_height(height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    self.audio_output_section(ui);
                     self.master_section(ui);
+                    self.renderer_section(ui);
                     self.objects_section(ui);
                     self.speakers_section(ui);
                 });
@@ -539,6 +547,7 @@ impl eframe::App for StudioSpike {
             .show(ui, |ui| self.viewport(ui));
         let ctx = ui.ctx().clone();
         self.overlays(&ctx);
+        self.check_recompute_ack();
         self.maintain_gaintable_subscriptions();
         self.persist_prefs();
         self.maybe_print_stats();

@@ -4,6 +4,7 @@
 //! the banners. They are plain functions over `Ui`, so a panel reads like the
 //! markup it replaces.
 
+#![allow(dead_code)] // the toolkit is complete before every panel using it
 use egui::{Color32, Response, Sense, Ui, Widget, vec2};
 
 use super::theme;
