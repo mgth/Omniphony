@@ -349,6 +349,10 @@ impl StudioSpike {
                 if adaptive_on {
                     self.resample_meter(ui);
                 }
+                // The sparkline sits between the gauge and the target, as in
+                // the web: the gauge says where the rate is now, the plot says
+                // how it got there.
+                self.resample_plot(ui);
                 self.target_latency_row(ui, target);
                 band_indicator(ui, runtime_state.as_deref(), band.as_deref());
                 self.adaptive_form(ui, adaptive_on, paused);

@@ -23,6 +23,7 @@ pub mod object_test_sheet;
 pub mod profiles;
 pub mod renderer;
 pub mod renderer_perf;
+pub mod resample_plot;
 pub mod room;
 pub mod row_glyphs;
 pub mod sources_2d;
