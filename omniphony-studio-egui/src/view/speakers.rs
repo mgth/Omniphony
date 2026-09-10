@@ -16,6 +16,10 @@ use crate::render::{
 use super::objects::hsl_to_rgb;
 use super::{ViewSettings, dbfs_to_scale, decayed_level, scene_position};
 
+/// `setSpeakersGhosted`: how much of a speaker is left when the renderer is
+/// not feeding speakers at all.
+const GHOST: f32 = 0.18;
+
 /// The driver disc's radius as a fraction of the cube's side (`materials.js`:
 /// `CircleGeometry(0.08 × 0.36)` against a 0.08 cube).
 const DRIVER_RADIUS: f32 = 0.36;
@@ -44,6 +48,9 @@ pub struct SpeakerVisual {
     pub opacity: f32,
     /// The crossover band this speaker belongs to, and how many there are:
     /// the gauge's lit segment takes its colour from the pair.
+    /// The renderer is in binaural output, so the speakers are only a
+    /// reference: their labels dim with them.
+    pub ghosted: bool,
     pub band: (usize, usize),
     /// The pass-band in hertz, zero where the layout does not cut.
     pub pass_band: (f32, f32),
@@ -106,6 +113,15 @@ pub fn collect(
     edges.push(f64::INFINITY);
     let band_count = edges.len() - 1;
     let selected_gains = selected_object.and_then(|id| live.app.object_speaker_gains.get(id));
+    // Binaural output means nothing is going to these speakers; they are drawn
+    // as a reference for where the objects are, not as things being fed.
+    let ghosted = live
+        .app
+        .binaural
+        .as_ref()
+        .and_then(|b| b.get("outputMode"))
+        .and_then(|m| m.as_str())
+        == Some("binaural");
     let size_scale = settings.speaker_size.clamp(0.04, 0.2) / SPEAKER_BASE_SIZE;
 
     speakers
@@ -143,6 +159,11 @@ pub fn collect(
             } else {
                 color
             };
+            // The ghost factor is applied after everything else. The web
+            // writes the base opacity back on the next selection or gains
+            // update and so loses the ghosting until the next mode change;
+            // taking it last is the same rule stated once, and it holds.
+            let opacity = if ghosted { opacity * GHOST } else { opacity };
 
             SpeakerVisual {
                 index,
@@ -154,6 +175,7 @@ pub fn collect(
                 scale,
                 color,
                 opacity,
+                ghosted,
                 band: (speaker_band_index(s.freq_low, &edges), band_count),
                 pass_band: (s.freq_low.unwrap_or(0.0), s.freq_high.unwrap_or(0.0)),
             }

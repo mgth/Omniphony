@@ -571,6 +571,9 @@ impl StudioSpike {
             self.pick(p, rect, aspect);
         }
 
+        // The curve editor's selection is the scene's too: the shape it draws
+        // is what that point means.
+        self.settings.hybrid_point = self.hybrid_point;
         let ppp = ui.ctx().pixels_per_point();
         let out = {
             let live = self.live.lock().unwrap();

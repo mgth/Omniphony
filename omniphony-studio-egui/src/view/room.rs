@@ -389,6 +389,104 @@ pub fn emit_dimension_guides(
     }
 }
 
+/// The hybrid backend's iso-distance shape (`scene/hybrid-distance.js`).
+///
+/// A hybrid backend switches models at a distance, and its curve says where.
+/// Selecting a point on that curve draws the surface that distance stands for,
+/// so it is a place in the room rather than a number on an axis.
+///
+/// The web draws a translucent solid; this draws the same surface as a warped
+/// wire grid. The renderer here takes instanced unit shapes, and the room's
+/// depth warp is not a scale — it is a curve, and the whole point of the shape
+/// is that it follows it. Every vertex is warped exactly, the way a position
+/// is, which is what makes the shape line up with the speakers.
+pub fn emit_hybrid_distance(
+    radius_adm: f32,
+    spherical: bool,
+    room: &RoomRatio,
+    frame: &mut FrameData,
+) {
+    // A zero radius is a point, not a surface; the web hides it too.
+    if radius_adm <= 1e-4 {
+        return;
+    }
+    let colour = with_alpha(hex_linear(0xffd166), 0.5);
+    let point = |adm: Vec3| -> Vec3 {
+        use omniphony_geometry::f64 as g;
+        let o = adm * radius_adm;
+        let scaled = g::room_scaled_position(
+            [o.x as f64, o.y as f64, o.z as f64],
+            [room.width, room.length, room.height],
+            room.rear,
+            room.lower,
+            room.center_blend,
+        );
+        let s = g::adm_to_scene(scaled);
+        Vec3::new(s[0] as f32, s[1] as f32, s[2] as f32)
+    };
+    let mut segment = |a: Vec3, b: Vec3| {
+        frame.lines.push(LineVertex {
+            pos: a.to_array(),
+            color: colour,
+        });
+        frame.lines.push(LineVertex {
+            pos: b.to_array(),
+            color: colour,
+        });
+    };
+    if spherical {
+        // Latitudes and longitudes: enough to read as a surface, few enough to
+        // stay a hint rather than a model.
+        const RINGS: usize = 7;
+        const SEGMENTS: usize = 24;
+        let at = |t: f32, p: f32| {
+            let (theta, phi) = (t * std::f32::consts::PI, p * std::f32::consts::TAU);
+            Vec3::new(
+                theta.sin() * phi.cos(),
+                theta.sin() * phi.sin(),
+                theta.cos(),
+            )
+        };
+        for i in 1..RINGS {
+            let t = i as f32 / RINGS as f32;
+            for j in 0..SEGMENTS {
+                let (p0, p1) = (j as f32 / SEGMENTS as f32, (j + 1) as f32 / SEGMENTS as f32);
+                segment(point(at(t, p0)), point(at(t, p1)));
+            }
+        }
+        for j in 0..SEGMENTS {
+            let p = j as f32 / SEGMENTS as f32;
+            for i in 0..RINGS {
+                let (t0, t1) = (i as f32 / RINGS as f32, (i + 1) as f32 / RINGS as f32);
+                segment(point(at(t0, p)), point(at(t1, p)));
+            }
+        }
+    } else {
+        // The cube's twelve edges, each subdivided so the depth warp shows.
+        const STEPS: usize = 8;
+        let corner = |i: usize| {
+            Vec3::new(
+                if i & 1 == 0 { -1.0 } else { 1.0 },
+                if i & 2 == 0 { -1.0 } else { 1.0 },
+                if i & 4 == 0 { -1.0 } else { 1.0 },
+            )
+        };
+        for a in 0..8usize {
+            for bit in [1usize, 2, 4] {
+                let b = a | bit;
+                if b == a {
+                    continue;
+                }
+                let (from, to) = (corner(a), corner(b));
+                for step in 0..STEPS {
+                    let (t0, t1) = (step as f32 / STEPS as f32, (step + 1) as f32 / STEPS as f32);
+                    segment(point(from.lerp(to, t0)), point(from.lerp(to, t1)));
+                }
+            }
+        }
+    }
+}
+
 /// Six black discs projected on the walls for a selected speaker/object
 /// (`updateSelected*FaceShadows`).
 pub fn emit_face_shadows(p: Vec3, b: &RoomBounds, frame: &mut FrameData) {
