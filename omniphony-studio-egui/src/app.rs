@@ -127,6 +127,8 @@ pub struct StudioSpike {
     pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// The sample rate being typed, until it is applied or abandoned.
+    pub(crate) sample_rate_edit: Option<String>,
     /// An update check in flight, answering on its own thread.
     pub(crate) update_check: Option<crate::panels::updates::CheckHandle>,
     /// Which gradient stop each custom-colormap editor has selected.
@@ -352,6 +354,7 @@ impl StudioSpike {
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
             // executable's own directory.
+            sample_rate_edit: None,
             update_check: None,
             object_stop_selected: None,
             speaker_stop_selected: None,
