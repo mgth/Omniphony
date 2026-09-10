@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Layout actions | Presets, Import layout, Export layout and Add on the speakers header, each refused while the backend has the speakers frozen | `/omniphony/control/config/layout` (`replaceLayout`, `addSpeaker`) and its apply; the pickers and the file I/O are host-side |
 | Renderer performance | One bar for the frame split into decode, crossover, render and write end to end, cumulative worst-case markers, and a readout per stage against the frame budget — shown only while metering is on | nothing |
 | Diagnostics | The metrics plot: the renderer's published schema as a chip row grouped and tiered the way it registered them, the window and publication rate, pause, and one stacked panel per selected metric on its own y scale, with the time grid and the mean reference line | `/omniphony/control/diag/enabled` (with the web's one-second keep-alive), `…/diag/rate_hz` |
 | OSC status and banners | The status line reports the four states with the web's colours and names the connected renderer's flavour; the three banners say a renderer is missing, that one came up without its decoder bridge, or that the one answering is not the one this Studio would start | nothing |
@@ -94,6 +95,20 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+Importing a layout is two things, and doing only the first is the bug the web
+had: the file has to land in Studio's list *and* be pushed to the renderer,
+because a layout that exists only on this side desyncs the two — the renderer
+keeps rendering the old one and a save persists the wrong thing. So an import
+sends the whole layout as one `replaceLayout` patch and commits it, skipping the
+renderer's own mirror, which would only echo. The clamps that matter are the
+frontend's, not the host's single-field helpers, because the web never uses
+those: a coordinate outside the cube is clamped, a zero radius or distance falls
+back rather than collapsing the room onto the listener, a negative delay is not a
+delay, and an empty band edge is null rather than a 0 Hz corner. Add appends a
+speaker at the selected one's pose: a new speaker is nearly always a sibling of
+the one being looked at, and an origin default would put it inside the
+listener's head.
 
 The performance gauges answer one question — is the renderer keeping up, and
 which stage is spending the time — and they answer it against the frame budget
@@ -241,9 +256,9 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Renderer panel**: the hybrid backend's own controls, the file-parameter
   Browse and Edit buttons, the info modals, and the SOFA browser the binaural
   tab's file source needs.
-- **Speakers**: layout import, export and presets, the position thumbnail and
-  filter glyph of a list row, the band contribution bars, drag-to-reorder, the
-  headphone channel rows and their ear mute.
+- **Speakers**: the position thumbnail and filter glyph of a list row, the band
+  contribution bars, drag-to-reorder, the headphone channel rows and their ear
+  mute.
 - **Left overlay**: updates (the web fetches GitHub from the webview; a native
   host needs its own HTTP client) and the dead rows of the audio input panel
   (backend, imported layout, channel count, sample rate, map, LFE mode) which

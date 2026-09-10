@@ -23,4 +23,5 @@ pub mod renderer_perf;
 pub mod room;
 pub mod sources_2d;
 pub mod speaker_editor;
+pub mod speaker_layouts;
 pub mod tools;
