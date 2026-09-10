@@ -6,9 +6,11 @@ Date: 10 September 2026. Branch `feat/studio-egui-panels`, crate
 web frontend's panels — the controls, lists, meters and the log — with native
 ones driving the same renderer over the same OSC.
 
-This document records the first pass: the control plane, the chrome and the
-panels that pay for themselves immediately. The remaining panels are listed at
-the end with the specification they will be built from.
+This document records the whole phase, increment by increment: the control
+plane, the chrome, every panel, and — once the panels were done — the viewport
+work phase 1 had left behind, which turned out to belong to the panels that arm
+it (the edit gizmos, the room guides, the speaker gauges). What is not ported
+is listed at the end, and it is now one deliberate omission.
 
 ## The control plane
 
@@ -31,9 +33,11 @@ alive and subscribe to gain tables, nothing else. A panel has to send.
   points the other at it too.
 - `src/host/control.rs` is what the panels call: one method per host command
   family, each sending through the listener's socket.
-- `src/i18n.rs` resolves keys against the web Studio's `en.json`, embedded at
-  build time. Labels cannot drift from the web UI before the cutover; the other
-  seven locales come with the cutover, when the JSON files move into the crate.
+- `src/i18n.rs` resolves keys against the web Studio's own JSON catalogues, all
+  eight of them, embedded at build time and each merged over English so a key a
+  translator has not reached yet reads in English rather than as a raw key.
+  Labels cannot drift from the web UI before the cutover, because they are the
+  same files.
 
 ## Chrome
 
