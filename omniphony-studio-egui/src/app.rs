@@ -127,6 +127,8 @@ pub struct StudioSpike {
     pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// Whether the About box is showing.
+    pub(crate) about_open: bool,
     /// The at-rest bed markers this host owns, and what they were built from.
     pub(crate) synthetic_bed_ids: Vec<String>,
     pub(crate) synthetic_bed_signature: Option<u64>,
@@ -302,6 +304,7 @@ impl StudioSpike {
             object_test_grid_cache: None,
             channel_catalog: Default::default(),
             channel_coord_mode: crate::panels::channel_editor::CoordMode::Cartesian,
+            about_open: false,
             synthetic_bed_ids: Vec::new(),
             synthetic_bed_signature: None,
             config_dir,
@@ -518,12 +521,7 @@ impl StudioSpike {
         let mut layout = self.layout;
         layout.clamp_all(ctx.content_rect().width());
         crate::ui::overlay::show(ctx, Side::Left, &mut layout, |ui| {
-            ui.heading(crate::i18n::t("app.title"));
-            ui.label(
-                egui::RichText::new(crate::i18n::t("app.subtitle"))
-                    .size(crate::ui::theme::FONT_SIZE_SMALL)
-                    .color(crate::ui::theme::TEXT_MUTED),
-            );
+            self.brand_row(ui);
             self.connection_line(ui);
             self.profiles_row(ui);
             let height = ui.available_height();
@@ -560,6 +558,7 @@ impl StudioSpike {
                 });
         });
         self.log_overlay(ctx, &layout);
+        self.about_modal(ctx);
         if !layout_eq(&layout, &self.layout) {
             self.layout = layout;
             self.prefs.side_panels = layout;

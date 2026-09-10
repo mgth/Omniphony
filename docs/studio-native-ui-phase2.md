@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| About | The brand row and the `?` beside the connection line open it: name, description, version, licence, repository link, which renderer is answering (with its ABI, and its executable in the tooltip) and which configuration that renderer is running on — including that it read none and is on built-in defaults | nothing |
 | Channel editor | The per-channel gain, Virtual/Direct, the destination speaker of a direct channel, and the cartesian and polar coordinate tables in normalised units and metres; plus the layout reset in the fixed-channel section and the at-rest bed markers that make a channel selectable with nothing playing | `/omniphony/control/virtual_bed` (the whole bed, as the renderer takes a layout rather than a diff) |
 | Object injection | The feature switch on the objects list, and the editor: transport, stimulus, the WAV clip with what the renderer says about it, the ADM/room view, the CAD sheet with its three views, gutter sliders, snap grid and orbit path, the level, the orbit's axis, radius and turn time, the programme isolation and the centre button | `/omniphony/control/object_test`, `…/object_test/rotation`, `…/object_test/clip`, `…/speaker_test/idle_feed` |
 | Renderer | Output mode, the Renderer/Binaural tab pair, the evaluation mode with its cartesian and polar grids and their step readouts, position interpolation, object size intervals, ramp mode, the backend with its status and its schema-generated parameters, distance diffuse, the distance model, the crossover with what the engine built | `/omniphony/control/output_mode`, `…/binaural_mode`, `…/render_evaluation_mode`, `…/render_evaluation/*`, `…/ramp_mode`, `…/render_backend`, `…/backend/param`, `…/distance_diffuse/*`, `…/distance_model*`, `…/option` |
@@ -90,6 +91,22 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+Half of the About box is fixed at build time and half of it is whatever the
+renderer last said about itself. That second half is why the box is worth
+porting early: it answers "which renderer am I actually driving, and which
+configuration is it running on", which is the first question when something
+sounds wrong — and a renderer silently running on built-in defaults explains a
+whole class of "why does it not sound like the settings say". Two details of the
+native box: the version it reports is this crate's own (the Tauri Studio is at
+0.5.2, the native host at 0.1.0) because the host command is the ported one, and
+it becomes the right number at the cutover; and there is no logo, because the
+web's is an SVG and one image is not worth a rasteriser dependency.
+
+Modals get an opaque frame rather than the side panels' 78 %: a dialog painted
+at that transparency lets the scene and the controls behind it show through its
+own text, and a box that has to be read is the one place the translucency costs
+more than it buys.
 
 The channel editor is the speaker editor's mechanic applied to the input side:
 each channel of a channel-based stream is either routed straight to its speaker
@@ -168,9 +185,9 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   filter glyph of a list row, the band contribution bars, drag-to-reorder, the
   headphone channel rows and their ear mute.
 - **Left overlay**: updates (the web fetches GitHub from the webview; a native
-  host needs its own HTTP client), the About modal, and the dead rows of the
-  audio input panel (backend, imported layout, channel count, sample rate, map,
-  LFE mode) which belong to the legacy PCM mode.
+  host needs its own HTTP client) and the dead rows of the audio input panel
+  (backend, imported layout, channel count, sample rate, map, LFE mode) which
+  belong to the legacy PCM mode.
 - **Elsewhere**: the save footer, the scene-effects bar, the band cursor, the
   modals, the gradient editor, the plots, the code editor, the SOFA browser,
   the auto-tune wizard, mpv overlay mirroring.

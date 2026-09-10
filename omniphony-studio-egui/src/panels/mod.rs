@@ -2,6 +2,7 @@
 //! `impl StudioSpike` block, so a panel reads top-down like the markup it
 //! replaces while the state stays in one place.
 
+pub mod about;
 pub mod audio;
 pub mod audio_input;
 pub mod audio_output;

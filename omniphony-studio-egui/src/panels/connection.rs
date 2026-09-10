@@ -13,7 +13,7 @@ use crate::ui::{theme, widgets};
 impl StudioSpike {
     /// The status line: a coloured dot and one line of text, like the web
     /// `#oscStatus` row.
-    pub(crate) fn connection_line(&self, ui: &mut egui::Ui) {
+    pub(crate) fn connection_line(&mut self, ui: &mut egui::Ui) {
         let port = self.osc_stats.listen_port.load(Ordering::Relaxed);
         let target = *self.osc_stats.target.lock().unwrap();
         let (dot, text) = match (
@@ -30,7 +30,20 @@ impl StudioSpike {
             }
             (None, _, _) => (theme::TEXT_FAINT, format!("idle · udp/{port}")),
         };
-        widgets::status_dot(ui, dot, text);
+        ui.horizontal(|ui| {
+            widgets::status_dot(ui, dot, text);
+            // `#aboutBtn`: the box's second entry point, beside the status it
+            // reports on.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(egui::Button::new("?").small())
+                    .on_hover_text(t("about.open"))
+                    .clicked()
+                {
+                    self.about_open = true;
+                }
+            });
+        });
     }
 }
 

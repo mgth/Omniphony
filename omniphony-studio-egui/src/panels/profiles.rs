@@ -11,7 +11,7 @@ use egui::Ui;
 
 use crate::app::StudioSpike;
 use crate::i18n::{t, tf};
-use crate::ui::theme;
+use crate::ui::{theme, widgets};
 
 /// What a submitted name in the inline editor should do.
 #[derive(Clone, PartialEq, Eq)]
@@ -162,8 +162,9 @@ impl StudioSpike {
             self.profile_delete_confirm = None;
             return;
         };
-        let modal =
-            egui::Modal::new(egui::Id::new("profile-delete-confirm")).show(ui.ctx(), |ui| {
+        let modal = egui::Modal::new(egui::Id::new("profile-delete-confirm"))
+            .frame(widgets::modal_frame())
+            .show(ui.ctx(), |ui| {
                 ui.set_max_width(320.0);
                 for line in tf(
                     "profiles.confirmDelete",
