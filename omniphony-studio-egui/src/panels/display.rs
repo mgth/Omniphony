@@ -156,6 +156,12 @@ impl StudioSpike {
                 );
             });
 
+        // Which stop each editor has selected. Held on the app rather than in
+        // the settings: it is a pointer into the list, not part of the
+        // gradient, and a saved selection would go stale the moment a stop is
+        // added elsewhere.
+        let mut object_stop = self.object_stop_selected;
+        let mut speaker_stop = self.speaker_stop_selected;
         let v = &mut self.volume_settings;
         Section::new("heatmapsSection", "display.heatmaps")
             .info("heatmap")
@@ -184,6 +190,15 @@ impl StudioSpike {
                     t("heatmap.objectEnergy.colormap"),
                     &mut v.object_colormap,
                 );
+                // The editor appears with the colormap it edits: a gradient bar
+                // sitting under a preset nobody picked is noise.
+                if v.object_colormap == Colormap::Custom {
+                    crate::panels::gradient::gradient_editor(
+                        ui,
+                        &mut v.object_stops,
+                        &mut object_stop,
+                    );
+                }
                 ui.add(
                     egui::Slider::new(&mut v.object_radius, 0.02..=0.5)
                         .step_by(0.01)
@@ -204,6 +219,13 @@ impl StudioSpike {
                     t("heatmap.objectEnergy.colormap"),
                     &mut v.speaker_colormap,
                 );
+                if v.speaker_colormap == Colormap::Custom {
+                    crate::panels::gradient::gradient_editor(
+                        ui,
+                        &mut v.speaker_stops,
+                        &mut speaker_stop,
+                    );
+                }
                 ui.separator();
                 widgets::switch_row(
                     ui,
@@ -298,5 +320,7 @@ impl StudioSpike {
                     }
                 }
             });
+        self.object_stop_selected = object_stop;
+        self.speaker_stop_selected = speaker_stop;
     }
 }

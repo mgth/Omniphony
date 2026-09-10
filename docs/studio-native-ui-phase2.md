@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Custom gradient editor | The heatmaps' "Custom" colormap: the gradient itself as the control, a handle per stop, and a colour well for the selected one | nothing (the shader reads the stops directly) |
 | mpv overlay mirroring | Studio's object, label, heatmap and trail choices pushed to the overlay whenever they change, and the whole set pushed again on every fresh connection | `/omniphony/control/overlay/*` |
 | Info modals | The long-form explanations of eight sections, opened by clicking the section's own title | nothing |
 | Scene-effects bar | Seven quick toggles over the viewport for the display switches reached for most often, and the two nature flyouts (object marker, trail kind) | nothing, except the mpv overlay's own enable |
@@ -105,6 +106,19 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The gradient editor makes the bar the control. A table of positions and hex
+triplets says nothing about what the volume will look like, which is the only
+question being asked, so the bar shows the interpolation the shader will do —
+built as a vertex-coloured strip rather than sampled into blocks — and the
+handles sit under it. Adding a stop takes the colour already there, so it
+changes the shape without changing the picture; the last pair cannot be removed,
+because two stops are a gradient and one is a colour.
+
+One interaction with the theme is worth recording: `interact_size.x` is zero,
+which is right for rows that size themselves from their content and starves any
+widget that uses it as its *own* size. The colour well is one of those, and was
+drawn zero pixels wide until it was given a width of its own.
 
 The mpv overlay draws the same scene on top of the video, and the renderer owns
 and persists its settings. Studio's job is to keep them in step with what it is
@@ -386,8 +400,9 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   host needs its own HTTP client) and the dead rows of the audio input panel
   (backend, imported layout, channel count, sample rate, map, LFE mode) which
   belong to the legacy PCM mode.
-- **Elsewhere**: the gradient editor (and with it the overlay's custom gradient
-  stops), the code editor, the SOFA browser, the auto-tune wizard.
+- **Elsewhere**: the code editor, the SOFA browser, the auto-tune wizard, and
+  the overlay's custom gradient stops (the editor exists now; mirroring them is
+  one more message).
 - **Host services** the native app does not have yet: the derived master meter.
 
 ## The gate

@@ -13,6 +13,7 @@ pub mod diag_plot;
 pub mod display;
 pub mod drc;
 pub mod footer;
+pub mod gradient;
 pub mod host_services;
 pub mod hybrid;
 pub mod info_modal;
