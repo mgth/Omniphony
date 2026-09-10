@@ -545,7 +545,12 @@ impl StudioSpike {
     /// is open on a speaker, so a test is audible with nothing playing. The
     /// arm expires renderer-side, hence the re-arm.
     pub(crate) fn maintain_test_idle_feed(&mut self) {
-        let wanted = self.speaker_tab == SpeakerTab::Test && self.selection.speaker.is_some();
+        // Ref-counted across the two things that need it (`test-idle-feed.js`):
+        // the speaker Test pane and the object injection. Both are keyed on the
+        // editor being *open* rather than merely configured, so a restored
+        // preference cannot make the host talk to a live renderer at startup.
+        let wanted = (self.speaker_tab == SpeakerTab::Test && self.selection.speaker.is_some())
+            || self.object_test_editor_open();
         let now = std::time::Instant::now();
         match (wanted, self.idle_feed_armed_at) {
             (true, None) => {

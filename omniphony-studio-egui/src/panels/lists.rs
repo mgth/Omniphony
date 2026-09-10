@@ -12,9 +12,7 @@ use crate::panels::audio::meter_fraction;
 use crate::ui::{section::Section, theme, widgets};
 use crate::view::{self, Selection};
 
-/// The injected test source owns its own muting: `control_object_mute` takes a
-/// number and this id is a name (`object-test-id.js`).
-const OBJECT_TEST_SOURCE_ID: &str = "injection";
+use crate::panels::object_test::OBJECT_TEST_SOURCE_ID;
 
 /// One row of a list, already read out of the model.
 struct Row {
@@ -38,6 +36,7 @@ impl StudioSpike {
                 ui.ctx().content_rect().height(),
             ))
             .show(ui, |ui| {
+                self.object_test_feature_row(ui);
                 if rows.is_empty() {
                     widgets::note(ui, t("objects.none"));
                 }
@@ -163,8 +162,17 @@ impl StudioSpike {
     /// `sendObjectMute` / `sendSpeakerMute` plus the optimistic local write.
     fn set_muted(&mut self, id: &str, muted: bool, speaker: bool) {
         if !speaker && id == OBJECT_TEST_SOURCE_ID {
-            // The injected source owns its own muting; it is not addressable
-            // by index, so the renderer would read `NaN`.
+            // The injected source owns its own muting: it is not addressable
+            // by index, so `control_object_mute` would read `NaN`. Stopping
+            // the signal while remembering that it was playing is what makes
+            // unmuting resume rather than need the transport again.
+            self.live
+                .lock()
+                .unwrap()
+                .app
+                .object_mutes
+                .insert(id.to_owned(), u8::from(muted));
+            self.set_object_test_muted(muted);
             return;
         }
         let Ok(index) = id.parse::<i32>() else {

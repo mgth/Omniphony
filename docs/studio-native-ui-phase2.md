@@ -72,11 +72,15 @@ config, debounced 600 ms so a drag writes once.
 | Room geometry | The five metre dimensions, the derived scale, and the front/rear blend when the two depths differ | `/omniphony/control/config/layout` (`radiusM`), `…/room_ratio`, `…/room_ratio_rear`, `…/room_ratio_lower`, `…/room_ratio_center_blend` |
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
+| Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Object injection | The feature switch on the objects list, and the editor: transport, stimulus, the WAV clip with what the renderer says about it, the ADM/room view, the CAD sheet with its three views, gutter sliders, snap grid and orbit path, the level, the orbit's axis, radius and turn time, the programme isolation and the centre button | `/omniphony/control/object_test`, `…/object_test/rotation`, `…/object_test/clip`, `…/speaker_test/idle_feed` |
 | Renderer | Output mode, the Renderer/Binaural tab pair, the evaluation mode with its cartesian and polar grids and their step readouts, position interpolation, object size intervals, ramp mode, the backend with its status and its schema-generated parameters, distance diffuse, the distance model, the crossover with what the engine built | `/omniphony/control/output_mode`, `…/binaural_mode`, `…/render_evaluation_mode`, `…/render_evaluation/*`, `…/ramp_mode`, `…/render_backend`, `…/backend/param`, `…/distance_diffuse/*`, `…/distance_model*`, `…/option` |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
-only unmuted entry lifts the mutes, and the injected test source is skipped
-because it is addressed by name rather than by index.
+only unmuted entry lifts the mutes, and the injected test source is skipped by
+`control_object_mute` because it is addressed by name rather than by index —
+its M button stops the test signal instead, remembering that it was playing so
+unmuting resumes.
 
 Two rules from the web are worth naming because they are easy to lose. The
 backend parameters are generated from the schema the renderer publishes, so a
@@ -85,6 +89,31 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The injected object is a real source: it is written into the same registry
+every other object lives in, so the sphere, the label, the trail, the list row
+and the meter are the ones everything else gets, and none of them know it is
+invented. The 3D scene shows where the renderer says the source *is* while it
+plays; the CAD sheet keeps showing where it was *placed*, because those markers
+are the handle being dragged and a handle that runs away from the pointer is
+not a handle.
+
+The sheet is one drawing rather than three: a single scale means a unit of room
+is the same number of sheet units in every view, so the side view's depth is
+visibly the same length as the plan's, and the 45° mitre in the empty corner
+carries depth between the two views that show it. The faces follow the room's
+true extents and its depth warp, so a marker on a face and the object in the
+room are in the same place; the ADM view swaps them for the renderer's unit
+cube, where the sampling grid is evenly spaced and a circle is a circle. The
+orbit path mirrors the renderer's `position_at`, clamp included — a drawn
+circle where the heard one is flattened against a wall would be a picture of
+something that is not happening.
+
+One departure from the web, and the reason for it: the renderer's idle feed is
+armed while the injection editor is *open*, not merely while the feature is
+configured on. The web arms it from the stored preference at boot; a native host
+that did the same would send a control message to a live renderer before the
+user had touched anything, which this host must never do.
 
 The batched audio configuration goes through the host's own resolver
 (`audio_config.rs`, copied verbatim), so the values sent on the wire are the
@@ -117,10 +146,10 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Speakers**: layout import, export and presets, the position thumbnail and
   filter glyph of a list row, the band contribution bars, drag-to-reorder, the
   headphone channel rows and their ear mute.
-- **Left overlay**: profiles, updates, the channel editor and the object-test
-  editor, and the dead rows of the audio input panel (backend, imported
-  layout, channel count, sample rate, map, LFE mode) which belong to the
-  legacy PCM mode.
+- **Left overlay**: updates (the web fetches GitHub from the webview; a native
+  host needs its own HTTP client), the About modal, the channel editor, and the
+  dead rows of the audio input panel (backend, imported layout, channel count,
+  sample rate, map, LFE mode) which belong to the legacy PCM mode.
 - **Elsewhere**: the save footer, the scene-effects bar, the band cursor, the
   modals, the gradient editor, the plots, the code editor, the SOFA browser,
   the auto-tune wizard, mpv overlay mirroring.

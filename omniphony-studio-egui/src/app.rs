@@ -106,6 +106,23 @@ pub struct StudioSpike {
     pub(crate) latency_target_edit: Option<f64>,
     /// Adaptive-controller fields edited but not yet applied.
     pub(crate) adaptive_edits: std::collections::BTreeMap<&'static str, f64>,
+    /// Config profiles: the inline name editor, its text, and the pending
+    /// delete confirmation.
+    pub(crate) profile_editor: Option<crate::panels::profiles::NameEditor>,
+    pub(crate) profile_name_edit: String,
+    pub(crate) profile_name_focus: bool,
+    pub(crate) profile_delete_confirm: Option<String>,
+    /// Object injection: whether the test signal is playing, whether the list's
+    /// M button silenced it, and what a sheet gesture is locked to.
+    pub(crate) object_test_playing: bool,
+    pub(crate) object_test_muted: bool,
+    pub(crate) object_test_drag: Option<crate::panels::object_test_sheet::Target>,
+    pub(crate) object_test_focus: Option<usize>,
+    /// The orbit path, rebuilt in place each frame so drawing it allocates
+    /// nothing after the first.
+    pub(crate) object_test_orbit: Vec<[f64; 3]>,
+    /// Snap grid, keyed on the published interval counts it was built from.
+    pub(crate) object_test_grid_cache: Option<([u32; 4], [Vec<f64>; 3])>,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
     /// Handle on the renderer: every control the panels expose goes through it.
@@ -266,6 +283,16 @@ impl StudioSpike {
             prtf_freq_scale: 100.0,
             latency_target_edit: None,
             adaptive_edits: Default::default(),
+            profile_editor: None,
+            profile_name_edit: String::new(),
+            profile_name_focus: false,
+            profile_delete_confirm: None,
+            object_test_playing: false,
+            object_test_muted: false,
+            object_test_drag: None,
+            object_test_focus: None,
+            object_test_orbit: Vec::new(),
+            object_test_grid_cache: None,
             config_dir,
             ctl,
             last_subscribe: None,
@@ -487,6 +514,7 @@ impl StudioSpike {
                     .color(crate::ui::theme::TEXT_MUTED),
             );
             self.connection_line(ui);
+            self.profiles_row(ui);
             let height = ui.available_height();
             egui::ScrollArea::vertical()
                 .id_salt("overlay-left-scroll")
@@ -514,6 +542,7 @@ impl StudioSpike {
                     self.master_section(ui);
                     self.renderer_section(ui);
                     self.objects_section(ui);
+                    self.object_test_editor(ui);
                     self.speakers_section(ui);
                     self.speaker_editor(ui);
                 });
@@ -543,6 +572,13 @@ impl StudioSpike {
             }
             None => self.prefs_dirty_since = Some(Instant::now()),
         }
+    }
+
+    /// Mark the preferences file for a (debounced) rewrite, restarting the
+    /// debounce so a burst of changes writes once.
+    pub(crate) fn mark_prefs_dirty(&mut self) {
+        self.prefs_dirty = true;
+        self.prefs_dirty_since = None;
     }
 
     /// Next value of the realtime sequence counter.
@@ -601,10 +637,18 @@ impl eframe::App for StudioSpike {
             self.last_speaker_selection = self.selection.speaker;
             self.follow_speaker_selection();
         }
+        self.maintain_object_test_source();
         self.maintain_test_idle_feed();
         self.check_recompute_ack();
         self.maintain_gaintable_subscriptions();
         self.persist_prefs();
         self.maybe_print_stats();
+    }
+
+    /// `beforeunload`: a test left playing would outlive the window, so the
+    /// renderer is told to stop before this host goes away.
+    fn on_exit(&mut self) {
+        self.stop_speaker_test();
+        self.stop_object_test();
     }
 }
