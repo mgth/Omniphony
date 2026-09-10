@@ -4,6 +4,7 @@
 //! CPU-side: it produces a `FrameData` for the renderer plus the screen-space
 //! labels egui draws on top, and the pick lists the app uses for selection.
 
+pub mod gizmos;
 pub mod objects;
 pub mod room;
 pub mod speakers;
@@ -49,6 +50,8 @@ pub struct ViewSettings {
     /// `app.roomGeometryExpanded`: the dimension guides, shown while the room
     /// panel is open. Not persisted, as in the web — it follows the panel.
     pub room_guides_visible: bool,
+    /// Which edit gizmo the editor has armed, if any.
+    pub gizmo: gizmos::GizmoState,
     /// `app.speakerSize` (default 0.08).
     pub speaker_size: f32,
     /// `app.vbapCartesianFaceGridEnabled` ("Grid", default false).
@@ -71,6 +74,7 @@ impl Default for ViewSettings {
             speaker_band_bars_enabled: false,
             speaker_face_listener_enabled: false,
             room_guides_visible: false,
+            gizmo: gizmos::GizmoState::default(),
             speaker_size: 0.08,
             vbap_grid: false,
             trails: TrailSettings::default(),
@@ -386,6 +390,8 @@ pub fn build_frame(
         }
     }
 
+    // The edit gizmos: the selected speaker, or a selected object that is a
+    // virtual bed channel — the two things whose position this editor moves.
     // Objects, their labels and trails.
     let objects = objects::collect(
         live,
@@ -396,6 +402,29 @@ pub fn build_frame(
         selection.speaker,
         now,
     );
+    // The edit gizmos follow the thing this editor moves: the selected
+    // speaker, or a selected object that is a virtual bed channel — a real
+    // object's position belongs to whatever is playing it, not to the editor.
+    let gizmo_target = match selection.speaker {
+        Some(index) => speaker_visuals.get(index).map(|sp| sp.scene_pos),
+        None => selection.object.as_deref().and_then(|id| {
+            gizmos::is_virtual_channel(&live.app, id)
+                .then(|| objects.iter().find(|o| o.id == id).map(|o| o.scene_pos))
+                .flatten()
+        }),
+    };
+    if let Some(target) = gizmo_target {
+        let g = settings.gizmo;
+        match g.mode {
+            gizmos::EditMode::Polar if g.polar_armed => {
+                gizmos::emit_polar(target, &mut frame, &project, &points_per_unit, &mut labels)
+            }
+            gizmos::EditMode::Cartesian if g.cartesian_armed => {
+                gizmos::emit_cartesian(target, cam_pos, &mut frame)
+            }
+            _ => {}
+        }
+    }
     if settings.objects_visible {
         for obj in &objects {
             objects::emit(obj, settings, &mut frame, cam_right, cam_up);
