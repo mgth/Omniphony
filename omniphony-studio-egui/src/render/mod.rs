@@ -13,12 +13,15 @@
 //! (billboard rings) with depth testing off.
 
 pub mod camera;
+pub mod volume;
 
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
+
+use volume::{VolumeDraw, VolumeRenderer};
 
 const MSAA_SAMPLES: u32 = 4;
 const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -211,6 +214,7 @@ pub struct FrameData {
     pub sprites_alpha: Vec<SpriteInstance>,
     pub sprites_additive: Vec<SpriteInstance>,
     pub points: Vec<PointInstance>,
+    pub volumes: Vec<VolumeDraw>,
     pub view_proj: Mat4,
     pub cam_pos: Vec3,
     pub cam_right: Vec3,
@@ -237,6 +241,7 @@ impl FrameData {
             sprites_alpha: Vec::new(),
             sprites_additive: Vec::with_capacity(64),
             points: Vec::with_capacity(4096),
+            volumes: Vec::new(),
             view_proj,
             cam_pos,
             cam_right,
@@ -311,6 +316,7 @@ pub struct SceneRenderer {
     sprite_additive: wgpu::RenderPipeline,
     point_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
+    volumes: VolumeRenderer,
     globals_buf: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     blit_layout: wgpu::BindGroupLayout,
@@ -640,6 +646,20 @@ impl SceneRenderer {
             })
             .collect();
 
+        let volumes = VolumeRenderer::new(
+            device,
+            &shader,
+            &globals_layout,
+            wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<MeshVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &MESH_ATTRS,
+            },
+            SCENE_FORMAT,
+            DEPTH_FORMAT,
+            MSAA_SAMPLES,
+        );
+
         Self {
             mesh_opaque,
             mesh_blend_depth,
@@ -650,6 +670,7 @@ impl SceneRenderer {
             sprite_additive,
             point_pipeline,
             blit_pipeline,
+            volumes,
             globals_buf,
             globals_bind_group,
             blit_layout,
@@ -847,6 +868,7 @@ impl SceneRenderer {
         self.points
             .upload(device, queue, bytemuck::cast_slice(&frame.points));
         self.point_count = frame.points.len() as u32;
+        self.volumes.upload(device, queue, &frame.volumes);
     }
 
     fn unit_mesh(&self, kind: MeshKind) -> &UnitMesh {
@@ -936,6 +958,11 @@ impl SceneRenderer {
                 0..1,
             );
         }
+        // Volumes last (render order 22, after rings).
+        let cube = self.unit_mesh(MeshKind::Cube);
+        pass.set_bind_group(0, &self.globals_bind_group, &[]);
+        self.volumes
+            .encode(&mut pass, &cube.vertices, &cube.indices, cube.index_count);
     }
 }
 

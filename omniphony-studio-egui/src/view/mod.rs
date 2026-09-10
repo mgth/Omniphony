@@ -8,6 +8,7 @@ pub mod objects;
 pub mod room;
 pub mod speakers;
 pub mod trails;
+pub mod volumes;
 
 use std::time::Instant;
 
@@ -22,6 +23,7 @@ use crate::render::{FrameData, MeshInstance, MeshItem, MeshKind, hex_linear, wit
 pub use objects::{ObjectDisplayMode, SpeakerRef};
 pub use room::RoomBounds;
 pub use trails::{TrailMode, TrailSettings};
+pub use volumes::{VolumeSettings, VolumeState};
 
 /// Display toggles the Studio persists as `spatialviz.effective_render_prefs`
 /// and `spatialviz.trail_prefs`.
@@ -117,6 +119,8 @@ pub fn build_frame(
     rect: Rect,
     ppp: f32,
     selection: &Selection,
+    volume_settings: &VolumeSettings,
+    volume_state: &mut VolumeState,
     now: Instant,
 ) -> FrameOutput {
     let viewport = [rect.width(), rect.height()];
@@ -276,6 +280,16 @@ pub fn build_frame(
     if let Some(p) = shadow_pos {
         room::emit_face_shadows(p, &bounds, &mut frame);
     }
+
+    frame.volumes = volumes::build(
+        live,
+        volume_settings,
+        volume_state,
+        &bounds,
+        &room,
+        selection.speaker,
+        now,
+    );
 
     FrameOutput {
         frame,

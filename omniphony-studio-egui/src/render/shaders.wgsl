@@ -255,3 +255,119 @@ fn vs_blit(@builtin(vertex_index) vi: u32) -> BlitOut {
 fn fs_blit(in: BlitOut) -> @location(0) vec4<f32> {
     return textureSample(scene_tex, scene_samp, in.uv);
 }
+
+// --- ray-marched energy volumes (scene/energy-volume-core.js) --------------
+// Unit cube instance (vertex buffer 0 only), front faces culled so the ray
+// starts from the back face and still works with the camera inside the box.
+// Output is premultiplied alpha, written raw (RawShaderMaterial, no OETF).
+
+struct VolumeUniforms {
+    model: mat4x4<f32>,
+    // xyz = box min, w = inv_max
+    box_min: vec4<f32>,
+    // xyz = box max, w = opacity
+    box_max: vec4<f32>,
+    // gamma_accumulate, gamma_mip, step_norm, mix
+    params: vec4<f32>,
+    // colormap, steps, precolored, custom_stop_count
+    iparams: vec4<i32>,
+    custom_stops: array<vec4<f32>, 8>,
+};
+@group(1) @binding(0) var<uniform> vol: VolumeUniforms;
+@group(1) @binding(1) var vol_tex: texture_3d<f32>;
+@group(1) @binding(2) var vol_samp: sampler;
+
+struct VolumeOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) world: vec3<f32>,
+};
+
+@vertex
+fn vs_volume(@location(0) pos: vec3<f32>, @location(1) normal: vec3<f32>) -> VolumeOut {
+    let world = vol.model * vec4<f32>(pos, 1.0);
+    var out: VolumeOut;
+    out.world = world.xyz;
+    out.clip = globals.view_proj * world;
+    return out;
+}
+
+fn custom_stops_color(t: f32) -> vec3<f32> {
+    let n = vol.iparams.w;
+    if (n <= 0) { return vec3<f32>(t); }
+    if (t <= vol.custom_stops[0].x) { return vol.custom_stops[0].yzw; }
+    for (var i: i32 = 0; i + 1 < 8; i++) {
+        if (i + 1 >= n) { break; }
+        let a = vol.custom_stops[i];
+        let b = vol.custom_stops[i + 1];
+        if (t <= b.x) {
+            let f = select(0.0, (t - a.x) / (b.x - a.x), b.x > a.x);
+            return mix(a.yzw, b.yzw, f);
+        }
+    }
+    return vol.custom_stops[n - 1].yzw;
+}
+
+fn heatmap_color(value: f32) -> vec3<f32> {
+    let t = clamp(value, 0.0, 1.0);
+    let cm = vol.iparams.x;
+    if (cm == 4) { return custom_stops_color(t); }
+    if (cm == 3) { return vec3<f32>(1.0, 0.0, 0.0); }
+    if (cm == 2) { return vec3<f32>(1.0, 1.0 - t, 1.0 - t); }
+    if (cm == 1) { return vec3<f32>(t, t, 1.0); }
+    if (t < 0.25) { return mix(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0, 1.0, 1.0), (t - 0.00) / 0.25); }
+    if (t < 0.48) { return mix(vec3<f32>(0.0, 1.0, 1.0), vec3<f32>(0.0, 1.0, 0.0), (t - 0.25) / 0.23); }
+    if (t < 0.70) { return mix(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 1.0, 0.0), (t - 0.48) / 0.22); }
+    return mix(vec3<f32>(1.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), (t - 0.70) / 0.30);
+}
+
+@fragment
+fn fs_volume(in: VolumeOut) -> @location(0) vec4<f32> {
+    let ro = globals.cam_pos.xyz;
+    let rd = normalize(in.world - ro);
+    let invd = 1.0 / rd;
+    let bmin = vol.box_min.xyz;
+    let bmax = vol.box_max.xyz;
+    let ta = (bmin - ro) * invd;
+    let tb = (bmax - ro) * invd;
+    let tmin = min(ta, tb);
+    let tmax = max(ta, tb);
+    var t_near = max(max(tmin.x, tmin.y), tmin.z);
+    let t_far = min(min(tmax.x, tmax.y), tmax.z);
+    t_near = max(t_near, 0.0);
+    if (t_far <= t_near) { discard; }
+
+    let steps = vol.iparams.y;
+    let precolored = vol.iparams.z == 1;
+    let inv_max = vol.box_min.w;
+    let opacity = vol.box_max.w;
+    let gamma_acc = vol.params.x;
+    let gamma_mip = vol.params.y;
+    let step_norm = vol.params.z;
+    let mix_amount = vol.params.w;
+
+    let box_size = bmax - bmin;
+    let dt = (t_far - t_near) / f32(steps);
+    var acc = vec4<f32>(0.0);
+    var e_max = 0.0;
+    var e_max_col = vec3<f32>(0.0);
+    for (var s: i32 = 0; s < 512; s++) {
+        if (s >= steps) { break; }
+        let t = t_near + (f32(s) + 0.5) * dt;
+        let p = ro + rd * t;
+        let uvw = (p - bmin) / box_size;
+        let tx = textureSampleLevel(vol_tex, vol_samp, uvw, 0.0);
+        let e = clamp(select(tx.r, tx.a, precolored) * inv_max, 0.0, 1.0);
+        let col = select(heatmap_color(e), tx.rgb, precolored);
+        if (e > e_max) { e_max = e; e_max_col = col; }
+        if (e > 0.004) {
+            let a = clamp(pow(e, gamma_acc) * opacity * step_norm, 0.0, 1.0);
+            acc = vec4<f32>(acc.rgb + (1.0 - acc.a) * col * a, acc.a + (1.0 - acc.a) * a);
+            if (mix_amount < 0.001 && acc.a > 0.98) { break; }
+        }
+    }
+    let a_mip = clamp(pow(e_max, gamma_mip) * opacity, 0.0, 1.0);
+    let peak = vec4<f32>(e_max_col * a_mip, a_mip);
+    let result = mix(acc, peak, mix_amount);
+    if (result.a <= 0.0) { discard; }
+    return result;
+}

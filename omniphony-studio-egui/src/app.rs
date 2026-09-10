@@ -13,11 +13,12 @@ use crate::Args;
 use crate::model::app_state::AppState;
 use crate::model::layouts::load_layouts;
 use crate::osc::dispatch::Live;
-use crate::osc::{self, OscStats, SharedLive};
+use crate::osc::{self, Control, ControlTx, OscStats, SharedLive};
 use crate::render::camera::OrbitCamera;
 use crate::render::{SceneRenderer, ViewportCallback};
 use crate::stats::{FrameStats, ProcStats};
-use crate::view::{self, ObjectDisplayMode, Selection, TrailMode, ViewSettings};
+use crate::view::volumes::{Colormap, DiscontinuityMode};
+use crate::view::{self, ObjectDisplayMode, Selection, TrailMode, ViewSettings, VolumeSettings, VolumeState};
 use crate::widgets::{self, OPTION_SCHEMA, OptionValue};
 
 const PANEL_WIDTH: f32 = 300.0;
@@ -42,6 +43,12 @@ pub struct StudioSpike {
     /// Pick lists of the last built frame.
     pick_objects: Vec<(String, Vec3, f32)>,
     pick_speakers: Vec<(usize, Vec3, f32)>,
+    volume_settings: VolumeSettings,
+    volume_state: VolumeState,
+    control: ControlTx,
+    /// Gain-table targets currently subscribed, and the last (re)subscribe.
+    subscribed_tables: Vec<i64>,
+    last_subscribe: Option<Instant>,
 }
 
 impl StudioSpike {
@@ -92,7 +99,7 @@ impl StudioSpike {
             ),
             None => None,
         };
-        let port = osc::spawn_listener(
+        let (port, control) = osc::spawn_listener(
             live.clone(),
             cc.egui_ctx.clone(),
             osc_stats.clone(),
@@ -108,6 +115,7 @@ impl StudioSpike {
             osc::spawn_synthetic(args.synthetic, args.rate, port, stop)?;
         }
 
+        let object_field = args.object_field;
         Ok(Self {
             args,
             live,
@@ -125,7 +133,62 @@ impl StudioSpike {
             pointer_over: false,
             pick_objects: Vec::new(),
             pick_speakers: Vec::new(),
+            volume_settings: VolumeSettings {
+                object_field_enabled: object_field,
+                ..VolumeSettings::default()
+            },
+            volume_state: VolumeState::default(),
+            control,
+            subscribed_tables: Vec::new(),
+            last_subscribe: None,
         })
+    }
+
+    /// `acquireGainTable` / `releaseGainTable`: keep the renderer's
+    /// gain-table subscriptions aligned with the enabled volumes, with the
+    /// Studio's 5 s repair heartbeat.
+    fn maintain_gaintable_subscriptions(&mut self) {
+        if self.args.register.is_none() {
+            return;
+        }
+        let wanted = view::volumes::wanted_tables(&self.volume_settings, self.selection.speaker);
+        let changed = wanted != self.subscribed_tables;
+        let heartbeat_due = self
+            .last_subscribe
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(5));
+        if wanted.is_empty() {
+            if changed {
+                let _ = self.control.send(Control::UnsubscribeGainTable);
+                self.subscribed_tables.clear();
+            }
+            return;
+        }
+        if changed || heartbeat_due {
+            let versions: Vec<(i64, i32)> = {
+                let live = self.live.lock().unwrap();
+                wanted
+                    .iter()
+                    .map(|t| {
+                        (
+                            *t,
+                            live.gain_tables
+                                .get(t)
+                                .map(|g| g.version() as i32)
+                                .unwrap_or(0)
+                                .max(0),
+                        )
+                    })
+                    .collect()
+            };
+            for (target, have_version) in versions {
+                let _ = self.control.send(Control::SubscribeGainTable {
+                    have_version,
+                    speaker_index: target as i32,
+                });
+            }
+            self.subscribed_tables = wanted;
+            self.last_subscribe = Some(Instant::now());
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -179,6 +242,8 @@ impl StudioSpike {
                 rect,
                 ppp,
                 &self.selection,
+                &self.volume_settings,
+                &mut self.volume_state,
                 Instant::now(),
             )
         };
@@ -382,6 +447,101 @@ impl StudioSpike {
                         .step_by(0.05)
                         .text("teleport threshold"),
                 );
+            });
+
+        let v = &mut self.volume_settings;
+        egui::CollapsingHeader::new("Heatmaps")
+            .default_open(false)
+            .show(ui, |ui| {
+                let combo = |ui: &mut egui::Ui, id: &str, label: &str, cm: &mut Colormap| {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            egui::ComboBox::from_id_salt(id)
+                                .selected_text(cm.label())
+                                .width(130.0)
+                                .show_ui(ui, |ui| {
+                                    for c in Colormap::ALL {
+                                        ui.selectable_value(cm, c, c.label());
+                                    }
+                                });
+                        });
+                    });
+                };
+                widgets::switch_row(ui, "Object energy field", &mut v.object_field_enabled);
+                combo(ui, "object-colormap", "Colormap", &mut v.object_colormap);
+                ui.add(
+                    egui::Slider::new(&mut v.object_radius, 0.02..=0.5)
+                        .step_by(0.01)
+                        .text("falloff radius"),
+                );
+                ui.separator();
+                widgets::switch_row(ui, "Global energy deviation", &mut v.global_enabled);
+                ui.add(
+                    egui::Slider::new(&mut v.global_scale_db, 1.0..=40.0)
+                        .step_by(1.0)
+                        .text("scale (dB)"),
+                );
+                ui.separator();
+                widgets::switch_row(ui, "Speaker heatmap volume", &mut v.speaker_enabled);
+                combo(ui, "speaker-colormap", "Colormap", &mut v.speaker_colormap);
+                ui.separator();
+                widgets::switch_row(ui, "Discontinuity", &mut v.discontinuity_enabled);
+                ui.horizontal(|ui| {
+                    ui.label("Mode");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        egui::ComboBox::from_id_salt("discontinuity-mode")
+                            .selected_text(match v.discontinuity_mode {
+                                DiscontinuityMode::Gain => "Gain",
+                                DiscontinuityMode::Centroid => "Centroid",
+                            })
+                            .width(130.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut v.discontinuity_mode, DiscontinuityMode::Gain, "Gain");
+                                ui.selectable_value(&mut v.discontinuity_mode, DiscontinuityMode::Centroid, "Centroid");
+                            });
+                    });
+                });
+                ui.add(
+                    egui::Slider::new(&mut v.discontinuity_scale, 0.05..=2.0)
+                        .step_by(0.05)
+                        .text("scale"),
+                );
+                ui.separator();
+                ui.small("Common parameters");
+                let mut res = v.resolution as f32;
+                if ui
+                    .add(egui::Slider::new(&mut res, 8.0..=64.0).step_by(2.0).text("resolution"))
+                    .changed()
+                {
+                    v.resolution = res.round() as u32;
+                }
+                ui.add(egui::Slider::new(&mut v.opacity, 0.05..=1.0).step_by(0.05).text("opacity"));
+                ui.add(egui::Slider::new(&mut v.mix, 0.0..=1.0).step_by(0.01).text("mix"));
+                ui.add(
+                    egui::Slider::new(&mut v.gamma_accumulate, 1.0..=10.0)
+                        .step_by(0.1)
+                        .text("gamma accumulate"),
+                );
+                ui.add(egui::Slider::new(&mut v.gamma_mip, 0.2..=3.0).step_by(0.05).text("gamma mip"));
+                let mut refresh = v.refresh_ms as f32;
+                if ui
+                    .add(egui::Slider::new(&mut refresh, 40.0..=500.0).step_by(10.0).text("refresh (ms)"))
+                    .changed()
+                {
+                    v.refresh_ms = refresh.round() as u32;
+                }
+                widgets::switch_row(ui, "Smooth interpolation", &mut v.smooth);
+                widgets::switch_row(ui, "All bands", &mut v.all_bands);
+                if !v.all_bands {
+                    let mut band = v.band_index as f32;
+                    if ui
+                        .add(egui::Slider::new(&mut band, 0.0..=7.0).step_by(1.0).text("band"))
+                        .changed()
+                    {
+                        v.band_index = band.round() as usize;
+                    }
+                }
             });
 
         egui::CollapsingHeader::new("Live options (registry-driven)")
@@ -612,6 +772,7 @@ impl eframe::App for StudioSpike {
         let ctx = ui.ctx().clone();
         self.left_panel(&ctx);
         self.right_panel(&ctx);
+        self.maintain_gaintable_subscriptions();
         self.maybe_print_stats();
     }
 }

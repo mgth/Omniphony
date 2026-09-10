@@ -18,6 +18,7 @@ pub mod parser;
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -77,6 +78,19 @@ pub struct ListenerConfig {
     pub register: Option<SocketAddr>,
 }
 
+/// Messages the UI can send to the renderer through the listener's socket.
+/// Only debug/state subscriptions: the port never sends audio controls.
+#[derive(Debug, Clone)]
+pub enum Control {
+    SubscribeGainTable {
+        have_version: i32,
+        speaker_index: i32,
+    },
+    UnsubscribeGainTable,
+}
+
+pub type ControlTx = Sender<Control>;
+
 /// Bind the socket and start the listener thread. Returns the bound port so a
 /// `0` request can be reported (and fed by the synthetic generator).
 pub fn spawn_listener(
@@ -84,15 +98,16 @@ pub fn spawn_listener(
     ctx: egui::Context,
     stats: Arc<OscStats>,
     cfg: ListenerConfig,
-) -> std::io::Result<u16> {
+) -> std::io::Result<(u16, ControlTx)> {
     let socket = UdpSocket::bind(("0.0.0.0", cfg.listen_port))?;
     let port = socket.local_addr()?.port();
     socket.set_read_timeout(Some(Duration::from_millis(100)))?;
     stats.listen_port.store(u64::from(port), Ordering::Relaxed);
+    let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("osc-listener".into())
-        .spawn(move || listener_loop(socket, port, live, ctx, stats, cfg.register))?;
-    Ok(port)
+        .spawn(move || listener_loop(socket, port, live, ctx, stats, cfg.register, rx))?;
+    Ok((port, tx))
 }
 
 fn listener_loop(
@@ -102,6 +117,7 @@ fn listener_loop(
     ctx: egui::Context,
     stats: Arc<OscStats>,
     register: Option<SocketAddr>,
+    control: Receiver<Control>,
 ) {
     let mut buf = vec![0u8; RECV_BUF];
     let mut last_heartbeat = Instant::now();
@@ -158,6 +174,25 @@ fn listener_loop(
         }
 
         if let Some(addr) = register {
+            while let Ok(msg) = control.try_recv() {
+                match msg {
+                    Control::SubscribeGainTable {
+                        have_version,
+                        speaker_index,
+                    } => send_ints(
+                        &socket,
+                        addr,
+                        "/omniphony/control/debug/speaker_gaintable/subscribe",
+                        &[have_version, speaker_index],
+                    ),
+                    Control::UnsubscribeGainTable => send_ints(
+                        &socket,
+                        addr,
+                        "/omniphony/control/debug/speaker_gaintable/unsubscribe",
+                        &[],
+                    ),
+                }
+            }
             let now = Instant::now();
             if now.duration_since(last_heartbeat) >= HEARTBEAT_INTERVAL {
                 last_heartbeat = now;
@@ -246,9 +281,13 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
 }
 
 fn send_int(socket: &UdpSocket, to: SocketAddr, addr: &str, value: i32) {
+    send_ints(socket, to, addr, &[value]);
+}
+
+fn send_ints(socket: &UdpSocket, to: SocketAddr, addr: &str, values: &[i32]) {
     let msg = OscPacket::Message(OscMessage {
         addr: addr.to_owned(),
-        args: vec![OscType::Int(value)],
+        args: values.iter().map(|v| OscType::Int(*v)).collect(),
     });
     match encoder::encode(&msg) {
         Ok(bytes) => {

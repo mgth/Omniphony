@@ -73,6 +73,11 @@ pub struct Args {
     /// instead of the monitor's refresh rate.
     #[arg(long, default_value_t = false)]
     pub no_vsync: bool,
+
+    /// Start with the object energy field volume enabled (for tests and
+    /// measurements; it is off by default like in the Studio).
+    #[arg(long, default_value_t = false)]
+    pub object_field: bool,
 }
 
 /// Probed in order when `--cjk-font` is not given.
