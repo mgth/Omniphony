@@ -45,6 +45,7 @@ struct MeshIn {
     @location(6) color: vec4<f32>,
     // rgb = emissive colour (linear); w = gloss (0 matte .. 1 glossy), or < 0 for unlit
     @location(7) emissive: vec4<f32>,
+    @location(8) vcolor: vec4<f32>,
 };
 
 struct MeshOut {
@@ -62,7 +63,7 @@ fn vs_mesh(in: MeshIn) -> MeshOut {
     var out: MeshOut;
     out.clip = globals.view_proj * world;
     out.normal = normalize((model * vec4<f32>(in.normal, 0.0)).xyz);
-    out.color = in.color;
+    out.color = in.color * in.vcolor;
     out.world = world.xyz;
     out.emissive = in.emissive;
     return out;
@@ -283,7 +284,7 @@ struct VolumeOut {
 };
 
 @vertex
-fn vs_volume(@location(0) pos: vec3<f32>, @location(1) normal: vec3<f32>) -> VolumeOut {
+fn vs_volume(@location(0) pos: vec3<f32>) -> VolumeOut {
     let world = vol.model * vec4<f32>(pos, 1.0);
     var out: VolumeOut;
     out.world = world.xyz;

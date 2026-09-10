@@ -13,6 +13,7 @@
 //! (billboard rings) with depth testing off.
 
 pub mod camera;
+pub mod head;
 pub mod volume;
 
 use std::sync::Arc;
@@ -87,15 +88,18 @@ pub enum MeshKind {
     Cone,
     /// Radius 1 in XY, normal +Z (three.js `CircleGeometry(1)`).
     Disc,
+    /// The listener head model, already scaled and oriented (see `head`).
+    Head,
 }
 
 impl MeshKind {
-    pub const ALL: [MeshKind; 5] = [
+    pub const ALL: [MeshKind; 6] = [
         MeshKind::Sphere,
         MeshKind::Cube,
         MeshKind::Quad,
         MeshKind::Cone,
         MeshKind::Disc,
+        MeshKind::Head,
     ];
 }
 
@@ -112,10 +116,22 @@ pub struct MeshItem {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct MeshVertex {
-    pos: [f32; 3],
-    normal: [f32; 3],
+#[derive(Clone, Copy, Pod, Zeroable, Debug)]
+pub struct MeshVertex {
+    pub pos: [f32; 3],
+    pub normal: [f32; 3],
+    /// Linear RGBA vertex colour, multiplied into the instance colour.
+    pub color: [f32; 4],
+}
+
+impl MeshVertex {
+    fn white(pos: [f32; 3], normal: [f32; 3]) -> Self {
+        Self {
+            pos,
+            normal,
+            color: [1.0; 4],
+        }
+    }
 }
 
 #[repr(C)]
@@ -154,8 +170,8 @@ pub struct PointInstance {
     pub color: [f32; 4],
 }
 
-const MESH_ATTRS: [wgpu::VertexAttribute; 2] =
-    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+const MESH_ATTRS: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 8 => Float32x4];
 const INSTANCE_ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
     2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4
 ];
@@ -338,7 +354,13 @@ pub struct SceneRenderer {
 }
 
 impl SceneRenderer {
-    pub fn new(device: &wgpu::Device, egui_target_format: wgpu::TextureFormat) -> Self {
+    /// `head` is the loaded head model, or `None` to draw nothing for the
+    /// `Head` kind (the view falls back to a placeholder sphere).
+    pub fn new(
+        device: &wgpu::Device,
+        egui_target_format: wgpu::TextureFormat,
+        head: Option<(Vec<MeshVertex>, Vec<u32>)>,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("studio scene shaders"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders.wgsl").into()),
@@ -617,6 +639,7 @@ impl SceneRenderer {
             ..Default::default()
         });
 
+        let mut head = head;
         let unit_meshes = MeshKind::ALL
             .iter()
             .map(|&kind| {
@@ -626,6 +649,16 @@ impl SceneRenderer {
                     MeshKind::Quad => unit_quad(),
                     MeshKind::Cone => unit_cone(14),
                     MeshKind::Disc => unit_disc(24),
+                    MeshKind::Head => head.take().unwrap_or_else(|| (Vec::new(), Vec::new())),
+                };
+                let (vertices, indices) = if vertices.is_empty() {
+                    // Empty unit mesh: one degenerate triangle keeps the buffers valid.
+                    (
+                        vec![MeshVertex::white([0.0; 3], [0.0, 1.0, 0.0]); 3],
+                        vec![0, 1, 2],
+                    )
+                } else {
+                    (vertices, indices)
                 };
                 (
                     kind,
@@ -1038,7 +1071,7 @@ fn unit_sphere(stacks: u32, slices: u32) -> (Vec<MeshVertex>, Vec<u32>) {
             let theta = j as f32 / slices as f32 * std::f32::consts::TAU;
             let (st, ct) = theta.sin_cos();
             let p = [sp * ct, cp, sp * st];
-            vertices.push(MeshVertex { pos: p, normal: p });
+            vertices.push(MeshVertex::white(p, p));
         }
     }
     let mut indices = Vec::with_capacity((stacks * slices * 6) as usize);
@@ -1070,10 +1103,7 @@ fn unit_cube() -> (Vec<MeshVertex>, Vec<u32>) {
         let base = vertices.len() as u32;
         for (su, sv) in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)] {
             let p = n * 0.5 + u * su + v * sv;
-            vertices.push(MeshVertex {
-                pos: p.to_array(),
-                normal: n.to_array(),
-            });
+            vertices.push(MeshVertex::white(p.to_array(), n.to_array()));
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -1083,22 +1113,10 @@ fn unit_cube() -> (Vec<MeshVertex>, Vec<u32>) {
 fn unit_quad() -> (Vec<MeshVertex>, Vec<u32>) {
     let n = [0.0, 0.0, 1.0];
     let vertices = vec![
-        MeshVertex {
-            pos: [-0.5, -0.5, 0.0],
-            normal: n,
-        },
-        MeshVertex {
-            pos: [0.5, -0.5, 0.0],
-            normal: n,
-        },
-        MeshVertex {
-            pos: [0.5, 0.5, 0.0],
-            normal: n,
-        },
-        MeshVertex {
-            pos: [-0.5, 0.5, 0.0],
-            normal: n,
-        },
+        MeshVertex::white([-0.5, -0.5, 0.0], n),
+        MeshVertex::white([0.5, -0.5, 0.0], n),
+        MeshVertex::white([0.5, 0.5, 0.0], n),
+        MeshVertex::white([-0.5, 0.5, 0.0], n),
     ];
     (vertices, vec![0, 1, 2, 0, 2, 3])
 }
@@ -1115,32 +1133,20 @@ fn unit_cone(segments: u32) -> (Vec<MeshVertex>, Vec<u32>) {
         let am = (a0 + a1) * 0.5;
         let n = Vec3::new(am.cos(), 0.5, am.sin()).normalize().to_array();
         let base = vertices.len() as u32;
-        vertices.push(MeshVertex {
-            pos: [0.0, 0.5, 0.0],
-            normal: n,
-        });
-        vertices.push(MeshVertex {
-            pos: [c0, -0.5, s0],
-            normal: n,
-        });
-        vertices.push(MeshVertex {
-            pos: [c1, -0.5, s1],
-            normal: n,
-        });
+        vertices.push(MeshVertex::white([0.0, 0.5, 0.0], n));
+        vertices.push(MeshVertex::white([c0, -0.5, s0], n));
+        vertices.push(MeshVertex::white([c1, -0.5, s1], n));
         indices.extend_from_slice(&[base, base + 1, base + 2]);
     }
     // Base cap.
     let center = vertices.len() as u32;
-    vertices.push(MeshVertex {
-        pos: [0.0, -0.5, 0.0],
-        normal: [0.0, -1.0, 0.0],
-    });
+    vertices.push(MeshVertex::white([0.0, -0.5, 0.0], [0.0, -1.0, 0.0]));
     for i in 0..segments {
         let a = i as f32 / segments as f32 * std::f32::consts::TAU;
-        vertices.push(MeshVertex {
-            pos: [a.cos(), -0.5, a.sin()],
-            normal: [0.0, -1.0, 0.0],
-        });
+        vertices.push(MeshVertex::white(
+            [a.cos(), -0.5, a.sin()],
+            [0.0, -1.0, 0.0],
+        ));
     }
     for i in 0..segments {
         let a = center + 1 + i;
@@ -1152,16 +1158,10 @@ fn unit_cone(segments: u32) -> (Vec<MeshVertex>, Vec<u32>) {
 
 fn unit_disc(segments: u32) -> (Vec<MeshVertex>, Vec<u32>) {
     let n = [0.0, 0.0, 1.0];
-    let mut vertices = vec![MeshVertex {
-        pos: [0.0, 0.0, 0.0],
-        normal: n,
-    }];
+    let mut vertices = vec![MeshVertex::white([0.0, 0.0, 0.0], n)];
     for i in 0..segments {
         let a = i as f32 / segments as f32 * std::f32::consts::TAU;
-        vertices.push(MeshVertex {
-            pos: [a.cos(), a.sin(), 0.0],
-            normal: n,
-        });
+        vertices.push(MeshVertex::white([a.cos(), a.sin(), 0.0], n));
     }
     let mut indices = Vec::with_capacity((segments * 3) as usize);
     for i in 0..segments {

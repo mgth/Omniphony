@@ -283,7 +283,15 @@ impl VolumeRenderer {
             let Some(s) = self.slots.get(slot).and_then(|s| s.as_ref()) else {
                 continue;
             };
-            pass.set_bind_group(1, if smooth { &s.bind_linear } else { &s.bind_nearest }, &[]);
+            pass.set_bind_group(
+                1,
+                if smooth {
+                    &s.bind_linear
+                } else {
+                    &s.bind_nearest
+                },
+                &[],
+            );
             pass.draw_indexed(0..cube_index_count, 0, 0..1);
         }
     }

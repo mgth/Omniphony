@@ -4,7 +4,7 @@
 
 use glam::{Mat4, Quat, Vec3};
 
-use crate::model::app_state::RoomRatio;
+use crate::model::app_state::{RoomRatio, VbapCartesian};
 use crate::render::{
     FrameData, LineVertex, MeshInstance, MeshItem, MeshKind, hex_linear, with_alpha,
 };
@@ -348,5 +348,87 @@ pub fn emit_face_shadows(p: Vec3, b: &RoomBounds, frame: &mut FrameData) {
             depth_test: false,
             order: 3,
         });
+    }
+}
+
+/// VBAP cartesian face grids (`scene/gizmos.js`): the evaluation grid's
+/// nodes drawn on the visible room faces, `#66d8ff` α 0.42, no depth test.
+pub fn emit_vbap_grids(
+    b: &RoomBounds,
+    room: &RoomRatio,
+    cam_pos: Vec3,
+    sizes: &VbapCartesian,
+    frame: &mut FrameData,
+) {
+    use omniphony_geometry::f64 as geometry;
+    let (Some(xs_n), Some(ys_n), Some(zs_n)) = (sizes.x_size, sizes.y_size, sizes.z_size) else {
+        return;
+    };
+    let z_neg = sizes.z_neg_size.unwrap_or(0);
+    if xs_n < 2 || ys_n < 2 || zs_n < 2 {
+        return;
+    }
+    let axis = |min: f32, max: f32, n: u32| -> Vec<f32> {
+        (0..n)
+            .map(|i| min + (max - min) * i as f32 / (n - 1).max(1) as f32)
+            .collect()
+    };
+    // Scene x (depth) from ADM y nodes, through the depth warp.
+    let xs: Vec<f32> = axis(-1.0, 1.0, ys_n + 1)
+        .into_iter()
+        .map(|v| {
+            geometry::map_depth(f64::from(v), room.length, room.rear, room.center_blend) as f32
+        })
+        .collect();
+    // Scene y (height): lower half without its last node, then the upper half.
+    let mut ys: Vec<f32> = if z_neg >= 1 {
+        let mut lower = axis(b.y_min, 0.0, z_neg + 1);
+        lower.pop();
+        lower
+    } else {
+        Vec::new()
+    };
+    ys.extend(axis(0.0, b.y_max, zs_n + 1));
+    // Scene z (width) from ADM x nodes.
+    let zs = axis(b.z_min, b.z_max, xs_n + 1);
+
+    let color = with_alpha(hex_linear(0x66d8ff), 0.42);
+    let mut seg = |a: [f32; 3], c: [f32; 3]| {
+        frame.overlay_lines.push(LineVertex { pos: a, color });
+        frame.overlay_lines.push(LineVertex { pos: c, color });
+    };
+    for (index, (inward, pos, _)) in faces(b).into_iter().enumerate() {
+        if inward.dot(cam_pos - pos) <= 0.0 {
+            continue;
+        }
+        match index {
+            0 | 1 => {
+                let x = if index == 0 { b.x_max } else { b.x_min };
+                for &y in &ys {
+                    seg([x, y, b.z_min], [x, y, b.z_max]);
+                }
+                for &z in &zs {
+                    seg([x, b.y_min, z], [x, b.y_max, z]);
+                }
+            }
+            2 | 3 => {
+                let y = if index == 2 { b.y_max } else { b.y_min };
+                for &x in &xs {
+                    seg([x, y, b.z_min], [x, y, b.z_max]);
+                }
+                for &z in &zs {
+                    seg([b.x_min, y, z], [b.x_max, y, z]);
+                }
+            }
+            _ => {
+                let z = if index == 4 { b.z_max } else { b.z_min };
+                for &x in &xs {
+                    seg([x, b.y_min, z], [x, b.y_max, z]);
+                }
+                for &y in &ys {
+                    seg([b.x_min, y, z], [b.x_max, y, z]);
+                }
+            }
+        }
     }
 }

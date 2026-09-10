@@ -43,6 +43,8 @@ pub struct ViewSettings {
     pub speaker_labels_enabled: bool,
     /// `app.speakerSize` (default 0.08).
     pub speaker_size: f32,
+    /// `app.vbapCartesianFaceGridEnabled` ("Grid", default false).
+    pub vbap_grid: bool,
     pub trails: TrailSettings,
 }
 
@@ -59,6 +61,7 @@ impl Default for ViewSettings {
             speakers_visible: true,
             speaker_labels_enabled: false,
             speaker_size: 0.08,
+            vbap_grid: false,
             trails: TrailSettings::default(),
         }
     }
@@ -121,6 +124,9 @@ pub fn build_frame(
     selection: &Selection,
     volume_settings: &VolumeSettings,
     volume_state: &mut VolumeState,
+    // Eased head-pose rotation and whether the glTF head is available.
+    head_rotation: Quat,
+    head_loaded: bool,
     now: Instant,
 ) -> FrameOutput {
     let viewport = [rect.width(), rect.height()];
@@ -162,21 +168,45 @@ pub fn build_frame(
     let room = live.app.room_ratio.clone();
     let bounds = RoomBounds::from_ratio(&room);
     room::emit_room(&bounds, cam_pos, &mut frame);
+    if settings.vbap_grid {
+        room::emit_vbap_grids(
+            &bounds,
+            &room,
+            cam_pos,
+            &live.app.vbap_cartesian,
+            &mut frame,
+        );
+    }
     room::emit_axes(&mut frame, &project, &points_per_unit, &mut labels);
 
-    // Listener head: placeholder sphere until the glTF model lands (max
-    // dimension 0.34 in the Studio).
-    frame.meshes.push(MeshItem {
-        kind: MeshKind::Sphere,
-        instance: MeshInstance::new(
-            Mat4::from_scale_rotation_translation(Vec3::splat(0.17), Quat::IDENTITY, Vec3::ZERO),
-            with_alpha(hex_linear(0xb9a58f), 1.0),
-            [0.0, 0.0, 0.0, 0.1],
-        ),
-        blend: false,
-        depth_test: true,
-        order: 0,
-    });
+    // Listener head (Dame de Brassempouy, roughness 0.92, metalness 0) under
+    // the head-pose rotation; a sphere of the same size when the asset is
+    // missing.
+    if head_loaded {
+        frame.meshes.push(MeshItem {
+            kind: MeshKind::Head,
+            instance: MeshInstance::new(
+                Mat4::from_rotation_translation(head_rotation, Vec3::ZERO),
+                [1.0, 1.0, 1.0, 1.0],
+                [0.0, 0.0, 0.0, 0.08],
+            ),
+            blend: false,
+            depth_test: true,
+            order: 0,
+        });
+    } else {
+        frame.meshes.push(MeshItem {
+            kind: MeshKind::Sphere,
+            instance: MeshInstance::new(
+                Mat4::from_scale_rotation_translation(Vec3::splat(0.17), head_rotation, Vec3::ZERO),
+                with_alpha(hex_linear(0xb9a58f), 1.0),
+                [0.0, 0.0, 0.0, 0.1],
+            ),
+            blend: false,
+            depth_test: true,
+            order: 0,
+        });
+    }
 
     // Speakers.
     let speaker_visuals = speakers::collect(

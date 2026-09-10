@@ -74,6 +74,13 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub no_vsync: bool,
 
+    /// Listener head model (glTF binary). Missing file → placeholder sphere.
+    #[arg(
+        long,
+        default_value = "../omniphony-studio/assets/la_dame_de_brassempouy_centered.glb"
+    )]
+    pub head_model: PathBuf,
+
     /// Start with the object energy field volume enabled (for tests and
     /// measurements; it is off by default like in the Studio).
     #[arg(long, default_value_t = false)]

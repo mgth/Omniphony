@@ -476,7 +476,12 @@ fn uniforms(
     VolumeUniforms {
         model: model_matrix(box_min, box_max).to_cols_array_2d(),
         box_min: [box_min[0], box_min[1], box_min[2], inv_max],
-        box_max: [box_max[0], box_max[1], box_max[2], settings.opacity.clamp(0.05, 1.0)],
+        box_max: [
+            box_max[0],
+            box_max[1],
+            box_max[2],
+            settings.opacity.clamp(0.05, 1.0),
+        ],
         params: [
             settings.gamma_accumulate.clamp(1.0, 10.0),
             settings.gamma_mip.clamp(0.2, 3.0),
@@ -512,7 +517,10 @@ pub fn build(
     let mut draws = Vec::new();
     let n = settings.resolution.clamp(8, 64);
     let refresh = Duration::from_millis(u64::from(settings.refresh_ms.max(40)));
-    let due = |slot: &SlotState| slot.last_rebuild.is_none_or(|t| now.duration_since(t) >= refresh);
+    let due = |slot: &SlotState| {
+        slot.last_rebuild
+            .is_none_or(|t| now.duration_since(t) >= refresh)
+    };
     let room_sig = room_sig(room);
 
     // --- object energy field (live, no signature) ---
@@ -629,7 +637,16 @@ pub fn build(
         if slot.data.is_some() {
             draws.push(VolumeDraw {
                 slot: SLOT_GLOBAL,
-                uniforms: uniforms(settings, bounds, n, slot.max, Some(1.0), Colormap::Heatmap, true, &[]),
+                uniforms: uniforms(
+                    settings,
+                    bounds,
+                    n,
+                    slot.max,
+                    Some(1.0),
+                    Colormap::Heatmap,
+                    true,
+                    &[],
+                ),
                 upload,
                 smooth: settings.smooth,
             });
@@ -643,10 +660,10 @@ pub fn build(
         && let Some(bt) = band_table(table)
     {
         let all = settings.all_bands && bt.bands.len() > 1;
-        let stops_sig: u64 = settings
-            .speaker_stops
-            .iter()
-            .fold(0u64, |h, s| h.wrapping_mul(31).wrapping_add(f2u(s.pos) ^ f2u(s.rgb[0]) ^ f2u(s.rgb[1]) ^ f2u(s.rgb[2])));
+        let stops_sig: u64 = settings.speaker_stops.iter().fold(0u64, |h, s| {
+            h.wrapping_mul(31)
+                .wrapping_add(f2u(s.pos) ^ f2u(s.rgb[0]) ^ f2u(s.rgb[1]) ^ f2u(s.rgb[2]))
+        });
         let sig = signature(&[
             u64::from(table.version()),
             si as u64,
@@ -674,9 +691,13 @@ pub fn build(
                 let band_rgb: Vec<[f32; 3]> = (0..bt.bands.len())
                     .map(|b| {
                         let lo = bt.low_hz[b].max(20.0);
-                        let hi = bt.high_hz[b].filter(|h| *h > 0.0).unwrap_or(20000.0).min(20000.0);
+                        let hi = bt.high_hz[b]
+                            .filter(|h| *h > 0.0)
+                            .unwrap_or(20000.0)
+                            .min(20000.0);
                         let f = (lo * hi.max(lo)).sqrt().clamp(20.0, 20000.0);
-                        let t = ((f.ln() - 20f64.ln()) / (20000f64.ln() - 20f64.ln())).clamp(0.0, 1.0);
+                        let t =
+                            ((f.ln() - 20f64.ln()) / (20000f64.ln() - 20f64.ln())).clamp(0.0, 1.0);
                         energy_color(settings.speaker_colormap, t as f32, &settings.speaker_stops)
                     })
                     .collect();
@@ -787,7 +808,16 @@ pub fn build(
         if slot.data.is_some() {
             draws.push(VolumeDraw {
                 slot: SLOT_DISCONTINUITY,
-                uniforms: uniforms(settings, bounds, n, slot.max, Some(1.0), Colormap::Heatmap, true, &[]),
+                uniforms: uniforms(
+                    settings,
+                    bounds,
+                    n,
+                    slot.max,
+                    Some(1.0),
+                    Colormap::Heatmap,
+                    true,
+                    &[],
+                ),
                 upload,
                 smooth: settings.smooth,
             });

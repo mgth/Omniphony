@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, Pos2, Rect};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use crate::Args;
 use crate::model::app_state::AppState;
@@ -18,7 +18,9 @@ use crate::render::camera::OrbitCamera;
 use crate::render::{SceneRenderer, ViewportCallback};
 use crate::stats::{FrameStats, ProcStats};
 use crate::view::volumes::{Colormap, DiscontinuityMode};
-use crate::view::{self, ObjectDisplayMode, Selection, TrailMode, ViewSettings, VolumeSettings, VolumeState};
+use crate::view::{
+    self, ObjectDisplayMode, Selection, TrailMode, ViewSettings, VolumeSettings, VolumeState,
+};
 use crate::widgets::{self, OPTION_SCHEMA, OptionValue};
 
 const PANEL_WIDTH: f32 = 300.0;
@@ -45,6 +47,9 @@ pub struct StudioSpike {
     pick_speakers: Vec<(usize, Vec3, f32)>,
     volume_settings: VolumeSettings,
     volume_state: VolumeState,
+    head_loaded: bool,
+    /// Eased head-pose rotation (`scene/head-pose.js`, slerp 0.4 per frame).
+    head_rotation: Quat,
     control: ControlTx,
     /// Gain-table targets currently subscribed, and the last (re)subscribe.
     subscribed_tables: Vec<i64>,
@@ -60,10 +65,18 @@ impl StudioSpike {
             .wgpu_render_state
             .as_ref()
             .ok_or("eframe did not initialise wgpu")?;
+        let head = match crate::render::head::load(&args.head_model) {
+            Ok(mesh) => Some(mesh),
+            Err(e) => {
+                log::warn!("[head] {e}; drawing a placeholder sphere");
+                None
+            }
+        };
+        let head_loaded = head.is_some();
         rs.renderer
             .write()
             .callback_resources
-            .insert(SceneRenderer::new(&rs.device, rs.target_format));
+            .insert(SceneRenderer::new(&rs.device, rs.target_format, head));
 
         let layouts = load_layouts(&args.layouts_dir);
         log::info!(
@@ -138,10 +151,37 @@ impl StudioSpike {
                 ..VolumeSettings::default()
             },
             volume_state: VolumeState::default(),
+            head_loaded,
+            head_rotation: Quat::IDENTITY,
             control,
             subscribed_tables: Vec::new(),
             last_subscribe: None,
         })
+    }
+
+    /// Head pose: only while the renderer is in binaural output mode; the
+    /// wire quaternion is conjugated and permuted into the scene frame.
+    fn ease_head_pose(&mut self, ctx: &egui::Context) {
+        let target = {
+            let live = self.live.lock().unwrap();
+            let binaural = live
+                .app
+                .binaural
+                .as_ref()
+                .and_then(|b| b.get("outputMode"))
+                .and_then(|m| m.as_str())
+                == Some("binaural");
+            match (binaural, live.head_pose) {
+                (true, Some([w, x, y, z])) => Quat::from_xyzw(-y, -z, -x, w).normalize(),
+                _ => Quat::IDENTITY,
+            }
+        };
+        if self.head_rotation.abs_diff_eq(target, 1e-4) {
+            self.head_rotation = target;
+            return;
+        }
+        self.head_rotation = self.head_rotation.slerp(target, 0.4);
+        ctx.request_repaint();
     }
 
     /// `acquireGainTable` / `releaseGainTable`: keep the renderer's
@@ -224,6 +264,7 @@ impl StudioSpike {
         if self.camera.update() {
             ui.ctx().request_repaint();
         }
+        self.ease_head_pose(ui.ctx());
 
         let aspect = rect.width() / rect.height().max(1.0);
         if response.clicked()
@@ -244,6 +285,8 @@ impl StudioSpike {
                 &self.selection,
                 &self.volume_settings,
                 &mut self.volume_state,
+                self.head_rotation,
+                self.head_loaded,
                 Instant::now(),
             )
         };
@@ -404,6 +447,7 @@ impl StudioSpike {
                 widgets::switch_row(ui, "Object colours", &mut s.object_colors_enabled);
                 widgets::switch_row(ui, "Object labels", &mut s.object_labels_enabled);
                 widgets::switch_row(ui, "Effective render", &mut s.effective_render_enabled);
+                widgets::switch_row(ui, "Grid (VBAP nodes)", &mut s.vbap_grid);
                 ui.separator();
                 widgets::switch_row(ui, "Speakers", &mut s.speakers_visible);
                 widgets::switch_row(ui, "Speaker labels", &mut s.speaker_labels_enabled);
@@ -497,8 +541,16 @@ impl StudioSpike {
                             })
                             .width(130.0)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut v.discontinuity_mode, DiscontinuityMode::Gain, "Gain");
-                                ui.selectable_value(&mut v.discontinuity_mode, DiscontinuityMode::Centroid, "Centroid");
+                                ui.selectable_value(
+                                    &mut v.discontinuity_mode,
+                                    DiscontinuityMode::Gain,
+                                    "Gain",
+                                );
+                                ui.selectable_value(
+                                    &mut v.discontinuity_mode,
+                                    DiscontinuityMode::Centroid,
+                                    "Centroid",
+                                );
                             });
                     });
                 });
@@ -511,22 +563,42 @@ impl StudioSpike {
                 ui.small("Common parameters");
                 let mut res = v.resolution as f32;
                 if ui
-                    .add(egui::Slider::new(&mut res, 8.0..=64.0).step_by(2.0).text("resolution"))
+                    .add(
+                        egui::Slider::new(&mut res, 8.0..=64.0)
+                            .step_by(2.0)
+                            .text("resolution"),
+                    )
                     .changed()
                 {
                     v.resolution = res.round() as u32;
                 }
-                ui.add(egui::Slider::new(&mut v.opacity, 0.05..=1.0).step_by(0.05).text("opacity"));
-                ui.add(egui::Slider::new(&mut v.mix, 0.0..=1.0).step_by(0.01).text("mix"));
+                ui.add(
+                    egui::Slider::new(&mut v.opacity, 0.05..=1.0)
+                        .step_by(0.05)
+                        .text("opacity"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut v.mix, 0.0..=1.0)
+                        .step_by(0.01)
+                        .text("mix"),
+                );
                 ui.add(
                     egui::Slider::new(&mut v.gamma_accumulate, 1.0..=10.0)
                         .step_by(0.1)
                         .text("gamma accumulate"),
                 );
-                ui.add(egui::Slider::new(&mut v.gamma_mip, 0.2..=3.0).step_by(0.05).text("gamma mip"));
+                ui.add(
+                    egui::Slider::new(&mut v.gamma_mip, 0.2..=3.0)
+                        .step_by(0.05)
+                        .text("gamma mip"),
+                );
                 let mut refresh = v.refresh_ms as f32;
                 if ui
-                    .add(egui::Slider::new(&mut refresh, 40.0..=500.0).step_by(10.0).text("refresh (ms)"))
+                    .add(
+                        egui::Slider::new(&mut refresh, 40.0..=500.0)
+                            .step_by(10.0)
+                            .text("refresh (ms)"),
+                    )
                     .changed()
                 {
                     v.refresh_ms = refresh.round() as u32;
@@ -536,7 +608,11 @@ impl StudioSpike {
                 if !v.all_bands {
                     let mut band = v.band_index as f32;
                     if ui
-                        .add(egui::Slider::new(&mut band, 0.0..=7.0).step_by(1.0).text("band"))
+                        .add(
+                            egui::Slider::new(&mut band, 0.0..=7.0)
+                                .step_by(1.0)
+                                .text("band"),
+                        )
                         .changed()
                     {
                         v.band_index = band.round() as usize;
