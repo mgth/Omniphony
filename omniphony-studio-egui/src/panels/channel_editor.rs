@@ -827,6 +827,40 @@ impl StudioSpike {
         });
     }
 
+    /// The gizmo's version: the same commit, except that a drag in flight
+    /// only moves the local copy. The bed is a whole layout, and pushing one
+    /// per pointer move would be a stream of layouts.
+    pub(crate) fn set_channel_polar_from_drag(
+        &mut self,
+        name: &str,
+        azimuth: f64,
+        elevation: f64,
+        distance: f64,
+        send: bool,
+    ) {
+        if send {
+            self.set_channel_polar(name, azimuth, elevation, distance);
+            return;
+        }
+        let room = self.live.lock().unwrap().app.room_ratio.clone();
+        let distance = distance.max(0.01);
+        let adm = polar_to_adm(&room, azimuth, elevation, distance);
+        let mut live = self.live.lock().unwrap();
+        let mut channels = effective_channels(&self.channel_catalog, &live.app);
+        let Some(target) = channels.iter_mut().find(|c| c.name == name) else {
+            return;
+        };
+        target.coord_mode = CoordMode::Polar;
+        target.azimuth = azimuth;
+        target.elevation = elevation;
+        target.distance = distance;
+        target.x = adm[0];
+        target.y = adm[1];
+        target.z = adm[2];
+        let payload = build_layout_payload(&live.app, &channels);
+        live.app.live_options.virtual_bed = Some(payload);
+    }
+
     fn set_channel_polar(&mut self, name: &str, azimuth: f64, elevation: f64, distance: f64) {
         let room = self.live.lock().unwrap().app.room_ratio.clone();
         let distance = if distance > 0.0 { distance } else { 0.01 };

@@ -150,6 +150,11 @@ pub struct StudioSpike {
     pub(crate) diag_started: Instant,
     pub(crate) diag_paused: bool,
     pub(crate) diag_keepalive_at: Option<Instant>,
+    /// What the edit gizmo is on, and where: the drag handlers' anchor, kept
+    /// from the last frame and moved locally while a drag is in flight.
+    pub(crate) gizmo_target: Option<(crate::view::gizmos::GizmoTarget, glam::Vec3)>,
+    /// A gizmo drag in progress.
+    pub(crate) gizmo_drag: Option<crate::panels::gizmo_drag::GizmoDrag>,
     /// Where the frequency gauges were drawn last frame, so a click on one
     /// selects its speaker the way a click on the cube does.
     pub(crate) band_bar_hits: Vec<(usize, Rect)>,
@@ -382,6 +387,8 @@ impl StudioSpike {
             diag_started: Instant::now(),
             diag_paused: false,
             diag_keepalive_at: None,
+            gizmo_target: None,
+            gizmo_drag: None,
             band_bar_hits: Vec::new(),
             diag_selection: None,
             expected_orender_path: crate::host::commands::orender::expected_orender_path(
@@ -498,8 +505,30 @@ impl StudioSpike {
         let rect = ui.max_rect();
         let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
 
+        let aspect = rect.width() / rect.height().max(1.0);
+        // A gizmo drag takes the primary button before the camera does: an
+        // orbit under a drag would move the thing being aimed with.
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            self.begin_gizmo_drag(p, rect, aspect);
+        }
+        if self.gizmo_drag.is_some() {
+            if let Some(p) = response.interact_pointer_pos() {
+                self.update_gizmo_drag(p, rect, aspect);
+            }
+            // The drag ends when the button does, not when the pointer stops
+            // moving: a pause mid-drag is not a release.
+            if response.drag_stopped_by(egui::PointerButton::Primary)
+                || ui.input(|i| !i.pointer.primary_down())
+            {
+                self.end_gizmo_drag();
+            }
+        }
+        let dragging_gizmo = self.gizmo_drag.is_some();
+
         // OrbitControls: left rotate, middle dolly, right lens-shift pan, wheel dolly.
-        if response.dragged_by(egui::PointerButton::Primary) {
+        if response.dragged_by(egui::PointerButton::Primary) && !dragging_gizmo {
             let d = response.drag_delta();
             self.camera.rotate(d.x, d.y, rect.height());
         }
@@ -511,10 +540,21 @@ impl StudioSpike {
             self.camera.pan(d.x, d.y);
         }
         if response.hovered() {
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            let (scroll, ctrl, shift) = ui.input(|i| {
+                (
+                    i.smooth_scroll_delta.y,
+                    i.modifiers.command,
+                    i.modifiers.shift,
+                )
+            });
             if scroll != 0.0 {
-                // egui: positive = wheel up; three.js deltaY < 0 for wheel up.
-                self.camera.dolly_wheel(-scroll);
+                // Held with a modifier the wheel moves the target, not the
+                // camera: fine with shift, coarse with ctrl.
+                if (ctrl || shift) && self.gizmo_wheel(scroll, shift) {
+                } else {
+                    // egui: positive = wheel up; three.js deltaY < 0 for wheel up.
+                    self.camera.dolly_wheel(-scroll);
+                }
             }
         }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -525,7 +565,6 @@ impl StudioSpike {
         }
         self.ease_head_pose(ui.ctx());
 
-        let aspect = rect.width() / rect.height().max(1.0);
         if response.clicked()
             && let Some(p) = response.interact_pointer_pos()
         {
@@ -551,6 +590,11 @@ impl StudioSpike {
         };
         self.pick_objects = out.pick_objects;
         self.pick_speakers = out.pick_speakers;
+        // A drag owns the anchor while it lasts: the frame's copy is the
+        // position before the pointer moved.
+        if self.gizmo_drag.is_none() {
+            self.gizmo_target = out.gizmo_target;
+        }
 
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
