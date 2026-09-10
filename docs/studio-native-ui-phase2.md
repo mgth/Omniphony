@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| mpv overlay mirroring | Studio's object, label, heatmap and trail choices pushed to the overlay whenever they change, and the whole set pushed again on every fresh connection | `/omniphony/control/overlay/*` |
 | Info modals | The long-form explanations of eight sections, opened by clicking the section's own title | nothing |
 | Scene-effects bar | Seven quick toggles over the viewport for the display switches reached for most often, and the two nature flyouts (object marker, trail kind) | nothing, except the mpv overlay's own enable |
 | Resample sparkline | The smoothed latency against its target and the rate adjustment in ppm, stacked on one canvas over the diagnostics plot's own window | nothing |
@@ -104,6 +105,15 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The mpv overlay draws the same scene on top of the video, and the renderer owns
+and persists its settings. Studio's job is to keep them in step with what it is
+showing itself, so the two pictures do not disagree — a trail visible in Studio
+and absent over the film is a bug the user reports as "the overlay is broken".
+Two moments matter: a mirrored control changing, and a fresh connection, because
+the renderer comes up on its own persisted values and without the second push
+Studio's would not apply until the user touched each control in turn. A new
+snapshot epoch is what marks that moment.
 
 The `*.infoBody` strings are written as web markup, because the web drops them
 into a modal with `innerHTML`. Stripping the tags would lose the structure —
@@ -376,8 +386,8 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
   host needs its own HTTP client) and the dead rows of the audio input panel
   (backend, imported layout, channel count, sample rate, map, LFE mode) which
   belong to the legacy PCM mode.
-- **Elsewhere**: the gradient editor, the code editor, the SOFA browser, the
-  auto-tune wizard, mpv overlay mirroring.
+- **Elsewhere**: the gradient editor (and with it the overlay's custom gradient
+  stops), the code editor, the SOFA browser, the auto-tune wizard.
 - **Host services** the native app does not have yet: the derived master meter.
 
 ## The gate

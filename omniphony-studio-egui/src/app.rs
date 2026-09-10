@@ -127,6 +127,9 @@ pub struct StudioSpike {
     pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// What was last mirrored onto the mpv overlay, and for which snapshot.
+    pub(crate) overlay_pushed: Option<crate::panels::mpv_overlay::OverlayPrefs>,
+    pub(crate) overlay_pushed_epoch: Option<u64>,
     /// Which long-form info modal is open, by its i18n key prefix.
     pub(crate) info_modal_open: Option<String>,
     /// Which scene-effects flyout is open, if any.
@@ -344,6 +347,8 @@ impl StudioSpike {
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
             // executable's own directory.
+            overlay_pushed: None,
+            overlay_pushed_epoch: None,
             info_modal_open: None,
             scene_fx_flyout_open: None,
             resample_plot_open: false,
@@ -725,6 +730,7 @@ impl eframe::App for StudioSpike {
         }
         self.refresh_channel_catalog();
         self.sync_virtual_bed_objects(false);
+        self.maintain_mpv_overlay();
         self.maintain_renderer_watchdog();
         self.maintain_object_test_source();
         self.maintain_test_idle_feed();
