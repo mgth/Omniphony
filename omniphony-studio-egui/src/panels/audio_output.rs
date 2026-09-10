@@ -267,23 +267,54 @@ impl StudioSpike {
         }
     }
 
+    /// The rate is a text field with a menu of presets beside it, not a plain
+    /// select: a device may run at a rate nobody thought to list, and the
+    /// renderer accepts any of them. The presets are a shortcut, not the set.
     fn sample_rate_row(&mut self, ui: &mut Ui, current: u32) {
-        let mut chosen = current;
+        let mut apply: Option<u32> = None;
         ui.horizontal(|ui| {
             ui.label(t("audio.sampleRate"));
+            widgets::help(ui, "help.audio.sampleRate");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // A preset picks a value *and* applies it, as the web's menu
+                // does.
                 egui::ComboBox::from_id_salt("audio-sample-rate")
-                    .selected_text(rate_label(current))
-                    .width(130.0)
+                    .selected_text("▾")
+                    .width(34.0)
                     .show_ui(ui, |ui| {
                         for rate in SAMPLE_RATE_PRESETS {
-                            ui.selectable_value(&mut chosen, *rate, rate_label(*rate));
+                            if ui
+                                .selectable_label(*rate == current, rate_label(*rate))
+                                .clicked()
+                            {
+                                apply = Some(*rate);
+                            }
                         }
                     });
+                // Not overwritten while it is being typed in: the field holds
+                // what the user is writing, not what the renderer last said.
+                if self.sample_rate_edit.is_none() {
+                    self.sample_rate_edit = Some(current.to_string());
+                }
+                let text = self.sample_rate_edit.get_or_insert_with(String::new);
+                let response = ui.add(
+                    egui::TextEdit::singleline(text)
+                        .desired_width(90.0)
+                        .font(egui::FontId::proportional(theme::FONT_SIZE)),
+                );
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    apply = Some(text.trim().parse::<u32>().unwrap_or(0));
+                }
+                if !response.has_focus() && apply.is_none() {
+                    // Back to the renderer's answer as soon as the field is
+                    // left, so an abandoned edit does not linger as a claim.
+                    *text = current.to_string();
+                }
             });
         });
-        if chosen != current {
-            self.live.lock().unwrap().app.audio.audio_sample_rate = (chosen > 0).then_some(chosen);
+        if let Some(rate) = apply {
+            self.sample_rate_edit = Some(rate.to_string());
+            self.live.lock().unwrap().app.audio.audio_sample_rate = (rate > 0).then_some(rate);
             self.send_audio_config();
         }
     }

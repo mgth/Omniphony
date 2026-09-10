@@ -109,6 +109,13 @@ recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
 
+The sample rate is a text field with a menu of presets beside it rather than a
+plain select, because a device may run at a rate nobody thought to list and the
+renderer accepts any of them — the presets are a shortcut, not the set. The
+field is not overwritten while it is being typed in, and returns to the
+renderer's answer as soon as it is left, so an abandoned edit does not linger as
+a claim about the device.
+
 Two meter behaviours were the host's, and the OSC stream carries neither. Both
 exist because a meter has to keep saying something true between messages. A
 renderer that never publishes a master level still publishes speaker levels, so
@@ -415,9 +422,8 @@ a transient stays readable after it has passed.
 Specifications for all of it were extracted from the web sources first and are
 in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
-- **Audio panel**: the sample-rate preset menu (the native select offers the
-  presets but not a free-text rate), and the diagnostics plot's FFT, difference
-  and measurement modes.
+- **Audio panel**: the diagnostics plot's FFT, difference and measurement
+  modes.
 - **Renderer panel**: the file-parameter Browse and Edit buttons, the info
   modals, and the SOFA browser the binaural tab's file source needs.
 - **Speakers**: the 3D per-speaker frequency gauge and the band cursor that
