@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Resample sparkline | The smoothed latency against its target and the rate adjustment in ppm, stacked on one canvas over the diagnostics plot's own window | nothing |
 | Host services | The local-renderer auto-start watchdog, and Launch / Stop / install / restart for the renderer and its OS service | `/omniphony/control/quit` on Stop; the rest is process control, not OSC |
 | Language | All eight of the web's catalogues, the picker in the Display section, and `auto` following the environment | nothing — the language is this host's own |
 | Hybrid backend | The Mix / inner-backend tabs, the external and internal backends, the distance metric, the curve smoothing, and the blend-curve editor with its point editor | `/omniphony/control/hybrid/external_backend`, `…/internal_backend`, `…/metric`, `…/curve_smoothing`, `…/curve` |
@@ -101,6 +102,13 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The resample sparkline puts the smoothed latency and the rate adjustment in one
+picture because they are cause and effect — the controller pulls the rate to
+move the latency — and reading either one alone says nothing about whether the
+loop is behaving. A missing sample breaks the line rather than being bridged:
+the gap is what happened. Closing the plot drops its history, because a plot
+reopened ten minutes later showing a stale window would be read as current.
 
 The auto-start watchdog is what makes "open Studio and it works" true on a
 machine where the renderer is a separate process: when the link has been down
@@ -328,10 +336,9 @@ a transient stays readable after it has passed.
 Specifications for all of it were extracted from the web sources first and are
 in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
-- **Audio panel**: the resample plot, the
-  sample-rate preset menu (the native select offers the presets but not a
-  free-text rate), and the diagnostics plot's FFT, difference and measurement
-  modes.
+- **Audio panel**: the sample-rate preset menu (the native select offers the
+  presets but not a free-text rate), and the diagnostics plot's FFT, difference
+  and measurement modes.
 - **Renderer panel**: the file-parameter Browse and Edit buttons, the info
   modals, and the SOFA browser the binaural tab's file source needs.
 - **Speakers**: the 3D per-speaker frequency gauge and the band cursor that

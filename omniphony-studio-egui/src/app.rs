@@ -127,6 +127,9 @@ pub struct StudioSpike {
     pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// Resample sparkline: whether it is showing, and what it has sampled.
+    pub(crate) resample_plot_open: bool,
+    pub(crate) resample_series: crate::panels::resample_plot::ResampleSeries,
     /// Diagnostics plot: the sampled series, when the plot started, whether it
     /// is frozen, and when publication was last re-asserted.
     pub(crate) diag_series: crate::panels::diag_plot::DiagSeries,
@@ -337,6 +340,8 @@ impl StudioSpike {
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
             // executable's own directory.
+            resample_plot_open: false,
+            resample_series: Default::default(),
             diag_series: Default::default(),
             diag_started: Instant::now(),
             diag_paused: false,
