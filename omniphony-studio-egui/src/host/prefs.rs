@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::panels::diag_plot::DiagPlotPrefs;
 use crate::panels::object_test::ObjectTestPrefs;
+use crate::panels::updates::UpdatePrefs;
 use crate::ui::layout::OverlayLayout;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -23,6 +24,8 @@ pub struct Prefs {
     pub object_test: ObjectTestPrefs,
     /// The `diagPlot.*` keys of the diagnostics plot.
     pub diag_plot: DiagPlotPrefs,
+    /// The `omniphony.updateCheck.*` keys of the release check.
+    pub updates: UpdatePrefs,
 }
 
 fn path(config_dir: &Path) -> PathBuf {

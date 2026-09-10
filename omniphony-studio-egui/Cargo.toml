@@ -49,6 +49,10 @@ env_logger = "0.11"
 memory-stats = "1"
 # Native file dialogs (layout import/export), same crate as the Tauri host.
 rfd = "0.16"
+# The one HTTP client, for the GitHub release check. Same crate and major as
+# the Tauri host's; `rustls` rather than a system TLS stack so the three CI
+# targets build the same way.
+ureq = { version = "2", default-features = false, features = ["tls", "json", "gzip"] }
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 
 [profile.release]

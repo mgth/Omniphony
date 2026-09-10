@@ -34,3 +34,4 @@ pub mod sources_2d;
 pub mod speaker_editor;
 pub mod speaker_layouts;
 pub mod tools;
+pub mod updates;

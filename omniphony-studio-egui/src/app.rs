@@ -127,6 +127,8 @@ pub struct StudioSpike {
     pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// An update check in flight, answering on its own thread.
+    pub(crate) update_check: Option<crate::panels::updates::CheckHandle>,
     /// Which gradient stop each custom-colormap editor has selected.
     pub(crate) object_stop_selected: Option<usize>,
     pub(crate) speaker_stop_selected: Option<usize>,
@@ -350,6 +352,7 @@ impl StudioSpike {
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
             // executable's own directory.
+            update_check: None,
             object_stop_selected: None,
             speaker_stop_selected: None,
             overlay_pushed: None,
@@ -603,6 +606,7 @@ impl StudioSpike {
             self.brand_row(ui);
             self.connection_line(ui);
             self.profiles_row(ui);
+            self.updates_panel(ui);
             let height = ui.available_height();
             egui::ScrollArea::vertical()
                 .id_salt("overlay-left-scroll")
