@@ -204,6 +204,8 @@ pub struct FrameOutput {
     pub frame: FrameData,
     pub labels: Vec<Label>,
     pub band_bars: Vec<BandBar>,
+    /// What the edit gizmo is on, and where it is, for the drag handlers.
+    pub gizmo_target: Option<(gizmos::GizmoTarget, Vec3)>,
     /// `(id, scene position, pick radius)` for objects.
     pub pick_objects: Vec<(String, Vec3, f32)>,
     /// `(index, scene position, pick radius)` for speakers.
@@ -405,15 +407,22 @@ pub fn build_frame(
     // The edit gizmos follow the thing this editor moves: the selected
     // speaker, or a selected object that is a virtual bed channel — a real
     // object's position belongs to whatever is playing it, not to the editor.
-    let gizmo_target = match selection.speaker {
-        Some(index) => speaker_visuals.get(index).map(|sp| sp.scene_pos),
+    let gizmo_target: Option<(gizmos::GizmoTarget, Vec3)> = match selection.speaker {
+        Some(index) => speaker_visuals
+            .get(index)
+            .map(|sp| (gizmos::GizmoTarget::Speaker(index), sp.scene_pos)),
         None => selection.object.as_deref().and_then(|id| {
             gizmos::is_virtual_channel(&live.app, id)
-                .then(|| objects.iter().find(|o| o.id == id).map(|o| o.scene_pos))
+                .then(|| {
+                    objects
+                        .iter()
+                        .find(|o| o.id == id)
+                        .map(|o| (gizmos::GizmoTarget::Channel(id.to_owned()), o.scene_pos))
+                })
                 .flatten()
         }),
     };
-    if let Some(target) = gizmo_target {
+    if let Some((_, target)) = gizmo_target.clone() {
         let g = settings.gizmo;
         match g.mode {
             gizmos::EditMode::Polar if g.polar_armed => {
@@ -495,6 +504,7 @@ pub fn build_frame(
         frame,
         labels,
         band_bars,
+        gizmo_target,
         pick_objects,
         pick_speakers,
     }

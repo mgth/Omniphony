@@ -17,7 +17,7 @@ use crate::render::{
     FrameData, LineVertex, MeshInstance, MeshItem, MeshKind, hex_linear, with_alpha,
 };
 
-use crate::model::app_state::AppState;
+use crate::model::app_state::{AppState, RoomRatio};
 
 use super::Label;
 
@@ -43,6 +43,74 @@ pub struct GizmoState {
     /// Armed by the editor's "3D Edit" button, one mode at a time.
     pub polar_armed: bool,
     pub cartesian_armed: bool,
+}
+
+/// What the gizmo is pointed at, so a drag knows what to commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GizmoTarget {
+    /// A speaker, by its index in the layout.
+    Speaker(usize),
+    /// A virtual bed channel, by name.
+    Channel(String),
+}
+
+/// A scene position back to the normalised ADM triple the layout is written
+/// in: the room warp inverted, the axes swizzled, the result clamped.
+pub fn scene_to_normalized(scene: Vec3, room: &RoomRatio) -> [f64; 3] {
+    use omniphony_geometry::f64 as g;
+    g::inverse_room_scaled_position(
+        g::scene_to_adm([scene.x as f64, scene.y as f64, scene.z as f64]),
+        [room.width, room.length, room.height],
+        room.rear,
+        room.lower,
+        room.center_blend,
+    )
+}
+
+/// Where a ray crosses a plane through the origin, or `None` when it runs
+/// along it.
+pub fn ray_plane(origin: Vec3, dir: Vec3, normal: Vec3) -> Option<Vec3> {
+    let denominator = normal.dot(dir);
+    if denominator.abs() < 1e-6 {
+        return None;
+    }
+    let t = -normal.dot(origin) / denominator;
+    (t > 0.0).then(|| origin + dir * t)
+}
+
+/// How far along an axis the closest approach of a ray lies — the scalar an
+/// axis drag moves the speaker by.
+pub fn project_ray_onto_axis(origin: Vec3, dir: Vec3, axis_origin: Vec3, axis_dir: Vec3) -> f32 {
+    let w = axis_origin - origin;
+    let a = axis_dir.dot(axis_dir);
+    let b = axis_dir.dot(dir);
+    let c = dir.dot(dir);
+    let d = axis_dir.dot(w);
+    let e = dir.dot(w);
+    let denominator = a * c - b * b;
+    // A ray along the axis has no unique closest point; the axis's own
+    // projection of the origin is the honest answer.
+    if denominator.abs() < 1e-6 {
+        return d / a.max(1e-6);
+    }
+    (b * e - c * d) / denominator
+}
+
+/// The angle snapping a polar drag applies.
+///
+/// The radial distance of the pointer from the ring is the precision control:
+/// on the ring the drag snaps to whole degrees, and pulling outward past a
+/// tenth of the radius coarsens it to five. Nothing is snapped while the
+/// pointer is inside the ring, which is where fine work happens.
+pub fn snap_drag_angle(deg: f32, radial_delta: f32) -> f32 {
+    use omniphony_geometry::f32 as g;
+    if (0.0..=0.1).contains(&radial_delta) {
+        g::snap_deg(deg, 1.0, 0.5)
+    } else if radial_delta > 0.1 {
+        g::snap_deg(deg, 5.0, 2.5)
+    } else {
+        deg
+    }
 }
 
 /// `channelPlacement(name) === 'virtual'`: the channel is spatialised into an
@@ -307,6 +375,50 @@ mod tests {
 
     /// The cartesian gizmo grows with the camera distance so its handles keep
     /// their size on screen, and never collapses when the camera is close.
+    #[test]
+    fn a_ray_meets_the_plane_it_points_at() {
+        let hit = ray_plane(Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, -1.0, 0.0), Vec3::Y);
+        assert_eq!(hit, Some(Vec3::ZERO));
+        // Parallel to the plane, and pointing away from it: no crossing.
+        assert!(ray_plane(Vec3::new(0.0, 2.0, 0.0), Vec3::X, Vec3::Y).is_none());
+        assert!(ray_plane(Vec3::new(0.0, 2.0, 0.0), Vec3::Y, Vec3::Y).is_none());
+    }
+
+    /// An axis drag moves the speaker by how far the pointer travelled along
+    /// that axis, whatever angle the camera is at.
+    #[test]
+    fn the_axis_projection_follows_the_pointer_along_the_axis() {
+        // A ray straight down onto the X axis at x = 3.
+        let t = project_ray_onto_axis(
+            Vec3::new(3.0, 5.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::ZERO,
+            Vec3::X,
+        );
+        assert!((t - 3.0).abs() < 1e-4, "t = {t}");
+        // An axis that starts elsewhere is measured from where it starts.
+        let t = project_ray_onto_axis(
+            Vec3::new(3.0, 5.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::X,
+        );
+        assert!((t - 2.0).abs() < 1e-4, "t = {t}");
+    }
+
+    /// The distance from the ring is the precision control, and inside it
+    /// nothing is snapped at all.
+    #[test]
+    fn pulling_away_from_the_ring_coarsens_the_snap() {
+        assert!((snap_drag_angle(44.7, 0.02) - 45.0).abs() < 1e-4);
+        // On the ring, five degrees away from a multiple of five: untouched.
+        assert!((snap_drag_angle(42.0, 0.02) - 42.0).abs() < 1e-4);
+        // Pulled out: the same angle snaps to the five-degree grid.
+        assert!((snap_drag_angle(44.0, 0.5) - 45.0).abs() < 1e-4);
+        // Inside the ring: free.
+        assert!((snap_drag_angle(44.7, -0.3) - 44.7).abs() < 1e-4);
+    }
+
     #[test]
     fn the_cartesian_gizmo_scales_with_the_camera() {
         let mut near = FrameData::new(

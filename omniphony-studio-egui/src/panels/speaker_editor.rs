@@ -615,6 +615,24 @@ impl StudioSpike {
     }
 
     /// One field of one speaker in the layout document, then apply.
+    /// The three coordinates in one edit, which is what a drag produces: three
+    /// separate edits would be three layout applies for one move.
+    pub(crate) fn edit_speaker_position(&mut self, id: i32, adm: [f64; 3]) {
+        self.ctl.send_json(
+            "/omniphony/control/config/layout",
+            &serde_json::json!({
+                "speakerEdits": [{
+                    "id": id.max(0),
+                    "coordMode": "cartesian",
+                    "x": adm[0],
+                    "y": adm[1],
+                    "z": adm[2],
+                }]
+            }),
+        );
+        self.apply_layout();
+    }
+
     fn edit_speaker(&mut self, id: i32, key: &str, value: serde_json::Value) {
         self.ctl.send_json(
             "/omniphony/control/config/layout",

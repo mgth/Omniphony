@@ -101,6 +101,7 @@ config, debounced 600 ms so a drag writes once.
 | Speaker orientation | Aim at listener: the cubes turn their driver face toward the listening position, with no roll on elevated speakers, and that face carries the dark driver disc | nothing |
 | Room dimension guides | Seven measured guides outside the box — width, front, rear, total depth, height, lower and total height — each a line with end ticks and its length in metres, shown while the room panel is open | nothing |
 | Edit gizmos | The polar gizmo (azimuth ring with its degree scale, elevation arc turned into the speaker's azimuth plane, and the measured distance line) and the cartesian one (three axes and three handles), each shown only while the editor has armed its mode | nothing — they draw what the editor's own fields send |
+| Gizmo dragging | Dragging the ring turns the speaker around the listener, the arc raises it in its own plane, a cartesian handle slides it along one axis, and the wheel held with a modifier moves it closer or further | `/omniphony/control/config/layout` (`speakerEdits`) + apply on release for a speaker; `control_virtual_bed` per move for a channel |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped by
@@ -159,6 +160,16 @@ interpolated rather than dropped, since a gap left in place would shift every
 bin after it. The transform length is bounded by both the history collected and
 the window the user chose, which is what makes a shorter window a coarser
 spectrum.
+
+Dragging them is where the two commit rules matter. A speaker's edit is sent
+once, on release: the layout is applied as a whole and a stream of applies per
+pointer move would be a stream of gain recomputes. A virtual bed channel's is
+sent as it moves, because its position lives in the renderer's bed, which would
+put the channel back between updates. The camera is held still for the duration
+— an orbit under a drag would move the thing being aimed with — and the
+pointer's distance from the ring is the precision control, snapping to whole
+degrees on the ring, to five when pulled outward, and to nothing at all inside
+it.
 
 The edit gizmos draw the coordinates as things you can read off the scene: the
 polar one puts a ring at the speaker's distance with a scale in degrees, an
