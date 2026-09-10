@@ -136,6 +136,10 @@ pub struct StudioSpike {
     /// The orender binary this Studio would launch, resolved once at start-up.
     /// A renderer answering from anywhere else is not one we started.
     pub(crate) expected_orender_path: Option<String>,
+    /// Hybrid backend: which tab of its panel is showing, and which curve
+    /// point is selected.
+    pub(crate) hybrid_tab: crate::panels::hybrid::HybridTab,
+    pub(crate) hybrid_point: Option<usize>,
     /// The speaker a drag picked up, until it is dropped on another row.
     pub(crate) speaker_drag: Option<usize>,
     /// Whether the About box is showing.
@@ -326,6 +330,8 @@ impl StudioSpike {
                 &crate::host::commands::HostPaths::default(),
                 None,
             ),
+            hybrid_tab: "hybrid".to_owned(),
+            hybrid_point: None,
             speaker_drag: None,
             about_open: false,
             synthetic_bed_ids: Vec::new(),
