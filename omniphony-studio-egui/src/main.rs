@@ -8,11 +8,11 @@
 //! panels over the viewport so panel expansion can never resize the scene.
 
 mod app;
-mod layout;
+mod model;
 mod osc;
 mod render;
-mod scene;
 mod stats;
+mod view;
 mod widgets;
 
 use std::path::{Path, PathBuf};
@@ -50,9 +50,15 @@ pub struct Args {
     #[arg(long, default_value_t = 0.0)]
     pub synthetic_stop_after: f32,
 
-    /// Speaker layout YAML (one of the Studio layouts/*.yaml files).
-    #[arg(long, default_value = "../layouts/7.1.4.yaml")]
-    pub layout: PathBuf,
+    /// Directory of Studio layout files (`layouts/*.yaml`), loaded with the
+    /// host's layout loader. A live renderer replaces the selection with its
+    /// own `/state/layout`.
+    #[arg(long, default_value = "../layouts")]
+    pub layouts_dir: PathBuf,
+
+    /// Layout key to show before a renderer sends its own (default: 7.1.4).
+    #[arg(long)]
+    pub layout_key: Option<String>,
 
     /// CJK-capable font file appended as a fallback face. Without it egui's
     /// bundled fonts render CJK as boxes. Default: probe common system paths.
@@ -67,6 +73,22 @@ pub struct Args {
     /// instead of the monitor's refresh rate.
     #[arg(long, default_value_t = false)]
     pub no_vsync: bool,
+
+    /// Listener head model (glTF binary). Missing file → placeholder sphere.
+    #[arg(
+        long,
+        default_value = "../omniphony-studio/assets/la_dame_de_brassempouy_centered.glb"
+    )]
+    pub head_model: PathBuf,
+
+    /// Start with trails disabled (measurements).
+    #[arg(long, default_value_t = false)]
+    pub no_trails: bool,
+
+    /// Start with the object energy field volume enabled (for tests and
+    /// measurements; it is off by default like in the Studio).
+    #[arg(long, default_value_t = false)]
+    pub object_field: bool,
 }
 
 /// Probed in order when `--cjk-font` is not given.
