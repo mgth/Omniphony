@@ -91,6 +91,10 @@ pub struct StudioSpike {
     pub(crate) idle_feed_armed_at: Option<Instant>,
     /// Speaker selection of the previous frame, to notice a change.
     pub(crate) last_speaker_selection: Option<usize>,
+    /// Room dimensions as the form holds them, and whether this panel is the
+    /// one that last changed them.
+    pub(crate) room_edit: Option<crate::panels::room::RoomDimensions>,
+    pub(crate) room_editing: bool,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
     /// Handle on the renderer: every control the panels expose goes through it.
@@ -242,6 +246,8 @@ impl StudioSpike {
             speaker_test_deadline: None,
             idle_feed_armed_at: None,
             last_speaker_selection: None,
+            room_edit: None,
+            room_editing: false,
             config_dir,
             ctl,
             last_subscribe: None,
@@ -470,7 +476,11 @@ impl StudioSpike {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     self.osc_section(ui);
+                    self.audio_input_section(ui);
+                    self.sources_2d_section(ui);
+                    self.room_geometry_section(ui);
                     self.display_sections(ui);
+                    self.drc_section(ui);
                     self.tool_sections(ui);
                 });
         });
