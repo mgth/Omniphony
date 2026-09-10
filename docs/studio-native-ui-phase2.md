@@ -84,9 +84,8 @@ a transient stays readable after it has passed.
 
 ## Not covered by this pass
 
-Specifications for all of it were extracted from the web sources first and live
-in the session scratchpad (`spec_panels_right.md`, `spec_design.md`,
-`spec_host_contract.md`).
+Specifications for all of it were extracted from the web sources first and are
+in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
 - **Audio panel**: output backend and device, the staged-config apply flow, the
   file/pipe output, latency controls and their readouts, adaptive resampling,
