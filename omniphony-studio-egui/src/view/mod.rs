@@ -46,6 +46,9 @@ pub struct ViewSettings {
     /// `app.speakerFaceListenerEnabled`: aim the cubes at the listener and
     /// show the driver face.
     pub speaker_face_listener_enabled: bool,
+    /// `app.roomGeometryExpanded`: the dimension guides, shown while the room
+    /// panel is open. Not persisted, as in the web — it follows the panel.
+    pub room_guides_visible: bool,
     /// `app.speakerSize` (default 0.08).
     pub speaker_size: f32,
     /// `app.vbapCartesianFaceGridEnabled` ("Grid", default false).
@@ -67,6 +70,7 @@ impl Default for ViewSettings {
             speaker_labels_enabled: false,
             speaker_band_bars_enabled: false,
             speaker_face_listener_enabled: false,
+            room_guides_visible: false,
             speaker_size: 0.08,
             vbap_grid: false,
             trails: TrailSettings::default(),
@@ -287,6 +291,16 @@ pub fn build_frame(
         );
     }
     room::emit_axes(&mut frame, &project, &points_per_unit, &mut labels);
+    if settings.room_guides_visible {
+        room::emit_dimension_guides(
+            &bounds,
+            &room,
+            &mut frame,
+            &project,
+            &points_per_unit,
+            &mut labels,
+        );
+    }
 
     // Listener head (Dame de Brassempouy, roughness 0.92, metalness 0) under
     // the head-pose rotation; a sphere of the same size when the asset is

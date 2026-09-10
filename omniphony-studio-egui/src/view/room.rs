@@ -286,6 +286,109 @@ pub fn emit_axes(
     }
 }
 
+/// The seven room dimension guides (`room-geometry.js`).
+///
+/// Each is a line with a tick at both ends and a label in metres, laid just
+/// outside the room so the numbers can be read against the box they describe.
+/// They are shown only while the room panel is open, which is the moment those
+/// numbers are being edited.
+pub fn emit_dimension_guides(
+    b: &RoomBounds,
+    room: &RoomRatio,
+    frame: &mut FrameData,
+    project: &dyn Fn(Vec3) -> Option<(egui::Pos2, f32)>,
+    points_per_unit: &dyn Fn(f32) -> f32,
+    labels: &mut Vec<Label>,
+) {
+    const OFF: f32 = 0.08;
+    const TICK: f32 = 0.04;
+    /// The label sits a little past the tick, clear of the line.
+    const LABEL_AT: f32 = 2.2;
+    let mpu = room.scale_m.max(0.001) as f32;
+    let y_top = b.y_max + 0.06;
+    let guides: [(u32, Vec3, Vec3, Vec3, f32); 7] = [
+        (
+            0x88c7ff,
+            Vec3::new(b.x_max + OFF, y_top, b.z_min),
+            Vec3::new(b.x_max + OFF, y_top, b.z_max),
+            Vec3::X,
+            room.width as f32 * mpu * 2.0,
+        ),
+        (
+            0xa0ffd1,
+            Vec3::new(0.0, y_top, b.z_max + OFF),
+            Vec3::new(b.x_max, y_top, b.z_max + OFF),
+            Vec3::Z,
+            room.length as f32 * mpu,
+        ),
+        (
+            0xffd08a,
+            Vec3::new(b.x_min, y_top, b.z_max + OFF),
+            Vec3::new(0.0, y_top, b.z_max + OFF),
+            Vec3::Z,
+            room.rear as f32 * mpu,
+        ),
+        (
+            0xb8b8ff,
+            Vec3::new(b.x_min, y_top, b.z_min - OFF),
+            Vec3::new(b.x_max, y_top, b.z_min - OFF),
+            Vec3::Z,
+            (room.length + room.rear) as f32 * mpu,
+        ),
+        (
+            0xff9ed8,
+            Vec3::new(b.x_max + OFF, 0.0, b.z_max + OFF),
+            Vec3::new(b.x_max + OFF, b.y_max, b.z_max + OFF),
+            Vec3::X,
+            room.height as f32 * mpu,
+        ),
+        (
+            0xff7a7a,
+            Vec3::new(b.x_max + OFF, b.y_min, b.z_max + OFF),
+            Vec3::new(b.x_max + OFF, 0.0, b.z_max + OFF),
+            Vec3::X,
+            room.lower as f32 * mpu,
+        ),
+        (
+            0xffb3e6,
+            Vec3::new(b.x_max + OFF, b.y_min, b.z_min - OFF),
+            Vec3::new(b.x_max + OFF, b.y_max, b.z_min - OFF),
+            Vec3::X,
+            (room.height + room.lower) as f32 * mpu,
+        ),
+    ];
+    for (hex, start, end, tick_dir, metres) in guides {
+        let colour = with_alpha(hex_linear(hex), 0.85);
+        let tick = tick_dir.normalize_or_zero() * TICK;
+        let mut segment = |a: Vec3, z: Vec3| {
+            frame.overlay_lines.push(LineVertex {
+                pos: a.to_array(),
+                color: colour,
+            });
+            frame.overlay_lines.push(LineVertex {
+                pos: z.to_array(),
+                color: colour,
+            });
+        };
+        segment(start, end);
+        segment(start - tick, start + tick);
+        segment(end - tick, end + tick);
+        if let Some((p, depth)) = project((start + end) * 0.5 + tick * LABEL_AT) {
+            labels.push(Label {
+                pos: p,
+                text: format!("{metres:.2} m"),
+                color: egui::Color32::from_rgb(
+                    ((hex >> 16) & 0xff) as u8,
+                    ((hex >> 8) & 0xff) as u8,
+                    (hex & 0xff) as u8,
+                ),
+                size: (0.052 * points_per_unit(depth)).clamp(6.0, 40.0).round(),
+                depth,
+            });
+        }
+    }
+}
+
 /// Six black discs projected on the walls for a selected speaker/object
 /// (`updateSelected*FaceShadows`).
 pub fn emit_face_shadows(p: Vec3, b: &RoomBounds, frame: &mut FrameData) {

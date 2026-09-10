@@ -82,7 +82,9 @@ impl StudioSpike {
             edit.front + edit.rear,
             edit.height + edit.lower
         );
-        Section::new("roomGeometrySection", "room.title")
+        // The guides exist to be read while these numbers are being edited,
+        // so they follow the panel rather than a switch of their own.
+        let open = Section::new("roomGeometrySection", "room.title")
             .info("room")
             .summary(summary)
             .show(ui, |ui| {
@@ -140,7 +142,9 @@ impl StudioSpike {
                         self.apply_room_geometry(edit);
                     }
                 });
-            });
+            })
+            .is_some();
+        self.settings.room_guides_visible = open;
     }
 
     /// The five messages `applyRoomGeometryNow` sends, in its order: the

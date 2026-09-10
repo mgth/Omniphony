@@ -99,6 +99,7 @@ config, debounced 600 ms so a drag writes once.
 | Auto-tune | The whole run: the detectors and the state machine (the kp sweep and its oscillation test, saturation, convergence, source loss, the long-run statistics that size the rate limit), and the wizard that drives them — preparation, the five steps with the resample traces beside them, the disturbance prompt, the summary, and the guard that will not let Studio close mid-run | the four controller values ride the batched `/omniphony/control/config/audio` + its apply, like any other adaptive setting |
 | Speaker frequency gauge | The per-speaker pass-band gauge beside each speaker: a log-frequency track from 20 Hz to 20 kHz with the crossover pass-band lit in the band's own colour, its decade ticks, and a click target that selects the speaker | nothing |
 | Speaker orientation | Aim at listener: the cubes turn their driver face toward the listening position, with no roll on elevated speakers, and that face carries the dark driver disc | nothing |
+| Room dimension guides | Seven measured guides outside the box — width, front, rear, total depth, height, lower and total height — each a line with end ticks and its length in metres, shown while the room panel is open | nothing |
 
 Mute and solo follow `mute-solo.js`: solo mutes every other entry, soloing the
 only unmuted entry lifts the mutes, and the injected test source is skipped by
@@ -157,6 +158,12 @@ interpolated rather than dropped, since a gap left in place would shift every
 bin after it. The transform length is bounded by both the history collected and
 the window the user chose, which is what makes a shorter window a coarser
 spectrum.
+
+The room dimension guides follow the room panel rather than a switch of their
+own, as in the web: they exist to be read while those numbers are being edited,
+and a set of measurements floating over the scene at any other time would just
+be clutter. Each is laid just outside the box it describes, so a number can be
+read against the wall it belongs to.
 
 Aiming the speakers at the listener is the other one. The rotation is three.js's
 `lookAt` with the listening position as the target, which lands the cube's local
