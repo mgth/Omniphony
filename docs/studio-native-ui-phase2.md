@@ -136,6 +136,13 @@ renderer publishes separately from `hrirSource` — the latter is the bare word
 path out of `hrirSource` and so never found one; it now reads the field that
 carries it, and says which file is playing instead of claiming none was chosen.
 
+The overlay mirrors the custom gradient as well, because the colormap alone is
+not the picture: pushing "Custom" without its stops shows the overlay's own
+gradient under Studio's choice. The stops are a list and the mirrored set is one
+`Copy` value compared in a single test, so what the set carries is a signature
+of them — enough to answer the only question the push asks, whether they
+changed.
+
 The backend file editor moves bytes, not paths: the file lives on the renderer,
 so the editor asks for its content over OSC and saves it the same way, and
 editing a scriptable backend keeps working when orender runs on another
@@ -465,8 +472,7 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Left overlay**: the dead rows of the audio input panel (backend, imported
   layout, channel count, sample rate, map, LFE mode), which belong to the legacy
   PCM mode and are deliberately not ported.
-- **Elsewhere**: the auto-tune wizard, and the overlay's custom gradient stops
-  (the editor exists now; mirroring them is one more message).
+- **Elsewhere**: the auto-tune wizard.
 - **Host services**: all ported.
 
 ## The gate
