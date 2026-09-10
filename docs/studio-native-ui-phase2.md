@@ -136,6 +136,25 @@ renderer publishes separately from `hrirSource` — the latter is the bare word
 path out of `hrirSource` and so never found one; it now reads the field that
 carries it, and says which file is playing instead of claiming none was chosen.
 
+The diagnostics plot gained the two transforms its investigations are made of.
+`d/dt` takes the derivative between *changes*, not between samples: a metric
+the renderer republishes unchanged would otherwise read as a stretch of zeroes
+broken by a spike, which says something about the publication rate rather than
+about the metric. `FFT` replaces the time axis with frequency — a radix-2
+transform over a Hanning window, with the mean removed so a large offset or a
+slow drift does not bury everything under one bin at zero, and with the per-bin
+magnitude divided by the window's coherent gain so a peak reads as the
+amplitude of the equivalent sinusoid rather than as a shape. That last property
+is what a test pins: a half-millisecond tone at 3.125 Hz comes back at 3.125 Hz
+and half a millisecond.
+
+Samples are taken on the frame loop, not on a timer, so the spectrum is
+computed on a 50 Hz grid the series is resampled onto: a frame that ran late is
+interpolated rather than dropped, since a gap left in place would shift every
+bin after it. The transform length is bounded by both the history collected and
+the window the user chose, which is what makes a shorter window a coarser
+spectrum.
+
 The overlay mirrors the custom gradient as well, because the colormap alone is
 not the picture: pushing "Custom" without its stops shows the overlay's own
 gradient under Studio's choice. The stops are a list and the mirrored set is one
@@ -465,8 +484,7 @@ a transient stays readable after it has passed.
 Specifications for all of it were extracted from the web sources first and are
 in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
-- **Audio panel**: the diagnostics plot's FFT, difference and measurement
-  modes.
+- **Audio panel**: the diagnostics plot's paused-selection measurement.
 - **Speakers**: the 3D per-speaker frequency gauge and the band cursor that
   share the row's band colours.
 - **Left overlay**: the dead rows of the audio input panel (backend, imported
