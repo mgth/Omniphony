@@ -242,6 +242,8 @@ impl StudioSpike {
                 if ui.button(t("osc.connect")).clicked() {
                     self.connect();
                 }
+                ui.separator();
+                self.renderer_controls(ui);
             });
     }
 

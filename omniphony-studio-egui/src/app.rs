@@ -151,6 +151,16 @@ pub struct StudioSpike {
     pub(crate) config_dir: std::path::PathBuf,
     /// Handle on the renderer: every control the panels expose goes through it.
     pub(crate) ctl: Ctl,
+    /// The host's own `SharedState`, kept for the whole session because the
+    /// watchdog and the tracked child live in it: a fresh one per call would
+    /// forget the renderer it just started.
+    pub(crate) host: std::sync::Arc<crate::host::commands::SharedState>,
+    /// When the watchdog last ticked, and since when the link has been down.
+    pub(crate) watchdog_tick: Option<Instant>,
+    pub(crate) disconnected_since: Option<Instant>,
+    /// The OS service's state, and when it was last asked for. Asking means
+    /// spawning a process, so it is not a per-frame question.
+    pub(crate) service_status: Option<(Instant, bool, String)>,
     pub(crate) last_subscribe: Option<Instant>,
 }
 
@@ -252,6 +262,8 @@ impl StudioSpike {
             None => (osc_config.host.clone(), osc_config.osc_rx_port),
         };
 
+        let live_for_host = live.clone();
+        let control_for_host = control.clone();
         let object_field = args.object_field;
         let mut settings = ViewSettings::default();
         settings.trails.enabled = !args.no_trails;
@@ -339,6 +351,20 @@ impl StudioSpike {
             about_open: false,
             synthetic_bed_ids: Vec::new(),
             synthetic_bed_signature: None,
+            host: std::sync::Arc::new(crate::host::commands::SharedState {
+                inner: live_for_host,
+                osc_tx: control_for_host,
+                config_dir: config_dir.clone(),
+                listen_port: Arc::new(Mutex::new(port)),
+                realtime_seq: std::sync::atomic::AtomicI32::new(0),
+                renderer_child: Default::default(),
+                watchdog: Default::default(),
+                auto_tune_snapshot: Default::default(),
+                paths: crate::host::commands::HostPaths::default(),
+            }),
+            watchdog_tick: None,
+            service_status: None,
+            disconnected_since: Some(Instant::now()),
             config_dir,
             ctl,
             last_subscribe: None,
@@ -686,6 +712,7 @@ impl eframe::App for StudioSpike {
         }
         self.refresh_channel_catalog();
         self.sync_virtual_bed_objects(false);
+        self.maintain_renderer_watchdog();
         self.maintain_object_test_source();
         self.maintain_test_idle_feed();
         self.check_recompute_ack();

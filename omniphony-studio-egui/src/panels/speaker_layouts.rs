@@ -63,7 +63,7 @@ impl StudioSpike {
 
     fn import_layout(&mut self, pick: Pick) {
         let paths = HostPaths::default();
-        let state = self.host_state();
+        let state = self.host.clone();
         let path = match pick {
             Pick::Presets => crate::host::commands::layout_io::pick_preset_layout_path(&paths),
             Pick::Import => {
@@ -199,26 +199,6 @@ impl StudioSpike {
         self.mark_recompute_pending();
         self.ctl
             .send_no_args("/omniphony/control/config/layout/apply");
-    }
-
-    /// The ported commands take the host's `SharedState`; the native app keeps
-    /// its pieces on `StudioSpike`, so one is assembled for the call.
-    fn host_state(&self) -> crate::host::commands::SharedState {
-        crate::host::commands::SharedState {
-            inner: self.live.clone(),
-            osc_tx: self.control.clone(),
-            config_dir: self.config_dir.clone(),
-            listen_port: std::sync::Arc::new(std::sync::Mutex::new(
-                self.osc_stats
-                    .listen_port
-                    .load(std::sync::atomic::Ordering::Relaxed) as u16,
-            )),
-            realtime_seq: std::sync::atomic::AtomicI32::new(self.realtime_seq),
-            renderer_child: Default::default(),
-            watchdog: Default::default(),
-            auto_tune_snapshot: Default::default(),
-            paths: HostPaths::default(),
-        }
     }
 
     /// One line into the log overlay.

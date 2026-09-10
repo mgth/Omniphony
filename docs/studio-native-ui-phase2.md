@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Host services | The local-renderer auto-start watchdog, and Launch / Stop / install / restart for the renderer and its OS service | `/omniphony/control/quit` on Stop; the rest is process control, not OSC |
 | Language | All eight of the web's catalogues, the picker in the Display section, and `auto` following the environment | nothing — the language is this host's own |
 | Hybrid backend | The Mix / inner-backend tabs, the external and internal backends, the distance metric, the curve smoothing, and the blend-curve editor with its point editor | `/omniphony/control/hybrid/external_backend`, `…/internal_backend`, `…/metric`, `…/curve_smoothing`, `…/curve` |
 | Save footer and band cursor | Save and Reload with what the renderer last said about its configuration file, and the band picker that chooses which crossover band the scene's heatmaps are drawn for | `/omniphony/control/save_config`, `…/reload_config` |
@@ -100,6 +101,21 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The auto-start watchdog is what makes "open Studio and it works" true on a
+machine where the renderer is a separate process: when the link has been down
+six seconds, the configured host is this machine, and nothing else already holds
+the port, it starts one. Everything else in it is a rule against doing that when
+it would be wrong or futile — a manual Stop suppresses it, a service-managed
+renderer is someone else's responsibility, a child that is still starting is
+left alone, a goodbye broadcast short-circuits the debounce because that port is
+about to be free, and three fast failures in a row stop it trying, because that
+is a broken installation rather than bad luck and a spawn loop would bury the
+reason in the log. It runs on the frame loop at the host's one-second cadence
+rather than inside the OSC thread; everything it reads already lives on this
+side, and one place that can spawn a renderer is easier to reason about than
+two. The service's own state is asked for every few seconds rather than every
+frame, because asking means spawning a process.
 
 The eight locales are the web Studio's own JSON, embedded the way English
 already was, and each one is English overridden by its own entries — exactly as
@@ -327,8 +343,7 @@ in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 - **Elsewhere**: the scene-effects bar, the modals, the gradient editor, the
   resample plot, the code editor, the SOFA browser, the auto-tune wizard, mpv
   overlay mirroring.
-- **Host services** the native app does not have yet: the local-renderer
-  auto-start watchdog, the OS-service controls, and the derived master meter.
+- **Host services** the native app does not have yet: the derived master meter.
 
 ## The gate
 
