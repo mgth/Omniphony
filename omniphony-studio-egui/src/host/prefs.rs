@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::panels::diag_plot::DiagPlotPrefs;
 use crate::panels::object_test::ObjectTestPrefs;
 use crate::ui::layout::OverlayLayout;
 
@@ -20,6 +21,8 @@ pub struct Prefs {
     pub locale: Option<String>,
     /// The `objectTest.*` keys of the injection editor.
     pub object_test: ObjectTestPrefs,
+    /// The `diagPlot.*` keys of the diagnostics plot.
+    pub diag_plot: DiagPlotPrefs,
 }
 
 fn path(config_dir: &Path) -> PathBuf {

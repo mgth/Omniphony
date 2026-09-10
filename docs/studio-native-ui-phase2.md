@@ -73,6 +73,7 @@ config, debounced 600 ms so a drag writes once.
 | DRC and loudness | The compression mode and weight, the loudness switch with its three readouts, and the gain gauge while metering is on | `/omniphony/control/input/drc_mode`, `…/input/drc_weight`, `…/loudness` |
 | Speaker editor | Reorder, delete, name, the cartesian and polar coordinate tables in normalised units and metres, gain, delay, spatialise, band limits, and the Test tab with its trigger, isolation, level and idle feed | `/omniphony/control/config/layout` (`speakerEdits`, `moveSpeaker`, `removeSpeaker`) and its apply, `…/config/speakers` for the delay, `…/realtime/speaker_gain`, `…/speaker_test`, `…/speaker_test/idle_feed` |
 | Config profiles | The picker at the top of the left overlay, create, rename and delete, each re-populated from the renderer's echo rather than applied optimistically | `/omniphony/control/profile/switch`, `…/create`, `…/rename`, `…/delete` |
+| Diagnostics | The metrics plot: the renderer's published schema as a chip row grouped and tiered the way it registered them, the window and publication rate, pause, and one stacked panel per selected metric on its own y scale, with the time grid and the mean reference line | `/omniphony/control/diag/enabled` (with the web's one-second keep-alive), `…/diag/rate_hz` |
 | OSC status and banners | The status line reports the four states with the web's colours and names the connected renderer's flavour; the three banners say a renderer is missing, that one came up without its decoder bridge, or that the one answering is not the one this Studio would start | nothing |
 | About | The brand row and the `?` beside the connection line open it: name, description, version, licence, repository link, which renderer is answering (with its ABI, and its executable in the tooltip) and which configuration that renderer is running on — including that it read none and is on built-in defaults | nothing |
 | Channel editor | The per-channel gain, Virtual/Direct, the destination speaker of a direct channel, and the cartesian and polar coordinate tables in normalised units and metres; plus the layout reset in the fixed-channel section and the at-rest bed markers that make a channel selectable with nothing playing | `/omniphony/control/virtual_bed` (the whole bed, as the renderer takes a layout rather than a diff) |
@@ -92,6 +93,20 @@ the schema's own, as in `vbap.js`. And every control that forces a gain
 recompute arms the same eight-second watchdog: the panel says "computing"
 immediately and, if no broadcast comes back, says the engine never answered
 rather than lying about being up to date.
+
+The diagnostics plot is schema-driven end to end: the renderer's `DiagRegistry`
+publishes what it exposes and a flat map of current values, so a metric added on
+the Rust side becomes plottable with no UI change. Telemetry is not free, so the
+renderer only publishes while someone is looking — and in this host the
+section's own disclosure *is* that signal, where the web needs a separate toggle
+button because its header is not one. Each metric gets its own panel and its own
+y scale: metrics of wildly different magnitudes are the normal case, and one
+shared scale would flatten all but the largest into a line. The plot asks for a
+repaint while it is open, since telemetry arrives with no input event behind it.
+
+Not in this pass: the plot's FFT view, its difference mode and its
+paused-selection measurement, which are investigation tools rather than
+readouts.
 
 The status line is where the web is told its state by its own connection
 machinery; this host derives the same four states from what its listener
@@ -196,9 +211,10 @@ a transient stays readable after it has passed.
 Specifications for all of it were extracted from the web sources first and are
 in [`studio-native-ui-specs/`](studio-native-ui-specs/).
 
-- **Audio panel**: the diagnostics block, the per-stage timing readouts, the
-  resample plot, and the sample-rate preset menu (the native select offers the
-  presets but not a free-text rate).
+- **Audio panel**: the per-stage timing readouts, the resample plot, the
+  sample-rate preset menu (the native select offers the presets but not a
+  free-text rate), and the diagnostics plot's FFT, difference and measurement
+  modes.
 - **Renderer panel**: the hybrid backend's own controls, the file-parameter
   Browse and Edit buttons, the performance gauges, the info modals, and the
   SOFA browser the binaural tab's file source needs.

@@ -127,6 +127,12 @@ pub struct StudioSpike {
     pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    /// Diagnostics plot: the sampled series, when the plot started, whether it
+    /// is frozen, and when publication was last re-asserted.
+    pub(crate) diag_series: crate::panels::diag_plot::DiagSeries,
+    pub(crate) diag_started: Instant,
+    pub(crate) diag_paused: bool,
+    pub(crate) diag_keepalive_at: Option<Instant>,
     /// The orender binary this Studio would launch, resolved once at start-up.
     /// A renderer answering from anywhere else is not one we started.
     pub(crate) expected_orender_path: Option<String>,
@@ -310,6 +316,10 @@ impl StudioSpike {
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
             // executable's own directory.
+            diag_series: Default::default(),
+            diag_started: Instant::now(),
+            diag_paused: false,
+            diag_keepalive_at: None,
             expected_orender_path: crate::host::commands::orender::expected_orender_path(
                 &crate::host::commands::HostPaths::default(),
                 None,
@@ -558,6 +568,7 @@ impl StudioSpike {
                 .show(ui, |ui| {
                     self.audio_output_section(ui);
                     self.latency_section(ui);
+                    self.diagnostics_section(ui);
                     self.master_section(ui);
                     self.renderer_section(ui);
                     self.objects_section(ui);
