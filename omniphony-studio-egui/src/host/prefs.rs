@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::panels::object_test::ObjectTestPrefs;
 use crate::ui::layout::OverlayLayout;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -17,6 +18,8 @@ pub struct Prefs {
     /// `spatialviz.locale` (`auto`, or a locale key). Only `en` is bundled so
     /// far; the value is kept so the choice survives the cutover.
     pub locale: Option<String>,
+    /// The `objectTest.*` keys of the injection editor.
+    pub object_test: ObjectTestPrefs,
 }
 
 fn path(config_dir: &Path) -> PathBuf {
