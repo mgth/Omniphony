@@ -110,9 +110,6 @@ impl StudioSpike {
         };
         Section::new("rendererSection", "section.renderer")
             .summary(summary)
-            .max_height(crate::ui::section::open_max_height_large(
-                ui.ctx().content_rect().height(),
-            ))
             .show(ui, |ui| {
                 self.renderer_perf(ui);
                 self.output_mode_row(ui);

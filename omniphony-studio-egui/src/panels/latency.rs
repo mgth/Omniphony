@@ -341,9 +341,6 @@ impl StudioSpike {
         Section::new("latencySection", "section.latency")
             .info("adaptive")
             .summary(summary)
-            .max_height(crate::ui::section::open_max_height_large(
-                ui.ctx().content_rect().height(),
-            ))
             .show(ui, |ui| {
                 latency_meter(ui, &state, stats.as_ref(), target);
                 readouts(ui, &state, stats.as_ref());
