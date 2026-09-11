@@ -6,10 +6,10 @@
 //! heartbeat, re-register on an unknown-client reply, and the NACK timer of
 //! the chunked gain-table transfer.
 //!
-//! Repaint policy: after each packet that changed the model the listener asks
-//! egui for a repaint, coalesced so a burst of per-object messages never
-//! requests more than one frame per ~2.5 ms. When nothing arrives, nothing
-//! repaints.
+//! Repaint policy: after each packet that changed the model the listener calls
+//! the [`Waker`] the UI gave it, coalesced so a burst of per-object messages
+//! never asks for more than one frame per ~2.5 ms. When nothing arrives,
+//! nothing repaints.
 
 pub mod apply;
 pub mod dispatch;
@@ -37,6 +37,11 @@ const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_BUF: usize = 65_536;
 
 pub type SharedLive = Arc<Mutex<Live>>;
+
+/// Asks whoever shows the model to draw it again. The UI supplies it (egui's
+/// `request_repaint` today), so the core never names the toolkit. It is called
+/// from the listener thread and must be cheap and non-blocking.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 pub struct OscStats {
     pub packets: AtomicU64,
@@ -119,7 +124,7 @@ pub type ControlTx = Sender<Control>;
 /// `0` request can be reported (and fed by the synthetic generator).
 pub fn spawn_listener(
     live: SharedLive,
-    ctx: egui::Context,
+    waker: Waker,
     stats: Arc<OscStats>,
     cfg: ListenerConfig,
 ) -> std::io::Result<(u16, ControlTx)> {
@@ -135,7 +140,7 @@ pub fn spawn_listener(
                 socket,
                 port,
                 live,
-                ctx,
+                waker,
                 stats,
                 cfg.register,
                 cfg.metering,
@@ -150,7 +155,7 @@ fn listener_loop(
     socket: UdpSocket,
     port: u16,
     live: SharedLive,
-    ctx: egui::Context,
+    waker: Waker,
     stats: Arc<OscStats>,
     register: Option<SocketAddr>,
     metering: bool,
@@ -196,7 +201,7 @@ fn listener_loop(
                             && last_repaint.elapsed() >= REPAINT_COALESCE
                         {
                             last_repaint = Instant::now();
-                            ctx.request_repaint();
+                            waker();
                         }
                     }
                     Err(e) => log::debug!("[osc] undecodable packet ({n} bytes): {e:?}"),

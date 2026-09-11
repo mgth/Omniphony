@@ -300,9 +300,10 @@ impl StudioSpike {
             ),
             None => None,
         };
+        let repaint_ctx = cc.egui_ctx.clone();
         let (port, control) = osc::spawn_listener(
             live.clone(),
-            cc.egui_ctx.clone(),
+            Arc::new(move || repaint_ctx.request_repaint()),
             osc_stats.clone(),
             osc::ListenerConfig {
                 listen_port: args.listen_port,
