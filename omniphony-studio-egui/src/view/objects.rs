@@ -440,6 +440,7 @@ pub fn collect(
                 .app
                 .object_band_gains
                 .get(id)
+                .filter(|_| !settings.heatmap_all_bands)
                 .and_then(|bands| bands.get(settings.heatmap_band_index))
                 .filter(|g| !g.is_empty());
             let gains = band.or_else(|| live.app.object_speaker_gains.get(id));

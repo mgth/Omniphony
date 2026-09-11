@@ -42,6 +42,9 @@ pub struct ViewSettings {
     pub effective_render_enabled: bool,
     /// Band used for the effective-render centroid (`heatmapBandIndex`).
     pub heatmap_band_index: usize,
+    /// `VolumeSettings::all_bands`, copied in each frame: with every band
+    /// composited, the one-band readouts use the full-band gains instead.
+    pub heatmap_all_bands: bool,
     pub speakers_visible: bool,
     /// `app.speakerLabelsEnabled` (default false in the Studio).
     pub speaker_labels_enabled: bool,
@@ -79,6 +82,7 @@ impl Default for ViewSettings {
             show_object_details: true,
             effective_render_enabled: false,
             heatmap_band_index: 0,
+            heatmap_all_bands: true,
             speakers_visible: true,
             speaker_labels_enabled: false,
             speaker_band_bars_enabled: false,

@@ -76,6 +76,7 @@ impl StudioSpike {
                 t("display.showObjectDetails"),
             )
             .show(ui, |ui| {
+                self.metering_row(ui);
                 self.object_test_feature_row(ui);
                 if rows.is_empty() {
                     widgets::note(ui, t("objects.none"));
@@ -418,7 +419,8 @@ impl StudioSpike {
         // each object row says what that object puts through it.
         let selected_speaker = self.selection.speaker;
         let show_details = self.settings.show_object_details;
-        let band = self.settings.heatmap_band_index;
+        // One band's gains, or the full band's while every band is shown.
+        let band = (!self.volume_settings.all_bands).then_some(self.settings.heatmap_band_index);
         let mut rows: Vec<Row> = live
             .app
             .sources
@@ -503,7 +505,7 @@ impl StudioSpike {
                                     live.app
                                         .object_band_gains
                                         .get(id)
-                                        .and_then(|bands| bands.get(band))
+                                        .and_then(|bands| band.and_then(|b| bands.get(b)))
                                         .filter(|gains| !gains.is_empty())
                                         .or_else(|| live.app.object_speaker_gains.get(id)),
                                     |index| speakers.get(index).map(|s| s.id.clone()),
@@ -1103,12 +1105,18 @@ fn coordinates(xyz: [f64; 3], polar: Option<[f64; 3]>) -> String {
 /// `getObjectDominantSpeakerText`: the speaker taking the largest gain, and
 /// that gain in dB — or a dash when nothing reaches any speaker.
 fn dominant_speaker(gains: Option<&Vec<f64>>, name_of: impl Fn(usize) -> Option<String>) -> String {
+    // The first of equal gains, as the web's `gain <= bestGain` skip keeps
+    // it: a bass-managed channel sends as much to the LFE as to its own
+    // speaker, and `max_by` would name the LFE, the last of the two.
     let best = gains.and_then(|gains| {
         gains
             .iter()
             .enumerate()
             .filter(|(_, g)| g.is_finite())
-            .max_by(|a, b| a.1.total_cmp(b.1))
+            .fold(None, |best: Option<(usize, &f64)>, (i, g)| match best {
+                Some((_, b)) if g <= b => best,
+                _ => Some((i, g)),
+            })
     });
     match best {
         Some((index, &gain)) if gain > 0.0 => {
@@ -1252,6 +1260,16 @@ mod tests {
         );
         assert_eq!(dominant_speaker(Some(&vec![0.0, 0.0]), name_of), "—");
         assert_eq!(dominant_speaker(None, name_of), "—");
+        // Equal gains name the first: a bass-managed L sends 1.0 to FL and
+        // to the LFE, and its speaker is FL.
+        let names = ["FL", "LFE"];
+        let name_of = |i: usize| names.get(i).map(|n| n.to_string());
+        assert_eq!(
+            dominant_speaker(Some(&vec![1.0, 1.0]), name_of),
+            "FL 0.0 dB"
+        );
+        let names = ["L", "R"];
+        let name_of = |i: usize| names.get(i).map(|n| n.to_string());
         // A gain past the layout's end still names its index.
         assert_eq!(
             dominant_speaker(Some(&vec![0.0, 0.0, 1.0]), name_of),
