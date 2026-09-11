@@ -291,7 +291,7 @@ impl Live {
 
     /// Feed one meter to its peak-hold cursor, the way the host does before
     /// emitting `peakHoldDbfs`.
-    pub(crate) fn hold(&mut self, key: String, peak_dbfs: f64) {
+    pub fn hold(&mut self, key: String, peak_dbfs: f64) {
         let held = self.peaks.update(&key, peak_dbfs, Instant::now());
         self.peak_hold_db.insert(key, held);
     }

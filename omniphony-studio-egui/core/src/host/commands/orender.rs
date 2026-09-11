@@ -21,8 +21,11 @@ struct OrenderLaunchSpec {
     args: Vec<String>,
 }
 
+/// Public so the UI crate can name it; read serialised, like [`AboutInfo`].
+///
+/// [`AboutInfo`]: super::app::AboutInfo
 #[derive(serde::Serialize)]
-pub(crate) struct OrenderServiceStatus {
+pub struct OrenderServiceStatus {
     installed: bool,
     running: bool,
     manager: &'static str,
@@ -398,7 +401,7 @@ fn windows_service_bin_path(exec_path: &PathBuf, args: &[String]) -> String {
 
 /// Whether a managed orender service instance is running (watchdog gate: a
 /// service-owned renderer must not be doubled by an auto-started one).
-pub(crate) fn orender_service_running() -> bool {
+pub fn orender_service_running() -> bool {
     get_orender_service_status()
         .map(|status| status.running)
         .unwrap_or(false)
@@ -764,7 +767,7 @@ fn spawn_orender_process(
 
 /// Watchdog entry point: launch a standby renderer from the saved OSC config
 /// (binary discovery only — no user-supplied path or log level).
-pub(crate) fn autostart_orender(
+pub fn autostart_orender(
     app: &HostPaths,
     state: &SharedState,
 ) -> Result<serde_json::Value, String> {

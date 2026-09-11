@@ -1,18 +1,20 @@
-//! Architecture ratchet for the native Studio.
+//! Architecture ratchet for the native Studio's UI crate.
 //!
 //! The Studio is meant to outlive its UI toolkit: the web frontend gave way to
 //! egui, and egui may one day give way to something else. That stays cheap
-//! only while the crate keeps two tiers apart (see `ARCHITECTURE.md`):
+//! only while the code keeps two tiers apart (see `ARCHITECTURE.md`):
 //!
-//! - the **core** (`model`, `osc`, `host`, `auto_tune`, `i18n`, `stats`)
-//!   speaks the renderer's protocol and owns the application's state and
-//!   behaviour, and knows nothing of the toolkit;
-//! - the **UI tier** (`app`, `main`, `panels`, `ui`, `view`, `render`) draws
-//!   and asks the core to act.
+//! - the **core**, `core/` (omniphony-studio-core), speaks the renderer's
+//!   protocol and owns the application's state and behaviour. It is its own
+//!   crate: the compiler stops it from importing the UI, and CI stops any UI
+//!   crate from entering its dependency graph;
+//! - the **UI tier**, this crate (`app`, `main`, `panels`, `prefs`, `ui`,
+//!   `view`, `render`), draws and asks the core to act.
 //!
-//! The port does not keep them apart yet. This test scans `src/`, counts each
-//! rule's violations per file and compares the counts with
-//! `tests/architecture-baseline.txt`:
+//! The compiler cannot see the second half of the rule: UI code that speaks
+//! the protocol, writes the model or runs behaviour of its own. This test
+//! scans `src/`, counts each rule's violations per file and compares the
+//! counts with `tests/architecture-baseline.txt`:
 //!
 //! - a count above its baseline fails: move the code, do not raise the count;
 //! - a count below its baseline fails too, so that the progress is recorded:
@@ -37,29 +39,18 @@ use regex::Regex;
 const BASELINE: &str = "tests/architecture-baseline.txt";
 const UPDATE_VAR: &str = "UPDATE_ARCHITECTURE_BASELINE";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tier {
-    Core,
-    Ui,
-}
-
-/// Every file under `src/` belongs to one tier, matched by prefix. A new
-/// top-level module fails the test until it is placed here: which side of the
-/// boundary it sits on is a decision, not an accident.
-const TIERS: &[(&str, Tier)] = &[
-    ("src/model/", Tier::Core),
-    ("src/osc/", Tier::Core),
-    ("src/host/", Tier::Core),
-    ("src/auto_tune/", Tier::Core),
-    ("src/i18n.rs", Tier::Core),
-    ("src/stats.rs", Tier::Core),
-    ("src/app.rs", Tier::Ui),
-    ("src/main.rs", Tier::Ui),
-    ("src/panels/", Tier::Ui),
-    ("src/prefs/", Tier::Ui),
-    ("src/ui/", Tier::Ui),
-    ("src/view/", Tier::Ui),
-    ("src/render/", Tier::Ui),
+/// The UI crate's modules, matched by prefix. A file under `src/` outside all
+/// of them fails the test until its module is declared here, which is the
+/// moment to ask whether it draws (here) or holds protocol, state or behaviour
+/// (then it belongs in `core/`).
+const MODULES: &[&str] = &[
+    "src/app.rs",
+    "src/main.rs",
+    "src/panels/",
+    "src/prefs/",
+    "src/ui/",
+    "src/view/",
+    "src/render/",
 ];
 
 /// How a rule finds its violations in a scanned file.
@@ -75,7 +66,6 @@ enum Matcher {
 
 struct Rule {
     id: &'static str,
-    tier: Tier,
     /// Why a violation matters, shown when the rule fails.
     why: &'static str,
     /// Where the code goes instead.
@@ -88,17 +78,15 @@ struct Rule {
 const RULES: &[Rule] = &[
     Rule {
         id: "osc-address",
-        tier: Tier::Ui,
         why: "UI code spells a renderer OSC address: it speaks the wire protocol instead of asking the core",
-        fix: "add a typed function in src/host/commands/ (clamp, update the model, send) and call it",
+        fix: "add a typed function in core/src/host/commands/ (clamp, update the model, send) and call it",
         matchers: &[Matcher::LiteralPrefix("/omniphony/")],
         exempt: &[],
     },
     Rule {
         id: "raw-send",
-        tier: Tier::Ui,
         why: "UI code pushes a raw message down the control channel",
-        fix: "call a typed function in src/host/commands/ rather than ctl.send*/control.send",
+        fix: "call a typed function in core/src/host/commands/ rather than ctl.send*/control.send",
         matchers: &[Matcher::Code(&[
             r"\bctl\s*\.\s*send\w*\s*\(",
             r"\bcontrol\s*\.\s*send\s*\(",
@@ -108,9 +96,8 @@ const RULES: &[Rule] = &[
     },
     Rule {
         id: "model-write",
-        tier: Tier::Ui,
         why: "UI code writes state the core owns: the model behind `live`, or host state behind a lock",
-        fix: "let the core command that sends the change apply it too (src/host/commands/)",
+        fix: "let the core command that sends the change apply it too (core/src/host/commands/)",
         matchers: &[
             Matcher::Code(&[
                 // `….app.field = …`, `….app.list[i] += …`
@@ -130,20 +117,9 @@ const RULES: &[Rule] = &[
         exempt: &[],
     },
     Rule {
-        id: "model-impl",
-        tier: Tier::Ui,
-        why: "UI code extends the model's own types, so model behaviour lives in a view",
-        fix: "put the impl next to the type, in src/model/ or src/osc/",
-        matchers: &[Matcher::Code(&[
-            r"\bimpl(?:<[^>]*>)?\s+(?:AppState|Live)\b",
-        ])],
-        exempt: &[],
-    },
-    Rule {
         id: "side-effect",
-        tier: Tier::Ui,
         why: "UI code spawns threads or processes, blocks, or does file or network I/O",
-        fix: "run it in a host service (src/host/), off the UI thread when it can block, and show its result",
+        fix: "run it in a host service (core/src/host/), off the UI thread when it can block, and show its result",
         matchers: &[Matcher::Code(&[
             r"\bthread::(?:spawn|sleep|Builder::new)\s*\(",
             r"\bCommand::new\s*\(",
@@ -161,31 +137,9 @@ const RULES: &[Rule] = &[
     },
     Rule {
         id: "frame-tick",
-        tier: Tier::Ui,
         why: "periodic behaviour defined in UI code runs only when the toolkit draws a frame",
         fix: "make it a host service with `tick(now) -> Option<Instant>` whose deadline schedules the next wake",
         matchers: &[Matcher::Code(&[r"\bfn\s+maintain_\w+"])],
-        exempt: &[],
-    },
-    Rule {
-        id: "toolkit-in-core",
-        tier: Tier::Core,
-        why: "core code names the UI toolkit, its GPU stack or a native dialog",
-        fix: "take a neutral callback or trait (e.g. a `Fn() + Send + Sync` waker) and let the UI tier supply it",
-        matchers: &[Matcher::Code(&[
-            r"\b(?:egui|eframe|egui_wgpu|epaint|emath|ecolor|wgpu|winit|rfd)\b",
-        ])],
-        exempt: &[],
-    },
-    Rule {
-        id: "core-imports-ui",
-        tier: Tier::Core,
-        why: "core code depends on a UI module, so the core cannot be built without the UI",
-        fix: "move the type down into the core, or move the code that needs it up into the UI tier",
-        matchers: &[Matcher::Code(&[
-            r"\bcrate::(?:app|panels|ui|view|render|Args)\b",
-            r"\bcrate::\{[^}]*\b(?:app|panels|ui|view|render|Args)\b",
-        ])],
         exempt: &[],
     },
 ];
@@ -346,11 +300,8 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn tier_of(path: &str) -> Option<Tier> {
-    TIERS
-        .iter()
-        .find(|(prefix, _)| path.starts_with(prefix))
-        .map(|&(_, tier)| tier)
+fn declared(path: &str) -> bool {
+    MODULES.iter().any(|prefix| path.starts_with(prefix))
 }
 
 type Counts = BTreeMap<(String, String), usize>;
@@ -385,15 +336,15 @@ fn measure(root: &Path) -> (Counts, Vec<String>) {
             .expect("under the crate")
             .to_string_lossy()
             .replace('\\', "/");
-        let Some(tier) = tier_of(&rel) else {
+        if !declared(&rel) {
             unclassified.push(rel);
             continue;
-        };
+        }
         let text = std::fs::read_to_string(&file)
             .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
         let scanned = scan(&text);
         for (rule, patterns) in RULES.iter().zip(&compiled) {
-            if rule.tier != tier || rule.exempt.contains(&rel.as_str()) {
+            if rule.exempt.contains(&rel.as_str()) {
                 continue;
             }
             let mut n = 0;
@@ -502,8 +453,9 @@ fn ui_toolkit_boundary_ratchet() {
     if !unclassified.is_empty() {
         let _ = writeln!(
             report,
-            "\nFiles outside every tier (add their module to TIERS in tests/architecture.rs,\n\
-             on the side of the boundary it belongs to):"
+            "\nFiles in no declared module. Declare the module in MODULES in\n\
+             tests/architecture.rs if it draws; if it holds protocol, state or\n\
+             behaviour, it belongs in core/ instead:"
         );
         for path in &unclassified {
             let _ = writeln!(report, "  {path}");

@@ -1,0 +1,31 @@
+[package]
+name = "omniphony-studio-core"
+version.workspace = true
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-or-later"
+description = "Omniphony Studio's core: the renderer protocol, the application state and behaviour, and no UI toolkit"
+publish = false
+
+# No UI crate belongs here: not egui, eframe, wgpu, winit or rfd. CI fails
+# the build if one appears in this crate's dependency graph.
+[dependencies]
+# Canonical coordinate math shared with the renderer; dependency-free by design.
+omniphony-geometry = { path = "../../omniphony-renderer/omniphony-geometry" }
+# OSC transport, same crate/version as the Tauri Studio.
+rosc = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Gain-table artifacts arrive zlib-compressed over OSC (same as the Tauri host).
+flate2 = "1"
+log = "0.4"
+# Cross-platform RSS readout for the stats panel (also used by the Tauri Studio).
+memory-stats = "1"
+# The one HTTP client, for the SOFA catalogue. Same crate and major as the
+# Tauri host's; `rustls` rather than a system TLS stack so the three CI
+# targets build the same way.
+ureq = { version = "2", default-features = false, features = ["tls", "json", "gzip"] }
+# SOFA global attributes for the HRTF browser's licence line. Same pin as the
+# renderer and the Tauri host; pure Rust, and without the default features it
+# brings no DSP (we read three strings, never convolve).
+sofar = { git = "https://github.com/mgth/sofar", rev = "c03ff5cfd997d316ae330e2735e82311769b45a3", default-features = false }

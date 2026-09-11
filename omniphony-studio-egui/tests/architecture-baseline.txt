@@ -10,11 +10,8 @@
 #   osc-address      129
 #   raw-send         131
 #   model-write      77
-#   model-impl       0
 #   side-effect      7
 #   frame-tick       9
-#   toolkit-in-core  0
-#   core-imports-ui  0
 #
 # rule            file                                      count
 osc-address       src/panels/audio.rs                       3

@@ -154,7 +154,8 @@ jobs:
           LD_LIBRARY_PATH=target/debug target/debug/orender_smoke
 
       # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
-      # The phase-2 replacement of the web frontend. It is a separate crate
+      # The phase-2 replacement of the web frontend. It is a separate workspace
+      # (the egui app and its toolkit-free core, omniphony-studio-core)
       # with its own toolchain pin (egui 0.36 needs a newer rustc than the
       # renderer workspace uses), so it gets its own steps rather than joining
       # the workspace build above. Without them the whole port would have no
@@ -187,15 +188,33 @@ jobs:
 
       - name: Check native Studio formatting
         working-directory: omniphony-studio-egui
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Build native Studio
         working-directory: omniphony-studio-egui
-        run: cargo build
+        run: cargo build --workspace
 
+      # The core must stay drawable by any UI toolkit (ARCHITECTURE.md): no
+      # egui, eframe, wgpu, winit, accesskit or rfd anywhere in its dependency
+      # graph. The compiler already stops it importing the app; this stops a UI
+      # crate from being added to its manifest.
+      - name: Check the native Studio core has no UI dependency
+        working-directory: omniphony-studio-egui
+        run: |
+          ui=$(cargo tree -p omniphony-studio-core -e normal --prefix none --format '{p}' \
+            | grep -E '^(egui|eframe|egui-wgpu|egui_wgpu|epaint|emath|ecolor|wgpu|wgpu-[a-z]+|winit|rfd|accesskit[a-z_-]*) ' \
+            | sort -u || true)
+          if [ -n "$ui" ]; then
+            echo "::error::omniphony-studio-core depends on UI crates (see omniphony-studio-egui/ARCHITECTURE.md):"
+            echo "$ui"
+            exit 1
+          fi
+
+      # Includes the architecture ratchet (tests/architecture.rs), which keeps
+      # protocol, model writes, I/O and timers out of the UI crate.
       - name: Test native Studio
         working-directory: omniphony-studio-egui
-        run: cargo test
+        run: cargo test --workspace
 
       # ── Studio frontend build (no Tauri bundling / no sidecar) ─────────────
       - name: Install Studio npm dependencies

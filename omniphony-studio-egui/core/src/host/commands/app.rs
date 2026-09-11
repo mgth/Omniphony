@@ -11,10 +11,10 @@ use super::OscControlMsg;
 use super::{SharedState, send_control};
 use crate::host::config::{OscConfig, load_config, save_config};
 
-/// Return type for [`get_about_info`]. Kept `pub(crate)` so the
-/// `generate_handler!` expansion in `main.rs` can name the command's output.
+/// Return type for [`get_about_info`]. Public so the UI crate can name it; its
+/// fields stay private, and the About box reads it serialised, as the web did.
 #[derive(serde::Serialize)]
-pub(crate) struct AboutInfo {
+pub struct AboutInfo {
     name: &'static str,
     version: &'static str,
     license: &'static str,
@@ -32,7 +32,7 @@ pub fn get_osc_config(state: &SharedState) -> OscConfig {
 }
 
 /// Loopback test shared by [`renderer_is_local`] and the auto-start watchdog.
-pub(crate) fn host_is_local(host: &str) -> bool {
+pub fn host_is_local(host: &str) -> bool {
     let host = host.trim();
     host.is_empty()
         || host.eq_ignore_ascii_case("localhost")
