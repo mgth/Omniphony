@@ -259,6 +259,26 @@ pub struct FrameData {
     pub size_px: [u32; 2],
     /// Linear RGBA clear colour.
     pub clear: [f64; 4],
+    /// The side panels over the viewport, for their blurred backdrop.
+    pub backdrop: Backdrop,
+}
+
+/// Where the side panels sit over the viewport, in framebuffer pixels
+/// (`[min_x, min_y, max_x, max_y]`), and their corner radius. `count` rects are
+/// live; with none, no blur pass runs at all.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Backdrop {
+    pub rects: [[f32; 4]; 2],
+    pub count: u32,
+    pub radius_px: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct BackdropUniform {
+    rect0: [f32; 4],
+    rect1: [f32; 4],
+    params: [f32; 4],
 }
 
 impl FrameData {
@@ -284,6 +304,7 @@ impl FrameData {
             lighting: Lighting::default(),
             size_px,
             clear: [0.0, 0.0, 0.0, 1.0],
+            backdrop: Backdrop::default(),
         }
     }
 }
@@ -296,6 +317,10 @@ struct Targets {
     resolve_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
     blit_bind_group: wgpu::BindGroup,
+    /// The backdrop blur's steps, each a pass from a source bind group into a
+    /// target view (and whether it halves or doubles): three halvings, then
+    /// two doublings back to half size.
+    blur_steps: Vec<(wgpu::BindGroup, wgpu::TextureView, bool)>,
 }
 
 struct GrowBuffer {
@@ -351,6 +376,10 @@ pub struct SceneRenderer {
     sprite_additive: wgpu::RenderPipeline,
     point_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
+    blur_down: wgpu::RenderPipeline,
+    blur_up: wgpu::RenderPipeline,
+    composite_layout: wgpu::BindGroupLayout,
+    backdrop_buf: wgpu::Buffer,
     volumes: VolumeRenderer,
     globals_buf: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
@@ -615,10 +644,87 @@ impl SceneRenderer {
                 },
             ],
         });
+        // The final blit also reads the blurred copy and the panel rects.
+        let texture_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("composite"),
+            entries: &[
+                texture_entry(0),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                texture_entry(2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
         let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("blit"),
+            bind_group_layouts: &[Some(&composite_layout)],
+            immediate_size: 0,
+        });
+        let blur_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("blur"),
             bind_group_layouts: &[Some(&blit_layout)],
             immediate_size: 0,
+        });
+        let blur_pipeline = |label: &str, fs: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&blur_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_blit"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: tri,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: SCENE_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let blur_down = blur_pipeline("blur down", "fs_blur_down");
+        let blur_up = blur_pipeline("blur up", "fs_blur_up");
+        let backdrop_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("backdrop"),
+            size: std::mem::size_of::<BackdropUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blit"),
@@ -722,6 +828,10 @@ impl SceneRenderer {
             sprite_additive,
             point_pipeline,
             blit_pipeline,
+            blur_down,
+            blur_up,
+            composite_layout,
+            backdrop_buf,
             volumes,
             globals_buf,
             globals_bind_group,
@@ -797,9 +907,58 @@ impl SceneRenderer {
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
         let resolve_view = resolve.create_view(&Default::default());
+        // The blur chain: 1/2, 1/4, 1/8 on the way down, 1/4 and 1/2 on the
+        // way up. Each level is a texture it renders into and later reads from.
+        let level = |label: &str, div: u32| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: size[0].div_ceil(div).max(1),
+                        height: size[1].div_ceil(div).max(1),
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: SCENE_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let d1 = level("blur 1/2", 2);
+        let d2 = level("blur 1/4", 4);
+        let d3 = level("blur 1/8", 8);
+        let u2 = level("blur up 1/4", 4);
+        let u1 = level("blur up 1/2", 2);
+        let source = |view: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("blur source"),
+                layout: &self.blit_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            })
+        };
+        let blur_steps = vec![
+            (source(&resolve_view), d1.clone(), true),
+            (source(&d1), d2.clone(), true),
+            (source(&d2), d3.clone(), true),
+            (source(&d3), u2.clone(), false),
+            (source(&u2), u1.clone(), false),
+        ];
         let blit_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit"),
-            layout: &self.blit_layout,
+            layout: &self.composite_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -809,6 +968,14 @@ impl SceneRenderer {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&u1),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.backdrop_buf.as_entire_binding(),
+                },
             ],
         });
         self.targets = Some(Targets {
@@ -817,6 +984,7 @@ impl SceneRenderer {
             resolve_view,
             depth_view: depth.create_view(&Default::default()),
             blit_bind_group,
+            blur_steps,
         });
     }
 
@@ -849,6 +1017,13 @@ impl SceneRenderer {
             ],
         };
         queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
+        let b = &frame.backdrop;
+        let backdrop = BackdropUniform {
+            rect0: b.rects[0],
+            rect1: b.rects[1],
+            params: [b.radius_px, b.count.min(2) as f32, 0.0, 0.0],
+        };
+        queue.write_buffer(&self.backdrop_buf, 0, bytemuck::bytes_of(&backdrop));
 
         // Opaque first, grouped by kind; then blended sorted by render order
         // and distance, split into runs of equal kind and depth-test flag.
@@ -928,6 +1103,40 @@ impl SceneRenderer {
             .upload(device, queue, bytemuck::cast_slice(&frame.points));
         self.point_count = frame.points.len() as u32;
         self.volumes.upload(device, queue, &frame.volumes);
+    }
+
+    /// Blur the resolved scene for the panels' backdrop. Skipped when no panel
+    /// is open over the viewport: a frame without panels costs nothing extra.
+    fn encode_blur(&self, encoder: &mut wgpu::CommandEncoder, frame: &FrameData) {
+        let Some(t) = &self.targets else { return };
+        if frame.backdrop.count == 0 {
+            return;
+        }
+        for (source, target, down) in &t.blur_steps {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("backdrop blur"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(if *down {
+                &self.blur_down
+            } else {
+                &self.blur_up
+            });
+            pass.set_bind_group(0, source, &[]);
+            pass.draw(0..3, 0..1);
+        }
     }
 
     fn unit_mesh(&self, kind: MeshKind) -> &UnitMesh {
@@ -1044,6 +1253,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
             label: Some("studio scene"),
         });
         renderer.encode_scene(&mut encoder, frame);
+        renderer.encode_blur(&mut encoder, frame);
         vec![encoder.finish()]
     }
 
