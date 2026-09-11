@@ -946,6 +946,7 @@ impl StudioSpike {
             self.ctl
                 .send_string("/omniphony/control/distance_diffuse/metric", &chosen);
         }
+        self.mirror_axes_rows(ui, state.mirror_axes.unwrap_or_default());
         let mut threshold = state.threshold.unwrap_or(1.0) as f32;
         if widgets::value_slider_help(
             ui,
@@ -975,6 +976,49 @@ impl StudioSpike {
             self.live.lock().unwrap().app.distance_diffuse.curve = Some(curve as f64);
             self.ctl
                 .send_float("/omniphony/control/distance_diffuse/curve", curve.max(0.0));
+        }
+    }
+
+    /// "Mirror axes": the symmetry the flips make, named, and one switch per
+    /// axis under it in the web's quieter sub-row style.
+    fn mirror_axes_rows(&mut self, ui: &mut Ui, axes: crate::model::app_state::MirrorAxes) {
+        widgets::label_row_help(
+            ui,
+            t("distance.mirrorAxes"),
+            "help.distanceDiffuse.mirrorAxes",
+            |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(t(axes.symmetry_key()))
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(theme::TEXT_FAINT),
+                    )
+                    .truncate(),
+                );
+            },
+        );
+        let mut next = axes;
+        for (key, on) in [
+            ("distance.mirrorAxis.x", &mut next.x),
+            ("distance.mirrorAxis.y", &mut next.y),
+            ("distance.mirrorAxis.z", &mut next.z),
+        ] {
+            // `.switch-row` at 0.7rem in `#8fa6bd`.
+            widgets::label_row(
+                ui,
+                RichText::new(t(key))
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(theme::TEXT_FAINT),
+                |ui| widgets::switch(ui, on),
+            );
+        }
+        if next != axes {
+            self.live.lock().unwrap().app.distance_diffuse.mirror_axes = Some(next);
+            self.mark_recompute_pending();
+            self.ctl.send_string(
+                "/omniphony/control/distance_diffuse/mirror_axes",
+                &next.to_arg(),
+            );
         }
     }
 

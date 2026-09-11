@@ -101,6 +101,65 @@ pub struct DistanceDiffuse {
     pub threshold: Option<f64>,
     pub curve: Option<f64>,
     pub metric: Option<String>,
+    /// Which axes the mirror image negates (the renderer's snapshot).
+    #[serde(
+        rename = "mirrorAxes",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mirror_axes: Option<MirrorAxes>,
+}
+
+/// `distanceDiffuse.mirrorAxes`. The renderer's default is X and Y: a
+/// half-turn about the vertical, the classic behaviour.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MirrorAxes {
+    pub x: bool,
+    pub y: bool,
+    pub z: bool,
+}
+
+impl Default for MirrorAxes {
+    fn default() -> Self {
+        Self {
+            x: true,
+            y: true,
+            z: false,
+        }
+    }
+}
+
+impl MirrorAxes {
+    /// The renderer's `/distance_diffuse/mirror_axes` argument: the flipped
+    /// axes spelled out, `none` for none. The set goes as one string because
+    /// the flips compose into a single mirror rather than acting apart.
+    pub fn to_arg(self) -> String {
+        let axes: String = [(self.x, 'x'), (self.y, 'y'), (self.z, 'z')]
+            .into_iter()
+            .filter_map(|(on, axis)| on.then_some(axis))
+            .collect();
+        if axes.is_empty() {
+            "none".to_owned()
+        } else {
+            axes
+        }
+    }
+
+    /// `symmetryI18nKey`: what the flips compose into. One is a reflection in
+    /// the plane normal to its axis, two a half-turn about the axis left
+    /// alone, three an inversion through the origin.
+    pub fn symmetry_key(self) -> &'static str {
+        match (self.x, self.y, self.z) {
+            (false, false, false) => "distance.symmetry.none",
+            (true, false, false) => "distance.symmetry.planeX",
+            (false, true, false) => "distance.symmetry.planeY",
+            (false, false, true) => "distance.symmetry.planeZ",
+            (false, true, true) => "distance.symmetry.axisX",
+            (true, false, true) => "distance.symmetry.axisY",
+            (true, true, false) => "distance.symmetry.axisZ",
+            (true, true, true) => "distance.symmetry.origin",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -1057,5 +1116,51 @@ mod validation_tests {
         let once = state.clone();
         state.sanitize();
         assert_eq!(format!("{once:?}"), format!("{state:?}"));
+    }
+}
+
+#[cfg(test)]
+mod mirror_axes_tests {
+    use super::{DistanceDiffuse, MirrorAxes};
+
+    #[test]
+    fn the_flips_name_their_symmetry_and_spell_the_renderer_argument() {
+        let axes = |x, y, z| MirrorAxes { x, y, z };
+        assert_eq!(
+            MirrorAxes::default().symmetry_key(),
+            "distance.symmetry.axisZ"
+        );
+        assert_eq!(MirrorAxes::default().to_arg(), "xy");
+        assert_eq!(axes(false, false, false).to_arg(), "none");
+        assert_eq!(
+            axes(false, false, false).symmetry_key(),
+            "distance.symmetry.none"
+        );
+        assert_eq!(
+            axes(false, true, false).symmetry_key(),
+            "distance.symmetry.planeY"
+        );
+        assert_eq!(axes(true, true, true).to_arg(), "xyz");
+        assert_eq!(
+            axes(true, true, true).symmetry_key(),
+            "distance.symmetry.origin"
+        );
+    }
+
+    #[test]
+    fn the_snapshot_carries_the_mirror_axes() {
+        let parsed: DistanceDiffuse = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "mirrorAxes": { "x": false, "y": true, "z": true }
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed.mirror_axes,
+            Some(MirrorAxes {
+                x: false,
+                y: true,
+                z: true
+            })
+        );
     }
 }
