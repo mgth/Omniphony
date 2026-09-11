@@ -23,6 +23,10 @@ use crate::ui::layout::{OverlayLayout, Side};
 use crate::view::{self, Selection, ViewSettings, VolumeSettings, VolumeState};
 use crate::widgets::{OPTION_SCHEMA, OptionValue};
 
+/// How long after a selection change the lists keep the selected row in view,
+/// long enough for the pinned editor to settle on its height.
+const REVEAL_WINDOW: Duration = Duration::from_millis(400);
+
 /// True when two layouts describe the same panels (they hold only floats and
 /// flags, so a field-wise comparison is enough to know whether to persist).
 fn layout_eq(a: &OverlayLayout, b: &OverlayLayout) -> bool {
@@ -91,6 +95,10 @@ pub struct StudioSpike {
     pub(crate) idle_feed_armed_at: Option<Instant>,
     /// Speaker selection of the previous frame, to notice a change.
     pub(crate) last_speaker_selection: Option<usize>,
+    /// The selection the lists last scrolled to, and until when they keep
+    /// making sure its row is in view (see `reveal_selected_row`).
+    pub(crate) revealed_selection: Selection,
+    pub(crate) reveal_until: Option<Instant>,
     /// Room dimensions as the form holds them, and whether this panel is the
     /// one that last changed them.
     pub(crate) room_edit: Option<crate::panels::room::RoomDimensions>,
@@ -357,6 +365,8 @@ impl StudioSpike {
             speaker_test_deadline: None,
             idle_feed_armed_at: None,
             last_speaker_selection: None,
+            revealed_selection: Selection::default(),
+            reveal_until: None,
             room_edit: None,
             room_editing: false,
             pinna_preset: "pbnh".to_owned(),
@@ -712,6 +722,22 @@ impl StudioSpike {
     /// Both side overlays. They float above the viewport, so resizing or
     /// collapsing one never changes the scene's size.
     fn overlays(&mut self, ctx: &egui::Context) {
+        // A new selection opens its editor in the pinned slot at the foot of
+        // the overlay, which shortens the list above and can hide the very
+        // row that was picked. The web scrolls it back into view after layout
+        // (`scrollIntoView({ block: 'nearest' })`); here the slot only settles
+        // on its height a frame later, so the lists keep checking for a moment
+        // rather than once.
+        if self.selection != self.revealed_selection {
+            self.revealed_selection = self.selection.clone();
+            let picked = self.selection.object.is_some() || self.selection.speaker.is_some();
+            self.reveal_until = picked.then(|| Instant::now() + REVEAL_WINDOW);
+        }
+        if self.reveal_until.is_some_and(|t| Instant::now() < t) {
+            ctx.request_repaint();
+        } else {
+            self.reveal_until = None;
+        }
         // `OverlayLayout` is `Copy`: take it out so the panel bodies can
         // borrow `self`, then write back what the chrome changed.
         let mut layout = self.layout;
