@@ -133,6 +133,9 @@ pub struct StudioSpike {
     pub(crate) profile_name_edit: String,
     pub(crate) profile_name_focus: bool,
     pub(crate) profile_delete_confirm: Option<String>,
+    /// A bulk delay tool waiting for its confirmation: both rewrite every
+    /// speaker, so neither runs on a single click.
+    pub(crate) delay_tool_confirm: Option<crate::panels::speaker_editor::DelayTool>,
     /// Object injection: whether the test signal is playing, whether the list's
     /// M button silenced it, and what a sheet gesture is locked to.
     pub(crate) object_test_playing: bool,
@@ -403,6 +406,7 @@ impl StudioSpike {
             profile_name_edit: String::new(),
             profile_name_focus: false,
             profile_delete_confirm: None,
+            delay_tool_confirm: None,
             object_test_playing: false,
             object_test_muted: false,
             object_test_drag: None,
@@ -834,6 +838,7 @@ impl StudioSpike {
         self.band_cursor(ctx, &layout);
         self.about_modal(ctx);
         self.info_modal(ctx);
+        self.delay_tool_modal(ctx);
         crate::ui::help::end_frame(ctx);
         self.sofa_browser_modal(ctx);
         self.script_editor_modal(ctx);

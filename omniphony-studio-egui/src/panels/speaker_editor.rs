@@ -49,6 +49,66 @@ const TEST_ISOLATIONS: &[(&str, &str)] = &[
     ("test_only_solo", "speaker.testIsolation.solo"),
 ];
 
+/// `SPEED_OF_SOUND_M_S` of the web's delay tools.
+const SPEED_OF_SOUND_M_S: f64 = 343.0;
+/// `DEFAULT_SAMPLE_RATE_HZ`: the web converts delays to samples at 48 kHz,
+/// whatever the output runs at, and the two readouts have to agree.
+const DELAY_SAMPLE_RATE_HZ: f64 = 48_000.0;
+
+/// The editor's two bulk delay tools (`speakerEditAutoDelayBtn`,
+/// `speakerEditDelayToDistanceBtn`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DelayTool {
+    /// Delay every speaker so all arrive with the farthest one.
+    CalcDelays,
+    /// Move every speaker along its direction until its distance matches its
+    /// delay, the farthest speaker being the reference.
+    DelayToDistance,
+}
+
+impl DelayTool {
+    fn confirm_key(self) -> &'static str {
+        match self {
+            Self::CalcDelays => "confirm.calcDelays",
+            Self::DelayToDistance => "confirm.delayToDist",
+        }
+    }
+
+    fn label_key(self) -> &'static str {
+        match self {
+            Self::CalcDelays => "speaker.calcDelays",
+            Self::DelayToDistance => "speaker.delayToDist",
+        }
+    }
+}
+
+/// `computeAndApplySpeakerDelays`: the delay, in ms rounded to the µs, that
+/// aligns each speaker at `distances_m` with the farthest one.
+fn aligned_delays_ms(distances_m: &[f64]) -> Vec<f64> {
+    let farthest = distances_m.iter().copied().fold(0.0, f64::max);
+    distances_m
+        .iter()
+        .map(|d| {
+            let ms = ((farthest - d) / SPEED_OF_SOUND_M_S * 1000.0).max(0.0);
+            (ms * 1000.0).round() / 1000.0
+        })
+        .collect()
+}
+
+/// `adjustSpeakerDistancesFromDelays`: the distance, in room units, each
+/// speaker should sit at so that its delay is the path it is short of the
+/// farthest speaker. Never closer than 0.01.
+fn distances_from_delays(distances_m: &[f64], delays_ms: &[f64], scale_m: f64) -> Vec<f64> {
+    let reference = distances_m.iter().copied().fold(0.01, f64::max);
+    delays_ms
+        .iter()
+        .map(|delay| {
+            let shortfall = delay.max(0.0) / 1000.0 * SPEED_OF_SOUND_M_S;
+            ((reference - shortfall) / scale_m).max(0.01)
+        })
+        .collect()
+}
+
 impl StudioSpike {
     /// Shown only while a speaker is selected, like the web editor.
     pub(crate) fn speaker_editor(&mut self, ui: &mut Ui) {
@@ -225,14 +285,30 @@ impl StudioSpike {
                     )
                     .changed()
                 {
-                    self.ctl.send_json(
-                        "/omniphony/control/config/speakers",
-                        &serde_json::json!({
-                            "speakerEdits": [{ "id": id.max(0), "delayMs": delay.max(0.0) }]
-                        }),
-                    );
+                    self.set_speaker_delay(id, delay as f64);
                 }
             });
+            // The same delay in samples, both readouts kept in step.
+            let mut samples = (speaker.delay_ms.max(0.0) / 1000.0 * DELAY_SAMPLE_RATE_HZ).round();
+            widgets::label_row_help(
+                ui,
+                t("speaker.delaySamples"),
+                "help.speaker.delaySamples",
+                |ui| {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut samples)
+                                .speed(1.0)
+                                .range(0.0..=f64::MAX)
+                                .fixed_decimals(0),
+                        )
+                        .changed()
+                    {
+                        self.set_speaker_delay(id, samples.round() * 1000.0 / DELAY_SAMPLE_RATE_HZ);
+                    }
+                },
+            );
+            self.delay_tools_row(ui);
 
             let mut spatialize = speaker.spatialize != 0;
             if widgets::switch_row_help(
@@ -636,6 +712,180 @@ impl StudioSpike {
         }
     }
 
+    /// "Delay tools": the two bulk tools, each asking before it runs. The
+    /// buttons sit beside the label while they fit, and share a line of
+    /// their own under it when the panel is too narrow for both.
+    fn delay_tools_row(&mut self, ui: &mut Ui) {
+        let tools = [DelayTool::CalcDelays, DelayTool::DelayToDistance];
+        let button_width = |ui: &Ui, tool: DelayTool| {
+            egui::WidgetText::from(t(tool.label_key()))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Button,
+                )
+                .size()
+                .x
+                + 2.0 * ui.spacing().button_padding.x
+        };
+        let label_width = egui::WidgetText::from(t("speaker.delayTools"))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Body,
+            )
+            .size()
+            .x;
+        let spacing = ui.spacing().item_spacing.x;
+        let needed = label_width
+            + tools
+                .iter()
+                .map(|tool| button_width(ui, *tool) + spacing)
+                .sum::<f32>();
+        if needed <= ui.available_width() {
+            widgets::label_row_help(
+                ui,
+                t("speaker.delayTools"),
+                "help.speaker.delayTools",
+                |ui| {
+                    // Right to left: the second tool is placed first.
+                    for tool in tools.into_iter().rev() {
+                        if ui.button(t(tool.label_key())).clicked() {
+                            self.delay_tool_confirm = Some(tool);
+                        }
+                    }
+                },
+            );
+            return;
+        }
+        widgets::label_row_help(
+            ui,
+            t("speaker.delayTools"),
+            "help.speaker.delayTools",
+            |_| {},
+        );
+        ui.columns(tools.len(), |columns| {
+            for (column, tool) in columns.iter_mut().zip(tools) {
+                let width = column.available_width();
+                let button = egui::Button::new(t(tool.label_key())).truncate();
+                if column
+                    .add_sized(egui::vec2(width, column.spacing().interact_size.y), button)
+                    .clicked()
+                {
+                    self.delay_tool_confirm = Some(tool);
+                }
+            }
+        });
+    }
+
+    /// Delay belongs to the speakers document, not the layout.
+    fn set_speaker_delay(&mut self, id: i32, delay_ms: f64) {
+        self.ctl.send_json(
+            "/omniphony/control/config/speakers",
+            &serde_json::json!({
+                "speakerEdits": [{ "id": id.max(0), "delayMs": delay_ms.max(0.0) }]
+            }),
+        );
+    }
+
+    /// The web asks with `window.confirm`; here a modal with the same text.
+    pub(crate) fn delay_tool_modal(&mut self, ctx: &egui::Context) {
+        let Some(tool) = self.delay_tool_confirm else {
+            return;
+        };
+        let mut run = false;
+        let mut cancel = false;
+        let modal = egui::Modal::new(egui::Id::new("delay-tool-confirm"))
+            .frame(widgets::modal_frame())
+            .show(ctx, |ui| {
+                ui.set_max_width(340.0);
+                for line in t(tool.confirm_key()).split('\n') {
+                    if line.is_empty() {
+                        ui.add_space(theme::ROW_GAP);
+                    } else {
+                        ui.label(line);
+                    }
+                }
+                ui.add_space(theme::PANEL_GAP);
+                ui.horizontal(|ui| {
+                    cancel = ui.button(t("common.cancel")).clicked();
+                    run = ui
+                        .button(RichText::new(t(tool.label_key())).color(theme::WARN))
+                        .clicked();
+                });
+            });
+        if run {
+            self.run_delay_tool(tool);
+        }
+        if run || cancel || modal.should_close() {
+            self.delay_tool_confirm = None;
+        }
+    }
+
+    fn run_delay_tool(&mut self, tool: DelayTool) {
+        let (speakers, frozen, scale_m) = {
+            let live = self.live.lock().unwrap();
+            (
+                live.selected_speakers().to_vec(),
+                live.app.render_backend_state.frozen_speakers,
+                live.app.room_ratio.scale_m.max(0.01),
+            )
+        };
+        if frozen || speakers.is_empty() {
+            return;
+        }
+        let distances_m: Vec<f64> = speakers
+            .iter()
+            .map(|s| s.distance_m.max(0.0) * scale_m)
+            .collect();
+        match tool {
+            DelayTool::CalcDelays => {
+                let edits: Vec<serde_json::Value> = aligned_delays_ms(&distances_m)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(id, delay_ms)| serde_json::json!({ "id": id, "delayMs": delay_ms }))
+                    .collect();
+                self.ctl.send_json(
+                    "/omniphony/control/config/speakers",
+                    &serde_json::json!({ "speakerEdits": edits }),
+                );
+            }
+            DelayTool::DelayToDistance => {
+                let delays: Vec<f64> = speakers.iter().map(|s| s.delay_ms).collect();
+                let targets = distances_from_delays(&distances_m, &delays, scale_m);
+                // Along each speaker's own direction: its position scaled to
+                // the new distance, one layout edit for the lot.
+                let edits: Vec<serde_json::Value> = speakers
+                    .iter()
+                    .zip(targets)
+                    .enumerate()
+                    .map(|(id, (s, target))| {
+                        let norm = (s.x * s.x + s.y * s.y + s.z * s.z).sqrt();
+                        let dir = if norm > 1e-6 {
+                            [s.x / norm, s.y / norm, s.z / norm]
+                        } else {
+                            [1.0, 0.0, 0.0]
+                        };
+                        serde_json::json!({
+                            "id": id,
+                            "coordMode": "cartesian",
+                            "x": dir[0] * target,
+                            "y": dir[1] * target,
+                            "z": dir[2] * target,
+                        })
+                    })
+                    .collect();
+                self.ctl.send_json(
+                    "/omniphony/control/config/layout",
+                    &serde_json::json!({ "speakerEdits": edits }),
+                );
+                self.apply_layout();
+            }
+        }
+    }
+
     /// One field of one speaker in the layout document, then apply.
     /// The three coordinates in one edit, which is what a drag produces: three
     /// separate edits would be three layout applies for one move.
@@ -730,4 +980,31 @@ fn select_row(
         });
     });
     (chosen != current).then_some(chosen)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{aligned_delays_ms, distances_from_delays};
+
+    #[test]
+    fn nearer_speakers_wait_for_the_farthest() {
+        // 3.43 m of path is 10 ms of sound.
+        let delays = aligned_delays_ms(&[3.43, 0.0, 1.715]);
+        assert_eq!(delays, vec![0.0, 10.0, 5.0]);
+    }
+
+    #[test]
+    fn delays_move_speakers_back_to_the_distance_they_stand_for() {
+        let distances_m = [3.43, 3.43];
+        // Scale 2 m per unit: the reference 3.43 m is 1.715 units.
+        let targets = distances_from_delays(&distances_m, &[0.0, 5.0], 2.0);
+        assert!((targets[0] - 1.715).abs() < 1e-9);
+        assert!((targets[1] - 0.8575).abs() < 1e-9);
+        // Round trip: the delays computed from the new distances are the
+        // delays that were asked for.
+        let back = aligned_delays_ms(&targets.iter().map(|t| t * 2.0).collect::<Vec<_>>());
+        assert_eq!(back, vec![0.0, 5.0]);
+        // A delay longer than the room is clamped, not negative.
+        assert_eq!(distances_from_delays(&[1.0], &[1000.0], 1.0), vec![0.01]);
+    }
 }
