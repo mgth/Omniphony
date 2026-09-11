@@ -192,3 +192,41 @@ fn drag_handle(
             ui.painter().rect_filled(grip, 1.0, colour);
         });
 }
+
+/// The web's pinned editor slot (`#speakerEditSection`, `#channelEditSection`,
+/// `#objectTestEditSection`): a temporary editing panel at the foot of an
+/// overlay, below its scroll, so it stays in view while the list above it
+/// keeps scrolling. At most 45 % of the window high, as `max-height: 45vh`,
+/// scrolling inside itself past that so a tall editor never starves the list.
+///
+/// It is carved out of the overlay with a bottom panel, and the list's
+/// `CentralPanel` — called after this — takes what it leaves, so opening an
+/// editor shortens the list rather than pushing the editor off the foot of a
+/// fixed-height overlay.
+///
+/// The panel is sized from the height egui measured for the editor's content
+/// on the previous frame. Left to size itself it never grows: the editor sits
+/// in a scroll area, a scroll area is bounded by the room it is given, and the
+/// room it is given is the panel's own initial sliver — so the content never
+/// overflows and the panel never learns it should be taller. The first frame
+/// opens at the full 45 % and settles on the content from the next.
+pub fn pinned_slot(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
+    let max = ui.ctx().content_rect().height() * 0.45;
+    let key = Id::new((id, "content-height"));
+    let wanted: f32 = ui.data(|d| d.get_temp(key)).unwrap_or(max);
+    egui::Panel::bottom(Id::new(id))
+        .frame(egui::Frame::NONE)
+        .show_separator_line(false)
+        .exact_size(wanted.clamp(0.0, max))
+        .show_inside(ui, |ui| {
+            let out = egui::ScrollArea::vertical()
+                .id_salt((id, "scroll"))
+                .auto_shrink([false, false])
+                .show(ui, add);
+            let measured = out.content_size.y;
+            if (measured - wanted).abs() > 0.5 {
+                ui.data_mut(|d| d.insert_temp(key, measured));
+                ui.ctx().request_repaint();
+            }
+        });
+}

@@ -721,39 +721,60 @@ impl StudioSpike {
             self.connection_line(ui);
             self.profiles_row(ui);
             self.updates_panel(ui);
-            let height = ui.available_height();
-            egui::ScrollArea::vertical()
-                .id_salt("overlay-left-scroll")
-                .max_height(height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    self.osc_section(ui);
-                    self.audio_input_section(ui);
-                    self.sources_2d_section(ui);
-                    self.room_geometry_section(ui);
-                    self.display_sections(ui);
-                    self.drc_section(ui);
-                    self.tool_sections(ui);
+            // What comes *in* sits on the left and what goes *out* on the
+            // right, as in the web: the objects are the program arriving, so
+            // they follow the input sections here, and their two editors take
+            // the left overlay's pinned slot. The right panel keeps the output
+            // chain, from the device to the speakers.
+            if self.object_test_editor_open() || self.selected_channel().is_some() {
+                crate::ui::overlay::pinned_slot(ui, "overlay-left-pinned", |ui| {
+                    self.object_test_editor(ui);
+                    self.channel_editor(ui);
+                });
+            }
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show_inside(ui, |ui| {
+                    let height = ui.available_height();
+                    egui::ScrollArea::vertical()
+                        .id_salt("overlay-left-scroll")
+                        .max_height(height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.osc_section(ui);
+                            self.audio_input_section(ui);
+                            self.sources_2d_section(ui);
+                            self.room_geometry_section(ui);
+                            self.display_sections(ui);
+                            self.drc_section(ui);
+                            self.objects_section(ui);
+                            self.tool_sections(ui);
+                        });
                 });
         });
         crate::ui::overlay::show(ctx, Side::Right, &mut layout, |ui| {
-            let height = ui.available_height();
-            egui::ScrollArea::vertical()
-                .id_salt("overlay-right-scroll")
-                .max_height(height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    self.audio_output_section(ui);
-                    self.latency_section(ui);
-                    self.diagnostics_section(ui);
-                    self.master_section(ui);
-                    self.renderer_section(ui);
-                    self.objects_section(ui);
-                    self.channel_editor(ui);
-                    self.object_test_editor(ui);
-                    self.headphones_section(ui);
-                    self.speakers_section(ui);
+            if self.selection.speaker.is_some() {
+                crate::ui::overlay::pinned_slot(ui, "overlay-right-pinned", |ui| {
                     self.speaker_editor(ui);
+                });
+            }
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show_inside(ui, |ui| {
+                    let height = ui.available_height();
+                    egui::ScrollArea::vertical()
+                        .id_salt("overlay-right-scroll")
+                        .max_height(height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.audio_output_section(ui);
+                            self.latency_section(ui);
+                            self.diagnostics_section(ui);
+                            self.master_section(ui);
+                            self.renderer_section(ui);
+                            self.headphones_section(ui);
+                            self.speakers_section(ui);
+                        });
                 });
         });
         self.log_overlay(ctx, &layout);
