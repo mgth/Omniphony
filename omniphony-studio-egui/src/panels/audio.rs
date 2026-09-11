@@ -66,6 +66,7 @@ impl StudioSpike {
                         meter_fraction(peak),
                         (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
                         hold >= 0.0,
+                        None,
                     );
                     ui.label(
                         RichText::new(format_level(meter.as_ref()))
