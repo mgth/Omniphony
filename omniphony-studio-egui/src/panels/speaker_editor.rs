@@ -624,12 +624,6 @@ impl StudioSpike {
         ) {
             self.speaker_test_level_db = level;
         }
-        // A running test whose safety window elapsed stops itself.
-        if let Some(deadline) = self.speaker_test_deadline
-            && std::time::Instant::now() >= deadline
-        {
-            self.stop_speaker_test();
-        }
     }
 
     /// The start message. Sent again whenever something it carries changes.
@@ -649,11 +643,17 @@ impl StudioSpike {
     fn start_speaker_test(&mut self, index: usize) {
         self.send_speaker_test(index);
         self.speaker_test_running = Some(index);
-        self.speaker_test_deadline = match self.speaker_test_mode.as_str() {
-            "burst" => Some(std::time::Instant::now() + BURST),
-            "toggle" => Some(std::time::Instant::now() + TOGGLE_SAFETY),
+        let window = match self.speaker_test_mode.as_str() {
+            "burst" => Some(BURST),
+            "toggle" => Some(TOGGLE_SAFETY),
             _ => None,
         };
+        self.speaker_test_deadline = window.map(|window| std::time::Instant::now() + window);
+        // Woken from here too: `maintain_speaker_test` keeps the wake-up
+        // alive, but only once some later pass has run it.
+        if let Some(window) = window {
+            self.ctx.request_repaint_after(window);
+        }
     }
 
     /// Sent unconditionally: "nothing is running" is this side's belief, and
@@ -672,6 +672,24 @@ impl StudioSpike {
                 rosc::OscType::String(self.speaker_test_isolation.clone()),
             ],
         );
+    }
+
+    /// A running burst or toggle test stops itself once its window has elapsed
+    /// (the `setTimeout` in `speaker-test.js`).
+    ///
+    /// Ticked from `App::logic`, not from the Test tab: the renderer has no
+    /// timeout of its own, so the stop must come whether or not the tab is
+    /// drawn (a collapsed overlay, a layout change that took the speaker away).
+    /// The repaint it asks for wakes the host at the deadline when nothing
+    /// else would, e.g. with metering off and no input.
+    pub(crate) fn maintain_speaker_test(&mut self, ctx: &egui::Context) {
+        let Some(deadline) = self.speaker_test_deadline else {
+            return;
+        };
+        match deadline.checked_duration_since(std::time::Instant::now()) {
+            Some(left) if !left.is_zero() => ctx.request_repaint_after(left),
+            _ => self.stop_speaker_test(),
+        }
     }
 
     /// A test running on another speaker follows a new selection in toggle
