@@ -62,7 +62,7 @@ impl StudioSpike {
                 }
                 for row in &rows {
                     let selected = self.selection.object.as_deref() == Some(row.id.as_str());
-                    let (action, _) = list_row(
+                    let (action, rect) = list_row(
                         ui,
                         "objects",
                         row,
@@ -73,6 +73,9 @@ impl StudioSpike {
                         },
                         &cutoffs,
                     );
+                    if selected {
+                        self.reveal_selected_row(ui, rect);
+                    }
                     self.apply_row_action(action, row, false);
                 }
             });
@@ -216,6 +219,9 @@ impl StudioSpike {
                     if matches!(action, RowAction::DragStart) {
                         self.speaker_drag = index;
                     }
+                    if selected {
+                        self.reveal_selected_row(ui, rect);
+                    }
                     // The row under the pointer is the one a release lands on.
                     if pointer.is_some_and(|p| rect.contains(p)) {
                         drop_on = index;
@@ -354,6 +360,19 @@ impl StudioSpike {
     }
 
     /// Apply what the row's controls asked for: selection, mute, solo.
+    /// Keep the selected row in view for a moment after the selection changed.
+    /// It scrolls only when the row is not wholly visible and then only as far
+    /// as needed — `block: 'nearest'` — so a row that is already in view does
+    /// not move, and scrolling away from it afterwards is not undone.
+    fn reveal_selected_row(&self, ui: &Ui, rect: egui::Rect) {
+        if self.reveal_until.is_none() {
+            return;
+        }
+        if !ui.clip_rect().contains_rect(rect) {
+            ui.scroll_to_rect(rect, None);
+        }
+    }
+
     fn apply_row_action(&mut self, action: RowAction, row: &Row, speaker: bool) {
         match action {
             // The drag is bookkept by the caller, which knows the drop target.

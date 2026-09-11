@@ -91,7 +91,7 @@ impl Default for ViewSettings {
 }
 
 /// Current selection: at most one of the two is set.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Selection {
     pub object: Option<String>,
     pub speaker: Option<usize>,
