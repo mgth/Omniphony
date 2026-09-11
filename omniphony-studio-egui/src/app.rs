@@ -71,9 +71,6 @@ pub struct StudioSpike {
     /// Log overlay: expanded state and the filter box's text.
     pub(crate) log_expanded: bool,
     pub(crate) log_filter: String,
-    /// `SharedState::realtime_seq`: monotonic stamp on realtime controls, so
-    /// the renderer can drop updates that arrive out of order.
-    pub(crate) realtime_seq: i32,
     /// OSC form fields (`osc_config.json`, shared with the Tauri Studio).
     pub(crate) osc_host: String,
     pub(crate) osc_port: u16,
@@ -383,7 +380,6 @@ impl StudioSpike {
             prefs_dirty_since: None,
             log_expanded: false,
             log_filter: String::new(),
-            realtime_seq: 0,
             osc_host,
             osc_port,
             osc_auto_start: osc_config.auto_start_renderer,
@@ -955,10 +951,16 @@ impl StudioSpike {
         self.prefs_dirty_since = None;
     }
 
-    /// Next value of the realtime sequence counter.
+    /// Next value of the realtime sequence counter: a monotonic stamp on
+    /// realtime controls, so the renderer can drop updates that arrive out of
+    /// order. It is the host's counter, the one `host::commands` stamps with,
+    /// so a control sent from a panel and one sent through a command share a
+    /// single sequence.
     pub(crate) fn next_realtime_seq(&mut self) -> i32 {
-        self.realtime_seq = self.realtime_seq.wrapping_add(1);
-        self.realtime_seq
+        self.host
+            .realtime_seq
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
     }
 
     fn maybe_print_stats(&mut self) {
