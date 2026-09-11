@@ -39,7 +39,13 @@ impl StudioSpike {
             let live = self.live.lock().unwrap();
             live.app.render_backend_state.frozen_speakers
         };
-        ui.horizontal(|ui| {
+        // Four buttons need ~350 points on one line, more than the panel's
+        // minimum width. Laid out on a plain row they overflowed it, and the
+        // panel's frame — anchored to the right edge — grew leftward to hold
+        // them: every other section then looked narrower than the panel, and
+        // anything placed from the configured width landed inside it. They
+        // wrap instead, as the web's flex row does.
+        ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(!frozen, |ui| {
                 if ui
                     .button(t("config.presets"))
