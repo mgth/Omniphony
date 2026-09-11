@@ -65,14 +65,17 @@ impl StudioSpike {
                 }
                 let mut chosen = mode.clone();
                 widgets::label_row_help(ui, t("input.drc"), "help.drc.mode", |ui| {
-                    egui::ComboBox::from_id_salt("drc-mode")
-                        .selected_text(&mode)
-                        .width(120.0)
-                        .show_ui(ui, |ui| {
-                            for option in &options {
-                                ui.selectable_value(&mut chosen, option.clone(), option);
-                            }
-                        });
+                    widgets::bounded_combo(ui, 120.0, |ui, w| {
+                        egui::ComboBox::from_id_salt("drc-mode")
+                            .selected_text(&mode)
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for option in &options {
+                                    ui.selectable_value(&mut chosen, option.clone(), option);
+                                }
+                            })
+                    });
                 });
                 if chosen != mode {
                     self.live.lock().unwrap().app.drc_mode = Some(chosen.clone());

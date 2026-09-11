@@ -43,6 +43,10 @@ struct Row {
     size: Option<[f32; 3]>,
     /// Trail points are still alive for this object, i.e. it is moving.
     moving: bool,
+    /// What the vertical badge carries: a short code, or an icon for a
+    /// synthesized object (whose full name then shows on hover).
+    strip: String,
+    strip_icon: Option<row_glyphs::BadgeIcon>,
     /// The badge carries the object's own colour, as `.object-colorized` does
     /// when the colour switch is on.
     colorized: bool,
@@ -129,6 +133,8 @@ impl StudioSpike {
                 Row {
                     id: key.clone(),
                     label: label.to_owned(),
+                    strip: label.to_owned(),
+                    strip_icon: None,
                     meter: live.ear_levels.get(&key).cloned(),
                     hold: live.peak_hold(&format!("ear:{key}")),
                     muted: muted(ear),
@@ -261,11 +267,15 @@ impl StudioSpike {
             .iter()
             .map(|(id, src)| {
                 let (base, _semantic) = view::objects::base_color(id, src.name.as_deref());
+                let name = view::objects::display_name(id, src.name.as_deref());
+                let (strip_icon, strip) = object_badge(id, &name, src.kind.as_deref());
                 let direct = direct_speaker(src.fixed, src.direct_speaker_index, speakers.len())
                     .and_then(|index| speakers.get(index));
                 Row {
                     id: id.clone(),
-                    label: view::objects::display_name(id, src.name.as_deref()),
+                    label: name,
+                    strip,
+                    strip_icon,
                     meter: live.app.source_levels.get(id).cloned(),
                     hold: live.peak_hold(&format!("src:{id}")),
                     muted: live.app.object_mutes.get(id).is_some_and(|m| *m != 0),
@@ -347,6 +357,8 @@ impl StudioSpike {
                 Row {
                     id: key.clone(),
                     label: speaker.id.clone(),
+                    strip: speaker.id.clone(),
+                    strip_icon: None,
                     meter: live.app.speaker_levels.get(&key).cloned(),
                     hold: live.peak_hold(&format!("spk:{key}")),
                     muted: live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),
@@ -550,6 +562,63 @@ fn contribution_fraction(gain: Option<f64>, source_rms: Option<f64>) -> Option<f
     Some(meter_fraction(rms + 20.0 * gain.log10()) as f64)
 }
 
+/// `objectBadge` + `applyObjectIdentity`: what an object's vertical badge
+/// carries. The strip is sized for codes like FL or TBR, so an object's name
+/// is reduced to one: the injected test source is `INJ`, the synthesized
+/// objects lose their technical prefix (`Ambience_FL` → FL, `Phantom_L_C` →
+/// L·C, `DirectH_FL` → FL↑), and anything else loses a single prefix word.
+/// Height and phantom objects show their kind as an icon instead.
+fn object_badge(
+    id: &str,
+    name: &str,
+    kind: Option<&str>,
+) -> (Option<row_glyphs::BadgeIcon>, String) {
+    if id == OBJECT_TEST_SOURCE_ID {
+        return (None, "INJ".to_owned());
+    }
+    let icon = match kind {
+        Some("height") => Some(row_glyphs::BadgeIcon::Height),
+        Some("phantom") => Some(row_glyphs::BadgeIcon::Phantom),
+        _ => None,
+    };
+    // `^Prefix(.+)$`, case-insensitive: the rest, if there is any.
+    let after = |prefix: &str| -> Option<&str> {
+        let head = name.get(..prefix.len())?;
+        let rest = &name[prefix.len()..];
+        (head.eq_ignore_ascii_case(prefix) && !rest.is_empty()).then_some(rest)
+    };
+    if let Some(rest) = after("Ambience_") {
+        return (icon, rest.to_owned());
+    }
+    if let Some(rest) = after("Height_")
+        && let Some(cut) = rest.len().checked_sub("_synth".len())
+        && cut > 0
+        && rest.is_char_boundary(cut)
+        && rest[cut..].eq_ignore_ascii_case("_synth")
+    {
+        return (icon, rest[..cut].to_owned());
+    }
+    if let Some(rest) = after("Diffuse_") {
+        return (icon, rest.to_owned());
+    }
+    if let Some(rest) = after("Phantom_") {
+        // `Phantom_L_C`: a source localized between two channels.
+        return match rest.split_once('_') {
+            Some((a, b)) if !a.is_empty() && !b.is_empty() => (icon, format!("{a}·{b}")),
+            _ => (icon, rest.to_owned()),
+        };
+    }
+    // The high ring is marked ↑ so its codes stay distinct from the floor's.
+    if let Some(rest) = after("DirectH_") {
+        return (icon, format!("{rest}↑"));
+    }
+    if let Some(rest) = after("Direct_") {
+        return (icon, rest.to_owned());
+    }
+    let code = name.split_once('_').map_or(name, |(_, rest)| rest);
+    (icon, if code.is_empty() { name } else { code }.to_owned())
+}
+
 /// `directFixedSpeakerTarget`: the speaker a fixed channel is routed straight
 /// to, if there is one. Both halves are required — `fixed` on its own is a bed
 /// channel that is still panned, and an index no layout resolves is not a
@@ -656,7 +725,8 @@ fn list_row(
                     egui::Shape::Vec(row_glyphs::id_strip(
                         ui,
                         strip_rect,
-                        &row.label,
+                        &row.strip,
+                        row.strip_icon,
                         row.colorized.then_some(row.colour),
                         state,
                     )),
@@ -681,6 +751,9 @@ fn list_row(
             }
             if row.speaker {
                 strip.on_hover_text("Drag to reorder");
+            } else if row.strip_icon.is_some() {
+                // The name hides behind the icon, so it shows on hover.
+                strip.on_hover_text(&row.label);
             }
         })
         .response
@@ -771,7 +844,49 @@ fn toggle_letter(ui: &mut Ui, letter: &str, active: bool) -> egui::Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{band_contributions, contribution_fraction, direct_speaker};
+    use super::{band_contributions, contribution_fraction, direct_speaker, object_badge};
+    use crate::panels::row_glyphs::BadgeIcon;
+
+    /// The web's own examples, from the comments of `objectBadge`.
+    #[test]
+    fn a_badge_carries_a_short_code() {
+        let code = |name: &str| object_badge("7", name, None).1;
+        assert_eq!(code("Ambience_FL"), "FL");
+        assert_eq!(code("Height_Ls_synth"), "Ls");
+        assert_eq!(code("Diffuse_TFL"), "TFL");
+        assert_eq!(code("Phantom_L_C"), "L·C");
+        assert_eq!(code("Phantom_C"), "C");
+        assert_eq!(code("DirectH_FL"), "FL↑");
+        assert_eq!(code("Direct_FL"), "FL");
+        assert_eq!(code("Obj_12"), "12");
+        assert_eq!(code("LFE"), "LFE");
+        // Case-insensitive, as the web's `/i`.
+        assert_eq!(code("ambience_fl"), "fl");
+    }
+
+    /// The injected test source's name is a sentence; its badge is a code.
+    #[test]
+    fn the_test_source_is_inj() {
+        let id = crate::panels::object_test::OBJECT_TEST_SOURCE_ID;
+        assert_eq!(
+            object_badge(id, "Objet de test", None),
+            (None, "INJ".to_owned())
+        );
+    }
+
+    /// Height and phantom objects show their kind as an icon.
+    #[test]
+    fn synthesized_kinds_get_an_icon() {
+        assert_eq!(
+            object_badge("3", "Height_Ls_synth", Some("height")).0,
+            Some(BadgeIcon::Height)
+        );
+        assert_eq!(
+            object_badge("4", "Phantom_L_C", Some("phantom")).0,
+            Some(BadgeIcon::Phantom)
+        );
+        assert_eq!(object_badge("5", "Obj_5", Some("object")).0, None);
+    }
 
     /// The table is band-major: one entry per band, each a gain per speaker.
     /// A speaker gets one bar per *band*, however many speakers there are.

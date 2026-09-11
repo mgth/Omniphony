@@ -102,14 +102,17 @@ impl StudioSpike {
 
                 let mut chosen = mode.clone();
                 widgets::label_row_help(ui, t("input.mode"), "help.input.mode", |ui| {
-                    egui::ComboBox::from_id_salt("input-mode")
-                        .selected_text(mode_label(&mode))
-                        .width(150.0)
-                        .show_ui(ui, |ui| {
-                            for (id, key) in MODES {
-                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
-                            }
-                        });
+                    widgets::bounded_combo(ui, 150.0, |ui, w| {
+                        egui::ComboBox::from_id_salt("input-mode")
+                            .selected_text(mode_label(&mode))
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for (id, key) in MODES {
+                                    ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                                }
+                            })
+                    });
                 });
                 if chosen != mode {
                     {
@@ -165,22 +168,25 @@ impl StudioSpike {
                     }
                     let mut chosen_clock = clock.clone();
                     widgets::label_row(ui, t("input.clock"), |ui| {
-                        egui::ComboBox::from_id_salt("input-clock")
-                            .selected_text(t(CLOCK_MODES
-                                .iter()
-                                .find(|(id, _)| *id == clock)
-                                .map(|(_, key)| *key)
-                                .unwrap_or("input.clock.dac")))
-                            .width(150.0)
-                            .show_ui(ui, |ui| {
-                                for (id, key) in CLOCK_MODES {
-                                    ui.selectable_value(
-                                        &mut chosen_clock,
-                                        (*id).to_owned(),
-                                        t(key),
-                                    );
-                                }
-                            });
+                        widgets::bounded_combo(ui, 150.0, |ui, w| {
+                            egui::ComboBox::from_id_salt("input-clock")
+                                .selected_text(t(CLOCK_MODES
+                                    .iter()
+                                    .find(|(id, _)| *id == clock)
+                                    .map(|(_, key)| *key)
+                                    .unwrap_or("input.clock.dac")))
+                                .width(w)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    for (id, key) in CLOCK_MODES {
+                                        ui.selectable_value(
+                                            &mut chosen_clock,
+                                            (*id).to_owned(),
+                                            t(key),
+                                        );
+                                    }
+                                })
+                        });
                     });
                     if chosen_clock != clock {
                         // Held until Apply: the clock cannot change under a

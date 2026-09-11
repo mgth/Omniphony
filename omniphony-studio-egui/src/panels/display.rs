@@ -26,24 +26,27 @@ impl StudioSpike {
                 .show(ui, |ui| {
                     // The language row heads the Display section, as in the web.
                     widgets::label_row(ui, t("app.language"), |ui| {
-                        egui::ComboBox::from_id_salt("locale")
-                            .selected_text(
-                                crate::i18n::LOCALE_OPTIONS
-                                    .iter()
-                                    .find(|(id, _)| *id == locale)
-                                    .map(|(_, label)| *label)
-                                    .unwrap_or("Auto"),
-                            )
-                            .width(150.0)
-                            .show_ui(ui, |ui| {
-                                for (id, label) in crate::i18n::LOCALE_OPTIONS {
-                                    if ui.selectable_label(*id == locale, *label).clicked()
-                                        && *id != locale
-                                    {
-                                        locale_choice = Some((*id).to_owned());
+                        widgets::bounded_combo(ui, 150.0, |ui, w| {
+                            egui::ComboBox::from_id_salt("locale")
+                                .selected_text(
+                                    crate::i18n::LOCALE_OPTIONS
+                                        .iter()
+                                        .find(|(id, _)| *id == locale)
+                                        .map(|(_, label)| *label)
+                                        .unwrap_or("Auto"),
+                                )
+                                .width(w)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    for (id, label) in crate::i18n::LOCALE_OPTIONS {
+                                        if ui.selectable_label(*id == locale, *label).clicked()
+                                            && *id != locale
+                                        {
+                                            locale_choice = Some((*id).to_owned());
+                                        }
                                     }
-                                }
-                            });
+                                })
+                        });
                         // "Auto" does not say which language it picked, and
                         // that is exactly what a reader checks when the UI
                         // is not in the language they expected.
@@ -57,18 +60,21 @@ impl StudioSpike {
                     });
                     widgets::switch_row(ui, t("display.showObjects"), &mut s.objects_visible);
                     widgets::label_row(ui, t("display.objectDisplayMode"), |ui| {
-                        egui::ComboBox::from_id_salt("object-display-mode")
-                            .selected_text(s.object_display_mode.label())
-                            .width(150.0)
-                            .show_ui(ui, |ui| {
-                                for mode in ObjectDisplayMode::ALL {
-                                    ui.selectable_value(
-                                        &mut s.object_display_mode,
-                                        mode,
-                                        mode.label(),
-                                    );
-                                }
-                            });
+                        widgets::bounded_combo(ui, 150.0, |ui, w| {
+                            egui::ComboBox::from_id_salt("object-display-mode")
+                                .selected_text(s.object_display_mode.label())
+                                .width(w)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    for mode in ObjectDisplayMode::ALL {
+                                        ui.selectable_value(
+                                            &mut s.object_display_mode,
+                                            mode,
+                                            mode.label(),
+                                        );
+                                    }
+                                })
+                        });
                     });
                     widgets::slider_line(
                         ui,
@@ -131,14 +137,17 @@ impl StudioSpike {
             .show(ui, |ui| {
                 widgets::switch_row(ui, t("trail.show"), &mut s.trails.enabled);
                 widgets::label_row(ui, t("trail.mode"), |ui| {
-                    egui::ComboBox::from_id_salt("trail-mode")
-                        .selected_text(s.trails.mode.label())
-                        .width(120.0)
-                        .show_ui(ui, |ui| {
-                            for mode in [TrailMode::Diffuse, TrailMode::Line] {
-                                ui.selectable_value(&mut s.trails.mode, mode, mode.label());
-                            }
-                        });
+                    widgets::bounded_combo(ui, 120.0, |ui, w| {
+                        egui::ComboBox::from_id_salt("trail-mode")
+                            .selected_text(s.trails.mode.label())
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for mode in [TrailMode::Diffuse, TrailMode::Line] {
+                                    ui.selectable_value(&mut s.trails.mode, mode, mode.label());
+                                }
+                            })
+                    });
                 });
                 let mut ttl_s = s.trails.ttl.as_secs_f32();
                 if widgets::slider_line(ui, t("trail.duration"), &mut ttl_s, 1.0..=20.0, 0.5)
@@ -168,14 +177,17 @@ impl StudioSpike {
             .show(ui, |ui| {
                 let combo = |ui: &mut egui::Ui, id: &str, label: &str, cm: &mut Colormap| {
                     widgets::label_row(ui, label, |ui| {
-                        egui::ComboBox::from_id_salt(id)
-                            .selected_text(cm.label())
-                            .width(130.0)
-                            .show_ui(ui, |ui| {
-                                for c in Colormap::ALL {
-                                    ui.selectable_value(cm, c, c.label());
-                                }
-                            });
+                        widgets::bounded_combo(ui, 130.0, |ui, w| {
+                            egui::ComboBox::from_id_salt(id)
+                                .selected_text(cm.label())
+                                .width(w)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    for c in Colormap::ALL {
+                                        ui.selectable_value(cm, c, c.label());
+                                    }
+                                })
+                        });
                     });
                 };
                 widgets::switch_row(ui, t("heatmap.objectEnergy"), &mut v.object_field_enabled);
@@ -232,24 +244,27 @@ impl StudioSpike {
                     &mut v.discontinuity_enabled,
                 );
                 widgets::label_row(ui, t("heatmap.discontinuity.mode"), |ui| {
-                    egui::ComboBox::from_id_salt("discontinuity-mode")
-                        .selected_text(match v.discontinuity_mode {
-                            DiscontinuityMode::Gain => "Gain",
-                            DiscontinuityMode::Centroid => "Centroid",
-                        })
-                        .width(130.0)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut v.discontinuity_mode,
-                                DiscontinuityMode::Gain,
-                                t("heatmap.discontinuity.modeGain"),
-                            );
-                            ui.selectable_value(
-                                &mut v.discontinuity_mode,
-                                DiscontinuityMode::Centroid,
-                                t("heatmap.discontinuity.modeCentroid"),
-                            );
-                        });
+                    widgets::bounded_combo(ui, 130.0, |ui, w| {
+                        egui::ComboBox::from_id_salt("discontinuity-mode")
+                            .selected_text(match v.discontinuity_mode {
+                                DiscontinuityMode::Gain => "Gain",
+                                DiscontinuityMode::Centroid => "Centroid",
+                            })
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut v.discontinuity_mode,
+                                    DiscontinuityMode::Gain,
+                                    t("heatmap.discontinuity.modeGain"),
+                                );
+                                ui.selectable_value(
+                                    &mut v.discontinuity_mode,
+                                    DiscontinuityMode::Centroid,
+                                    t("heatmap.discontinuity.modeCentroid"),
+                                );
+                            })
+                    });
                 });
                 widgets::slider_line(
                     ui,
