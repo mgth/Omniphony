@@ -179,6 +179,91 @@ pub fn bounded_combo<R>(ui: &mut Ui, preferred: f32, add: impl FnOnce(&mut Ui, f
     .inner
 }
 
+/// A label and a few buttons, `(text, enabled)`, returning the index of the
+/// one clicked. The buttons sit at the right of the label while they fit, as
+/// in the web; on a panel too narrow for them they share a line of their own
+/// under it, each an equal part of the width and truncated if it must be,
+/// rather than pushing the row past the panel's edge.
+pub fn label_buttons_help<'h>(
+    ui: &mut Ui,
+    label: &str,
+    help: impl Into<Help<'h>>,
+    buttons: &[(&str, bool)],
+) -> Option<usize> {
+    let help = help.into();
+    let spacing = ui.spacing().item_spacing.x;
+    let text_width = |ui: &Ui, text: &str, style: egui::TextStyle| {
+        egui::WidgetText::from(text)
+            .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style)
+            .size()
+            .x
+    };
+    let needed = text_width(ui, label, egui::TextStyle::Body)
+        + buttons
+            .iter()
+            .map(|(text, _)| {
+                text_width(ui, text, egui::TextStyle::Button)
+                    + 2.0 * ui.spacing().button_padding.x
+                    + spacing
+            })
+            .sum::<f32>();
+    let mut clicked = None;
+    if needed <= ui.available_width() {
+        labelled(ui, label.into(), Some(Trigger::Card(help)), |ui| {
+            // Right to left: the last button is placed first.
+            for (index, (text, enabled)) in buttons.iter().enumerate().rev() {
+                if ui.add_enabled(*enabled, egui::Button::new(*text)).clicked() {
+                    clicked = Some(index);
+                }
+            }
+        });
+        super::help::card(ui, help);
+        return clicked;
+    }
+    labelled(ui, label.into(), Some(Trigger::Card(help)), |_| {});
+    super::help::card(ui, help);
+    ui.columns(buttons.len().max(1), |columns| {
+        for (index, (column, (text, enabled))) in columns.iter_mut().zip(buttons).enumerate() {
+            let size = vec2(column.available_width(), column.spacing().interact_size.y);
+            let button = egui::Button::new(*text).truncate();
+            if column
+                .add_enabled_ui(*enabled, |ui| ui.add_sized(size, button))
+                .inner
+                .clicked()
+            {
+                clicked = Some(index);
+            }
+        }
+    });
+    clicked
+}
+
+/// The width each of `fields` equal inputs can take on a line that also
+/// holds `texts` (small labels): what is left once the labels and the gaps
+/// are paid for, shared out, and never wider than `max` nor narrower than
+/// `min` — past `min` the line does overflow, but only on a panel narrower
+/// than any the layout allows.
+pub fn fitted_field_width(ui: &Ui, texts: &[&str], fields: usize, min: f32, max: f32) -> f32 {
+    let spacing = ui.spacing().item_spacing.x;
+    let labels: f32 = texts
+        .iter()
+        .map(|text| {
+            egui::WidgetText::from(egui::RichText::new(*text).size(theme::FONT_SIZE_SMALL))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                )
+                .size()
+                .x
+        })
+        .sum();
+    let gaps = spacing * (texts.len() + fields).saturating_sub(1) as f32;
+    let fields = fields.max(1) as f32;
+    ((ui.available_width() - labels - gaps) / fields).clamp(min, max)
+}
+
 /// Label left, switch right (`.inline-toggle`). Returns true when toggled.
 pub fn switch_row(ui: &mut Ui, label: &str, on: &mut bool) -> bool {
     label_row(ui, label, |ui| switch(ui, on).changed())
