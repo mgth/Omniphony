@@ -227,10 +227,21 @@ impl StudioSpike {
         // added elsewhere.
         let mut object_stop = self.object_stop_selected;
         let mut speaker_stop = self.speaker_stop_selected;
+        let band_labels = {
+            let live = self.live.lock().unwrap();
+            crate::panels::row_glyphs::band_labels(&crate::model::layouts::crossover_cutoffs(
+                &live.selected_speakers(),
+            ))
+        };
+        let band = &mut self.settings.heatmap_band_index;
         let v = &mut self.volume_settings;
         Section::new("heatmapsSection", "display.heatmaps")
             .info("heatmap")
             .show(ui, |ui| {
+                // The one crossover-band selector: every heatmap below, the
+                // effective render and the dominant-speaker readouts follow
+                // it, as does the cursor floating over the scene.
+                crossover_band_row(ui, band, &band_labels);
                 // Both colormap rows share one help; each opens its own card.
                 let combo = |ui: &mut egui::Ui, id: &str, label: &str, cm: &mut Colormap| {
                     let help = widgets::Help::text(
@@ -296,7 +307,12 @@ impl StudioSpike {
                     1.0,
                 );
                 ui.separator();
-                widgets::switch_row(ui, t("heatmap.speakers"), &mut v.speaker_enabled);
+                widgets::switch_row_help(
+                    ui,
+                    t("heatmap.speakers"),
+                    "help.heatmap.speakerVolume",
+                    &mut v.speaker_enabled,
+                );
                 combo(
                     ui,
                     "speaker-colormap",
@@ -430,4 +446,41 @@ impl StudioSpike {
         self.object_stop_selected = object_stop;
         self.speaker_stop_selected = speaker_stop;
     }
+}
+
+/// `#heatmapBandSelect`: one entry per band, and "All bands" past the last
+/// when there is more than one — an index at or past the band count, as the
+/// band cursor spells it.
+fn crossover_band_row(ui: &mut egui::Ui, band: &mut usize, labels: &[String]) {
+    let count = labels.len();
+    let all = count > 1 && *band >= count;
+    let shown = if all {
+        t("heatmap.bandAll").to_owned()
+    } else {
+        labels
+            .get((*band).min(count.saturating_sub(1)))
+            .cloned()
+            .unwrap_or_default()
+    };
+    widgets::label_row_help(
+        ui,
+        t("heatmap.crossoverBand"),
+        "help.heatmap.crossoverBand",
+        |ui| {
+            widgets::bounded_combo(ui, 150.0, |ui, w| {
+                egui::ComboBox::from_id_salt("heatmap-band")
+                    .selected_text(shown)
+                    .width(w)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        for (index, label) in labels.iter().enumerate() {
+                            ui.selectable_value(band, index, label);
+                        }
+                        if count > 1 {
+                            ui.selectable_value(band, count, t("heatmap.bandAll"));
+                        }
+                    })
+            });
+        },
+    );
 }
