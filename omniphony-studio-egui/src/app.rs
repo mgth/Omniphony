@@ -791,11 +791,11 @@ impl StudioSpike {
                 .frame(egui::Frame::NONE)
                 .show_inside(ui, |ui| {
                     let height = ui.available_height();
-                    egui::ScrollArea::vertical()
-                        .id_salt("overlay-left-scroll")
-                        .max_height(height)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
+                    crate::ui::overlay::panel_scroll(
+                        ui,
+                        "overlay-left-scroll",
+                        Some(height),
+                        |ui| {
                             self.osc_section(ui);
                             self.audio_input_section(ui);
                             self.sources_2d_section(ui);
@@ -804,7 +804,8 @@ impl StudioSpike {
                             self.drc_section(ui);
                             self.objects_section(ui);
                             self.tool_sections(ui);
-                        });
+                        },
+                    );
                 });
         });
         crate::ui::overlay::show(ctx, Side::Right, &mut layout, |ui| {
@@ -817,11 +818,11 @@ impl StudioSpike {
                 .frame(egui::Frame::NONE)
                 .show_inside(ui, |ui| {
                     let height = ui.available_height();
-                    egui::ScrollArea::vertical()
-                        .id_salt("overlay-right-scroll")
-                        .max_height(height)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
+                    crate::ui::overlay::panel_scroll(
+                        ui,
+                        "overlay-right-scroll",
+                        Some(height),
+                        |ui| {
                             self.audio_output_section(ui);
                             self.latency_section(ui);
                             self.diagnostics_section(ui);
@@ -829,7 +830,8 @@ impl StudioSpike {
                             self.renderer_section(ui);
                             self.headphones_section(ui);
                             self.speakers_section(ui);
-                        });
+                        },
+                    );
                 });
         });
         self.log_overlay(ctx, &layout);

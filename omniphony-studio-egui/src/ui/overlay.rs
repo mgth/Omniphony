@@ -238,14 +238,62 @@ pub fn pinned_slot(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
         .show_separator_line(false)
         .exact_size(wanted.clamp(0.0, max))
         .show_inside(ui, |ui| {
-            let out = egui::ScrollArea::vertical()
-                .id_salt((id, "scroll"))
-                .auto_shrink([false, false])
-                .show(ui, add);
-            let measured = out.content_size.y;
+            let measured = panel_scroll(ui, (id, "scroll"), None, add).y;
             if (measured - wanted).abs() > 0.5 {
                 ui.data_mut(|d| d.insert_temp(key, measured));
                 ui.ctx().request_repaint();
             }
         });
+}
+
+/// How far into the panel's right padding a panel's scroll area reaches: its
+/// scroll bar lives there, beside the content rather than over it.
+const SCROLL_GUTTER: f32 = 12.0;
+
+/// A panel's vertical scroll, with its bar in the panel's right padding.
+///
+/// The bar floats — hidden until the pointer nears it, as the web's overlay
+/// scrollbars are — but egui draws a floating bar over the right edge of the
+/// content, which here is where the switches are: reaching for one woke the
+/// bar, and the bar sat on top of the switch. So the scroll area is laid out
+/// `SCROLL_GUTTER` wider than the content, into the padding, and its content
+/// is held to the original width: the bar and the band that wakes it are
+/// both in the padding, the content keeps every point of its width, and the
+/// panel does not grow. The clip is widened with it, or egui would pull the
+/// bar back inside the clip, onto the content.
+///
+/// Returns the size of the content, for a caller sizing itself on it.
+pub fn panel_scroll(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    max_height: Option<f32>,
+    add: impl FnOnce(&mut Ui),
+) -> egui::Vec2 {
+    let rect = ui.available_rect_before_wrap();
+    let content_width = rect.width();
+    let outer = rect.with_max_x(rect.max.x + SCROLL_GUTTER);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(outer)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let clip = ui.clip_rect();
+    child.set_clip_rect(clip.with_max_x(clip.max.x.max(outer.max.x)));
+    let mut area = egui::ScrollArea::vertical()
+        .id_salt(id_salt)
+        .auto_shrink([false, false]);
+    if let Some(height) = max_height {
+        area = area.max_height(height);
+    }
+    let out = area.show(&mut child, |ui| {
+        ui.set_max_width(content_width);
+        add(ui);
+    });
+    // The child took no room in the parent; the scroll area's footprint
+    // within the content width does.
+    ui.allocate_rect(
+        rect.intersect(out.inner_rect.with_max_x(rect.max.x)),
+        Sense::hover(),
+    );
+    out.content_size
 }
