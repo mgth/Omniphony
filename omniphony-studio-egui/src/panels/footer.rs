@@ -11,7 +11,7 @@ use egui::{Align2, Color32, Ui, vec2};
 use crate::app::StudioSpike;
 use crate::i18n::t;
 use crate::panels::row_glyphs::{band_colour, band_labels};
-use crate::ui::layout::{COLLAPSED_WIDTH, OverlayLayout};
+use crate::ui::layout::{OverlayLayout, Side};
 use crate::ui::theme;
 
 /// The glass both pieces are made of (`rgba(18,22,28,0.72)` over a blur egui
@@ -21,8 +21,11 @@ const GLASS_EDGE: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
 /// `#bandCursor` segments.
 const SEG: egui::Vec2 = egui::vec2(14.0, 30.0);
 const SEG_ALL: egui::Vec2 = egui::vec2(14.0, 16.0);
-/// `right: calc(var(--panel-width-right) + 2.6rem)`.
-const CURSOR_GAP: f32 = 41.6;
+/// The clear space between the cursor and the right panel's drawn edge. The
+/// web has `right: calc(var(--panel-width-right) + 2.6rem)` against a
+/// border-box panel sitting `1rem` from the screen edge, so the gap between the
+/// two is 2.6rem − 1rem.
+const CURSOR_GAP: f32 = 25.6;
 
 impl StudioSpike {
     /// Save and Reload, with what the renderer last said about the file.
@@ -101,11 +104,18 @@ impl StudioSpike {
             return;
         }
         let labels = band_labels(&cutoffs);
-        let right = if layout.right.collapsed {
-            COLLAPSED_WIDTH
-        } else {
-            layout.right.width
-        };
+        // Stand off the panel's *drawn* left edge, not its configured width:
+        // the width excludes the frame's padding and the edge margin, and a
+        // child that overflows grows the frame past it. Measured from the width
+        // the cursor sat on top of the panel's first column. The first frame
+        // has no rect yet, so the configured width is the fallback.
+        let screen_right = ctx.content_rect().right();
+        let right = ctx
+            .memory(|m| m.area_rect(egui::Id::new("overlay-right")))
+            .map(|panel| screen_right - panel.left())
+            .unwrap_or_else(|| {
+                layout.effective_width(Side::Right) + crate::ui::theme::PANEL_EDGE_MARGIN
+            });
         let selected = self.settings.heatmap_band_index;
         egui::Area::new(egui::Id::new("band-cursor"))
             .anchor(Align2::RIGHT_CENTER, vec2(-(right + CURSOR_GAP), 0.0))
