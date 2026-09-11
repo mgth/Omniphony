@@ -12,52 +12,64 @@ use crate::view::trails::TrailMode;
 use crate::view::volumes::{Colormap, DiscontinuityMode};
 
 impl StudioSpike {
-    pub(crate) fn display_sections(&mut self, ui: &mut egui::Ui) {
+    /// The language select. The web heads its Display section with it; here
+    /// the Display settings moved to the scene's own panel, and the language
+    /// is not a setting of the scene, so it stays in the main panel with the
+    /// other settings of the application.
+    pub(crate) fn language_row(&mut self, ui: &mut egui::Ui) {
         let mut locale_choice: Option<String> = None;
         let locale = self
             .prefs
             .locale
             .clone()
             .unwrap_or_else(|| "auto".to_owned());
+        widgets::label_row_help(ui, t("app.language"), "help.display.language", |ui| {
+            widgets::bounded_combo(ui, 150.0, |ui, w| {
+                egui::ComboBox::from_id_salt("locale")
+                    .selected_text(
+                        crate::i18n::LOCALE_OPTIONS
+                            .iter()
+                            .find(|(id, _)| *id == locale)
+                            .map(|(_, label)| *label)
+                            .unwrap_or("Auto"),
+                    )
+                    .width(w)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        for (id, label) in crate::i18n::LOCALE_OPTIONS {
+                            if ui.selectable_label(*id == locale, *label).clicked() && *id != locale
+                            {
+                                locale_choice = Some((*id).to_owned());
+                            }
+                        }
+                    })
+            });
+            // "Auto" does not say which language it picked, and
+            // that is exactly what a reader checks when the UI
+            // is not in the language they expected.
+            if locale == "auto" {
+                ui.label(
+                    egui::RichText::new(crate::i18n::active_locale())
+                        .size(crate::ui::theme::FONT_SIZE_SMALL)
+                        .color(crate::ui::theme::TEXT_MUTED),
+                );
+            }
+        });
+        if let Some(choice) = locale_choice {
+            // The renderer is not told: the language is this host's own, and
+            // nothing on the wire carries a string the user reads.
+            crate::i18n::set_locale(&choice);
+            self.prefs.locale = Some(choice);
+            self.mark_prefs_dirty();
+        }
+    }
+
+    pub(crate) fn display_sections(&mut self, ui: &mut egui::Ui) {
         {
             let s = &mut self.settings;
             Section::new("displaySection", "section.display")
                 .default_open(true)
                 .show(ui, |ui| {
-                    // The language row heads the Display section, as in the web.
-                    widgets::label_row_help(ui, t("app.language"), "help.display.language", |ui| {
-                        widgets::bounded_combo(ui, 150.0, |ui, w| {
-                            egui::ComboBox::from_id_salt("locale")
-                                .selected_text(
-                                    crate::i18n::LOCALE_OPTIONS
-                                        .iter()
-                                        .find(|(id, _)| *id == locale)
-                                        .map(|(_, label)| *label)
-                                        .unwrap_or("Auto"),
-                                )
-                                .width(w)
-                                .truncate()
-                                .show_ui(ui, |ui| {
-                                    for (id, label) in crate::i18n::LOCALE_OPTIONS {
-                                        if ui.selectable_label(*id == locale, *label).clicked()
-                                            && *id != locale
-                                        {
-                                            locale_choice = Some((*id).to_owned());
-                                        }
-                                    }
-                                })
-                        });
-                        // "Auto" does not say which language it picked, and
-                        // that is exactly what a reader checks when the UI
-                        // is not in the language they expected.
-                        if locale == "auto" {
-                            ui.label(
-                                egui::RichText::new(crate::i18n::active_locale())
-                                    .size(crate::ui::theme::FONT_SIZE_SMALL)
-                                    .color(crate::ui::theme::TEXT_MUTED),
-                            );
-                        }
-                    });
                     // The overlay's state is the engine's (an mpv keybind can
                     // flip it), so the row shows what the engine last
                     // published, as the scene-effects button does.
@@ -169,14 +181,6 @@ impl StudioSpike {
                         0.002,
                     );
                 });
-        }
-
-        if let Some(choice) = locale_choice {
-            // The renderer is not told: the language is this host's own, and
-            // nothing on the wire carries a string the user reads.
-            crate::i18n::set_locale(&choice);
-            self.prefs.locale = Some(choice);
-            self.mark_prefs_dirty();
         }
 
         let s = &mut self.settings;

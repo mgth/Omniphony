@@ -97,6 +97,16 @@ macro_rules! icon {
 
 use Prim::{Circle, Ellipse, Path, Rect as R};
 
+// The display settings panel's button: lucide's `sliders-horizontal`, in
+// the same 24-unit, 1.8-stroke family as the bar's other icons.
+icon!(
+    SETTINGS,
+    24.0,
+    1.8,
+    [stroke(Path(
+        "M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"
+    ))]
+);
 // `#fxGridBtn`
 icon!(
     GRID,

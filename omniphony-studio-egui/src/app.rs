@@ -162,6 +162,8 @@ pub struct StudioSpike {
     pub(crate) info_modal_open: Option<crate::ui::help::Overlay>,
     /// Which scene-effects flyout is open, if any.
     pub(crate) scene_fx_flyout_open: Option<crate::panels::scene_fx::Flyout>,
+    /// The display settings panel over the scene-effects bar.
+    pub(crate) display_panel_open: bool,
     /// Resample sparkline: whether it is showing, and what it has sampled.
     pub(crate) resample_plot_open: bool,
     pub(crate) resample_series: crate::panels::resample_plot::ResampleSeries,
@@ -421,6 +423,7 @@ impl StudioSpike {
             overlay_pushed_epoch: None,
             info_modal_open: None,
             scene_fx_flyout_open: None,
+            display_panel_open: false,
             resample_plot_open: false,
             resample_series: Default::default(),
             diag_series: Default::default(),
@@ -771,6 +774,7 @@ impl StudioSpike {
             self.connection_line(ui);
             self.profiles_row(ui);
             self.updates_panel(ui);
+            self.language_row(ui);
             // What comes *in* sits on the left and what goes *out* on the
             // right, as in the web: the objects are the program arriving, so
             // they follow the input sections here, and their two editors take
@@ -795,7 +799,6 @@ impl StudioSpike {
                             self.audio_input_section(ui);
                             self.sources_2d_section(ui);
                             self.room_geometry_section(ui);
-                            self.display_sections(ui);
                             self.drc_section(ui);
                             self.objects_section(ui);
                             self.tool_sections(ui);
@@ -879,6 +882,10 @@ impl StudioSpike {
         for (id, folded) in [
             ("overlay-left", self.layout.left.collapsed),
             ("overlay-right", self.layout.right.collapsed),
+            (
+                crate::panels::scene_fx::DISPLAY_PANEL_ID,
+                !self.display_panel_open,
+            ),
         ] {
             if folded {
                 continue;

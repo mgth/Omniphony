@@ -263,12 +263,12 @@ pub struct FrameData {
     pub backdrop: Backdrop,
 }
 
-/// Where the side panels sit over the viewport, in framebuffer pixels
+/// Where the panels — the two sides and the display panel — sit over the viewport, in framebuffer pixels
 /// (`[min_x, min_y, max_x, max_y]`), and their corner radius. `count` rects are
 /// live; with none, no blur pass runs at all.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Backdrop {
-    pub rects: [[f32; 4]; 2],
+    pub rects: [[f32; 4]; 3],
     pub count: u32,
     pub radius_px: f32,
 }
@@ -278,6 +278,7 @@ pub struct Backdrop {
 struct BackdropUniform {
     rect0: [f32; 4],
     rect1: [f32; 4],
+    rect2: [f32; 4],
     params: [f32; 4],
 }
 
@@ -1021,7 +1022,8 @@ impl SceneRenderer {
         let backdrop = BackdropUniform {
             rect0: b.rects[0],
             rect1: b.rects[1],
-            params: [b.radius_px, b.count.min(2) as f32, 0.0, 0.0],
+            rect2: b.rects[2],
+            params: [b.radius_px, b.count.min(3) as f32, 0.0, 0.0],
         };
         queue.write_buffer(&self.backdrop_buf, 0, bytemuck::bytes_of(&backdrop));
 
