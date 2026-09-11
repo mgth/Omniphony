@@ -62,9 +62,15 @@ pub fn show(ctx: &Context, side: Side, layout: &mut OverlayLayout, body: impl Fn
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
             panel.set_clip_rect(rect.intersect(ui.clip_rect()));
-            theme::panel_frame().show(&mut panel, |ui| {
+            let frame = theme::panel_frame();
+            // The frame's height is its content's plus its padding *and* its
+            // border: leaving the border out made the frame two points taller
+            // than the rect it is clipped to, and cut its bottom edge off.
+            // (The width already counts it, in `PANEL_CHROME`.)
+            let chrome = frame.total_margin().sum();
+            frame.show(&mut panel, |ui| {
                 ui.set_width(width);
-                ui.set_height(height - 2.0 * theme::PANEL_PADDING_Y);
+                ui.set_height(height - chrome.y);
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         if side == Side::Right {
