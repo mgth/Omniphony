@@ -274,7 +274,7 @@ fn vs_blit(@builtin(vertex_index) vi: u32) -> BlitOut {
     return out;
 }
 
-// The side panels' backdrop (`backdrop-filter: blur(8px)` in the web). The
+// The panels' backdrop (`backdrop-filter: blur(8px)` in the web). The
 // panels float over the viewport, so what is behind them is this texture: the
 // blit takes a blurred copy of it inside their rounded rects and the sharp one
 // everywhere else. Rects are in framebuffer pixels (min.xy, max.xy);
@@ -282,6 +282,7 @@ fn vs_blit(@builtin(vertex_index) vi: u32) -> BlitOut {
 struct Backdrop {
     rect0: vec4<f32>,
     rect1: vec4<f32>,
+    rect2: vec4<f32>,
     params: vec4<f32>,
 };
 @group(0) @binding(2) var blur_tex: texture_2d<f32>;
@@ -309,6 +310,9 @@ fn fs_blit(in: BlitOut) -> @location(0) vec4<f32> {
     }
     if (backdrop.params.y > 1.5) {
         cover = max(cover, panel_cover(in.clip.xy, backdrop.rect1, backdrop.params.x));
+    }
+    if (backdrop.params.y > 2.5) {
+        cover = max(cover, panel_cover(in.clip.xy, backdrop.rect2, backdrop.params.x));
     }
     return mix(sharp, blurred, cover);
 }

@@ -10,6 +10,11 @@
 //! Two of them carry a "nature" flyout — which kind of object marker, which
 //! kind of trail — for the same reason: the choice belongs with the switch that
 //! turns it on.
+//!
+//! The last button opens the display panel: every setting the bar summarises
+//! (Display, Trails, Heatmaps), in a panel of its own floating over the bar.
+//! Those settings are about the scene, not about the audio chain the side
+//! panels hold, so they open from the scene's own controls.
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Ui, pos2, vec2};
 
@@ -52,6 +57,14 @@ const BOTTOM_OFFSET: f32 = -56.0;
 const FLYOUT_GAP: f32 = 9.0;
 const TAIL: f32 = 6.0;
 
+/// The display panel's area, for the backdrop blur behind it.
+pub const DISPLAY_PANEL_ID: &str = "display-panel";
+/// The display panel's width, the side panels' default.
+const DISPLAY_PANEL_WIDTH: f32 = 380.0;
+/// Its tallest: enough for the three sections half open, and short enough to
+/// leave most of the scene above it in view.
+const DISPLAY_PANEL_MAX_HEIGHT: f32 = 640.0;
+
 /// Which flyout is open, if any.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Flyout {
@@ -72,7 +85,7 @@ enum Press {
 impl StudioSpike {
     pub(crate) fn scene_fx_bar(&mut self, ctx: &egui::Context) {
         let mut anchors = (Rect::NOTHING, Rect::NOTHING);
-        egui::Area::new(egui::Id::new("scene-fx-bar"))
+        let bar = egui::Area::new(egui::Id::new("scene-fx-bar"))
             .anchor(Align2::CENTER_BOTTOM, vec2(0.0, BOTTOM_OFFSET))
             .show(ctx, |ui| {
                 egui::Frame::new()
@@ -92,6 +105,61 @@ impl StudioSpike {
                     });
             });
         self.scene_fx_flyout(ctx, anchors);
+        self.display_panel(ctx, bar.response.rect);
+    }
+
+    /// Display, Trails and Heatmaps, in a panel floating over the bar.
+    ///
+    /// Fixed extents, as the side panels have: its height is set by the room
+    /// above the bar, not by what is open inside it, and the sections scroll
+    /// within. A panel sized by its content would grow upward as a section
+    /// opened, and sections open under the pointer.
+    fn display_panel(&mut self, ctx: &egui::Context, bar: Rect) {
+        if !self.display_panel_open || !bar.is_finite() {
+            return;
+        }
+        let screen = ctx.content_rect();
+        let margin = crate::ui::theme::PANEL_EDGE_MARGIN;
+        // Between the side panels when it can be: narrowed to the room
+        // either side of the bar, but never below a usable width.
+        let side_edge = |id: &str| ctx.memory(|m| m.area_rect(egui::Id::new(id)));
+        let left = side_edge("overlay-left").map_or(screen.left(), |r| r.right());
+        let right = side_edge("overlay-right").map_or(screen.right(), |r| r.left());
+        let room = 2.0 * (bar.center().x - left).min(right - bar.center().x) - 2.0 * margin;
+        let width = DISPLAY_PANEL_WIDTH.min(room).max(260.0);
+        let height = (bar.top() - FLYOUT_GAP - screen.top() - margin)
+            .min(DISPLAY_PANEL_MAX_HEIGHT)
+            .max(120.0);
+        let mut close = false;
+        egui::Area::new(egui::Id::new(DISPLAY_PANEL_ID))
+            .order(egui::Order::Middle)
+            .pivot(Align2::CENTER_BOTTOM)
+            .fixed_pos(pos2(bar.center().x, bar.top() - FLYOUT_GAP))
+            .show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+                let mut panel = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                panel.set_clip_rect(rect.intersect(ui.clip_rect()));
+                let frame = crate::ui::theme::panel_frame();
+                let chrome = frame.total_margin().sum();
+                frame.show(&mut panel, |ui| {
+                    ui.set_width(width - chrome.x);
+                    ui.set_height(height - chrome.y);
+                    // No title: the first section is "Display" and says it.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        close = close_button(ui);
+                    });
+                    crate::ui::overlay::panel_scroll(ui, "display-panel-scroll", None, |ui| {
+                        self.display_sections(ui);
+                    });
+                });
+            });
+        if close {
+            self.display_panel_open = false;
+        }
     }
 
     /// The seven toggles. Returns where the two flyout buttons were drawn, so
@@ -112,7 +180,10 @@ impl StudioSpike {
         );
         match press {
             Press::Toggle => self.settings.objects_visible = objects,
-            Press::Menu => self.scene_fx_flyout_open = toggle(open, Flyout::Objects),
+            Press::Menu => {
+                self.scene_fx_flyout_open = toggle(open, Flyout::Objects);
+                self.display_panel_open = false;
+            }
             Press::None => {}
         }
         let mut labels = self.settings.object_labels_enabled;
@@ -130,7 +201,10 @@ impl StudioSpike {
         );
         match press {
             Press::Toggle => self.settings.trails.enabled = trails,
-            Press::Menu => self.scene_fx_flyout_open = toggle(open, Flyout::Trails),
+            Press::Menu => {
+                self.scene_fx_flyout_open = toggle(open, Flyout::Trails);
+                self.display_panel_open = false;
+            }
             Press::None => {}
         }
         let mut field = self.volume_settings.object_field_enabled;
@@ -174,6 +248,19 @@ impl StudioSpike {
         {
             self.ctl
                 .send_int("/omniphony/control/overlay/enabled", i32::from(overlay));
+        }
+        // The toggles end here; the last key opens their settings.
+        let (divider, _) = ui.allocate_exact_size(vec2(1.0, BUTTON.y - 12.0), Sense::hover());
+        ui.painter().rect_filled(divider, 0.0, white(0.12));
+        let mut panel = self.display_panel_open;
+        if fx_button(ui, &icons::SETTINGS, &mut panel, t("section.display"), None).0
+            == Press::Toggle
+        {
+            self.display_panel_open = panel;
+            // Both float over the bar: one at a time.
+            if panel {
+                self.scene_fx_flyout_open = None;
+            }
         }
         (objects_rect, trails_rect)
     }
@@ -414,4 +501,21 @@ fn flyout_item(ui: &mut Ui, icon: &Icon, selected: bool, title: &str) -> bool {
         );
     }
     response.on_hover_text(title).clicked()
+}
+
+/// A small painted cross, so it does not depend on a glyph the bundled
+/// fonts may lack.
+fn close_button(ui: &mut Ui) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+    let hovered = response.hovered();
+    if hovered {
+        ui.painter().rect_filled(rect, 5.0, white(0.08));
+    }
+    let r = Rect::from_center_size(rect.center(), vec2(8.0, 8.0));
+    let stroke = egui::Stroke::new(1.5, if hovered { Color32::WHITE } else { ink(0.6) });
+    ui.painter()
+        .line_segment([r.left_top(), r.right_bottom()], stroke);
+    ui.painter()
+        .line_segment([r.right_top(), r.left_bottom()], stroke);
+    response.on_hover_text(t("common.close")).clicked()
 }
