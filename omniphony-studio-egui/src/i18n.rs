@@ -7,9 +7,9 @@
 //! reached yet reads in English rather than as a raw key. `t` resolves a key
 //! and `tf` substitutes `{name}` placeholders.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// The locales, in the order the language picker offers them. The first is the
 /// base every other one falls back to.
@@ -156,10 +156,30 @@ pub fn t(key: &str) -> &'static str {
     }
 }
 
+/// `t(key)` when the key exists, for callers that probe for an optional
+/// string (a translated parameter help, say) and fall back to their own.
+pub fn lookup(key: &str) -> Option<&'static str> {
+    let all = catalogues();
+    let index = ACTIVE.load(Ordering::Relaxed).min(all.len() - 1);
+    all[index].get(key).map(String::as_str)
+}
+
 fn leak_key(key: &str) -> &'static str {
     // Missing keys are a development-time defect; a small leak per distinct
-    // key keeps the signature borrow-free.
-    Box::leak(key.to_owned().into_boxed_str())
+    // key keeps the signature borrow-free. Per distinct key, not per call: a
+    // missing key asked for on every frame would otherwise grow the heap for
+    // as long as the window repaints.
+    static LEAKED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let mut leaked = LEAKED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(interned) = leaked.get(key) {
+        return interned;
+    }
+    let interned: &'static str = Box::leak(key.to_owned().into_boxed_str());
+    leaked.insert(interned);
+    interned
 }
 
 /// `t(key)` with `{name}` placeholders replaced.
@@ -174,6 +194,15 @@ pub fn tf(key: &str, values: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_key_is_leaked_once_not_once_per_call() {
+        let first = t("no.such.key.anywhere");
+        let second = t("no.such.key.anywhere");
+        assert_eq!(first, "no.such.key.anywhere");
+        assert!(std::ptr::eq(first, second));
+        assert_eq!(lookup("no.such.key.anywhere"), None);
+    }
 
     /// The active locale is process-wide, so the tests read the catalogues
     /// directly rather than switching it: a test that changed it would decide

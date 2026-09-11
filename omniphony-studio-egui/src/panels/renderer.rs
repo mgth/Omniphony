@@ -7,6 +7,7 @@ use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
 use crate::i18n::{t, tf};
+use crate::ui::help::{self, Help};
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
@@ -234,12 +235,12 @@ impl StudioSpike {
             )
         };
         ui.add_space(4.0);
-        widgets::label_row_help(
+        widgets::label_row_info(
             ui,
             RichText::new(t("evaluation.title"))
                 .size(theme::FONT_SIZE)
                 .color(theme::TEXT_STRONG),
-            "evaluation.infoBody",
+            "evaluation",
             |ui| {
                 ui.label(
                     RichText::new(
@@ -493,12 +494,13 @@ impl StudioSpike {
         let backends = backend_list(&available);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(
+            help::overlay_title(
+                ui,
                 RichText::new(t("backend.title"))
                     .size(theme::FONT_SIZE)
                     .color(theme::TEXT_STRONG),
+                || help::Overlay::info("backend"),
             );
-            widgets::help(ui, "backend.infoBody");
             ui.label(
                 RichText::new(status.0)
                     .size(theme::FONT_SIZE_SMALL)
@@ -593,6 +595,13 @@ impl StudioSpike {
                 .or_else(|| spec.get("default").cloned())
                 .unwrap_or(serde_json::Value::Null);
             let label = param_label(key, spec);
+            // The backend's own description, or the Studio's translation of
+            // it; opened from the parameter's name, not always on show.
+            let help_text = param_help(key, spec);
+            let help = Help::text(
+                ("backend-param", backend, key),
+                help_text.as_deref().unwrap_or(""),
+            );
             let kind = spec.get("kind");
             let kind_type = kind
                 .and_then(|k| k.get("type"))
@@ -601,7 +610,8 @@ impl StudioSpike {
             let sent = match kind_type {
                 "bool" => {
                     let mut on = value.as_bool().unwrap_or(false);
-                    widgets::switch_row(ui, &label, &mut on).then(|| serde_json::json!(on))
+                    widgets::switch_row_help(ui, &label, help, &mut on)
+                        .then(|| serde_json::json!(on))
                 }
                 "enum" => {
                     let current = value.as_str().unwrap_or("").to_owned();
@@ -623,7 +633,7 @@ impl StudioSpike {
                         })
                         .unwrap_or_default();
                     let mut chosen = current.clone();
-                    widgets::label_row(ui, &label, |ui| {
+                    widgets::label_row_help(ui, &label, help, |ui| {
                         widgets::bounded_combo(ui, 150.0, |ui, w| {
                             egui::ComboBox::from_id_salt(("backend-param", key))
                                 .selected_text(
@@ -671,7 +681,7 @@ impl StudioSpike {
                     let local = crate::host::commands::app::renderer_is_local(&self.host);
                     let mut browse = false;
                     let mut edit = false;
-                    widgets::label_row(ui, &label, |ui| {
+                    widgets::label_row_help(ui, &label, help, |ui| {
                         if editable {
                             edit = ui.button(t("backend.file.edit")).clicked();
                         }
@@ -722,13 +732,21 @@ impl StudioSpike {
                             .unwrap_or(0.01)
                     };
                     let mut number = value.as_f64().unwrap_or(min as f64) as f32;
-                    widgets::value_slider(ui, &label, &mut number, min..=max, step, move |v| {
-                        if is_int {
-                            format!("{}", v.round() as i64)
-                        } else {
-                            format!("{v:.3}")
-                        }
-                    })
+                    widgets::value_slider_help(
+                        ui,
+                        &label,
+                        help,
+                        &mut number,
+                        min..=max,
+                        step,
+                        move |v| {
+                            if is_int {
+                                format!("{}", v.round() as i64)
+                            } else {
+                                format!("{v:.3}")
+                            }
+                        },
+                    )
                     .then(|| {
                         if is_int {
                             serde_json::json!(number.round() as i64)
@@ -740,9 +758,6 @@ impl StudioSpike {
             };
             if let Some(value) = sent {
                 self.send_backend_param(backend, key, value);
-            }
-            if let Some(help) = param_help(key, spec) {
-                widgets::note(ui, &help);
             }
         }
     }
@@ -1173,8 +1188,7 @@ fn param_label(key: &str, spec: &serde_json::Value) -> String {
 }
 
 fn param_help(key: &str, spec: &serde_json::Value) -> Option<String> {
-    let translated = t(&format!("backendParamHelp.{key}"));
-    if translated != format!("backendParamHelp.{key}") {
+    if let Some(translated) = crate::i18n::lookup(&format!("backendParamHelp.{key}")) {
         return Some(translated.to_owned());
     }
     spec.get("help")

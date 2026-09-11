@@ -11,7 +11,7 @@ use egui::{Color32, Pos2, RichText, Stroke, Ui, vec2};
 
 use crate::app::StudioSpike;
 use crate::i18n::t;
-use crate::ui::{theme, widgets};
+use crate::ui::{help, theme, widgets};
 
 /// The preview canvas, as the web sizes it.
 const CURVE_HEIGHT: f32 = 180.0;
@@ -341,12 +341,13 @@ impl StudioSpike {
         let endpoint = index == 0 || index + 1 == points.len();
         let mut changed = false;
         ui.horizontal(|ui| {
-            ui.label(
+            help::label(
+                ui,
                 RichText::new(t("hybrid.selectedPoint"))
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
+                "help.hybrid.selectedPoint",
             );
-            widgets::help(ui, "help.hybrid.selectedPoint");
             ui.label(t("hybrid.pointDistance"));
             let mut distance = point[0] * max_distance;
             ui.add_enabled_ui(!endpoint, |ui| {
@@ -374,6 +375,7 @@ impl StudioSpike {
                 changed = true;
             }
         });
+        help::card(ui, "help.hybrid.selectedPoint");
         if changed {
             let mut next = points.to_vec();
             next[index] = point;
@@ -417,11 +419,9 @@ fn backend_row(
     current: &str,
     options: &[(String, String)],
 ) -> Option<String> {
-    let mut chosen = None;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        widgets::help(ui, help_key);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    widgets::label_row_help(ui, label, help_key, |ui| {
+        widgets::bounded_combo(ui, 150.0, |ui, w| {
+            let mut chosen = None;
             egui::ComboBox::from_id_salt(id)
                 .selected_text(
                     options
@@ -430,7 +430,8 @@ fn backend_row(
                         .map(|(_, label)| label.clone())
                         .unwrap_or_else(|| current.to_owned()),
                 )
-                .width(150.0)
+                .width(w)
+                .truncate()
                 .show_ui(ui, |ui| {
                     for (value, label) in options {
                         if ui.selectable_label(value == current, label).clicked()
@@ -440,9 +441,9 @@ fn backend_row(
                         }
                     }
                 });
-        });
-    });
-    chosen
+            chosen
+        })
+    })
 }
 
 #[cfg(test)]

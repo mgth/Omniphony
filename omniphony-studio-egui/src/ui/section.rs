@@ -37,12 +37,20 @@ fn paint_chevron(ui: &Ui, rect: egui::Rect, openness: f32) {
     ));
 }
 
+/// What a section's title opens, built only when it is clicked.
+#[derive(Clone, Copy)]
+enum Explains<'a> {
+    /// A `<prefix>.infoTitle` / `<prefix>.infoBody` pair.
+    Info(&'a str),
+    /// A `help.*` string under the section's own title.
+    Help(&'a str),
+}
+
 pub struct Section<'a> {
     id: &'a str,
     title: String,
     summary: Option<String>,
-    help_key: Option<&'a str>,
-    info_key: Option<&'a str>,
+    explains: Option<Explains<'a>>,
     default_open: bool,
 }
 
@@ -54,8 +62,7 @@ impl<'a> Section<'a> {
             id,
             title: crate::i18n::t(title_key).to_owned(),
             summary: None,
-            help_key: None,
-            info_key: None,
+            explains: None,
             default_open: false,
         }
     }
@@ -66,8 +73,10 @@ impl<'a> Section<'a> {
         self
     }
 
+    /// A `help.*` string explaining the whole section, opened in the centred
+    /// overlay under the section's own title.
     pub fn help(mut self, key: &'a str) -> Self {
-        self.help_key = Some(key);
+        self.explains = Some(Explains::Help(key));
         self
     }
 
@@ -76,7 +85,7 @@ impl<'a> Section<'a> {
     /// pointer — rather than hanging an "i" button beside it, so the thing you
     /// click is the thing you are asking about.
     pub fn info(mut self, key: &'a str) -> Self {
-        self.info_key = Some(key);
+        self.explains = Some(Explains::Info(key));
         self
     }
 
@@ -99,30 +108,21 @@ impl<'a> Section<'a> {
             let (rect, chevron) =
                 ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
             paint_chevron(ui, rect, openness);
-            let mut text = egui::RichText::new(&self.title)
+            let text = egui::RichText::new(&self.title)
                 .size(theme::FONT_SIZE_SECTION)
                 .color(theme::TEXT_STRONG);
-            if self.info_key.is_some() {
-                text = text.underline();
-            }
             let title = ui.add(
                 egui::Label::new(text)
                     .sense(egui::Sense::click())
                     .selectable(false),
             );
-            if let Some(key) = self.info_key {
-                // Opening it is a click on the title; the request travels back
-                // through the response so the section stays a pure widget.
-                if title.clicked() {
-                    ui.ctx()
-                        .data_mut(|d| d.insert_temp(egui::Id::new("info-modal"), key.to_owned()));
-                }
-                title
-                    .clone()
-                    .on_hover_text(crate::i18n::t(&format!("{key}.infoTitle")));
-            }
-            if let Some(key) = self.help_key {
-                super::widgets::help(ui, key);
+            if let Some(explains) = self.explains {
+                // The title is the trigger: the thing you click is the thing
+                // you are asking about.
+                super::help::overlay_trigger(ui, &title, || match explains {
+                    Explains::Info(prefix) => super::help::Overlay::info(prefix),
+                    Explains::Help(key) => super::help::Overlay::titled(&self.title, key),
+                });
             }
             if let Some(summary) = &self.summary {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -140,7 +140,7 @@ impl<'a> Section<'a> {
             // A title that opens a modal is the modal's trigger, not the
             // section's: the chevron keeps the disclosure to itself, or one
             // click would both explain the section and close it.
-            if self.info_key.is_some() {
+            if self.explains.is_some() {
                 chevron
             } else {
                 chevron.union(title)

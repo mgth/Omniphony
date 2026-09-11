@@ -149,7 +149,7 @@ pub struct StudioSpike {
     pub(crate) overlay_pushed: Option<crate::panels::mpv_overlay::OverlayPrefs>,
     pub(crate) overlay_pushed_epoch: Option<u64>,
     /// Which long-form info modal is open, by its i18n key prefix.
-    pub(crate) info_modal_open: Option<String>,
+    pub(crate) info_modal_open: Option<crate::ui::help::Overlay>,
     /// Which scene-effects flyout is open, if any.
     pub(crate) scene_fx_flyout_open: Option<crate::panels::scene_fx::Flyout>,
     /// Resample sparkline: whether it is showing, and what it has sampled.
@@ -821,6 +821,7 @@ impl StudioSpike {
         self.band_cursor(ctx, &layout);
         self.about_modal(ctx);
         self.info_modal(ctx);
+        crate::ui::help::end_frame(ctx);
         self.sofa_browser_modal(ctx);
         self.script_editor_modal(ctx);
         self.auto_tune_modal(ctx);

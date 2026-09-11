@@ -7,6 +7,7 @@
 #![allow(dead_code)] // the toolkit is complete before every panel using it
 use egui::{Color32, Response, Sense, Ui, Widget, vec2};
 
+use super::help::{Help, Trigger};
 use super::theme;
 
 /// `.inline-toggle input[type="checkbox"]`: 34×18 track, 12 px thumb, green
@@ -70,22 +71,40 @@ pub fn label_row<R>(
     labelled(ui, label.into(), None, add_right)
 }
 
-/// `label_row` with the `?` help mark after the label. The mark keeps its
-/// place when the label truncates: its width is taken off the label's room
-/// first, measured from the glyph itself.
-pub fn label_row_help<R>(
+/// `label_row` whose label opens `help` in a card under the row (see
+/// [`super::help`]). `help` is a `help.*` key, or a [`Help`] built from text.
+pub fn label_row_help<'h, R>(
     ui: &mut Ui,
     label: impl Into<egui::WidgetText>,
-    help_key: &str,
+    help: impl Into<Help<'h>>,
     add_right: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    labelled(ui, label.into(), Some(help_key), add_right)
+    let help = help.into();
+    let out = labelled(ui, label.into(), Some(Trigger::Card(help)), add_right);
+    super::help::card(ui, help);
+    out
+}
+
+/// `label_row` whose label heads a whole block and opens the centred overlay
+/// for its `<prefix>.infoTitle` / `.infoBody` pair.
+pub fn label_row_info<R>(
+    ui: &mut Ui,
+    label: impl Into<egui::WidgetText>,
+    info_prefix: &str,
+    add_right: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    labelled(
+        ui,
+        label.into(),
+        Some(Trigger::Info(info_prefix)),
+        add_right,
+    )
 }
 
 fn labelled<R>(
     ui: &mut Ui,
     label: egui::WidgetText,
-    help_key: Option<&str>,
+    help: Option<Trigger<'_>>,
     add_right: impl FnOnce(&mut Ui) -> R,
 ) -> R {
     ui.horizontal(|ui| {
@@ -99,21 +118,7 @@ fn labelled<R>(
             // children took, so every row after it started those few points
             // further left and lost its first letter to the panel's edge.
             let space = ui.available_rect_before_wrap();
-            let mark = match help_key {
-                Some(_) => {
-                    ui.painter()
-                        .layout_no_wrap(
-                            "?".to_owned(),
-                            egui::FontId::proportional(theme::FONT_SIZE_SMALL),
-                            theme::TEXT_FAINT,
-                        )
-                        .size()
-                        .x
-                        + ui.spacing().item_spacing.x
-                }
-                None => 0.0,
-            };
-            let text_width = (space.width() - mark).max(0.0);
+            let text_width = space.width().max(0.0);
             let galley = label.clone().into_galley(
                 ui,
                 Some(egui::TextWrapMode::Truncate),
@@ -137,21 +142,11 @@ fn labelled<R>(
                 if truncated {
                     response.on_hover_text(label.text());
                 }
-            }
-            if let Some(key) = help_key {
-                // The mark sits right after the text, inside the same space.
-                let at = egui::Rect::from_min_size(
-                    egui::pos2(text_rect.right() + ui.spacing().item_spacing.x, rect.top()),
-                    egui::vec2(mark, rect.height()),
-                );
-                // A child placed on the mark's rect takes no room in the row,
-                // which the label has already taken whole.
-                let mut mark_ui = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(at)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                );
-                help(&mut mark_ui, key);
+                // The label itself is the trigger, over the text only: the
+                // blank between it and the controls stays inert.
+                if let Some(help) = help {
+                    super::help::trigger_any(ui, text_rect.intersect(rect), help);
+                }
             }
             out
         })
@@ -186,6 +181,16 @@ pub fn bounded_combo<R>(ui: &mut Ui, preferred: f32, add: impl FnOnce(&mut Ui, f
 /// Label left, switch right (`.inline-toggle`). Returns true when toggled.
 pub fn switch_row(ui: &mut Ui, label: &str, on: &mut bool) -> bool {
     label_row(ui, label, |ui| switch(ui, on).changed())
+}
+
+/// `switch_row` whose label opens `help`.
+pub fn switch_row_help<'h>(
+    ui: &mut Ui,
+    label: &str,
+    help: impl Into<Help<'h>>,
+    on: &mut bool,
+) -> bool {
+    label_row_help(ui, label, help, |ui| switch(ui, on).changed())
 }
 
 /// A `.toggle-btn` group: one active value out of a list of (value, label).
@@ -225,6 +230,42 @@ pub fn value_slider(
     step: f64,
     format: impl Fn(f32) -> String,
 ) -> bool {
+    slider_row(ui, label, None, value, range, step, format)
+}
+
+/// `value_slider` whose label opens `help`.
+pub fn value_slider_help<'h>(
+    ui: &mut Ui,
+    label: &str,
+    help: impl Into<Help<'h>>,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f64,
+    format: impl Fn(f32) -> String,
+) -> bool {
+    let help = help.into();
+    let changed = slider_row(
+        ui,
+        label,
+        Some(Trigger::Card(help)),
+        value,
+        range,
+        step,
+        format,
+    );
+    super::help::card(ui, help);
+    changed
+}
+
+fn slider_row(
+    ui: &mut Ui,
+    label: &str,
+    help: Option<Trigger<'_>>,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f64,
+    format: impl Fn(f32) -> String,
+) -> bool {
     let label_width = egui::WidgetText::from(label)
         .into_galley(
             ui,
@@ -235,7 +276,7 @@ pub fn value_slider(
         .size()
         .x;
     let full_track = ui.spacing().slider_width;
-    label_row(ui, label, |ui| {
+    labelled(ui, label.into(), help, |ui| {
         ui.add_sized(
             vec2(64.0, ui.spacing().interact_size.y),
             egui::Label::new(
@@ -336,21 +377,6 @@ pub fn note(ui: &mut Ui, text: &str) {
             .size(theme::FONT_SIZE_SMALL)
             .color(theme::TEXT_MUTED),
     );
-}
-
-/// The `?` affordance of `controls/inline-help.js`: hovering shows the help
-/// string for the key.
-pub fn help(ui: &mut Ui, help_key: &str) {
-    let text = crate::i18n::t(help_key);
-    ui.label(
-        egui::RichText::new("?")
-            .size(theme::FONT_SIZE_SMALL)
-            .color(theme::TEXT_FAINT),
-    )
-    .on_hover_ui(|ui| {
-        ui.set_max_width(260.0);
-        ui.label(text);
-    });
 }
 
 /// The shortest track a slider row keeps; its label truncates before the track
