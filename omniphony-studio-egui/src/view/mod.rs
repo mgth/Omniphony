@@ -372,7 +372,6 @@ pub fn build_frame(
         &room,
         selection.object.as_deref(),
         selection.speaker,
-        now,
     );
     let speaker_refs: Vec<SpeakerRef> = speaker_visuals
         .iter()
@@ -434,7 +433,6 @@ pub fn build_frame(
         &speaker_refs,
         selection.object.as_deref(),
         selection.speaker,
-        now,
     );
     // The edit gizmos follow the thing this editor moves: the selected
     // speaker, or a selected object that is a virtual bed channel — a real
@@ -573,18 +571,6 @@ pub fn billboard_ring(
 pub fn dbfs_to_scale(dbfs: f64, min: f32, max: f32) -> f32 {
     let n = ((dbfs.clamp(-100.0, 0.0) + 100.0) / 100.0) as f32;
     min + n * (max - min)
-}
-
-/// Level after the Studio's decay: untouched for 250 ms, then −45 dB/s down to
-/// −100 dBFS (`decayMeters`, speakers.js).
-pub fn decayed_level(level: f64, seen: Option<Instant>, now: Instant) -> f64 {
-    let Some(seen) = seen else { return level };
-    let idle = now.saturating_duration_since(seen).as_secs_f64();
-    if idle <= 0.25 {
-        level
-    } else {
-        (level - 45.0 * (idle - 0.25)).max(-100.0)
-    }
 }
 
 #[cfg(test)]

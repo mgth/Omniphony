@@ -2,8 +2,6 @@
 //! `updateSourceSelectionStyles`, `updateSourceDecorations`, `objectBadge`,
 //! `getObjectBaseColor`, and the halo/outline/effective-render renderables.
 
-use std::time::Instant;
-
 use glam::Vec3;
 
 use crate::model::app_state::RoomRatio;
@@ -15,7 +13,7 @@ use crate::render::{
     scale_rgb, with_alpha,
 };
 
-use super::{ViewSettings, billboard_ring, dbfs_to_scale, decayed_level, scene_position};
+use super::{ViewSettings, billboard_ring, dbfs_to_scale, scene_position};
 
 /// `app.objectDisplayMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -283,7 +281,6 @@ pub fn collect(
     speakers: &[SpeakerRef],
     selected_object: Option<&str>,
     selected_speaker: Option<usize>,
-    now: Instant,
 ) -> Vec<ObjectVisual> {
     let mut out = Vec::with_capacity(live.app.sources.len());
     for (id, src) in &live.app.sources {
@@ -310,12 +307,13 @@ pub fn collect(
             (None, None) => scene_position([src.x, src.y, src.z], room),
         };
 
+        // Already decayed on the model (`maintain_meters`), the same number
+        // the object list shows.
         let rms = live
             .app
             .source_levels
             .get(id)
-            .map(|m| decayed_level(m.rms_dbfs, live.source_level_seen.get(id).copied(), now))
-            .unwrap_or(-100.0);
+            .map_or(-100.0, |m| m.rms_dbfs);
         let level_scale = dbfs_to_scale(rms, 0.5, 2.4);
 
         let selected = selected_object == Some(id.as_str());

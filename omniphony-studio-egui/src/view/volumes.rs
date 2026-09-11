@@ -14,7 +14,6 @@ use crate::osc::dispatch::Live;
 use crate::render::volume::{VolumeData, VolumeDraw, VolumeUniforms, f16_bits, model_matrix};
 
 use super::RoomBounds;
-use super::decayed_level;
 
 /// `OBJECT_ENERGY_COLORMAPS` indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -174,7 +173,7 @@ pub struct ActiveObject {
 }
 
 /// `collectActiveObjects`: unmuted objects with a finite, positive energy.
-pub fn active_objects(live: &Live, settings: &VolumeSettings, now: Instant) -> Vec<ActiveObject> {
+pub fn active_objects(live: &Live, settings: &VolumeSettings) -> Vec<ActiveObject> {
     live.app
         .sources
         .iter()
@@ -186,7 +185,8 @@ pub fn active_objects(live: &Live, settings: &VolumeSettings, now: Instant) -> V
                 Some(b) if !settings.all_bands && b.len() >= 2 => {
                     b[settings.band_index.min(b.len() - 1)]
                 }
-                _ => decayed_level(level.rms_dbfs, live.source_level_seen.get(id).copied(), now),
+                // Already decayed on the model (`maintain_meters`).
+                _ => level.rms_dbfs,
             };
             let energy = if rms.is_finite() && rms > -100.0 {
                 10f64.powf(rms / 10.0)
@@ -530,7 +530,7 @@ pub fn build(
 
     // --- object energy field (live, no signature) ---
     if settings.object_field_enabled {
-        let objects = active_objects(live, settings, now);
+        let objects = active_objects(live, settings);
         let slot = &mut state.slots[SLOT_OBJECT_FIELD];
         if objects.is_empty() {
             slot.data = None;
