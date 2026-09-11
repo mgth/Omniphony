@@ -247,6 +247,15 @@ impl StudioSpike {
             }
         }
         app.selected_layout_key = key;
+        // The config is read before the listener starts, because the register
+        // carries the metering choice: a client that registers with metering
+        // off gets no meters until someone touches the switch, and each client
+        // is subscribed on its own.
+        let config_dir = crate::host::runtime_env::config_dir()
+            .map(|dir| dir.join("studio"))
+            .unwrap_or_else(|| args.layouts_dir.join(".studio-egui"));
+        let osc_config = crate::host::config::load_config(&config_dir);
+        app.osc_metering_enabled = Some(u8::from(osc_config.osc_metering_enabled));
         let live: SharedLive = Arc::new(Mutex::new(Live::new(app)));
 
         let osc_stats = OscStats::new();
@@ -266,7 +275,7 @@ impl StudioSpike {
             osc::ListenerConfig {
                 listen_port: args.listen_port,
                 register,
-                metering: false,
+                metering: osc_config.osc_metering_enabled,
             },
         )?;
         log::info!("[osc] listening on udp/{port}");
@@ -276,9 +285,6 @@ impl StudioSpike {
             osc::spawn_synthetic(args.synthetic, args.rate, port, stop)?;
         }
 
-        let config_dir = crate::host::runtime_env::config_dir()
-            .map(|dir| dir.join("studio"))
-            .unwrap_or_else(|| args.layouts_dir.join(".studio-egui"));
         let mut prefs = crate::host::prefs::load(&config_dir);
         // The language is applied before the first frame, so nothing is drawn
         // in English and then redrawn.
@@ -289,7 +295,6 @@ impl StudioSpike {
         let ctl = Ctl::new(control.clone());
         // The OSC form starts from the same file the Tauri Studio writes, so
         // both hosts point at the same renderer by default.
-        let osc_config = crate::host::config::load_config(&config_dir);
         let (osc_host, osc_port) = match &args.register {
             Some(spec) => match spec.rsplit_once(':') {
                 Some((host, port)) => (
