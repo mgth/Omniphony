@@ -287,8 +287,15 @@ pub fn toggle_buttons<'a, T: PartialEq + Clone>(
     options: &[(T, &'a str)],
 ) -> Option<T> {
     let mut picked = None;
+    // Inside a right-to-left row — the controls of a `label_row` — a
+    // horizontal group runs right to left too, and the first option would
+    // land on the right: "Back | Side" for the web's "Side | Back". Placing
+    // them last-first keeps the order they are given in.
+    let reversed = ui.layout().prefer_right_to_left();
     ui.horizontal(|ui| {
-        for (value, label) in options {
+        let count = options.len();
+        for i in 0..count {
+            let (value, label) = &options[if reversed { count - 1 - i } else { i }];
             let active = value == current;
             let mut text = egui::RichText::new(*label);
             if active {
