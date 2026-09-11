@@ -213,27 +213,18 @@ impl StudioSpike {
             .info("osc")
             .summary(format!("{}:{}", self.osc_host, self.osc_port))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(t("osc.host"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.osc_host).desired_width(140.0));
-                    });
+                widgets::label_row(ui, t("osc.host"), |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.osc_host).desired_width(140.0));
                 });
-                ui.horizontal(|ui| {
-                    ui.label(t("osc.omniphonyPort"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add(egui::DragValue::new(&mut self.osc_port).range(1..=65535));
-                    });
+                widgets::label_row(ui, t("osc.omniphonyPort"), |ui| {
+                    ui.add(egui::DragValue::new(&mut self.osc_port).range(1..=65535));
                 });
-                ui.horizontal(|ui| {
-                    ui.label(t("osc.listenPort"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new(listen_port.to_string())
-                                .monospace()
-                                .color(theme::TEXT_MUTED),
-                        );
-                    });
+                widgets::label_row(ui, t("osc.listenPort"), |ui| {
+                    ui.label(
+                        egui::RichText::new(listen_port.to_string())
+                            .monospace()
+                            .color(theme::TEXT_MUTED),
+                    );
                 });
                 let mut metering = metering_on;
                 if widgets::switch_row(ui, t("osc.metering"), &mut metering) {

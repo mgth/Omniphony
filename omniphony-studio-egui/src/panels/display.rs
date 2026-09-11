@@ -27,61 +27,57 @@ impl StudioSpike {
                 .max_height(max_height)
                 .show(ui, |ui| {
                     // The language row heads the Display section, as in the web.
-                    ui.horizontal(|ui| {
-                        ui.label(t("app.language"));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            egui::ComboBox::from_id_salt("locale")
-                                .selected_text(
-                                    crate::i18n::LOCALE_OPTIONS
-                                        .iter()
-                                        .find(|(id, _)| *id == locale)
-                                        .map(|(_, label)| *label)
-                                        .unwrap_or("Auto"),
-                                )
-                                .width(150.0)
-                                .show_ui(ui, |ui| {
-                                    for (id, label) in crate::i18n::LOCALE_OPTIONS {
-                                        if ui.selectable_label(*id == locale, *label).clicked()
-                                            && *id != locale
-                                        {
-                                            locale_choice = Some((*id).to_owned());
-                                        }
+                    widgets::label_row(ui, t("app.language"), |ui| {
+                        egui::ComboBox::from_id_salt("locale")
+                            .selected_text(
+                                crate::i18n::LOCALE_OPTIONS
+                                    .iter()
+                                    .find(|(id, _)| *id == locale)
+                                    .map(|(_, label)| *label)
+                                    .unwrap_or("Auto"),
+                            )
+                            .width(150.0)
+                            .show_ui(ui, |ui| {
+                                for (id, label) in crate::i18n::LOCALE_OPTIONS {
+                                    if ui.selectable_label(*id == locale, *label).clicked()
+                                        && *id != locale
+                                    {
+                                        locale_choice = Some((*id).to_owned());
                                     }
-                                });
-                            // "Auto" does not say which language it picked, and
-                            // that is exactly what a reader checks when the UI
-                            // is not in the language they expected.
-                            if locale == "auto" {
-                                ui.label(
-                                    egui::RichText::new(crate::i18n::active_locale())
-                                        .size(crate::ui::theme::FONT_SIZE_SMALL)
-                                        .color(crate::ui::theme::TEXT_MUTED),
-                                );
-                            }
-                        });
+                                }
+                            });
+                        // "Auto" does not say which language it picked, and
+                        // that is exactly what a reader checks when the UI
+                        // is not in the language they expected.
+                        if locale == "auto" {
+                            ui.label(
+                                egui::RichText::new(crate::i18n::active_locale())
+                                    .size(crate::ui::theme::FONT_SIZE_SMALL)
+                                    .color(crate::ui::theme::TEXT_MUTED),
+                            );
+                        }
                     });
                     widgets::switch_row(ui, t("display.showObjects"), &mut s.objects_visible);
-                    ui.horizontal(|ui| {
-                        ui.label(t("display.objectDisplayMode"));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            egui::ComboBox::from_id_salt("object-display-mode")
-                                .selected_text(s.object_display_mode.label())
-                                .width(150.0)
-                                .show_ui(ui, |ui| {
-                                    for mode in ObjectDisplayMode::ALL {
-                                        ui.selectable_value(
-                                            &mut s.object_display_mode,
-                                            mode,
-                                            mode.label(),
-                                        );
-                                    }
-                                });
-                        });
+                    widgets::label_row(ui, t("display.objectDisplayMode"), |ui| {
+                        egui::ComboBox::from_id_salt("object-display-mode")
+                            .selected_text(s.object_display_mode.label())
+                            .width(150.0)
+                            .show_ui(ui, |ui| {
+                                for mode in ObjectDisplayMode::ALL {
+                                    ui.selectable_value(
+                                        &mut s.object_display_mode,
+                                        mode,
+                                        mode.label(),
+                                    );
+                                }
+                            });
                     });
-                    ui.add(
-                        egui::Slider::new(&mut s.object_sphere_size, 0.03..=0.2)
-                            .step_by(0.002)
-                            .text(t("display.objectSphereSize")),
+                    widgets::slider_line(
+                        ui,
+                        t("display.objectSphereSize"),
+                        &mut s.object_sphere_size,
+                        0.03..=0.2,
+                        0.002,
                     );
                     widgets::switch_row(
                         ui,
@@ -112,10 +108,12 @@ impl StudioSpike {
                         t("display.speakerFaceListener"),
                         &mut s.speaker_face_listener_enabled,
                     );
-                    ui.add(
-                        egui::Slider::new(&mut s.speaker_size, 0.04..=0.2)
-                            .step_by(0.002)
-                            .text(t("display.speakerSize")),
+                    widgets::slider_line(
+                        ui,
+                        t("display.speakerSize"),
+                        &mut s.speaker_size,
+                        0.04..=0.2,
+                        0.002,
                     );
                 });
         }
@@ -135,34 +133,28 @@ impl StudioSpike {
             .max_height(max_height)
             .show(ui, |ui| {
                 widgets::switch_row(ui, t("trail.show"), &mut s.trails.enabled);
-                ui.horizontal(|ui| {
-                    ui.label(t("trail.mode"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        egui::ComboBox::from_id_salt("trail-mode")
-                            .selected_text(s.trails.mode.label())
-                            .width(120.0)
-                            .show_ui(ui, |ui| {
-                                for mode in [TrailMode::Diffuse, TrailMode::Line] {
-                                    ui.selectable_value(&mut s.trails.mode, mode, mode.label());
-                                }
-                            });
-                    });
+                widgets::label_row(ui, t("trail.mode"), |ui| {
+                    egui::ComboBox::from_id_salt("trail-mode")
+                        .selected_text(s.trails.mode.label())
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for mode in [TrailMode::Diffuse, TrailMode::Line] {
+                                ui.selectable_value(&mut s.trails.mode, mode, mode.label());
+                            }
+                        });
                 });
                 let mut ttl_s = s.trails.ttl.as_secs_f32();
-                if ui
-                    .add(
-                        egui::Slider::new(&mut ttl_s, 1.0..=20.0)
-                            .step_by(0.5)
-                            .text(t("trail.duration")),
-                    )
+                if widgets::slider_line(ui, t("trail.duration"), &mut ttl_s, 1.0..=20.0, 0.5)
                     .changed()
                 {
                     s.trails.ttl = Duration::from_secs_f32(ttl_s.max(0.5));
                 }
-                ui.add(
-                    egui::Slider::new(&mut s.trails.teleport_threshold, 0.05..=2.0)
-                        .step_by(0.05)
-                        .text(t("trail.teleport")),
+                widgets::slider_line(
+                    ui,
+                    t("trail.teleport"),
+                    &mut s.trails.teleport_threshold,
+                    0.05..=2.0,
+                    0.05,
                 );
             });
 
@@ -179,18 +171,15 @@ impl StudioSpike {
             .max_height(max_height)
             .show(ui, |ui| {
                 let combo = |ui: &mut egui::Ui, id: &str, label: &str, cm: &mut Colormap| {
-                    ui.horizontal(|ui| {
-                        ui.label(label);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            egui::ComboBox::from_id_salt(id)
-                                .selected_text(cm.label())
-                                .width(130.0)
-                                .show_ui(ui, |ui| {
-                                    for c in Colormap::ALL {
-                                        ui.selectable_value(cm, c, c.label());
-                                    }
-                                });
-                        });
+                    widgets::label_row(ui, label, |ui| {
+                        egui::ComboBox::from_id_salt(id)
+                            .selected_text(cm.label())
+                            .width(130.0)
+                            .show_ui(ui, |ui| {
+                                for c in Colormap::ALL {
+                                    ui.selectable_value(cm, c, c.label());
+                                }
+                            });
                     });
                 };
                 widgets::switch_row(ui, t("heatmap.objectEnergy"), &mut v.object_field_enabled);
@@ -209,17 +198,21 @@ impl StudioSpike {
                         &mut object_stop,
                     );
                 }
-                ui.add(
-                    egui::Slider::new(&mut v.object_radius, 0.02..=0.5)
-                        .step_by(0.01)
-                        .text(t("heatmap.objectEnergy.radius")),
+                widgets::slider_line(
+                    ui,
+                    t("heatmap.objectEnergy.radius"),
+                    &mut v.object_radius,
+                    0.02..=0.5,
+                    0.01,
                 );
                 ui.separator();
                 widgets::switch_row(ui, t("heatmap.globalEnergy"), &mut v.global_enabled);
-                ui.add(
-                    egui::Slider::new(&mut v.global_scale_db, 1.0..=40.0)
-                        .step_by(1.0)
-                        .text(t("heatmap.globalEnergy.scale")),
+                widgets::slider_line(
+                    ui,
+                    t("heatmap.globalEnergy.scale"),
+                    &mut v.global_scale_db,
+                    1.0..=40.0,
+                    1.0,
                 );
                 ui.separator();
                 widgets::switch_row(ui, t("heatmap.speakers"), &mut v.speaker_enabled);
@@ -242,75 +235,84 @@ impl StudioSpike {
                     t("heatmap.discontinuity.toggle"),
                     &mut v.discontinuity_enabled,
                 );
-                ui.horizontal(|ui| {
-                    ui.label(t("heatmap.discontinuity.mode"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        egui::ComboBox::from_id_salt("discontinuity-mode")
-                            .selected_text(match v.discontinuity_mode {
-                                DiscontinuityMode::Gain => "Gain",
-                                DiscontinuityMode::Centroid => "Centroid",
-                            })
-                            .width(130.0)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut v.discontinuity_mode,
-                                    DiscontinuityMode::Gain,
-                                    t("heatmap.discontinuity.modeGain"),
-                                );
-                                ui.selectable_value(
-                                    &mut v.discontinuity_mode,
-                                    DiscontinuityMode::Centroid,
-                                    t("heatmap.discontinuity.modeCentroid"),
-                                );
-                            });
-                    });
+                widgets::label_row(ui, t("heatmap.discontinuity.mode"), |ui| {
+                    egui::ComboBox::from_id_salt("discontinuity-mode")
+                        .selected_text(match v.discontinuity_mode {
+                            DiscontinuityMode::Gain => "Gain",
+                            DiscontinuityMode::Centroid => "Centroid",
+                        })
+                        .width(130.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut v.discontinuity_mode,
+                                DiscontinuityMode::Gain,
+                                t("heatmap.discontinuity.modeGain"),
+                            );
+                            ui.selectable_value(
+                                &mut v.discontinuity_mode,
+                                DiscontinuityMode::Centroid,
+                                t("heatmap.discontinuity.modeCentroid"),
+                            );
+                        });
                 });
-                ui.add(
-                    egui::Slider::new(&mut v.discontinuity_scale, 0.05..=2.0)
-                        .step_by(0.05)
-                        .text(t("heatmap.discontinuity.scale")),
+                widgets::slider_line(
+                    ui,
+                    t("heatmap.discontinuity.scale"),
+                    &mut v.discontinuity_scale,
+                    0.05..=2.0,
+                    0.05,
                 );
                 ui.separator();
                 widgets::note(ui, t("heatmap.common"));
                 let mut res = v.resolution as f32;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut res, 8.0..=64.0)
-                            .step_by(2.0)
-                            .text(t("heatmap.objectEnergy.resolution")),
-                    )
-                    .changed()
+                if widgets::slider_line(
+                    ui,
+                    t("heatmap.objectEnergy.resolution"),
+                    &mut res,
+                    8.0..=64.0,
+                    2.0,
+                )
+                .changed()
                 {
                     v.resolution = res.round() as u32;
                 }
-                ui.add(
-                    egui::Slider::new(&mut v.opacity, 0.05..=1.0)
-                        .step_by(0.05)
-                        .text(t("heatmap.objectEnergy.opacity")),
+                widgets::slider_line(
+                    ui,
+                    t("heatmap.objectEnergy.opacity"),
+                    &mut v.opacity,
+                    0.05..=1.0,
+                    0.05,
                 );
-                ui.add(
-                    egui::Slider::new(&mut v.mix, 0.0..=1.0)
-                        .step_by(0.01)
-                        .text(t("heatmap.objectEnergy.mix")),
+                widgets::slider_line(
+                    ui,
+                    t("heatmap.objectEnergy.mix"),
+                    &mut v.mix,
+                    0.0..=1.0,
+                    0.01,
                 );
-                ui.add(
-                    egui::Slider::new(&mut v.gamma_accumulate, 1.0..=10.0)
-                        .step_by(0.1)
-                        .text(t("heatmap.objectEnergy.gammaAccumulate")),
+                widgets::slider_line(
+                    ui,
+                    t("heatmap.objectEnergy.gammaAccumulate"),
+                    &mut v.gamma_accumulate,
+                    1.0..=10.0,
+                    0.1,
                 );
-                ui.add(
-                    egui::Slider::new(&mut v.gamma_mip, 0.2..=3.0)
-                        .step_by(0.05)
-                        .text(t("heatmap.objectEnergy.gammaMip")),
+                widgets::slider_line(
+                    ui,
+                    t("heatmap.objectEnergy.gammaMip"),
+                    &mut v.gamma_mip,
+                    0.2..=3.0,
+                    0.05,
                 );
                 let mut refresh = v.refresh_ms as f32;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut refresh, 40.0..=500.0)
-                            .step_by(10.0)
-                            .text(t("heatmap.objectEnergy.refresh")),
-                    )
-                    .changed()
+                if widgets::slider_line(
+                    ui,
+                    t("heatmap.objectEnergy.refresh"),
+                    &mut refresh,
+                    40.0..=500.0,
+                    10.0,
+                )
+                .changed()
                 {
                     v.refresh_ms = refresh.round() as u32;
                 }
@@ -318,14 +320,7 @@ impl StudioSpike {
                 widgets::switch_row(ui, t("heatmap.bandAll"), &mut v.all_bands);
                 if !v.all_bands {
                     let mut band = v.band_index as f32;
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut band, 0.0..=7.0)
-                                .step_by(1.0)
-                                .text("band"),
-                        )
-                        .changed()
-                    {
+                    if widgets::slider_line(ui, "band", &mut band, 0.0..=7.0, 1.0).changed() {
                         v.band_index = band.round() as usize;
                     }
                 }

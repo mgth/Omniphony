@@ -31,51 +31,57 @@ impl StudioSpike {
             )
         };
         let has_active = active.as_deref().is_some_and(|a| !a.is_empty());
+        // The three buttons are placed first, right to left, and the list takes
+        // what they leave. Sizing the list as "available minus the buttons"
+        // needs the buttons' width, and the hand-written guess was ten points
+        // short: the row ran past the panel at its minimum width.
         ui.horizontal(|ui| {
-            let label = active.clone().unwrap_or_default();
-            let combo = egui::ComboBox::from_id_salt("profile-select")
-                .selected_text(label)
-                .width(ui.available_width() - 76.0);
-            let mut picked: Option<String> = None;
-            ui.add_enabled_ui(!names.is_empty(), |ui| {
-                combo.show_ui(ui, |ui| {
-                    for name in &names {
-                        let selected = active.as_deref() == Some(name.as_str());
-                        if ui.selectable_label(selected, name).clicked() && !selected {
-                            picked = Some(name.clone());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // The renderer refuses to delete the last profile, so the button
+                // says so rather than letting the message be rejected silently.
+                let can_delete = has_active && names.len() > 1;
+                if ui
+                    .add_enabled(can_delete, egui::Button::new("✕"))
+                    .on_hover_text(t("profiles.delete"))
+                    .clicked()
+                {
+                    self.profile_delete_confirm = active.clone();
+                }
+                if ui
+                    .add_enabled(has_active, egui::Button::new("✎"))
+                    .on_hover_text(t("profiles.rename"))
+                    .clicked()
+                    && let Some(name) = &active
+                {
+                    self.profile_editor = Some(NameEditor::Rename(name.clone()));
+                    self.profile_name_edit = name.clone();
+                    self.profile_name_focus = true;
+                }
+                if ui.button("+").on_hover_text(t("profiles.create")).clicked() {
+                    self.profile_editor = Some(NameEditor::Create);
+                    self.profile_name_edit.clear();
+                    self.profile_name_focus = true;
+                }
+                let label = active.clone().unwrap_or_default();
+                let combo = egui::ComboBox::from_id_salt("profile-select")
+                    .selected_text(label)
+                    .width(ui.available_width());
+                let mut picked: Option<String> = None;
+                ui.add_enabled_ui(!names.is_empty(), |ui| {
+                    combo.show_ui(ui, |ui| {
+                        for name in &names {
+                            let selected = active.as_deref() == Some(name.as_str());
+                            if ui.selectable_label(selected, name).clicked() && !selected {
+                                picked = Some(name.clone());
+                            }
                         }
-                    }
+                    });
                 });
+                if let Some(name) = picked {
+                    self.ctl
+                        .send_string("/omniphony/control/profile/switch", &name);
+                }
             });
-            if let Some(name) = picked {
-                self.ctl
-                    .send_string("/omniphony/control/profile/switch", &name);
-            }
-            if ui.button("+").on_hover_text(t("profiles.create")).clicked() {
-                self.profile_editor = Some(NameEditor::Create);
-                self.profile_name_edit.clear();
-                self.profile_name_focus = true;
-            }
-            if ui
-                .add_enabled(has_active, egui::Button::new("✎"))
-                .on_hover_text(t("profiles.rename"))
-                .clicked()
-                && let Some(name) = &active
-            {
-                self.profile_editor = Some(NameEditor::Rename(name.clone()));
-                self.profile_name_edit = name.clone();
-                self.profile_name_focus = true;
-            }
-            // The renderer refuses to delete the last profile, so the button
-            // says so rather than letting the message be rejected silently.
-            let can_delete = has_active && names.len() > 1;
-            if ui
-                .add_enabled(can_delete, egui::Button::new("✕"))
-                .on_hover_text(t("profiles.delete"))
-                .clicked()
-            {
-                self.profile_delete_confirm = active.clone();
-            }
         });
         self.profile_name_editor(ui, &names, active.as_deref());
         self.profile_delete_modal(ui, &names);

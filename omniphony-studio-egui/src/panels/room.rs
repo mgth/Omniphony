@@ -180,25 +180,22 @@ impl StudioSpike {
 /// One metre field: two decimals, never below a centimetre.
 fn metre_row(ui: &mut Ui, label: &str, value: &mut f64) -> bool {
     let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut metres = *value as f32;
-            if ui
-                .add_sized(
-                    egui::vec2(72.0, ui.spacing().interact_size.y),
-                    egui::DragValue::new(&mut metres)
-                        .speed(0.01)
-                        .range(0.01..=f32::MAX)
-                        .fixed_decimals(2)
-                        .suffix(" m"),
-                )
-                .changed()
-            {
-                *value = (metres as f64).max(0.01);
-                changed = true;
-            }
-        });
+    widgets::label_row(ui, label, |ui| {
+        let mut metres = *value as f32;
+        if ui
+            .add_sized(
+                egui::vec2(72.0, ui.spacing().interact_size.y),
+                egui::DragValue::new(&mut metres)
+                    .speed(0.01)
+                    .range(0.01..=f32::MAX)
+                    .fixed_decimals(2)
+                    .suffix(" m"),
+            )
+            .changed()
+        {
+            *value = (metres as f64).max(0.01);
+            changed = true;
+        }
     });
     changed
 }

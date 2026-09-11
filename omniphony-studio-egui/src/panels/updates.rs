@@ -121,18 +121,14 @@ impl StudioSpike {
         // due, so drawing it is the same moment.
         self.maybe_check_updates();
         let mut enabled = self.prefs.updates.enabled;
-        ui.horizontal(|ui| {
-            ui.label(t("updates.checkLabel"));
-            widgets::help(ui, "help.updates.check");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::switch(ui, &mut enabled).changed() {
-                    self.prefs.updates.enabled = enabled;
-                    self.mark_prefs_dirty();
-                    if enabled {
-                        self.maybe_check_updates();
-                    }
+        widgets::label_row_help(ui, t("updates.checkLabel"), "help.updates.check", |ui| {
+            if widgets::switch(ui, &mut enabled).changed() {
+                self.prefs.updates.enabled = enabled;
+                self.mark_prefs_dirty();
+                if enabled {
+                    self.maybe_check_updates();
                 }
-            });
+            }
         });
         if !enabled {
             return;

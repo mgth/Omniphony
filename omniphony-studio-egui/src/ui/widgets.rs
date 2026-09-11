@@ -54,16 +54,76 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     response
 }
 
+/// A label on the left and controls on the right, where the controls win.
+///
+/// They are placed first, from the right edge, and the label takes what they
+/// leave — truncated if it must be, and egui shows it whole on hover. Laid out
+/// the other way round, label first and then a right-to-left block, a label
+/// longer than its room simply sits *under* the controls: a right-to-left
+/// layout draws over what is already there instead of pushing it, and the
+/// panel's measured width stays innocent while the row is unreadable.
+pub fn label_row<R>(
+    ui: &mut Ui,
+    label: impl Into<egui::WidgetText>,
+    add_right: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    labelled(ui, label.into(), None, add_right)
+}
+
+/// `label_row` with the `?` help mark after the label. The mark keeps its
+/// place when the label truncates: its width is taken off the label's room
+/// first, measured from the glyph itself.
+pub fn label_row_help<R>(
+    ui: &mut Ui,
+    label: impl Into<egui::WidgetText>,
+    help_key: &str,
+    add_right: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    labelled(ui, label.into(), Some(help_key), add_right)
+}
+
+fn labelled<R>(
+    ui: &mut Ui,
+    label: egui::WidgetText,
+    help_key: Option<&str>,
+    add_right: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let out = add_right(ui);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let mark = match help_key {
+                    Some(_) => {
+                        ui.painter()
+                            .layout_no_wrap(
+                                "?".to_owned(),
+                                egui::FontId::proportional(theme::FONT_SIZE_SMALL),
+                                theme::TEXT_FAINT,
+                            )
+                            .size()
+                            .x
+                            + ui.spacing().item_spacing.x
+                    }
+                    None => 0.0,
+                };
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - mark).max(0.0));
+                    ui.add(egui::Label::new(label).truncate());
+                });
+                if let Some(key) = help_key {
+                    help(ui, key);
+                }
+            });
+            out
+        })
+        .inner
+    })
+    .inner
+}
+
 /// Label left, switch right (`.inline-toggle`). Returns true when toggled.
 pub fn switch_row(ui: &mut Ui, label: &str, on: &mut bool) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            changed = switch(ui, on).changed();
-        });
-    });
-    changed
+    label_row(ui, label, |ui| switch(ui, on).changed())
 }
 
 /// A `.toggle-btn` group: one active value out of a list of (value, label).
@@ -91,6 +151,10 @@ pub fn toggle_buttons<'a, T: PartialEq + Clone>(
 
 /// `.gain-box`: a label, a slider, and the value with its unit. `format`
 /// renders the readout so each caller keeps the web's exact formatting.
+///
+/// Narrowing the panel takes room from the track first, down to `MIN_TRACK`,
+/// and only then from the label: a slider that is merely shorter still works,
+/// a label cut to three letters says nothing.
 pub fn value_slider(
     ui: &mut Ui,
     label: &str,
@@ -99,25 +163,33 @@ pub fn value_slider(
     step: f64,
     format: impl Fn(f32) -> String,
 ) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_sized(
-                vec2(64.0, ui.spacing().interact_size.y),
-                egui::Label::new(
-                    egui::RichText::new(format(*value))
-                        .monospace()
-                        .color(theme::TEXT_STRONG),
-                ),
-            );
-            let slider = egui::Slider::new(value, range)
-                .show_value(false)
-                .step_by(step);
-            changed = slider.ui(ui).changed();
-        });
-    });
-    changed
+    let label_width = egui::WidgetText::from(label)
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+        .size()
+        .x;
+    let full_track = ui.spacing().slider_width;
+    label_row(ui, label, |ui| {
+        ui.add_sized(
+            vec2(64.0, ui.spacing().interact_size.y),
+            egui::Label::new(
+                egui::RichText::new(format(*value))
+                    .monospace()
+                    .color(theme::TEXT_STRONG),
+            ),
+        );
+        let room = ui.available_width() - label_width - ui.spacing().item_spacing.x;
+        ui.spacing_mut().slider_width = room.clamp(MIN_TRACK, full_track.max(MIN_TRACK));
+        egui::Slider::new(value, range)
+            .show_value(false)
+            .step_by(step)
+            .ui(ui)
+            .changed()
+    })
 }
 
 /// The connection dot of the OSC panel: a filled circle plus a caption.
@@ -217,4 +289,70 @@ pub fn help(ui: &mut Ui, help_key: &str) {
         ui.set_max_width(260.0);
         ui.label(text);
     });
+}
+
+/// The shortest track a slider row keeps; its label truncates before the track
+/// goes below it.
+const MIN_TRACK: f32 = 48.0;
+
+/// The web's Display-panel slider row (`.control-row`, `grid auto 1fr`): the
+/// label with its current value on the left, the track taking what is left.
+///
+/// `Slider::text` cannot do this. It lays a track of the style's fixed width,
+/// a value box and then the label on one line, and none of the three shrinks,
+/// so every such row ran past a panel at its minimum width — "Object sphere
+/// size" alone does. Here the track is the part that gives, as the web's `1fr`
+/// column does, and past a short track the label truncates and shows itself
+/// whole on hover.
+pub fn slider_line(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f64,
+) -> Response {
+    let decimals = decimals_for(step);
+    ui.horizontal(|ui| {
+        let spacing = ui.spacing().item_spacing.x;
+        let label_max = (ui.available_width() - MIN_TRACK - spacing).max(0.0);
+        let text = format!("{label} {:.*}", decimals, *value);
+        ui.scope(|ui| {
+            ui.set_max_width(label_max);
+            ui.add(egui::Label::new(egui::RichText::new(text).size(theme::FONT_SIZE)).truncate());
+        });
+        ui.spacing_mut().slider_width = ui.available_width().max(MIN_TRACK);
+        ui.add(
+            egui::Slider::new(value, range)
+                .step_by(step)
+                .show_value(false),
+        )
+    })
+    .inner
+}
+
+/// As many decimals as the step can move the value by: a 0.002 step reads
+/// `0.070`, a 0.5 step `7.0`, a whole step `12`.
+fn decimals_for(step: f64) -> usize {
+    if step <= 0.0 || !step.is_finite() {
+        return 2;
+    }
+    (-step.log10()).ceil().max(0.0) as usize
+}
+
+#[cfg(test)]
+mod slider_line_tests {
+    use super::decimals_for;
+
+    /// The readout keeps the digits the step can actually change, and no more:
+    /// these are the steps the Display sliders use.
+    #[test]
+    fn the_readout_follows_the_step() {
+        assert_eq!(decimals_for(0.002), 3);
+        assert_eq!(decimals_for(0.01), 2);
+        assert_eq!(decimals_for(0.05), 2);
+        assert_eq!(decimals_for(0.1), 1);
+        assert_eq!(decimals_for(0.5), 1);
+        assert_eq!(decimals_for(1.0), 0);
+        assert_eq!(decimals_for(10.0), 0);
+    }
 }
