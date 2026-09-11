@@ -206,10 +206,6 @@ impl StudioSpike {
     /// switch, with a Connect button that re-registers.
     pub(crate) fn osc_section(&mut self, ui: &mut egui::Ui) {
         let listen_port = self.osc_stats.listen_port.load(Ordering::Relaxed);
-        let metering_on = {
-            let live = self.live.lock().unwrap();
-            live.app.osc_metering_enabled.unwrap_or(0) != 0
-        };
         let shown = Section::new("oscSection", "osc.configTitle")
             .info("osc")
             .summary(format!("{}:{}", self.osc_host, self.osc_port))
@@ -232,16 +228,6 @@ impl StudioSpike {
                             .color(theme::TEXT_MUTED),
                     );
                 });
-                let mut metering = metering_on;
-                if widgets::switch_row_help(
-                    ui,
-                    t("osc.metering"),
-                    "help.osc.metering",
-                    &mut metering,
-                ) {
-                    self.live.lock().unwrap().app.osc_metering_enabled = Some(u8::from(metering));
-                    self.ctl.set_metering(metering);
-                }
                 self.host_switches(ui);
                 if ui.button(t("osc.connect")).clicked() {
                     self.connect();
@@ -253,6 +239,67 @@ impl StudioSpike {
         // so it is re-read every time the section opens rather than cached.
         if shown.is_none() {
             self.mpv_orender = None;
+        }
+    }
+
+    /// `#oscMeteringToggle` and `#oscMeteringRateSelect`, which the web puts
+    /// at the head of the Objects section, over the meters they feed: whether
+    /// this client receives levels at all, and how often the renderer
+    /// publishes them. The switch is saved to `osc_config.json`, as the
+    /// Tauri host's `control_osc_metering` does, so it holds across
+    /// restarts; the rate is the renderer's own, echoed in its snapshot.
+    pub(crate) fn metering_row(&mut self, ui: &mut egui::Ui) {
+        const RATES_HZ: [u32; 5] = [10, 20, 50, 100, 200];
+        let (metering_on, rate) = {
+            let live = self.live.lock().unwrap();
+            (
+                live.app.osc_metering_enabled.unwrap_or(0) != 0,
+                live.app.meter_rate_hz.map_or(50, |hz| hz.round() as u32),
+            )
+        };
+        let mut metering = metering_on;
+        let mut chosen = rate;
+        let toggled = widgets::label_row_help(ui, t("osc.metering"), "help.osc.metering", |ui| {
+            widgets::bounded_combo(ui, 80.0, |ui, w| {
+                egui::ComboBox::from_id_salt("meter-rate")
+                    .selected_text(format!("{rate} Hz"))
+                    .width(w)
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        for hz in RATES_HZ {
+                            ui.selectable_value(&mut chosen, hz, format!("{hz} Hz"));
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Audio meter publish rate (Hz) — drives the level meters only. \
+                         Diag publication has its own rate in the diag plot controls.",
+                    );
+            });
+            widgets::switch(ui, &mut metering).changed()
+        });
+        if toggled {
+            self.live.lock().unwrap().app.osc_metering_enabled = Some(u8::from(metering));
+            self.ctl.set_metering(metering);
+            let mut config = load_config(&self.config_dir);
+            config.osc_metering_enabled = metering;
+            if let Err(e) = save_config(&self.config_dir, &config) {
+                log::warn!("[osc] could not save the configuration: {e}");
+            }
+            self.log(
+                "info",
+                "osc",
+                t(if metering {
+                    "log.oscMeteringEnabled"
+                } else {
+                    "log.oscMeteringDisabled"
+                }),
+            );
+        }
+        if chosen != rate {
+            self.live.lock().unwrap().app.meter_rate_hz = Some(chosen as f32);
+            self.ctl
+                .send_float("/omniphony/control/metering/rate_hz", chosen as f32);
         }
     }
 

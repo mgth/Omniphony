@@ -652,6 +652,7 @@ impl StudioSpike {
         // One band for everything: the band cursor and the Heatmaps select
         // write `heatmap_band_index`, and the volumes read it from here.
         self.volume_settings.band_index = self.settings.heatmap_band_index;
+        self.settings.heatmap_all_bands = self.volume_settings.all_bands;
         let out = {
             let live = self.live.lock().unwrap();
             view::build_frame(

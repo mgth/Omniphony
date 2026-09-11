@@ -76,6 +76,15 @@ impl<'a> Section<'a> {
         }
     }
 
+    /// A section of this host's own, with no web counterpart and so no
+    /// `data-i18n` key: its title is given as is.
+    pub fn titled(id: &'a str, title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            ..Self::new(id, "section.display")
+        }
+    }
+
     /// The collapsed header's one-line summary (`.panel-summary`).
     pub fn summary(mut self, summary: impl Into<String>) -> Self {
         self.summary = Some(summary.into());
