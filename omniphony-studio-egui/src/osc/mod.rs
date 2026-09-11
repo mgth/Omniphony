@@ -32,6 +32,9 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// `HEARTBEAT_ACK_TIMEOUT`, so both clients give up after the same delay.
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 const REPAINT_COALESCE: Duration = Duration::from_micros(2500);
+/// How long a receive waits when no change is waiting to be shown, so the
+/// heartbeat, the snapshot requests and the control channel keep running.
+const READ_TIMEOUT: Duration = Duration::from_millis(100);
 /// While `osc_snapshot_ready` is false, re-register this often (host value).
 const SNAPSHOT_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_BUF: usize = 65_536;
@@ -130,7 +133,7 @@ pub fn spawn_listener(
 ) -> std::io::Result<(u16, ControlTx)> {
     let socket = UdpSocket::bind(("0.0.0.0", cfg.listen_port))?;
     let port = socket.local_addr()?.port();
-    socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+    socket.set_read_timeout(Some(READ_TIMEOUT))?;
     stats.listen_port.store(u64::from(port), Ordering::Relaxed);
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
@@ -165,6 +168,12 @@ fn listener_loop(
     let mut last_heartbeat = Instant::now();
     let mut last_ack = Instant::now();
     let mut last_repaint = Instant::now() - REPAINT_COALESCE;
+    // A change applied to the model but not yet handed to the waker, because
+    // it landed inside the coalescing window. While one is waiting, the socket
+    // waits no longer than the window, so the last packet of a burst still gets
+    // its frame when nothing follows it.
+    let mut repaint_pending = false;
+    let mut read_timeout = READ_TIMEOUT;
     let mut last_snapshot_request = Instant::now();
     let mut register = register;
     let mut metering = metering;
@@ -197,11 +206,8 @@ fn listener_loop(
                         if outcome.ack {
                             last_ack = Instant::now();
                         }
-                        if outcome.change != Change::None
-                            && last_repaint.elapsed() >= REPAINT_COALESCE
-                        {
-                            last_repaint = Instant::now();
-                            waker();
+                        if outcome.change != Change::None {
+                            repaint_pending = true;
                         }
                     }
                     Err(e) => log::debug!("[osc] undecodable packet ({n} bytes): {e:?}"),
@@ -215,6 +221,23 @@ fn listener_loop(
             Err(e) => {
                 log::error!("[osc] recv failed: {e}");
                 std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        if repaint_pending && last_repaint.elapsed() >= REPAINT_COALESCE {
+            repaint_pending = false;
+            last_repaint = Instant::now();
+            waker();
+        }
+        let wanted = if repaint_pending {
+            REPAINT_COALESCE
+        } else {
+            READ_TIMEOUT
+        };
+        if wanted != read_timeout {
+            match socket.set_read_timeout(Some(wanted)) {
+                Ok(()) => read_timeout = wanted,
+                Err(e) => log::debug!("[osc] set_read_timeout({wanted:?}): {e}"),
             }
         }
 
