@@ -43,6 +43,10 @@ struct Globals {
     hemi_sky: [f32; 4],
     hemi_ground: [f32; 4],
     viewport: [f32; 4],
+    /// xyz = position, w = cutoff distance (0 = no cutoff).
+    point: [f32; 4],
+    /// rgb = colour, w = intensity.
+    point_color: [f32; 4],
 }
 
 /// One instanced mesh: full model matrix, linear RGBA, emissive + gloss.
@@ -185,7 +189,13 @@ const POINT_ATTRS: [wgpu::VertexAttribute; 3] =
 /// Scene lighting in the three.js frame (x depth, y up, z right). Defaults
 /// are `scene/setup.js`: key `#fff7ea` 2.35 from `(3.6, 4.8, 1.4)`, fill
 /// `#b8d4ff` 1.05 from `(-2.8, 1.1, -3.8)`, ambient `#ffffff` 0.24,
-/// hemisphere sky `#dcecff` / ground `#0d0f14` 0.12.
+/// hemisphere sky `#dcecff` / ground `#0d0f14` 0.12, and the point light
+/// `brassempouyFill` `#fff4dc` 0.9 at `(-0.18, 0.42, 0.22)`, cut at 2.2.
+///
+/// That last one is the head's own light. It sits a few tenths of a unit
+/// above and in front of the listener and falls off with the square of the
+/// distance, so at the head's surface it is several times stronger than the
+/// key light — it is what makes the head read as a lit object at all.
 #[derive(Clone, Copy, Debug)]
 pub struct Lighting {
     pub key_dir: Vec3,
@@ -199,6 +209,11 @@ pub struct Lighting {
     pub hemi_sky: [f32; 3],
     pub hemi_ground: [f32; 3],
     pub hemi_intensity: f32,
+    pub point_pos: Vec3,
+    pub point_color: [f32; 3],
+    pub point_intensity: f32,
+    /// three.js `distance`: past it the light contributes nothing.
+    pub point_cutoff: f32,
 }
 
 impl Default for Lighting {
@@ -215,6 +230,10 @@ impl Default for Lighting {
             hemi_sky: linear_rgb(0xdc, 0xec, 0xff),
             hemi_ground: linear_rgb(0x0d, 0x0f, 0x14),
             hemi_intensity: 0.12,
+            point_pos: Vec3::new(-0.18, 0.42, 0.22),
+            point_color: linear_rgb(0xff, 0xf4, 0xdc),
+            point_intensity: 0.9,
+            point_cutoff: 2.2,
         }
     }
 }
@@ -821,6 +840,13 @@ impl SceneRenderer {
             hemi_sky: [l.hemi_sky[0], l.hemi_sky[1], l.hemi_sky[2], 1.0],
             hemi_ground: [l.hemi_ground[0], l.hemi_ground[1], l.hemi_ground[2], 1.0],
             viewport: [frame.size_px[0] as f32, frame.size_px[1] as f32, 0.0, 0.0],
+            point: l.point_pos.extend(l.point_cutoff).to_array(),
+            point_color: [
+                l.point_color[0],
+                l.point_color[1],
+                l.point_color[2],
+                l.point_intensity,
+            ],
         };
         queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
 

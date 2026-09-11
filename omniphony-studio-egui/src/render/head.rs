@@ -1,7 +1,8 @@
 //! Listener head model (`assets/la_dame_de_brassempouy_centered.glb`),
 //! loaded the way `app.js` does with GLTFLoader: node translation applied,
 //! `rotation.y = -π/2` (glTF forward → scene +X front), uniform scale so the
-//! bounding box's largest dimension is 0.34 scene units, vertex colours kept.
+//! bounding box's largest dimension is 0.34 scene units, vertex colours kept
+//! as they are (linear, as glTF defines them).
 
 use std::path::Path;
 
@@ -81,13 +82,12 @@ pub fn load(path: &Path) -> Result<(Vec<MeshVertex>, Vec<u32>), String> {
         v.normal = (rot * Vec3::from_array(v.normal))
             .normalize_or_zero()
             .to_array();
-        // Vertex colours are sRGB in glTF; the renderer shades in linear.
-        v.color = [
-            v.color[0].powf(2.2),
-            v.color[1].powf(2.2),
-            v.color[2].powf(2.2),
-            v.color[3],
-        ];
+        // `COLOR_0` is already linear — the glTF 2.0 spec defines vertex
+        // colours as linear multipliers, and three.js' GLTFLoader uses them
+        // as they are. Decoding them as sRGB darkened the head five- to
+        // twenty-fold (its median brown 0.26/0.17/0.07 fell to
+        // 0.05/0.02/0.003), which read as a dark silhouette the room's
+        // translucent walls showed through.
     }
     log::info!(
         "[head] {}: {} vertices, {} triangles, largest extent {:.1} → {TARGET_MAX_DIMENSION}",
