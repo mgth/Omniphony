@@ -484,9 +484,10 @@ impl StudioSpike {
             return;
         }
         let mut azimuth = self.prefs.object_test.rotation.azimuth as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("objectTest.axisAzimuth"),
+            "help.objectTest.axisAzimuth",
             &mut azimuth,
             -180.0..=180.0,
             1.0,
@@ -496,9 +497,10 @@ impl StudioSpike {
             self.apply_object_test_rotation();
         }
         let mut elevation = self.prefs.object_test.rotation.elevation as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("objectTest.axisElevation"),
+            "help.objectTest.axisElevation",
             &mut elevation,
             -90.0..=90.0,
             1.0,

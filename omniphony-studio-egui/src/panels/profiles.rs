@@ -68,14 +68,19 @@ impl StudioSpike {
                     .width(ui.available_width());
                 let mut picked: Option<String> = None;
                 ui.add_enabled_ui(!names.is_empty(), |ui| {
-                    combo.show_ui(ui, |ui| {
-                        for name in &names {
-                            let selected = active.as_deref() == Some(name.as_str());
-                            if ui.selectable_label(selected, name).clicked() && !selected {
-                                picked = Some(name.clone());
+                    // The list has no label to click, so its help is its
+                    // hover text, as the web's `title` is.
+                    combo
+                        .show_ui(ui, |ui| {
+                            for name in &names {
+                                let selected = active.as_deref() == Some(name.as_str());
+                                if ui.selectable_label(selected, name).clicked() && !selected {
+                                    picked = Some(name.clone());
+                                }
                             }
-                        }
-                    });
+                        })
+                        .response
+                        .on_hover_text(t("help.profiles"));
                 });
                 if let Some(name) = picked {
                     self.ctl

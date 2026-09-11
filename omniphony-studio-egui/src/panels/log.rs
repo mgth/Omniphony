@@ -197,13 +197,16 @@ impl StudioSpike {
                         .send_string("/omniphony/control/log_level", &chosen);
                     self.live.lock().unwrap().app.log_level = Some(chosen);
                 }
-                ui.label(
+                crate::ui::help::label(
+                    ui,
                     RichText::new(t("log.levelLabel"))
                         .size(theme::FONT_SIZE_SMALL)
                         .color(theme::TEXT_MUTED),
+                    "help.log.level",
                 );
             });
         });
+        crate::ui::help::card(ui, "help.log.level");
     }
 }
 

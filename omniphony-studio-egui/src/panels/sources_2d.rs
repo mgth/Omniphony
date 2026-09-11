@@ -77,18 +77,23 @@ impl StudioSpike {
                     },
                 );
 
-                widgets::label_row(ui, t("twoDSources.surroundLabel"), |ui| {
-                    if let Some(picked) = widgets::toggle_buttons(
-                        ui,
-                        &placement,
-                        &[
-                            ("side".to_owned(), t("twoDSources.surroundSide")),
-                            ("back".to_owned(), t("twoDSources.surroundBack")),
-                        ],
-                    ) {
-                        self.set_option("surround_placement", serde_json::json!(picked));
-                    }
-                });
+                widgets::label_row_help(
+                    ui,
+                    t("twoDSources.surroundLabel"),
+                    "help.twoDSources.surroundPlacement",
+                    |ui| {
+                        if let Some(picked) = widgets::toggle_buttons(
+                            ui,
+                            &placement,
+                            &[
+                                ("side".to_owned(), t("twoDSources.surroundSide")),
+                                ("back".to_owned(), t("twoDSources.surroundBack")),
+                            ],
+                        ) {
+                            self.set_option("surround_placement", serde_json::json!(picked));
+                        }
+                    },
+                );
 
                 let mut on = synthetic;
                 if widgets::switch_row_help(

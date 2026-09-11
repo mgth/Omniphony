@@ -48,6 +48,15 @@ impl Overlay {
         }
     }
 
+    /// A title key and a body key that do not share a prefix
+    /// (`input.clockInfoTitle` / `input.clockInfoBody`).
+    pub fn keys(title_key: &str, body_key: &str) -> Self {
+        Self {
+            title: t(title_key).to_owned(),
+            body: t(body_key).to_owned(),
+        }
+    }
+
     /// A section's own title over a `help.*` string.
     pub fn titled(title: impl Into<String>, body_key: &str) -> Self {
         Self {
@@ -168,6 +177,8 @@ pub enum Trigger<'a> {
     /// The centred overlay, for a `<prefix>.infoTitle` / `.infoBody` pair: the
     /// label heads a whole block, and its help is about the block.
     Info(&'a str),
+    /// The centred overlay, for a title key and a body key.
+    InfoKeys(&'a str, &'a str),
 }
 
 /// Make `text_rect` — a label already painted — open what `what` names.
@@ -177,6 +188,10 @@ pub fn trigger_any(ui: &Ui, text_rect: egui::Rect, what: Trigger<'_>) {
         Trigger::Info(prefix) => {
             let response = ui.interact(text_rect, Id::new(("help-info", prefix)), Sense::click());
             overlay_trigger(ui, &response, || Overlay::info(prefix));
+        }
+        Trigger::InfoKeys(title, body) => {
+            let response = ui.interact(text_rect, Id::new(("help-info", title)), Sense::click());
+            overlay_trigger(ui, &response, || Overlay::keys(title, body));
         }
     }
 }

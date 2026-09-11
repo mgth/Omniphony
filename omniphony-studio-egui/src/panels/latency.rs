@@ -368,10 +368,12 @@ impl StudioSpike {
             )
         };
         ui.horizontal(|ui| {
-            ui.label(
+            crate::ui::help::label(
+                ui,
                 RichText::new(t("telemetry.resample"))
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
+                "help.telemetry.resample",
             );
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width().min(140.0), 6.0),
@@ -414,6 +416,7 @@ impl StudioSpike {
                     .color(theme::TEXT_MUTED),
             );
         });
+        crate::ui::help::card(ui, "help.telemetry.resample");
     }
 
     fn target_latency_row(&mut self, ui: &mut Ui, target: Option<i64>) {

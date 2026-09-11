@@ -145,7 +145,12 @@ impl StudioSpike {
                         "help.display.showObjectDetails",
                         &mut s.show_object_details,
                     );
-                    widgets::switch_row(ui, "Effective render", &mut s.effective_render_enabled);
+                    widgets::label_row_info(
+                        ui,
+                        t("effectiveRender.title"),
+                        "effectiveRender",
+                        |ui| widgets::switch(ui, &mut s.effective_render_enabled),
+                    );
                     widgets::switch_row_help(
                         ui,
                         t("display.grid"),
@@ -153,7 +158,12 @@ impl StudioSpike {
                         &mut s.vbap_grid,
                     );
                     ui.separator();
-                    widgets::switch_row(ui, t("display.speakers"), &mut s.speakers_visible);
+                    widgets::switch_row_help(
+                        ui,
+                        t("display.speakers"),
+                        "help.display.showSpeakers",
+                        &mut s.speakers_visible,
+                    );
                     widgets::switch_row_help(
                         ui,
                         t("display.speakerLabels"),
@@ -188,7 +198,12 @@ impl StudioSpike {
             .info("trail")
             .default_open(true)
             .show(ui, |ui| {
-                widgets::switch_row(ui, t("trail.show"), &mut s.trails.enabled);
+                widgets::switch_row_help(
+                    ui,
+                    t("trail.show"),
+                    "help.trail.show",
+                    &mut s.trails.enabled,
+                );
                 widgets::label_row_help(ui, t("trail.mode"), "help.trail.mode", |ui| {
                     widgets::bounded_combo(ui, 120.0, |ui, w| {
                         egui::ComboBox::from_id_salt("trail-mode")

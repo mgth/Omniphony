@@ -672,7 +672,7 @@ impl StudioSpike {
         if let Some([w, x, y, z]) = pose {
             let (yaw, pitch, roll) = euler_degrees(w, x, y, z);
             ui.horizontal(|ui| {
-                ui.label(t("binaural.pose"));
+                crate::ui::help::label(ui, t("binaural.pose"), "help.binaural.pose");
                 ui.label(
                     RichText::new(format!("yaw {yaw:.0}°  pitch {pitch:.0}°  roll {roll:.0}°"))
                         .monospace()
@@ -680,6 +680,7 @@ impl StudioSpike {
                         .color(theme::TEXT_MUTED),
                 );
             });
+            crate::ui::help::card(ui, "help.binaural.pose");
         }
     }
 }
