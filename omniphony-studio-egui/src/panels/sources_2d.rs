@@ -78,20 +78,17 @@ impl StudioSpike {
                     },
                 );
 
-                ui.horizontal(|ui| {
-                    ui.label(t("twoDSources.surroundLabel"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(picked) = widgets::toggle_buttons(
-                            ui,
-                            &placement,
-                            &[
-                                ("side".to_owned(), t("twoDSources.surroundSide")),
-                                ("back".to_owned(), t("twoDSources.surroundBack")),
-                            ],
-                        ) {
-                            self.set_option("surround_placement", serde_json::json!(picked));
-                        }
-                    });
+                widgets::label_row(ui, t("twoDSources.surroundLabel"), |ui| {
+                    if let Some(picked) = widgets::toggle_buttons(
+                        ui,
+                        &placement,
+                        &[
+                            ("side".to_owned(), t("twoDSources.surroundSide")),
+                            ("back".to_owned(), t("twoDSources.surroundBack")),
+                        ],
+                    ) {
+                        self.set_option("surround_placement", serde_json::json!(picked));
+                    }
                 });
 
                 let mut on = synthetic;
@@ -149,10 +146,11 @@ impl StudioSpike {
             current.to_owned()
         };
         let mut chosen = current.clone();
-        ui.horizontal(|ui| {
-            ui.label(t("twoDSources.objectGeneratorLabel"));
-            widgets::help(ui, "help.objectGenerator");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row_help(
+            ui,
+            t("twoDSources.objectGeneratorLabel"),
+            "help.objectGenerator",
+            |ui| {
                 egui::ComboBox::from_id_salt("object-generator")
                     .selected_text(
                         options
@@ -167,8 +165,8 @@ impl StudioSpike {
                             ui.selectable_value(&mut chosen, id.clone(), label);
                         }
                     });
-            });
-        });
+            },
+        );
         if chosen != current {
             // The renderer drops the previous generator's overrides, so the
             // new one shows its declared defaults.
@@ -194,10 +192,11 @@ impl StudioSpike {
             ("spectral", "twoDSources.phantomSpectral"),
         ];
         let mut chosen = current.to_owned();
-        ui.horizontal(|ui| {
-            ui.label(t("twoDSources.phantomLabel"));
-            widgets::help(ui, "help.phantomExtract");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row_help(
+            ui,
+            t("twoDSources.phantomLabel"),
+            "help.phantomExtract",
+            |ui| {
                 egui::ComboBox::from_id_salt("phantom-extract")
                     .selected_text(t(options
                         .iter()
@@ -210,8 +209,8 @@ impl StudioSpike {
                             ui.selectable_value(&mut chosen, id.to_owned(), t(key));
                         }
                     });
-            });
-        });
+            },
+        );
         if chosen != current {
             self.set_option("phantom_extract_mode", serde_json::json!(chosen));
         }

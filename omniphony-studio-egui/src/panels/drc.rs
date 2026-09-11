@@ -64,19 +64,15 @@ impl StudioSpike {
                     options.push("Off".to_owned());
                 }
                 let mut chosen = mode.clone();
-                ui.horizontal(|ui| {
-                    ui.label(t("input.drc"));
-                    widgets::help(ui, "help.drc.mode");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        egui::ComboBox::from_id_salt("drc-mode")
-                            .selected_text(&mode)
-                            .width(120.0)
-                            .show_ui(ui, |ui| {
-                                for option in &options {
-                                    ui.selectable_value(&mut chosen, option.clone(), option);
-                                }
-                            });
-                    });
+                widgets::label_row_help(ui, t("input.drc"), "help.drc.mode", |ui| {
+                    egui::ComboBox::from_id_salt("drc-mode")
+                        .selected_text(&mode)
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for option in &options {
+                                ui.selectable_value(&mut chosen, option.clone(), option);
+                            }
+                        });
                 });
                 if chosen != mode {
                     self.live.lock().unwrap().app.drc_mode = Some(chosen.clone());

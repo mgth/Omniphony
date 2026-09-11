@@ -101,19 +101,15 @@ impl StudioSpike {
                 widgets::note(ui, &status);
 
                 let mut chosen = mode.clone();
-                ui.horizontal(|ui| {
-                    ui.label(t("input.mode"));
-                    widgets::help(ui, "help.input.mode");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        egui::ComboBox::from_id_salt("input-mode")
-                            .selected_text(mode_label(&mode))
-                            .width(150.0)
-                            .show_ui(ui, |ui| {
-                                for (id, key) in MODES {
-                                    ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
-                                }
-                            });
-                    });
+                widgets::label_row_help(ui, t("input.mode"), "help.input.mode", |ui| {
+                    egui::ComboBox::from_id_salt("input-mode")
+                        .selected_text(mode_label(&mode))
+                        .width(150.0)
+                        .show_ui(ui, |ui| {
+                            for (id, key) in MODES {
+                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                            }
+                        });
                 });
                 if chosen != mode {
                     {
@@ -131,25 +127,22 @@ impl StudioSpike {
                 // The bridge path is exempt from the connection lock: it is
                 // how a missing bridge gets fixed.
                 let mut path = bridge.clone();
-                ui.horizontal(|ui| {
-                    ui.label(t("input.bridgeBinary"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add(
-                                egui::TextEdit::singleline(&mut path)
-                                    .desired_width(170.0)
-                                    .hint_text(t("input.autoDetect")),
-                            )
-                            .lost_focus()
-                            && path != bridge
-                        {
-                            let value = path.trim().to_owned();
-                            self.live.lock().unwrap().app.render_bridge_path =
-                                (!value.is_empty()).then(|| value.clone());
-                            self.ctl
-                                .send_string("/omniphony/control/render/bridge_path", &value);
-                        }
-                    });
+                widgets::label_row(ui, t("input.bridgeBinary"), |ui| {
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut path)
+                                .desired_width(170.0)
+                                .hint_text(t("input.autoDetect")),
+                        )
+                        .lost_focus()
+                        && path != bridge
+                    {
+                        let value = path.trim().to_owned();
+                        self.live.lock().unwrap().app.render_bridge_path =
+                            (!value.is_empty()).then(|| value.clone());
+                        self.ctl
+                            .send_string("/omniphony/control/render/bridge_path", &value);
+                    }
                 });
 
                 if pipewire {
@@ -171,26 +164,23 @@ impl StudioSpike {
                         self.send_input_config(false);
                     }
                     let mut chosen_clock = clock.clone();
-                    ui.horizontal(|ui| {
-                        ui.label(t("input.clock"));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            egui::ComboBox::from_id_salt("input-clock")
-                                .selected_text(t(CLOCK_MODES
-                                    .iter()
-                                    .find(|(id, _)| *id == clock)
-                                    .map(|(_, key)| *key)
-                                    .unwrap_or("input.clock.dac")))
-                                .width(150.0)
-                                .show_ui(ui, |ui| {
-                                    for (id, key) in CLOCK_MODES {
-                                        ui.selectable_value(
-                                            &mut chosen_clock,
-                                            (*id).to_owned(),
-                                            t(key),
-                                        );
-                                    }
-                                });
-                        });
+                    widgets::label_row(ui, t("input.clock"), |ui| {
+                        egui::ComboBox::from_id_salt("input-clock")
+                            .selected_text(t(CLOCK_MODES
+                                .iter()
+                                .find(|(id, _)| *id == clock)
+                                .map(|(_, key)| *key)
+                                .unwrap_or("input.clock.dac")))
+                            .width(150.0)
+                            .show_ui(ui, |ui| {
+                                for (id, key) in CLOCK_MODES {
+                                    ui.selectable_value(
+                                        &mut chosen_clock,
+                                        (*id).to_owned(),
+                                        t(key),
+                                    );
+                                }
+                            });
                     });
                     if chosen_clock != clock {
                         // Held until Apply: the clock cannot change under a
@@ -293,17 +283,14 @@ fn mode_label(mode: &str) -> &'static str {
 fn text_row(ui: &mut Ui, label: &str, value: &mut String, hint: &str) -> bool {
     let mut committed = false;
     let before = value.clone();
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            committed = ui
-                .add(
-                    egui::TextEdit::singleline(value)
-                        .desired_width(170.0)
-                        .hint_text(hint),
-                )
-                .lost_focus();
-        });
+    widgets::label_row(ui, label, |ui| {
+        committed = ui
+            .add(
+                egui::TextEdit::singleline(value)
+                    .desired_width(170.0)
+                    .hint_text(hint),
+            )
+            .lost_focus();
     });
     committed && *value != before
 }
