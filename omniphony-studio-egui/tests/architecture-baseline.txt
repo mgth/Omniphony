@@ -9,10 +9,10 @@
 # Totals:
 #   osc-address      129
 #   raw-send         131
-#   model-write      76
+#   model-write      77
 #   model-impl       1
 #   side-effect      7
-#   frame-tick       8
+#   frame-tick       9
 #   toolkit-in-core  3
 #   core-imports-ui  8
 #
@@ -80,7 +80,7 @@ model-write       src/panels/log.rs                         1
 model-write       src/panels/meters.rs                      4
 model-write       src/panels/object_test.rs                 5
 model-write       src/panels/renderer.rs                    16
-model-write       src/panels/room.rs                        1
+model-write       src/panels/room.rs                        2
 model-write       src/panels/speaker_layouts.rs             1
 model-impl        src/panels/latency.rs                     1
 side-effect       src/app.rs                                1
@@ -95,7 +95,7 @@ frame-tick        src/panels/host_services.rs               1
 frame-tick        src/panels/meters.rs                      1
 frame-tick        src/panels/mpv_overlay.rs                 1
 frame-tick        src/panels/object_test.rs                 1
-frame-tick        src/panels/speaker_editor.rs              1
+frame-tick        src/panels/speaker_editor.rs              2
 toolkit-in-core   src/host/commands/layout_io.rs            1
 toolkit-in-core   src/osc/mod.rs                            2
 core-imports-ui   src/host/display_prefs.rs                 4
