@@ -50,6 +50,18 @@ struct Row {
     /// The badge carries the object's own colour, as `.object-colorized` does
     /// when the colour switch is on.
     colorized: bool,
+    /// The object's coordinate line (`.object-head`), when details are on.
+    details: Option<RowDetails>,
+}
+
+/// `.object-head`: where the object is, in both coordinate systems, and the
+/// speaker it lands on most — or the one it is routed to.
+struct RowDetails {
+    coords: String,
+    /// `.object-topright`.
+    target: String,
+    /// Says what `target` is when it is a routing rather than a gain.
+    target_hover: Option<String>,
 }
 
 impl StudioSpike {
@@ -59,6 +71,10 @@ impl StudioSpike {
         Section::new("objectsSection", "section.objects")
             .default_open(true)
             .summary(format!("{}", rows.len()))
+            .header_toggle(
+                self.settings.show_object_details,
+                t("display.showObjectDetails"),
+            )
             .show(ui, |ui| {
                 self.object_test_feature_row(ui);
                 if rows.is_empty() {
@@ -83,6 +99,9 @@ impl StudioSpike {
                     self.apply_row_action(action, row, false);
                 }
             });
+        if Section::header_toggled(ui, "objectsSection") {
+            self.settings.show_object_details = !self.settings.show_object_details;
+        }
     }
 
     /// The two ear rows (`#hpChannelsList`). They are the output in binaural
@@ -150,6 +169,7 @@ impl StudioSpike {
                     size: None,
                     moving: false,
                     colorized: false,
+                    details: None,
                 }
             })
             .collect()
@@ -261,6 +281,8 @@ impl StudioSpike {
         // The mirror of the speaker list's overlay: with a speaker selected,
         // each object row says what that object puts through it.
         let selected_speaker = self.selection.speaker;
+        let show_details = self.settings.show_object_details;
+        let band = self.settings.heatmap_band_index;
         let mut rows: Vec<Row> = live
             .app
             .sources
@@ -312,6 +334,53 @@ impl StudioSpike {
                         })
                         .unwrap_or_default(),
                     colorized: self.settings.object_colors_enabled,
+                    details: show_details.then(|| {
+                        let (coords, target, target_hover) = match direct {
+                            Some(speaker) => (
+                                coordinates(
+                                    [speaker.x, speaker.y, speaker.z],
+                                    Some([
+                                        speaker.azimuth_deg,
+                                        speaker.elevation_deg,
+                                        speaker.distance_m,
+                                    ]),
+                                ),
+                                format!("→ {}", speaker.id),
+                                Some(format!(
+                                    "{}: {}",
+                                    t("channelEdit.destinationSpeaker"),
+                                    speaker.id
+                                )),
+                            ),
+                            None => (
+                                coordinates(
+                                    [src.x, src.y, src.z],
+                                    src.azimuth_deg.map(|az| {
+                                        [
+                                            az,
+                                            src.elevation_deg.unwrap_or(0.0),
+                                            src.distance_m.unwrap_or(0.0),
+                                        ]
+                                    }),
+                                ),
+                                dominant_speaker(
+                                    live.app
+                                        .object_band_gains
+                                        .get(id)
+                                        .and_then(|bands| bands.get(band))
+                                        .filter(|gains| !gains.is_empty())
+                                        .or_else(|| live.app.object_speaker_gains.get(id)),
+                                    |index| speakers.get(index).map(|s| s.id.clone()),
+                                ),
+                                None,
+                            ),
+                        };
+                        RowDetails {
+                            coords,
+                            target,
+                            target_hover,
+                        }
+                    }),
                     size: live.object_sizes.get(id).copied(),
                     moving: live
                         .trails
@@ -380,6 +449,7 @@ impl StudioSpike {
                     size: None,
                     moving: false,
                     colorized: false,
+                    details: None,
                     band_gains: band_gains
                         .map(|bands| band_contributions(bands, index))
                         .unwrap_or_default(),
@@ -702,6 +772,9 @@ fn list_row(
                     ui.allocate_exact_size(vec2(row_glyphs::STRIP_W, 0.0), Sense::hover());
                 let content = ui
                     .vertical(|ui| {
+                        if let Some(details) = &row.details {
+                            details_line(ui, details);
+                        }
                         row_line(ui, row, &mut action);
                         if !row.band_gains.is_empty() {
                             row_glyphs::band_bars(ui, cutoffs, &row.band_gains);
@@ -762,6 +835,85 @@ fn list_row(
         action = RowAction::Select;
     }
     (action, response.rect)
+}
+
+/// `.object-head`: the coordinates on the left, cut short when the row is
+/// narrow, and the target speaker kept whole on the right.
+fn details_line(ui: &mut Ui, details: &RowDetails) {
+    ui.scope(|ui| {
+        // The line is 9–10 px text, not a control: it takes a text line's
+        // height rather than a button's.
+        ui.spacing_mut().interact_size.y = 12.0;
+        widgets::label_row(
+            ui,
+            RichText::new(&details.coords)
+                .monospace()
+                .size(9.0)
+                .color(theme::TEXT_DIM),
+            |ui| {
+                let target = ui.add(
+                    egui::Label::new(
+                        RichText::new(&details.target)
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(Color32::from_rgb(0xb9, 0xc7, 0xd8)),
+                    )
+                    .selectable(false),
+                );
+                if let Some(hover) = &details.target_hover {
+                    target.on_hover_text(hover);
+                }
+            },
+        );
+    });
+}
+
+/// `decomposePosition`, laid out as `.object-coords`' grid: three cartesian
+/// columns, a bar, three polar ones. `polar` is the renderer's own reading
+/// when it sent one; otherwise it is derived from the cartesian position.
+fn coordinates(xyz: [f64; 3], polar: Option<[f64; 3]>) -> String {
+    let [x, y, z] = xyz;
+    if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+        return "x:— y:— z:— | az:— el:— r:—".to_owned();
+    }
+    let [az, el, r] = polar.unwrap_or_else(|| {
+        let planar = (x * x + y * y).sqrt();
+        [
+            x.atan2(y).to_degrees(),
+            z.atan2(planar).to_degrees(),
+            (x * x + y * y + z * z).sqrt(),
+        ]
+    });
+    format!(
+        "{:<7}{:<7}{:<7}| {:<10}{:<10}{}",
+        format!("x:{x:.1}"),
+        format!("y:{y:.1}"),
+        format!("z:{z:.1}"),
+        format!("az:{az:.1}"),
+        format!("el:{el:.1}"),
+        format!("r:{r:.2}"),
+    )
+}
+
+/// `getObjectDominantSpeakerText`: the speaker taking the largest gain, and
+/// that gain in dB — or a dash when nothing reaches any speaker.
+fn dominant_speaker(gains: Option<&Vec<f64>>, name_of: impl Fn(usize) -> Option<String>) -> String {
+    let best = gains.and_then(|gains| {
+        gains
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.is_finite())
+            .max_by(|a, b| a.1.total_cmp(b.1))
+    });
+    match best {
+        Some((index, &gain)) if gain > 0.0 => {
+            let name = name_of(index).unwrap_or_else(|| index.to_string());
+            format!(
+                "{name} {}",
+                crate::panels::audio::format_linear_as_db(Some(gain))
+            )
+        }
+        _ => "—".to_owned(),
+    }
 }
 
 /// `.meter-row`: the web's grid `auto [auto] 8ch 1fr [32px] auto`, i.e. the
@@ -844,8 +996,38 @@ fn toggle_letter(ui: &mut Ui, letter: &str, active: bool) -> egui::Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{band_contributions, contribution_fraction, direct_speaker, object_badge};
+    use super::{
+        band_contributions, contribution_fraction, coordinates, direct_speaker, dominant_speaker,
+        object_badge,
+    };
     use crate::panels::row_glyphs::BadgeIcon;
+
+    #[test]
+    fn coordinates_read_as_the_web_grid_and_derive_the_polar_side() {
+        let line = coordinates([0.0, 1.0, 0.0], None);
+        assert_eq!(line, "x:0.0  y:1.0  z:0.0  | az:0.0    el:0.0    r:1.00");
+        // The renderer's own polar reading wins over a derived one.
+        let line = coordinates([1.0, 0.0, 0.0], Some([-30.0, 15.0, 2.5]));
+        assert!(line.ends_with("| az:-30.0  el:15.0   r:2.50"), "{line}");
+        assert!(coordinates([f64::NAN, 0.0, 0.0], None).starts_with("x:—"));
+    }
+
+    #[test]
+    fn the_dominant_speaker_is_the_largest_gain_or_a_dash() {
+        let names = ["L", "R"];
+        let name_of = |i: usize| names.get(i).map(|n| n.to_string());
+        assert_eq!(
+            dominant_speaker(Some(&vec![0.1, 0.5]), name_of),
+            "R -6.0 dB"
+        );
+        assert_eq!(dominant_speaker(Some(&vec![0.0, 0.0]), name_of), "—");
+        assert_eq!(dominant_speaker(None, name_of), "—");
+        // A gain past the layout's end still names its index.
+        assert_eq!(
+            dominant_speaker(Some(&vec![0.0, 0.0, 1.0]), name_of),
+            "2 0.0 dB"
+        );
+    }
 
     /// The web's own examples, from the comments of `objectBadge`.
     #[test]

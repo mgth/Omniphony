@@ -58,6 +58,27 @@ impl StudioSpike {
                             );
                         }
                     });
+                    // The overlay's state is the engine's (an mpv keybind can
+                    // flip it), so the row shows what the engine last
+                    // published, as the scene-effects button does.
+                    let mut overlay = self
+                        .live
+                        .lock()
+                        .unwrap()
+                        .overlay
+                        .as_ref()
+                        .and_then(|o| o.get("enabled"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    if widgets::switch_row_help(
+                        ui,
+                        t("mpvOverlay.title"),
+                        "help.display.mpvOverlay",
+                        &mut overlay,
+                    ) {
+                        self.ctl
+                            .send_int("/omniphony/control/overlay/enabled", i32::from(overlay));
+                    }
                     widgets::switch_row_help(
                         ui,
                         t("display.showObjects"),
@@ -105,6 +126,12 @@ impl StudioSpike {
                         t("display.objectLabels"),
                         "help.display.objectLabels",
                         &mut s.object_labels_enabled,
+                    );
+                    widgets::switch_row_help(
+                        ui,
+                        t("display.showObjectDetails"),
+                        "help.display.showObjectDetails",
+                        &mut s.show_object_details,
                     );
                     widgets::switch_row(ui, "Effective render", &mut s.effective_render_enabled);
                     widgets::switch_row_help(

@@ -36,6 +36,9 @@ pub struct ViewSettings {
     pub object_sphere_size: f32,
     pub object_colors_enabled: bool,
     pub object_labels_enabled: bool,
+    /// `app.showObjectDetails`: the coordinate line above each object row's
+    /// meter (`body.hide-object-details` when off).
+    pub show_object_details: bool,
     pub effective_render_enabled: bool,
     /// Band used for the effective-render centroid (`heatmapBandIndex`).
     pub heatmap_band_index: usize,
@@ -73,6 +76,7 @@ impl Default for ViewSettings {
             object_sphere_size: 0.07,
             object_colors_enabled: false,
             object_labels_enabled: true,
+            show_object_details: true,
             effective_render_enabled: false,
             heatmap_band_index: 0,
             speakers_visible: true,

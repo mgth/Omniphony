@@ -52,6 +52,14 @@ pub struct Section<'a> {
     summary: Option<String>,
     explains: Option<Explains<'a>>,
     default_open: bool,
+    /// A two-state button at the header's right end (`.panel-toggle-btn`),
+    /// and what it says on hover. See [`Section::header_toggled`].
+    header_toggle: Option<(bool, &'a str)>,
+}
+
+/// Where a header toggle leaves its click for the caller to pick up.
+fn toggle_id(section: &str) -> egui::Id {
+    egui::Id::new(("section-header-toggle", section))
 }
 
 impl<'a> Section<'a> {
@@ -64,6 +72,7 @@ impl<'a> Section<'a> {
             summary: None,
             explains: None,
             default_open: false,
+            header_toggle: None,
         }
     }
 
@@ -87,6 +96,21 @@ impl<'a> Section<'a> {
     pub fn info(mut self, key: &'a str) -> Self {
         self.explains = Some(Explains::Info(key));
         self
+    }
+
+    /// A header button showing `on` as ▾ (on) or ▸ (off), as the Objects
+    /// section's details toggle does. The section stays a pure widget: the
+    /// click is read back with [`Section::header_toggled`] after `show`.
+    pub fn header_toggle(mut self, on: bool, hover: &'a str) -> Self {
+        self.header_toggle = Some((on, hover));
+        self
+    }
+
+    /// Whether the header toggle of section `id` was clicked this frame.
+    pub fn header_toggled(ui: &Ui, id: &str) -> bool {
+        ui.ctx()
+            .data_mut(|d| d.remove_temp::<bool>(toggle_id(id)))
+            .unwrap_or(false)
     }
 
     pub fn default_open(mut self, open: bool) -> Self {
@@ -124,8 +148,27 @@ impl<'a> Section<'a> {
                     Explains::Help(key) => super::help::Overlay::titled(&self.title, key),
                 });
             }
-            if let Some(summary) = &self.summary {
+            if self.summary.is_some() || self.header_toggle.is_some() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some((on, hover)) = self.header_toggle {
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(16.0, 14.0), egui::Sense::click());
+                        if response.hovered() {
+                            ui.painter().rect_filled(
+                                rect,
+                                theme::CONTROL_RADIUS,
+                                theme::FILL_HOVER,
+                            );
+                        }
+                        paint_chevron(ui, rect, if on { 1.0 } else { 0.0 });
+                        if response.on_hover_text(hover).clicked() {
+                            ui.ctx()
+                                .data_mut(|d| d.insert_temp(toggle_id(self.id), true));
+                        }
+                    }
+                    let Some(summary) = &self.summary else {
+                        return;
+                    };
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(summary)

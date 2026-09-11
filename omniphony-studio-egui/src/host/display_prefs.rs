@@ -74,6 +74,7 @@ pub struct DisplayPrefs {
     pub object_display_mode: Option<ObjectDisplayMode>,
     pub object_sphere_size: Option<f32>,
     pub object_labels: Option<bool>,
+    pub show_object_details: Option<bool>,
     pub speaker_labels: Option<bool>,
     pub speaker_bands: Option<bool>,
     pub speaker_face_listener: Option<bool>,
@@ -125,6 +126,7 @@ impl DisplayPrefs {
             object_display_mode: Some(settings.object_display_mode),
             object_sphere_size: Some(settings.object_sphere_size),
             object_labels: Some(settings.object_labels_enabled),
+            show_object_details: Some(settings.show_object_details),
             speaker_labels: Some(settings.speaker_labels_enabled),
             speaker_bands: Some(settings.speaker_band_bars_enabled),
             speaker_face_listener: Some(settings.speaker_face_listener_enabled),
@@ -173,6 +175,7 @@ impl DisplayPrefs {
             && self.object_display_mode == Some(settings.object_display_mode)
             && self.object_sphere_size == Some(settings.object_sphere_size)
             && self.object_labels == Some(settings.object_labels_enabled)
+            && self.show_object_details == Some(settings.show_object_details)
             && self.speaker_labels == Some(settings.speaker_labels_enabled)
             && self.speaker_bands == Some(settings.speaker_band_bars_enabled)
             && self.speaker_face_listener == Some(settings.speaker_face_listener_enabled)
@@ -224,6 +227,7 @@ impl DisplayPrefs {
                 .map(|v| v.clamp(0.03, 0.2))
         );
         set!(settings.object_labels_enabled, self.object_labels);
+        set!(settings.show_object_details, self.show_object_details);
         set!(settings.speaker_labels_enabled, self.speaker_labels);
         set!(settings.speaker_band_bars_enabled, self.speaker_bands);
         set!(
@@ -350,6 +354,7 @@ mod tests {
         let mut volume = VolumeSettings::default();
         settings.speaker_face_listener_enabled = true;
         settings.speaker_size = 0.12;
+        settings.show_object_details = false;
         settings.object_display_mode = ObjectDisplayMode::DiffuseSphere;
         settings.trails.mode = TrailMode::Line;
         volume.object_colormap = Colormap::WhiteRed;
@@ -362,6 +367,7 @@ mod tests {
         assert!(back.matches(&s2, &v2));
         assert!(s2.speaker_face_listener_enabled);
         assert_eq!(s2.speaker_size, 0.12);
+        assert!(!s2.show_object_details);
         assert_eq!(s2.object_display_mode, ObjectDisplayMode::DiffuseSphere);
         assert_eq!(s2.trails.mode, TrailMode::Line);
         assert_eq!(v2.object_colormap, Colormap::WhiteRed);
