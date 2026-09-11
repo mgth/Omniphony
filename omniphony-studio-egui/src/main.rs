@@ -18,7 +18,6 @@ mod render;
 mod stats;
 mod ui;
 mod view;
-mod widgets;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
