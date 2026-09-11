@@ -1,7 +1,13 @@
 # RFC: restoring the native Studio's UI boundary
 
-Status: proposed, 2026-09-11. Phase 0 (the guardrails) lands with this
-document.
+Status: accepted, 2026-09-11.
+
+Progress:
+
+- **Phase 0 landed**: the architecture ratchet, `ARCHITECTURE.md` and the
+  agent rules.
+- **Phase 1 landed**: `omniphony-studio-core` exists and has no UI crate in
+  its graph. What changed from the plan below is recorded under the phase.
 
 The rules this plan converges on are stated in
 [`omniphony-studio-egui/ARCHITECTURE.md`](../omniphony-studio-egui/ARCHITECTURE.md).
@@ -48,8 +54,11 @@ runtime_control (re-exports)   omniphony-studio-core   model, protocol, commands
                                omniphony-studio-egui    app, panels, ui, view, render
 ```
 
-`omniphony-studio-core` sits next to the egui crate at the repository root, so
-the Tauri host can depend on it too if it outlives the cutover (phase 5).
+`omniphony-studio-core` lives in `omniphony-studio-egui/core/`, in a workspace
+with the egui crate. Sitting there, it shares the lock file, the toolchain pin
+and the CI cache. The Tauri host can still depend on it by path if it outlives
+the cutover (phase 5).
+
 Splitting `render` and `view` into an `omniphony-studio-scene` crate is
 optional and only worth it when a migration is actually on the table.
 
@@ -99,7 +108,7 @@ while minimised, `App::logic` included.
 The work lands as small PRs. Each one is green on CI, changes no visible
 behaviour unless it says so, and lowers the ratchet baseline in the same commit.
 
-### Phase 0: lock the practice (this PR)
+### Phase 0: lock the practice (landed)
 
 - `tests/architecture.rs`: the per-file ratchet over eight rules, with the
   baseline in `tests/architecture-baseline.txt`.
@@ -111,7 +120,7 @@ behaviour unless it says so, and lowers the ratchet baseline in the same commit.
 
 From here the debt can only shrink.
 
-### Phase 1: the compiler holds the core boundary (about 2 days)
+### Phase 1: the compiler holds the core boundary (landed)
 
 1. **Waker.** `osc::spawn_listener` and the SOFA workers take a `Waker`
    instead of `egui::Context`. Also add the missing trailing repaint: a change
@@ -131,8 +140,8 @@ From here the debt can only shrink.
    - `rfd` in `host/commands/layout_io.rs`: the `pick_*` functions move up to
      the UI;
    - the `CARGO_MANIFEST_DIR` lookups (already reworked in #447);
-   - `include_str!` into the web tree: same relative path from the new crate,
-     so it keeps working until phase 5.
+   - `include_str!` into the web tree: one directory deeper from the new
+     crate, and it keeps working until phase 5.
 
 Done when a CI step checks that `cargo tree -p omniphony-studio-core -e normal`
 contains no egui, eframe, wgpu, winit or rfd. The `toolkit-in-core` and
@@ -141,6 +150,28 @@ enforces them.
 
 The file move in step 3 conflicts with every open Studio PR. Land it when few
 are open, and land it fast; git follows the renames on rebase.
+
+**As landed:**
+
+- The core crate lives inside the app's directory (`core/`), in a workspace,
+  rather than at the repository root.
+- The app binds the core's modules at its root, so `crate::model::…` and the
+  like still resolve and no panel changed.
+- `impl AppState` in `panels/latency.rs` became `LatencyView::of(&AppState)`.
+  The orphan rule now forbids the pattern, so `model-impl` was retired with the
+  two core rules.
+- The file dialogs moved to `ui::file_dialogs`. Their start directory, their
+  memory and their default names stayed in the core.
+- The SOFA workers still hold the egui context: they are UI-side threads
+  today, and move to a core service with the other side effects in phase 3.
+- Deferred to phase 2: moving `Live` into `model/` (a question internal to the
+  core, not a boundary one) and the state types `StudioSpike` borrows from
+  `panels/` (they move with the logic that owns them).
+- Dropping `#![allow(dead_code)]` does not list the unused commands: in a
+  library, a public item is never dead. Phase 2 deletes the unused ones by
+  hand.
+- The CI step also rejects `accesskit`. It was tested both ways, by adding
+  `egui` to the core's manifest.
 
 ### Phase 2: an action API (about 1 to 1.5 weeks)
 
@@ -164,9 +195,9 @@ are open, and land it fast; git follows the renames on rebase.
    and the UI crate loses every path to `&mut Live`. The listener holds the
    only writer.
 
-Done when `osc-address`, `raw-send`, `model-write` and `model-impl` are at
-zero. `model-write` and `model-impl` are then deleted, since the type system
-forbids them. `osc-address` and `raw-send` stay as tripwires.
+Done when `osc-address`, `raw-send` and `model-write` are at zero.
+`model-write` is then deleted, since the type system forbids it. `osc-address`
+and `raw-send` stay as tripwires.
 
 ### Phase 3: a clock for the core (about 1 week)
 
@@ -231,7 +262,7 @@ between it and the egui crate. Decide at the cutover:
 | Phase | Work | Size |
 |---|---|---|
 | 0 | guardrails | this PR |
-| 1 | waker, dependencies, core crate | about 2 days |
+| 1 | waker, dependencies, core crate | landed |
 | 2 | contract crate, `Studio` API, about 25 panel PRs, read-only model | 5 to 8 days |
 | 3 | scheduler, 10 ticks, side effects | 4 to 6 days |
 | 4 | neutral 3D engine | about 2 days, deferrable |
