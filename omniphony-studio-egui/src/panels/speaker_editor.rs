@@ -201,7 +201,7 @@ impl StudioSpike {
         ui.add_enabled_ui(!frozen, |ui| {
             // Name.
             let mut name = speaker.id.clone();
-            widgets::label_row(ui, t("common.name"), |ui| {
+            widgets::label_row_help(ui, t("common.name"), "help.speaker.name", |ui| {
                 if ui
                     .add(egui::TextEdit::singleline(&mut name).desired_width(150.0))
                     .lost_focus()

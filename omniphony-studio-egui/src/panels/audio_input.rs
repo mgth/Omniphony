@@ -174,27 +174,33 @@ impl StudioSpike {
                         self.send_input_config(false);
                     }
                     let mut chosen_clock = clock.clone();
-                    widgets::label_row(ui, t("input.clock"), |ui| {
-                        widgets::bounded_combo(ui, 150.0, |ui, w| {
-                            egui::ComboBox::from_id_salt("input-clock")
-                                .selected_text(t(CLOCK_MODES
-                                    .iter()
-                                    .find(|(id, _)| *id == clock)
-                                    .map(|(_, key)| *key)
-                                    .unwrap_or("input.clock.dac")))
-                                .width(w)
-                                .truncate()
-                                .show_ui(ui, |ui| {
-                                    for (id, key) in CLOCK_MODES {
-                                        ui.selectable_value(
-                                            &mut chosen_clock,
-                                            (*id).to_owned(),
-                                            t(key),
-                                        );
-                                    }
-                                })
-                        });
-                    });
+                    widgets::label_row_info_keys(
+                        ui,
+                        t("input.clock"),
+                        "input.clockInfoTitle",
+                        "input.clockInfoBody",
+                        |ui| {
+                            widgets::bounded_combo(ui, 150.0, |ui, w| {
+                                egui::ComboBox::from_id_salt("input-clock")
+                                    .selected_text(t(CLOCK_MODES
+                                        .iter()
+                                        .find(|(id, _)| *id == clock)
+                                        .map(|(_, key)| *key)
+                                        .unwrap_or("input.clock.dac")))
+                                    .width(w)
+                                    .truncate()
+                                    .show_ui(ui, |ui| {
+                                        for (id, key) in CLOCK_MODES {
+                                            ui.selectable_value(
+                                                &mut chosen_clock,
+                                                (*id).to_owned(),
+                                                t(key),
+                                            );
+                                        }
+                                    })
+                            });
+                        },
+                    );
                     if chosen_clock != clock {
                         // Held until Apply: the clock cannot change under a
                         // running bridge.

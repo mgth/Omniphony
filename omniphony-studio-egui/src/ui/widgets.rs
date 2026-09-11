@@ -86,6 +86,23 @@ pub fn label_row_help<'h, R>(
     out
 }
 
+/// `label_row_info` for a title key and a body key that do not share a
+/// prefix.
+pub fn label_row_info_keys<R>(
+    ui: &mut Ui,
+    label: impl Into<egui::WidgetText>,
+    title_key: &str,
+    body_key: &str,
+    add_right: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    labelled(
+        ui,
+        label.into(),
+        Some(Trigger::InfoKeys(title_key, body_key)),
+        add_right,
+    )
+}
+
 /// `label_row` whose label heads a whole block and opens the centred overlay
 /// for its `<prefix>.infoTitle` / `.infoBody` pair.
 pub fn label_row_info<R>(

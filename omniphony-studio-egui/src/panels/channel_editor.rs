@@ -603,18 +603,23 @@ impl StudioSpike {
         // highlighted: a deliberate divergence, asked for because the web's
         // version is read backwards as often as forwards.
         let spatialize = channel.spatialize;
-        ui.horizontal(|ui| {
-            if let Some(picked) = widgets::toggle_buttons(
-                ui,
-                &spatialize,
-                &[
-                    (false, t("virtualBed.direct")),
-                    (true, t("virtualBed.virtual")),
-                ],
-            ) {
-                self.commit_channel(&name, |c| c.spatialize = picked);
-            }
-        });
+        widgets::label_row_help(
+            ui,
+            t("channelEdit.routing"),
+            "help.channelEdit.routing",
+            |ui| {
+                if let Some(picked) = widgets::toggle_buttons(
+                    ui,
+                    &spatialize,
+                    &[
+                        (false, t("virtualBed.direct")),
+                        (true, t("virtualBed.virtual")),
+                    ],
+                ) {
+                    self.commit_channel(&name, |c| c.spatialize = picked);
+                }
+            },
+        );
 
         // Direct: the coordinates below are the speaker's, and nothing about
         // the position is editable.

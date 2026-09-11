@@ -136,7 +136,7 @@ impl StudioSpike {
             OutputMode::from_state(live.app.binaural.as_ref())
         };
         let mut chosen = current;
-        widgets::label_row(ui, t("outputMode.selectTitle"), |ui| {
+        widgets::label_row_help(ui, t("outputMode.selectTitle"), "help.outputMode", |ui| {
             widgets::bounded_combo(ui, 160.0, |ui, w| {
                 egui::ComboBox::from_id_salt("output-mode")
                     .selected_text(current.label())
@@ -515,7 +515,7 @@ impl StudioSpike {
                 RichText::new(t("backend.title"))
                     .size(theme::FONT_SIZE)
                     .color(theme::TEXT_STRONG),
-                || help::Overlay::info("backend"),
+                || backend_overlay(&selection, &backends),
             );
             ui.label(
                 RichText::new(status.0)
@@ -814,11 +814,12 @@ impl StudioSpike {
         };
         let mut chosen = current.clone();
         ui.add_space(4.0);
-        widgets::label_row(
+        widgets::label_row_info(
             ui,
             RichText::new(t("renderer.rampTitle"))
                 .size(theme::FONT_SIZE)
                 .color(theme::TEXT_STRONG),
+            "rampMode",
             |ui| {
                 widgets::bounded_combo(ui, 140.0, |ui, w| {
                     egui::ComboBox::from_id_salt("ramp-mode")
@@ -862,38 +863,44 @@ impl StudioSpike {
                 .color(theme::TEXT_STRONG),
         );
         let mut chosen = kind.clone();
-        widgets::label_row(ui, t("renderer.crossoverTypeLabel"), |ui| {
-            widgets::bounded_combo(ui, 160.0, |ui, w| {
-                egui::ComboBox::from_id_salt("crossover-type")
-                    .selected_text(t(if kind == "fir" {
-                        "renderer.crossoverType.fir"
-                    } else {
-                        "renderer.crossoverType.lr4"
-                    }))
-                    .width(w)
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut chosen,
-                            "lr4".to_owned(),
-                            t("renderer.crossoverType.lr4"),
-                        );
-                        ui.selectable_value(
-                            &mut chosen,
-                            "fir".to_owned(),
-                            t("renderer.crossoverType.fir"),
-                        );
-                    })
-            });
-        });
+        widgets::label_row_help(
+            ui,
+            t("renderer.crossoverTypeLabel"),
+            "help.renderer.crossoverType",
+            |ui| {
+                widgets::bounded_combo(ui, 160.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("crossover-type")
+                        .selected_text(t(if kind == "fir" {
+                            "renderer.crossoverType.fir"
+                        } else {
+                            "renderer.crossoverType.lr4"
+                        }))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut chosen,
+                                "lr4".to_owned(),
+                                t("renderer.crossoverType.lr4"),
+                            );
+                            ui.selectable_value(
+                                &mut chosen,
+                                "fir".to_owned(),
+                                t("renderer.crossoverType.fir"),
+                            );
+                        })
+                });
+            },
+        );
         if chosen != kind {
             self.set_option("crossover_type", serde_json::json!(chosen));
         }
         if kind == "fir" {
             let mut ratio = transition as f32;
-            if widgets::value_slider(
+            if widgets::value_slider_help(
                 ui,
                 t("renderer.crossoverTransitionLabel"),
+                "help.renderer.crossoverTransition",
                 &mut ratio,
                 0.05..=2.0,
                 0.05,
@@ -915,11 +922,12 @@ impl StudioSpike {
         };
         ui.add_space(4.0);
         let mut enabled = state.enabled.unwrap_or(false);
-        widgets::label_row(
+        widgets::label_row_info(
             ui,
             RichText::new(t("distance.title"))
                 .size(theme::FONT_SIZE)
                 .color(theme::TEXT_STRONG),
+            "distance",
             |ui| {
                 if widgets::switch(ui, &mut enabled).changed() {
                     self.live.lock().unwrap().app.distance_diffuse.enabled = Some(enabled);
@@ -1045,11 +1053,13 @@ impl StudioSpike {
         };
         ui.add_space(4.0);
         let mut chosen = value.clone();
-        widgets::label_row(
+        widgets::label_row_info_keys(
             ui,
             RichText::new(t("distance.model"))
                 .size(theme::FONT_SIZE)
                 .color(theme::TEXT_STRONG),
+            "distance.modelInfoTitle",
+            "distance.modelInfoBody",
             |ui| {
                 widgets::bounded_combo(ui, 150.0, |ui, w| {
                     egui::ComboBox::from_id_salt("distance-model")
@@ -1262,6 +1272,24 @@ fn param_label(key: &str, spec: &serde_json::Value) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or(key)
         .to_owned()
+}
+
+/// `setBackendInfoModalOpen`: the generic intro, then a paragraph on the
+/// selected backend when there is one to say (`help.backend.<id>`).
+fn backend_overlay(selection: &str, backends: &[(String, String)]) -> help::Overlay {
+    let mut overlay = help::Overlay::info("backend");
+    let id = selection.trim();
+    if let Some(specific) = crate::i18n::lookup(&format!("help.backend.{id}")) {
+        let label = backends
+            .iter()
+            .find(|(value, _)| value == id)
+            .map_or(id, |(_, label)| label.as_str());
+        overlay.body = format!(
+            "{}<br><br><strong>{label}</strong><br>{specific}",
+            overlay.body
+        );
+    }
+    overlay
 }
 
 fn param_help(key: &str, spec: &serde_json::Value) -> Option<String> {
