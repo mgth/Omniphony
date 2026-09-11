@@ -21,7 +21,6 @@ use crate::render::{SceneRenderer, ViewportCallback};
 use crate::stats::{FrameStats, ProcStats};
 use crate::ui::layout::{OverlayLayout, Side};
 use crate::view::{self, Selection, ViewSettings, VolumeSettings, VolumeState};
-use crate::widgets::{OPTION_SCHEMA, OptionValue};
 
 /// How long after a selection change the lists keep the selected row in view,
 /// long enough for the pinned editor to settle on its height.
@@ -46,7 +45,6 @@ pub struct StudioSpike {
     pub(crate) camera: OrbitCamera,
     pub(crate) selection: Selection,
     pub(crate) settings: ViewSettings,
-    pub(crate) options: Vec<OptionValue>,
     pub(crate) frame_stats: FrameStats,
     pub(crate) proc_stats: ProcStats,
     pub(crate) last_print: Instant,
@@ -351,7 +349,6 @@ impl StudioSpike {
             camera: OrbitCamera::new(),
             selection: Selection::default(),
             settings,
-            options: OPTION_SCHEMA.iter().map(|s| s.default.to_value()).collect(),
             frame_stats: FrameStats::new(),
             proc_stats: ProcStats::new(),
             last_print: Instant::now(),

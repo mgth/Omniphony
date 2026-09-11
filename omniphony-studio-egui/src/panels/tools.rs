@@ -1,30 +1,12 @@
 //! Sections that belong to the native host rather than the web Studio: the
-//! registry-driven option rows and the frame/OSC stats.
+//! frame/OSC stats and the camera help.
 
 use std::sync::atomic::Ordering;
 
 use crate::app::StudioSpike;
-use crate::widgets::{OPTION_SCHEMA, option_row};
 
 impl StudioSpike {
     pub(crate) fn tool_sections(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Live options (registry-driven)")
-            .default_open(false)
-            .show(ui, |ui| {
-                for (spec, value) in OPTION_SCHEMA.iter().zip(self.options.iter_mut()) {
-                    if option_row(ui, spec, value) {
-                        log::info!(
-                            "[options] {} = {:?} (logged, not sent to the renderer)",
-                            spec.key,
-                            value
-                        );
-                    }
-                }
-                ui.small(
-                    "Widgets are generated from the option schema. Changes are logged, never sent.",
-                );
-            });
-
         egui::CollapsingHeader::new("Stats")
             .default_open(true)
             .show(ui, |ui| {
