@@ -8,7 +8,8 @@ use std::time::Duration;
 use egui::Color32;
 
 use crate::app::StudioSpike;
-use crate::host::config::{OscConfig, save_config};
+use crate::host::commands::mpv_config::MpvOrenderState;
+use crate::host::config::{load_config, save_config};
 use crate::i18n::{t, tf};
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
@@ -209,7 +210,7 @@ impl StudioSpike {
             let live = self.live.lock().unwrap();
             live.app.osc_metering_enabled.unwrap_or(0) != 0
         };
-        Section::new("oscSection", "osc.configTitle")
+        let shown = Section::new("oscSection", "osc.configTitle")
             .info("osc")
             .summary(format!("{}:{}", self.osc_host, self.osc_port))
             .show(ui, |ui| {
@@ -241,12 +242,173 @@ impl StudioSpike {
                     self.live.lock().unwrap().app.osc_metering_enabled = Some(u8::from(metering));
                     self.ctl.set_metering(metering);
                 }
+                self.host_switches(ui);
                 if ui.button(t("osc.connect")).clicked() {
                     self.connect();
                 }
                 ui.separator();
                 self.renderer_controls(ui);
             });
+        // mpv.conf can change outside Studio (a hand edit, another machine),
+        // so it is re-read every time the section opens rather than cached.
+        if shown.is_none() {
+            self.mpv_orender = None;
+        }
+    }
+
+    /// The switches under the form: auto-start and keep-alive for a local
+    /// renderer, and the mpv.conf opt-in. Each takes effect when flipped —
+    /// the first two are read by the watchdog and at quit, the third edits
+    /// mpv.conf — so none waits for Connect.
+    fn host_switches(&mut self, ui: &mut egui::Ui) {
+        let mut auto_start = self.osc_auto_start;
+        if widgets::switch_row_help(
+            ui,
+            t("osc.autoStartRenderer"),
+            "help.osc.autoStartRenderer",
+            &mut auto_start,
+        ) {
+            self.osc_auto_start = auto_start;
+            self.save_host_switches();
+            if auto_start {
+                // Turning it back on after installing the service lifts the
+                // suppression the install set; the watchdog decides the rest.
+                self.host.watchdog.lock().unwrap().suppressed = false;
+            }
+        }
+        let mut keep_alive = self.osc_keep_alive;
+        if widgets::switch_row_help(
+            ui,
+            t("osc.keepRendererAlive"),
+            "help.osc.keepRendererAlive",
+            &mut keep_alive,
+        ) {
+            self.osc_keep_alive = keep_alive;
+            self.save_host_switches();
+        }
+
+        let status = self
+            .mpv_orender
+            .get_or_insert_with(crate::host::commands::mpv_config::mpv_orender_status)
+            .clone();
+        let (mut enabled, conflict) = match &status {
+            Ok(status) => (
+                status.state == MpvOrenderState::Enabled,
+                status.state == MpvOrenderState::Conflict,
+            ),
+            Err(_) => (false, false),
+        };
+        // A hand-written `ad=` wins: Studio never edits a line it did not
+        // write, so the switch is inert until the user resolves it.
+        let flipped = ui
+            .add_enabled_ui(!conflict && status.is_ok(), |ui| {
+                widgets::switch_row_help(
+                    ui,
+                    t("osc.mpvOrender"),
+                    "help.osc.mpvOrender",
+                    &mut enabled,
+                )
+            })
+            .inner;
+        if flipped {
+            match crate::host::commands::mpv_config::mpv_orender_set(enabled) {
+                Ok(status) => {
+                    let key = if enabled {
+                        "log.mpvOrenderEnabled"
+                    } else {
+                        "log.mpvOrenderDisabled"
+                    };
+                    self.log("info", "mpv", tf(key, &[("path", &status.path)]));
+                    self.mpv_orender = Some(Ok(status));
+                }
+                Err(error) => {
+                    // The file was not changed: re-read it, which puts the
+                    // switch back and shows a refused conflict as such.
+                    self.log(
+                        "error",
+                        "mpv",
+                        tf("log.mpvOrenderFailed", &[("error", &error)]),
+                    );
+                    self.mpv_orender = None;
+                }
+            }
+        }
+        let (note, colour) = match &status {
+            Ok(status) if conflict => (
+                tf(
+                    "osc.mpvOrenderConflict",
+                    &[
+                        (
+                            "line",
+                            &status
+                                .conflict_line
+                                .map_or_else(|| "?".to_owned(), |line| line.to_string()),
+                        ),
+                        ("text", status.conflict_text.as_deref().unwrap_or("").trim()),
+                    ],
+                ),
+                theme::WARN,
+            ),
+            Ok(status) => (
+                tf("osc.mpvOrenderPath", &[("path", &status.path)]),
+                theme::TEXT_MUTED,
+            ),
+            Err(error) => (error.clone(), theme::WARN),
+        };
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(note)
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(colour),
+            )
+            .wrap(),
+        );
+    }
+
+    /// Write the two host switches into `osc_config.json`, leaving every
+    /// other field as the file has it.
+    fn save_host_switches(&self) {
+        let mut config = load_config(&self.config_dir);
+        config.auto_start_renderer = self.osc_auto_start;
+        config.keep_renderer_alive_on_quit = self.osc_keep_alive;
+        if let Err(e) = save_config(&self.config_dir, &config) {
+            log::warn!("[osc] could not save the configuration: {e}");
+        }
+    }
+
+    /// At quit, take a renderer this Studio launched down with it, unless the
+    /// user asked to keep it: a graceful quit first, so it writes its
+    /// live-state handoff, then a kill if it has not gone within two seconds.
+    /// A renderer this Studio did not start (a service, mpv's own) is left
+    /// alone.
+    pub(crate) fn stop_launched_renderer(&mut self) {
+        let mut guard = self.host.renderer_child.lock().unwrap();
+        let Some(child) = guard.as_mut() else {
+            return;
+        };
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        if load_config(&self.config_dir).keep_renderer_alive_on_quit {
+            log::info!("leaving the local renderer running (keep alive on quit)");
+            return;
+        }
+        self.ctl.send("/omniphony/control/quit", Vec::new());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                _ => {
+                    log::warn!("local renderer did not quit in time; killing it");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+            }
+        }
     }
 
     /// Point the client at the configured renderer and save the choice, like
@@ -283,19 +445,20 @@ impl StudioSpike {
                 }
             }
         }
-        let config = OscConfig {
-            host: self.osc_host.trim().to_owned(),
-            osc_rx_port: self.osc_port,
-            osc_metering_enabled: self
-                .live
-                .lock()
-                .unwrap()
-                .app
-                .osc_metering_enabled
-                .unwrap_or(0)
-                != 0,
-            ..OscConfig::default()
-        };
+        // Only the form's own fields: starting from the defaults instead
+        // turned auto-start back on and forgot the import directory on every
+        // Connect.
+        let mut config = load_config(&self.config_dir);
+        config.host = self.osc_host.trim().to_owned();
+        config.osc_rx_port = self.osc_port;
+        config.osc_metering_enabled = self
+            .live
+            .lock()
+            .unwrap()
+            .app
+            .osc_metering_enabled
+            .unwrap_or(0)
+            != 0;
         if let Err(e) = save_config(&self.config_dir, &config) {
             log::warn!("[osc] could not save the configuration: {e}");
         }

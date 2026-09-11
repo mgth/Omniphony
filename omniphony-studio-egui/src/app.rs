@@ -80,6 +80,16 @@ pub struct StudioSpike {
     /// OSC form fields (`osc_config.json`, shared with the Tauri Studio).
     pub(crate) osc_host: String,
     pub(crate) osc_port: u16,
+    /// `auto_start_renderer` / `keep_renderer_alive_on_quit`, as last saved:
+    /// the switches write the file straight away, the rest of the form on
+    /// Connect.
+    pub(crate) osc_auto_start: bool,
+    pub(crate) osc_keep_alive: bool,
+    /// What the user's mpv.conf says about `ad=orender`, read when the OSC
+    /// section opens (the file can change behind Studio's back) and dropped
+    /// when it closes. `Err` is the read failure, shown in place of the path.
+    pub(crate) mpv_orender:
+        Option<Result<crate::host::commands::mpv_config::MpvOrenderStatus, String>>,
     /// Which half of the renderer panel is showing.
     pub(crate) renderer_tab: crate::panels::renderer::RendererTab,
     /// When an unanswered recompute request becomes an error.
@@ -364,6 +374,9 @@ impl StudioSpike {
             realtime_seq: 0,
             osc_host,
             osc_port,
+            osc_auto_start: osc_config.auto_start_renderer,
+            osc_keep_alive: osc_config.keep_renderer_alive_on_quit,
+            mpv_orender: None,
             renderer_tab: Default::default(),
             recompute_deadline: None,
             audio_pipe_path: String::new(),
@@ -986,5 +999,6 @@ impl eframe::App for StudioSpike {
     fn on_exit(&mut self) {
         self.stop_speaker_test();
         self.stop_object_test();
+        self.stop_launched_renderer();
     }
 }
