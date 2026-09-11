@@ -150,20 +150,23 @@ impl StudioSpike {
             t("twoDSources.objectGeneratorLabel"),
             "help.objectGenerator",
             |ui| {
-                egui::ComboBox::from_id_salt("object-generator")
-                    .selected_text(
-                        options
-                            .iter()
-                            .find(|(id, _)| *id == current)
-                            .map(|(_, label)| label.clone())
-                            .unwrap_or_else(|| current.clone()),
-                    )
-                    .width(160.0)
-                    .show_ui(ui, |ui| {
-                        for (id, label) in &options {
-                            ui.selectable_value(&mut chosen, id.clone(), label);
-                        }
-                    });
+                widgets::bounded_combo(ui, 160.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("object-generator")
+                        .selected_text(
+                            options
+                                .iter()
+                                .find(|(id, _)| *id == current)
+                                .map(|(_, label)| label.clone())
+                                .unwrap_or_else(|| current.clone()),
+                        )
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, label) in &options {
+                                ui.selectable_value(&mut chosen, id.clone(), label);
+                            }
+                        })
+                });
             },
         );
         if chosen != current {
@@ -196,18 +199,21 @@ impl StudioSpike {
             t("twoDSources.phantomLabel"),
             "help.phantomExtract",
             |ui| {
-                egui::ComboBox::from_id_salt("phantom-extract")
-                    .selected_text(t(options
-                        .iter()
-                        .find(|(id, _)| *id == current)
-                        .map(|(_, key)| *key)
-                        .unwrap_or("twoDSources.phantomOff")))
-                    .width(160.0)
-                    .show_ui(ui, |ui| {
-                        for (id, key) in options {
-                            ui.selectable_value(&mut chosen, id.to_owned(), t(key));
-                        }
-                    });
+                widgets::bounded_combo(ui, 160.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("phantom-extract")
+                        .selected_text(t(options
+                            .iter()
+                            .find(|(id, _)| *id == current)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("twoDSources.phantomOff")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in options {
+                                ui.selectable_value(&mut chosen, id.to_owned(), t(key));
+                            }
+                        })
+                });
             },
         );
         if chosen != current {

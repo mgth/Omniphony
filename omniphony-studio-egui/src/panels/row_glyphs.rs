@@ -336,6 +336,17 @@ const STRIP_MOVING_RING: Color32 = Color32::from_rgba_premultiplied(42, 78, 86, 
 const STRIP_CLIP: Color32 = Color32::from_rgba_premultiplied(217, 50, 41, 217);
 const STRIP_TEXT: Color32 = Color32::from_rgb(0xd9, 0xec, 0xff);
 
+/// The synthesized object kinds the badge shows as an icon instead of a code
+/// (`applyObjectIdentity`): `▲` a height-upmix object, `◇` a phantom.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BadgeIcon {
+    Height,
+    Phantom,
+}
+
+/// `.object-item .id-strip.type-phantom .object-type-icon`.
+const PHANTOM_ICON: Color32 = Color32::from_rgb(0xff, 0xe6, 0x6d);
+
 /// How a badge is lit.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StripState {
@@ -354,6 +365,7 @@ pub fn id_strip(
     ui: &Ui,
     rect: Rect,
     label: &str,
+    icon: Option<BadgeIcon>,
     accent: Option<Color32>,
     state: StripState,
 ) -> Vec<egui::Shape> {
@@ -372,11 +384,35 @@ pub fn id_strip(
             egui::StrokeKind::Inside,
         ));
     }
-    let galley = ui.painter().layout_no_wrap(
+    // A synthesized object shows its kind as an icon, upright and 12 px, as
+    // the web's `.object-type-icon` does; it never rotates.
+    if let Some(icon) = icon {
+        let (glyph, colour) = match icon {
+            BadgeIcon::Height => ("▲", STRIP_TEXT),
+            BadgeIcon::Phantom => ("◇", PHANTOM_ICON),
+        };
+        let galley =
+            ui.painter()
+                .layout_no_wrap(glyph.to_owned(), egui::FontId::proportional(12.0), colour);
+        let at = rect.center() - galley.size() / 2.0;
+        shapes.push(egui::Shape::galley(at, galley, colour));
+        return shapes;
+    }
+    // The code, cut to the badge's height: the badge is sized for codes like
+    // FL or TBR, and a longer one written vertically ran into the rows above
+    // and below. `objectBadge` keeps codes short; this keeps a long one in.
+    let mut job = egui::text::LayoutJob::simple_singleline(
         label.to_owned(),
         egui::FontId::proportional(11.0),
         STRIP_TEXT,
     );
+    job.wrap = egui::text::TextWrapping {
+        max_width: (rect.height() - 6.0).max(0.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
     // Rotating by -90° about the anchor maps the galley's (x, y) to
     // (y, -x), so the text ends up `h` wide and `w` tall: place the anchor so
     // that box lands centred in the badge.
