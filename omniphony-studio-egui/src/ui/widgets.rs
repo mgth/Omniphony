@@ -7,7 +7,8 @@
 #![allow(dead_code)] // the toolkit is complete before every panel using it
 use egui::{Color32, Response, Sense, Ui, Widget, vec2};
 
-use super::help::{Help, Trigger};
+pub use super::help::Help;
+use super::help::Trigger;
 use super::theme;
 
 /// `.inline-toggle input[type="checkbox"]`: 34×18 track, 12 px thumb, green
@@ -399,6 +400,32 @@ pub fn slider_line(
     range: std::ops::RangeInclusive<f32>,
     step: f64,
 ) -> Response {
+    slider_line_with(ui, label, None, value, range, step)
+}
+
+/// `slider_line` whose label opens `help`.
+pub fn slider_line_help<'h>(
+    ui: &mut Ui,
+    label: &str,
+    help: impl Into<Help<'h>>,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f64,
+) -> Response {
+    let help = help.into();
+    let response = slider_line_with(ui, label, Some(help), value, range, step);
+    super::help::card(ui, help);
+    response
+}
+
+fn slider_line_with(
+    ui: &mut Ui,
+    label: &str,
+    help: Option<Help<'_>>,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f64,
+) -> Response {
     let decimals = decimals_for(step);
     ui.horizontal(|ui| {
         let spacing = ui.spacing().item_spacing.x;
@@ -406,7 +433,11 @@ pub fn slider_line(
         let text = format!("{label} {:.*}", decimals, *value);
         ui.scope(|ui| {
             ui.set_max_width(label_max);
-            ui.add(egui::Label::new(egui::RichText::new(text).size(theme::FONT_SIZE)).truncate());
+            let shown = ui
+                .add(egui::Label::new(egui::RichText::new(text).size(theme::FONT_SIZE)).truncate());
+            if let Some(help) = help {
+                super::help::trigger(ui, shown.rect, help);
+            }
         });
         ui.spacing_mut().slider_width = ui.available_width().max(MIN_TRACK);
         ui.add(

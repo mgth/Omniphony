@@ -11,7 +11,7 @@ use egui::{RichText, Ui};
 use crate::app::StudioSpike;
 use crate::i18n::t;
 use crate::model::layouts::Speaker;
-use crate::ui::{theme, widgets};
+use crate::ui::{help, theme, widgets};
 use crate::view::gizmos::EditMode;
 
 /// Which tab of the editor is showing (`body.speaker-tab-test`).
@@ -104,7 +104,7 @@ impl StudioSpike {
     /// Reorder and delete. Both rewrite the layout, so both are refused while
     /// the backend has the speakers frozen.
     fn layout_row(&mut self, ui: &mut Ui, index: usize, count: usize, frozen: bool) {
-        widgets::label_row(ui, t("speaker.layout"), |ui| {
+        widgets::label_row_help(ui, t("speaker.layout"), "help.speaker.layout", |ui| {
             ui.add_enabled_ui(!frozen, |ui| {
                 if ui.button(t("speaker.delete")).clicked() {
                     self.ctl.send_json(
@@ -161,22 +161,27 @@ impl StudioSpike {
             } else {
                 CoordMode::Cartesian
             };
-            widgets::label_row(ui, t("speaker.coordinates"), |ui| {
-                let mut chosen = mode;
-                ui.selectable_value(&mut chosen, CoordMode::Polar, t("common.polarShort"));
-                ui.selectable_value(
-                    &mut chosen,
-                    CoordMode::Cartesian,
-                    t("common.cartesianShort"),
-                );
-                if chosen != mode {
-                    let value = match chosen {
-                        CoordMode::Cartesian => "cartesian",
-                        CoordMode::Polar => "polar",
-                    };
-                    self.edit_speaker(id, "coordMode", serde_json::json!(value));
-                }
-            });
+            widgets::label_row_help(
+                ui,
+                t("speaker.coordinates"),
+                "help.speaker.position",
+                |ui| {
+                    let mut chosen = mode;
+                    ui.selectable_value(&mut chosen, CoordMode::Polar, t("common.polarShort"));
+                    ui.selectable_value(
+                        &mut chosen,
+                        CoordMode::Cartesian,
+                        t("common.cartesianShort"),
+                    );
+                    if chosen != mode {
+                        let value = match chosen {
+                            CoordMode::Cartesian => "cartesian",
+                            CoordMode::Polar => "polar",
+                        };
+                        self.edit_speaker(id, "coordMode", serde_json::json!(value));
+                    }
+                },
+            );
             match mode {
                 CoordMode::Cartesian => {
                     self.cartesian_table(ui, id, speaker, scale_m);
@@ -197,15 +202,21 @@ impl StudioSpike {
                     .unwrap_or(1.0)
             };
             let mut value = gain as f32;
-            if widgets::value_slider(ui, t("speaker.gain"), &mut value, 0.0..=2.0, 0.01, |v| {
-                crate::panels::audio::format_linear_as_db(Some(v as f64))
-            }) {
+            if widgets::value_slider_help(
+                ui,
+                t("speaker.gain"),
+                "help.speaker.gain",
+                &mut value,
+                0.0..=2.0,
+                0.01,
+                |v| crate::panels::audio::format_linear_as_db(Some(v as f64)),
+            ) {
                 self.set_speaker_gain(index, value);
             }
 
             // Delay belongs to the speakers document, not the layout.
             let mut delay = speaker.delay_ms as f32;
-            widgets::label_row(ui, t("speaker.delayMs"), |ui| {
+            widgets::label_row_help(ui, t("speaker.delayMs"), "help.speaker.delayMs", |ui| {
                 if ui
                     .add(
                         egui::DragValue::new(&mut delay)
@@ -224,14 +235,33 @@ impl StudioSpike {
             });
 
             let mut spatialize = speaker.spatialize != 0;
-            if widgets::switch_row(ui, t("speaker.spatialize"), &mut spatialize) {
+            if widgets::switch_row_help(
+                ui,
+                t("speaker.spatialize"),
+                "help.speaker.spatialize",
+                &mut spatialize,
+            ) {
                 self.edit_speaker(id, "spatialize", serde_json::json!(spatialize));
             }
 
             // Band limits: empty means full range, which is why they are
             // optional in the model and sent as zero to clear.
-            self.frequency_row(ui, id, t("speaker.freqLow"), "freqLow", speaker.freq_low);
-            self.frequency_row(ui, id, "Freq. max (Hz)", "freqHigh", speaker.freq_high);
+            self.frequency_row(
+                ui,
+                id,
+                t("speaker.freqLow"),
+                "help.speaker.freqLow",
+                "freqLow",
+                speaker.freq_low,
+            );
+            self.frequency_row(
+                ui,
+                id,
+                "Freq. max (Hz)",
+                "help.speaker.freqHigh",
+                "freqHigh",
+                speaker.freq_high,
+            );
         });
     }
 
@@ -306,10 +336,12 @@ impl StudioSpike {
             }
         });
         ui.horizontal(|ui| {
-            ui.label(
+            help::label(
+                ui,
                 RichText::new(t("speaker.metersCoords"))
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
+                "help.speaker.positionMeters",
             );
             for (label, value, key) in axes {
                 let mut metres = (value * scale_m) as f32;
@@ -330,6 +362,7 @@ impl StudioSpike {
                 }
             }
         });
+        help::card(ui, "help.speaker.positionMeters");
     }
 
     fn polar_table(&mut self, ui: &mut Ui, id: i32, speaker: &Speaker, scale_m: f64) {
@@ -388,10 +421,12 @@ impl StudioSpike {
             }
         });
         ui.horizontal(|ui| {
-            ui.label(
+            help::label(
+                ui,
                 RichText::new(t("speaker.metersCoords"))
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
+                "help.speaker.positionMeters",
             );
             let mut metres = (speaker.distance_m * scale_m) as f32;
             if ui
@@ -407,6 +442,7 @@ impl StudioSpike {
                 self.edit_speaker(id, "distance", serde_json::json!(normalised));
             }
         });
+        help::card(ui, "help.speaker.positionMeters");
     }
 
     /// A band limit: empty means full range, so zero clears it.
@@ -415,11 +451,12 @@ impl StudioSpike {
         ui: &mut Ui,
         id: i32,
         label: &str,
+        help: &str,
         key: &'static str,
         current: Option<f32>,
     ) {
         let mut value = current.unwrap_or(0.0);
-        widgets::label_row(ui, label, |ui| {
+        widgets::label_row_help(ui, label, help, |ui| {
             let response = ui.add(
                 egui::DragValue::new(&mut value)
                     .speed(10.0)
@@ -443,7 +480,7 @@ impl StudioSpike {
 
     fn speaker_test_tab(&mut self, ui: &mut Ui, index: usize) {
         let running = self.speaker_test_running == Some(index);
-        widgets::label_row(ui, t("speaker.test"), |ui| {
+        widgets::label_row_help(ui, t("speaker.test"), "help.speaker.test", |ui| {
             let label = if running {
                 t("speaker.testStop")
             } else {
@@ -473,6 +510,7 @@ impl StudioSpike {
         if let Some(chosen) = select_row(
             ui,
             t("speaker.testMode"),
+            "help.speaker.testMode",
             "speaker-test-mode",
             &mode,
             TEST_MODES,
@@ -483,6 +521,7 @@ impl StudioSpike {
         if let Some(chosen) = select_row(
             ui,
             t("speaker.testIsolation"),
+            "help.speaker.testIsolation",
             "speaker-test-isolation",
             &isolation,
             TEST_ISOLATIONS,
@@ -490,9 +529,10 @@ impl StudioSpike {
             self.speaker_test_isolation = chosen;
         }
         let mut level = self.speaker_test_level_db;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("speaker.testLevel"),
+            "help.speaker.testLevel",
             &mut level,
             -60.0..=0.0,
             1.0,
@@ -666,12 +706,13 @@ impl StudioSpike {
 fn select_row(
     ui: &mut Ui,
     label: &str,
+    help: &str,
     id: &str,
     current: &str,
     options: &[(&str, &str)],
 ) -> Option<String> {
     let mut chosen = current.to_owned();
-    widgets::label_row(ui, label, |ui| {
+    widgets::label_row_help(ui, label, help, |ui| {
         widgets::bounded_combo(ui, 160.0, |ui, w| {
             egui::ComboBox::from_id_salt(id)
                 .selected_text(t(options

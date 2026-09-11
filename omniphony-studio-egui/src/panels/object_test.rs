@@ -277,9 +277,10 @@ impl StudioSpike {
         );
         self.object_test_snap_row(ui);
         let mut level = self.prefs.object_test.level_db as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("objectTest.level"),
+            "help.objectTestLevel",
             &mut level,
             -60.0..=0.0,
             1.0,

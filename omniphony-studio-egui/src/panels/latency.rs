@@ -461,7 +461,7 @@ impl StudioSpike {
     fn adaptive_form(&mut self, ui: &mut Ui, adaptive_on: bool, paused: bool) {
         ui.separator();
         let mut on = adaptive_on;
-        if widgets::switch_row(ui, t("adaptive.title"), &mut on) {
+        if widgets::switch_row_help(ui, t("adaptive.title"), "help.adaptive.title", &mut on) {
             self.live.lock().unwrap().app.adaptive_resampling = Some(u8::from(on));
             self.send_audio_config();
         }

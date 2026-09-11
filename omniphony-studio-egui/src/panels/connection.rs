@@ -213,13 +213,18 @@ impl StudioSpike {
             .info("osc")
             .summary(format!("{}:{}", self.osc_host, self.osc_port))
             .show(ui, |ui| {
-                widgets::label_row(ui, t("osc.host"), |ui| {
+                widgets::label_row_help(ui, t("osc.host"), "help.osc.host", |ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.osc_host).desired_width(140.0));
                 });
-                widgets::label_row(ui, t("osc.omniphonyPort"), |ui| {
-                    ui.add(egui::DragValue::new(&mut self.osc_port).range(1..=65535));
-                });
-                widgets::label_row(ui, t("osc.listenPort"), |ui| {
+                widgets::label_row_help(
+                    ui,
+                    t("osc.omniphonyPort"),
+                    "help.osc.omniphonyPort",
+                    |ui| {
+                        ui.add(egui::DragValue::new(&mut self.osc_port).range(1..=65535));
+                    },
+                );
+                widgets::label_row_help(ui, t("osc.listenPort"), "help.osc.listenPort", |ui| {
                     ui.label(
                         egui::RichText::new(listen_port.to_string())
                             .monospace()
@@ -227,7 +232,12 @@ impl StudioSpike {
                     );
                 });
                 let mut metering = metering_on;
-                if widgets::switch_row(ui, t("osc.metering"), &mut metering) {
+                if widgets::switch_row_help(
+                    ui,
+                    t("osc.metering"),
+                    "help.osc.metering",
+                    &mut metering,
+                ) {
                     self.live.lock().unwrap().app.osc_metering_enabled = Some(u8::from(metering));
                     self.ctl.set_metering(metering);
                 }

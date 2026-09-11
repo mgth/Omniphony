@@ -176,9 +176,10 @@ impl StudioSpike {
                 .send_string("/omniphony/control/hybrid/metric", &chosen);
         }
         let mut smoothing = hybrid.curve_smoothing.unwrap_or(0.0) as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("hybrid.smoothing"),
+            "help.hybrid.smoothing",
             &mut smoothing,
             0.0..=1.0,
             0.01,

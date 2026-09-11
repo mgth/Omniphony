@@ -25,7 +25,7 @@ impl StudioSpike {
                 .default_open(true)
                 .show(ui, |ui| {
                     // The language row heads the Display section, as in the web.
-                    widgets::label_row(ui, t("app.language"), |ui| {
+                    widgets::label_row_help(ui, t("app.language"), "help.display.language", |ui| {
                         widgets::bounded_combo(ui, 150.0, |ui, w| {
                             egui::ComboBox::from_id_salt("locale")
                                 .selected_text(
@@ -58,63 +58,85 @@ impl StudioSpike {
                             );
                         }
                     });
-                    widgets::switch_row(ui, t("display.showObjects"), &mut s.objects_visible);
-                    widgets::label_row(ui, t("display.objectDisplayMode"), |ui| {
-                        widgets::bounded_combo(ui, 150.0, |ui, w| {
-                            egui::ComboBox::from_id_salt("object-display-mode")
-                                .selected_text(s.object_display_mode.label())
-                                .width(w)
-                                .truncate()
-                                .show_ui(ui, |ui| {
-                                    for mode in ObjectDisplayMode::ALL {
-                                        ui.selectable_value(
-                                            &mut s.object_display_mode,
-                                            mode,
-                                            mode.label(),
-                                        );
-                                    }
-                                })
-                        });
-                    });
-                    widgets::slider_line(
+                    widgets::switch_row_help(
+                        ui,
+                        t("display.showObjects"),
+                        "help.display.showObjects",
+                        &mut s.objects_visible,
+                    );
+                    widgets::label_row_help(
+                        ui,
+                        t("display.objectDisplayMode"),
+                        "help.display.objectDisplayMode",
+                        |ui| {
+                            widgets::bounded_combo(ui, 150.0, |ui, w| {
+                                egui::ComboBox::from_id_salt("object-display-mode")
+                                    .selected_text(s.object_display_mode.label())
+                                    .width(w)
+                                    .truncate()
+                                    .show_ui(ui, |ui| {
+                                        for mode in ObjectDisplayMode::ALL {
+                                            ui.selectable_value(
+                                                &mut s.object_display_mode,
+                                                mode,
+                                                mode.label(),
+                                            );
+                                        }
+                                    })
+                            });
+                        },
+                    );
+                    widgets::slider_line_help(
                         ui,
                         t("display.objectSphereSize"),
+                        "help.display.objectSphereSize",
                         &mut s.object_sphere_size,
                         0.03..=0.2,
                         0.002,
                     );
-                    widgets::switch_row(
+                    widgets::switch_row_help(
                         ui,
                         t("display.objectColors"),
+                        "help.display.objectColors",
                         &mut s.object_colors_enabled,
                     );
-                    widgets::switch_row(
+                    widgets::switch_row_help(
                         ui,
                         t("display.objectLabels"),
+                        "help.display.objectLabels",
                         &mut s.object_labels_enabled,
                     );
                     widgets::switch_row(ui, "Effective render", &mut s.effective_render_enabled);
-                    widgets::switch_row(ui, t("display.grid"), &mut s.vbap_grid);
+                    widgets::switch_row_help(
+                        ui,
+                        t("display.grid"),
+                        "help.display.grid",
+                        &mut s.vbap_grid,
+                    );
                     ui.separator();
                     widgets::switch_row(ui, t("display.speakers"), &mut s.speakers_visible);
-                    widgets::switch_row(
+                    widgets::switch_row_help(
                         ui,
                         t("display.speakerLabels"),
+                        "help.display.speakerLabels",
                         &mut s.speaker_labels_enabled,
                     );
-                    widgets::switch_row(
+                    widgets::switch_row_help(
                         ui,
                         t("display.speakerBands"),
+                        "help.display.speakerBands",
                         &mut s.speaker_band_bars_enabled,
                     );
-                    widgets::switch_row(
+                    widgets::switch_row_help(
                         ui,
                         t("display.speakerFaceListener"),
+                        "help.display.speakerFaceListener",
                         &mut s.speaker_face_listener_enabled,
                     );
-                    widgets::slider_line(
+                    widgets::slider_line_help(
                         ui,
                         t("display.speakerSize"),
+                        "help.display.speakerSize",
                         &mut s.speaker_size,
                         0.04..=0.2,
                         0.002,
@@ -136,7 +158,7 @@ impl StudioSpike {
             .default_open(true)
             .show(ui, |ui| {
                 widgets::switch_row(ui, t("trail.show"), &mut s.trails.enabled);
-                widgets::label_row(ui, t("trail.mode"), |ui| {
+                widgets::label_row_help(ui, t("trail.mode"), "help.trail.mode", |ui| {
                     widgets::bounded_combo(ui, 120.0, |ui, w| {
                         egui::ComboBox::from_id_salt("trail-mode")
                             .selected_text(s.trails.mode.label())
@@ -150,14 +172,22 @@ impl StudioSpike {
                     });
                 });
                 let mut ttl_s = s.trails.ttl.as_secs_f32();
-                if widgets::slider_line(ui, t("trail.duration"), &mut ttl_s, 1.0..=20.0, 0.5)
-                    .changed()
+                if widgets::slider_line_help(
+                    ui,
+                    t("trail.duration"),
+                    "help.trail.duration",
+                    &mut ttl_s,
+                    1.0..=20.0,
+                    0.5,
+                )
+                .changed()
                 {
                     s.trails.ttl = Duration::from_secs_f32(ttl_s.max(0.5));
                 }
-                widgets::slider_line(
+                widgets::slider_line_help(
                     ui,
                     t("trail.teleport"),
+                    "help.trail.teleport",
                     &mut s.trails.teleport_threshold,
                     0.05..=2.0,
                     0.05,
@@ -174,8 +204,13 @@ impl StudioSpike {
         Section::new("heatmapsSection", "display.heatmaps")
             .info("heatmap")
             .show(ui, |ui| {
+                // Both colormap rows share one help; each opens its own card.
                 let combo = |ui: &mut egui::Ui, id: &str, label: &str, cm: &mut Colormap| {
-                    widgets::label_row(ui, label, |ui| {
+                    let help = widgets::Help::text(
+                        ("colormap", id),
+                        crate::i18n::lookup("help.heatmap.colormap").unwrap_or(""),
+                    );
+                    widgets::label_row_help(ui, label, help, |ui| {
                         widgets::bounded_combo(ui, 130.0, |ui, w| {
                             egui::ComboBox::from_id_salt(id)
                                 .selected_text(cm.label())
@@ -189,7 +224,12 @@ impl StudioSpike {
                         });
                     });
                 };
-                widgets::switch_row(ui, t("heatmap.objectEnergy"), &mut v.object_field_enabled);
+                widgets::switch_row_help(
+                    ui,
+                    t("heatmap.objectEnergy"),
+                    "help.heatmap.objectEnergy",
+                    &mut v.object_field_enabled,
+                );
                 combo(
                     ui,
                     "object-colormap",
@@ -205,18 +245,25 @@ impl StudioSpike {
                         &mut object_stop,
                     );
                 }
-                widgets::slider_line(
+                widgets::slider_line_help(
                     ui,
                     t("heatmap.objectEnergy.radius"),
+                    "help.heatmap.radius",
                     &mut v.object_radius,
                     0.02..=0.5,
                     0.01,
                 );
                 ui.separator();
-                widgets::switch_row(ui, t("heatmap.globalEnergy"), &mut v.global_enabled);
-                widgets::slider_line(
+                widgets::switch_row_help(
+                    ui,
+                    t("heatmap.globalEnergy"),
+                    "help.heatmap.globalEnergy",
+                    &mut v.global_enabled,
+                );
+                widgets::slider_line_help(
                     ui,
                     t("heatmap.globalEnergy.scale"),
+                    "help.heatmap.globalEnergyScale",
                     &mut v.global_scale_db,
                     1.0..=40.0,
                     1.0,
@@ -237,37 +284,44 @@ impl StudioSpike {
                     );
                 }
                 ui.separator();
-                widgets::switch_row(
+                widgets::switch_row_help(
                     ui,
                     t("heatmap.discontinuity.toggle"),
+                    "help.heatmap.discontinuity",
                     &mut v.discontinuity_enabled,
                 );
-                widgets::label_row(ui, t("heatmap.discontinuity.mode"), |ui| {
-                    widgets::bounded_combo(ui, 130.0, |ui, w| {
-                        egui::ComboBox::from_id_salt("discontinuity-mode")
-                            .selected_text(match v.discontinuity_mode {
-                                DiscontinuityMode::Gain => "Gain",
-                                DiscontinuityMode::Centroid => "Centroid",
-                            })
-                            .width(w)
-                            .truncate()
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut v.discontinuity_mode,
-                                    DiscontinuityMode::Gain,
-                                    t("heatmap.discontinuity.modeGain"),
-                                );
-                                ui.selectable_value(
-                                    &mut v.discontinuity_mode,
-                                    DiscontinuityMode::Centroid,
-                                    t("heatmap.discontinuity.modeCentroid"),
-                                );
-                            })
-                    });
-                });
-                widgets::slider_line(
+                widgets::label_row_help(
+                    ui,
+                    t("heatmap.discontinuity.mode"),
+                    "help.heatmap.discontinuityMode",
+                    |ui| {
+                        widgets::bounded_combo(ui, 130.0, |ui, w| {
+                            egui::ComboBox::from_id_salt("discontinuity-mode")
+                                .selected_text(match v.discontinuity_mode {
+                                    DiscontinuityMode::Gain => "Gain",
+                                    DiscontinuityMode::Centroid => "Centroid",
+                                })
+                                .width(w)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut v.discontinuity_mode,
+                                        DiscontinuityMode::Gain,
+                                        t("heatmap.discontinuity.modeGain"),
+                                    );
+                                    ui.selectable_value(
+                                        &mut v.discontinuity_mode,
+                                        DiscontinuityMode::Centroid,
+                                        t("heatmap.discontinuity.modeCentroid"),
+                                    );
+                                })
+                        });
+                    },
+                );
+                widgets::slider_line_help(
                     ui,
                     t("heatmap.discontinuity.scale"),
+                    "help.heatmap.discontinuityScale",
                     &mut v.discontinuity_scale,
                     0.05..=2.0,
                     0.05,
@@ -275,9 +329,10 @@ impl StudioSpike {
                 ui.separator();
                 widgets::note(ui, t("heatmap.common"));
                 let mut res = v.resolution as f32;
-                if widgets::slider_line(
+                if widgets::slider_line_help(
                     ui,
                     t("heatmap.objectEnergy.resolution"),
+                    "help.heatmap.resolution",
                     &mut res,
                     8.0..=64.0,
                     2.0,
@@ -286,38 +341,43 @@ impl StudioSpike {
                 {
                     v.resolution = res.round() as u32;
                 }
-                widgets::slider_line(
+                widgets::slider_line_help(
                     ui,
                     t("heatmap.objectEnergy.opacity"),
+                    "help.heatmap.opacity",
                     &mut v.opacity,
                     0.05..=1.0,
                     0.05,
                 );
-                widgets::slider_line(
+                widgets::slider_line_help(
                     ui,
                     t("heatmap.objectEnergy.mix"),
+                    "help.heatmap.mix",
                     &mut v.mix,
                     0.0..=1.0,
                     0.01,
                 );
-                widgets::slider_line(
+                widgets::slider_line_help(
                     ui,
                     t("heatmap.objectEnergy.gammaAccumulate"),
+                    "help.heatmap.gammaAccumulate",
                     &mut v.gamma_accumulate,
                     1.0..=10.0,
                     0.1,
                 );
-                widgets::slider_line(
+                widgets::slider_line_help(
                     ui,
                     t("heatmap.objectEnergy.gammaMip"),
+                    "help.heatmap.gammaMip",
                     &mut v.gamma_mip,
                     0.2..=3.0,
                     0.05,
                 );
                 let mut refresh = v.refresh_ms as f32;
-                if widgets::slider_line(
+                if widgets::slider_line_help(
                     ui,
                     t("heatmap.objectEnergy.refresh"),
+                    "help.heatmap.refresh",
                     &mut refresh,
                     40.0..=500.0,
                     10.0,
@@ -326,7 +386,12 @@ impl StudioSpike {
                 {
                     v.refresh_ms = refresh.round() as u32;
                 }
-                widgets::switch_row(ui, t("heatmap.smooth"), &mut v.smooth);
+                widgets::switch_row_help(
+                    ui,
+                    t("heatmap.smooth"),
+                    "help.heatmap.smooth",
+                    &mut v.smooth,
+                );
                 widgets::switch_row(ui, t("heatmap.bandAll"), &mut v.all_bands);
                 if !v.all_bands {
                     let mut band = v.band_index as f32;

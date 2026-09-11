@@ -296,11 +296,14 @@ impl StudioSpike {
         let show_polar = visible_mode == "precomputed_polar" && supports_polar;
 
         if show_cartesian {
-            ui.label(
+            help::label(
+                ui,
                 RichText::new(t("eval.cartesianGrid"))
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
+                "help.eval.cartesianGrid",
             );
+            help::card(ui, "help.eval.cartesianGrid");
             ui.horizontal(|ui| {
                 // Steps are the room extent over the count: 2 units across X
                 // and Y, 1 unit up.
@@ -342,11 +345,14 @@ impl StudioSpike {
         }
 
         if show_polar {
-            ui.label(
+            help::label(
+                ui,
                 RichText::new(t("eval.polarGrid"))
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
+                "help.eval.polarGrid",
             );
+            help::card(ui, "help.eval.polarGrid");
             ui.horizontal(|ui| {
                 self.grid_field(ui, "az", polar.azimuth_resolution, 1, |v| {
                     ("polar/azimuth_resolution", v)
@@ -406,7 +412,12 @@ impl StudioSpike {
 
         if show_cartesian || show_polar {
             let mut on = interpolation;
-            if widgets::switch_row(ui, t("vbap.positionInterpolation"), &mut on) {
+            if widgets::switch_row_help(
+                ui,
+                t("vbap.positionInterpolation"),
+                "help.vbap.positionInterpolation",
+                &mut on,
+            ) {
                 self.live
                     .lock()
                     .unwrap()
@@ -425,19 +436,24 @@ impl StudioSpike {
         let supports_size = caps.as_ref().is_none_or(|c| c.supports_spread);
         if supports_size {
             let mut value = intervals;
-            widgets::label_row(ui, t("evaluation.objectSizeIntervals"), |ui| {
-                if ui
-                    .add(egui::DragValue::new(&mut value).range(0..=u32::MAX))
-                    .changed()
-                {
-                    self.live.lock().unwrap().app.object_size_intervals = value;
-                    self.mark_recompute_pending();
-                    self.ctl.send_int(
-                        "/omniphony/control/render_evaluation/object_size_intervals",
-                        value as i32,
-                    );
-                }
-            });
+            widgets::label_row_help(
+                ui,
+                t("evaluation.objectSizeIntervals"),
+                "help.eval.objectSizeIntervals",
+                |ui| {
+                    if ui
+                        .add(egui::DragValue::new(&mut value).range(0..=u32::MAX))
+                        .changed()
+                    {
+                        self.live.lock().unwrap().app.object_size_intervals = value;
+                        self.mark_recompute_pending();
+                        self.ctl.send_int(
+                            "/omniphony/control/render_evaluation/object_size_intervals",
+                            value as i32,
+                        );
+                    }
+                },
+            );
         }
     }
 
@@ -919,16 +935,22 @@ impl StudioSpike {
             return;
         }
         let metric = state.metric.clone().unwrap_or_else(|| "spherical".into());
-        if let Some(chosen) = self.metric_row(ui, "distance-diffuse-metric", &metric) {
+        if let Some(chosen) = self.metric_row(
+            ui,
+            "distance-diffuse-metric",
+            "help.distanceDiffuse.metric",
+            &metric,
+        ) {
             self.live.lock().unwrap().app.distance_diffuse.metric = Some(chosen.clone());
             self.mark_recompute_pending();
             self.ctl
                 .send_string("/omniphony/control/distance_diffuse/metric", &chosen);
         }
         let mut threshold = state.threshold.unwrap_or(1.0) as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("distance.threshold"),
+            "help.distanceDiffuse.threshold",
             &mut threshold,
             0.1..=2.0,
             0.01,
@@ -941,9 +963,15 @@ impl StudioSpike {
             );
         }
         let mut curve = state.curve.unwrap_or(1.0) as f32;
-        if widgets::value_slider(ui, t("distance.curve"), &mut curve, 0.5..=2.0, 0.05, |v| {
-            format!("{v:.2}")
-        }) {
+        if widgets::value_slider_help(
+            ui,
+            t("distance.curve"),
+            "help.distanceDiffuse.curve",
+            &mut curve,
+            0.5..=2.0,
+            0.05,
+            |v| format!("{v:.2}"),
+        ) {
             self.live.lock().unwrap().app.distance_diffuse.curve = Some(curve as f64);
             self.ctl
                 .send_float("/omniphony/control/distance_diffuse/curve", curve.max(0.0));
@@ -1004,7 +1032,12 @@ impl StudioSpike {
         }
         // The metric only means something once a model is applied.
         if value != "none"
-            && let Some(chosen) = self.metric_row(ui, "distance-model-metric", &metric)
+            && let Some(chosen) = self.metric_row(
+                ui,
+                "distance-model-metric",
+                "help.distanceModel.metric",
+                &metric,
+            )
         {
             self.live.lock().unwrap().app.distance_model.metric = Some(chosen.clone());
             self.mark_recompute_pending();
@@ -1014,9 +1047,9 @@ impl StudioSpike {
     }
 
     /// The spherical/Chebyshev select shared by both distance blocks.
-    fn metric_row(&mut self, ui: &mut Ui, id: &str, current: &str) -> Option<String> {
+    fn metric_row(&mut self, ui: &mut Ui, id: &str, help: &str, current: &str) -> Option<String> {
         let mut chosen = current.to_owned();
-        widgets::label_row(ui, t("distance.metric"), |ui| {
+        widgets::label_row_help(ui, t("distance.metric"), help, |ui| {
             widgets::bounded_combo(ui, 130.0, |ui, w| {
                 egui::ComboBox::from_id_salt(id)
                     .selected_text(t(METRICS

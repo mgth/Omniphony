@@ -130,7 +130,7 @@ impl StudioSpike {
                 // The bridge path is exempt from the connection lock: it is
                 // how a missing bridge gets fixed.
                 let mut path = bridge.clone();
-                widgets::label_row(ui, t("input.bridgeBinary"), |ui| {
+                widgets::label_row_help(ui, t("input.bridgeBinary"), "help.input.bridge", |ui| {
                     if ui
                         .add(
                             egui::TextEdit::singleline(&mut path)
@@ -150,7 +150,13 @@ impl StudioSpike {
 
                 if pipewire {
                     let mut node = node.clone();
-                    if text_row(ui, t("input.node"), &mut node, "omniphony") {
+                    if text_row(
+                        ui,
+                        t("input.node"),
+                        "help.input.node",
+                        &mut node,
+                        "omniphony",
+                    ) {
                         self.live.lock().unwrap().app.live_input.node =
                             (!node.trim().is_empty()).then(|| node.trim().to_owned());
                         self.send_input_config(false);
@@ -159,6 +165,7 @@ impl StudioSpike {
                     if text_row(
                         ui,
                         t("input.description"),
+                        "help.input.description",
                         &mut description,
                         "Omniphony Bridge Input",
                     ) {
@@ -195,7 +202,13 @@ impl StudioSpike {
                     }
                 } else {
                     let mut pipe_path = pipe.clone();
-                    if text_row(ui, t("input.pipe"), &mut pipe_path, t("input.autoDetect")) {
+                    if text_row(
+                        ui,
+                        t("input.pipe"),
+                        "help.input.pipe",
+                        &mut pipe_path,
+                        t("input.autoDetect"),
+                    ) {
                         let value = pipe_path.trim().to_owned();
                         self.live.lock().unwrap().app.orender_input_pipe =
                             (!value.is_empty()).then(|| value.clone());
@@ -286,10 +299,10 @@ fn mode_label(mode: &str) -> &'static str {
 }
 
 /// Label plus a text field that commits when it loses focus.
-fn text_row(ui: &mut Ui, label: &str, value: &mut String, hint: &str) -> bool {
+fn text_row(ui: &mut Ui, label: &str, help: &str, value: &mut String, hint: &str) -> bool {
     let mut committed = false;
     let before = value.clone();
-    widgets::label_row(ui, label, |ui| {
+    widgets::label_row_help(ui, label, help, |ui| {
         committed = ui
             .add(
                 egui::TextEdit::singleline(value)
