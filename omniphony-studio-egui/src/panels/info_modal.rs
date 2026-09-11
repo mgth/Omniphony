@@ -1,36 +1,37 @@
-//! The `*.infoModal` dialogs (`modals.js`).
+//! The help overlay: the `*.infoModal` dialogs (`modals.js`) and every other
+//! panel-level help.
 //!
 //! A dozen sections carry a long-form explanation — what a backend is, what the
-//! adaptive controller does, how the heatmaps are computed. In the web the
-//! section's own title is the trigger: it gets a dotted underline and opens the
-//! modal, so the thing you click is the thing you are asking about. The same
-//! here, with the request travelling from the header through egui's temporary
-//! data rather than through a return value, so a section stays a pure widget.
+//! adaptive controller does, how the heatmaps are computed — and a few a short
+//! `help.*` string about the whole section. Either opens here, centred, from a
+//! click on the section's own title (see `ui::help`). The request travels from
+//! the header through egui's temporary data rather than through a return
+//! value, so a section stays a pure widget.
 
 use crate::app::StudioSpike;
 use crate::i18n::t;
-use crate::ui::{markup, theme, widgets};
-
-/// Where a header leaves the id of the modal it wants opened.
-pub fn request_id() -> egui::Id {
-    egui::Id::new("info-modal")
-}
+use crate::ui::{help, markup, theme, widgets};
 
 impl StudioSpike {
     pub(crate) fn info_modal(&mut self, ctx: &egui::Context) {
-        let requested: Option<String> = ctx.data_mut(|d| d.remove_temp(request_id()));
-        if let Some(key) = requested {
-            self.info_modal_open = Some(key);
+        let requested = ctx.data_mut(|d| {
+            let overlay = d.get_temp::<help::Overlay>(help::overlay_request_id());
+            d.remove::<help::Overlay>(help::overlay_request_id());
+            overlay
+        });
+        if let Some(overlay) = requested {
+            self.info_modal_open = Some(overlay);
         }
-        let Some(key) = self.info_modal_open.clone() else {
+        let Some(overlay) = &self.info_modal_open else {
             return;
         };
+        let mut close = false;
         let modal = egui::Modal::new(egui::Id::new("info-modal-window"))
             .frame(widgets::modal_frame())
             .show(ctx, |ui| {
                 ui.set_max_width(460.0);
                 ui.label(
-                    egui::RichText::new(t(&format!("{key}.infoTitle")))
+                    egui::RichText::new(&overlay.title)
                         .size(theme::FONT_SIZE_TITLE)
                         .color(theme::TEXT_STRONG),
                 );
@@ -41,16 +42,14 @@ impl StudioSpike {
                 egui::ScrollArea::vertical()
                     .max_height(ui.ctx().content_rect().height() * 0.6)
                     .show(ui, |ui| {
-                        markup::info_body(ui, t(&format!("{key}.infoBody")));
+                        markup::info_body(ui, &overlay.body);
                     });
                 ui.add_space(theme::PANEL_GAP);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(t("common.close")).clicked() {
-                        self.info_modal_open = None;
-                    }
+                    close = ui.button(t("common.close")).clicked();
                 });
             });
-        if modal.should_close() {
+        if close || modal.should_close() {
             self.info_modal_open = None;
         }
     }

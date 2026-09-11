@@ -173,7 +173,6 @@ impl StudioSpike {
         let v = &mut self.volume_settings;
         Section::new("heatmapsSection", "display.heatmaps")
             .info("heatmap")
-            .help("help.heatmaps")
             .show(ui, |ui| {
                 let combo = |ui: &mut egui::Ui, id: &str, label: &str, cm: &mut Colormap| {
                     widgets::label_row(ui, label, |ui| {

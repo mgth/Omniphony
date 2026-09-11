@@ -538,7 +538,7 @@ impl StudioSpike {
                 };
                 // Label, help mark and switch on one line, the switch placed
                 // first: it used to fall to a line of its own below its label.
-                if widgets::label_row_help(ui, t(label), help, |ui| {
+                if widgets::label_row_help(ui, t(label), *help, |ui| {
                     widgets::switch(ui, &mut value).changed()
                 }) {
                     {

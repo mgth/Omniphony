@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::StudioSpike;
 use crate::i18n::t;
-use crate::ui::{theme, widgets};
+use crate::ui::{help, theme, widgets};
 
 use super::object_test_sheet as sheet;
 
@@ -242,15 +242,17 @@ impl StudioSpike {
         }
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t("section.objectTest"))
-                    .size(theme::FONT_SIZE_SECTION)
-                    .color(theme::TEXT_STRONG),
-            );
-            widgets::help(ui, "help.objectTest");
-        });
+        help::overlay_title(
+            ui,
+            RichText::new(t("section.objectTest"))
+                .size(theme::FONT_SIZE_SECTION)
+                .color(theme::TEXT_STRONG),
+            || help::Overlay::titled(t("section.objectTest"), "help.objectTest"),
+        );
         self.object_test_transport(ui);
+        // The signal's help is about the whole transport, so it opens under
+        // it (`data-help-anchor=".object-test-transport"`).
+        help::card(ui, "help.objectTestSignal");
         self.object_test_clip_row(ui);
         let mut adm = self.prefs.object_test.adm_view;
         widgets::label_row_help(
@@ -294,7 +296,7 @@ impl StudioSpike {
         if let Some(chosen) = select_row(
             ui,
             t("objectTest.isolation"),
-            Some("help.objectTestIsolation"),
+            "help.objectTestIsolation",
             "object-test-isolation",
             &isolation,
             ISOLATIONS,
@@ -347,14 +349,13 @@ impl StudioSpike {
                 }
             }
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(t("objectTest.signal"))
-                            .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::TEXT_MUTED),
-                    );
-                    widgets::help(ui, "help.objectTestSignal");
-                });
+                help::label(
+                    ui,
+                    RichText::new(t("objectTest.signal"))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                    "help.objectTestSignal",
+                );
                 let signal = self.prefs.object_test.signal.clone();
                 if let Some(chosen) = combo(ui, "object-test-signal", &signal, SIGNALS, 190.0) {
                     self.prefs.object_test.signal = chosen;
@@ -443,7 +444,7 @@ impl StudioSpike {
         if let Some(chosen) = select_row(
             ui,
             t("objectTest.rotationAxis"),
-            Some("help.objectTestRotation"),
+            "help.objectTestRotation",
             "object-test-axis",
             &axis,
             AXES,
@@ -930,22 +931,14 @@ fn nearest(nodes: &[f64], value: f64) -> f64 {
 fn select_row(
     ui: &mut Ui,
     label: &str,
-    help_key: Option<&str>,
+    help_key: &str,
     id: &str,
     current: &str,
     options: &[(&str, &str)],
 ) -> Option<String> {
-    let mut chosen = None;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        if let Some(key) = help_key {
-            widgets::help(ui, key);
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            chosen = combo(ui, id, current, options, 170.0);
-        });
-    });
-    chosen
+    widgets::label_row_help(ui, label, help_key, |ui| {
+        widgets::bounded_combo(ui, 170.0, |ui, w| combo(ui, id, current, options, w))
+    })
 }
 
 fn combo(
@@ -963,6 +956,7 @@ fn combo(
             .map(|(_, key)| *key)
             .unwrap_or(options[0].1)))
         .width(width)
+        .truncate()
         .show_ui(ui, |ui| {
             for (value, key) in options {
                 if ui.selectable_label(*value == current, t(key)).clicked() && *value != current {
