@@ -164,30 +164,29 @@ impl StudioSpike {
     /// Reorder and delete. Both rewrite the layout, so both are refused while
     /// the backend has the speakers frozen.
     fn layout_row(&mut self, ui: &mut Ui, index: usize, count: usize, frozen: bool) {
-        widgets::label_row_help(ui, t("speaker.layout"), "help.speaker.layout", |ui| {
-            ui.add_enabled_ui(!frozen, |ui| {
-                if ui.button(t("speaker.delete")).clicked() {
-                    self.ctl.send_json(
-                        "/omniphony/control/config/layout",
-                        &serde_json::json!({ "removeSpeaker": index }),
-                    );
-                    self.apply_layout();
-                    self.selection.speaker = None;
-                }
-                if ui
-                    .add_enabled(index + 1 < count, egui::Button::new(t("speaker.down")))
-                    .clicked()
-                {
-                    self.move_speaker(index, index + 1);
-                }
-                if ui
-                    .add_enabled(index > 0, egui::Button::new(t("speaker.up")))
-                    .clicked()
-                {
-                    self.move_speaker(index, index - 1);
-                }
-            });
-        });
+        let clicked = widgets::label_buttons_help(
+            ui,
+            t("speaker.layout"),
+            "help.speaker.layout",
+            &[
+                (t("speaker.up"), !frozen && index > 0),
+                (t("speaker.down"), !frozen && index + 1 < count),
+                (t("speaker.delete"), !frozen),
+            ],
+        );
+        match clicked {
+            Some(0) => self.move_speaker(index, index - 1),
+            Some(1) => self.move_speaker(index, index + 1),
+            Some(2) => {
+                self.ctl.send_json(
+                    "/omniphony/control/config/layout",
+                    &serde_json::json!({ "removeSpeaker": index }),
+                );
+                self.apply_layout();
+                self.selection.speaker = None;
+            }
+            _ => {}
+        }
     }
 
     fn speaker_edit_tab(
@@ -388,6 +387,13 @@ impl StudioSpike {
             ("Z", speaker.z, "z"),
         ];
         ui.horizontal(|ui| {
+            let width = widgets::fitted_field_width(
+                ui,
+                &[t("speaker.normalizedCoords"), "X", "Y", "Z"],
+                3,
+                30.0,
+                56.0,
+            );
             ui.label(
                 RichText::new(t("speaker.normalizedCoords"))
                     .size(theme::FONT_SIZE_SMALL)
@@ -402,7 +408,7 @@ impl StudioSpike {
                 );
                 if ui
                     .add_sized(
-                        egui::vec2(56.0, ui.spacing().interact_size.y),
+                        egui::vec2(width, ui.spacing().interact_size.y),
                         egui::DragValue::new(&mut v).speed(0.001).range(-1.0..=1.0),
                     )
                     .changed()
@@ -419,6 +425,7 @@ impl StudioSpike {
                     .color(theme::TEXT_MUTED),
                 "help.speaker.positionMeters",
             );
+            let width = widgets::fitted_field_width(ui, &["X", "Y", "Z"], 3, 30.0, 56.0);
             for (label, value, key) in axes {
                 let mut metres = (value * scale_m) as f32;
                 ui.label(
@@ -428,7 +435,7 @@ impl StudioSpike {
                 );
                 if ui
                     .add_sized(
-                        egui::vec2(56.0, ui.spacing().interact_size.y),
+                        egui::vec2(width, ui.spacing().interact_size.y),
                         egui::DragValue::new(&mut metres).speed(0.01),
                     )
                     .changed()
@@ -448,6 +455,7 @@ impl StudioSpike {
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
             );
+            let width = widgets::fitted_field_width(ui, &["Az°", "El°", "Dist"], 3, 30.0, 56.0);
             let mut az = speaker.azimuth_deg as f32;
             let mut el = speaker.elevation_deg as f32;
             let mut distance = speaker.distance_m as f32;
@@ -458,7 +466,7 @@ impl StudioSpike {
             );
             if ui
                 .add_sized(
-                    egui::vec2(56.0, ui.spacing().interact_size.y),
+                    egui::vec2(width, ui.spacing().interact_size.y),
                     egui::DragValue::new(&mut az).speed(0.1),
                 )
                 .changed()
@@ -472,7 +480,7 @@ impl StudioSpike {
             );
             if ui
                 .add_sized(
-                    egui::vec2(56.0, ui.spacing().interact_size.y),
+                    egui::vec2(width, ui.spacing().interact_size.y),
                     egui::DragValue::new(&mut el).speed(0.1),
                 )
                 .changed()
@@ -486,7 +494,7 @@ impl StudioSpike {
             );
             if ui
                 .add_sized(
-                    egui::vec2(56.0, ui.spacing().interact_size.y),
+                    egui::vec2(width, ui.spacing().interact_size.y),
                     egui::DragValue::new(&mut distance)
                         .speed(0.001)
                         .range(0.01..=f32::MAX),
@@ -712,72 +720,18 @@ impl StudioSpike {
         }
     }
 
-    /// "Delay tools": the two bulk tools, each asking before it runs. The
-    /// buttons sit beside the label while they fit, and share a line of
-    /// their own under it when the panel is too narrow for both.
+    /// "Delay tools": the two bulk tools, each asking before it runs.
     fn delay_tools_row(&mut self, ui: &mut Ui) {
         let tools = [DelayTool::CalcDelays, DelayTool::DelayToDistance];
-        let button_width = |ui: &Ui, tool: DelayTool| {
-            egui::WidgetText::from(t(tool.label_key()))
-                .into_galley(
-                    ui,
-                    Some(egui::TextWrapMode::Extend),
-                    f32::INFINITY,
-                    egui::TextStyle::Button,
-                )
-                .size()
-                .x
-                + 2.0 * ui.spacing().button_padding.x
-        };
-        let label_width = egui::WidgetText::from(t("speaker.delayTools"))
-            .into_galley(
-                ui,
-                Some(egui::TextWrapMode::Extend),
-                f32::INFINITY,
-                egui::TextStyle::Body,
-            )
-            .size()
-            .x;
-        let spacing = ui.spacing().item_spacing.x;
-        let needed = label_width
-            + tools
-                .iter()
-                .map(|tool| button_width(ui, *tool) + spacing)
-                .sum::<f32>();
-        if needed <= ui.available_width() {
-            widgets::label_row_help(
-                ui,
-                t("speaker.delayTools"),
-                "help.speaker.delayTools",
-                |ui| {
-                    // Right to left: the second tool is placed first.
-                    for tool in tools.into_iter().rev() {
-                        if ui.button(t(tool.label_key())).clicked() {
-                            self.delay_tool_confirm = Some(tool);
-                        }
-                    }
-                },
-            );
-            return;
-        }
-        widgets::label_row_help(
+        let clicked = widgets::label_buttons_help(
             ui,
             t("speaker.delayTools"),
             "help.speaker.delayTools",
-            |_| {},
+            &tools.map(|tool| (t(tool.label_key()), true)),
         );
-        ui.columns(tools.len(), |columns| {
-            for (column, tool) in columns.iter_mut().zip(tools) {
-                let width = column.available_width();
-                let button = egui::Button::new(t(tool.label_key())).truncate();
-                if column
-                    .add_sized(egui::vec2(width, column.spacing().interact_size.y), button)
-                    .clicked()
-                {
-                    self.delay_tool_confirm = Some(tool);
-                }
-            }
-        });
+        if let Some(index) = clicked {
+            self.delay_tool_confirm = Some(tools[index]);
+        }
     }
 
     /// Delay belongs to the speakers document, not the layout.
