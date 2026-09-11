@@ -117,6 +117,7 @@ impl StudioSpike {
                 layout.effective_width(Side::Right) + crate::ui::theme::PANEL_EDGE_MARGIN
             });
         let selected = self.settings.heatmap_band_index;
+        let all = self.volume_settings.all_bands;
         egui::Area::new(egui::Id::new("band-cursor"))
             .anchor(Align2::RIGHT_CENTER, vec2(-(right + CURSOR_GAP), 0.0))
             .show(ctx, |ui| {
@@ -131,22 +132,28 @@ impl StudioSpike {
                             // "All" caps the stack, then the bands run highest
                             // frequency first: the cursor reads like a spectrum
                             // stood on end.
-                            if segment(ui, SEG_ALL, all_bands_colour(), selected >= count)
+                            if segment(ui, SEG_ALL, all_bands_colour(), all)
                                 .on_hover_text(t("heatmap.bandAll"))
                                 .clicked()
                             {
-                                self.settings.heatmap_band_index = count;
+                                self.volume_settings.all_bands = true;
                             }
                             for band in (0..count).rev() {
                                 let label = labels
                                     .get(band)
                                     .cloned()
                                     .unwrap_or_else(|| t("heatmap.bandFull").to_owned());
-                                if segment(ui, SEG, band_colour(band, count), selected == band)
-                                    .on_hover_text(label)
-                                    .clicked()
+                                if segment(
+                                    ui,
+                                    SEG,
+                                    band_colour(band, count),
+                                    !all && selected == band,
+                                )
+                                .on_hover_text(label)
+                                .clicked()
                                 {
                                     self.settings.heatmap_band_index = band;
+                                    self.volume_settings.all_bands = false;
                                 }
                             }
                         });

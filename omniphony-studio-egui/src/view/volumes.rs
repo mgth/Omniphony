@@ -96,6 +96,9 @@ pub struct VolumeSettings {
     pub gamma_mip: f32,
     pub refresh_ms: u32,
     pub smooth: bool,
+    /// The band the volumes are drawn for — `ViewSettings::heatmap_band_index`,
+    /// copied in each frame — and whether they composite every band instead
+    /// (`heatmapAllBands`: the index is kept, as the web keeps it).
     pub band_index: usize,
     pub all_bands: bool,
     pub object_field_enabled: bool,
