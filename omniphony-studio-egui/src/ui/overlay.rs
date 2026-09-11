@@ -43,7 +43,26 @@ pub fn show(ctx: &Context, side: Side, layout: &mut OverlayLayout, body: impl Fn
             }
             let width = layout.side(side).width;
             let height = screen.height() - 2.0 * margin;
-            theme::panel_frame().show(ui, |ui| {
+            // Fixed extents. The overlay takes exactly its configured size, and
+            // its content is laid out in a child placed on that rect — a child
+            // does not allocate in the area — clipped to it. A row wider than
+            // the panel is then cut inside the panel instead of growing its
+            // frame; grown, the frame made every section that did respect the
+            // width look narrower than the panel, and dragging the edge past
+            // the minimum made the content keep shrinking while the panel had
+            // stopped. The project's rule for overlays: fixed extents, internal
+            // overflow.
+            let (rect, _) = ui.allocate_exact_size(
+                vec2(width + super::layout::PANEL_CHROME, height),
+                egui::Sense::hover(),
+            );
+            let mut panel = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            panel.set_clip_rect(rect.intersect(ui.clip_rect()));
+            theme::panel_frame().show(&mut panel, |ui| {
                 ui.set_width(width);
                 ui.set_height(height - 2.0 * theme::PANEL_PADDING_Y);
                 ui.vertical(|ui| {

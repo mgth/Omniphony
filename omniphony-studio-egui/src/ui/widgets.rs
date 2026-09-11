@@ -91,32 +91,94 @@ fn labelled<R>(
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let out = add_right(ui);
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let mark = match help_key {
-                    Some(_) => {
-                        ui.painter()
-                            .layout_no_wrap(
-                                "?".to_owned(),
-                                egui::FontId::proportional(theme::FONT_SIZE_SMALL),
-                                theme::TEXT_FAINT,
-                            )
-                            .size()
-                            .x
-                            + ui.spacing().item_spacing.x
-                    }
-                    None => 0.0,
-                };
-                ui.scope(|ui| {
-                    ui.set_max_width((ui.available_width() - mark).max(0.0));
-                    ui.add(egui::Label::new(label).truncate());
-                });
-                if let Some(key) = help_key {
-                    help(ui, key);
+            // What the controls left, from the row's own left edge. The label
+            // takes exactly that and no more: it is laid out at that width,
+            // cut to it, and painted inside it. Left to size itself, a label
+            // that could not quite fit made its row a few points wider than
+            // the panel — and egui grows a layout's bounds to whatever its
+            // children took, so every row after it started those few points
+            // further left and lost its first letter to the panel's edge.
+            let space = ui.available_rect_before_wrap();
+            let mark = match help_key {
+                Some(_) => {
+                    ui.painter()
+                        .layout_no_wrap(
+                            "?".to_owned(),
+                            egui::FontId::proportional(theme::FONT_SIZE_SMALL),
+                            theme::TEXT_FAINT,
+                        )
+                        .size()
+                        .x
+                        + ui.spacing().item_spacing.x
                 }
-            });
+                None => 0.0,
+            };
+            let text_width = (space.width() - mark).max(0.0);
+            let galley = label.clone().into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                text_width,
+                egui::TextStyle::Body,
+            );
+            // One row high: the space's own height is whatever is left below.
+            let row_height = ui.spacing().interact_size.y.max(galley.size().y);
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(space.width(), row_height), Sense::hover());
+            let text_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0),
+                galley.size(),
+            );
+            if text_width > 0.0 {
+                let truncated = galley.elided;
+                let colour = ui.visuals().text_color();
+                ui.painter()
+                    .with_clip_rect(rect.intersect(ui.clip_rect()))
+                    .galley(text_rect.min, galley, colour);
+                if truncated {
+                    response.on_hover_text(label.text());
+                }
+            }
+            if let Some(key) = help_key {
+                // The mark sits right after the text, inside the same space.
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(text_rect.right() + ui.spacing().item_spacing.x, rect.top()),
+                    egui::vec2(mark, rect.height()),
+                );
+                // A child placed on the mark's rect takes no room in the row,
+                // which the label has already taken whole.
+                let mut mark_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(at)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                help(&mut mark_ui, key);
+            }
             out
         })
         .inner
+    })
+    .inner
+}
+
+/// The width a dropdown in a `label_row` takes: its usual width, but never more
+/// than 60 % of the row, so its label keeps room to be read when the panel is
+/// narrow. Called inside the row's controls closure, where the row is still
+/// wholly available.
+pub fn combo_width(ui: &Ui, preferred: f32) -> f32 {
+    (ui.available_width() * 0.6).min(preferred).max(40.0)
+}
+
+/// A dropdown held to `combo_width(preferred)`. egui takes `ComboBox::width`
+/// as a minimum and, truncating, lays the selected text out against all the
+/// width it can see — so a truncated combo grows to fill whatever is left of
+/// its row, and a row of label and combo ran past the panel. The combo is
+/// drawn inside a scope bounded to its width, so that is all it can see.
+/// `add` gets the bounded ui and the width to pass to `ComboBox::width`.
+pub fn bounded_combo<R>(ui: &mut Ui, preferred: f32, add: impl FnOnce(&mut Ui, f32) -> R) -> R {
+    let width = combo_width(ui, preferred);
+    ui.scope(|ui| {
+        ui.set_max_width(width);
+        add(ui, width)
     })
     .inner
 }

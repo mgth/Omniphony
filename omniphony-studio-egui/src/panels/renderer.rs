@@ -135,12 +135,12 @@ impl StudioSpike {
             OutputMode::from_state(live.app.binaural.as_ref())
         };
         let mut chosen = current;
-        ui.horizontal(|ui| {
-            ui.label(t("outputMode.selectTitle"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row(ui, t("outputMode.selectTitle"), |ui| {
+            widgets::bounded_combo(ui, 160.0, |ui, w| {
                 egui::ComboBox::from_id_salt("output-mode")
                     .selected_text(current.label())
-                    .width(160.0)
+                    .width(w)
+                    .truncate()
                     .show_ui(ui, |ui| {
                         for mode in [
                             OutputMode::Speaker,
@@ -149,7 +149,7 @@ impl StudioSpike {
                         ] {
                             ui.selectable_value(&mut chosen, mode, mode.label());
                         }
-                    });
+                    })
             });
         });
         if chosen == current {
@@ -234,14 +234,13 @@ impl StudioSpike {
             )
         };
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t("evaluation.title"))
-                    .size(theme::FONT_SIZE)
-                    .color(theme::TEXT_STRONG),
-            );
-            widgets::help(ui, "evaluation.infoBody");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row_help(
+            ui,
+            RichText::new(t("evaluation.title"))
+                .size(theme::FONT_SIZE)
+                .color(theme::TEXT_STRONG),
+            "evaluation.infoBody",
+            |ui| {
                 ui.label(
                     RichText::new(
                         effective
@@ -253,14 +252,21 @@ impl StudioSpike {
                     .color(theme::TEXT_MUTED),
                 );
                 let mut chosen = selection.clone();
-                egui::ComboBox::from_id_salt("evaluation-mode")
-                    .selected_text(evaluation_label(&selection))
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for mode in &allowed {
-                            ui.selectable_value(&mut chosen, mode.clone(), evaluation_label(mode));
-                        }
-                    });
+                widgets::bounded_combo(ui, 150.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("evaluation-mode")
+                        .selected_text(evaluation_label(&selection))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for mode in &allowed {
+                                ui.selectable_value(
+                                    &mut chosen,
+                                    mode.clone(),
+                                    evaluation_label(mode),
+                                );
+                            }
+                        })
+                });
                 if chosen != selection && allowed.contains(&chosen) {
                     self.live
                         .lock()
@@ -272,8 +278,8 @@ impl StudioSpike {
                     self.ctl
                         .send_string("/omniphony/control/render_evaluation_mode", &chosen);
                 }
-            });
-        });
+            },
+        );
 
         // Which grid block applies: `auto` follows the effective mode.
         let visible_mode = if selection == "auto" {
@@ -418,21 +424,18 @@ impl StudioSpike {
         let supports_size = caps.as_ref().is_none_or(|c| c.supports_spread);
         if supports_size {
             let mut value = intervals;
-            ui.horizontal(|ui| {
-                ui.label(t("evaluation.objectSizeIntervals"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(egui::DragValue::new(&mut value).range(0..=u32::MAX))
-                        .changed()
-                    {
-                        self.live.lock().unwrap().app.object_size_intervals = value;
-                        self.mark_recompute_pending();
-                        self.ctl.send_int(
-                            "/omniphony/control/render_evaluation/object_size_intervals",
-                            value as i32,
-                        );
-                    }
-                });
+            widgets::label_row(ui, t("evaluation.objectSizeIntervals"), |ui| {
+                if ui
+                    .add(egui::DragValue::new(&mut value).range(0..=u32::MAX))
+                    .changed()
+                {
+                    self.live.lock().unwrap().app.object_size_intervals = value;
+                    self.mark_recompute_pending();
+                    self.ctl.send_int(
+                        "/omniphony/control/render_evaluation/object_size_intervals",
+                        value as i32,
+                    );
+                }
             });
         }
     }
@@ -514,20 +517,23 @@ impl StudioSpike {
                 );
                 let mut chosen = selection.clone();
                 ui.add_enabled_ui(!frozen, |ui| {
-                    egui::ComboBox::from_id_salt("render-backend")
-                        .selected_text(
-                            backends
-                                .iter()
-                                .find(|(id, _)| *id == selection)
-                                .map(|(_, label)| label.clone())
-                                .unwrap_or_else(|| selection.clone()),
-                        )
-                        .width(150.0)
-                        .show_ui(ui, |ui| {
-                            for (id, label) in &backends {
-                                ui.selectable_value(&mut chosen, id.clone(), label);
-                            }
-                        });
+                    widgets::bounded_combo(ui, 150.0, |ui, w| {
+                        egui::ComboBox::from_id_salt("render-backend")
+                            .selected_text(
+                                backends
+                                    .iter()
+                                    .find(|(id, _)| *id == selection)
+                                    .map(|(_, label)| label.clone())
+                                    .unwrap_or_else(|| selection.clone()),
+                            )
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for (id, label) in &backends {
+                                    ui.selectable_value(&mut chosen, id.clone(), label);
+                                }
+                            })
+                    });
                 });
                 if chosen != selection && !chosen.is_empty() {
                     self.live.lock().unwrap().app.render_backend_state.selection =
@@ -617,9 +623,8 @@ impl StudioSpike {
                         })
                         .unwrap_or_default();
                     let mut chosen = current.clone();
-                    ui.horizontal(|ui| {
-                        ui.label(&label);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    widgets::label_row(ui, &label, |ui| {
+                        widgets::bounded_combo(ui, 150.0, |ui, w| {
                             egui::ComboBox::from_id_salt(("backend-param", key))
                                 .selected_text(
                                     options
@@ -628,12 +633,13 @@ impl StudioSpike {
                                         .map(|(_, l)| l.clone())
                                         .unwrap_or_else(|| current.clone()),
                                 )
-                                .width(150.0)
+                                .width(w)
+                                .truncate()
                                 .show_ui(ui, |ui| {
                                     for (v, l) in &options {
                                         ui.selectable_value(&mut chosen, v.clone(), l);
                                     }
-                                });
+                                })
                         });
                     });
                     (chosen != current).then(|| serde_json::json!(chosen))
@@ -665,29 +671,26 @@ impl StudioSpike {
                     let local = crate::host::commands::app::renderer_is_local(&self.host);
                     let mut browse = false;
                     let mut edit = false;
-                    ui.horizontal(|ui| {
-                        ui.label(&label);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if editable {
-                                edit = ui.button(t("backend.file.edit")).clicked();
-                            }
-                            if local {
-                                browse = ui.button(t("backend.file.browse")).clicked();
-                            }
-                            changed = ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut text)
-                                        .desired_width(120.0)
-                                        .hint_text(match extensions.first() {
-                                            Some(ext) => format!("name.{ext}"),
-                                            None if kind_type == "path" => {
-                                                "/path/to/backend.lua".to_owned()
-                                            }
-                                            None => "name.ext".to_owned(),
-                                        }),
-                                )
-                                .lost_focus();
-                        });
+                    widgets::label_row(ui, &label, |ui| {
+                        if editable {
+                            edit = ui.button(t("backend.file.edit")).clicked();
+                        }
+                        if local {
+                            browse = ui.button(t("backend.file.browse")).clicked();
+                        }
+                        changed = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut text)
+                                    .desired_width(120.0)
+                                    .hint_text(match extensions.first() {
+                                        Some(ext) => format!("name.{ext}"),
+                                        None if kind_type == "path" => {
+                                            "/path/to/backend.lua".to_owned()
+                                        }
+                                        None => "name.ext".to_owned(),
+                                    }),
+                            )
+                            .lost_focus();
                     });
                     if edit {
                         self.open_script_editor(backend, key, language, extensions.clone());
@@ -780,27 +783,29 @@ impl StudioSpike {
         };
         let mut chosen = current.clone();
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t("renderer.rampTitle"))
-                    .size(theme::FONT_SIZE)
-                    .color(theme::TEXT_STRONG),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                egui::ComboBox::from_id_salt("ramp-mode")
-                    .selected_text(t(RAMP_MODES
-                        .iter()
-                        .find(|(id, _)| *id == current)
-                        .map(|(_, key)| *key)
-                        .unwrap_or("audio.rampModeFrame")))
-                    .width(140.0)
-                    .show_ui(ui, |ui| {
-                        for (id, key) in RAMP_MODES {
-                            ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
-                        }
-                    });
-            });
-        });
+        widgets::label_row(
+            ui,
+            RichText::new(t("renderer.rampTitle"))
+                .size(theme::FONT_SIZE)
+                .color(theme::TEXT_STRONG),
+            |ui| {
+                widgets::bounded_combo(ui, 140.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("ramp-mode")
+                        .selected_text(t(RAMP_MODES
+                            .iter()
+                            .find(|(id, _)| *id == current)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("audio.rampModeFrame")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in RAMP_MODES {
+                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                            }
+                        })
+                });
+            },
+        );
         if chosen != current {
             self.live.lock().unwrap().app.audio.ramp_mode = Some(chosen.clone());
             self.ctl
@@ -826,16 +831,16 @@ impl StudioSpike {
                 .color(theme::TEXT_STRONG),
         );
         let mut chosen = kind.clone();
-        ui.horizontal(|ui| {
-            ui.label(t("renderer.crossoverTypeLabel"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row(ui, t("renderer.crossoverTypeLabel"), |ui| {
+            widgets::bounded_combo(ui, 160.0, |ui, w| {
                 egui::ComboBox::from_id_salt("crossover-type")
                     .selected_text(t(if kind == "fir" {
                         "renderer.crossoverType.fir"
                     } else {
                         "renderer.crossoverType.lr4"
                     }))
-                    .width(160.0)
+                    .width(w)
+                    .truncate()
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut chosen,
@@ -847,7 +852,7 @@ impl StudioSpike {
                             "fir".to_owned(),
                             t("renderer.crossoverType.fir"),
                         );
-                    });
+                    })
             });
         });
         if chosen != kind {
@@ -879,13 +884,12 @@ impl StudioSpike {
         };
         ui.add_space(4.0);
         let mut enabled = state.enabled.unwrap_or(false);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t("distance.title"))
-                    .size(theme::FONT_SIZE)
-                    .color(theme::TEXT_STRONG),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row(
+            ui,
+            RichText::new(t("distance.title"))
+                .size(theme::FONT_SIZE)
+                .color(theme::TEXT_STRONG),
+            |ui| {
                 if widgets::switch(ui, &mut enabled).changed() {
                     self.live.lock().unwrap().app.distance_diffuse.enabled = Some(enabled);
                     self.ctl.send_int(
@@ -893,8 +897,8 @@ impl StudioSpike {
                         i32::from(enabled),
                     );
                 }
-            });
-        });
+            },
+        );
         // The parameters collapse with the effect, as in the web panel.
         if !enabled {
             return;
@@ -954,27 +958,29 @@ impl StudioSpike {
         };
         ui.add_space(4.0);
         let mut chosen = value.clone();
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t("distance.model"))
-                    .size(theme::FONT_SIZE)
-                    .color(theme::TEXT_STRONG),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                egui::ComboBox::from_id_salt("distance-model")
-                    .selected_text(t(DISTANCE_MODELS
-                        .iter()
-                        .find(|(id, _)| *id == value)
-                        .map(|(_, key)| *key)
-                        .unwrap_or("distance.model.none")))
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for (id, key) in DISTANCE_MODELS {
-                            ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
-                        }
-                    });
-            });
-        });
+        widgets::label_row(
+            ui,
+            RichText::new(t("distance.model"))
+                .size(theme::FONT_SIZE)
+                .color(theme::TEXT_STRONG),
+            |ui| {
+                widgets::bounded_combo(ui, 150.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("distance-model")
+                        .selected_text(t(DISTANCE_MODELS
+                            .iter()
+                            .find(|(id, _)| *id == value)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("distance.model.none")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in DISTANCE_MODELS {
+                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                            }
+                        })
+                });
+            },
+        );
         if chosen != value {
             self.live.lock().unwrap().app.distance_model.value = Some(chosen.clone());
             self.mark_recompute_pending();
@@ -995,21 +1001,21 @@ impl StudioSpike {
     /// The spherical/Chebyshev select shared by both distance blocks.
     fn metric_row(&mut self, ui: &mut Ui, id: &str, current: &str) -> Option<String> {
         let mut chosen = current.to_owned();
-        ui.horizontal(|ui| {
-            ui.label(t("distance.metric"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row(ui, t("distance.metric"), |ui| {
+            widgets::bounded_combo(ui, 130.0, |ui, w| {
                 egui::ComboBox::from_id_salt(id)
                     .selected_text(t(METRICS
                         .iter()
                         .find(|(v, _)| *v == current)
                         .map(|(_, key)| *key)
                         .unwrap_or("distance.metric.spherical")))
-                    .width(130.0)
+                    .width(w)
+                    .truncate()
                     .show_ui(ui, |ui| {
                         for (v, key) in METRICS {
                             ui.selectable_value(&mut chosen, (*v).to_owned(), t(key));
                         }
-                    });
+                    })
             });
         });
         (chosen != current).then_some(chosen)

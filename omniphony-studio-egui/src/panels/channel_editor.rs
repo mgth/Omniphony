@@ -567,39 +567,33 @@ impl StudioSpike {
         );
 
         let mut gain = channel.gain_db as f32;
-        ui.horizontal(|ui| {
-            ui.label(t("channelEdit.gain"));
-            widgets::help(ui, "help.channelEdit.gain");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let readout = if gain > 0.0 {
-                    format!("+{gain:.1} dB")
-                } else {
-                    format!("{gain:.1} dB")
-                };
-                // Double-clicking the readout is the web's reset to unity.
-                if ui
-                    .add_sized(
-                        egui::vec2(58.0, ui.spacing().interact_size.y),
-                        egui::Label::new(
-                            RichText::new(readout).monospace().color(theme::TEXT_STRONG),
-                        )
+        widgets::label_row_help(ui, t("channelEdit.gain"), "help.channelEdit.gain", |ui| {
+            let readout = if gain > 0.0 {
+                format!("+{gain:.1} dB")
+            } else {
+                format!("{gain:.1} dB")
+            };
+            // Double-clicking the readout is the web's reset to unity.
+            if ui
+                .add_sized(
+                    egui::vec2(58.0, ui.spacing().interact_size.y),
+                    egui::Label::new(RichText::new(readout).monospace().color(theme::TEXT_STRONG))
                         .sense(egui::Sense::click()),
-                    )
-                    .double_clicked()
-                {
-                    self.set_channel_gain(&name, 0.0);
-                }
-                if ui
-                    .add(
-                        egui::Slider::new(&mut gain, -24.0..=12.0)
-                            .show_value(false)
-                            .step_by(0.1),
-                    )
-                    .changed()
-                {
-                    self.set_channel_gain(&name, f64::from(gain));
-                }
-            });
+                )
+                .double_clicked()
+            {
+                self.set_channel_gain(&name, 0.0);
+            }
+            if ui
+                .add(
+                    egui::Slider::new(&mut gain, -24.0..=12.0)
+                        .show_value(false)
+                        .step_by(0.1),
+                )
+                .changed()
+            {
+                self.set_channel_gain(&name, f64::from(gain));
+            }
         });
 
         // Virtual or direct. The web puts this on a switch whose *label* is

@@ -197,15 +197,16 @@ impl StudioSpike {
     /// `#objectTestFeatureRow`, shown at the top of the objects section.
     pub(crate) fn object_test_feature_row(&mut self, ui: &mut Ui) {
         let mut on = self.prefs.object_test.feature;
-        ui.horizontal(|ui| {
-            ui.label(t("objectTest.feature"));
-            widgets::help(ui, "help.objectTestFeature");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row_help(
+            ui,
+            t("objectTest.feature"),
+            "help.objectTestFeature",
+            |ui| {
                 if widgets::switch(ui, &mut on).changed() {
                     self.set_object_test_feature(on);
                 }
-            });
-        });
+            },
+        );
     }
 
     fn set_object_test_feature(&mut self, on: bool) {
@@ -252,16 +253,17 @@ impl StudioSpike {
         self.object_test_transport(ui);
         self.object_test_clip_row(ui);
         let mut adm = self.prefs.object_test.adm_view;
-        ui.horizontal(|ui| {
-            ui.label(t("objectTest.admView"));
-            widgets::help(ui, "help.objectTestAdmView");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row_help(
+            ui,
+            t("objectTest.admView"),
+            "help.objectTestAdmView",
+            |ui| {
                 if widgets::switch(ui, &mut adm).changed() {
                     self.prefs.object_test.adm_view = adm;
                     self.mark_prefs_dirty();
                 }
-            });
-        });
+            },
+        );
         widgets::note(ui, t("objectTest.hint"));
         self.object_test_sheet(ui);
         let p = self.prefs.object_test.position;
@@ -418,20 +420,16 @@ impl StudioSpike {
     fn object_test_snap_row(&mut self, ui: &mut Ui) {
         let has_grid = self.ensure_object_test_grid();
         let mut snap = self.prefs.object_test.snap;
-        ui.horizontal(|ui| {
-            ui.label(t("objectTest.snap"));
-            widgets::help(ui, "help.objectTestSnap");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_enabled_ui(has_grid, |ui| {
-                    if widgets::switch(ui, &mut snap).changed() {
-                        self.prefs.object_test.snap = snap;
-                        self.mark_prefs_dirty();
-                        if snap {
-                            // Turning it on re-snaps where the source already is.
-                            self.set_object_test_position(self.prefs.object_test.position);
-                        }
+        widgets::label_row_help(ui, t("objectTest.snap"), "help.objectTestSnap", |ui| {
+            ui.add_enabled_ui(has_grid, |ui| {
+                if widgets::switch(ui, &mut snap).changed() {
+                    self.prefs.object_test.snap = snap;
+                    self.mark_prefs_dirty();
+                    if snap {
+                        // Turning it on re-snaps where the source already is.
+                        self.set_object_test_position(self.prefs.object_test.position);
                     }
-                });
+                }
             });
         });
         if snap && !has_grid {
@@ -459,30 +457,26 @@ impl StudioSpike {
             self.apply_object_test_rotation();
         }
         let mut pos = period_to_slider(self.prefs.object_test.rotation.period);
-        ui.horizontal(|ui| {
-            ui.label(t("objectTest.period"));
-            widgets::help(ui, "help.objectTestPeriod");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_sized(
-                    egui::vec2(56.0, ui.spacing().interact_size.y),
-                    egui::Label::new(
-                        RichText::new(format_period(self.prefs.object_test.rotation.period))
-                            .monospace()
-                            .color(theme::TEXT_STRONG),
-                    ),
-                );
-                if ui
-                    .add(
-                        egui::Slider::new(&mut pos, 0.0..=PERIOD_STEPS)
-                            .show_value(false)
-                            .step_by(1.0),
-                    )
-                    .changed()
-                {
-                    self.prefs.object_test.rotation.period = slider_to_period(pos);
-                    self.apply_object_test_rotation();
-                }
-            });
+        widgets::label_row_help(ui, t("objectTest.period"), "help.objectTestPeriod", |ui| {
+            ui.add_sized(
+                egui::vec2(56.0, ui.spacing().interact_size.y),
+                egui::Label::new(
+                    RichText::new(format_period(self.prefs.object_test.rotation.period))
+                        .monospace()
+                        .color(theme::TEXT_STRONG),
+                ),
+            );
+            if ui
+                .add(
+                    egui::Slider::new(&mut pos, 0.0..=PERIOD_STEPS)
+                        .show_value(false)
+                        .step_by(1.0),
+                )
+                .changed()
+            {
+                self.prefs.object_test.rotation.period = slider_to_period(pos);
+                self.apply_object_test_rotation();
+            }
         });
         if self.prefs.object_test.rotation.axis != "free" {
             return;
@@ -516,35 +510,31 @@ impl StudioSpike {
     /// The radius slider, with the room's own distances marked on the track.
     fn radius_row(&mut self, ui: &mut Ui, radius: &mut f64) -> bool {
         let mut changed = false;
-        ui.horizontal(|ui| {
-            ui.label(t("objectTest.radius"));
-            widgets::help(ui, "help.objectTestRadius");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_sized(
-                    egui::vec2(64.0, ui.spacing().interact_size.y),
-                    egui::Label::new(
-                        RichText::new(format_radius(*radius))
-                            .monospace()
-                            .color(theme::TEXT_STRONG),
-                    ),
+        widgets::label_row_help(ui, t("objectTest.radius"), "help.objectTestRadius", |ui| {
+            ui.add_sized(
+                egui::vec2(64.0, ui.spacing().interact_size.y),
+                egui::Label::new(
+                    RichText::new(format_radius(*radius))
+                        .monospace()
+                        .color(theme::TEXT_STRONG),
+                ),
+            );
+            let response = ui.add(
+                egui::Slider::new(radius, 0.0..=RADIUS_MAX)
+                    .show_value(false)
+                    .step_by(0.01),
+            );
+            changed = response.changed();
+            // The marks are guides; `snap_radius` is what lands on them.
+            let track = response.rect;
+            for (value, _) in RADIUS_MARKS {
+                let x = track.left() + track.width() * (value / RADIUS_MAX) as f32;
+                ui.painter().vline(
+                    x,
+                    (track.bottom() - 4.0)..=track.bottom(),
+                    egui::Stroke::new(1.0, theme::TEXT_FAINT),
                 );
-                let response = ui.add(
-                    egui::Slider::new(radius, 0.0..=RADIUS_MAX)
-                        .show_value(false)
-                        .step_by(0.01),
-                );
-                changed = response.changed();
-                // The marks are guides; `snap_radius` is what lands on them.
-                let track = response.rect;
-                for (value, _) in RADIUS_MARKS {
-                    let x = track.left() + track.width() * (value / RADIUS_MAX) as f32;
-                    ui.painter().vline(
-                        x,
-                        (track.bottom() - 4.0)..=track.bottom(),
-                        egui::Stroke::new(1.0, theme::TEXT_FAINT),
-                    );
-                }
-            });
+            }
         });
         changed
     }
