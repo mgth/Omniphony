@@ -55,9 +55,6 @@ impl StudioSpike {
         Section::new("objectsSection", "section.objects")
             .default_open(true)
             .summary(format!("{}", rows.len()))
-            .max_height(crate::ui::section::open_max_height_large(
-                ui.ctx().content_rect().height(),
-            ))
             .show(ui, |ui| {
                 self.object_test_feature_row(ui);
                 if rows.is_empty() {
@@ -193,9 +190,6 @@ impl StudioSpike {
         Section::new("speakersSection", "section.speakers")
             .default_open(true)
             .summary(layout_name)
-            .max_height(crate::ui::section::open_max_height_large(
-                ui.ctx().content_rect().height(),
-            ))
             .show(ui, |ui| {
                 self.layout_actions(ui);
                 if rows.is_empty() {

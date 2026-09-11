@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::app::StudioSpike;
 use crate::i18n::t;
-use crate::ui::section::{Section, open_max_height};
+use crate::ui::section::Section;
 use crate::ui::widgets;
 use crate::view::objects::ObjectDisplayMode;
 use crate::view::trails::TrailMode;
@@ -13,7 +13,6 @@ use crate::view::volumes::{Colormap, DiscontinuityMode};
 
 impl StudioSpike {
     pub(crate) fn display_sections(&mut self, ui: &mut egui::Ui) {
-        let max_height = open_max_height(ui.ctx().content_rect().height());
         let mut locale_choice: Option<String> = None;
         let locale = self
             .prefs
@@ -24,7 +23,6 @@ impl StudioSpike {
             let s = &mut self.settings;
             Section::new("displaySection", "section.display")
                 .default_open(true)
-                .max_height(max_height)
                 .show(ui, |ui| {
                     // The language row heads the Display section, as in the web.
                     widgets::label_row(ui, t("app.language"), |ui| {
@@ -130,7 +128,6 @@ impl StudioSpike {
         Section::new("trailSection", "trail.title")
             .info("trail")
             .default_open(true)
-            .max_height(max_height)
             .show(ui, |ui| {
                 widgets::switch_row(ui, t("trail.show"), &mut s.trails.enabled);
                 widgets::label_row(ui, t("trail.mode"), |ui| {
@@ -168,7 +165,6 @@ impl StudioSpike {
         Section::new("heatmapsSection", "display.heatmaps")
             .info("heatmap")
             .help("help.heatmaps")
-            .max_height(max_height)
             .show(ui, |ui| {
                 let combo = |ui: &mut egui::Ui, id: &str, label: &str, cm: &mut Colormap| {
                     widgets::label_row(ui, label, |ui| {

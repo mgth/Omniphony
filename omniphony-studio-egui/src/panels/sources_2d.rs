@@ -13,7 +13,7 @@ use egui::Ui;
 use crate::app::StudioSpike;
 use crate::i18n::t;
 use crate::ui::section::Section;
-use crate::ui::{section::open_max_height_large, widgets};
+use crate::ui::widgets;
 
 /// `PROCESSING_REASON_KEYS`: why a synthesis stage is or is not running.
 fn reason_text(reason: &str) -> &'static str {
@@ -62,7 +62,6 @@ impl StudioSpike {
         Section::new("twoDSourcesSection", "section.twoDSources")
             .help("help.twoDSources")
             .summary(summary)
-            .max_height(open_max_height_large(ui.ctx().content_rect().height()))
             .show(ui, |ui| {
                 // What the renderer is doing with the current stream.
                 let stream = processing

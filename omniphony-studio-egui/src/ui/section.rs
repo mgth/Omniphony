@@ -1,23 +1,17 @@
 //! `.info-section`: a rule, a header made of a title, an optional one-line
 //! summary and a chevron, and a body that expands in place.
 //!
-//! The body is height-bounded and scrolls internally
-//! (`--panel-open-max-height: min(44vh, 420px)`), which is what keeps an
-//! expanding section from resizing anything outside the overlay.
+//! The body takes its full height. The web bounds an open section
+//! (`--panel-open-max-height: min(44vh, 420px)`) and scrolls it inside; here
+//! the overlays already have a fixed extent and one scroll each, so a bound
+//! per section only nested a second scrollbar inside the first — a list of
+//! twenty speakers in a box of its own, inside a panel that scrolls anyway.
+//! An expanding section still cannot resize anything outside its overlay:
+//! the overlay's own scroll absorbs it.
 
 use egui::Ui;
 
 use super::theme;
-
-/// `min(44vh, 420px)`.
-pub fn open_max_height(viewport_height: f32) -> f32 {
-    (0.44 * viewport_height).min(420.0)
-}
-
-/// `min(52vh, 520px)`, for the sections the stylesheet marks as large.
-pub fn open_max_height_large(viewport_height: f32) -> f32 {
-    (0.52 * viewport_height).min(520.0)
-}
 
 /// The header's disclosure triangle, rotated by `openness` (0 = closed).
 fn paint_chevron(ui: &Ui, rect: egui::Rect, openness: f32) {
@@ -50,7 +44,6 @@ pub struct Section<'a> {
     help_key: Option<&'a str>,
     info_key: Option<&'a str>,
     default_open: bool,
-    max_height: f32,
 }
 
 impl<'a> Section<'a> {
@@ -64,7 +57,6 @@ impl<'a> Section<'a> {
             help_key: None,
             info_key: None,
             default_open: false,
-            max_height: 420.0,
         }
     }
 
@@ -90,11 +82,6 @@ impl<'a> Section<'a> {
 
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
-        self
-    }
-
-    pub fn max_height(mut self, height: f32) -> Self {
-        self.max_height = height;
         self
     }
 
@@ -162,17 +149,6 @@ impl<'a> Section<'a> {
         if header.inner.clicked() {
             state.toggle(ui);
         }
-        let max_height = self.max_height;
-        let id_salt = self.id.to_owned();
-        state
-            .show_body_unindented(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt(id_salt)
-                    .max_height(max_height)
-                    .auto_shrink([false, true])
-                    .show(ui, body)
-                    .inner
-            })
-            .map(|r| r.inner)
+        state.show_body_unindented(ui, body).map(|r| r.inner)
     }
 }

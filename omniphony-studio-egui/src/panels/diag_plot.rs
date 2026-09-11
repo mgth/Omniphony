@@ -457,7 +457,6 @@ impl StudioSpike {
         let open = Section::new("diagSection", "section.diagnostics")
             .info("telemetry")
             .summary(summary)
-            .max_height(CANVAS_HEIGHT + 160.0)
             .show(ui, |ui| {
                 self.diag_controls(ui, &metrics);
                 self.diag_canvas(ui, &metrics);
