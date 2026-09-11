@@ -10,7 +10,7 @@
 #   osc-address      129
 #   raw-send         131
 #   model-write      77
-#   model-impl       1
+#   model-impl       0
 #   side-effect      7
 #   frame-tick       9
 #   toolkit-in-core  0
@@ -82,7 +82,6 @@ model-write       src/panels/object_test.rs                 5
 model-write       src/panels/renderer.rs                    16
 model-write       src/panels/room.rs                        2
 model-write       src/panels/speaker_layouts.rs             1
-model-impl        src/panels/latency.rs                     1
 side-effect       src/app.rs                                1
 side-effect       src/panels/connection.rs                  2
 side-effect       src/panels/host_services.rs               1
