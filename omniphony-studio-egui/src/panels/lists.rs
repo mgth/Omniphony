@@ -658,52 +658,40 @@ fn row_line(ui: &mut Ui, row: &Row, action: &mut RowAction) {
                     .color(theme::TEXT_MUTED),
             ),
         );
-        // Everything to the right of the meter is fixed width, so the meter
-        // gets what is left — the `1fr` column of the web's grid.
-        let spacing = ui.spacing().item_spacing.x;
-        let mut reserved = TOGGLE_W * 2.0 + spacing * 2.0;
-        if row.size.is_some() {
-            reserved += row_glyphs::SIZE_W + spacing;
-        }
-        if let Some(detail) = &row.detail {
-            reserved += ui
-                .painter()
-                .layout_no_wrap(
-                    detail.clone(),
-                    egui::FontId::proportional(theme::FONT_SIZE_SMALL),
-                    theme::TEXT_MUTED,
-                )
-                .size()
-                .x
-                + spacing;
-        }
-        let width = (ui.available_width() - reserved).max(24.0);
-        let peak = row.meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
-        let hold = row.hold.unwrap_or(peak);
-        crate::ui::meter::level_meter_sized(
-            ui,
-            width,
-            meter_fraction(peak),
-            (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
-            hold >= 0.0,
-            row.contribution.map(|c| c as f32),
-        );
-        if let Some(size) = row.size {
-            row_glyphs::size_gauges(ui, size);
-        }
-        if let Some(detail) = &row.detail {
-            ui.label(
-                RichText::new(detail)
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
+        // The web's `1fr`: the meter takes whatever the fixed columns to its
+        // right leave. Those are placed first, right to left, and the meter is
+        // handed the remainder — measuring them by hand instead would make the
+        // row overflow whenever the guess came up short, which widens the
+        // scroll area, which widens the next row's slack, and the list fans out
+        // as it goes down.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if toggle_letter(ui, "S", false).clicked() {
+                *action = RowAction::Solo;
+            }
+            if toggle_letter(ui, "M", row.muted).clicked() {
+                *action = RowAction::Mute;
+            }
+            if let Some(size) = row.size {
+                row_glyphs::size_gauges(ui, size);
+            }
+            if let Some(detail) = &row.detail {
+                ui.label(
+                    RichText::new(detail)
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                );
+            }
+            let peak = row.meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
+            let hold = row.hold.unwrap_or(peak);
+            crate::ui::meter::level_meter_sized(
+                ui,
+                ui.available_width(),
+                meter_fraction(peak),
+                (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
+                hold >= 0.0,
+                row.contribution.map(|c| c as f32),
             );
-        }
-        if toggle_letter(ui, "M", row.muted).clicked() {
-            *action = RowAction::Mute;
-        }
-        if toggle_letter(ui, "S", false).clicked() {
-            *action = RowAction::Solo;
-        }
+        });
     });
 }
 
