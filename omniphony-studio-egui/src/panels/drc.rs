@@ -84,9 +84,10 @@ impl StudioSpike {
                 }
 
                 let mut percent = (weight * 100.0).round();
-                if widgets::value_slider(
+                if widgets::value_slider_help(
                     ui,
                     t("input.drc_weight"),
+                    "help.drc.weight",
                     &mut percent,
                     0.0..=100.0,
                     1.0,
@@ -100,7 +101,8 @@ impl StudioSpike {
 
                 ui.separator();
                 let mut on = loudness;
-                if widgets::switch_row(ui, t("section.loudness"), &mut on) {
+                if widgets::switch_row_help(ui, t("section.loudness"), "help.drc.loudness", &mut on)
+                {
                     self.live.lock().unwrap().app.loudness = Some(u8::from(on));
                     self.ctl
                         .send_int("/omniphony/control/loudness", i32::from(on));

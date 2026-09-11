@@ -91,7 +91,12 @@ impl StudioSpike {
                 });
 
                 let mut on = synthetic;
-                if widgets::switch_row(ui, t("twoDSources.syntheticObjectsLabel"), &mut on) {
+                if widgets::switch_row_help(
+                    ui,
+                    t("twoDSources.syntheticObjectsLabel"),
+                    "help.syntheticObjects",
+                    &mut on,
+                ) {
                     self.set_option("synthetic_objects_enabled", serde_json::json!(on));
                 }
                 widgets::note(

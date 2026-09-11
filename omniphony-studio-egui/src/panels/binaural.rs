@@ -161,7 +161,12 @@ impl StudioSpike {
         }
 
         let mut eq = flag(doc, &["diffuseFieldEq"], false);
-        if widgets::switch_row(ui, t("binaural.diffuseFieldEq"), &mut eq) {
+        if widgets::switch_row_help(
+            ui,
+            t("binaural.diffuseFieldEq"),
+            "help.binaural.diffuseFieldEq",
+            &mut eq,
+        ) {
             self.ctl.send_int(
                 "/omniphony/control/binaural/diffuse_field_eq",
                 i32::from(eq),
@@ -170,9 +175,10 @@ impl StudioSpike {
 
         // The head radius travels in metres; the slider is in centimetres.
         let mut radius_cm = (number(doc, &["headRadiusM"], 0.0875) * 100.0) as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("binaural.headRadius"),
+            "help.binaural.headRadius",
             &mut radius_cm,
             5.0..=15.0,
             0.1,
@@ -230,29 +236,35 @@ impl StudioSpike {
             ];
             let current = self.pinna_preset.clone();
             let mut chosen = current.clone();
-            widgets::label_row(ui, t("binaural.pinnaPreset"), |ui| {
-                widgets::bounded_combo(ui, 120.0, |ui, w| {
-                    egui::ComboBox::from_id_salt("pinna-preset")
-                        .selected_text(t(presets
-                            .iter()
-                            .find(|(id, _)| *id == current)
-                            .map(|(_, key)| *key)
-                            .unwrap_or("binaural.pinnaPreset.pbnh")))
-                        .width(w)
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for (id, key) in presets {
-                                ui.selectable_value(&mut chosen, id.to_owned(), t(key));
-                            }
-                        })
-                });
-            });
+            widgets::label_row_help(
+                ui,
+                t("binaural.pinnaPreset"),
+                "help.binaural.pinnaPreset",
+                |ui| {
+                    widgets::bounded_combo(ui, 120.0, |ui, w| {
+                        egui::ComboBox::from_id_salt("pinna-preset")
+                            .selected_text(t(presets
+                                .iter()
+                                .find(|(id, _)| *id == current)
+                                .map(|(_, key)| *key)
+                                .unwrap_or("binaural.pinnaPreset.pbnh")))
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for (id, key) in presets {
+                                    ui.selectable_value(&mut chosen, id.to_owned(), t(key));
+                                }
+                            })
+                    });
+                },
+            );
             let mut changed = chosen != current;
             self.pinna_preset = chosen;
             let mut d_scale = self.pinna_d_scale;
-            changed |= widgets::value_slider(
+            changed |= widgets::value_slider_help(
                 ui,
                 t("binaural.pinnaDScale"),
+                "help.binaural.pinnaDScale",
                 &mut d_scale,
                 50.0..=150.0,
                 5.0,
@@ -260,9 +272,10 @@ impl StudioSpike {
             );
             self.pinna_d_scale = d_scale;
             let mut depth = self.pinna_depth;
-            changed |= widgets::value_slider(
+            changed |= widgets::value_slider_help(
                 ui,
                 t("binaural.pinnaDepth"),
+                "help.binaural.pinnaDepth",
                 &mut depth,
                 0.0..=100.0,
                 5.0,
@@ -274,9 +287,10 @@ impl StudioSpike {
             }
         } else if source == "prtf" {
             let mut depth = self.prtf_depth;
-            let mut changed = widgets::value_slider(
+            let mut changed = widgets::value_slider_help(
                 ui,
                 t("binaural.prtfDepth"),
+                "help.binaural.prtfDepth",
                 &mut depth,
                 0.0..=100.0,
                 5.0,
@@ -284,9 +298,10 @@ impl StudioSpike {
             );
             self.prtf_depth = depth;
             let mut freq_scale = self.prtf_freq_scale;
-            changed |= widgets::value_slider(
+            changed |= widgets::value_slider_help(
                 ui,
                 t("binaural.prtfFreqScale"),
+                "help.binaural.prtfFreqScale",
                 &mut freq_scale,
                 50.0..=150.0,
                 5.0,
@@ -327,9 +342,10 @@ impl StudioSpike {
                 .color(theme::TEXT_STRONG),
         );
         let mut scale = number(doc, &["unitScaleM"], 1.0) as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("binaural.distanceScale"),
+            "help.binaural.distanceScale",
             &mut scale,
             0.1..=10.0,
             0.1,
@@ -339,7 +355,12 @@ impl StudioSpike {
                 .send_float("/omniphony/control/binaural/unit_scale", scale);
         }
         let mut air = flag(doc, &["airAbsorption"], true);
-        if widgets::switch_row(ui, t("binaural.airAbsorption"), &mut air) {
+        if widgets::switch_row_help(
+            ui,
+            t("binaural.airAbsorption"),
+            "help.binaural.airAbsorption",
+            &mut air,
+        ) {
             self.ctl
                 .send_int("/omniphony/control/binaural/air_absorption", i32::from(air));
         }
@@ -355,7 +376,12 @@ impl StudioSpike {
 
         // Early reflections, then their parameters while they are on.
         let mut reflections = flag(doc, &["reflections", "enabled"], false);
-        if widgets::switch_row(ui, t("binaural.earlyReflections"), &mut reflections) {
+        if widgets::switch_row_help(
+            ui,
+            t("binaural.earlyReflections"),
+            "help.binaural.earlyReflections",
+            &mut reflections,
+        ) {
             self.ctl.send_int(
                 "/omniphony/control/binaural/reflections/enabled",
                 i32::from(reflections),
@@ -363,9 +389,10 @@ impl StudioSpike {
         }
         if reflections {
             let mut level = number(doc, &["reflections", "level"], 0.5) as f32;
-            if widgets::value_slider(
+            if widgets::value_slider_help(
                 ui,
                 t("binaural.reflectionLevel"),
+                "help.binaural.reflectionLevel",
                 &mut level,
                 0.0..=1.0,
                 0.01,
@@ -394,9 +421,16 @@ impl StudioSpike {
             .enumerate()
             {
                 let mut value = room[index] as f32;
-                if widgets::value_slider(
+                // One help for the three sliders, as the web has one label for
+                // them; each slider opens its own card, under itself.
+                let help = widgets::Help::text(
+                    ("binaural-room", axis),
+                    crate::i18n::lookup("help.binaural.room").unwrap_or(""),
+                );
+                if widgets::value_slider_help(
                     ui,
                     &format!("{} {label}", t("binaural.roomDims")),
+                    help,
                     &mut value,
                     1.0..=20.0,
                     0.1,
@@ -411,9 +445,10 @@ impl StudioSpike {
             // The cutoff travels in hertz; the slider is in kilohertz.
             let mut cutoff_khz =
                 (number(doc, &["reflections", "wallCutoffHz"], 6000.0) / 1000.0) as f32;
-            if widgets::value_slider(
+            if widgets::value_slider_help(
                 ui,
                 t("binaural.wallDamping"),
+                "help.binaural.wallDamping",
                 &mut cutoff_khz,
                 1.0..=20.0,
                 0.5,
@@ -428,7 +463,12 @@ impl StudioSpike {
 
         ui.separator();
         let mut reverb = flag(doc, &["reverb", "enabled"], false);
-        if widgets::switch_row(ui, t("binaural.lateReverb"), &mut reverb) {
+        if widgets::switch_row_help(
+            ui,
+            t("binaural.lateReverb"),
+            "help.binaural.lateReverb",
+            &mut reverb,
+        ) {
             self.ctl.send_int(
                 "/omniphony/control/binaural/reverb/enabled",
                 i32::from(reverb),
@@ -438,9 +478,10 @@ impl StudioSpike {
             return;
         }
         let mut level = number(doc, &["reverb", "level"], 0.25) as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("binaural.reverbLevel"),
+            "help.binaural.reverbLevel",
             &mut level,
             0.0..=1.0,
             0.01,
@@ -450,16 +491,23 @@ impl StudioSpike {
                 .send_float("/omniphony/control/binaural/reverb/level", level);
         }
         let mut rt60 = number(doc, &["reverb", "rt60S"], 0.35) as f32;
-        if widgets::value_slider(ui, t("binaural.rt60"), &mut rt60, 0.1..=1.5, 0.05, |v| {
-            format!("{v:.2}")
-        }) {
+        if widgets::value_slider_help(
+            ui,
+            t("binaural.rt60"),
+            "help.binaural.rt60",
+            &mut rt60,
+            0.1..=1.5,
+            0.05,
+            |v| format!("{v:.2}"),
+        ) {
             self.ctl
                 .send_float("/omniphony/control/binaural/reverb/rt60", rt60);
         }
         let mut size = number(doc, &["reverb", "size"], 1.0) as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("binaural.reverbSize"),
+            "help.binaural.reverbSize",
             &mut size,
             0.5..=2.0,
             0.05,
@@ -472,25 +520,27 @@ impl StudioSpike {
         self.decay_ratio_row(
             ui,
             t("binaural.reverbBassDecay"),
+            "help.binaural.reverbBassDecay",
             "rt60_low_ratio",
             number(doc, &["reverb", "rt60LowRatio"], 1.0),
         );
         self.decay_ratio_row(
             ui,
             t("binaural.reverbTrebleDecay"),
+            "help.binaural.reverbTrebleDecay",
             "rt60_high_ratio",
             number(doc, &["reverb", "rt60HighRatio"], 1.0),
         );
     }
 
     /// A ratio slider whose scale is log2, so 1.0 is the centre.
-    fn decay_ratio_row(&mut self, ui: &mut Ui, label: &str, address: &str, ratio: f64) {
+    fn decay_ratio_row(&mut self, ui: &mut Ui, label: &str, help: &str, address: &str, ratio: f64) {
         let mut octaves = if ratio > 0.0 {
             ratio.log2() as f32
         } else {
             0.0
         };
-        if widgets::value_slider(ui, label, &mut octaves, -2.0..=2.0, 0.1, |v| {
+        if widgets::value_slider_help(ui, label, help, &mut octaves, -2.0..=2.0, 0.1, |v| {
             format!("{:.2}", 2f32.powf(v))
         }) {
             self.ctl.send_float(
@@ -544,49 +594,60 @@ impl StudioSpike {
 
         let address = text(doc, &["tracking", "address"]).unwrap_or_default();
         let mut edited = address.clone();
-        widgets::label_row(ui, t("binaural.oscAddressLabel"), |ui| {
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut edited)
-                        .desired_width(170.0)
-                        .hint_text("/android/rotationvector"),
-                )
-                .lost_focus()
-                && edited.trim() != address
-            {
-                self.ctl
-                    .send_string("/omniphony/control/head/tracking/address", edited.trim());
-            }
-        });
+        widgets::label_row_help(
+            ui,
+            t("binaural.oscAddressLabel"),
+            "help.binaural.oscAddress",
+            |ui| {
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut edited)
+                            .desired_width(170.0)
+                            .hint_text("/android/rotationvector"),
+                    )
+                    .lost_focus()
+                    && edited.trim() != address
+                {
+                    self.ctl
+                        .send_string("/omniphony/control/head/tracking/address", edited.trim());
+                }
+            },
+        );
 
         let format = text(doc, &["tracking", "format"]).unwrap_or_else(|| "auto".to_owned());
         let mut chosen = format.clone();
-        widgets::label_row(ui, t("binaural.trackFormatLabel"), |ui| {
-            widgets::bounded_combo(ui, 140.0, |ui, w| {
-                egui::ComboBox::from_id_salt("track-format")
-                    .selected_text(t(TRACK_FORMATS
-                        .iter()
-                        .find(|(id, _)| *id == format)
-                        .map(|(_, key)| *key)
-                        .unwrap_or("common.auto")))
-                    .width(w)
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        for (id, key) in TRACK_FORMATS {
-                            ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
-                        }
-                    })
-            });
-        });
+        widgets::label_row_help(
+            ui,
+            t("binaural.trackFormatLabel"),
+            "help.binaural.trackFormat",
+            |ui| {
+                widgets::bounded_combo(ui, 140.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("track-format")
+                        .selected_text(t(TRACK_FORMATS
+                            .iter()
+                            .find(|(id, _)| *id == format)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("common.auto")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in TRACK_FORMATS {
+                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                            }
+                        })
+                });
+            },
+        );
         if chosen != format {
             self.ctl
                 .send_string("/omniphony/control/head/tracking/format", &chosen);
         }
 
         let mut smoothing = number(doc, &["tracking", "smoothing"], 0.2) as f32;
-        if widgets::value_slider(
+        if widgets::value_slider_help(
             ui,
             t("binaural.trackSmoothing"),
+            "help.binaural.trackSmoothing",
             &mut smoothing,
             0.0..=0.99,
             0.01,
@@ -596,7 +657,12 @@ impl StudioSpike {
                 .send_float("/omniphony/control/head/tracking/smoothing", smoothing);
         }
         let mut invert = flag(doc, &["tracking", "invert"], false);
-        if widgets::switch_row(ui, t("binaural.invertRotation"), &mut invert) {
+        if widgets::switch_row_help(
+            ui,
+            t("binaural.invertRotation"),
+            "help.binaural.invertRotation",
+            &mut invert,
+        ) {
             self.ctl
                 .send_int("/omniphony/control/head/tracking/invert", i32::from(invert));
         }

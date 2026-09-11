@@ -90,7 +90,8 @@ impl StudioSpike {
             .show(ui, |ui| {
                 ui.add_enabled_ui(!frozen, |ui| {
                     let mut changed = false;
-                    changed |= metre_row(ui, t("room.axis.width"), &mut edit.width);
+                    changed |=
+                        metre_row(ui, t("room.axis.width"), "help.room.width", &mut edit.width);
                     ui.horizontal(|ui| {
                         widgets::note(ui, t("room.mpu"));
                         ui.label(
@@ -100,18 +101,31 @@ impl StudioSpike {
                                 .color(theme::TEXT),
                         );
                     });
-                    changed |= metre_row(ui, t("room.axis.length"), &mut edit.front);
-                    changed |= metre_row(ui, t("room.axis.rear"), &mut edit.rear);
-                    changed |= metre_row(ui, t("room.axis.height"), &mut edit.height);
-                    changed |= metre_row(ui, t("room.axis.lower"), &mut edit.lower);
+                    changed |= metre_row(
+                        ui,
+                        t("room.axis.length"),
+                        "help.room.front",
+                        &mut edit.front,
+                    );
+                    changed |= metre_row(ui, t("room.axis.rear"), "help.room.rear", &mut edit.rear);
+                    changed |= metre_row(
+                        ui,
+                        t("room.axis.height"),
+                        "help.room.height",
+                        &mut edit.height,
+                    );
+                    changed |=
+                        metre_row(ui, t("room.axis.lower"), "help.room.lower", &mut edit.lower);
 
                     // The blend only means something with different front and
                     // rear depths.
                     if (edit.front - edit.rear).abs() >= 1e-6 {
                         let mut percent = (edit.center_blend * 100.0) as f32;
-                        let response = ui.horizontal(|ui| {
-                            ui.label(t("room.centerBlend"));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let slider = widgets::label_row_help(
+                            ui,
+                            t("room.centerBlend"),
+                            "help.room.centerBlend",
+                            |ui| {
                                 ui.label(
                                     RichText::new(format!("{:.0}/{:.0}", percent, 100.0 - percent))
                                         .monospace()
@@ -122,10 +136,8 @@ impl StudioSpike {
                                         .step_by(1.0)
                                         .show_value(false),
                                 )
-                            })
-                            .inner
-                        });
-                        let slider = response.inner;
+                            },
+                        );
                         if slider.double_clicked() {
                             edit.center_blend = 0.5;
                             changed = true;
@@ -178,9 +190,9 @@ impl StudioSpike {
 }
 
 /// One metre field: two decimals, never below a centimetre.
-fn metre_row(ui: &mut Ui, label: &str, value: &mut f64) -> bool {
+fn metre_row(ui: &mut Ui, label: &str, help: &str, value: &mut f64) -> bool {
     let mut changed = false;
-    widgets::label_row(ui, label, |ui| {
+    widgets::label_row_help(ui, label, help, |ui| {
         let mut metres = *value as f32;
         if ui
             .add_sized(

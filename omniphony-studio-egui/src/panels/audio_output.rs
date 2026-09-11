@@ -77,26 +77,35 @@ impl StudioSpike {
     fn output_backend_row(&mut self, ui: &mut Ui, file_backend: bool) {
         let current = if file_backend { "file" } else { "device" };
         let mut chosen = current.to_owned();
-        widgets::label_row(ui, t("audio.outputBackend"), |ui| {
-            widgets::bounded_combo(ui, 150.0, |ui, w| {
-                egui::ComboBox::from_id_salt("audio-output-backend")
-                    .selected_text(t(if file_backend {
-                        "audio.backendFile"
-                    } else {
-                        "audio.backendDevice"
-                    }))
-                    .width(w)
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut chosen,
-                            "device".to_owned(),
-                            t("audio.backendDevice"),
-                        );
-                        ui.selectable_value(&mut chosen, "file".to_owned(), t("audio.backendFile"));
-                    })
-            });
-        });
+        widgets::label_row_help(
+            ui,
+            t("audio.outputBackend"),
+            "help.audio.outputBackend",
+            |ui| {
+                widgets::bounded_combo(ui, 150.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("audio-output-backend")
+                        .selected_text(t(if file_backend {
+                            "audio.backendFile"
+                        } else {
+                            "audio.backendDevice"
+                        }))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut chosen,
+                                "device".to_owned(),
+                                t("audio.backendDevice"),
+                            );
+                            ui.selectable_value(
+                                &mut chosen,
+                                "file".to_owned(),
+                                t("audio.backendFile"),
+                            );
+                        })
+                });
+            },
+        );
         if chosen != current {
             // Deliberately outside the batched config, like the web panel.
             self.live.lock().unwrap().app.audio.audio_output_backend = Some(chosen.clone());
@@ -129,32 +138,41 @@ impl StudioSpike {
                 .unwrap_or_else(|| value.to_owned())
         };
         let mut chosen = current.clone();
-        widgets::label_row(ui, t("audio.outputDevice"), |ui| {
-            if ui
-                .small_button("↺")
-                .on_hover_text(t("audio.refreshDevices"))
-                .clicked()
-            {
-                self.ctl
-                    .send_no_args("/omniphony/control/audio/output_devices/refresh");
-            }
-            // Device names are long (`alsa_output.usb-…iec958-stereo`): the
-            // list is cut to its row and says the whole name on hover.
-            widgets::bounded_combo(ui, 180.0, |ui, w| {
-                egui::ComboBox::from_id_salt("audio-output-device")
-                    .selected_text(label_of(&current))
-                    .width(w)
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut chosen, String::new(), default_label);
-                        for device in devices {
-                            ui.selectable_value(&mut chosen, device.value.clone(), &device.label);
-                        }
-                    })
-            })
-            .response
-            .on_hover_text(label_of(&current));
-        });
+        widgets::label_row_help(
+            ui,
+            t("audio.outputDevice"),
+            "help.audio.outputDevice",
+            |ui| {
+                if ui
+                    .small_button("↺")
+                    .on_hover_text(t("audio.refreshDevices"))
+                    .clicked()
+                {
+                    self.ctl
+                        .send_no_args("/omniphony/control/audio/output_devices/refresh");
+                }
+                // Device names are long (`alsa_output.usb-…iec958-stereo`): the
+                // list is cut to its row and says the whole name on hover.
+                widgets::bounded_combo(ui, 180.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("audio-output-device")
+                        .selected_text(label_of(&current))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut chosen, String::new(), default_label);
+                            for device in devices {
+                                ui.selectable_value(
+                                    &mut chosen,
+                                    device.value.clone(),
+                                    &device.label,
+                                );
+                            }
+                        })
+                })
+                .response
+                .on_hover_text(label_of(&current));
+            },
+        );
         if chosen != current {
             self.live.lock().unwrap().app.audio.audio_output_device =
                 (!chosen.is_empty()).then_some(chosen);
@@ -168,7 +186,12 @@ impl StudioSpike {
             .clone()
             .unwrap_or_else(|| "-".into());
         let mut named_pipe = file != "-";
-        if widgets::switch_row(ui, t("audio.namedPipe"), &mut named_pipe) {
+        if widgets::switch_row_help(
+            ui,
+            t("audio.namedPipe"),
+            "help.audio.namedPipe",
+            &mut named_pipe,
+        ) {
             if named_pipe {
                 // Restore the path the switch remembered, if there is one.
                 let remembered = self.audio_pipe_path.clone();
@@ -186,7 +209,7 @@ impl StudioSpike {
         }
         if named_pipe {
             let mut path = if file == "-" { String::new() } else { file };
-            widgets::label_row(ui, t("audio.outputFile"), |ui| {
+            widgets::label_row_help(ui, t("audio.outputFile"), "help.audio.outputFile", |ui| {
                 if ui
                     .add(
                         egui::TextEdit::singleline(&mut path)
@@ -211,23 +234,28 @@ impl StudioSpike {
             .filter(|f| FILE_FORMATS.iter().any(|(id, _)| id == f))
             .unwrap_or_else(|| "raw_f32".to_owned());
         let mut chosen = current.clone();
-        widgets::label_row(ui, t("audio.outputFileFormat"), |ui| {
-            widgets::bounded_combo(ui, 150.0, |ui, w| {
-                egui::ComboBox::from_id_salt("audio-file-format")
-                    .selected_text(t(FILE_FORMATS
-                        .iter()
-                        .find(|(id, _)| *id == current)
-                        .map(|(_, key)| *key)
-                        .unwrap_or("audio.formatRawF32")))
-                    .width(w)
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        for (id, key) in FILE_FORMATS {
-                            ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
-                        }
-                    })
-            });
-        });
+        widgets::label_row_help(
+            ui,
+            t("audio.outputFileFormat"),
+            "help.audio.outputFileFormat",
+            |ui| {
+                widgets::bounded_combo(ui, 150.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("audio-file-format")
+                        .selected_text(t(FILE_FORMATS
+                            .iter()
+                            .find(|(id, _)| *id == current)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("audio.formatRawF32")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in FILE_FORMATS {
+                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                            }
+                        })
+                });
+            },
+        );
         if chosen != current {
             self.live.lock().unwrap().app.audio.audio_output_file_format = Some(chosen.clone());
             self.ctl
@@ -236,18 +264,23 @@ impl StudioSpike {
     }
 
     fn channel_mapping_row(&mut self, ui: &mut Ui, mapping: &str, unroutable: &[String]) {
-        widgets::label_row(ui, t("audio.channelMapping"), |ui| {
-            if let Some(picked) = widgets::toggle_buttons(
-                ui,
-                &mapping.to_owned(),
-                &[
-                    ("by_index".to_owned(), t("audio.channelMapping.byIndex")),
-                    ("by_name".to_owned(), t("audio.channelMapping.byName")),
-                ],
-            ) {
-                self.set_option("output_channel_mapping", serde_json::json!(picked));
-            }
-        });
+        widgets::label_row_help(
+            ui,
+            t("audio.channelMapping"),
+            "help.audio.channelMapping",
+            |ui| {
+                if let Some(picked) = widgets::toggle_buttons(
+                    ui,
+                    &mapping.to_owned(),
+                    &[
+                        ("by_index".to_owned(), t("audio.channelMapping.byIndex")),
+                        ("by_name".to_owned(), t("audio.channelMapping.byName")),
+                    ],
+                ) {
+                    self.set_option("output_channel_mapping", serde_json::json!(picked));
+                }
+            },
+        );
         // Speakers the renderer could not place by name are a real routing
         // hole, so the warning stays visible while it lasts.
         if mapping == "by_name" && !unroutable.is_empty() {

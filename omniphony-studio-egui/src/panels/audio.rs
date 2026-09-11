@@ -106,7 +106,13 @@ impl StudioSpike {
                 ui.horizontal(|ui| {
                     clip_indicator(ui, clipping);
                     let mut on = auto_gain;
-                    if widgets::switch_row(ui, t("autoGain.title"), &mut on) && ready {
+                    if widgets::switch_row_help(
+                        ui,
+                        t("autoGain.title"),
+                        "help.master.autoGain",
+                        &mut on,
+                    ) && ready
+                    {
                         self.live.lock().unwrap().app.auto_gain = Some(on);
                         self.ctl
                             .send_int("/omniphony/control/auto_gain", i32::from(on));
@@ -114,9 +120,10 @@ impl StudioSpike {
                 });
                 let mut db = ceiling as f32;
                 ui.add_enabled_ui(ready, |ui| {
-                    if widgets::value_slider(
+                    if widgets::value_slider_help(
                         ui,
                         t("autoGain.ceiling"),
+                        "help.master.ceiling",
                         &mut db,
                         -12.0..=0.0,
                         0.1,

@@ -19,7 +19,7 @@ use egui::{RichText, Ui};
 use crate::app::StudioSpike;
 use crate::i18n::t;
 use crate::model::app_state::{AppState, RoomRatio, SourcePosition};
-use crate::ui::{theme, widgets};
+use crate::ui::{help, theme, widgets};
 
 /// Editable fixed-channel set with its default ADM cartesian poses (X
 /// left/right, Y rear/front, Z down/up; ear level Z = 0), used until the
@@ -724,7 +724,13 @@ impl StudioSpike {
                 }
             });
             ui.horizontal(|ui| {
-                coord_label(ui, t("speaker.metersCoords"));
+                help::label(
+                    ui,
+                    RichText::new(t("speaker.metersCoords"))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                    "help.speaker.positionMeters",
+                );
                 for (index, axis) in ["X", "Y", "Z"].into_iter().enumerate() {
                     let mut value = meters[index] as f32;
                     axis_label(ui, axis);
@@ -738,6 +744,7 @@ impl StudioSpike {
                     }
                 }
             });
+            help::card(ui, "help.speaker.positionMeters");
         });
         if let Some(next) = edit {
             self.set_channel_cartesian(name, next);
@@ -780,13 +787,20 @@ impl StudioSpike {
                 }
             });
             ui.horizontal(|ui| {
-                coord_label(ui, t("speaker.metersCoords"));
+                help::label(
+                    ui,
+                    RichText::new(t("speaker.metersCoords"))
+                        .size(theme::FONT_SIZE_SMALL)
+                        .color(theme::TEXT_MUTED),
+                    "help.speaker.positionMeters",
+                );
                 let mut d = dist_m as f32;
                 axis_label(ui, "Dist");
                 if coord_field(ui, &mut d, 0.01, Some(0.01..=f32::MAX), blank) {
                     edit = Some((az, el, f64::from(d) / scale_m));
                 }
             });
+            help::card(ui, "help.speaker.positionMeters");
         });
         if let Some((az, el, dist)) = edit {
             self.set_channel_polar(name, az, el, dist);
