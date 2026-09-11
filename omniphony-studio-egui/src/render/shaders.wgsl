@@ -274,9 +274,73 @@ fn vs_blit(@builtin(vertex_index) vi: u32) -> BlitOut {
     return out;
 }
 
+// The side panels' backdrop (`backdrop-filter: blur(8px)` in the web). The
+// panels float over the viewport, so what is behind them is this texture: the
+// blit takes a blurred copy of it inside their rounded rects and the sharp one
+// everywhere else. Rects are in framebuffer pixels (min.xy, max.xy);
+// params.x = corner radius in pixels, params.y = how many rects are live.
+struct Backdrop {
+    rect0: vec4<f32>,
+    rect1: vec4<f32>,
+    params: vec4<f32>,
+};
+@group(0) @binding(2) var blur_tex: texture_2d<f32>;
+@group(0) @binding(3) var<uniform> backdrop: Backdrop;
+
+// How much of the pixel at `p` lies inside the rounded rect `r`: the signed
+// distance to its edge, antialiased over one pixel.
+fn panel_cover(p: vec2<f32>, r: vec4<f32>, radius: f32) -> f32 {
+    let centre = (r.xy + r.zw) * 0.5;
+    let half = (r.zw - r.xy) * 0.5;
+    let q = abs(p - centre) - half + vec2<f32>(radius);
+    let d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    return clamp(0.5 - d, 0.0, 1.0);
+}
+
 @fragment
 fn fs_blit(in: BlitOut) -> @location(0) vec4<f32> {
-    return textureSample(scene_tex, scene_samp, in.uv);
+    let sharp = textureSample(scene_tex, scene_samp, in.uv);
+    // Sampled unconditionally: a sample under a position-dependent branch is
+    // outside uniform control flow.
+    let blurred = textureSample(blur_tex, scene_samp, in.uv);
+    var cover = 0.0;
+    if (backdrop.params.y > 0.5) {
+        cover = panel_cover(in.clip.xy, backdrop.rect0, backdrop.params.x);
+    }
+    if (backdrop.params.y > 1.5) {
+        cover = max(cover, panel_cover(in.clip.xy, backdrop.rect1, backdrop.params.x));
+    }
+    return mix(sharp, blurred, cover);
+}
+
+// Dual-filter (Kawase) blur: each pass reads a texture and writes one at half
+// or twice its size, sampling a few taps a half-texel apart. Three halvings
+// and two doublings make a wide, smooth blur for the cost of a handful of
+// small passes. The source texel size comes from the texture itself, so the
+// passes need no uniforms.
+@fragment
+fn fs_blur_down(in: BlitOut) -> @location(0) vec4<f32> {
+    let hp = 0.5 / vec2<f32>(textureDimensions(scene_tex));
+    var s = textureSample(scene_tex, scene_samp, in.uv) * 4.0;
+    s += textureSample(scene_tex, scene_samp, in.uv - hp);
+    s += textureSample(scene_tex, scene_samp, in.uv + hp);
+    s += textureSample(scene_tex, scene_samp, in.uv + vec2<f32>(hp.x, -hp.y));
+    s += textureSample(scene_tex, scene_samp, in.uv - vec2<f32>(hp.x, -hp.y));
+    return s / 8.0;
+}
+
+@fragment
+fn fs_blur_up(in: BlitOut) -> @location(0) vec4<f32> {
+    let hp = 0.5 / vec2<f32>(textureDimensions(scene_tex));
+    var s = textureSample(scene_tex, scene_samp, in.uv + vec2<f32>(-hp.x * 2.0, 0.0));
+    s += textureSample(scene_tex, scene_samp, in.uv + vec2<f32>(-hp.x, hp.y)) * 2.0;
+    s += textureSample(scene_tex, scene_samp, in.uv + vec2<f32>(0.0, hp.y * 2.0));
+    s += textureSample(scene_tex, scene_samp, in.uv + vec2<f32>(hp.x, hp.y)) * 2.0;
+    s += textureSample(scene_tex, scene_samp, in.uv + vec2<f32>(hp.x * 2.0, 0.0));
+    s += textureSample(scene_tex, scene_samp, in.uv + vec2<f32>(hp.x, -hp.y)) * 2.0;
+    s += textureSample(scene_tex, scene_samp, in.uv + vec2<f32>(0.0, -hp.y * 2.0));
+    s += textureSample(scene_tex, scene_samp, in.uv + vec2<f32>(-hp.x, -hp.y)) * 2.0;
+    return s / 12.0;
 }
 
 // --- ray-marched energy volumes (scene/energy-volume-core.js) --------------

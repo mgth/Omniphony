@@ -11,9 +11,14 @@ use egui::{Color32, CornerRadius, Margin, Stroke};
 
 /// `body { background: #0a0b10 }` — behind the viewport, never painted over it.
 pub const PAGE_BG: Color32 = Color32::from_rgb(0x0a, 0x0b, 0x10);
-/// `#overlay { background: rgba(0,0,0,.65) }` plus an 8 px backdrop blur egui
-/// cannot do; the fill is darkened to keep text contrast without it.
-pub const PANEL_BG: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 199);
+/// `#overlay { background: rgba(0,0,0,.65) }`. The web's 8 px backdrop blur is
+/// done by the scene renderer behind the panels (`render::Backdrop`), so the
+/// fill is the web's own rather than darkened to make up for its absence.
+pub const PANEL_BG: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 166);
+/// Popups, menus and dropdowns. They open over the panels' own text, where
+/// there is no blurred scene behind them, so they stay dense: at the panels'
+/// 65 % the text underneath would read through the list.
+pub const POPUP_BG: Color32 = Color32::from_rgba_premultiplied(11, 13, 17, 240);
 /// `border: 1px solid rgba(255,255,255,.2)`.
 pub const PANEL_BORDER: Color32 = Color32::from_rgba_premultiplied(51, 51, 51, 51);
 /// `border-top: 1px solid rgba(255,255,255,.12)` between sections.
@@ -105,7 +110,7 @@ pub fn install(ctx: &egui::Context) {
     style.visuals = egui::Visuals::dark();
     let v = &mut style.visuals;
     v.panel_fill = PANEL_BG;
-    v.window_fill = PANEL_BG;
+    v.window_fill = POPUP_BG;
     v.extreme_bg_color = Color32::from_white_alpha(10);
     v.faint_bg_color = Color32::from_white_alpha(10);
     v.override_text_color = Some(TEXT);
@@ -200,8 +205,9 @@ mod tests {
 
     /// The panel ground is a translucent *black*, where premultiplying leaves
     /// the channels at zero — the one case the wrong form would have got right.
+    /// At the web's 65 %, now that the scene behind it is blurred.
     #[test]
     fn the_panel_ground_stays_black() {
-        assert_eq!(PANEL_BG.to_srgba_unmultiplied(), [0, 0, 0, 199]);
+        assert_eq!(PANEL_BG.to_srgba_unmultiplied(), [0, 0, 0, 166]);
     }
 }

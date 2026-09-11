@@ -642,9 +642,11 @@ impl StudioSpike {
             self.gizmo_target = out.gizmo_target;
         }
 
+        let mut frame = out.frame;
+        frame.backdrop = self.panel_backdrop(ui.ctx());
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,
-            ViewportCallback(Arc::new(out.frame)),
+            ViewportCallback(Arc::new(frame)),
         ));
 
         let painter = ui.painter().with_clip_rect(rect);
@@ -845,6 +847,33 @@ impl StudioSpike {
             self.prefs.display = next;
             self.mark_prefs_dirty();
         }
+    }
+
+    /// Where the two side panels sit, in framebuffer pixels, so the renderer
+    /// can blur what lies behind them (`backdrop-filter: blur(8px)` in the
+    /// web). A folded panel is a button, not glass, and gets none. The rects
+    /// are last frame's — the panels are laid out after the viewport — so a
+    /// panel edge being dragged is one frame behind, which does not show.
+    fn panel_backdrop(&self, ctx: &egui::Context) -> crate::render::Backdrop {
+        let ppp = ctx.pixels_per_point();
+        let mut backdrop = crate::render::Backdrop {
+            radius_px: f32::from(crate::ui::theme::PANEL_RADIUS) * ppp,
+            ..Default::default()
+        };
+        for (id, folded) in [
+            ("overlay-left", self.layout.left.collapsed),
+            ("overlay-right", self.layout.right.collapsed),
+        ] {
+            if folded {
+                continue;
+            }
+            if let Some(r) = ctx.memory(|m| m.area_rect(egui::Id::new(id))) {
+                backdrop.rects[backdrop.count as usize] =
+                    [r.min.x * ppp, r.min.y * ppp, r.max.x * ppp, r.max.y * ppp];
+                backdrop.count += 1;
+            }
+        }
+        backdrop
     }
 
     /// Write the preferences out once the user has stopped dragging a panel
