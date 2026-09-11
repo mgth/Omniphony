@@ -364,9 +364,7 @@ impl StudioSpike {
         }
         match action {
             Some(Action::Browse) => {
-                if let Some(path) =
-                    crate::host::commands::layout_io::pick_backend_file_path(extensions)
-                {
+                if let Some(path) = crate::ui::file_dialogs::pick_backend_file_path(extensions) {
                     if let Some(editor) = &mut self.script_editor {
                         editor.name = path.clone();
                     }
