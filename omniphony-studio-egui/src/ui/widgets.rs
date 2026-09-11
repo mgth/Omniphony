@@ -120,33 +120,6 @@ pub fn value_slider(
     changed
 }
 
-/// `.meter`: a level bar with an optional peak-hold tick, both already mapped
-/// to 0..1 by the caller (the web maps dBFS with `METER_DB_MIN = -60`).
-pub fn meter(ui: &mut Ui, level: f32, peak: Option<f32>, clipping: bool) -> Response {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width().min(120.0), 6.0), Sense::hover());
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
-        painter.rect_filled(rect, 3.0, theme::FILL);
-        let level = level.clamp(0.0, 1.0);
-        if level > 0.0 {
-            let mut fill = rect;
-            fill.set_width(rect.width() * level);
-            let colour = if clipping { theme::ERROR } else { theme::OK };
-            painter.rect_filled(fill, 3.0, colour);
-        }
-        if let Some(peak) = peak {
-            let x = rect.left() + rect.width() * peak.clamp(0.0, 1.0);
-            painter.vline(
-                x,
-                rect.y_range(),
-                egui::Stroke::new(1.5, theme::TEXT_STRONG),
-            );
-        }
-    }
-    response
-}
-
 /// The connection dot of the OSC panel: a filled circle plus a caption.
 pub fn status_dot(ui: &mut Ui, colour: Color32, text: impl Into<egui::WidgetText>) {
     ui.horizontal(|ui| {
