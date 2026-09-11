@@ -357,6 +357,11 @@ pub enum StripState {
     Clipping,
 }
 
+/// The badge's code size, and the smallest it is set at before a code too
+/// long for the badge is cut.
+const STRIP_TEXT_SIZE: f32 = 11.0;
+const STRIP_TEXT_MIN: f32 = 7.0;
+
 /// `.id-strip.flip`: the row's name as vertical text in an 18 px badge, reading
 /// bottom-to-top. It is drawn into a rect the caller measures *after* laying the
 /// row out, because the badge spans the whole row — meter line and band bars
@@ -398,16 +403,36 @@ pub fn id_strip(
         shapes.push(egui::Shape::galley(at, galley, colour));
         return shapes;
     }
-    // The code, cut to the badge's height: the badge is sized for codes like
-    // FL or TBR, and a longer one written vertically ran into the rows above
-    // and below. `objectBadge` keeps codes short; this keeps a long one in.
+    // The code, fitted to the badge's height. The badge is sized for codes
+    // like FL or TBR; a longer one written vertically ran into the rows
+    // above and below. So a code that does not fit at the badge's own size
+    // is set smaller, a point at a time down to `STRIP_TEXT_MIN`, and only
+    // one still too long at that size is cut with an ellipsis. Whole sizes
+    // only: every size egui draws text at is a set of glyphs it rasterises
+    // and keeps, and a size per label would be a set per label.
+    let room = (rect.height() - 6.0).max(0.0);
+    let size = (STRIP_TEXT_MIN as u8..=STRIP_TEXT_SIZE as u8)
+        .rev()
+        .map(f32::from)
+        .find(|size| {
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    label.to_owned(),
+                    egui::FontId::proportional(*size),
+                    STRIP_TEXT,
+                )
+                .size()
+                .x <= room
+            })
+        })
+        .unwrap_or(STRIP_TEXT_MIN);
     let mut job = egui::text::LayoutJob::simple_singleline(
         label.to_owned(),
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(size),
         STRIP_TEXT,
     );
     job.wrap = egui::text::TextWrapping {
-        max_width: (rect.height() - 6.0).max(0.0),
+        max_width: room,
         max_rows: 1,
         break_anywhere: true,
         overflow_character: Some('…'),
