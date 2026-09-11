@@ -313,3 +313,155 @@ mod tests {
         assert!(band_colour(0, 3).r() > band_colour(2, 3).r());
     }
 }
+
+/// The width of the vertical name badge, `.id-strip`'s own grid column.
+pub const STRIP_W: f32 = 18.0;
+/// `.id-strip` at rest, `rgba(0, 0, 0, 0.55)`.
+const STRIP_BG: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 140);
+/// `.object-item.has-active-trail .id-strip`: the badge lights while the object
+/// is still laying down trail points, which is the list's way of saying "this
+/// one is moving" without another column.
+const STRIP_MOVING: Color32 = Color32::from_rgba_premultiplied(35, 65, 71, 71);
+const STRIP_MOVING_RING: Color32 = Color32::from_rgba_premultiplied(42, 78, 86, 87);
+/// The badge while the renderer reports a clip on this speaker.
+const STRIP_CLIP: Color32 = Color32::from_rgba_premultiplied(217, 50, 41, 217);
+const STRIP_TEXT: Color32 = Color32::from_rgb(0xd9, 0xec, 0xff);
+
+/// How a badge is lit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StripState {
+    Rest,
+    /// Trail points still alive: the object is moving.
+    Moving,
+    /// A clip was reported within the last second.
+    Clipping,
+}
+
+/// `.id-strip.flip`: the row's name as vertical text in an 18 px badge, reading
+/// bottom-to-top. It is drawn into a rect the caller measures *after* laying the
+/// row out, because the badge spans the whole row — meter line and band bars
+/// alike — and that height is not known before the content is placed.
+pub fn id_strip(
+    ui: &Ui,
+    rect: Rect,
+    label: &str,
+    accent: Option<Color32>,
+    state: StripState,
+) -> Vec<egui::Shape> {
+    let mut shapes = Vec::with_capacity(2);
+    let (fill, ring) = match state {
+        StripState::Rest => (accent.map_or(STRIP_BG, |a| colour_or(a, STRIP_BG)), None),
+        StripState::Moving => (STRIP_MOVING, Some(STRIP_MOVING_RING)),
+        StripState::Clipping => (STRIP_CLIP, None),
+    };
+    shapes.push(egui::Shape::rect_filled(rect, 6.0, fill));
+    if let Some(ring) = ring {
+        shapes.push(egui::Shape::rect_stroke(
+            rect,
+            6.0,
+            Stroke::new(1.0, ring),
+            egui::StrokeKind::Inside,
+        ));
+    }
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(11.0),
+        STRIP_TEXT,
+    );
+    // Rotating by -90° about the anchor maps the galley's (x, y) to
+    // (y, -x), so the text ends up `h` wide and `w` tall: place the anchor so
+    // that box lands centred in the badge.
+    let size = galley.size();
+    let anchor = egui::pos2(
+        rect.center().x - size.y * 0.5,
+        rect.center().y + size.x * 0.5,
+    );
+    shapes.push(egui::Shape::Text(
+        egui::epaint::TextShape::new(anchor, galley, STRIP_TEXT)
+            .with_angle(-std::f32::consts::FRAC_PI_2),
+    ));
+    shapes
+}
+
+/// A coloured object keeps its own accent under the badge, mixed toward the
+/// neutral background exactly as `color-mix(… 34%, rgba(0,0,0,0.55))`.
+fn colour_or(accent: Color32, base: Color32) -> Color32 {
+    let mix = |a: u8, b: u8| ((f32::from(a) * 0.34) + (f32::from(b) * 0.66)).round() as u8;
+    Color32::from_rgba_premultiplied(
+        mix(accent.r(), base.r()),
+        mix(accent.g(), base.g()),
+        mix(accent.b(), base.b()),
+        mix(accent.a(), base.a()),
+    )
+}
+
+/// `.object-size-gauges`: the object's three extents as 2 px bars, W over D
+/// over H, each with its own gradient so the axis is readable without reading
+/// the label.
+pub const SIZE_W: f32 = 32.0;
+const SIZE_BAR_H: f32 = 2.0;
+const SIZE_ROW_GAP: f32 = 2.0;
+const SIZE_LABEL_W: f32 = 8.0;
+const SIZE_TRACK: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
+const SIZE_LABEL: Color32 = Color32::from_rgb(0x8a, 0x9a, 0xac);
+/// W, D and H, each `(from, to)` of its own left-to-right gradient.
+const SIZE_FILLS: [([u8; 4], [u8; 4]); 3] = [
+    ([255, 168, 122, 217], [255, 226, 122, 242]),
+    ([122, 200, 255, 217], [138, 240, 255, 242]),
+    ([160, 255, 168, 217], [218, 255, 138, 242]),
+];
+
+pub fn size_gauges(ui: &mut Ui, size: [f32; 3]) -> egui::Response {
+    let height = SIZE_BAR_H.max(7.0) * 3.0 + SIZE_ROW_GAP * 2.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(SIZE_W, height), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let painter = ui.painter();
+    let row_h = (height - SIZE_ROW_GAP * 2.0) / 3.0;
+    for (i, (axis, value)) in ["W", "D", "H"].iter().zip(size).enumerate() {
+        let top = rect.top() + (row_h + SIZE_ROW_GAP) * i as f32;
+        let centre = top + row_h * 0.5;
+        painter.text(
+            egui::pos2(rect.left(), centre),
+            egui::Align2::LEFT_CENTER,
+            axis,
+            egui::FontId::proportional(7.0),
+            SIZE_LABEL,
+        );
+        let bar = Rect::from_min_max(
+            egui::pos2(rect.left() + SIZE_LABEL_W + 2.0, centre - SIZE_BAR_H * 0.5),
+            egui::pos2(rect.right(), centre + SIZE_BAR_H * 0.5),
+        );
+        painter.rect_filled(bar, 1.0, SIZE_TRACK);
+        let filled = value.clamp(0.0, 1.0);
+        if filled > 0.0 {
+            let (from, to) = SIZE_FILLS[i];
+            let mut fill = bar;
+            fill.set_width(bar.width() * filled);
+            painter.add(gradient_quad(
+                fill,
+                Color32::from_rgba_unmultiplied(from[0], from[1], from[2], from[3]),
+                Color32::from_rgba_unmultiplied(to[0], to[1], to[2], to[3]),
+            ));
+        }
+    }
+    response
+}
+
+/// A rectangle filled left-to-right with a two-stop gradient.
+fn gradient_quad(rect: Rect, from: Color32, to: Color32) -> egui::Shape {
+    let mut mesh = egui::epaint::Mesh::default();
+    for (x, colour) in [(rect.left(), from), (rect.right(), to)] {
+        for y in [rect.top(), rect.bottom()] {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: egui::pos2(x, y),
+                uv: egui::epaint::WHITE_UV,
+                color: colour,
+            });
+        }
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 2, 3);
+    egui::Shape::Mesh(std::sync::Arc::new(mesh))
+}

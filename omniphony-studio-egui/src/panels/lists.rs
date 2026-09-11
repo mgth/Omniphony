@@ -9,6 +9,7 @@ use crate::host::peak_hold::METER_DB_MIN;
 use crate::i18n::t;
 use crate::model::app_state::Meter;
 use crate::panels::audio::meter_fraction;
+use crate::panels::row_glyphs;
 use crate::ui::{section::Section, theme, widgets};
 use crate::view::{self, Selection};
 
@@ -38,6 +39,13 @@ struct Row {
     /// split per crossover band. Both empty unless an object is selected.
     contribution: Option<f64>,
     band_gains: Vec<f64>,
+    /// The object's extents, `[w, d, h]` in 0..1 — only objects have them.
+    size: Option<[f32; 3]>,
+    /// Trail points are still alive for this object, i.e. it is moving.
+    moving: bool,
+    /// The badge carries the object's own colour, as `.object-colorized` does
+    /// when the colour switch is on.
+    colorized: bool,
 }
 
 impl StudioSpike {
@@ -59,6 +67,7 @@ impl StudioSpike {
                     let selected = self.selection.object.as_deref() == Some(row.id.as_str());
                     let (action, _) = list_row(
                         ui,
+                        "objects",
                         row,
                         RowState {
                             selected,
@@ -93,7 +102,7 @@ impl StudioSpike {
                 .color(theme::TEXT_STRONG),
         );
         for (ear, row) in rows.iter().enumerate() {
-            let (action, _) = list_row(ui, row, RowState::default(), &[]);
+            let (action, _) = list_row(ui, "ears", row, RowState::default(), &[]);
             if matches!(action, RowAction::Mute) {
                 self.set_ear_muted(ear, !row.muted);
             }
@@ -132,6 +141,9 @@ impl StudioSpike {
                     freq_high: None,
                     contribution: None,
                     band_gains: Vec::new(),
+                    size: None,
+                    moving: false,
+                    colorized: false,
                 }
             })
             .collect()
@@ -198,6 +210,7 @@ impl StudioSpike {
                     let flash = index.is_some_and(|i| clip == Some(i as i32));
                     let (action, rect) = list_row(
                         ui,
+                        "speakers",
                         row,
                         RowState {
                             selected,
@@ -233,12 +246,20 @@ impl StudioSpike {
 
     fn object_rows(&self) -> Vec<Row> {
         let live = self.live.lock().unwrap();
+        // Trail points are filtered by age at draw time rather than pruned from
+        // the store, so "is it moving" has to apply the same time-to-live —
+        // otherwise a badge stays lit forever once its object has moved once.
+        let now = std::time::Instant::now();
+        let ttl = self.settings.trails.ttl;
+        let speakers = live.selected_speakers();
         let mut rows: Vec<Row> = live
             .app
             .sources
             .iter()
             .map(|(id, src)| {
                 let (base, _semantic) = view::objects::base_color(id, src.name.as_deref());
+                let direct = direct_speaker(src.fixed, src.direct_speaker_index, speakers.len())
+                    .and_then(|index| speakers.get(index));
                 Row {
                     id: id.clone(),
                     label: view::objects::display_name(id, src.name.as_deref()),
@@ -250,14 +271,24 @@ impl StudioSpike {
                         (base[1].powf(1.0 / 2.2) * 255.0) as u8,
                         (base[2].powf(1.0 / 2.2) * 255.0) as u8,
                     ),
-                    detail: src.fixed.unwrap_or(false).then(|| "bed".to_owned()),
-                    position: Some([src.x, src.y, src.z]),
-                    spatialize: true,
+                    // The web carries no "bed" marker in the meter line: a
+                    // channel routed straight out is said by the position
+                    // thumbnail, which is drawn at the destination speaker
+                    // and framed in black.
+                    detail: None,
+                    position: Some(direct.map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z])),
+                    spatialize: direct.is_none(),
                     speaker: false,
                     freq_low: None,
                     freq_high: None,
                     contribution: None,
                     band_gains: Vec::new(),
+                    colorized: self.settings.object_colors_enabled,
+                    size: live.object_sizes.get(id).copied(),
+                    moving: live
+                        .trails
+                        .get(id)
+                        .is_some_and(|t| t.points.iter().any(|p| now.duration_since(p.t) < ttl)),
                 }
             })
             .collect();
@@ -317,6 +348,9 @@ impl StudioSpike {
                         .filter(|g| *g > 0.0)
                         .zip(source_rms)
                         .map(|(g, rms)| meter_fraction(rms + 20.0 * g.log10()) as f64),
+                    size: None,
+                    moving: false,
+                    colorized: false,
                     band_gains: band_gains
                         .and_then(|bands| bands.get(index).cloned())
                         .unwrap_or_default(),
@@ -462,6 +496,19 @@ impl StudioSpike {
     }
 }
 
+/// `directFixedSpeakerTarget`: the speaker a fixed channel is routed straight
+/// to, if there is one. Both halves are required — `fixed` on its own is a bed
+/// channel that is still panned, and an index no layout resolves is not a
+/// destination. A row that has one is drawn at *that* speaker and framed in
+/// black, because its own coordinates say nothing about where it lands.
+fn direct_speaker(fixed: Option<bool>, index: Option<u32>, speakers: usize) -> Option<usize> {
+    if fixed != Some(true) {
+        return None;
+    }
+    let index = index? as usize;
+    (index < speakers).then_some(index)
+}
+
 /// What a row's controls asked for.
 enum RowAction {
     None,
@@ -482,6 +529,11 @@ struct RowState {
     flash: bool,
 }
 
+/// The level readout's column, the web's `8ch` of tabular monospace.
+const READOUT_W: f32 = 48.0;
+/// One `.toggle-btn` square.
+const TOGGLE_W: f32 = 20.0;
+
 /// How long a clip lights a row's id strip. Repeat clips restart it rather
 /// than stacking, so a run of them reads as one continuous warning.
 const CLIP_FLASH: std::time::Duration = std::time::Duration::from_millis(1000);
@@ -489,7 +541,13 @@ const CLIP_FLASH: std::time::Duration = std::time::Duration::from_millis(1000);
 /// One `.info-item`: id strip, glyphs, meter, readout, M and S. Returns what
 /// the row asked for and where it was drawn, so the caller can use it as a
 /// drop target.
-fn list_row(ui: &mut Ui, row: &Row, state: RowState, cutoffs: &[f64]) -> (RowAction, egui::Rect) {
+fn list_row(
+    ui: &mut Ui,
+    list: &str,
+    row: &Row,
+    state: RowState,
+    cutoffs: &[f64],
+) -> (RowAction, egui::Rect) {
     let mut action = RowAction::None;
     let fill = if state.dragging {
         Color32::from_rgba_unmultiplied(72, 140, 92, 140)
@@ -511,99 +569,64 @@ fn list_row(ui: &mut Ui, row: &Row, state: RowState, cutoffs: &[f64]) -> (RowAct
         .corner_radius(theme::CONTROL_RADIUS)
         .inner_margin(egui::Margin::symmetric(7, 4))
         .show(ui, |ui| {
+            let mut strip_rect = egui::Rect::NOTHING;
             ui.horizontal(|ui| {
-                if let Some(position) = row.position {
-                    crate::panels::row_glyphs::position_icon(ui, position, row.spatialize);
-                }
-                if row.speaker {
-                    crate::panels::row_glyphs::filter_icon(ui, row.freq_low, row.freq_high);
-                }
-                // The id strip is the drag handle, as in the web: the row
-                // itself stays clickable for selection.
-                let strip = ui.add(
-                    egui::Label::new(RichText::new(&row.label).size(theme::FONT_SIZE).color(
-                        if row.muted {
-                            theme::TEXT_DIM
-                        } else {
-                            row.colour
-                        },
-                    ))
-                    .truncate()
-                    .selectable(false)
-                    .sense(if row.speaker {
-                        Sense::click_and_drag()
-                    } else {
-                        Sense::click()
-                    }),
+                // The badge spans the whole row, band bars included, so its
+                // shapes are reserved here and filled in once the content
+                // below has been laid out and its height is known.
+                let slot = ui.painter().add(egui::Shape::Noop);
+                let (reserved, _) =
+                    ui.allocate_exact_size(vec2(row_glyphs::STRIP_W, 0.0), Sense::hover());
+                let content = ui
+                    .vertical(|ui| {
+                        row_line(ui, row, &mut action);
+                        if !row.band_gains.is_empty() {
+                            row_glyphs::band_bars(ui, cutoffs, &row.band_gains);
+                        }
+                    })
+                    .response
+                    .rect;
+                strip_rect = egui::Rect::from_min_max(
+                    egui::pos2(reserved.left(), content.top()),
+                    egui::pos2(reserved.right(), content.bottom()),
                 );
-                if state.flash {
-                    ui.painter().rect_filled(
-                        strip.rect.expand(2.0),
-                        theme::CONTROL_RADIUS,
-                        Color32::from_rgba_unmultiplied(255, 59, 48, 217),
-                    );
-                    ui.painter().text(
-                        strip.rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        &row.label,
-                        egui::FontId::proportional(theme::FONT_SIZE),
-                        Color32::WHITE,
-                    );
-                }
-                if strip.drag_started() {
-                    action = RowAction::DragStart;
-                }
-                if row.speaker {
-                    strip.on_hover_text("Drag to reorder");
-                }
-                if let Some(detail) = &row.detail {
-                    ui.label(
-                        RichText::new(detail)
-                            .size(theme::FONT_SIZE_SMALL)
-                            .color(theme::TEXT_MUTED),
-                    );
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if toggle_letter(ui, "S", false).clicked() {
-                        action = RowAction::Solo;
-                    }
-                    if toggle_letter(ui, "M", row.muted).clicked() {
-                        action = RowAction::Mute;
-                    }
-                    let rms = row.meter.as_ref().map_or(METER_DB_MIN, |m| m.rms_dbfs);
-                    ui.add_sized(
-                        vec2(48.0, ui.spacing().interact_size.y),
-                        egui::Label::new(
-                            RichText::new(format!("{rms:.1} dB"))
-                                .monospace()
-                                .size(theme::FONT_SIZE_SMALL)
-                                .color(theme::TEXT_MUTED),
-                        ),
-                    );
-                    let peak = row.meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
-                    let hold = row.hold.unwrap_or(peak);
-                    let response = crate::ui::meter::level_meter(
+                let state = if state.flash {
+                    row_glyphs::StripState::Clipping
+                } else if row.moving {
+                    row_glyphs::StripState::Moving
+                } else {
+                    row_glyphs::StripState::Rest
+                };
+                ui.painter().set(
+                    slot,
+                    egui::Shape::Vec(row_glyphs::id_strip(
                         ui,
-                        meter_fraction(peak),
-                        (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
-                        hold >= 0.0,
-                    );
-                    // The selected object's own share of this speaker, painted
-                    // over the level so the two are read against one scale.
-                    if let Some(contribution) = row.contribution {
-                        let rect = response.rect;
-                        let mut fill = rect;
-                        fill.set_width(rect.width() * contribution.clamp(0.0, 1.0) as f32);
-                        ui.painter().rect_filled(
-                            fill,
-                            3.0,
-                            Color32::from_rgba_unmultiplied(138, 240, 255, 235),
-                        );
-                    }
-                });
+                        strip_rect,
+                        &row.label,
+                        row.colorized.then_some(row.colour),
+                        state,
+                    )),
+                );
             });
-            if !row.band_gains.is_empty() {
-                crate::panels::row_glyphs::band_bars(ui, cutoffs, &row.band_gains);
+            // The badge is the drag handle, as in the web: the row itself stays
+            // a click target for selection.
+            // The id is spelled out rather than derived from the ui, because
+            // the three lists number their rows from zero independently and
+            // would otherwise ask egui for the same widget twice in one frame.
+            let strip = ui.interact(
+                strip_rect,
+                egui::Id::new(("row-strip", list, row.id.as_str())),
+                if row.speaker {
+                    Sense::click_and_drag()
+                } else {
+                    Sense::click()
+                },
+            );
+            if strip.drag_started() {
+                action = RowAction::DragStart;
+            }
+            if row.speaker {
+                strip.on_hover_text("Drag to reorder");
             }
         })
         .response
@@ -612,6 +635,76 @@ fn list_row(ui: &mut Ui, row: &Row, state: RowState, cutoffs: &[f64]) -> (RowAct
         action = RowAction::Select;
     }
     (action, response.rect)
+}
+
+/// `.meter-row`: the web's grid `auto [auto] 8ch 1fr [32px] auto`, i.e. the
+/// position thumbnail, the crossover glyph on speakers only, the level
+/// readout, the meter taking the slack, the object's size gauges, then M and S.
+fn row_line(ui: &mut Ui, row: &Row, action: &mut RowAction) {
+    ui.horizontal(|ui| {
+        if let Some(position) = row.position {
+            row_glyphs::position_icon(ui, position, row.spatialize);
+        }
+        if row.speaker {
+            row_glyphs::filter_icon(ui, row.freq_low, row.freq_high);
+        }
+        let rms = row.meter.as_ref().map_or(METER_DB_MIN, |m| m.rms_dbfs);
+        ui.add_sized(
+            vec2(READOUT_W, ui.spacing().interact_size.y),
+            egui::Label::new(
+                RichText::new(format!("{rms:.1} dB"))
+                    .monospace()
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(theme::TEXT_MUTED),
+            ),
+        );
+        // Everything to the right of the meter is fixed width, so the meter
+        // gets what is left — the `1fr` column of the web's grid.
+        let spacing = ui.spacing().item_spacing.x;
+        let mut reserved = TOGGLE_W * 2.0 + spacing * 2.0;
+        if row.size.is_some() {
+            reserved += row_glyphs::SIZE_W + spacing;
+        }
+        if let Some(detail) = &row.detail {
+            reserved += ui
+                .painter()
+                .layout_no_wrap(
+                    detail.clone(),
+                    egui::FontId::proportional(theme::FONT_SIZE_SMALL),
+                    theme::TEXT_MUTED,
+                )
+                .size()
+                .x
+                + spacing;
+        }
+        let width = (ui.available_width() - reserved).max(24.0);
+        let peak = row.meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
+        let hold = row.hold.unwrap_or(peak);
+        crate::ui::meter::level_meter_sized(
+            ui,
+            width,
+            meter_fraction(peak),
+            (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
+            hold >= 0.0,
+            row.contribution.map(|c| c as f32),
+        );
+        if let Some(size) = row.size {
+            row_glyphs::size_gauges(ui, size);
+        }
+        if let Some(detail) = &row.detail {
+            ui.label(
+                RichText::new(detail)
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(theme::TEXT_MUTED),
+            );
+        }
+        if toggle_letter(ui, "M", row.muted).clicked() {
+            *action = RowAction::Mute;
+        }
+        if toggle_letter(ui, "S", false).clicked() {
+            *action = RowAction::Solo;
+        }
+    });
 }
 
 /// The `.toggle-btn` M / S squares of a row.
@@ -632,4 +725,28 @@ fn toggle_letter(ui: &mut Ui, letter: &str, active: bool) -> egui::Response {
                 theme::FILL
             }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::direct_speaker;
+
+    /// The web takes the destination only when the channel is fixed *and*
+    /// carries an index a layout can resolve.
+    #[test]
+    fn a_direct_channel_needs_both_halves() {
+        assert_eq!(direct_speaker(Some(true), Some(3), 8), Some(3));
+        assert_eq!(direct_speaker(Some(true), None, 8), None, "no index");
+        assert_eq!(direct_speaker(None, Some(3), 8), None, "not fixed");
+        assert_eq!(direct_speaker(Some(false), Some(3), 8), None, "panned");
+    }
+
+    /// A layout change can leave an index pointing past the end; the row then
+    /// falls back to the object's own position rather than drawing nothing.
+    #[test]
+    fn an_index_past_the_layout_is_not_a_destination() {
+        assert_eq!(direct_speaker(Some(true), Some(8), 8), None);
+        assert_eq!(direct_speaker(Some(true), Some(7), 8), Some(7));
+        assert_eq!(direct_speaker(Some(true), Some(0), 0), None);
+    }
 }

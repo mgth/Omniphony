@@ -49,12 +49,12 @@ pub fn clip_start() -> f32 {
     ((0.0 - METER_DB_MIN) / (METER_DB_MAX - METER_DB_MIN)) as f32
 }
 
-/// The gradient's colour at `t` (0..1 across the track), with the alpha the
-/// caller wants. CSS interpolates its stops in sRGB, so this does too.
-fn colour_at(t: f32, alpha: u8) -> Color32 {
+/// The colour at `t` on a stop list, with the alpha the caller wants. CSS
+/// interpolates its stops in sRGB, so this does too.
+fn stop_colour(stops: &[(f32, [u8; 3])], t: f32, alpha: u8) -> Color32 {
     let t = t.clamp(0.0, 1.0);
-    let mut span = (STOPS[0], STOPS[1]);
-    for pair in STOPS.windows(2) {
+    let mut span = (stops[0], stops[stops.len() - 1]);
+    for pair in stops.windows(2) {
         if t >= pair[0].0 {
             span = (pair[0], pair[1]);
         }
@@ -83,7 +83,7 @@ fn half_height(rect: &Rect, x: f32) -> f32 {
 /// The x positions the mesh needs vertices at: both caps sampled finely enough
 /// to read as round, plus every gradient stop so no stop is crossed by
 /// interpolation.
-fn sample_xs(rect: &Rect) -> Vec<f32> {
+fn sample_xs(rect: &Rect, stops: &[(f32, [u8; 3])]) -> Vec<f32> {
     let r = rect.height() * 0.5;
     let mut xs: Vec<f32> = Vec::with_capacity(24);
     let cap_steps = 6;
@@ -92,7 +92,7 @@ fn sample_xs(rect: &Rect) -> Vec<f32> {
         xs.push(rect.left() + r * k);
         xs.push(rect.right() - r * (1.0 - k));
     }
-    for (t, _) in STOPS {
+    for (t, _) in stops {
         xs.push(rect.left() + rect.width() * t);
     }
     xs.retain(|x| *x >= rect.left() && *x <= rect.right());
@@ -104,14 +104,23 @@ fn sample_xs(rect: &Rect) -> Vec<f32> {
 /// The capsule as a strip of quads. `tint` paints one flat colour (the clipping
 /// zone, a clipped peak); without it every vertex takes the gradient.
 fn capsule(rect: &Rect, alpha: u8, tint: Option<Color32>) -> Mesh {
+    strip_with(rect, &STOPS, alpha, tint)
+}
+
+/// The same capsule painted from another stop list (the contribution overlay).
+fn strip(rect: &Rect, stops: &[(f32, [u8; 3])], alpha: u8) -> Mesh {
+    strip_with(rect, stops, alpha, None)
+}
+
+fn strip_with(rect: &Rect, stops: &[(f32, [u8; 3])], alpha: u8, tint: Option<Color32>) -> Mesh {
     let mut mesh = Mesh::default();
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return mesh;
     }
-    let xs = sample_xs(rect);
+    let xs = sample_xs(rect, stops);
     let colour = |x: f32| match tint {
         Some(c) => c,
-        None => colour_at((x - rect.left()) / rect.width(), alpha),
+        None => stop_colour(stops, (x - rect.left()) / rect.width(), alpha),
     };
     for x in &xs {
         let h = half_height(rect, *x);
@@ -146,11 +155,38 @@ fn clipped(painter: &Painter, rect: &Rect, window: Rect, alpha: u8, tint: Option
         .add(capsule(rect, alpha, tint));
 }
 
+/// The contribution overlay's own gradient, `.meter-fill.contribution`.
+const CONTRIB: [(f32, [u8; 3]); 2] = [(0.0, [0x8a, 0xf0, 0xff]), (1.0, [0xff, 0xe2, 0x7a])];
+/// What the level drops to while a contribution is painted over it, so the two
+/// are read as foreground and background rather than as one bar.
+const UNDER_CONTRIB: u8 = 97; // 0.38 × 255
+
 /// `.meter-bar.level-meter`: `level` and `peak` are already mapped to 0..1 by
 /// the caller (`meter_fraction`), `clipping` says the held peak crossed 0 dBFS.
-pub fn level_meter(ui: &mut Ui, level: f32, peak: Option<f32>, clipping: bool) -> Response {
+/// `contribution` is the selected object's share of this row, on the same
+/// scale, painted over the level.
+pub fn level_meter(
+    ui: &mut Ui,
+    level: f32,
+    peak: Option<f32>,
+    clipping: bool,
+    contribution: Option<f32>,
+) -> Response {
     let width = ui.available_width().min(MAX_WIDTH);
-    let (rect, response) = ui.allocate_exact_size(vec2(width, HEIGHT), Sense::hover());
+    level_meter_sized(ui, width, level, peak, clipping, contribution)
+}
+
+/// The same meter at a width the caller decides — a list row gives it the slack
+/// its grid column would have (`1fr`), instead of the capped stand-alone width.
+pub fn level_meter_sized(
+    ui: &mut Ui,
+    width: f32,
+    level: f32,
+    peak: Option<f32>,
+    clipping: bool,
+    contribution: Option<f32>,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width.max(HEIGHT), HEIGHT), Sense::hover());
     if !ui.is_rect_visible(rect) {
         return response;
     }
@@ -162,7 +198,21 @@ pub fn level_meter(ui: &mut Ui, level: f32, peak: Option<f32>, clipping: bool) -
     let level = level.clamp(0.0, 1.0);
     if level > 0.0 {
         let fill = Rect::from_min_max(rect.left_top(), pos2(x_at(level), rect.bottom()));
-        clipped(&painter, &rect, fill, 255, None);
+        let alpha = if contribution.is_some() {
+            UNDER_CONTRIB
+        } else {
+            255
+        };
+        clipped(&painter, &rect, fill, alpha, None);
+    }
+    if let Some(share) = contribution {
+        let share = share.clamp(0.0, 1.0);
+        if share > 0.0 {
+            let over = Rect::from_min_max(rect.left_top(), pos2(x_at(share), rect.bottom()));
+            painter
+                .with_clip_rect(over.intersect(painter.clip_rect()))
+                .add(strip(&rect, &CONTRIB, 235));
+        }
     }
 
     // The headroom above 0 dBFS, drawn over the level: a peak that reaches it
@@ -202,12 +252,17 @@ pub fn level_meter(ui: &mut Ui, level: f32, peak: Option<f32>, clipping: bool) -
 mod tests {
     use super::*;
 
+    /// The level scale's own colour at `t`, which is what the tests are about.
+    fn track_colour(t: f32, alpha: u8) -> Color32 {
+        stop_colour(&STOPS, t, alpha)
+    }
+
     /// The stops are the anchors of the scale: read them back exactly, or the
     /// meter no longer says the same thing as the web's.
     #[test]
     fn the_gradient_returns_its_own_stops() {
         for (t, rgb) in STOPS {
-            let c = colour_at(t, 255);
+            let c = track_colour(t, 255);
             assert_eq!([c.r(), c.g(), c.b()], rgb, "stop at {t}");
         }
     }
@@ -216,10 +271,10 @@ mod tests {
     /// either end clamps instead of wrapping.
     #[test]
     fn the_gradient_interpolates_and_clamps() {
-        let mid = colour_at(0.30, 255);
+        let mid = track_colour(0.30, 255);
         assert!(mid.r() > 0x4d && mid.r() < 0x7b, "red climbs: {}", mid.r());
-        assert_eq!(colour_at(-1.0, 255), colour_at(0.0, 255));
-        assert_eq!(colour_at(2.0, 255), colour_at(1.0, 255));
+        assert_eq!(track_colour(-1.0, 255), track_colour(0.0, 255));
+        assert_eq!(track_colour(2.0, 255), track_colour(1.0, 255));
     }
 
     /// 0 dBFS on a -60..+6 scale, which is where the headroom zone opens.
@@ -246,7 +301,7 @@ mod tests {
     #[test]
     fn the_mesh_covers_the_track() {
         let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(120.0, 6.0));
-        let xs = sample_xs(&rect);
+        let xs = sample_xs(&rect, &STOPS);
         for (t, _) in STOPS {
             let want = rect.left() + rect.width() * t;
             assert!(
