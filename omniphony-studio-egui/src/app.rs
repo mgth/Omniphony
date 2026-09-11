@@ -636,6 +636,9 @@ impl StudioSpike {
             .as_ref()
             .map(|(id, at, _)| (id.clone(), *at));
         let ppp = ui.ctx().pixels_per_point();
+        // One band for everything: the band cursor and the Heatmaps select
+        // write `heatmap_band_index`, and the volumes read it from here.
+        self.volume_settings.band_index = self.settings.heatmap_band_index;
         let out = {
             let live = self.live.lock().unwrap();
             view::build_frame(
