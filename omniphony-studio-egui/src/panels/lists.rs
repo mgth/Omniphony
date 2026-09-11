@@ -251,39 +251,47 @@ impl StudioSpike {
         // otherwise a badge stays lit forever once its object has moved once.
         let now = std::time::Instant::now();
         let ttl = self.settings.trails.ttl;
-        let mut rows: Vec<Row> =
-            live.app
-                .sources
-                .iter()
-                .map(|(id, src)| {
-                    let (base, _semantic) = view::objects::base_color(id, src.name.as_deref());
-                    Row {
-                        id: id.clone(),
-                        label: view::objects::display_name(id, src.name.as_deref()),
-                        meter: live.app.source_levels.get(id).cloned(),
-                        hold: live.peak_hold(&format!("src:{id}")),
-                        muted: live.app.object_mutes.get(id).is_some_and(|m| *m != 0),
-                        colour: Color32::from_rgb(
-                            (base[0].powf(1.0 / 2.2) * 255.0) as u8,
-                            (base[1].powf(1.0 / 2.2) * 255.0) as u8,
-                            (base[2].powf(1.0 / 2.2) * 255.0) as u8,
-                        ),
-                        detail: src.fixed.unwrap_or(false).then(|| "bed".to_owned()),
-                        position: Some([src.x, src.y, src.z]),
-                        spatialize: true,
-                        speaker: false,
-                        freq_low: None,
-                        freq_high: None,
-                        contribution: None,
-                        band_gains: Vec::new(),
-                        colorized: self.settings.object_colors_enabled,
-                        size: live.object_sizes.get(id).copied(),
-                        moving: live.trails.get(id).is_some_and(|t| {
-                            t.points.iter().any(|p| now.duration_since(p.t) < ttl)
-                        }),
-                    }
-                })
-                .collect();
+        let speakers = live.selected_speakers();
+        let mut rows: Vec<Row> = live
+            .app
+            .sources
+            .iter()
+            .map(|(id, src)| {
+                let (base, _semantic) = view::objects::base_color(id, src.name.as_deref());
+                let direct = direct_speaker(src.fixed, src.direct_speaker_index, speakers.len())
+                    .and_then(|index| speakers.get(index));
+                Row {
+                    id: id.clone(),
+                    label: view::objects::display_name(id, src.name.as_deref()),
+                    meter: live.app.source_levels.get(id).cloned(),
+                    hold: live.peak_hold(&format!("src:{id}")),
+                    muted: live.app.object_mutes.get(id).is_some_and(|m| *m != 0),
+                    colour: Color32::from_rgb(
+                        (base[0].powf(1.0 / 2.2) * 255.0) as u8,
+                        (base[1].powf(1.0 / 2.2) * 255.0) as u8,
+                        (base[2].powf(1.0 / 2.2) * 255.0) as u8,
+                    ),
+                    // The web carries no "bed" marker in the meter line: a
+                    // channel routed straight out is said by the position
+                    // thumbnail, which is drawn at the destination speaker
+                    // and framed in black.
+                    detail: None,
+                    position: Some(direct.map_or([src.x, src.y, src.z], |s| [s.x, s.y, s.z])),
+                    spatialize: direct.is_none(),
+                    speaker: false,
+                    freq_low: None,
+                    freq_high: None,
+                    contribution: None,
+                    band_gains: Vec::new(),
+                    colorized: self.settings.object_colors_enabled,
+                    size: live.object_sizes.get(id).copied(),
+                    moving: live
+                        .trails
+                        .get(id)
+                        .is_some_and(|t| t.points.iter().any(|p| now.duration_since(p.t) < ttl)),
+                }
+            })
+            .collect();
         // Numbered objects keep the stream's order; bed channels take the
         // classic 5.1/7.1 channel order rather than an alphabetical one, and
         // the injected test source sorts last because it is neither.
@@ -486,6 +494,19 @@ impl StudioSpike {
             };
         }
     }
+}
+
+/// `directFixedSpeakerTarget`: the speaker a fixed channel is routed straight
+/// to, if there is one. Both halves are required — `fixed` on its own is a bed
+/// channel that is still panned, and an index no layout resolves is not a
+/// destination. A row that has one is drawn at *that* speaker and framed in
+/// black, because its own coordinates say nothing about where it lands.
+fn direct_speaker(fixed: Option<bool>, index: Option<u32>, speakers: usize) -> Option<usize> {
+    if fixed != Some(true) {
+        return None;
+    }
+    let index = index? as usize;
+    (index < speakers).then_some(index)
 }
 
 /// What a row's controls asked for.
@@ -704,4 +725,28 @@ fn toggle_letter(ui: &mut Ui, letter: &str, active: bool) -> egui::Response {
                 theme::FILL
             }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::direct_speaker;
+
+    /// The web takes the destination only when the channel is fixed *and*
+    /// carries an index a layout can resolve.
+    #[test]
+    fn a_direct_channel_needs_both_halves() {
+        assert_eq!(direct_speaker(Some(true), Some(3), 8), Some(3));
+        assert_eq!(direct_speaker(Some(true), None, 8), None, "no index");
+        assert_eq!(direct_speaker(None, Some(3), 8), None, "not fixed");
+        assert_eq!(direct_speaker(Some(false), Some(3), 8), None, "panned");
+    }
+
+    /// A layout change can leave an index pointing past the end; the row then
+    /// falls back to the object's own position rather than drawing nothing.
+    #[test]
+    fn an_index_past_the_layout_is_not_a_destination() {
+        assert_eq!(direct_speaker(Some(true), Some(8), 8), None);
+        assert_eq!(direct_speaker(Some(true), Some(7), 8), Some(7));
+        assert_eq!(direct_speaker(Some(true), Some(0), 0), None);
+    }
 }
