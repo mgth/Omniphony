@@ -1,5 +1,5 @@
 //! Sections that belong to the native host rather than the web Studio: the
-//! registry-driven option rows, the CJK/IME check and the frame/OSC stats.
+//! registry-driven option rows and the frame/OSC stats.
 
 use std::sync::atomic::Ordering;
 
@@ -22,19 +22,6 @@ impl StudioSpike {
                 }
                 ui.small(
                     "Widgets are generated from the option schema. Changes are logged, never sent.",
-                );
-            });
-
-        egui::CollapsingHeader::new("Text: CJK and IME")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.label("日本語: 音楽・効果音・対話");
-                ui.label("中文: 环境声 · 对白 · 音效");
-                ui.label("한국어: 음악 · 효과음");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.ime_text)
-                        .hint_text("type here with an IME…")
-                        .desired_width(f32::INFINITY),
                 );
             });
 
