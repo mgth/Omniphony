@@ -197,6 +197,13 @@ pub struct StudioSpike {
     pub(crate) hybrid_point: Option<usize>,
     /// The speaker a drag picked up, until it is dropped on another row.
     pub(crate) speaker_drag: Option<usize>,
+    /// Where each speaker row's centre was drawn last frame, in the order
+    /// shown: what a drag measures its pointer against.
+    pub(crate) speaker_row_centres: Vec<(usize, f32)>,
+    /// A drop sent to the renderer and not yet echoed back: the list keeps
+    /// showing the new order until the layout does, rather than flicking
+    /// back to the old one for the round trip.
+    pub(crate) speaker_move_pending: Option<crate::panels::lists::PendingMove>,
     /// Whether the About box is showing.
     pub(crate) about_open: bool,
     /// The at-rest bed markers this host owns, and what they were built from.
@@ -445,6 +452,8 @@ impl StudioSpike {
             hybrid_tab: "hybrid".to_owned(),
             hybrid_point: None,
             speaker_drag: None,
+            speaker_row_centres: Vec::new(),
+            speaker_move_pending: None,
             about_open: false,
             synthetic_bed_ids: Vec::new(),
             synthetic_bed_signature: None,
