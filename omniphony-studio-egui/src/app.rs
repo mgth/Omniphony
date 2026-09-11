@@ -197,9 +197,12 @@ pub struct StudioSpike {
     pub(crate) hybrid_point: Option<usize>,
     /// The speaker a drag picked up, until it is dropped on another row.
     pub(crate) speaker_drag: Option<usize>,
-    /// Where each speaker row's centre was drawn last frame, in the order
-    /// shown: what a drag measures its pointer against.
-    pub(crate) speaker_row_centres: Vec<(usize, f32)>,
+    /// Where each speaker row was laid out last frame, in the order shown:
+    /// what a drag measures its pointer against, and the height its empty
+    /// slot keeps.
+    pub(crate) speaker_row_rects: Vec<(usize, egui::Rect)>,
+    /// How far below the dragged row's top the pointer took hold of it.
+    pub(crate) speaker_drag_grab: f32,
     /// A drop sent to the renderer and not yet echoed back: the list keeps
     /// showing the new order until the layout does, rather than flicking
     /// back to the old one for the round trip.
@@ -452,7 +455,8 @@ impl StudioSpike {
             hybrid_tab: "hybrid".to_owned(),
             hybrid_point: None,
             speaker_drag: None,
-            speaker_row_centres: Vec::new(),
+            speaker_row_rects: Vec::new(),
+            speaker_drag_grab: 0.0,
             speaker_move_pending: None,
             about_open: false,
             synthetic_bed_ids: Vec::new(),

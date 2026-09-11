@@ -259,7 +259,7 @@ impl StudioSpike {
         if let Some(from) = from.filter(|f| *f < rows.len()) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
             if let Some(p) = pointer {
-                let slot = drop_slot(&self.speaker_row_centres, from, p.y);
+                let slot = drop_slot(&self.speaker_row_rects, from, p.y);
                 order = reordered(rows.len(), from, slot);
                 target = Some(slot);
                 autoscroll(ui, p.y);
@@ -271,7 +271,16 @@ impl StudioSpike {
         // while the rows still carry the old ones.
         let in_flight = from.is_none() && self.speaker_move_pending.is_some();
 
-        let mut centres = Vec::with_capacity(rows.len());
+        // Rows slide to where they are laid out rather than jumping there.
+        // Each keeps its drawn position, relative to the list's top so that
+        // scrolling does not count as motion, under a key that follows the
+        // speaker rather than its index: the index changes when the renderer
+        // echoes a move, and the row should not slide for that.
+        let ctx = ui.ctx().clone();
+        let list_top = ui.cursor().top();
+        let keys = row_keys(rows);
+        let mut rects = Vec::with_capacity(rows.len());
+        let mut lifted: Option<(usize, egui::Rect, bool, bool)> = None;
         for (shown_at, &position) in order.iter().enumerate() {
             let row = &rows[position];
             let index: Option<usize> = row.id.parse().ok();
@@ -280,29 +289,97 @@ impl StudioSpike {
             } else {
                 index.is_some() && self.selection.speaker == index
             };
-            let dragging = from.is_some() && from == index;
             let flash = index.is_some_and(|i| clip == Some(i as i32));
-            let (action, rect) = list_row(
-                ui,
-                "speakers",
-                row,
-                RowState {
-                    selected,
-                    dragging,
-                    flash,
-                },
-                cutoffs,
-            );
-            centres.push((position, rect.center().y));
+            if from.is_some() && from == index {
+                // The dragged row leaves an empty slot where it will land; it
+                // is drawn after the others, over them, following the pointer.
+                let height = self
+                    .speaker_row_rects
+                    .iter()
+                    .find(|(i, _)| *i == position)
+                    .map_or(40.0, |(_, r)| r.height());
+                let (slot, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+                rects.push((position, slot));
+                lifted = Some((position, slot, selected, flash));
+                continue;
+            }
+            let laid_at = ui.cursor().top() - list_top;
+            let shown = ctx.animate_value_with_time(keys[position], laid_at, ROW_SLIDE);
+            let (action, rect) = ui
+                .with_visual_transform(
+                    egui::emath::TSTransform::from_translation(vec2(0.0, shown - laid_at)),
+                    |ui| {
+                        list_row(
+                            ui,
+                            "speakers",
+                            row,
+                            RowState {
+                                selected,
+                                dragging: false,
+                                flash,
+                            },
+                            cutoffs,
+                        )
+                    },
+                )
+                .inner;
+            rects.push((position, rect));
             if matches!(action, RowAction::DragStart) {
                 self.speaker_drag = index;
+                self.speaker_drag_grab = pointer.map_or(0.0, |p| p.y - rect.top());
             }
             if selected && from.is_none() {
                 self.reveal_selected_row(ui, rect);
             }
             self.apply_row_action(action, row, true);
         }
-        self.speaker_row_centres = centres;
+
+        if let Some((position, slot, selected, flash)) = lifted {
+            // Under the pointer, held where it was taken, and kept within the
+            // list so it cannot be carried off over the scene.
+            let bottom = rects
+                .iter()
+                .map(|(_, r)| r.bottom())
+                .fold(slot.bottom(), f32::max);
+            let top = pointer
+                .map_or(slot.top(), |p| p.y - self.speaker_drag_grab)
+                .clamp(list_top, (bottom - slot.height()).max(list_top));
+            // Seeded where it is drawn, so that on release it slides from
+            // there into its slot.
+            ctx.animate_value_with_time(keys[position], top - list_top, 0.0);
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(slot)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            child.with_visual_transform(
+                egui::emath::TSTransform::from_translation(vec2(0.0, top - slot.top())),
+                |ui| {
+                    ui.painter().add(
+                        egui::Shadow {
+                            offset: [0, 4],
+                            blur: 14,
+                            spread: 0,
+                            color: Color32::from_black_alpha(140),
+                        }
+                        .as_shape(slot, egui::CornerRadius::same(theme::CONTROL_RADIUS)),
+                    );
+                    list_row(
+                        ui,
+                        "speakers",
+                        &rows[position],
+                        RowState {
+                            selected,
+                            dragging: true,
+                            flash,
+                        },
+                        cutoffs,
+                    );
+                },
+            );
+        }
+        self.speaker_row_rects = rects;
 
         if let (Some(from), Some(to)) = (from, target)
             && ui.input(|i| i.pointer.any_released())
@@ -799,11 +876,26 @@ const PENDING_MOVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// with the dragged row among them. Measured against the others only, the
 /// slot is stable: the rows after the dragged one sit a row lower, so the
 /// pointer has to cross the next row's centre, not its edge, to move it on.
-fn drop_slot(centres: &[(usize, f32)], dragged: usize, pointer_y: f32) -> usize {
-    centres
+fn drop_slot(rects: &[(usize, egui::Rect)], dragged: usize, pointer_y: f32) -> usize {
+    rects
         .iter()
-        .filter(|(index, centre)| *index != dragged && *centre < pointer_y)
+        .filter(|(index, rect)| *index != dragged && rect.center().y < pointer_y)
         .count()
+}
+
+/// How long a speaker row takes to slide to a new place.
+const ROW_SLIDE: f32 = 0.15;
+
+/// One animation key per row, following the speaker's name: the nth row of a
+/// name keeps its key however the list is ordered or renumbered.
+fn row_keys(rows: &[Row]) -> Vec<egui::Id> {
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let nth = rows[..i].iter().filter(|r| r.label == row.label).count();
+            egui::Id::new(("speaker-row-slide", row.label.as_str(), nth))
+        })
+        .collect()
 }
 
 /// The display order of `len` rows with row `from` moved to position `to`.
@@ -1120,7 +1212,13 @@ mod tests {
     fn a_dragged_row_lands_below_the_centres_it_has_passed() {
         use super::{drop_slot, reordered};
         // Four rows 10 high, row 1 picked up and shown at slot 1.
-        let centres = [(0, 5.0), (1, 15.0), (2, 25.0), (3, 35.0)];
+        let row = |i: usize, top: f32| {
+            (
+                i,
+                egui::Rect::from_min_size(egui::pos2(0.0, top), egui::vec2(100.0, 10.0)),
+            )
+        };
+        let centres = [row(0, 0.0), row(1, 10.0), row(2, 20.0), row(3, 30.0)];
         assert_eq!(drop_slot(&centres, 1, 12.0), 1);
         // Crossing row 2's centre moves it past row 2, not its edge.
         assert_eq!(drop_slot(&centres, 1, 24.0), 1);
