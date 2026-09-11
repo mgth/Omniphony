@@ -56,6 +56,7 @@ const TIERS: &[(&str, Tier)] = &[
     ("src/app.rs", Tier::Ui),
     ("src/main.rs", Tier::Ui),
     ("src/panels/", Tier::Ui),
+    ("src/prefs/", Tier::Ui),
     ("src/ui/", Tier::Ui),
     ("src/view/", Tier::Ui),
     ("src/render/", Tier::Ui),

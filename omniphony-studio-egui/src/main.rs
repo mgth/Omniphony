@@ -14,6 +14,7 @@ mod i18n;
 mod model;
 mod osc;
 mod panels;
+mod prefs;
 mod render;
 mod stats;
 mod ui;

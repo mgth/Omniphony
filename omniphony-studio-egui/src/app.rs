@@ -11,11 +11,11 @@ use glam::{Quat, Vec3};
 
 use crate::Args;
 use crate::host::control::Ctl;
-use crate::host::prefs::Prefs;
 use crate::model::app_state::AppState;
 use crate::model::layouts::load_layouts;
 use crate::osc::dispatch::Live;
 use crate::osc::{self, Control, ControlTx, OscStats, SharedLive};
+use crate::prefs::Prefs;
 use crate::render::camera::OrbitCamera;
 use crate::render::{SceneRenderer, ViewportCallback};
 use crate::stats::{FrameStats, ProcStats};
@@ -318,7 +318,7 @@ impl StudioSpike {
             osc::spawn_synthetic(args.synthetic, args.rate, port, stop)?;
         }
 
-        let mut prefs = crate::host::prefs::load(&config_dir);
+        let mut prefs = crate::prefs::load(&config_dir);
         // The language is applied before the first frame, so nothing is drawn
         // in English and then redrawn.
         crate::i18n::set_locale(prefs.locale.as_deref().unwrap_or("auto"));
@@ -877,10 +877,8 @@ impl StudioSpike {
             .display
             .matches(&self.settings, &self.volume_settings)
         {
-            let next = crate::host::display_prefs::DisplayPrefs::capture(
-                &self.settings,
-                &self.volume_settings,
-            );
+            let next =
+                crate::prefs::display::DisplayPrefs::capture(&self.settings, &self.volume_settings);
             self.prefs.display = next;
             self.mark_prefs_dirty();
         }
@@ -934,7 +932,7 @@ impl StudioSpike {
                 ctx.request_repaint_after(PREFS_DEBOUNCE.saturating_sub(since.elapsed()));
             }
             Some(_) => {
-                crate::host::prefs::save(&self.config_dir, &self.prefs);
+                crate::prefs::save(&self.config_dir, &self.prefs);
                 self.prefs_dirty = false;
                 self.prefs_dirty_since = None;
             }

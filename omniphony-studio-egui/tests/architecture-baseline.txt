@@ -14,7 +14,7 @@
 #   side-effect      7
 #   frame-tick       9
 #   toolkit-in-core  1
-#   core-imports-ui  8
+#   core-imports-ui  0
 #
 # rule            file                                      count
 osc-address       src/panels/audio.rs                       3
@@ -97,5 +97,3 @@ frame-tick        src/panels/mpv_overlay.rs                 1
 frame-tick        src/panels/object_test.rs                 1
 frame-tick        src/panels/speaker_editor.rs              2
 toolkit-in-core   src/host/commands/layout_io.rs            1
-core-imports-ui   src/host/display_prefs.rs                 4
-core-imports-ui   src/host/prefs.rs                         4
