@@ -1,6 +1,7 @@
 //! The Studio's chrome: theme, side-panel geometry, sections and the
 //! recurring controls. The panels themselves live in `src/panels/`.
 
+pub mod icons;
 pub mod layout;
 pub mod markup;
 pub mod meter;
