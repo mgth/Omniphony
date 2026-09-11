@@ -377,6 +377,15 @@ fn init_osc_runtime(
 
     if let Some(renderer) = &handler.spatial_renderer {
         let ctrl = renderer.renderer_control();
+        // The channel-object stages' schemas, as the engine's `enable_osc`
+        // publishes them. Without them this host sent Studio two empty lists:
+        // no height generator to pick and no phantom-extraction parameters.
+        ctrl.set_object_generators_schema(
+            handler.spatial.channel_objects.generator_listings_json(),
+        );
+        ctrl.set_phantom_schema(
+            orender_engine::channel_objects::ChannelObjectStages::phantom_schema_json(),
+        );
         ctrl.set_input_path(Some(input_path.display().to_string()));
         ctrl.set_bridge_path(args.bridge_path.clone());
         let persisted_bridge_path = render_cfg.as_ref().and_then(|cfg| cfg.bridge_path.clone());
