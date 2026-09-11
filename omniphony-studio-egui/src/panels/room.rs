@@ -10,7 +10,7 @@ use crate::app::StudioSpike;
 use crate::i18n::t;
 use crate::model::app_state::RoomRatio;
 use crate::ui::section::Section;
-use crate::ui::{theme, widgets};
+use crate::ui::{help, theme, widgets};
 
 /// The dimensions the form edits, in metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,69 +89,85 @@ impl StudioSpike {
             .summary(summary)
             .show(ui, |ui| {
                 ui.add_enabled_ui(!frozen, |ui| {
-                    let mut changed = false;
-                    changed |=
-                        metre_row(ui, t("room.axis.width"), "help.room.width", &mut edit.width);
-                    ui.horizontal(|ui| {
-                        widgets::note(ui, t("room.mpu"));
-                        ui.label(
-                            RichText::new(format!("{:.2}", edit.meters_per_unit()))
-                                .monospace()
-                                .size(theme::FONT_SIZE_SMALL)
-                                .color(theme::TEXT),
+                    let mut step = Step::default();
+                    // `#roomGeometryForm`: three columns, one per axis — the
+                    // width and the scale it sets under X, the two depths
+                    // under Y, the two heights under Z.
+                    ui.columns(3, |columns| {
+                        axis_header(&mut columns[0], "X");
+                        axis_header(&mut columns[1], "Y");
+                        axis_header(&mut columns[2], "Z");
+                        step |= metre_field(
+                            &mut columns[0],
+                            t("room.axis.width"),
+                            "help.room.width",
+                            &mut edit.width,
+                        );
+                        field_label(&mut columns[0], "m/u", None);
+                        columns[0].with_layout(
+                            egui::Layout::right_to_left(egui::Align::Min),
+                            |ui| {
+                                ui.label(
+                                    RichText::new(format!("{:.2}", edit.meters_per_unit()))
+                                        .size(11.0)
+                                        .color(theme::TEXT),
+                                );
+                            },
+                        );
+                        step |= metre_field(
+                            &mut columns[1],
+                            t("room.axis.length"),
+                            "help.room.front",
+                            &mut edit.front,
+                        );
+                        step |= metre_field(
+                            &mut columns[1],
+                            t("room.axis.rear"),
+                            "help.room.rear",
+                            &mut edit.rear,
+                        );
+                        step |= metre_field(
+                            &mut columns[2],
+                            t("room.axis.height"),
+                            "help.room.height",
+                            &mut edit.height,
+                        );
+                        step |= metre_field(
+                            &mut columns[2],
+                            t("room.axis.lower"),
+                            "help.room.lower",
+                            &mut edit.lower,
                         );
                     });
-                    changed |= metre_row(
-                        ui,
-                        t("room.axis.length"),
+                    // The fields' help opens under the whole grid, as the
+                    // web anchors it to the form: a column is too narrow for
+                    // a paragraph.
+                    for key in [
+                        "help.room.width",
                         "help.room.front",
-                        &mut edit.front,
-                    );
-                    changed |= metre_row(ui, t("room.axis.rear"), "help.room.rear", &mut edit.rear);
-                    changed |= metre_row(
-                        ui,
-                        t("room.axis.height"),
+                        "help.room.rear",
                         "help.room.height",
-                        &mut edit.height,
-                    );
-                    changed |=
-                        metre_row(ui, t("room.axis.lower"), "help.room.lower", &mut edit.lower);
+                        "help.room.lower",
+                    ] {
+                        help::card(ui, key);
+                    }
 
                     // The blend only means something with different front and
                     // rear depths.
                     if (edit.front - edit.rear).abs() >= 1e-6 {
-                        let mut percent = (edit.center_blend * 100.0) as f32;
-                        let slider = widgets::label_row_help(
-                            ui,
-                            t("room.centerBlend"),
-                            "help.room.centerBlend",
-                            |ui| {
-                                ui.label(
-                                    RichText::new(format!("{:.0}/{:.0}", percent, 100.0 - percent))
-                                        .monospace()
-                                        .color(theme::TEXT_STRONG),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut percent, 0.0..=100.0)
-                                        .step_by(1.0)
-                                        .show_value(false),
-                                )
-                            },
-                        );
-                        if slider.double_clicked() {
-                            edit.center_blend = 0.5;
-                            changed = true;
-                        } else if slider.changed() {
-                            edit.center_blend = (percent / 100.0) as f64;
-                            changed = true;
-                        }
-                        slider.on_hover_text(t("room.centerBlend.resetTitle"));
+                        step |= center_blend_row(ui, &mut edit.center_blend);
                     }
 
                     self.room_edit = Some(edit);
-                    if changed {
-                        self.room_editing = true;
+                    if step.commit {
                         self.apply_room_geometry(edit);
+                    } else if step.preview {
+                        // Mid-drag: the scene follows, the renderer waits for
+                        // the release, as the web previews while typing and
+                        // commits on Enter or blur. Sent every frame, a drag
+                        // re-planned the layout at the frame rate.
+                        self.room_editing = true;
+                        self.live.lock().unwrap().app.room_ratio = edit.to_ratio();
                     }
                 });
             })
@@ -189,25 +205,117 @@ impl StudioSpike {
     }
 }
 
-/// One metre field: two decimals, never below a centimetre.
-fn metre_row(ui: &mut Ui, label: &str, help: &str, value: &mut f64) -> bool {
-    let mut changed = false;
-    widgets::label_row_help(ui, label, help, |ui| {
-        let mut metres = *value as f32;
-        if ui
-            .add_sized(
-                egui::vec2(72.0, ui.spacing().interact_size.y),
-                egui::DragValue::new(&mut metres)
-                    .speed(0.01)
-                    .range(0.01..=f32::MAX)
-                    .fixed_decimals(2)
-                    .suffix(" m"),
-            )
-            .changed()
-        {
-            *value = (metres as f64).max(0.01);
-            changed = true;
+/// What a control did this frame: moved mid-drag (the scene previews it),
+/// or settled (the renderer is sent it).
+#[derive(Clone, Copy, Default)]
+struct Step {
+    preview: bool,
+    commit: bool,
+}
+
+impl std::ops::BitOrAssign for Step {
+    fn bitor_assign(&mut self, other: Self) {
+        self.preview |= other.preview;
+        self.commit |= other.commit;
+    }
+}
+
+impl Step {
+    /// A drag commits when it is let go; any other change — a typed value on
+    /// Enter, an arrow key — commits at once.
+    fn of(response: &egui::Response) -> Self {
+        let changed = response.changed();
+        Self {
+            preview: changed,
+            commit: response.drag_stopped() || (changed && !response.dragged()),
+        }
+    }
+}
+
+/// An axis letter heading its column.
+fn axis_header(ui: &mut Ui, axis: &str) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+        ui.label(
+            RichText::new(axis)
+                .size(theme::FONT_SIZE)
+                .color(theme::TEXT_STRONG),
+        );
+    });
+}
+
+/// A field's name, small and right-aligned over it; its help, when it has
+/// one, opens from it.
+fn field_label(ui: &mut Ui, label: &str, help: Option<&str>) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+        let text = RichText::new(label)
+            .size(theme::FONT_SIZE_SMALL)
+            .color(theme::TEXT_DIM);
+        match help {
+            Some(key) => {
+                help::label(ui, text, key);
+            }
+            None => {
+                ui.label(text);
+            }
         }
     });
-    changed
+}
+
+/// One metre field in its column: its name over it, two decimals, never
+/// below a centimetre, as wide as the column.
+fn metre_field(ui: &mut Ui, label: &str, help: &str, value: &mut f64) -> Step {
+    field_label(ui, label, Some(help));
+    let mut metres = *value as f32;
+    let response = ui.add_sized(
+        egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+        egui::DragValue::new(&mut metres)
+            .speed(0.01)
+            .range(0.01..=f32::MAX)
+            .fixed_decimals(2)
+            .suffix(" m"),
+    );
+    let step = Step::of(&response);
+    if step.preview {
+        *value = f64::from(metres).max(0.01);
+    }
+    step
+}
+
+/// `#roomCenterBlendRow`: the name, the slider taking the room between, and
+/// the split as `front/rear`. A double click on either puts it back to
+/// 50/50, as the web's `dblclick` on both does.
+fn center_blend_row(ui: &mut Ui, blend: &mut f64) -> Step {
+    let mut percent = (*blend * 100.0) as f32;
+    let (slider, value) =
+        widgets::label_row_help(ui, t("room.centerBlend"), "help.room.centerBlend", |ui| {
+            let value = ui
+                .add(
+                    egui::Label::new(
+                        RichText::new(format!("{:.0}/{:.0}", percent, 100.0 - percent))
+                            .size(11.0)
+                            .color(theme::TEXT),
+                    )
+                    .sense(egui::Sense::click())
+                    .selectable(false),
+                )
+                .on_hover_text(t("room.centerBlend.resetTitle"));
+            let slider = ui.add(
+                egui::Slider::new(&mut percent, 0.0..=100.0)
+                    .step_by(1.0)
+                    .show_value(false),
+            );
+            (slider, value)
+        });
+    if slider.double_clicked() || value.double_clicked() {
+        *blend = 0.5;
+        return Step {
+            preview: true,
+            commit: true,
+        };
+    }
+    let step = Step::of(&slider);
+    if step.preview {
+        *blend = f64::from(percent / 100.0);
+    }
+    step
 }
