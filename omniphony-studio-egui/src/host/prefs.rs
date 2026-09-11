@@ -26,6 +26,8 @@ pub struct Prefs {
     pub diag_plot: DiagPlotPrefs,
     /// The `omniphony.updateCheck.*` keys of the release check.
     pub updates: UpdatePrefs,
+    /// The Display panel: the web's effective-render and trail prefs.
+    pub display: super::display_prefs::DisplayPrefs,
 }
 
 fn path(config_dir: &Path) -> PathBuf {

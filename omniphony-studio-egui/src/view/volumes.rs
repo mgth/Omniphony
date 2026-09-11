@@ -17,7 +17,8 @@ use super::RoomBounds;
 use super::decayed_level;
 
 /// `OBJECT_ENERGY_COLORMAPS` indices.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Colormap {
     Heatmap = 0,
     BlueWhite = 1,
@@ -69,7 +70,8 @@ pub fn default_stops() -> Vec<GradientStop> {
     ]
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DiscontinuityMode {
     Gain,
     Centroid,

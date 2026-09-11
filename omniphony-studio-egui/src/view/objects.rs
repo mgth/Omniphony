@@ -18,7 +18,8 @@ use crate::render::{
 use super::{ViewSettings, billboard_ring, dbfs_to_scale, decayed_level, scene_position};
 
 /// `app.objectDisplayMode`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ObjectDisplayMode {
     Circle,
     TransparentSphere,

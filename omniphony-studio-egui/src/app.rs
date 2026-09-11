@@ -27,6 +27,9 @@ use crate::widgets::{OPTION_SCHEMA, OptionValue};
 /// long enough for the pinned editor to settle on its height.
 const REVEAL_WINDOW: Duration = Duration::from_millis(400);
 
+/// How long the preferences wait for changes to settle before being written.
+const PREFS_DEBOUNCE: Duration = Duration::from_millis(600);
+
 /// True when two layouts describe the same panels (they hold only floats and
 /// flags, so a field-wise comparison is enough to know whether to persist).
 fn layout_eq(a: &OverlayLayout, b: &OverlayLayout) -> bool {
@@ -317,8 +320,18 @@ impl StudioSpike {
         let live_for_host = live.clone();
         let control_for_host = control.clone();
         let object_field = args.object_field;
+        // The Display panel as the user left it, then the command line, which
+        // wins where it forces something: `--no-trails` and `--object-field`
+        // are asked for on this launch, the prefs only say what was last set.
         let mut settings = ViewSettings::default();
-        settings.trails.enabled = !args.no_trails;
+        let mut volume_settings = VolumeSettings::default();
+        prefs.display.apply(&mut settings, &mut volume_settings);
+        if args.no_trails {
+            settings.trails.enabled = false;
+        }
+        if object_field {
+            volume_settings.object_field_enabled = true;
+        }
         Ok(Self {
             args,
             live,
@@ -336,10 +349,7 @@ impl StudioSpike {
             pointer_over: false,
             pick_objects: Vec::new(),
             pick_speakers: Vec::new(),
-            volume_settings: VolumeSettings {
-                object_field_enabled: object_field,
-                ..VolumeSettings::default()
-            },
+            volume_settings,
             volume_state: VolumeState::default(),
             head_loaded,
             head_rotation: Quat::IDENTITY,
@@ -819,23 +829,49 @@ impl StudioSpike {
             self.prefs_dirty = true;
             self.prefs_dirty_since = None;
         }
+        // The web writes its display prefs to `localStorage` on every change;
+        // here a change marks the file for the same debounced write as the
+        // panel widths. The comparison allocates nothing, so it can run every
+        // frame; the snapshot is only rebuilt when a setting actually moved.
+        if !self
+            .prefs
+            .display
+            .matches(&self.settings, &self.volume_settings)
+        {
+            let next = crate::host::display_prefs::DisplayPrefs::capture(
+                &self.settings,
+                &self.volume_settings,
+            );
+            self.prefs.display = next;
+            self.mark_prefs_dirty();
+        }
     }
 
     /// Write the preferences out once the user has stopped dragging a panel
     /// edge (the web writes to `localStorage` on every change; a file wants a
     /// debounce).
-    fn persist_prefs(&mut self) {
+    ///
+    /// The window only repaints when something happens, so waiting for "the
+    /// next frame after the delay" could wait for ever: with the renderer idle
+    /// the frames stop, and a toggled setting or a dragged panel edge was
+    /// never written. The debounce asks for the frame it is waiting on.
+    fn persist_prefs(&mut self, ctx: &egui::Context) {
         if !self.prefs_dirty {
             return;
         }
         match self.prefs_dirty_since {
-            Some(since) if since.elapsed() < Duration::from_millis(600) => {}
+            Some(since) if since.elapsed() < PREFS_DEBOUNCE => {
+                ctx.request_repaint_after(PREFS_DEBOUNCE.saturating_sub(since.elapsed()));
+            }
             Some(_) => {
                 crate::host::prefs::save(&self.config_dir, &self.prefs);
                 self.prefs_dirty = false;
                 self.prefs_dirty_since = None;
             }
-            None => self.prefs_dirty_since = Some(Instant::now()),
+            None => {
+                self.prefs_dirty_since = Some(Instant::now());
+                ctx.request_repaint_after(PREFS_DEBOUNCE);
+            }
         }
     }
 
@@ -911,7 +947,7 @@ impl eframe::App for StudioSpike {
         self.maintain_test_idle_feed();
         self.check_recompute_ack();
         self.maintain_gaintable_subscriptions();
-        self.persist_prefs();
+        self.persist_prefs(&ctx);
         self.maybe_print_stats();
     }
 
