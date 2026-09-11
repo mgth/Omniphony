@@ -582,7 +582,7 @@ fn list_row(ui: &mut Ui, row: &Row, state: RowState, cutoffs: &[f64]) -> (RowAct
                     );
                     let peak = row.meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
                     let hold = row.hold.unwrap_or(peak);
-                    let response = widgets::meter(
+                    let response = crate::ui::meter::level_meter(
                         ui,
                         meter_fraction(peak),
                         (hold > METER_DB_MIN).then(|| meter_fraction(hold)),

@@ -61,7 +61,7 @@ impl StudioSpike {
                 ui.horizontal(|ui| {
                     let peak = meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
                     let hold = hold.unwrap_or(peak);
-                    widgets::meter(
+                    crate::ui::meter::level_meter(
                         ui,
                         meter_fraction(peak),
                         (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
