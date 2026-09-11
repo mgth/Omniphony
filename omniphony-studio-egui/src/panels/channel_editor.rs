@@ -602,20 +602,25 @@ impl StudioSpike {
             });
         });
 
-        // Virtual or direct: the switch's own text is the label, as in the web.
-        let mut spatialize = channel.spatialize;
-        if widgets::switch_row(
-            ui,
-            t(if spatialize {
-                "virtualBed.virtual"
-            } else {
-                "virtualBed.direct"
-            }),
-            &mut spatialize,
-        ) {
-            let value = spatialize;
-            self.commit_channel(&name, |c| c.spatialize = value);
-        }
+        // Virtual or direct. The web puts this on a switch whose *label* is
+        // the current state, so the control reads "Direct" when it is direct
+        // and "Virtual" when it is virtual — and nothing says which way the
+        // switch would move you. Both choices are shown here instead, one
+        // highlighted: a deliberate divergence, asked for because the web's
+        // version is read backwards as often as forwards.
+        let spatialize = channel.spatialize;
+        ui.horizontal(|ui| {
+            if let Some(picked) = widgets::toggle_buttons(
+                ui,
+                &spatialize,
+                &[
+                    (false, t("virtualBed.direct")),
+                    (true, t("virtualBed.virtual")),
+                ],
+            ) {
+                self.commit_channel(&name, |c| c.spatialize = picked);
+            }
+        });
 
         // Direct: the coordinates below are the speaker's, and nothing about
         // the position is editable.
