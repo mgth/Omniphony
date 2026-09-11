@@ -77,27 +77,29 @@ impl StudioSpike {
         let source = text(doc, &["hrirSource"]).unwrap_or_else(|| "saf".to_owned());
         let effective = text(doc, &["hrirEffective"]);
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("HRTF")
-                    .size(theme::FONT_SIZE)
-                    .color(theme::TEXT_STRONG),
-            );
-            widgets::help(ui, "help.binaural.hrtf");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row_help(
+            ui,
+            RichText::new("HRTF")
+                .size(theme::FONT_SIZE)
+                .color(theme::TEXT_STRONG),
+            "help.binaural.hrtf",
+            |ui| {
                 let mut chosen = source.clone();
-                egui::ComboBox::from_id_salt("hrir-source")
-                    .selected_text(t(HRIR_SOURCES
-                        .iter()
-                        .find(|(id, _)| *id == source)
-                        .map(|(_, key)| *key)
-                        .unwrap_or("binaural.hrtfSource.kemar")))
-                    .width(160.0)
-                    .show_ui(ui, |ui| {
-                        for (id, key) in HRIR_SOURCES {
-                            ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
-                        }
-                    });
+                widgets::bounded_combo(ui, 160.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("hrir-source")
+                        .selected_text(t(HRIR_SOURCES
+                            .iter()
+                            .find(|(id, _)| *id == source)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("binaural.hrtfSource.kemar")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in HRIR_SOURCES {
+                                ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                            }
+                        })
+                });
                 if chosen != source {
                     self.send_hrir_source(&chosen);
                 }
@@ -112,8 +114,8 @@ impl StudioSpike {
                 {
                     self.open_sofa_browser();
                 }
-            });
-        });
+            },
+        );
 
         // The renderer says what it actually loaded; a fallback means the
         // requested source did not work.
@@ -192,24 +194,28 @@ impl StudioSpike {
             ("coarse", "binaural.hrirLattice.coarse"),
         ];
         let mut chosen = lattice.clone();
-        ui.horizontal(|ui| {
-            ui.label(t("binaural.hrirUpdateLatticeLabel"));
-            widgets::help(ui, "help.hrirUpdateLattice");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                egui::ComboBox::from_id_salt("hrir-lattice")
-                    .selected_text(t(lattices
-                        .iter()
-                        .find(|(id, _)| *id == lattice)
-                        .map(|(_, key)| *key)
-                        .unwrap_or("binaural.hrirLattice.balanced")))
-                    .width(140.0)
-                    .show_ui(ui, |ui| {
-                        for (id, key) in lattices {
-                            ui.selectable_value(&mut chosen, id.to_owned(), t(key));
-                        }
-                    });
-            });
-        });
+        widgets::label_row_help(
+            ui,
+            t("binaural.hrirUpdateLatticeLabel"),
+            "help.hrirUpdateLattice",
+            |ui| {
+                widgets::bounded_combo(ui, 140.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("hrir-lattice")
+                        .selected_text(t(lattices
+                            .iter()
+                            .find(|(id, _)| *id == lattice)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("binaural.hrirLattice.balanced")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in lattices {
+                                ui.selectable_value(&mut chosen, id.to_owned(), t(key));
+                            }
+                        })
+                });
+            },
+        );
         if chosen != lattice {
             self.set_option("hrir_update_lattice", serde_json::json!(chosen));
         }
@@ -224,21 +230,21 @@ impl StudioSpike {
             ];
             let current = self.pinna_preset.clone();
             let mut chosen = current.clone();
-            ui.horizontal(|ui| {
-                ui.label(t("binaural.pinnaPreset"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            widgets::label_row(ui, t("binaural.pinnaPreset"), |ui| {
+                widgets::bounded_combo(ui, 120.0, |ui, w| {
                     egui::ComboBox::from_id_salt("pinna-preset")
                         .selected_text(t(presets
                             .iter()
                             .find(|(id, _)| *id == current)
                             .map(|(_, key)| *key)
                             .unwrap_or("binaural.pinnaPreset.pbnh")))
-                        .width(120.0)
+                        .width(w)
+                        .truncate()
                         .show_ui(ui, |ui| {
                             for (id, key) in presets {
                                 ui.selectable_value(&mut chosen, id.to_owned(), t(key));
                             }
-                        });
+                        })
                 });
             });
             let mut changed = chosen != current;
@@ -498,14 +504,13 @@ impl StudioSpike {
         ui.add_space(4.0);
         let step = number(doc, &["tracking", "calibrationStep"], 0.0) as usize;
         let calibrated = flag(doc, &["tracking", "axesCalibrated"], false);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t("binaural.headTrackingTitle"))
-                    .size(theme::FONT_SIZE)
-                    .color(theme::TEXT_STRONG),
-            );
-            widgets::help(ui, "help.binaural.headTracking");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row_help(
+            ui,
+            RichText::new(t("binaural.headTrackingTitle"))
+                .size(theme::FONT_SIZE)
+                .color(theme::TEXT_STRONG),
+            "help.binaural.headTracking",
+            |ui| {
                 if ui
                     .button(t("binaural.calibrateAxes"))
                     .on_hover_text(t("help.binaural.calibrateAxes"))
@@ -518,8 +523,8 @@ impl StudioSpike {
                 if ui.button(t("binaural.recenter")).clicked() {
                     self.ctl.send_int("/omniphony/control/head/recenter", 1);
                 }
-            });
-        });
+            },
+        );
         // Where the calibration is up to, in the user's terms.
         if calibrated {
             widgets::note(ui, t("binaural.calibrateDone"));
@@ -539,41 +544,38 @@ impl StudioSpike {
 
         let address = text(doc, &["tracking", "address"]).unwrap_or_default();
         let mut edited = address.clone();
-        ui.horizontal(|ui| {
-            ui.label(t("binaural.oscAddressLabel"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut edited)
-                            .desired_width(170.0)
-                            .hint_text("/android/rotationvector"),
-                    )
-                    .lost_focus()
-                    && edited.trim() != address
-                {
-                    self.ctl
-                        .send_string("/omniphony/control/head/tracking/address", edited.trim());
-                }
-            });
+        widgets::label_row(ui, t("binaural.oscAddressLabel"), |ui| {
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut edited)
+                        .desired_width(170.0)
+                        .hint_text("/android/rotationvector"),
+                )
+                .lost_focus()
+                && edited.trim() != address
+            {
+                self.ctl
+                    .send_string("/omniphony/control/head/tracking/address", edited.trim());
+            }
         });
 
         let format = text(doc, &["tracking", "format"]).unwrap_or_else(|| "auto".to_owned());
         let mut chosen = format.clone();
-        ui.horizontal(|ui| {
-            ui.label(t("binaural.trackFormatLabel"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row(ui, t("binaural.trackFormatLabel"), |ui| {
+            widgets::bounded_combo(ui, 140.0, |ui, w| {
                 egui::ComboBox::from_id_salt("track-format")
                     .selected_text(t(TRACK_FORMATS
                         .iter()
                         .find(|(id, _)| *id == format)
                         .map(|(_, key)| *key)
                         .unwrap_or("common.auto")))
-                    .width(140.0)
+                    .width(w)
+                    .truncate()
                     .show_ui(ui, |ui| {
                         for (id, key) in TRACK_FORMATS {
                             ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
                         }
-                    });
+                    })
             });
         });
         if chosen != format {

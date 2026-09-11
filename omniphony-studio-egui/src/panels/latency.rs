@@ -420,10 +420,11 @@ impl StudioSpike {
         let mut value = self
             .latency_target_edit
             .unwrap_or_else(|| target.unwrap_or(500).max(1) as f64);
-        ui.horizontal(|ui| {
-            ui.label(t("audio.targetLatency"));
-            widgets::help(ui, "help.audio.targetLatency");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row_help(
+            ui,
+            t("audio.targetLatency"),
+            "help.audio.targetLatency",
+            |ui| {
                 let dirty = self.latency_target_edit.is_some();
                 if ui
                     .add_enabled(dirty, egui::Button::new(t("adaptive.apply")))
@@ -451,8 +452,8 @@ impl StudioSpike {
                 {
                     self.latency_target_edit = Some(value);
                 }
-            });
-        });
+            },
+        );
     }
 
     /// The adaptive controller: its switches, its three groups of numbers,
@@ -464,7 +465,7 @@ impl StudioSpike {
             self.live.lock().unwrap().app.adaptive_resampling = Some(u8::from(on));
             self.send_audio_config();
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let label = if paused {
                 format!("▶ {}", t("adaptive.resume"))
             } else {
@@ -535,11 +536,11 @@ impl StudioSpike {
                     let live = self.live.lock().unwrap();
                     get(&live.app)
                 };
-                ui.horizontal(|ui| {
-                    ui.label(t(label));
-                    widgets::help(ui, help);
-                });
-                if widgets::switch_row(ui, "", &mut value) {
+                // Label, help mark and switch on one line, the switch placed
+                // first: it used to fall to a line of its own below its label.
+                if widgets::label_row_help(ui, t(label), help, |ui| {
+                    widgets::switch(ui, &mut value).changed()
+                }) {
                     {
                         let mut live = self.live.lock().unwrap();
                         set(&mut live.app, value);
@@ -578,24 +579,20 @@ impl StudioSpike {
                 };
                 let mut value = *self.adaptive_edits.get(field.key).unwrap_or(&stored);
                 ui.add_enabled_ui(enabled, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(t(field.label));
-                        widgets::help(ui, field.help);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let mut drag = egui::DragValue::new(&mut value)
-                                .speed(field.step)
-                                .range(field.min..=field.max)
-                                .fixed_decimals(field.decimals);
-                            if !field.unit.is_empty() {
-                                drag = drag.suffix(format!(" {}", field.unit));
-                            }
-                            if ui
-                                .add_sized(egui::vec2(84.0, ui.spacing().interact_size.y), drag)
-                                .changed()
-                            {
-                                self.adaptive_edits.insert(field.key, value);
-                            }
-                        });
+                    widgets::label_row_help(ui, t(field.label), field.help, |ui| {
+                        let mut drag = egui::DragValue::new(&mut value)
+                            .speed(field.step)
+                            .range(field.min..=field.max)
+                            .fixed_decimals(field.decimals);
+                        if !field.unit.is_empty() {
+                            drag = drag.suffix(format!(" {}", field.unit));
+                        }
+                        if ui
+                            .add_sized(egui::vec2(84.0, ui.spacing().interact_size.y), drag)
+                            .changed()
+                        {
+                            self.adaptive_edits.insert(field.key, value);
+                        }
                     });
                 });
             }

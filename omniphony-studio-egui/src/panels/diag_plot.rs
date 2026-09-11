@@ -475,38 +475,6 @@ impl StudioSpike {
                 }
             }
             ui.separator();
-            let window = self.prefs.diag_plot.window_ms;
-            egui::ComboBox::from_id_salt("diag-window")
-                .selected_text(format!("{} s", window / 1000))
-                .width(64.0)
-                .show_ui(ui, |ui| {
-                    for option in WINDOW_OPTIONS_MS {
-                        if ui
-                            .selectable_label(window == *option, format!("{} s", option / 1000))
-                            .clicked()
-                        {
-                            self.prefs.diag_plot.window_ms = *option;
-                            self.mark_prefs_dirty();
-                        }
-                    }
-                });
-            let rate = self.prefs.diag_plot.rate_hz;
-            egui::ComboBox::from_id_salt("diag-rate")
-                .selected_text(format!("{rate} Hz"))
-                .width(72.0)
-                .show_ui(ui, |ui| {
-                    for option in RATE_OPTIONS_HZ {
-                        if ui
-                            .selectable_label(rate == *option, format!("{option} Hz"))
-                            .clicked()
-                        {
-                            self.prefs.diag_plot.rate_hz = *option;
-                            self.mark_prefs_dirty();
-                            self.ctl
-                                .send_float("/omniphony/control/diag/rate_hz", *option as f32);
-                        }
-                    }
-                });
             if ui
                 .selectable_label(self.diag_paused, if self.diag_paused { "▶" } else { "❚❚" })
                 .clicked()
@@ -546,6 +514,45 @@ impl StudioSpike {
                 self.mark_prefs_dirty();
             }
         });
+        // The window and rate dropdowns get a row of their own: a ComboBox is
+        // a nested layout, not an atomic widget, so a wrapped row cannot carry
+        // it to the next line — squeezed in with the toggles, it pushed the
+        // whole section past the panel.
+        ui.horizontal(|ui| {
+            let window = self.prefs.diag_plot.window_ms;
+            egui::ComboBox::from_id_salt("diag-window")
+                .selected_text(format!("{} s", window / 1000))
+                .width(64.0)
+                .show_ui(ui, |ui| {
+                    for option in WINDOW_OPTIONS_MS {
+                        if ui
+                            .selectable_label(window == *option, format!("{} s", option / 1000))
+                            .clicked()
+                        {
+                            self.prefs.diag_plot.window_ms = *option;
+                            self.mark_prefs_dirty();
+                        }
+                    }
+                });
+            let rate = self.prefs.diag_plot.rate_hz;
+            egui::ComboBox::from_id_salt("diag-rate")
+                .selected_text(format!("{rate} Hz"))
+                .width(72.0)
+                .show_ui(ui, |ui| {
+                    for option in RATE_OPTIONS_HZ {
+                        if ui
+                            .selectable_label(rate == *option, format!("{option} Hz"))
+                            .clicked()
+                        {
+                            self.prefs.diag_plot.rate_hz = *option;
+                            self.mark_prefs_dirty();
+                            self.ctl
+                                .send_float("/omniphony/control/diag/rate_hz", *option as f32);
+                        }
+                    }
+                });
+        });
+
         if metrics.is_empty() {
             widgets::note(ui, "No diag metrics registered yet.");
             return;
@@ -582,7 +589,14 @@ impl StudioSpike {
                     } else {
                         theme::TEXT_MUTED
                     });
-                    if ui.selectable_label(on, text).clicked() {
+                    // A wrapped row only breaks *between* chips; a chip whose
+                    // name alone is wider than the panel is cut to it instead,
+                    // and says its whole name on hover.
+                    if ui
+                        .add(egui::Button::selectable(on, text).truncate())
+                        .on_hover_text(&metric.label)
+                        .clicked()
+                    {
                         if on {
                             self.prefs.diag_plot.selected.remove(&metric.name);
                             self.diag_series.remove(&metric.name);

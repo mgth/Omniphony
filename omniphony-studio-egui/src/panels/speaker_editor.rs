@@ -104,31 +104,28 @@ impl StudioSpike {
     /// Reorder and delete. Both rewrite the layout, so both are refused while
     /// the backend has the speakers frozen.
     fn layout_row(&mut self, ui: &mut Ui, index: usize, count: usize, frozen: bool) {
-        ui.horizontal(|ui| {
-            ui.label(t("speaker.layout"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_enabled_ui(!frozen, |ui| {
-                    if ui.button(t("speaker.delete")).clicked() {
-                        self.ctl.send_json(
-                            "/omniphony/control/config/layout",
-                            &serde_json::json!({ "removeSpeaker": index }),
-                        );
-                        self.apply_layout();
-                        self.selection.speaker = None;
-                    }
-                    if ui
-                        .add_enabled(index + 1 < count, egui::Button::new(t("speaker.down")))
-                        .clicked()
-                    {
-                        self.move_speaker(index, index + 1);
-                    }
-                    if ui
-                        .add_enabled(index > 0, egui::Button::new(t("speaker.up")))
-                        .clicked()
-                    {
-                        self.move_speaker(index, index - 1);
-                    }
-                });
+        widgets::label_row(ui, t("speaker.layout"), |ui| {
+            ui.add_enabled_ui(!frozen, |ui| {
+                if ui.button(t("speaker.delete")).clicked() {
+                    self.ctl.send_json(
+                        "/omniphony/control/config/layout",
+                        &serde_json::json!({ "removeSpeaker": index }),
+                    );
+                    self.apply_layout();
+                    self.selection.speaker = None;
+                }
+                if ui
+                    .add_enabled(index + 1 < count, egui::Button::new(t("speaker.down")))
+                    .clicked()
+                {
+                    self.move_speaker(index, index + 1);
+                }
+                if ui
+                    .add_enabled(index > 0, egui::Button::new(t("speaker.up")))
+                    .clicked()
+                {
+                    self.move_speaker(index, index - 1);
+                }
             });
         });
     }
@@ -145,18 +142,15 @@ impl StudioSpike {
         ui.add_enabled_ui(!frozen, |ui| {
             // Name.
             let mut name = speaker.id.clone();
-            ui.horizontal(|ui| {
-                ui.label(t("common.name"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut name).desired_width(150.0))
-                        .lost_focus()
-                        && name.trim() != speaker.id
-                        && !name.trim().is_empty()
-                    {
-                        self.edit_speaker(id, "name", serde_json::json!(name.trim()));
-                    }
-                });
+            widgets::label_row(ui, t("common.name"), |ui| {
+                if ui
+                    .add(egui::TextEdit::singleline(&mut name).desired_width(150.0))
+                    .lost_focus()
+                    && name.trim() != speaker.id
+                    && !name.trim().is_empty()
+                {
+                    self.edit_speaker(id, "name", serde_json::json!(name.trim()));
+                }
             });
 
             // Coordinates: the two tables of the web editor, normalised on one
@@ -167,24 +161,21 @@ impl StudioSpike {
             } else {
                 CoordMode::Cartesian
             };
-            ui.horizontal(|ui| {
-                ui.label(t("speaker.coordinates"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let mut chosen = mode;
-                    ui.selectable_value(&mut chosen, CoordMode::Polar, t("common.polarShort"));
-                    ui.selectable_value(
-                        &mut chosen,
-                        CoordMode::Cartesian,
-                        t("common.cartesianShort"),
-                    );
-                    if chosen != mode {
-                        let value = match chosen {
-                            CoordMode::Cartesian => "cartesian",
-                            CoordMode::Polar => "polar",
-                        };
-                        self.edit_speaker(id, "coordMode", serde_json::json!(value));
-                    }
-                });
+            widgets::label_row(ui, t("speaker.coordinates"), |ui| {
+                let mut chosen = mode;
+                ui.selectable_value(&mut chosen, CoordMode::Polar, t("common.polarShort"));
+                ui.selectable_value(
+                    &mut chosen,
+                    CoordMode::Cartesian,
+                    t("common.cartesianShort"),
+                );
+                if chosen != mode {
+                    let value = match chosen {
+                        CoordMode::Cartesian => "cartesian",
+                        CoordMode::Polar => "polar",
+                    };
+                    self.edit_speaker(id, "coordMode", serde_json::json!(value));
+                }
             });
             match mode {
                 CoordMode::Cartesian => {
@@ -214,25 +205,22 @@ impl StudioSpike {
 
             // Delay belongs to the speakers document, not the layout.
             let mut delay = speaker.delay_ms as f32;
-            ui.horizontal(|ui| {
-                ui.label(t("speaker.delayMs"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut delay)
-                                .speed(0.1)
-                                .range(0.0..=f32::MAX),
-                        )
-                        .changed()
-                    {
-                        self.ctl.send_json(
-                            "/omniphony/control/config/speakers",
-                            &serde_json::json!({
-                                "speakerEdits": [{ "id": id.max(0), "delayMs": delay.max(0.0) }]
-                            }),
-                        );
-                    }
-                });
+            widgets::label_row(ui, t("speaker.delayMs"), |ui| {
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut delay)
+                            .speed(0.1)
+                            .range(0.0..=f32::MAX),
+                    )
+                    .changed()
+                {
+                    self.ctl.send_json(
+                        "/omniphony/control/config/speakers",
+                        &serde_json::json!({
+                            "speakerEdits": [{ "id": id.max(0), "delayMs": delay.max(0.0) }]
+                        }),
+                    );
+                }
             });
 
             let mut spatialize = speaker.spatialize != 0;
@@ -431,61 +419,55 @@ impl StudioSpike {
         current: Option<f32>,
     ) {
         let mut value = current.unwrap_or(0.0);
-        ui.horizontal(|ui| {
-            ui.label(label);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let response = ui.add(
-                    egui::DragValue::new(&mut value)
-                        .speed(10.0)
-                        .range(0.0..=f32::MAX)
-                        .suffix(" Hz"),
-                );
-                if response.changed() {
-                    // Zero is "no limit", not a 0 Hz corner.
-                    let sent = if value > 0.0 {
-                        serde_json::json!(value)
-                    } else {
-                        serde_json::Value::Null
-                    };
-                    self.edit_speaker(id, key, sent);
-                }
-                if current.is_none() {
-                    response.on_hover_text("full range");
-                }
-            });
+        widgets::label_row(ui, label, |ui| {
+            let response = ui.add(
+                egui::DragValue::new(&mut value)
+                    .speed(10.0)
+                    .range(0.0..=f32::MAX)
+                    .suffix(" Hz"),
+            );
+            if response.changed() {
+                // Zero is "no limit", not a 0 Hz corner.
+                let sent = if value > 0.0 {
+                    serde_json::json!(value)
+                } else {
+                    serde_json::Value::Null
+                };
+                self.edit_speaker(id, key, sent);
+            }
+            if current.is_none() {
+                response.on_hover_text("full range");
+            }
         });
     }
 
     fn speaker_test_tab(&mut self, ui: &mut Ui, index: usize) {
         let running = self.speaker_test_running == Some(index);
-        ui.horizontal(|ui| {
-            ui.label(t("speaker.test"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if running {
-                    t("speaker.testStop")
-                } else {
-                    t("speaker.testPlay")
-                };
-                let button = ui.add(egui::Button::new(label).fill(if running {
-                    theme::FILL_ACTIVE
-                } else {
-                    theme::FILL
-                }));
-                if self.speaker_test_mode == "hold" {
-                    // Hold: the test lasts exactly as long as the press.
-                    if button.is_pointer_button_down_on() && !running {
-                        self.start_speaker_test(index);
-                    } else if running && !button.is_pointer_button_down_on() {
-                        self.stop_speaker_test();
-                    }
-                } else if button.clicked() {
-                    if running {
-                        self.stop_speaker_test();
-                    } else {
-                        self.start_speaker_test(index);
-                    }
+        widgets::label_row(ui, t("speaker.test"), |ui| {
+            let label = if running {
+                t("speaker.testStop")
+            } else {
+                t("speaker.testPlay")
+            };
+            let button = ui.add(egui::Button::new(label).fill(if running {
+                theme::FILL_ACTIVE
+            } else {
+                theme::FILL
+            }));
+            if self.speaker_test_mode == "hold" {
+                // Hold: the test lasts exactly as long as the press.
+                if button.is_pointer_button_down_on() && !running {
+                    self.start_speaker_test(index);
+                } else if running && !button.is_pointer_button_down_on() {
+                    self.stop_speaker_test();
                 }
-            });
+            } else if button.clicked() {
+                if running {
+                    self.stop_speaker_test();
+                } else {
+                    self.start_speaker_test(index);
+                }
+            }
         });
         let mode = self.speaker_test_mode.clone();
         if let Some(chosen) = select_row(
@@ -689,21 +671,21 @@ fn select_row(
     options: &[(&str, &str)],
 ) -> Option<String> {
     let mut chosen = current.to_owned();
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    widgets::label_row(ui, label, |ui| {
+        widgets::bounded_combo(ui, 160.0, |ui, w| {
             egui::ComboBox::from_id_salt(id)
                 .selected_text(t(options
                     .iter()
                     .find(|(v, _)| *v == current)
                     .map(|(_, key)| *key)
                     .unwrap_or(options[0].1)))
-                .width(160.0)
+                .width(w)
+                .truncate()
                 .show_ui(ui, |ui| {
                     for (value, key) in options {
                         ui.selectable_value(&mut chosen, (*value).to_owned(), t(key));
                     }
-                });
+                })
         });
     });
     (chosen != current).then_some(chosen)

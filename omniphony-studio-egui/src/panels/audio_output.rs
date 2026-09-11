@@ -61,7 +61,6 @@ impl StudioSpike {
                     line.push_str(&format!(" • Error: {error}"));
                 }
                 widgets::note(ui, &line);
-
                 ui.add_enabled_ui(ready, |ui| {
                     self.output_backend_row(ui, file_backend);
                     if file_backend {
@@ -78,16 +77,16 @@ impl StudioSpike {
     fn output_backend_row(&mut self, ui: &mut Ui, file_backend: bool) {
         let current = if file_backend { "file" } else { "device" };
         let mut chosen = current.to_owned();
-        ui.horizontal(|ui| {
-            ui.label(t("audio.outputBackend"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row(ui, t("audio.outputBackend"), |ui| {
+            widgets::bounded_combo(ui, 150.0, |ui, w| {
                 egui::ComboBox::from_id_salt("audio-output-backend")
                     .selected_text(t(if file_backend {
                         "audio.backendFile"
                     } else {
                         "audio.backendDevice"
                     }))
-                    .width(150.0)
+                    .width(w)
+                    .truncate()
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut chosen,
@@ -95,7 +94,7 @@ impl StudioSpike {
                             t("audio.backendDevice"),
                         );
                         ui.selectable_value(&mut chosen, "file".to_owned(), t("audio.backendFile"));
-                    });
+                    })
             });
         });
         if chosen != current {
@@ -130,27 +129,31 @@ impl StudioSpike {
                 .unwrap_or_else(|| value.to_owned())
         };
         let mut chosen = current.clone();
-        ui.horizontal(|ui| {
-            ui.label(t("audio.outputDevice"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .small_button("↺")
-                    .on_hover_text(t("audio.refreshDevices"))
-                    .clicked()
-                {
-                    self.ctl
-                        .send_no_args("/omniphony/control/audio/output_devices/refresh");
-                }
+        widgets::label_row(ui, t("audio.outputDevice"), |ui| {
+            if ui
+                .small_button("↺")
+                .on_hover_text(t("audio.refreshDevices"))
+                .clicked()
+            {
+                self.ctl
+                    .send_no_args("/omniphony/control/audio/output_devices/refresh");
+            }
+            // Device names are long (`alsa_output.usb-…iec958-stereo`): the
+            // list is cut to its row and says the whole name on hover.
+            widgets::bounded_combo(ui, 180.0, |ui, w| {
                 egui::ComboBox::from_id_salt("audio-output-device")
                     .selected_text(label_of(&current))
-                    .width(180.0)
+                    .width(w)
+                    .truncate()
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut chosen, String::new(), default_label);
                         for device in devices {
                             ui.selectable_value(&mut chosen, device.value.clone(), &device.label);
                         }
-                    });
-            });
+                    })
+            })
+            .response
+            .on_hover_text(label_of(&current));
         });
         if chosen != current {
             self.live.lock().unwrap().app.audio.audio_output_device =
@@ -183,27 +186,23 @@ impl StudioSpike {
         }
         if named_pipe {
             let mut path = if file == "-" { String::new() } else { file };
-            ui.horizontal(|ui| {
-                ui.label(t("audio.outputFile"));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut path)
-                                .desired_width(180.0)
-                                .hint_text("/path/to/fifo"),
-                        )
-                        .lost_focus()
-                    {
-                        let trimmed = path.trim().to_owned();
-                        self.live.lock().unwrap().app.audio.audio_output_file =
-                            Some(trimmed.clone());
-                        if !trimmed.is_empty() {
-                            self.audio_pipe_path = trimmed.clone();
-                            self.ctl
-                                .send_string("/omniphony/control/audio/output_file", &trimmed);
-                        }
+            widgets::label_row(ui, t("audio.outputFile"), |ui| {
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut path)
+                            .desired_width(180.0)
+                            .hint_text("/path/to/fifo"),
+                    )
+                    .lost_focus()
+                {
+                    let trimmed = path.trim().to_owned();
+                    self.live.lock().unwrap().app.audio.audio_output_file = Some(trimmed.clone());
+                    if !trimmed.is_empty() {
+                        self.audio_pipe_path = trimmed.clone();
+                        self.ctl
+                            .send_string("/omniphony/control/audio/output_file", &trimmed);
                     }
-                });
+                }
             });
         }
         let current = audio
@@ -212,21 +211,21 @@ impl StudioSpike {
             .filter(|f| FILE_FORMATS.iter().any(|(id, _)| id == f))
             .unwrap_or_else(|| "raw_f32".to_owned());
         let mut chosen = current.clone();
-        ui.horizontal(|ui| {
-            ui.label(t("audio.outputFileFormat"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        widgets::label_row(ui, t("audio.outputFileFormat"), |ui| {
+            widgets::bounded_combo(ui, 150.0, |ui, w| {
                 egui::ComboBox::from_id_salt("audio-file-format")
                     .selected_text(t(FILE_FORMATS
                         .iter()
                         .find(|(id, _)| *id == current)
                         .map(|(_, key)| *key)
                         .unwrap_or("audio.formatRawF32")))
-                    .width(150.0)
+                    .width(w)
+                    .truncate()
                     .show_ui(ui, |ui| {
                         for (id, key) in FILE_FORMATS {
                             ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
                         }
-                    });
+                    })
             });
         });
         if chosen != current {
@@ -237,20 +236,17 @@ impl StudioSpike {
     }
 
     fn channel_mapping_row(&mut self, ui: &mut Ui, mapping: &str, unroutable: &[String]) {
-        ui.horizontal(|ui| {
-            ui.label(t("audio.channelMapping"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(picked) = widgets::toggle_buttons(
-                    ui,
-                    &mapping.to_owned(),
-                    &[
-                        ("by_index".to_owned(), t("audio.channelMapping.byIndex")),
-                        ("by_name".to_owned(), t("audio.channelMapping.byName")),
-                    ],
-                ) {
-                    self.set_option("output_channel_mapping", serde_json::json!(picked));
-                }
-            });
+        widgets::label_row(ui, t("audio.channelMapping"), |ui| {
+            if let Some(picked) = widgets::toggle_buttons(
+                ui,
+                &mapping.to_owned(),
+                &[
+                    ("by_index".to_owned(), t("audio.channelMapping.byIndex")),
+                    ("by_name".to_owned(), t("audio.channelMapping.byName")),
+                ],
+            ) {
+                self.set_option("output_channel_mapping", serde_json::json!(picked));
+            }
         });
         // Speakers the renderer could not place by name are a real routing
         // hole, so the warning stays visible while it lasts.
@@ -272,45 +268,41 @@ impl StudioSpike {
     /// renderer accepts any of them. The presets are a shortcut, not the set.
     fn sample_rate_row(&mut self, ui: &mut Ui, current: u32) {
         let mut apply: Option<u32> = None;
-        ui.horizontal(|ui| {
-            ui.label(t("audio.sampleRate"));
-            widgets::help(ui, "help.audio.sampleRate");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // A preset picks a value *and* applies it, as the web's menu
-                // does.
-                egui::ComboBox::from_id_salt("audio-sample-rate")
-                    .selected_text("▾")
-                    .width(34.0)
-                    .show_ui(ui, |ui| {
-                        for rate in SAMPLE_RATE_PRESETS {
-                            if ui
-                                .selectable_label(*rate == current, rate_label(*rate))
-                                .clicked()
-                            {
-                                apply = Some(*rate);
-                            }
+        widgets::label_row_help(ui, t("audio.sampleRate"), "help.audio.sampleRate", |ui| {
+            // A preset picks a value *and* applies it, as the web's menu
+            // does.
+            egui::ComboBox::from_id_salt("audio-sample-rate")
+                .selected_text("▾")
+                .width(34.0)
+                .show_ui(ui, |ui| {
+                    for rate in SAMPLE_RATE_PRESETS {
+                        if ui
+                            .selectable_label(*rate == current, rate_label(*rate))
+                            .clicked()
+                        {
+                            apply = Some(*rate);
                         }
-                    });
-                // Not overwritten while it is being typed in: the field holds
-                // what the user is writing, not what the renderer last said.
-                if self.sample_rate_edit.is_none() {
-                    self.sample_rate_edit = Some(current.to_string());
-                }
-                let text = self.sample_rate_edit.get_or_insert_with(String::new);
-                let response = ui.add(
-                    egui::TextEdit::singleline(text)
-                        .desired_width(90.0)
-                        .font(egui::FontId::proportional(theme::FONT_SIZE)),
-                );
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    apply = Some(text.trim().parse::<u32>().unwrap_or(0));
-                }
-                if !response.has_focus() && apply.is_none() {
-                    // Back to the renderer's answer as soon as the field is
-                    // left, so an abandoned edit does not linger as a claim.
-                    *text = current.to_string();
-                }
-            });
+                    }
+                });
+            // Not overwritten while it is being typed in: the field holds
+            // what the user is writing, not what the renderer last said.
+            if self.sample_rate_edit.is_none() {
+                self.sample_rate_edit = Some(current.to_string());
+            }
+            let text = self.sample_rate_edit.get_or_insert_with(String::new);
+            let response = ui.add(
+                egui::TextEdit::singleline(text)
+                    .desired_width(90.0)
+                    .font(egui::FontId::proportional(theme::FONT_SIZE)),
+            );
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                apply = Some(text.trim().parse::<u32>().unwrap_or(0));
+            }
+            if !response.has_focus() && apply.is_none() {
+                // Back to the renderer's answer as soon as the field is
+                // left, so an abandoned edit does not linger as a claim.
+                *text = current.to_string();
+            }
         });
         if let Some(rate) = apply {
             self.sample_rate_edit = Some(rate.to_string());
