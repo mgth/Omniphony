@@ -224,43 +224,102 @@ impl StudioSpike {
                 if rows.is_empty() {
                     widgets::note(ui, t("speakers.none"));
                 }
-                let pointer = ui.ctx().pointer_interact_pos();
-                let mut drop_on: Option<usize> = None;
-                for row in &rows {
-                    let index: Option<usize> = row.id.parse().ok();
-                    let selected = index.is_some() && self.selection.speaker == index;
-                    let dragging = self.speaker_drag == index && index.is_some();
-                    let flash = index.is_some_and(|i| clip == Some(i as i32));
-                    let (action, rect) = list_row(
-                        ui,
-                        "speakers",
-                        row,
-                        RowState {
-                            selected,
-                            dragging,
-                            flash,
-                        },
-                        &cutoffs,
-                    );
-                    if matches!(action, RowAction::DragStart) {
-                        self.speaker_drag = index;
-                    }
-                    if selected {
-                        self.reveal_selected_row(ui, rect);
-                    }
-                    // The row under the pointer is the one a release lands on.
-                    if pointer.is_some_and(|p| rect.contains(p)) {
-                        drop_on = index;
-                    }
-                    self.apply_row_action(action, row, true);
-                }
-                if ui.input(|i| i.pointer.any_released())
-                    && let (Some(from), Some(to)) = (self.speaker_drag.take(), drop_on)
-                    && from != to
-                {
-                    self.move_speaker(from, to);
-                }
+                self.speaker_list(ui, &rows, &cutoffs, clip);
             });
+    }
+
+    /// The speaker rows, in the order they are shown.
+    ///
+    /// Reordering follows the pointer, as the web's list does: the row picked
+    /// up by its badge moves through the list while it is dragged, the others
+    /// making room, so where it will land is where it is. Near the list's top
+    /// or bottom edge the list scrolls to reach further; Escape puts it back.
+    /// The drop is sent to the renderer, and the new order stays on screen
+    /// until the layout comes back in it.
+    fn speaker_list(&mut self, ui: &mut Ui, rows: &[Row], cutoffs: &[f64], clip: Option<i32>) {
+        let pointer = ui.ctx().pointer_interact_pos();
+        if self.speaker_drag.is_some() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.speaker_drag = None;
+        }
+        let from = self.speaker_drag;
+
+        // A drop still in flight: done once the moved row is where it was
+        // dropped, or given up after a second.
+        if let Some(pending) = &self.speaker_move_pending
+            && (pending.at.elapsed() > PENDING_MOVE_TIMEOUT
+                || rows
+                    .get(pending.to)
+                    .is_some_and(|row| row.label == pending.label))
+        {
+            self.speaker_move_pending = None;
+        }
+
+        let mut order: Vec<usize> = (0..rows.len()).collect();
+        let mut target = None;
+        if let Some(from) = from.filter(|f| *f < rows.len()) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            if let Some(p) = pointer {
+                let slot = drop_slot(&self.speaker_row_centres, from, p.y);
+                order = reordered(rows.len(), from, slot);
+                target = Some(slot);
+                autoscroll(ui, p.y);
+            }
+        } else if let Some(pending) = &self.speaker_move_pending {
+            order = reordered(rows.len(), pending.from, pending.to);
+        }
+        // The selection already names the moved speaker by its new index
+        // while the rows still carry the old ones.
+        let in_flight = from.is_none() && self.speaker_move_pending.is_some();
+
+        let mut centres = Vec::with_capacity(rows.len());
+        for (shown_at, &position) in order.iter().enumerate() {
+            let row = &rows[position];
+            let index: Option<usize> = row.id.parse().ok();
+            let selected = if in_flight {
+                self.selection.speaker == Some(shown_at)
+            } else {
+                index.is_some() && self.selection.speaker == index
+            };
+            let dragging = from.is_some() && from == index;
+            let flash = index.is_some_and(|i| clip == Some(i as i32));
+            let (action, rect) = list_row(
+                ui,
+                "speakers",
+                row,
+                RowState {
+                    selected,
+                    dragging,
+                    flash,
+                },
+                cutoffs,
+            );
+            centres.push((position, rect.center().y));
+            if matches!(action, RowAction::DragStart) {
+                self.speaker_drag = index;
+            }
+            if selected && from.is_none() {
+                self.reveal_selected_row(ui, rect);
+            }
+            self.apply_row_action(action, row, true);
+        }
+        self.speaker_row_centres = centres;
+
+        if let (Some(from), Some(to)) = (from, target)
+            && ui.input(|i| i.pointer.any_released())
+        {
+            self.speaker_drag = None;
+            if from != to {
+                self.speaker_move_pending = Some(PendingMove {
+                    from,
+                    to,
+                    label: rows[from].label.clone(),
+                    at: std::time::Instant::now(),
+                });
+                self.move_speaker(from, to);
+            }
+        } else if from.is_some() && ui.input(|i| i.pointer.any_released()) {
+            self.speaker_drag = None;
+        }
     }
 
     /// The band edges the layout's spatialized speakers imply. Derived, never
@@ -722,6 +781,58 @@ struct RowState {
     flash: bool,
 }
 
+/// A speaker drop sent to the renderer and not yet reflected in its layout.
+pub struct PendingMove {
+    from: usize,
+    to: usize,
+    /// The moved row's name, to recognise it at `to` once the echo lands.
+    label: String,
+    at: std::time::Instant,
+}
+
+/// How long a drop may wait for the renderer's echo before the list goes
+/// back to showing whatever the layout says.
+const PENDING_MOVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Where a dragged row lands, from the pointer: the number of the other rows
+/// whose centre it is below. `centres` are last frame's, in the order shown,
+/// with the dragged row among them. Measured against the others only, the
+/// slot is stable: the rows after the dragged one sit a row lower, so the
+/// pointer has to cross the next row's centre, not its edge, to move it on.
+fn drop_slot(centres: &[(usize, f32)], dragged: usize, pointer_y: f32) -> usize {
+    centres
+        .iter()
+        .filter(|(index, centre)| *index != dragged && *centre < pointer_y)
+        .count()
+}
+
+/// The display order of `len` rows with row `from` moved to position `to`.
+fn reordered(len: usize, from: usize, to: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).filter(|i| *i != from).collect();
+    if from < len {
+        order.insert(to.min(order.len()), from);
+    }
+    order
+}
+
+/// While a row is dragged near the top or bottom of the visible list, scroll
+/// towards that edge, faster the closer the pointer is to it.
+fn autoscroll(ui: &mut Ui, pointer_y: f32) {
+    const EDGE: f32 = 32.0;
+    let view = ui.clip_rect();
+    let delta = if pointer_y < view.top() + EDGE {
+        (view.top() + EDGE - pointer_y).min(EDGE)
+    } else if pointer_y > view.bottom() - EDGE {
+        -(pointer_y - (view.bottom() - EDGE)).min(EDGE)
+    } else {
+        0.0
+    };
+    if delta != 0.0 {
+        ui.scroll_with_delta(vec2(0.0, delta * 0.5));
+        ui.ctx().request_repaint();
+    }
+}
+
 /// The level readout's column, the web's `8ch` of tabular monospace.
 const READOUT_W: f32 = 48.0;
 /// One `.toggle-btn` square.
@@ -823,6 +934,9 @@ fn list_row(
                 action = RowAction::DragStart;
             }
             if row.speaker {
+                if strip.hovered() && !strip.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                }
                 strip.on_hover_text("Drag to reorder");
             } else if row.strip_icon.is_some() {
                 // The name hides behind the icon, so it shows on hover.
@@ -1001,6 +1115,24 @@ mod tests {
         object_badge,
     };
     use crate::panels::row_glyphs::BadgeIcon;
+
+    #[test]
+    fn a_dragged_row_lands_below_the_centres_it_has_passed() {
+        use super::{drop_slot, reordered};
+        // Four rows 10 high, row 1 picked up and shown at slot 1.
+        let centres = [(0, 5.0), (1, 15.0), (2, 25.0), (3, 35.0)];
+        assert_eq!(drop_slot(&centres, 1, 12.0), 1);
+        // Crossing row 2's centre moves it past row 2, not its edge.
+        assert_eq!(drop_slot(&centres, 1, 24.0), 1);
+        assert_eq!(drop_slot(&centres, 1, 26.0), 2);
+        assert_eq!(drop_slot(&centres, 1, 100.0), 3);
+        assert_eq!(drop_slot(&centres, 1, -5.0), 0);
+        assert_eq!(reordered(4, 1, 3), vec![0, 2, 3, 1]);
+        assert_eq!(reordered(4, 3, 0), vec![3, 0, 1, 2]);
+        assert_eq!(reordered(4, 2, 2), vec![0, 1, 2, 3]);
+        // A slot past the end clamps to the end.
+        assert_eq!(reordered(3, 0, 9), vec![1, 2, 0]);
+    }
 
     #[test]
     fn coordinates_read_as_the_web_grid_and_derive_the_polar_side() {
