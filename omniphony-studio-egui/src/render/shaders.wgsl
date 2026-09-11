@@ -24,6 +24,10 @@ struct Globals {
     hemi_ground: vec4<f32>,
     // xy = viewport size in physical pixels
     viewport: vec4<f32>,
+    // point light: xyz = position, w = cutoff distance (0 = none)
+    point: vec4<f32>,
+    // rgb = colour, w = intensity
+    point_color: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> globals: Globals;
 
@@ -89,6 +93,24 @@ fn shade(n_in: vec3<f32>, world: vec3<f32>, albedo: vec3<f32>, gloss: f32) -> ve
     lit += albedo * globals.light2_color.rgb * globals.light2.w * d2 / PI;
     let h2 = normalize(l2 + v);
     lit += globals.light2_color.rgb * globals.light2.w * pow(max(dot(n, h2), 0.0), shininess) * spec_strength * 0.12;
+    // Point light, attenuated as three.js r165 `getDistanceAttenuation` with
+    // decay 2: inverse square, clamped near the source, windowed to zero at
+    // the cutoff distance.
+    let to_point = globals.point.xyz - world;
+    let dist = length(to_point);
+    let l3 = to_point / max(dist, 1e-4);
+    var atten = 1.0 / max(dist * dist, 0.01);
+    let cutoff = globals.point.w;
+    if (cutoff > 0.0) {
+        let q = dist / cutoff;
+        let window = clamp(1.0 - q * q * q * q, 0.0, 1.0);
+        atten *= window * window;
+    }
+    let point_rad = globals.point_color.rgb * globals.point_color.w * atten;
+    let d3 = max(dot(n, l3), 0.0);
+    lit += albedo * point_rad * d3 / PI;
+    let h3 = normalize(l3 + v);
+    lit += point_rad * pow(max(dot(n, h3), 0.0), shininess) * spec_strength * 0.25;
     let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.08 * gloss;
     return lit + vec3<f32>(rim);
 }
