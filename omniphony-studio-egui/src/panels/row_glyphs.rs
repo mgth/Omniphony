@@ -238,36 +238,45 @@ pub fn band_bars(ui: &mut Ui, cutoffs: &[f64], gains: &[f64]) {
     let labels = band_labels(cutoffs);
     let count = gains.len();
     for (index, gain) in gains.iter().enumerate() {
+        // The web's own fallbacks: a single band is the full band, not
+        // "band 0"; past the layout's cutoffs a band is numbered.
+        let label = labels.get(index).cloned().unwrap_or_else(|| {
+            if count == 1 {
+                t("heatmap.bandFull").to_owned()
+            } else {
+                tf("heatmap.bandIndex", &[("index", &index.to_string())])
+            }
+        });
         ui.horizontal(|ui| {
-            let label = labels
-                .get(index)
-                .cloned()
-                .unwrap_or_else(|| tf("heatmap.bandIndex", &[("index", &index.to_string())]));
             ui.add_sized(
                 vec2(52.0, 10.0),
                 egui::Label::new(RichText::new(label).size(9.0).color(BAND_LABEL)).truncate(),
             );
-            let (rect, _) = ui.allocate_exact_size(
-                vec2((ui.available_width() - 44.0).max(24.0), 6.0),
-                egui::Sense::hover(),
-            );
-            let painter = ui.painter();
-            painter.rect_filled(rect, 3.0, theme::FILL);
-            let level = (gain * 100.0).min(100.0).max(0.0) as f32 / 100.0;
-            if level > 0.0 {
-                let mut fill = rect;
-                fill.set_width(rect.width() * level);
-                painter.rect_filled(fill, 3.0, band_colour(index, count));
-            }
-            ui.add_sized(
-                vec2(40.0, 10.0),
-                egui::Label::new(
-                    RichText::new(crate::panels::audio::format_linear_as_db(Some(*gain)))
-                        .size(9.0)
-                        .monospace()
-                        .color(BAND_LABEL),
-                ),
-            );
+            // The readout is placed first from the right edge and the bar takes
+            // what it leaves, rather than "available minus a guessed readout".
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_sized(
+                    vec2(40.0, 10.0),
+                    egui::Label::new(
+                        RichText::new(crate::panels::audio::format_linear_as_db(Some(*gain)))
+                            .size(9.0)
+                            .monospace()
+                            .color(BAND_LABEL),
+                    ),
+                );
+                let (rect, _) = ui.allocate_exact_size(
+                    vec2(ui.available_width().max(0.0), 6.0),
+                    egui::Sense::hover(),
+                );
+                let painter = ui.painter();
+                painter.rect_filled(rect, 3.0, theme::FILL);
+                let level = gain.clamp(0.0, 1.0) as f32;
+                if level > 0.0 {
+                    let mut fill = rect;
+                    fill.set_width(rect.width() * level);
+                    painter.rect_filled(fill, 3.0, band_colour(index, count));
+                }
+            });
         });
     }
 }

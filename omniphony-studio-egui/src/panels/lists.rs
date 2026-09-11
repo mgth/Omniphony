@@ -252,6 +252,9 @@ impl StudioSpike {
         let now = std::time::Instant::now();
         let ttl = self.settings.trails.ttl;
         let speakers = live.selected_speakers();
+        // The mirror of the speaker list's overlay: with a speaker selected,
+        // each object row says what that object puts through it.
+        let selected_speaker = self.selection.speaker;
         let mut rows: Vec<Row> = live
             .app
             .sources
@@ -281,8 +284,23 @@ impl StudioSpike {
                     speaker: false,
                     freq_low: None,
                     freq_high: None,
-                    contribution: None,
-                    band_gains: Vec::new(),
+                    contribution: selected_speaker.and_then(|spk| {
+                        contribution_fraction(
+                            live.app
+                                .object_speaker_gains
+                                .get(id)
+                                .and_then(|gains| gains.get(spk).copied()),
+                            live.app.source_levels.get(id).map(|m| m.rms_dbfs),
+                        )
+                    }),
+                    band_gains: selected_speaker
+                        .and_then(|spk| {
+                            live.app
+                                .object_band_gains
+                                .get(id)
+                                .map(|bands| band_contributions(bands, spk))
+                        })
+                        .unwrap_or_default(),
                     colorized: self.settings.object_colors_enabled,
                     size: live.object_sizes.get(id).copied(),
                     moving: live
@@ -343,16 +361,15 @@ impl StudioSpike {
                     freq_high: speaker.freq_high,
                     // The object's own RMS through this speaker's panning gain
                     // — what it actually contributes, not what it was asked for.
-                    contribution: speaker_gains
-                        .and_then(|gains| gains.get(index).copied())
-                        .filter(|g| *g > 0.0)
-                        .zip(source_rms)
-                        .map(|(g, rms)| meter_fraction(rms + 20.0 * g.log10()) as f64),
+                    contribution: contribution_fraction(
+                        speaker_gains.and_then(|gains| gains.get(index).copied()),
+                        source_rms,
+                    ),
                     size: None,
                     moving: false,
                     colorized: false,
                     band_gains: band_gains
-                        .and_then(|bands| bands.get(index).cloned())
+                        .map(|bands| band_contributions(bands, index))
                         .unwrap_or_default(),
                 }
             })
@@ -507,6 +524,30 @@ impl StudioSpike {
             };
         }
     }
+}
+
+/// One object's per-band gains *through one speaker*, lowest band first —
+/// `getSelectedSourceBandContributions` / `…ForObject` in the web.
+///
+/// The renderer sends one message per band, each carrying a gain for every
+/// speaker (`/meter/object/{id}/band/{b}/gains`), so the table is band-major:
+/// `bands[b][speaker]`. Reading it speaker-major — `bands[speaker]` — handed
+/// the first few speakers a whole band's worth of gains each, one bar per
+/// speaker under generic "band n" labels, and gave every other speaker none.
+fn band_contributions(bands: &[Vec<f64>], speaker: usize) -> Vec<f64> {
+    bands
+        .iter()
+        .map(|per_speaker| per_speaker.get(speaker).copied().unwrap_or(0.0))
+        .collect()
+}
+
+/// What an object puts through a speaker, on the meter's own scale: its RMS
+/// through the panning gain, not the gain it was asked for. `None` when the
+/// object does not reach the speaker at all.
+fn contribution_fraction(gain: Option<f64>, source_rms: Option<f64>) -> Option<f64> {
+    let gain = gain.filter(|g| *g > 0.0)?;
+    let rms = source_rms?;
+    Some(meter_fraction(rms + 20.0 * gain.log10()) as f64)
 }
 
 /// `directFixedSpeakerTarget`: the speaker a fixed channel is routed straight
@@ -730,7 +771,34 @@ fn toggle_letter(ui: &mut Ui, letter: &str, active: bool) -> egui::Response {
 
 #[cfg(test)]
 mod tests {
-    use super::direct_speaker;
+    use super::{band_contributions, contribution_fraction, direct_speaker};
+
+    /// The table is band-major: one entry per band, each a gain per speaker.
+    /// A speaker gets one bar per *band*, however many speakers there are.
+    #[test]
+    fn band_gains_are_read_through_one_speaker() {
+        let bands = vec![
+            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            vec![0.7, 0.8, 0.9, 1.0, 0.0, 0.25],
+        ];
+        assert_eq!(band_contributions(&bands, 1), vec![0.2, 0.8]);
+        // Past the first few speakers too — the old read gave them nothing.
+        assert_eq!(band_contributions(&bands, 5), vec![0.6, 0.25]);
+        // A band that did not report this speaker reads as silence, not a gap.
+        let ragged = vec![vec![0.5, 0.5], vec![0.5]];
+        assert_eq!(band_contributions(&ragged, 1), vec![0.5, 0.0]);
+    }
+
+    /// A gain of zero, or no level to scale, is no contribution at all.
+    #[test]
+    fn an_object_that_does_not_reach_the_speaker_contributes_nothing() {
+        assert_eq!(contribution_fraction(Some(0.0), Some(-20.0)), None);
+        assert_eq!(contribution_fraction(Some(0.5), None), None);
+        assert_eq!(contribution_fraction(None, Some(-20.0)), None);
+        // Unity gain leaves the object's own level where it is.
+        let unity = contribution_fraction(Some(1.0), Some(-6.0)).unwrap();
+        assert!((unity - f64::from(super::meter_fraction(-6.0))).abs() < 1e-9);
+    }
 
     /// The web takes the destination only when the channel is fixed *and*
     /// carries an index a layout can resolve.
