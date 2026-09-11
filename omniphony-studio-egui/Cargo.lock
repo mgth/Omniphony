@@ -2561,6 +2561,7 @@ dependencies = [
  "log",
  "memory-stats",
  "omniphony-geometry",
+ "regex",
  "rfd",
  "rosc",
  "serde",
