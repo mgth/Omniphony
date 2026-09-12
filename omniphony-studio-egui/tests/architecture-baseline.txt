@@ -7,8 +7,8 @@
 # and commit this file with the change.
 #
 # Totals:
-#   osc-address      91
-#   raw-send         93
+#   osc-address      84
+#   raw-send         86
 #   model-write      69
 #   side-effect      7
 #   frame-tick       9
@@ -25,7 +25,6 @@ osc-address       src/panels/hybrid.rs                      5
 osc-address       src/panels/latency.rs                     2
 osc-address       src/panels/lists.rs                       3
 osc-address       src/panels/log.rs                         1
-osc-address       src/panels/mpv_overlay.rs                 7
 osc-address       src/panels/object_test.rs                 3
 osc-address       src/panels/renderer.rs                    21
 osc-address       src/panels/scene_fx.rs                    1
@@ -45,7 +44,6 @@ raw-send          src/panels/hybrid.rs                      5
 raw-send          src/panels/latency.rs                     2
 raw-send          src/panels/lists.rs                       3
 raw-send          src/panels/log.rs                         1
-raw-send          src/panels/mpv_overlay.rs                 7
 raw-send          src/panels/object_test.rs                 3
 raw-send          src/panels/renderer.rs                    21
 raw-send          src/panels/scene_fx.rs                    1
