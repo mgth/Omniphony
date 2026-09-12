@@ -70,6 +70,32 @@ pub fn control_adaptive_resampling_far_mode_return_fade_in_ms(state: &SharedStat
     );
 }
 
+/// Apply the target the form asked for: the model shows it at once (the
+/// requested value and the target the meter draws against), and the renderer
+/// is told.
+pub fn set_latency_target(state: &SharedState, ms: i64) {
+    let requested = ms.max(1);
+    {
+        let mut live = state.inner.lock().unwrap();
+        live.app.latency.latency_requested_ms = Some(requested);
+        live.app.latency.latency_target_ms = Some(requested);
+    }
+    control_latency_target(state, requested as i32);
+}
+
+/// The adaptive controller's own switch. It rides the audio document, so the
+/// change is applied to the model and the whole document is sent.
+pub fn set_adaptive_resampling_enabled(state: &SharedState, enabled: bool) {
+    state.inner.lock().unwrap().app.adaptive_resampling = Some(u8::from(enabled));
+    super::audio::send_audio_document(state);
+}
+
+/// Pause or resume the controller, the same way.
+pub fn set_adaptive_resampling_paused(state: &SharedState, paused: bool) {
+    state.inner.lock().unwrap().app.adaptive_resampling_paused = Some(u8::from(paused));
+    super::audio::send_audio_document(state);
+}
+
 pub fn control_latency_target(state: &SharedState, value: i32) {
     send_control(
         &state.osc_tx,

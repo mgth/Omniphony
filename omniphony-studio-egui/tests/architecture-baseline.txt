@@ -7,28 +7,26 @@
 # and commit this file with the change.
 #
 # Totals:
-#   osc-address      41
-#   raw-send         43
-#   model-write      40
+#   osc-address      39
+#   raw-send         41
+#   model-write      36
 #   side-effect      5
 #   frame-tick       9
 #
 # rule            file                                      count
 osc-address       src/panels/channel_editor.rs              1
-osc-address       src/panels/latency.rs                     2
 osc-address       src/panels/object_test.rs                 3
 osc-address       src/panels/renderer.rs                    21
 osc-address       src/panels/speaker_editor.rs              14
 raw-send          src/app.rs                                2
 raw-send          src/panels/channel_editor.rs              1
-raw-send          src/panels/latency.rs                     2
 raw-send          src/panels/object_test.rs                 3
 raw-send          src/panels/renderer.rs                    21
 raw-send          src/panels/speaker_editor.rs              14
 model-write       src/panels/auto_tune.rs                   4
 model-write       src/panels/channel_editor.rs              6
 model-write       src/panels/host_services.rs               3
-model-write       src/panels/latency.rs                     6
+model-write       src/panels/latency.rs                     2
 model-write       src/panels/meters.rs                      4
 model-write       src/panels/object_test.rs                 5
 model-write       src/panels/renderer.rs                    12

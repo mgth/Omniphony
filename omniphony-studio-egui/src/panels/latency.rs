@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use egui::{Color32, RichText, Ui};
 
 use crate::app::StudioSpike;
+use crate::host::commands::resampling;
 use crate::i18n::{t, tf};
 use crate::model::app_state::AppState;
 use crate::ui::section::Section;
@@ -433,14 +434,7 @@ impl StudioSpike {
                     .add_enabled(dirty, egui::Button::new(t("adaptive.apply")))
                     .clicked()
                 {
-                    let requested = (value.round() as i64).max(1);
-                    {
-                        let mut live = self.live.lock().unwrap();
-                        live.app.latency.latency_requested_ms = Some(requested);
-                        live.app.latency.latency_target_ms = Some(requested);
-                    }
-                    self.ctl
-                        .send_int("/omniphony/control/latency_target", requested as i32);
+                    resampling::set_latency_target(&self.host, value.round() as i64);
                     self.latency_target_edit = None;
                 }
                 if ui
@@ -465,8 +459,7 @@ impl StudioSpike {
         ui.separator();
         let mut on = adaptive_on;
         if widgets::switch_row_help(ui, t("adaptive.title"), "help.adaptive.title", &mut on) {
-            self.live.lock().unwrap().app.adaptive_resampling = Some(u8::from(on));
-            crate::host::commands::audio::send_audio_document(&self.host);
+            resampling::set_adaptive_resampling_enabled(&self.host, on);
         }
         ui.horizontal_wrapped(|ui| {
             let label = if paused {
@@ -478,13 +471,11 @@ impl StudioSpike {
                 .add_enabled(adaptive_on, egui::Button::new(label))
                 .clicked()
             {
-                self.live.lock().unwrap().app.adaptive_resampling_paused = Some(u8::from(!paused));
-                crate::host::commands::audio::send_audio_document(&self.host);
+                resampling::set_adaptive_resampling_paused(&self.host, !paused);
             }
             // Only reachable while paused: it is a diagnostic, not a control.
             if adaptive_on && paused && ui.button(t("adaptive.resetRatio")).clicked() {
-                self.ctl
-                    .send_int("/omniphony/control/adaptive_resampling/reset_ratio", 1);
+                resampling::control_adaptive_resampling_reset_ratio(&self.host);
             }
             // The wizard patches this controller live, so it only makes sense
             // while there is one running to patch.
