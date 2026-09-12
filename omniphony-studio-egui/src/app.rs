@@ -59,8 +59,6 @@ pub struct StudioSpike {
     pub(crate) head_loaded: bool,
     /// Eased head-pose rotation (`scene/head-pose.js`, slerp 0.4 per frame).
     pub(crate) head_rotation: Quat,
-    /// Gain-table targets currently subscribed, and the last (re)subscribe.
-    pub(crate) subscribed_tables: Vec<i64>,
     /// Side-panel widths and collapsed flags, persisted with the prefs.
     pub(crate) layout: OverlayLayout,
     pub(crate) prefs: Prefs,
@@ -165,7 +163,9 @@ pub struct StudioSpike {
     pub(crate) diag_series: crate::panels::diag_plot::DiagSeries,
     pub(crate) diag_started: Instant,
     pub(crate) diag_paused: bool,
-    pub(crate) diag_keepalive_at: Option<Instant>,
+    /// Whether the plot was on screen last frame, so its series is cleared
+    /// once when it goes away.
+    pub(crate) diag_showing: Option<()>,
     /// What the edit gizmo is on, and where: the drag handlers' anchor, kept
     /// from the last frame and moved locally while a drag is in flight.
     pub(crate) gizmo_target: Option<(crate::view::gizmos::GizmoTarget, glam::Vec3)>,
@@ -222,7 +222,6 @@ pub struct StudioSpike {
     /// The OS service's state, and when it was last asked for. Asking means
     /// spawning a process, so it is not a per-frame question.
     pub(crate) service_status: Option<(Instant, bool, String)>,
-    pub(crate) last_subscribe: Option<Instant>,
 }
 
 impl StudioSpike {
@@ -393,7 +392,6 @@ impl StudioSpike {
             volume_state: VolumeState::default(),
             head_loaded,
             head_rotation: Quat::IDENTITY,
-            subscribed_tables: Vec::new(),
             layout,
             prefs,
             prefs_dirty: false,
@@ -455,7 +453,7 @@ impl StudioSpike {
             diag_series: Default::default(),
             diag_started: Instant::now(),
             diag_paused: false,
-            diag_keepalive_at: None,
+            diag_showing: None,
             gizmo_target: None,
             gizmo_drag: None,
             channel_edit_pin: None,
@@ -481,7 +479,6 @@ impl StudioSpike {
             sofa_browser: None,
             script_editor: None,
             auto_tune: None,
-            last_subscribe: None,
         })
     }
 
@@ -510,52 +507,12 @@ impl StudioSpike {
         ctx.request_repaint();
     }
 
-    /// `acquireGainTable` / `releaseGainTable`: keep the renderer's
-    /// gain-table subscriptions aligned with the enabled volumes, with the
-    /// Studio's 5 s repair heartbeat.
-    fn maintain_gaintable_subscriptions(&mut self) {
-        if self.args.register.is_none() {
-            return;
-        }
+    /// `acquireGainTable` / `releaseGainTable`: say which tables the volumes
+    /// are drawing. The core negotiates the versions, repairs the
+    /// subscription on its heartbeat and releases it when nothing wants one.
+    fn declare_gaintable_interest(&mut self) {
         let wanted = view::volumes::wanted_tables(&self.volume_settings, self.selection.speaker);
-        let changed = wanted != self.subscribed_tables;
-        let heartbeat_due = self
-            .last_subscribe
-            .is_none_or(|t| t.elapsed() >= Duration::from_secs(5));
-        if wanted.is_empty() {
-            if changed {
-                crate::host::commands::diag::unsubscribe_speaker_gaintable(&self.host);
-                self.subscribed_tables.clear();
-            }
-            return;
-        }
-        if changed || heartbeat_due {
-            let versions: Vec<(i64, i32)> = {
-                let live = self.live.lock().unwrap();
-                wanted
-                    .iter()
-                    .map(|t| {
-                        (
-                            *t,
-                            live.gain_tables
-                                .get(t)
-                                .map(|g| g.version() as i32)
-                                .unwrap_or(0)
-                                .max(0),
-                        )
-                    })
-                    .collect()
-            };
-            for (target, have_version) in versions {
-                crate::host::commands::diag::subscribe_speaker_gaintable(
-                    &self.host,
-                    have_version,
-                    target as i32,
-                );
-            }
-            self.subscribed_tables = wanted;
-            self.last_subscribe = Some(Instant::now());
-        }
+        crate::host::services::interests::set_gain_tables_wanted(&self.host, &wanted);
     }
 
     // -----------------------------------------------------------------------
@@ -1008,9 +965,9 @@ impl eframe::App for StudioSpike {
         self.sync_virtual_bed_objects(false);
         self.maintain_mpv_overlay();
         self.maintain_object_test_source();
-        self.maintain_test_idle_feed();
+        self.declare_idle_feed_interest();
         self.check_recompute_ack(&ctx);
-        self.maintain_gaintable_subscriptions();
+        self.declare_gaintable_interest();
         self.persist_prefs(&ctx);
         self.maybe_print_stats();
     }
