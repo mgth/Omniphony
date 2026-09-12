@@ -7,8 +7,8 @@
 # and commit this file with the change.
 #
 # Totals:
-#   osc-address      129
-#   raw-send         131
+#   osc-address      109
+#   raw-send         111
 #   model-write      77
 #   side-effect      7
 #   frame-tick       9
@@ -17,7 +17,6 @@
 osc-address       src/panels/audio.rs                       3
 osc-address       src/panels/audio_input.rs                 9
 osc-address       src/panels/audio_output.rs                8
-osc-address       src/panels/binaural.rs                    20
 osc-address       src/panels/channel_editor.rs              1
 osc-address       src/panels/connection.rs                  2
 osc-address       src/panels/diag_plot.rs                   4
@@ -42,7 +41,6 @@ raw-send          src/app.rs                                2
 raw-send          src/panels/audio.rs                       3
 raw-send          src/panels/audio_input.rs                 9
 raw-send          src/panels/audio_output.rs                8
-raw-send          src/panels/binaural.rs                    20
 raw-send          src/panels/channel_editor.rs              1
 raw-send          src/panels/connection.rs                  2
 raw-send          src/panels/diag_plot.rs                   4
