@@ -54,11 +54,10 @@ impl StudioSpike {
                         ui.horizontal(|ui| {
                             self.save_indicator(ui, saved, error.as_deref(), pending);
                             if ui.button(t("config.save")).clicked() {
-                                self.live.lock().unwrap().save_requested = true;
-                                self.ctl.send_no_args("/omniphony/control/save_config");
+                                crate::host::commands::engine::request_save_config(&self.host);
                             }
                             if ui.button(t("config.reload")).clicked() {
-                                self.ctl.send_no_args("/omniphony/control/reload_config");
+                                crate::host::commands::engine::control_reload_config(&self.host);
                             }
                         });
                     });

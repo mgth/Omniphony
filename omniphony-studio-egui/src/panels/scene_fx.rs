@@ -246,8 +246,7 @@ impl StudioSpike {
         if fx_button(ui, &icons::MPV, &mut overlay, t("sceneFx.mpvOverlay"), None).0
             == Press::Toggle
         {
-            self.ctl
-                .send_int("/omniphony/control/overlay/enabled", i32::from(overlay));
+            crate::host::commands::mpv_overlay::mpv_overlay_set_active(&self.host, overlay);
         }
         // The toggles end here; the last key opens their settings.
         let (divider, _) = ui.allocate_exact_size(vec2(1.0, BUTTON.y - 12.0), Sense::hover());

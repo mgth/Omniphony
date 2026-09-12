@@ -24,6 +24,15 @@ pub fn control_reload_config(state: &SharedState) {
     );
 }
 
+/// The Save button: the model remembers that a save was asked for — the
+/// footer's indicator reads it — and the renderer is told. The bootstrap path
+/// of the input apply wants only the message, and calls
+/// [`control_save_config`].
+pub fn request_save_config(state: &SharedState) {
+    state.inner.lock().unwrap().save_requested = true;
+    control_save_config(state);
+}
+
 pub fn control_log_level(state: &SharedState, value: String) {
     let trimmed = value.trim().to_ascii_lowercase();
     if !matches!(
@@ -32,6 +41,7 @@ pub fn control_log_level(state: &SharedState, value: String) {
     ) {
         return;
     }
+    state.inner.lock().unwrap().app.log_level = Some(trimmed.clone());
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {

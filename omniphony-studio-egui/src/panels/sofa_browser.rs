@@ -755,9 +755,9 @@ impl StudioSpike {
 
     /// Tell the renderer to use this file, and mark it active.
     fn activate_sofa(&mut self, path: &Path) {
-        self.ctl.send_string(
-            "/omniphony/control/binaural/hrir_source",
-            &format!("sofa:{}", path.display()),
+        crate::host::commands::binaural::control_hrir_source(
+            &self.host,
+            format!("sofa:{}", path.display()),
         );
     }
 

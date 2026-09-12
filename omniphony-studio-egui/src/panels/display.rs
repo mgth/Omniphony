@@ -88,8 +88,9 @@ impl StudioSpike {
                         "help.display.mpvOverlay",
                         &mut overlay,
                     ) {
-                        self.ctl
-                            .send_int("/omniphony/control/overlay/enabled", i32::from(overlay));
+                        crate::host::commands::mpv_overlay::mpv_overlay_set_active(
+                            &self.host, overlay,
+                        );
                     }
                     widgets::switch_row_help(
                         ui,

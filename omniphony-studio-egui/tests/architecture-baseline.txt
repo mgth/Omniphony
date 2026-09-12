@@ -7,9 +7,9 @@
 # and commit this file with the change.
 #
 # Totals:
-#   osc-address      67
-#   raw-send         69
-#   model-write      53
+#   osc-address      61
+#   raw-send         63
+#   model-write      51
 #   side-effect      7
 #   frame-tick       9
 #
@@ -17,16 +17,11 @@
 osc-address       src/panels/channel_editor.rs              1
 osc-address       src/panels/connection.rs                  2
 osc-address       src/panels/diag_plot.rs                   4
-osc-address       src/panels/display.rs                     1
-osc-address       src/panels/footer.rs                      2
 osc-address       src/panels/hybrid.rs                      5
 osc-address       src/panels/latency.rs                     2
 osc-address       src/panels/lists.rs                       3
-osc-address       src/panels/log.rs                         1
 osc-address       src/panels/object_test.rs                 3
 osc-address       src/panels/renderer.rs                    21
-osc-address       src/panels/scene_fx.rs                    1
-osc-address       src/panels/sofa_browser.rs                1
 osc-address       src/panels/sources_2d.rs                  2
 osc-address       src/panels/speaker_editor.rs              14
 osc-address       src/panels/speaker_layouts.rs             4
@@ -34,26 +29,19 @@ raw-send          src/app.rs                                2
 raw-send          src/panels/channel_editor.rs              1
 raw-send          src/panels/connection.rs                  2
 raw-send          src/panels/diag_plot.rs                   4
-raw-send          src/panels/display.rs                     1
-raw-send          src/panels/footer.rs                      2
 raw-send          src/panels/hybrid.rs                      5
 raw-send          src/panels/latency.rs                     2
 raw-send          src/panels/lists.rs                       3
-raw-send          src/panels/log.rs                         1
 raw-send          src/panels/object_test.rs                 3
 raw-send          src/panels/renderer.rs                    21
-raw-send          src/panels/scene_fx.rs                    1
-raw-send          src/panels/sofa_browser.rs                1
 raw-send          src/panels/sources_2d.rs                  2
 raw-send          src/panels/speaker_editor.rs              14
 raw-send          src/panels/speaker_layouts.rs             4
 model-write       src/panels/auto_tune.rs                   4
 model-write       src/panels/channel_editor.rs              6
 model-write       src/panels/connection.rs                  6
-model-write       src/panels/footer.rs                      1
 model-write       src/panels/host_services.rs               3
 model-write       src/panels/latency.rs                     6
-model-write       src/panels/log.rs                         1
 model-write       src/panels/meters.rs                      4
 model-write       src/panels/object_test.rs                 5
 model-write       src/panels/renderer.rs                    16
