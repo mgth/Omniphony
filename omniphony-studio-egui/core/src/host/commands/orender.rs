@@ -829,11 +829,17 @@ mod tests {
 
     #[test]
     fn the_repo_root_is_the_checkout_that_holds_this_crate() {
-        // Two `parent()` steps from this crate's manifest, as in the Tauri
-        // host, land one level above the checkout.
+        // The search walks up from this crate's manifest until it finds the
+        // renderer, so it holds however deep the crate sits in the checkout —
+        // `omniphony-studio-egui/core/` since the core became its own crate.
         let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = repo_root().expect("tests run from a source tree");
-        assert_eq!(root, crate_dir.parent().unwrap());
+        assert!(
+            crate_dir.starts_with(&root),
+            "{} is not inside {}",
+            crate_dir.display(),
+            root.display()
+        );
         assert!(root.join("omniphony-studio-egui/Cargo.toml").is_file());
         // However deep the search starts inside the checkout.
         for start in [crate_dir.join("src/host/commands"), root.clone()] {
