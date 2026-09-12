@@ -172,18 +172,21 @@ pub fn send_json_control(tx: &ControlTx, address: &str, payload: serde_json::Val
     );
 }
 
-pub fn send_distance_metric(state: &SharedState, address: &str, value: String) {
+/// Returns what went out, so the caller can show it: the two distance metrics
+/// are the same grammar under two addresses.
+pub fn send_distance_metric(state: &SharedState, address: &str, value: String) -> Option<String> {
     let normalized = value.trim().to_ascii_lowercase();
     if !matches!(normalized.as_str(), "spherical" | "chebyshev") {
-        return;
+        return None;
     }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
             address: address.to_string(),
-            value: normalized,
+            value: normalized.clone(),
         },
     );
+    Some(normalized)
 }
 
 #[cfg(test)]

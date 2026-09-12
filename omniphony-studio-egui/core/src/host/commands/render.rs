@@ -8,6 +8,7 @@ use omniphony_geometry::f64 as geometry;
 
 use super::OscControlMsg;
 use super::{SharedState, send_control, send_distance_metric};
+use crate::model::app_state::MirrorAxes;
 
 pub fn control_spread_min(state: &SharedState, value: f32) {
     let clamped = value.max(0.0).min(1.0);
@@ -88,6 +89,8 @@ pub fn control_distance_model(state: &SharedState, value: String) {
     ) {
         return;
     }
+    state.inner.lock().unwrap().app.distance_model.value = Some(normalized.clone());
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
@@ -98,28 +101,38 @@ pub fn control_distance_model(state: &SharedState, value: String) {
 }
 
 pub fn control_distance_model_metric(state: &SharedState, value: String) {
-    send_distance_metric(&state, "/omniphony/control/distance_model_metric", value);
+    // The model shows what went out, not what was picked: `send_distance_metric`
+    // drops anything that is not one of the two metrics, and a rejected value
+    // applied locally would read as accepted.
+    if let Some(sent) =
+        send_distance_metric(state, "/omniphony/control/distance_model_metric", value)
+    {
+        state.inner.lock().unwrap().app.distance_model.metric = Some(sent);
+        mark_recompute_pending(state);
+    }
 }
 
 pub fn control_distance_diffuse_metric(state: &SharedState, value: String) {
-    send_distance_metric(&state, "/omniphony/control/distance_diffuse/metric", value);
+    if let Some(sent) =
+        send_distance_metric(state, "/omniphony/control/distance_diffuse/metric", value)
+    {
+        state.inner.lock().unwrap().app.distance_diffuse.metric = Some(sent);
+        mark_recompute_pending(state);
+    }
 }
 
-/// Axes negated to build the diffuse mirror, as the letters to flip (`xy`, `y`,
-/// `xyz`) or `none`. Validated here so a malformed value never reaches the OSC
-/// bus; the renderer parses the same grammar.
-pub fn control_distance_diffuse_mirror_axes(state: &SharedState, value: String) {
-    let normalized = value.trim().to_ascii_lowercase();
-    let valid = normalized == "none"
-        || (!normalized.is_empty() && normalized.chars().all(|c| matches!(c, 'x' | 'y' | 'z')));
-    if !valid {
-        return;
-    }
+/// Axes negated to build the diffuse mirror. The wire form is the letters to
+/// flip (`xy`, `y`, `xyz`) or `none`, which the renderer parses; taking the
+/// three flags instead of that string is what makes a malformed value
+/// unspellable rather than merely rejected.
+pub fn control_distance_diffuse_mirror_axes(state: &SharedState, axes: MirrorAxes) {
+    state.inner.lock().unwrap().app.distance_diffuse.mirror_axes = Some(axes);
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
             address: "/omniphony/control/distance_diffuse/mirror_axes".to_string(),
-            value: normalized,
+            value: axes.to_arg(),
         },
     );
 }
@@ -350,6 +363,14 @@ pub fn control_render_backend(state: &SharedState, value: String) {
     if normalized.is_empty() {
         return;
     }
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .render_backend_state
+        .selection = Some(normalized.clone());
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
@@ -558,6 +579,7 @@ pub fn control_distance_diffuse_enabled(state: &SharedState, enable: i32) {
 
 pub fn control_distance_diffuse_threshold(state: &SharedState, value: f32) {
     let v = value.max(0.01);
+    state.inner.lock().unwrap().app.distance_diffuse.threshold = Some(v as f64);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
@@ -569,6 +591,7 @@ pub fn control_distance_diffuse_threshold(state: &SharedState, value: f32) {
 
 pub fn control_distance_diffuse_curve(state: &SharedState, value: f32) {
     let v = value.max(0.0);
+    state.inner.lock().unwrap().app.distance_diffuse.curve = Some(v as f64);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {

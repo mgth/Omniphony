@@ -56,6 +56,7 @@ pub fn control_ramp_mode(state: &SharedState, value: String) {
     if !matches!(trimmed.as_str(), "off" | "frame" | "sample") {
         return;
     }
+    state.inner.lock().unwrap().app.audio.ramp_mode = Some(trimmed.clone());
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
@@ -76,15 +77,19 @@ pub fn control_option(state: &SharedState, key: String, value: serde_json::Value
     if k.is_empty() {
         return;
     }
-    let arg = match value {
+    let arg = match &value {
         serde_json::Value::String(s) => rosc::OscType::String(s.trim().to_ascii_lowercase()),
-        serde_json::Value::Bool(b) => rosc::OscType::Int(if b { 1 } else { 0 }),
+        serde_json::Value::Bool(b) => rosc::OscType::Int(if *b { 1 } else { 0 }),
         serde_json::Value::Number(n) => match n.as_f64() {
             Some(f) if f.is_finite() => rosc::OscType::Float(f as f32),
             _ => return,
         },
         _ => return,
     };
+    // Optimistic, and only for an option that is actually going out: the
+    // registry showing a value the renderer never heard about is the failure
+    // this command exists to avoid.
+    state.inner.lock().unwrap().set_option(&k, value);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
