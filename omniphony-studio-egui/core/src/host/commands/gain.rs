@@ -174,6 +174,14 @@ pub fn control_object_test(
     );
 }
 
+/// Take the injected test source out of the model: it is Studio's own marker,
+/// so nothing echoes its removal back.
+pub fn remove_object_test_source(state: &SharedState, id: &str) {
+    let mut live = state.inner.lock().unwrap();
+    live.app.sources.remove(id);
+    live.app.source_levels.remove(id);
+}
+
 /// Set the object test's orbit.
 ///
 /// Its own command rather than more arguments on `control_object_test`, for the
