@@ -28,6 +28,12 @@ state directly instead of a camelCase JSON mirror.
 | `src/view/` | Model → frame: objects, speakers, room, trails, volumes |
 | `src/render/` | wgpu renderer hosted by an `egui_wgpu::Callback`; camera; head glTF; volumes |
 
+The crate keeps a boundary between its core (`model`, `osc`, `host`,
+`auto_tune`) and its UI, so that egui can be replaced the way the web frontend
+was: see [`ARCHITECTURE.md`](ARCHITECTURE.md). `tests/architecture.rs` enforces
+it, and [`docs/studio-egui-boundary-plan.md`](../docs/studio-egui-boundary-plan.md)
+is the plan for the parts that do not respect it yet.
+
 ## Build and run
 
 Requires Rust 1.95+ (`rust-toolchain.toml` pins 1.97.1 for this directory).

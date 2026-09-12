@@ -1,0 +1,102 @@
+# Architecture ratchet baseline: the violations of each rule, per file,
+# that the boundary refactor has not removed yet. See tests/architecture.rs,
+# ARCHITECTURE.md and docs/studio-egui-boundary-plan.md.
+#
+# Counts only ever go down. After removing a violation, regenerate with
+#   UPDATE_ARCHITECTURE_BASELINE=1 cargo test --test architecture
+# and commit this file with the change.
+#
+# Totals:
+#   osc-address      129
+#   raw-send         131
+#   model-write      77
+#   model-impl       1
+#   side-effect      7
+#   frame-tick       9
+#   toolkit-in-core  3
+#   core-imports-ui  8
+#
+# rule            file                                      count
+osc-address       src/panels/audio.rs                       3
+osc-address       src/panels/audio_input.rs                 9
+osc-address       src/panels/audio_output.rs                8
+osc-address       src/panels/binaural.rs                    20
+osc-address       src/panels/channel_editor.rs              1
+osc-address       src/panels/connection.rs                  2
+osc-address       src/panels/diag_plot.rs                   4
+osc-address       src/panels/display.rs                     1
+osc-address       src/panels/drc.rs                         3
+osc-address       src/panels/footer.rs                      2
+osc-address       src/panels/hybrid.rs                      5
+osc-address       src/panels/latency.rs                     2
+osc-address       src/panels/lists.rs                       3
+osc-address       src/panels/log.rs                         1
+osc-address       src/panels/mpv_overlay.rs                 7
+osc-address       src/panels/object_test.rs                 3
+osc-address       src/panels/profiles.rs                    7
+osc-address       src/panels/renderer.rs                    21
+osc-address       src/panels/room.rs                        5
+osc-address       src/panels/scene_fx.rs                    1
+osc-address       src/panels/sofa_browser.rs                1
+osc-address       src/panels/sources_2d.rs                  2
+osc-address       src/panels/speaker_editor.rs              14
+osc-address       src/panels/speaker_layouts.rs             4
+raw-send          src/app.rs                                2
+raw-send          src/panels/audio.rs                       3
+raw-send          src/panels/audio_input.rs                 9
+raw-send          src/panels/audio_output.rs                8
+raw-send          src/panels/binaural.rs                    20
+raw-send          src/panels/channel_editor.rs              1
+raw-send          src/panels/connection.rs                  2
+raw-send          src/panels/diag_plot.rs                   4
+raw-send          src/panels/display.rs                     1
+raw-send          src/panels/drc.rs                         3
+raw-send          src/panels/footer.rs                      2
+raw-send          src/panels/hybrid.rs                      5
+raw-send          src/panels/latency.rs                     2
+raw-send          src/panels/lists.rs                       3
+raw-send          src/panels/log.rs                         1
+raw-send          src/panels/mpv_overlay.rs                 7
+raw-send          src/panels/object_test.rs                 3
+raw-send          src/panels/profiles.rs                    7
+raw-send          src/panels/renderer.rs                    21
+raw-send          src/panels/room.rs                        5
+raw-send          src/panels/scene_fx.rs                    1
+raw-send          src/panels/sofa_browser.rs                1
+raw-send          src/panels/sources_2d.rs                  2
+raw-send          src/panels/speaker_editor.rs              14
+raw-send          src/panels/speaker_layouts.rs             4
+model-write       src/panels/audio.rs                       3
+model-write       src/panels/audio_input.rs                 9
+model-write       src/panels/audio_output.rs                7
+model-write       src/panels/auto_tune.rs                   4
+model-write       src/panels/channel_editor.rs              6
+model-write       src/panels/connection.rs                  6
+model-write       src/panels/drc.rs                         3
+model-write       src/panels/footer.rs                      1
+model-write       src/panels/host_services.rs               3
+model-write       src/panels/latency.rs                     6
+model-write       src/panels/log.rs                         1
+model-write       src/panels/meters.rs                      4
+model-write       src/panels/object_test.rs                 5
+model-write       src/panels/renderer.rs                    16
+model-write       src/panels/room.rs                        2
+model-write       src/panels/speaker_layouts.rs             1
+model-impl        src/panels/latency.rs                     1
+side-effect       src/app.rs                                1
+side-effect       src/panels/connection.rs                  2
+side-effect       src/panels/host_services.rs               1
+side-effect       src/panels/sofa_browser.rs                1
+side-effect       src/panels/updates.rs                     2
+frame-tick        src/app.rs                                1
+frame-tick        src/panels/auto_tune.rs                   1
+frame-tick        src/panels/diag_plot.rs                   1
+frame-tick        src/panels/host_services.rs               1
+frame-tick        src/panels/meters.rs                      1
+frame-tick        src/panels/mpv_overlay.rs                 1
+frame-tick        src/panels/object_test.rs                 1
+frame-tick        src/panels/speaker_editor.rs              2
+toolkit-in-core   src/host/commands/layout_io.rs            1
+toolkit-in-core   src/osc/mod.rs                            2
+core-imports-ui   src/host/display_prefs.rs                 4
+core-imports-ui   src/host/prefs.rs                         4

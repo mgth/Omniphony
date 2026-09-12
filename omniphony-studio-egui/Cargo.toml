@@ -59,6 +59,11 @@ gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 # brings no DSP (we read three strings, never convolve).
 sofar = { git = "https://github.com/mgth/sofar", rev = "c03ff5cfd997d316ae330e2735e82311769b45a3", default-features = false }
 
+[dev-dependencies]
+# The architecture ratchet (tests/architecture.rs) matches its rules with it.
+# Already in the tree through env_logger, so it costs no new download.
+regex = "1"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
