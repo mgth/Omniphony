@@ -60,6 +60,7 @@ pub fn control_master_gain(state: &SharedState, gain: f32) {
 }
 
 pub fn control_loudness(state: &SharedState, enable: i32) {
+    state.inner.lock().unwrap().app.loudness = Some(u8::from(enable != 0));
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {

@@ -10,6 +10,7 @@
 use egui::Ui;
 
 use crate::app::StudioSpike;
+use crate::host::commands::profiles as cmd;
 use crate::i18n::{t, tf};
 use crate::ui::{theme, widgets};
 
@@ -83,8 +84,7 @@ impl StudioSpike {
                         .on_hover_text(t("help.profiles"));
                 });
                 if let Some(name) = picked {
-                    self.ctl
-                        .send_string("/omniphony/control/profile/switch", &name);
+                    cmd::control_profile_switch(&self.host, name);
                 }
             });
         });
@@ -141,24 +141,18 @@ impl StudioSpike {
         match action {
             // An existing name is a switch, not a second profile of that name.
             NameEditor::Create if names.iter().any(|n| n == &name) => {
-                self.ctl
-                    .send_string("/omniphony/control/profile/switch", &name);
+                cmd::control_profile_switch(&self.host, name);
             }
             NameEditor::Create => {
-                self.ctl
-                    .send_string("/omniphony/control/profile/create", &name);
-                self.ctl
-                    .send_string("/omniphony/control/profile/switch", &name);
+                cmd::control_profile_create(&self.host, name.clone());
+                cmd::control_profile_switch(&self.host, name);
             }
             NameEditor::Rename(old) => {
                 let unchanged = old == name || active != Some(old.as_str());
                 if unchanged || names.iter().any(|n| n == &name) {
                     return;
                 }
-                self.ctl.send(
-                    "/omniphony/control/profile/rename",
-                    vec![rosc::OscType::String(old), rosc::OscType::String(name)],
-                );
+                cmd::control_profile_rename(&self.host, old, name);
             }
         }
     }
@@ -200,10 +194,8 @@ impl StudioSpike {
                     {
                         // Switch first: the renderer will not delete the profile
                         // it is running on.
-                        self.ctl
-                            .send_string("/omniphony/control/profile/switch", &keep);
-                        self.ctl
-                            .send_string("/omniphony/control/profile/delete", &name);
+                        cmd::control_profile_switch(&self.host, keep.clone());
+                        cmd::control_profile_delete(&self.host, name.clone());
                         self.profile_delete_confirm = None;
                     }
                 });

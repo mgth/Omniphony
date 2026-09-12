@@ -7,9 +7,9 @@
 # and commit this file with the change.
 #
 # Totals:
-#   osc-address      109
-#   raw-send         111
-#   model-write      77
+#   osc-address      99
+#   raw-send         101
+#   model-write      74
 #   side-effect      7
 #   frame-tick       9
 #
@@ -21,7 +21,6 @@ osc-address       src/panels/channel_editor.rs              1
 osc-address       src/panels/connection.rs                  2
 osc-address       src/panels/diag_plot.rs                   4
 osc-address       src/panels/display.rs                     1
-osc-address       src/panels/drc.rs                         3
 osc-address       src/panels/footer.rs                      2
 osc-address       src/panels/hybrid.rs                      5
 osc-address       src/panels/latency.rs                     2
@@ -29,7 +28,6 @@ osc-address       src/panels/lists.rs                       3
 osc-address       src/panels/log.rs                         1
 osc-address       src/panels/mpv_overlay.rs                 7
 osc-address       src/panels/object_test.rs                 3
-osc-address       src/panels/profiles.rs                    7
 osc-address       src/panels/renderer.rs                    21
 osc-address       src/panels/room.rs                        5
 osc-address       src/panels/scene_fx.rs                    1
@@ -45,7 +43,6 @@ raw-send          src/panels/channel_editor.rs              1
 raw-send          src/panels/connection.rs                  2
 raw-send          src/panels/diag_plot.rs                   4
 raw-send          src/panels/display.rs                     1
-raw-send          src/panels/drc.rs                         3
 raw-send          src/panels/footer.rs                      2
 raw-send          src/panels/hybrid.rs                      5
 raw-send          src/panels/latency.rs                     2
@@ -53,7 +50,6 @@ raw-send          src/panels/lists.rs                       3
 raw-send          src/panels/log.rs                         1
 raw-send          src/panels/mpv_overlay.rs                 7
 raw-send          src/panels/object_test.rs                 3
-raw-send          src/panels/profiles.rs                    7
 raw-send          src/panels/renderer.rs                    21
 raw-send          src/panels/room.rs                        5
 raw-send          src/panels/scene_fx.rs                    1
@@ -67,7 +63,6 @@ model-write       src/panels/audio_output.rs                7
 model-write       src/panels/auto_tune.rs                   4
 model-write       src/panels/channel_editor.rs              6
 model-write       src/panels/connection.rs                  6
-model-write       src/panels/drc.rs                         3
 model-write       src/panels/footer.rs                      1
 model-write       src/panels/host_services.rs               3
 model-write       src/panels/latency.rs                     6
