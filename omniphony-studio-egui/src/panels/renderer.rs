@@ -504,7 +504,11 @@ impl StudioSpike {
                 b.available_backends.clone(),
                 b.backend_param_values_by_id.clone(),
                 b.frozen_speakers,
-                vbap_status(&live.app.recompute_error, live.app.vbap_recomputing),
+                vbap_status(
+                    &live.app.recompute_error,
+                    live.app.vbap_recomputing,
+                    live.recompute_timed_out,
+                ),
             )
         };
         let backends = backend_list(&available);
@@ -1123,32 +1127,18 @@ impl StudioSpike {
         (chosen != current).then_some(chosen)
     }
 
-    /// `markRecomputePending`: assume the engine will recompute, and complain
-    /// after eight seconds if it never says it did.
+    /// `markRecomputePending`, in the core: it owns the flag and the deadline.
     pub(crate) fn mark_recompute_pending(&mut self) {
-        let mut live = self.live.lock().unwrap();
-        live.app.vbap_recomputing = Some(true);
-        live.app.recompute_error = None;
-        drop(live);
-        self.recompute_deadline = Some(std::time::Instant::now() + RECOMPUTE_ACK_TIMEOUT);
+        crate::host::commands::render::mark_recompute_pending(&self.host);
     }
 
-    /// Called every frame: raise the no-answer error once the deadline passes.
-    pub(crate) fn check_recompute_ack(&mut self) {
-        let Some(deadline) = self.recompute_deadline else {
-            return;
-        };
-        let mut live = self.live.lock().unwrap();
-        if live.app.vbap_recomputing != Some(true) {
-            drop(live);
-            self.recompute_deadline = None;
-            return;
-        }
-        if std::time::Instant::now() >= deadline {
-            live.app.vbap_recomputing = Some(false);
-            live.app.recompute_error = Some(t("vbap.status.noAck").to_owned());
-            drop(live);
-            self.recompute_deadline = None;
+    /// Ask the core whether an unanswered recompute has run out of time, and
+    /// come back when it would: the deadline must not wait for a frame that
+    /// something else happens to draw.
+    pub(crate) fn check_recompute_ack(&mut self, ctx: &egui::Context) {
+        let now = std::time::Instant::now();
+        if let Some(deadline) = crate::host::commands::render::tick_recompute(&self.host, now) {
+            ctx.request_repaint_after(deadline.saturating_duration_since(now));
         }
     }
 
@@ -1171,10 +1161,6 @@ impl StudioSpike {
         );
     }
 }
-
-/// Eight seconds without a `vbap:recomputing` broadcast is an unanswered
-/// request (`markRecomputePending`).
-const RECOMPUTE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// `.vbap-step`: the grid's step, or an em dash when it is unknown.
 fn step_label(ui: &mut Ui, value: Option<f64>, unit: &str) {
@@ -1313,12 +1299,19 @@ fn option_label(key: &str, value: &str, option: &serde_json::Value) -> String {
         .to_owned()
 }
 
-/// `renderVbapStatus`: the engine's recompute state, or the error it reported.
-fn vbap_status(error: &Option<String>, recomputing: Option<bool>) -> (String, egui::Color32) {
-    match (error, recomputing) {
-        (Some(message), _) => (message.clone(), theme::ERROR),
-        (None, Some(true)) => (t("vbap.status.computing").to_owned(), theme::WARN),
-        (None, Some(false)) => (t("vbap.status.ready").to_owned(), theme::OK),
-        (None, None) => (t("vbap.status.idle").to_owned(), theme::TEXT_MUTED),
+/// `renderVbapStatus`: the engine's recompute state, the error it reported, or
+/// our own silence timeout — a flag in the model, said here in the user's
+/// language.
+fn vbap_status(
+    error: &Option<String>,
+    recomputing: Option<bool>,
+    timed_out: bool,
+) -> (String, egui::Color32) {
+    match (error, recomputing, timed_out) {
+        (Some(message), _, _) => (message.clone(), theme::ERROR),
+        (None, _, true) => (t("vbap.status.noAck").to_owned(), theme::ERROR),
+        (None, Some(true), _) => (t("vbap.status.computing").to_owned(), theme::WARN),
+        (None, Some(false), _) => (t("vbap.status.ready").to_owned(), theme::OK),
+        (None, None, _) => (t("vbap.status.idle").to_owned(), theme::TEXT_MUTED),
     }
 }

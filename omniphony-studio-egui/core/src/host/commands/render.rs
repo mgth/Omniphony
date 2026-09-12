@@ -124,8 +124,51 @@ pub fn control_distance_diffuse_mirror_axes(state: &SharedState, value: String) 
     );
 }
 
+/// Eight seconds without a `vbap:recomputing` broadcast is an unanswered
+/// recompute (`markRecomputePending`).
+pub const RECOMPUTE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// `markRecomputePending`: assume the engine will recompute, and arm the
+/// deadline that complains if it never says it did. Every command that
+/// re-plans the layout calls this as it sends.
+pub fn mark_recompute_pending(state: &SharedState) {
+    let mut live = state.inner.lock().unwrap();
+    live.app.vbap_recomputing = Some(true);
+    live.app.recompute_error = None;
+    live.recompute_timed_out = false;
+    live.recompute_deadline = Some(std::time::Instant::now() + RECOMPUTE_ACK_TIMEOUT);
+}
+
+/// Raise the no-answer flag once the deadline passes, and say when to look
+/// again. `None` means nothing is pending — the shape the core's services take
+/// in phase 3 of the boundary plan.
+pub fn tick_recompute(state: &SharedState, now: std::time::Instant) -> Option<std::time::Instant> {
+    let mut live = state.inner.lock().unwrap();
+    let deadline = live.recompute_deadline?;
+    if live.app.vbap_recomputing != Some(true) {
+        live.recompute_deadline = None;
+        return None;
+    }
+    if now < deadline {
+        return Some(deadline);
+    }
+    live.app.vbap_recomputing = Some(false);
+    live.recompute_timed_out = true;
+    live.recompute_deadline = None;
+    None
+}
+
 pub fn control_hybrid_external_backend(state: &SharedState, value: String) {
     if let Some(normalized) = valid_hybrid_inner_id(&value) {
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .app
+            .render_backend_state
+            .hybrid
+            .external_backend = Some(normalized.clone());
+        mark_recompute_pending(state);
         send_control(
             &state.osc_tx,
             OscControlMsg::SendString {
@@ -138,6 +181,15 @@ pub fn control_hybrid_external_backend(state: &SharedState, value: String) {
 
 pub fn control_hybrid_internal_backend(state: &SharedState, value: String) {
     if let Some(normalized) = valid_hybrid_inner_id(&value) {
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .app
+            .render_backend_state
+            .hybrid
+            .internal_backend = Some(normalized.clone());
+        mark_recompute_pending(state);
         send_control(
             &state.osc_tx,
             OscControlMsg::SendString {
@@ -157,16 +209,60 @@ fn valid_hybrid_inner_id(value: &str) -> Option<String> {
 }
 
 pub fn control_hybrid_metric(state: &SharedState, value: String) {
-    send_distance_metric(&state, "/omniphony/control/hybrid/metric", value);
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(normalized.as_str(), "spherical" | "chebyshev") {
+        return;
+    }
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .render_backend_state
+        .hybrid
+        .metric = Some(normalized.clone());
+    mark_recompute_pending(state);
+    send_distance_metric(state, "/omniphony/control/hybrid/metric", normalized);
 }
 
 pub fn control_hybrid_curve_smoothing(state: &SharedState, value: f32) {
+    let clamped = value.clamp(0.0, 1.0);
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .render_backend_state
+        .hybrid
+        .curve_smoothing = Some(f64::from(clamped));
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
             address: "/omniphony/control/hybrid/curve_smoothing".to_string(),
-            value: value.clamp(0.0, 1.0),
+            value: clamped,
         },
+    );
+}
+
+/// The curve, as the editor holds it: the model keeps the points it dragged,
+/// the renderer is sent the same list flattened and clamped.
+pub fn set_hybrid_curve(state: &SharedState, points: Vec<[f64; 2]>) {
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .render_backend_state
+        .hybrid
+        .curve = points.clone();
+    mark_recompute_pending(state);
+    control_hybrid_curve(
+        state,
+        points
+            .iter()
+            .map(|p| [p[0] as f32, p[1] as f32])
+            .collect::<Vec<_>>(),
     );
 }
 

@@ -1026,7 +1026,7 @@ impl eframe::App for StudioSpike {
         self.maintain_renderer_watchdog();
         self.maintain_object_test_source();
         self.maintain_test_idle_feed();
-        self.check_recompute_ack();
+        self.check_recompute_ack(&ctx);
         self.maintain_gaintable_subscriptions();
         self.persist_prefs(&ctx);
         self.maybe_print_stats();
