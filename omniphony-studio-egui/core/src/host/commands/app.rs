@@ -22,6 +22,12 @@ pub struct AboutInfo {
     description: &'static str,
 }
 
+/// One line into the log the overlay shows. The view says what happened; the
+/// model keeps it.
+pub fn push_log(state: &SharedState, level: &str, target: &str, message: String) {
+    state.inner.lock().unwrap().push_log(level, target, message);
+}
+
 pub fn get_state(state: &SharedState) -> serde_json::Value {
     let s = state.inner.lock().unwrap();
     serde_json::to_value(&s.app).unwrap_or(serde_json::Value::Null)
