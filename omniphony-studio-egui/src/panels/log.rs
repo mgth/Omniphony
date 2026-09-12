@@ -192,10 +192,7 @@ impl StudioSpike {
                         }
                     });
                 if chosen != current {
-                    // `control_log_level` → `/omniphony/control/log_level`.
-                    self.ctl
-                        .send_string("/omniphony/control/log_level", &chosen);
-                    self.live.lock().unwrap().app.log_level = Some(chosen);
+                    crate::host::commands::engine::control_log_level(&self.host, chosen);
                 }
                 crate::ui::help::label(
                     ui,
