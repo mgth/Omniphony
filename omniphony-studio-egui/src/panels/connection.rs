@@ -8,6 +8,7 @@ use std::time::Duration;
 use egui::Color32;
 
 use crate::app::StudioSpike;
+use crate::host::commands::app as app_cmd;
 use crate::host::commands::mpv_config::MpvOrenderState;
 use crate::host::config::{load_config, save_config};
 use crate::i18n::{t, tf};
@@ -279,13 +280,7 @@ impl StudioSpike {
             widgets::switch(ui, &mut metering).changed()
         });
         if toggled {
-            self.live.lock().unwrap().app.osc_metering_enabled = Some(u8::from(metering));
-            self.ctl.set_metering(metering);
-            let mut config = load_config(&self.config_dir);
-            config.osc_metering_enabled = metering;
-            if let Err(e) = save_config(&self.config_dir, &config) {
-                log::warn!("[osc] could not save the configuration: {e}");
-            }
+            app_cmd::set_metering_enabled(&self.host, metering);
             self.log(
                 "info",
                 "osc",
@@ -297,9 +292,7 @@ impl StudioSpike {
             );
         }
         if chosen != rate {
-            self.live.lock().unwrap().app.meter_rate_hz = Some(chosen as f32);
-            self.ctl
-                .send_float("/omniphony/control/metering/rate_hz", chosen as f32);
+            app_cmd::set_meter_rate_hz(&self.host, chosen as f32);
         }
     }
 
@@ -320,7 +313,7 @@ impl StudioSpike {
             if auto_start {
                 // Turning it back on after installing the service lifts the
                 // suppression the install set; the watchdog decides the rest.
-                self.host.watchdog.lock().unwrap().suppressed = false;
+                app_cmd::resume_watchdog(&self.host);
             }
         }
         let mut keep_alive = self.osc_keep_alive;
@@ -423,74 +416,17 @@ impl StudioSpike {
         }
     }
 
-    /// At quit, take a renderer this Studio launched down with it, unless the
-    /// user asked to keep it: a graceful quit first, so it writes its
-    /// live-state handoff, then a kill if it has not gone within two seconds.
-    /// A renderer this Studio did not start (a service, mpv's own) is left
-    /// alone.
+    /// At quit, take a renderer this Studio launched down with it: the core
+    /// owns the child and the two-second grace.
     pub(crate) fn stop_launched_renderer(&mut self) {
-        let mut guard = self.host.renderer_child.lock().unwrap();
-        let Some(child) = guard.as_mut() else {
-            return;
-        };
-        if !matches!(child.try_wait(), Ok(None)) {
-            return;
-        }
-        if load_config(&self.config_dir).keep_renderer_alive_on_quit {
-            log::info!("leaving the local renderer running (keep alive on quit)");
-            return;
-        }
-        self.ctl.send("/omniphony/control/quit", Vec::new());
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                _ => {
-                    log::warn!("local renderer did not quit in time; killing it");
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break;
-                }
-            }
-        }
+        crate::host::commands::orender::stop_launched_renderer(&self.host);
     }
 
     /// Point the client at the configured renderer and save the choice, like
     /// `save_osc_config` + the host's `Reconnect`.
     fn connect(&mut self) {
-        let target = format!("{}:{}", self.osc_host.trim(), self.osc_port);
-        match target.parse::<std::net::SocketAddr>() {
-            Ok(addr) => {
-                self.ctl.reconnect(addr);
-                let mut live = self.live.lock().unwrap();
-                live.push_log("info", "osc", format!("connecting to {addr}"));
-            }
-            Err(_) => {
-                // A hostname needs a lookup; do it here rather than in the
-                // listener thread so the error can be shown.
-                use std::net::ToSocketAddrs;
-                match target.to_socket_addrs().ok().and_then(|mut a| a.next()) {
-                    Some(addr) => {
-                        self.ctl.reconnect(addr);
-                        self.live.lock().unwrap().push_log(
-                            "info",
-                            "osc",
-                            format!("connecting to {addr}"),
-                        );
-                    }
-                    None => {
-                        self.live.lock().unwrap().push_log(
-                            "error",
-                            "osc",
-                            format!("cannot resolve {target}"),
-                        );
-                        return;
-                    }
-                }
-            }
+        if app_cmd::connect_to(&self.host, &self.osc_host, self.osc_port).is_err() {
+            return;
         }
         // Only the form's own fields: starting from the defaults instead
         // turned auto-start back on and forgot the import directory on every
