@@ -205,7 +205,9 @@ pub struct StudioSpike {
     /// The backend file editor, while it is open.
     pub(crate) script_editor: Option<crate::panels::script_editor::ScriptEditor>,
     /// The auto-tune wizard, while it is open.
-    pub(crate) auto_tune: Option<crate::panels::auto_tune::Wizard>,
+    /// A close was asked for while a run was going; the run itself is the
+    /// core's.
+    pub(crate) auto_tune_quit_asked: bool,
     /// The host's own `SharedState`, kept for the whole session because the
     /// watchdog and the tracked child live in it: a fresh one per call would
     /// forget the renderer it just started.
@@ -466,7 +468,7 @@ impl StudioSpike {
             ctx: cc.egui_ctx.clone(),
             sofa_browser: None,
             script_editor: None,
-            auto_tune: None,
+            auto_tune_quit_asked: false,
         })
     }
 
