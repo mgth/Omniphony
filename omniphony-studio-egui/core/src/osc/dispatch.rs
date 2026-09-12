@@ -123,6 +123,8 @@ pub struct Live {
     pub log: VecDeque<LogLine>,
     /// Set while a config save is in flight (`app.saveRequested`).
     pub save_requested: bool,
+    /// Where the release check is up to.
+    pub update_check: crate::host::services::updates::UpdateCheck,
     /// What the view is showing, for the mpv overlay to be kept in step with.
     pub overlay_prefs: Option<crate::host::services::overlay::OverlayPrefs>,
     /// What the view has asked the renderer to keep sending.
@@ -388,6 +390,7 @@ impl Live {
             peak_hold_db: HashMap::new(),
             log: VecDeque::new(),
             save_requested: false,
+            update_check: Default::default(),
             overlay_prefs: None,
             interests: Default::default(),
             speaker_test: Default::default(),

@@ -10,7 +10,7 @@
 #   osc-address      0
 #   raw-send         0
 #   model-write      21
-#   side-effect      4
+#   side-effect      2
 #   frame-tick       3
 #
 # rule            file                                      count
@@ -21,7 +21,6 @@ model-write       src/panels/object_test.rs                 3
 model-write       src/panels/renderer.rs                    9
 side-effect       src/app.rs                                1
 side-effect       src/panels/sofa_browser.rs                1
-side-effect       src/panels/updates.rs                     2
 frame-tick        src/panels/auto_tune.rs                   1
 frame-tick        src/panels/diag_plot.rs                   1
 frame-tick        src/panels/object_test.rs                 1

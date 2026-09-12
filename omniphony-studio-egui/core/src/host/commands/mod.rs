@@ -100,6 +100,8 @@ pub struct SharedState {
     pub paths: HostPaths,
     /// What the listener has seen, for the services that judge the link.
     pub stats: Arc<crate::osc::OscStats>,
+    /// How core work says it has something to show.
+    pub waker: crate::osc::Waker,
 }
 
 /// State of the local-renderer auto-start watchdog (host `main.rs`).
@@ -207,6 +209,7 @@ pub(crate) mod tests {
             auto_tune_snapshot: Default::default(),
             paths: HostPaths::default(),
             stats: crate::osc::OscStats::new(),
+            waker: Arc::new(|| {}),
         }
     }
 }
