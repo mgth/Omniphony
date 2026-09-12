@@ -133,6 +133,8 @@ pub struct Live {
     /// The renderer's fixed-channel catalogue, digested. Rebuilt by the
     /// virtual-bed service when the published array changes.
     pub channels: crate::host::channels::ChannelCatalog,
+    /// The auto-tune run, from the wizard opening to it closing.
+    pub auto_tune: Option<crate::host::services::auto_tune::Run>,
     /// What the view has asked the renderer to keep sending.
     pub interests: crate::host::services::interests::Interests,
     /// The per-speaker test signal this side started, with the safety window
@@ -400,6 +402,7 @@ impl Live {
             overlay_prefs: None,
             object_test_marker: Default::default(),
             channels: Default::default(),
+            auto_tune: None,
             interests: Default::default(),
             speaker_test: Default::default(),
             recompute_deadline: None,

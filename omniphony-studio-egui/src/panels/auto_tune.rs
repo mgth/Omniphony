@@ -1,75 +1,35 @@
-//! The auto-tune wizard (`auto-tune/wizard-ui.js` and `runner.js`).
+//! The auto-tune wizard (`auto-tune/wizard-ui.js`).
 //!
-//! The dialog that drives [`crate::auto_tune`]: it feeds the machine
-//! telemetry, applies the patches it asks for to the live controller, and
-//! shows what step the run is on with the two traces the run is about.
-//!
-//! Two rules the web set and this keeps. The values are applied live but not
-//! persisted — Save is still the user's to press — and the values the run
-//! started from are snapshotted so Cancel and Revert put the controller back
-//! exactly as it was.
-
-use std::time::{Duration, Instant};
+//! The dialog only. The run it shows — feeding [`crate::auto_tune`]'s machine,
+//! patching the live controller, the snapshot Cancel restores — is
+//! `host::services::auto_tune`, so a sweep keeps its cadence whether or not
+//! anything is being drawn.
 
 use egui::{RichText, Ui, vec2};
 
 use crate::app::StudioSpike;
-use crate::auto_tune::detectors::{Phase, Sample};
-use crate::auto_tune::machine::{Ack, AutoTune, Event, Failure, Note, Outcome, Patch, State};
+use crate::auto_tune::machine::{Ack, Context, Failure, Note, Outcome, State};
+use crate::host::services::auto_tune::{self, Refused};
 use crate::i18n::{t, tf};
 use crate::ui::{theme, widgets};
 
-/// The web polls the controller at 50 ms; the frame loop is faster than that
-/// and there is nothing to gain from feeding the machine every frame.
-const POLL: Duration = Duration::from_millis(50);
 /// The sparkline's window.
 const SPARK_MS: f64 = 30_000.0;
 
-/// Why a run could not start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Refused {
-    NotEnabled,
-    Paused,
+/// What the dialog needs from the run, read once so nothing draws while the
+/// model is locked.
+struct View {
+    state: State,
+    ctx: Context,
+    refused: Option<Refused>,
+    started: bool,
+    note: Option<Note>,
+    outcome: Option<Outcome>,
+    failure: Option<Failure>,
+    can_abbreviate: bool,
+    elapsed_ms: f64,
 }
 
-/// The dialog's state while it is open.
-pub struct Wizard {
-    pub machine: AutoTune,
-    /// Set until Start is pressed, and again if the start is refused.
-    pub refused: Option<Refused>,
-    pub started: bool,
-    /// The last note the machine attached to a step, shown under it.
-    pub note: Option<Note>,
-    pub outcome: Option<Outcome>,
-    pub failure: Option<Failure>,
-    pub can_abbreviate: bool,
-    pub elapsed_ms: f64,
-    pub polled_at: Option<Instant>,
-    /// The values the controller had before the run, restored on Cancel.
-    pub snapshot: Option<Patch>,
-    /// A close was asked for while the run was going.
-    pub quit_asked: bool,
-}
-
-impl Default for Wizard {
-    fn default() -> Self {
-        Self {
-            machine: AutoTune::default(),
-            refused: None,
-            started: false,
-            note: None,
-            outcome: None,
-            failure: None,
-            can_abbreviate: false,
-            elapsed_ms: 0.0,
-            polled_at: None,
-            snapshot: None,
-            quit_asked: false,
-        }
-    }
-}
-
-/// A number, or a dash where there is none.
 fn number(value: Option<f64>, decimals: usize) -> String {
     match value.filter(|v| v.is_finite()) {
         Some(v) => format!("{v:.decimals$}"),
@@ -109,14 +69,35 @@ impl StudioSpike {
             .on_hover_text(t("autoTune.openButtonTitle"))
             .clicked()
         {
-            self.auto_tune = Some(Wizard::default());
+            auto_tune::open(&self.host);
         }
     }
 
+    /// The run as the dialog reads it, or `None` when the wizard is closed.
+    fn auto_tune_view(&self) -> Option<View> {
+        let live = self.live.lock().unwrap();
+        let run = live.auto_tune.as_ref()?;
+        Some(View {
+            state: run.machine.state(),
+            ctx: run.machine.context(),
+            refused: run.refused,
+            started: run.started,
+            note: run.note,
+            outcome: run.outcome,
+            failure: run.failure,
+            can_abbreviate: run.can_abbreviate,
+            elapsed_ms: run.elapsed_ms,
+        })
+    }
+
     pub(crate) fn auto_tune_modal(&mut self, ctx: &egui::Context) {
-        self.maintain_auto_tune(ctx);
-        if self.auto_tune.is_none() {
+        if self.auto_tune_view().is_none() {
             return;
+        }
+        // The sparkline is the wizard's own picture of the run, and it is fed
+        // whether or not the telemetry plot is open.
+        if self.auto_tune_running() {
+            self.poll_resample_sample(ctx);
         }
         let modal = egui::Modal::new(egui::Id::new("auto-tune"))
             .frame(widgets::modal_frame())
@@ -128,32 +109,32 @@ impl StudioSpike {
         // controller is mid-patch, and dismissing the window by accident would
         // leave it there.
         if modal.should_close() && !self.auto_tune_running() {
-            self.close_auto_tune();
+            auto_tune::close(&self.host);
         }
     }
 
     fn auto_tune_running(&self) -> bool {
-        self.auto_tune.as_ref().is_some_and(|w| {
-            !matches!(
-                w.machine.state(),
-                State::Idle | State::Completed | State::Cancelled | State::Failed
-            )
-        })
+        self.live
+            .lock()
+            .unwrap()
+            .auto_tune
+            .as_ref()
+            .is_some_and(auto_tune::Run::running)
     }
 
     fn auto_tune_body(&mut self, ui: &mut Ui) {
-        let Some(wizard) = &self.auto_tune else {
+        let Some(view) = self.auto_tune_view() else {
             return;
         };
-        let state = wizard.machine.state();
-        let ctx = wizard.machine.context();
+        let state = view.state;
+        let ctx = view.ctx;
         ui.label(
             RichText::new(t("autoTune.title"))
                 .size(theme::FONT_SIZE_TITLE)
                 .color(theme::TEXT_STRONG),
         );
         ui.add_space(theme::ROW_GAP);
-        if let Some(refused) = wizard.refused {
+        if let Some(refused) = view.refused {
             let message = match refused {
                 Refused::NotEnabled => t("autoTune.refusedNotEnabled"),
                 Refused::Paused => t("autoTune.refusedPaused"),
@@ -162,16 +143,16 @@ impl StudioSpike {
             ui.add_space(theme::PANEL_GAP);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(t("common.close")).clicked() {
-                    self.auto_tune = None;
+                    auto_tune::close(&self.host);
                 }
             });
             return;
         }
-        if !wizard.started {
+        if !view.started {
             self.auto_tune_preparation(ui);
             return;
         }
-        if let Some(failure) = wizard.failure {
+        if let Some(failure) = view.failure {
             let Failure::NoOscillation { kp_reached } = failure;
             widgets::banner(
                 ui,
@@ -185,12 +166,12 @@ impl StudioSpike {
             ui.add_space(theme::PANEL_GAP);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(t("common.close")).clicked() {
-                    self.revert_auto_tune();
+                    auto_tune::revert(&self.host);
                 }
             });
             return;
         }
-        if let Some(outcome) = wizard.outcome {
+        if let Some(outcome) = view.outcome {
             self.auto_tune_summary(ui, outcome);
             return;
         }
@@ -236,7 +217,7 @@ impl StudioSpike {
                 "autoTune.elapsed",
                 &[(
                     "sec",
-                    &format!("{}", (wizard.elapsed_ms / 1000.0).round() as i64),
+                    &format!("{}", (view.elapsed_ms / 1000.0).round() as i64),
                 )],
             ),
             _ => String::new(),
@@ -256,7 +237,7 @@ impl StudioSpike {
         if !hint.is_empty() {
             widgets::note(ui, t(hint));
         }
-        if let Some(note) = wizard.note {
+        if let Some(note) = view.note {
             let (line, warn) = note_line(note);
             ui.label(
                 RichText::new(line)
@@ -271,33 +252,30 @@ impl StudioSpike {
         self.resample_traces(&painter, rect, SPARK_MS);
         ui.add_space(theme::PANEL_GAP);
 
-        let can_abbreviate = self.auto_tune.as_ref().is_some_and(|w| w.can_abbreviate);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             match state {
                 State::AwaitPerturbation => {
                     if ui.button(t("autoTune.continue")).clicked() {
-                        self.ack_auto_tune(Ack::Perturbation);
+                        auto_tune::acknowledge(&self.host, Ack::Perturbation);
                     }
                     if ui.button(t("autoTune.skip")).clicked() {
-                        self.ack_auto_tune(Ack::SkipPerturbation);
+                        auto_tune::acknowledge(&self.host, Ack::SkipPerturbation);
                     }
                 }
                 State::Suspended => {
                     if ui.button(t("autoTune.resume")).clicked() {
-                        self.ack_auto_tune(Ack::ResumeAfterSourceLoss);
+                        auto_tune::acknowledge(&self.host, Ack::ResumeAfterSourceLoss);
                     }
                 }
-                State::LongRun if can_abbreviate => {
-                    if ui.button(t("autoTune.abbreviate")).clicked()
-                        && let Some(wizard) = &mut self.auto_tune
-                    {
-                        wizard.machine.abbreviate();
+                State::LongRun if view.can_abbreviate => {
+                    if ui.button(t("autoTune.abbreviate")).clicked() {
+                        auto_tune::abbreviate(&self.host);
                     }
                 }
                 _ => {}
             }
             if ui.button(t("common.cancel")).clicked() {
-                self.revert_auto_tune();
+                auto_tune::revert(&self.host);
             }
         });
     }
@@ -313,10 +291,10 @@ impl StudioSpike {
         ui.add_space(theme::PANEL_GAP);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button(t("autoTune.start")).clicked() {
-                self.start_auto_tune();
+                auto_tune::start(&self.host);
             }
             if ui.button(t("common.cancel")).clicked() {
-                self.auto_tune = None;
+                auto_tune::close(&self.host);
             }
         });
     }
@@ -377,182 +355,12 @@ impl StudioSpike {
             if ui.button(t("autoTune.accept")).clicked() {
                 // The values are already live; accepting is letting them
                 // stand, and dropping the snapshot that would undo them.
-                self.close_auto_tune();
+                auto_tune::close(&self.host);
             }
             if ui.button(t("autoTune.revert")).clicked() {
-                self.revert_auto_tune();
+                auto_tune::revert(&self.host);
             }
         });
-    }
-
-    // ── the runner ──────────────────────────────────────────────────────
-
-    fn start_auto_tune(&mut self) {
-        let (enabled, paused) = {
-            let live = self.live.lock().unwrap();
-            (
-                live.app.adaptive_resampling.unwrap_or(0) != 0,
-                live.app.adaptive_resampling_paused.unwrap_or(0) != 0,
-            )
-        };
-        // The run patches a controller that has to be running: tuning a
-        // disabled or paused one would tune nothing.
-        let refused = match (enabled, paused) {
-            (false, _) => Some(Refused::NotEnabled),
-            (_, true) => Some(Refused::Paused),
-            _ => None,
-        };
-        if let Some(refused) = refused {
-            if let Some(wizard) = &mut self.auto_tune {
-                wizard.refused = Some(refused);
-            }
-            return;
-        }
-        let snapshot = self.controller_snapshot();
-        let Some(wizard) = &mut self.auto_tune else {
-            return;
-        };
-        wizard.snapshot = Some(snapshot);
-        wizard.started = true;
-        let events = wizard
-            .machine
-            .start(self.diag_started.elapsed().as_secs_f64() * 1000.0);
-        self.apply_auto_tune_events(events);
-    }
-
-    /// The four values the run touches, as they are now.
-    fn controller_snapshot(&self) -> Patch {
-        let live = self.live.lock().unwrap();
-        Patch {
-            kp_near: live.app.adaptive_resampling_kp_near,
-            ki: live.app.adaptive_resampling_ki,
-            max_adjust: live.app.adaptive_resampling_max_adjust,
-            update_interval_callbacks: live
-                .app
-                .adaptive_resampling_update_interval_callbacks
-                .map(|v| v.max(1) as u32),
-        }
-    }
-
-    fn ack_auto_tune(&mut self, ack: Ack) {
-        let now = self.diag_started.elapsed().as_secs_f64() * 1000.0;
-        let Some(wizard) = &mut self.auto_tune else {
-            return;
-        };
-        let events = wizard.machine.user_ack(ack, now);
-        self.apply_auto_tune_events(events);
-    }
-
-    /// Put the controller back where the run found it and close.
-    fn revert_auto_tune(&mut self) {
-        let snapshot = self.auto_tune.as_ref().and_then(|w| w.snapshot);
-        if let Some(wizard) = &mut self.auto_tune {
-            wizard.machine.cancel();
-        }
-        if let Some(snapshot) = snapshot {
-            self.apply_auto_tune_patch(snapshot);
-        }
-        self.close_auto_tune();
-    }
-
-    fn close_auto_tune(&mut self) {
-        self.auto_tune = None;
-    }
-
-    /// Feed the machine, at the web's cadence, and act on what it says.
-    fn maintain_auto_tune(&mut self, ctx: &egui::Context) {
-        if !self.auto_tune_running() {
-            return;
-        }
-        // The sparkline is the wizard's own picture of the run, and it is fed
-        // whether or not the telemetry plot is open.
-        self.poll_resample_sample(ctx);
-        let now = Instant::now();
-        let due = self
-            .auto_tune
-            .as_ref()
-            .and_then(|w| w.polled_at)
-            .is_none_or(|at| now.duration_since(at) >= POLL);
-        if !due {
-            return;
-        }
-        let sample = {
-            let live = self.live.lock().unwrap();
-            Sample {
-                t: self.diag_started.elapsed().as_secs_f64() * 1000.0,
-                latency_smoothed_ms: live.app.latency.latency_smoothed_ms,
-                latency_target_ms: live.app.latency.latency_target_ms.map(|v| v as f64),
-                resample_ratio: live.app.resample_ratio,
-                phase: match live.app.adaptive_resampling_state.as_deref() {
-                    Some("low-recover") => Phase::LowRecover,
-                    _ => Phase::Other,
-                },
-            }
-        };
-        let Some(wizard) = &mut self.auto_tune else {
-            return;
-        };
-        wizard.polled_at = Some(now);
-        let events = wizard.machine.push_sample(sample);
-        self.apply_auto_tune_events(events);
-    }
-
-    fn apply_auto_tune_events(&mut self, events: Vec<Event>) {
-        for event in events {
-            match event {
-                Event::ApplyParams(patch) => self.apply_auto_tune_patch(patch),
-                Event::Progress(progress) => {
-                    if let Some(wizard) = &mut self.auto_tune {
-                        wizard.note = progress.note;
-                        if let Some(elapsed) = progress.elapsed_ms {
-                            wizard.elapsed_ms = elapsed;
-                        }
-                        wizard.can_abbreviate |= progress.can_abbreviate;
-                    }
-                }
-                Event::Complete(outcome) => {
-                    if let Some(wizard) = &mut self.auto_tune {
-                        wizard.outcome = Some(outcome);
-                    }
-                    self.log("info", "auto-tune", "the run finished".to_owned());
-                }
-                Event::Failed(failure) => {
-                    if let Some(wizard) = &mut self.auto_tune {
-                        wizard.failure = Some(failure);
-                    }
-                }
-                Event::SourceLost { events } => {
-                    self.log(
-                        "warn",
-                        "auto-tune",
-                        format!("the source went away ({events} recoveries); the run is held"),
-                    );
-                }
-                Event::SourceRecovered { .. } | Event::AwaitUserAction(_) | Event::Cancelled => {}
-            }
-        }
-    }
-
-    /// Write a patch into the live controller and send it, the way a slider
-    /// on the adaptive panel would.
-    fn apply_auto_tune_patch(&mut self, patch: Patch) {
-        {
-            let mut live = self.live.lock().unwrap();
-            if let Some(kp) = patch.kp_near {
-                live.app.adaptive_resampling_kp_near = Some(kp);
-            }
-            if let Some(ki) = patch.ki {
-                live.app.adaptive_resampling_ki = Some(ki);
-            }
-            if let Some(max_adjust) = patch.max_adjust {
-                live.app.adaptive_resampling_max_adjust = Some(max_adjust);
-            }
-            if let Some(interval) = patch.update_interval_callbacks {
-                live.app.adaptive_resampling_update_interval_callbacks =
-                    Some(interval.max(1) as i64);
-            }
-        }
-        crate::host::commands::audio::send_audio_document(&self.host);
     }
 
     /// Closing the window mid-run would leave the controller on the values the
@@ -563,11 +371,9 @@ impl StudioSpike {
         }
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            if let Some(wizard) = &mut self.auto_tune {
-                wizard.quit_asked = true;
-            }
+            self.auto_tune_quit_asked = true;
         }
-        if !self.auto_tune.as_ref().is_some_and(|w| w.quit_asked) {
+        if !self.auto_tune_quit_asked {
             return;
         }
         let modal = egui::Modal::new(egui::Id::new("auto-tune-quit"))
@@ -582,21 +388,17 @@ impl StudioSpike {
                 ui.label(RichText::new(t("autoTune.quitBody")).size(theme::FONT_SIZE));
                 ui.add_space(theme::PANEL_GAP);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(t("autoTune.quitStay")).clicked()
-                        && let Some(wizard) = &mut self.auto_tune
-                    {
-                        wizard.quit_asked = false;
+                    if ui.button(t("autoTune.quitStay")).clicked() {
+                        self.auto_tune_quit_asked = false;
                     }
                     if ui.button(t("autoTune.quitLeave")).clicked() {
-                        self.revert_auto_tune();
+                        auto_tune::revert(&self.host);
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
             });
-        if modal.should_close()
-            && let Some(wizard) = &mut self.auto_tune
-        {
-            wizard.quit_asked = false;
+        if modal.should_close() {
+            self.auto_tune_quit_asked = false;
         }
     }
 }
