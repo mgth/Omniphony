@@ -12,14 +12,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::StudioSpike;
 use crate::host::commands::gain;
+use crate::host::services::object_test::{ObjectTestMarker, set_object_test_marker};
 use crate::i18n::t;
 use crate::ui::{help, theme, widgets};
 
 use super::object_test_sheet as sheet;
 
-/// `control_object_mute` addresses objects by number; this one has a name, so
-/// its mute is routed through the test message instead (`object-test-id.js`).
-pub const OBJECT_TEST_SOURCE_ID: &str = "injection";
+pub use crate::host::services::object_test::SOURCE_ID as OBJECT_TEST_SOURCE_ID;
 
 /// How the orbit is drawn: enough samples that the clamp's flats are visible.
 const ORBIT_SAMPLES: usize = 96;
@@ -223,7 +222,6 @@ impl StudioSpike {
             };
         } else {
             self.stop_object_test();
-            gain::remove_object_test_source(&self.host, OBJECT_TEST_SOURCE_ID);
             if self.selection.object.as_deref() == Some(OBJECT_TEST_SOURCE_ID) {
                 self.selection.object = None;
             }
@@ -752,57 +750,18 @@ impl StudioSpike {
         self.send_object_test();
     }
 
-    /// Publish the injected object into the source registry, so everything that
-    /// draws, lists, meters and selects an object handles this one too.
-    ///
-    /// The scene shows where the source *is* — the renderer's reported position
-    /// while it plays, the placed one otherwise. The sheet keeps showing the
-    /// placed position: those markers are the handle being dragged, and a
-    /// handle that runs away from the pointer is not a handle.
-    pub(crate) fn maintain_object_test_source(&mut self) {
-        if !self.prefs.object_test.feature {
-            return;
-        }
-        let placed = self.prefs.object_test.position;
-        let playing = self.object_test_playing;
-        let mut live = self.live.lock().unwrap();
-        let reported = live.object_test_position;
-        let at = match (playing, reported) {
-            (true, Some(p)) => [p.x, p.y, p.z],
-            _ => placed,
-        };
-        // The level goes through the same meter map every other object's row
-        // uses: Studio could not compute it, since the generator is scaled
-        // towards the requested level and clamped a little under it.
-        if let Some(p) = reported.filter(|_| playing) {
-            live.app.source_levels.insert(
-                OBJECT_TEST_SOURCE_ID.to_owned(),
-                crate::model::app_state::Meter {
-                    peak_dbfs: p.peak_dbfs,
-                    rms_dbfs: p.rms_dbfs,
-                },
-            );
-        }
-        match live.app.sources.get_mut(OBJECT_TEST_SOURCE_ID) {
-            Some(source) => {
-                source.x = at[0];
-                source.y = at[1];
-                source.z = at[2];
-            }
-            None => {
-                live.app.sources.insert(
-                    OBJECT_TEST_SOURCE_ID.to_owned(),
-                    crate::model::app_state::SourcePosition {
-                        x: at[0],
-                        y: at[1],
-                        z: at[2],
-                        coord_mode: Some("cartesian".to_owned()),
-                        name: Some(t("objectTest.markerLabel").to_owned()),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
+    /// Say whether the injected object belongs in the room and where the user
+    /// put it. Publishing it — and taking it away again — is the core service's
+    /// job, so it keeps happening while nothing is being drawn.
+    pub(crate) fn declare_object_test_marker(&mut self) {
+        set_object_test_marker(
+            &self.host,
+            ObjectTestMarker {
+                shown: self.prefs.object_test.feature,
+                playing: self.object_test_playing,
+                placed: self.prefs.object_test.position,
+            },
+        );
     }
 
     /// The orbit, mirrored from the renderer's `position_at` for display only.

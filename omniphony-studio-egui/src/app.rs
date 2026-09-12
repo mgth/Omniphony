@@ -284,9 +284,10 @@ impl StudioSpike {
             ),
             None => None,
         };
-        // Two wakers over one context. The listener's also nudges the core's
-        // clock, since a packet may have given it something to do; the clock's
-        // only repaints — nudging itself from its own waker would spin.
+        // Two wakers over one context. Everything that can give the clock
+        // something to do nudges it as well as repainting: an applied packet, a
+        // finished job, an interest the view just declared. The clock's own
+        // waker only repaints — nudging itself would spin.
         let (clock, nudges) = crate::host::services::ServiceClock::new();
         let repaint: osc::Waker = {
             let ctx = cc.egui_ctx.clone();
@@ -302,7 +303,7 @@ impl StudioSpike {
         };
         let (port, control) = osc::spawn_listener(
             live.clone(),
-            waker,
+            waker.clone(),
             osc_stats.clone(),
             osc::ListenerConfig {
                 listen_port: args.listen_port,
@@ -363,7 +364,7 @@ impl StudioSpike {
             auto_tune_snapshot: Default::default(),
             paths: crate::host::commands::HostPaths::default(),
             stats: osc_stats.clone(),
-            waker: repaint.clone(),
+            waker: waker.clone(),
         });
         // The core's own clock: it sleeps until a service is due or the waker
         // nudges it, so an idle Studio wakes for nothing.
@@ -957,7 +958,7 @@ impl eframe::App for StudioSpike {
         self.refresh_channel_catalog();
         self.sync_virtual_bed_objects(false);
         self.declare_overlay_prefs();
-        self.maintain_object_test_source();
+        self.declare_object_test_marker();
         self.declare_idle_feed_interest();
         self.check_recompute_ack(&ctx);
         self.declare_gaintable_interest();

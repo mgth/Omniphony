@@ -45,8 +45,8 @@ pub struct SpeakerRef {
     pub scene_pos: Vec3,
 }
 
-/// The injected test source (`object-test-id.js`).
-pub const OBJECT_TEST_SOURCE_ID: &str = "injection";
+/// The injected test source, named where the service that publishes it lives.
+pub use crate::host::services::object_test::SOURCE_ID as OBJECT_TEST_SOURCE_ID;
 
 /// `SOURCE_BASE_RADIUS` (materials.js).
 pub const SOURCE_BASE_RADIUS: f32 = 0.07;
@@ -148,6 +148,11 @@ pub fn badge_code(id: &str, name: Option<&str>) -> String {
 /// `getObjectDisplayName`: the raw name (or the id) without a leading
 /// `a_`/`v_`/`obj_`-style technical prefix.
 pub fn display_name(id: &str, name: Option<&str>) -> String {
+    if id == OBJECT_TEST_SOURCE_ID {
+        // Studio's own marker, and the only source whose name is ours to
+        // choose. The model holds codes, so the translation happens here.
+        return crate::i18n::t("objectTest.markerLabel").to_owned();
+    }
     let raw = name.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(id);
     let mut s = raw;
     if s.len() >= 2 {
