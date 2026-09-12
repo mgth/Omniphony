@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
+use crate::host::commands::engine;
 use crate::i18n::t;
 use crate::model::app_state::{AppState, RoomRatio, SourcePosition};
 use crate::ui::{help, theme, widgets};
@@ -876,7 +877,8 @@ impl StudioSpike {
         target.y = adm[1];
         target.z = adm[2];
         let payload = build_layout_payload(&live.app, &channels);
-        live.app.live_options.virtual_bed = Some(payload);
+        drop(live);
+        engine::preview_virtual_bed(&self.host, payload);
     }
 
     fn set_channel_polar(&mut self, name: &str, azimuth: f64, elevation: f64, distance: f64) {
@@ -905,11 +907,9 @@ impl StudioSpike {
                 return;
             };
             mutate(target);
-            let payload = build_layout_payload(&live.app, &channels);
-            live.app.live_options.virtual_bed = Some(payload.clone());
-            payload
+            build_layout_payload(&live.app, &channels)
         };
-        self.send_virtual_bed(&payload);
+        self.send_virtual_bed(payload);
     }
 
     /// Reset every channel to its catalogue corner, in cartesian mode.
@@ -942,18 +942,13 @@ impl StudioSpike {
                     default_entry(&room, &base)
                 })
                 .collect();
-            let payload = build_layout_payload(&live.app, &channels);
-            live.app.live_options.virtual_bed = Some(payload.clone());
-            payload
+            build_layout_payload(&live.app, &channels)
         };
-        self.send_virtual_bed(&payload);
+        self.send_virtual_bed(payload);
     }
 
-    fn send_virtual_bed(&mut self, payload: &serde_json::Value) {
-        if let Ok(value) = serde_json::to_string(payload) {
-            self.ctl
-                .send_string("/omniphony/control/virtual_bed", &value);
-        }
+    fn send_virtual_bed(&mut self, payload: serde_json::Value) {
+        engine::set_virtual_bed(&self.host, payload);
         self.sync_virtual_bed_objects(true);
     }
 
