@@ -14,6 +14,7 @@ pub mod interests;
 pub mod meters;
 pub mod overlay;
 pub mod speaker_test;
+pub mod updates;
 pub mod watchdog;
 
 use std::sync::Arc;

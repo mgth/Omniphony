@@ -141,8 +141,6 @@ pub struct StudioSpike {
     pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
     /// The sample rate being typed, until it is applied or abandoned.
     pub(crate) sample_rate_edit: Option<String>,
-    /// An update check in flight, answering on its own thread.
-    pub(crate) update_check: Option<crate::panels::updates::CheckHandle>,
     /// Which gradient stop each custom-colormap editor has selected.
     pub(crate) object_stop_selected: Option<usize>,
     pub(crate) speaker_stop_selected: Option<usize>,
@@ -365,6 +363,7 @@ impl StudioSpike {
             auto_tune_snapshot: Default::default(),
             paths: crate::host::commands::HostPaths::default(),
             stats: osc_stats.clone(),
+            waker: repaint.clone(),
         });
         // The core's own clock: it sleeps until a service is due or the waker
         // nudges it, so an idle Studio wakes for nothing.
@@ -437,7 +436,6 @@ impl StudioSpike {
             // native build actually has: the repo's own build, then the
             // executable's own directory.
             sample_rate_edit: None,
-            update_check: None,
             object_stop_selected: None,
             speaker_stop_selected: None,
             info_modal_open: None,
