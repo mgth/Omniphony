@@ -5,6 +5,7 @@
 use egui::{Color32, RichText, Sense, Ui, vec2};
 
 use crate::app::StudioSpike;
+use crate::host::commands::gain;
 use crate::host::peak_hold::METER_DB_MIN;
 use crate::i18n::t;
 use crate::model::app_state::Meter;
@@ -178,13 +179,7 @@ impl StudioSpike {
 
     /// `control_ear_mute`: the ear is the argument, not an index into a layout.
     fn set_ear_muted(&mut self, ear: usize, muted: bool) {
-        self.ctl.send(
-            "/omniphony/control/binaural/ear_mute",
-            vec![
-                rosc::OscType::Int(ear as i32),
-                rosc::OscType::Int(i32::from(muted)),
-            ],
-        );
+        crate::host::commands::binaural::control_ear_mute(&self.host, ear as u32, muted);
     }
 
     pub(crate) fn speakers_section(&mut self, ui: &mut Ui) {
@@ -645,40 +640,19 @@ impl StudioSpike {
             // by index, so `control_object_mute` would read `NaN`. Stopping
             // the signal while remembering that it was playing is what makes
             // unmuting resume rather than need the transport again.
-            self.live
-                .lock()
-                .unwrap()
-                .app
-                .object_mutes
-                .insert(id.to_owned(), u8::from(muted));
+            gain::set_object_mute_local(&self.host, id, muted);
             self.set_object_test_muted(muted);
             return;
         }
         let Ok(index) = id.parse::<i32>() else {
             return;
         };
-        {
-            let mut live = self.live.lock().unwrap();
-            let map = if speaker {
-                &mut live.app.speaker_mutes
-            } else {
-                &mut live.app.object_mutes
-            };
-            map.insert(id.to_owned(), u8::from(muted));
-        }
+        // Each command applies the mute to the model as it sends it; the
+        // speaker's goes through the speakers config document.
         if speaker {
-            // `control_speaker_mute` goes through the speakers config document.
-            self.ctl.send_json(
-                "/omniphony/control/config/speakers",
-                &serde_json::json!({
-                    "speakerEdits": [{ "id": index.max(0), "muted": muted }]
-                }),
-            );
+            gain::control_speaker_mute(&self.host, index, i32::from(muted));
         } else {
-            self.ctl.send_int(
-                &format!("/omniphony/control/object/{index}/mute"),
-                i32::from(muted),
-            );
+            gain::control_object_mute(&self.host, index, i32::from(muted));
         }
     }
 
