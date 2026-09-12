@@ -7,6 +7,7 @@
 use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
+use crate::host::commands::speakers;
 use crate::i18n::t;
 use crate::model::app_state::RoomRatio;
 use crate::ui::section::Section;
@@ -167,7 +168,7 @@ impl StudioSpike {
                         // commits on Enter or blur. Sent every frame, a drag
                         // re-planned the layout at the frame rate.
                         self.room_editing = true;
-                        self.live.lock().unwrap().app.room_ratio = edit.to_ratio();
+                        speakers::preview_room_geometry(&self.host, edit.to_ratio());
                     }
                 });
             })
@@ -175,32 +176,10 @@ impl StudioSpike {
         self.settings.room_guides_visible = open;
     }
 
-    /// The five messages `applyRoomGeometryNow` sends, in its order: the
-    /// scale, the blend, the box, then the two extra depths.
+    /// Commit the form: the core sends the five messages of
+    /// `applyRoomGeometryNow`, in its order, and applies the ratio.
     fn apply_room_geometry(&mut self, edit: RoomDimensions) {
-        let ratio = edit.to_ratio();
-        {
-            let mut live = self.live.lock().unwrap();
-            live.app.room_ratio = ratio.clone();
-        }
-        self.ctl.send_json(
-            "/omniphony/control/config/layout",
-            &serde_json::json!({ "radiusM": ratio.scale_m }),
-        );
-        self.ctl.send_float(
-            "/omniphony/control/room_ratio_center_blend",
-            ratio.center_blend as f32,
-        );
-        self.ctl.send_floats3(
-            "/omniphony/control/room_ratio",
-            ratio.width as f32,
-            ratio.length as f32,
-            ratio.height as f32,
-        );
-        self.ctl
-            .send_float("/omniphony/control/room_ratio_rear", ratio.rear as f32);
-        self.ctl
-            .send_float("/omniphony/control/room_ratio_lower", ratio.lower as f32);
+        speakers::control_room_geometry(&self.host, edit.to_ratio());
         self.room_editing = false;
     }
 }

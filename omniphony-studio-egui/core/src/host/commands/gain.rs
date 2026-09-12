@@ -49,6 +49,7 @@ pub fn control_speaker_mute(state: &SharedState, id: i32, muted: i32) {
 
 pub fn control_master_gain(state: &SharedState, gain: f32) {
     let clamped = gain.max(0.0).min(2.0);
+    state.inner.lock().unwrap().app.master_gain = Some(f64::from(clamped));
     let seq = state.realtime_seq.fetch_add(1, Ordering::Relaxed) + 1;
     send_control(
         &state.osc_tx,
@@ -71,6 +72,7 @@ pub fn control_loudness(state: &SharedState, enable: i32) {
 }
 
 pub fn control_auto_gain(state: &SharedState, enable: i32) {
+    state.inner.lock().unwrap().app.auto_gain = Some(enable != 0);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -81,11 +83,13 @@ pub fn control_auto_gain(state: &SharedState, enable: i32) {
 }
 
 pub fn control_auto_gain_ceiling(state: &SharedState, db: f32) {
+    let clamped = db.clamp(-12.0, 0.0);
+    state.inner.lock().unwrap().app.auto_gain_ceiling_db = Some(f64::from(clamped));
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
             address: "/omniphony/control/auto_gain_ceiling".to_string(),
-            value: db.clamp(-12.0, 0.0),
+            value: clamped,
         },
     );
 }

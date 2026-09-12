@@ -6,6 +6,31 @@
 
 use super::OscControlMsg;
 use super::{SharedState, send_control, send_json_control};
+use crate::model::app_state::RoomRatio;
+
+/// `applyRoomGeometryNow`: the five messages the web sends, in its order — the
+/// scale, the blend, the box, then the two extra depths — with the model
+/// updated to match so the scene does not wait for the echo.
+pub fn control_room_geometry(state: &SharedState, ratio: RoomRatio) {
+    state.inner.lock().unwrap().app.room_ratio = ratio.clone();
+    control_layout_radius_m(state, ratio.scale_m as f32);
+    control_room_ratio_center_blend(state, ratio.center_blend as f32);
+    control_room_ratio(
+        state,
+        ratio.width as f32,
+        ratio.length as f32,
+        ratio.height as f32,
+    );
+    control_room_ratio_rear(state, ratio.rear as f32);
+    control_room_ratio_lower(state, ratio.lower as f32);
+}
+
+/// The scene follows the room form while it is being dragged, and the renderer
+/// waits for the release: sent every frame, a drag would re-plan the layout at
+/// the frame rate. Nothing goes on the wire here.
+pub fn preview_room_geometry(state: &SharedState, ratio: RoomRatio) {
+    state.inner.lock().unwrap().app.room_ratio = ratio;
+}
 
 pub fn control_room_ratio(state: &SharedState, width: f32, length: f32, height: f32) {
     let w = width.max(0.01);
