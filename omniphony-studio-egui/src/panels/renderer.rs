@@ -557,9 +557,6 @@ impl StudioSpike {
                     });
                 });
                 if chosen != selection && !chosen.is_empty() {
-                    self.live.lock().unwrap().app.render_backend_state.selection =
-                        Some(chosen.clone());
-                    self.mark_recompute_pending();
                     render::control_render_backend(&self.host, chosen);
                 }
             });
@@ -828,7 +825,6 @@ impl StudioSpike {
             },
         );
         if chosen != current {
-            self.live.lock().unwrap().app.audio.ramp_mode = Some(chosen.clone());
             engine::control_ramp_mode(&self.host, chosen);
         }
     }
@@ -933,8 +929,6 @@ impl StudioSpike {
             "help.distanceDiffuse.metric",
             &metric,
         ) {
-            self.live.lock().unwrap().app.distance_diffuse.metric = Some(chosen.clone());
-            self.mark_recompute_pending();
             render::control_distance_diffuse_metric(&self.host, chosen);
         }
         self.mirror_axes_rows(ui, state.mirror_axes.unwrap_or_default());
@@ -948,7 +942,6 @@ impl StudioSpike {
             0.01,
             |v| format!("{v:.2}"),
         ) {
-            self.live.lock().unwrap().app.distance_diffuse.threshold = Some(threshold as f64);
             render::control_distance_diffuse_threshold(&self.host, threshold);
         }
         let mut curve = state.curve.unwrap_or(1.0) as f32;
@@ -961,7 +954,6 @@ impl StudioSpike {
             0.05,
             |v| format!("{v:.2}"),
         ) {
-            self.live.lock().unwrap().app.distance_diffuse.curve = Some(curve as f64);
             render::control_distance_diffuse_curve(&self.host, curve);
         }
     }
@@ -1000,9 +992,7 @@ impl StudioSpike {
             );
         }
         if next != axes {
-            self.live.lock().unwrap().app.distance_diffuse.mirror_axes = Some(next);
-            self.mark_recompute_pending();
-            render::control_distance_diffuse_mirror_axes(&self.host, next.to_arg());
+            render::control_distance_diffuse_mirror_axes(&self.host, next);
         }
     }
 
@@ -1055,8 +1045,6 @@ impl StudioSpike {
             },
         );
         if chosen != value {
-            self.live.lock().unwrap().app.distance_model.value = Some(chosen.clone());
-            self.mark_recompute_pending();
             render::control_distance_model(&self.host, chosen);
         }
         // The metric only means something once a model is applied.
@@ -1068,8 +1056,6 @@ impl StudioSpike {
                 &metric,
             )
         {
-            self.live.lock().unwrap().app.distance_model.metric = Some(chosen.clone());
-            self.mark_recompute_pending();
             render::control_distance_model_metric(&self.host, chosen);
         }
     }
@@ -1097,11 +1083,6 @@ impl StudioSpike {
         (chosen != current).then_some(chosen)
     }
 
-    /// `markRecomputePending`, in the core: it owns the flag and the deadline.
-    pub(crate) fn mark_recompute_pending(&mut self) {
-        crate::host::commands::render::mark_recompute_pending(&self.host);
-    }
-
     /// Ask the core whether an unanswered recompute has run out of time, and
     /// come back when it would: the deadline must not wait for a frame that
     /// something else happens to draw.
@@ -1112,12 +1093,8 @@ impl StudioSpike {
         }
     }
 
-    /// `control_option`: optimistic local write plus the registry message.
+    /// `control_option`: the registry message, which applies the value too.
     pub(crate) fn set_option(&mut self, key: &str, value: serde_json::Value) {
-        {
-            let mut live = self.live.lock().unwrap();
-            live.set_option(key, value.clone());
-        }
         engine::control_option(&self.host, key.to_owned(), value);
     }
 }
