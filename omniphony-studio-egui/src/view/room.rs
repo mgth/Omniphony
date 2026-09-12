@@ -2,6 +2,7 @@
 //! (`scene/setup.js`, `controls/room-geometry.js`, `scene/axes.js`,
 //! `scene/gizmos.js`, `speakers.js updateRoomFaceVisibility`).
 
+use super::screen;
 use glam::{Mat4, Quat, Vec3};
 
 use crate::model::app_state::{RoomRatio, VbapCartesian};
@@ -223,10 +224,10 @@ pub fn emit_room(bounds: &RoomBounds, cam_pos: Vec3, frame: &mut FrameData) {
 }
 
 /// Axis triad (`scene/axes.js`): lines with a gap around the head, a cone on
-/// the positive end, and a label beyond it. Labels are returned for egui.
+/// the positive end, and a label beyond it. Labels are returned for the app.
 pub fn emit_axes(
     frame: &mut FrameData,
-    project: &dyn Fn(Vec3) -> Option<(egui::Pos2, f32)>,
+    project: &dyn Fn(Vec3) -> Option<(screen::ScreenPos, f32)>,
     points_per_unit: &dyn Fn(f32) -> f32,
     labels: &mut Vec<Label>,
 ) {
@@ -272,9 +273,9 @@ pub fn emit_axes(
         if let Some((p, depth)) = project(label_pos) {
             let ppu = points_per_unit(depth);
             labels.push(Label {
-                pos: p + egui::vec2(0.0, 0.03 * ppu),
+                pos: p + glam::Vec2::new(0.0, 0.03 * ppu),
                 text: label.to_owned(),
-                color: egui::Color32::from_rgb(
+                color: screen::rgb(
                     ((hex >> 16) & 0xff) as u8,
                     ((hex >> 8) & 0xff) as u8,
                     (hex & 0xff) as u8,
@@ -296,7 +297,7 @@ pub fn emit_dimension_guides(
     b: &RoomBounds,
     room: &RoomRatio,
     frame: &mut FrameData,
-    project: &dyn Fn(Vec3) -> Option<(egui::Pos2, f32)>,
+    project: &dyn Fn(Vec3) -> Option<(screen::ScreenPos, f32)>,
     points_per_unit: &dyn Fn(f32) -> f32,
     labels: &mut Vec<Label>,
 ) {
@@ -377,7 +378,7 @@ pub fn emit_dimension_guides(
             labels.push(Label {
                 pos: p,
                 text: format!("{metres:.2} m"),
-                color: egui::Color32::from_rgb(
+                color: screen::rgb(
                     ((hex >> 16) & 0xff) as u8,
                     ((hex >> 8) & 0xff) as u8,
                     (hex & 0xff) as u8,

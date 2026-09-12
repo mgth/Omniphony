@@ -11,6 +11,7 @@
 //! never hidden by the room or by a speaker in front of it, which is what
 //! makes it usable from any camera angle.
 
+use super::screen;
 use glam::{Mat4, Quat, Vec3};
 
 use crate::render::{
@@ -183,7 +184,7 @@ fn push_loop(frame: &mut FrameData, points: &[Vec3], colour: [f32; 4]) {
 pub fn emit_polar(
     p: Vec3,
     frame: &mut FrameData,
-    project: &dyn Fn(Vec3) -> Option<(egui::Pos2, f32)>,
+    project: &dyn Fn(Vec3) -> Option<(screen::ScreenPos, f32)>,
     points_per_unit: &dyn Fn(f32) -> f32,
     labels: &mut Vec<Label>,
 ) {
@@ -271,7 +272,7 @@ pub fn emit_polar(
             labels.push(Label {
                 pos,
                 text,
-                color: egui::Color32::from_rgb(
+                color: screen::rgb(
                     ((hex >> 16) & 0xff) as u8,
                     ((hex >> 8) & 0xff) as u8,
                     (hex & 0xff) as u8,
