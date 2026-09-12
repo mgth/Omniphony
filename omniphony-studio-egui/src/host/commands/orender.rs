@@ -11,7 +11,7 @@ use super::{SharedState, send_control};
 use crate::host::config::{load_config, save_config};
 use std::env;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 
 const ORENDER_SERVICE_NAME: &str = "omniphony-renderer";
@@ -51,6 +51,37 @@ fn bundled_layouts_dir(app: &HostPaths) -> Option<PathBuf> {
     app.resource_dir().ok().map(|dir| dir.join("layouts"))
 }
 
+/// The Omniphony checkout this Studio was built from: the nearest directory
+/// above the crate that holds the renderer's `omniphony-renderer/Cargo.toml`.
+///
+/// Searched for rather than counted in `parent()` steps. The Tauri host sat
+/// one level deeper (`omniphony-studio/src-tauri`), and the two steps copied
+/// from it climbed out of the checkout to `workflows/<wf>/`, where the
+/// renderer build of the checkout was never found. `None` for a binary run
+/// away from its source tree, where only the configured, bundled and `PATH`
+/// binaries apply.
+fn repo_root() -> Option<PathBuf> {
+    repo_root_above(Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn repo_root_above(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors()
+        .find(|dir| dir.join("omniphony-renderer/Cargo.toml").is_file())
+        .map(Path::to_path_buf)
+}
+
+/// The checkout's own renderer builds, release first.
+fn repo_orender_candidates(repo_root: Option<&Path>) -> Vec<PathBuf> {
+    repo_root
+        .map(|root| {
+            vec![
+                root.join("omniphony-renderer/target/release/orender"),
+                root.join("omniphony-renderer/target/debug/orender"),
+            ]
+        })
+        .unwrap_or_default()
+}
+
 fn default_orender_input_path() -> PathBuf {
     // An environment that carved out its own runtime namespace pins the pipe,
     // so two renderers never end up reading the same FIFO.
@@ -88,18 +119,7 @@ fn resolve_orender_binary(
     app: &HostPaths,
     orender_path: Option<String>,
 ) -> Result<PathBuf, String> {
-    let studio_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "failed to resolve studio directory".to_string())?
-        .to_path_buf();
-    let repo_root = studio_dir
-        .parent()
-        .ok_or_else(|| "failed to resolve Omniphony repository root".to_string())?
-        .to_path_buf();
-    let repo_orender_candidates = [
-        repo_root.join("omniphony-renderer/target/release/orender"),
-        repo_root.join("omniphony-renderer/target/debug/orender"),
-    ];
+    let repo_orender_candidates = repo_orender_candidates(repo_root().as_deref());
 
     if cfg!(debug_assertions) {
         first_existing_path(&repo_orender_candidates)
@@ -155,14 +175,6 @@ fn resolve_orender_launch_spec(
     orender_path: Option<String>,
     log_level: Option<String>,
 ) -> Result<OrenderLaunchSpec, String> {
-    let studio_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "failed to resolve studio directory".to_string())?
-        .to_path_buf();
-    let repo_root = studio_dir
-        .parent()
-        .ok_or_else(|| "failed to resolve Omniphony repository root".to_string())?
-        .to_path_buf();
     let orender_path = resolve_orender_binary(app, orender_path)?;
 
     let input_path = default_orender_input_path();
@@ -211,10 +223,12 @@ fn resolve_orender_launch_spec(
                     dir.join("legacy").join(&layout_file),
                 ]
             })
-            .chain([
-                repo_root.join("layouts").join(&layout_file),
-                repo_root.join("layouts").join("legacy").join(&layout_file),
-            ])
+            .chain(repo_root().into_iter().flat_map(|root| {
+                [
+                    root.join("layouts").join(&layout_file),
+                    root.join("layouts").join("legacy").join(&layout_file),
+                ]
+            }))
             .find(|path| path.exists());
         if let Some(layout_path) = layout_path {
             args.push("--speaker-layout".to_string());
@@ -804,4 +818,43 @@ pub fn stop_orender(state: &SharedState) {
             address: "/omniphony/control/quit".to_string(),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_repo_root_is_the_checkout_that_holds_this_crate() {
+        // Two `parent()` steps from this crate's manifest, as in the Tauri
+        // host, land one level above the checkout.
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = repo_root().expect("tests run from a source tree");
+        assert_eq!(root, crate_dir.parent().unwrap());
+        assert!(root.join("omniphony-studio-egui/Cargo.toml").is_file());
+        // However deep the search starts inside the checkout.
+        for start in [crate_dir.join("src/host/commands"), root.clone()] {
+            assert_eq!(
+                repo_root_above(&start),
+                Some(root.clone()),
+                "from {}",
+                start.display()
+            );
+        }
+    }
+
+    #[test]
+    fn the_checkouts_own_renderer_builds_are_the_ones_looked_for() {
+        // What `expected_orender_path` is compared against in a dev build.
+        let root = repo_root().expect("tests run from a source tree");
+        assert_eq!(
+            repo_orender_candidates(Some(&root)),
+            [
+                root.join("omniphony-renderer/target/release/orender"),
+                root.join("omniphony-renderer/target/debug/orender"),
+            ]
+        );
+        // Away from a source tree there is nothing to look for.
+        assert!(repo_orender_candidates(None).is_empty());
+    }
 }

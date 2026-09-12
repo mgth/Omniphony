@@ -55,12 +55,34 @@ pub fn derived_master(levels: &[Meter]) -> Option<Meter> {
     })
 }
 
-/// One meter, faded by how long it has been since it was last refreshed.
-pub fn decayed(meter: &Meter, since: Option<Duration>) -> Meter {
-    let Some(since) = since.filter(|d| *d >= DECAY_START) else {
+/// One meter after the decay pass that runs at `now`.
+///
+/// `seen` is when its source last refreshed it and `last_pass` when the
+/// previous pass ran. A pass only takes off the part of the time since the
+/// previous one that lies past the hold, so the passes add up: however the
+/// silence is cut into frames, a meter ends 45 dB per second past its hold
+/// below the value it was refreshed with, exactly as one pass covering all of
+/// it would put it (`decayMeters` steps by the time between passes too).
+/// Taking the whole time since the refresh off on every pass instead
+/// re-applies the fall already taken, and the higher the frame rate, the
+/// faster the meter drops.
+pub fn decayed(
+    meter: &Meter,
+    seen: Option<Instant>,
+    last_pass: Option<Instant>,
+    now: Instant,
+) -> Meter {
+    // A meter nothing ever refreshed has no age to fall by.
+    let Some(seen) = seen else {
         return meter.clone();
     };
-    let db = DECAY_DB_PER_SEC * (since - DECAY_START).as_secs_f64();
+    let hold_end = seen + DECAY_START;
+    // Before the first pass, nothing has been taken off since the refresh.
+    let from = last_pass.map_or(hold_end, |at| at.max(hold_end));
+    let db = DECAY_DB_PER_SEC * now.saturating_duration_since(from).as_secs_f64();
+    if db <= 0.0 {
+        return meter.clone();
+    }
     Meter {
         peak_dbfs: (meter.peak_dbfs - db).max(DECAY_FLOOR),
         rms_dbfs: (meter.rms_dbfs - db).max(DECAY_FLOOR),
@@ -75,16 +97,18 @@ impl StudioSpike {
     /// the master section and the 3D scene all read the same numbers.
     pub(crate) fn maintain_meters(&mut self) {
         let now = Instant::now();
-        let mut live = self.live.lock().unwrap();
-        let seen = live.speaker_level_seen.clone();
+        let mut guard = self.live.lock().unwrap();
+        // One reborrow, so each level map and its timestamps can be borrowed
+        // side by side instead of cloning the timestamps every frame.
+        let live = &mut *guard;
+        let last_pass = live.meter_decay_at.replace(now);
         for (id, meter) in live.app.speaker_levels.iter_mut() {
-            let since = seen.get(id).map(|at| now.duration_since(*at));
-            *meter = decayed(meter, since);
+            let seen = live.speaker_level_seen.get(id).copied();
+            *meter = decayed(meter, seen, last_pass, now);
         }
-        let seen = live.source_level_seen.clone();
         for (id, meter) in live.app.source_levels.iter_mut() {
-            let since = seen.get(id).map(|at| now.duration_since(*at));
-            *meter = decayed(meter, since);
+            let seen = live.source_level_seen.get(id).copied();
+            *meter = decayed(meter, seen, last_pass, now);
         }
         // The renderer's own master level wins whenever it has published one;
         // this only fills a silence.
@@ -134,19 +158,90 @@ mod tests {
     #[test]
     fn a_meter_holds_then_falls_and_stops_at_the_parsers_floor() {
         let m = meter(-6.0, -12.0);
+        let seen = Instant::now();
         // Inside the hold window nothing moves: a meter that fell immediately
         // would flicker on every gap between messages.
+        let held = decayed(&m, Some(seen), None, seen + Duration::from_millis(200));
+        assert_eq!(held.peak_dbfs, -6.0);
         assert_eq!(
-            decayed(&m, Some(Duration::from_millis(200))).peak_dbfs,
+            decayed(&m, None, None, seen + Duration::from_secs(5)).peak_dbfs,
             -6.0
         );
-        assert_eq!(decayed(&m, None).peak_dbfs, -6.0);
+        // A refresh restarts the hold, whenever the previous pass ran.
+        let refreshed = seen + Duration::from_secs(1);
+        let held = decayed(
+            &m,
+            Some(refreshed),
+            Some(seen),
+            refreshed + Duration::from_millis(200),
+        );
+        assert_eq!(held.peak_dbfs, -6.0);
         // One second past the hold is 45 dB down, on both readings.
-        let fallen = decayed(&m, Some(DECAY_START + Duration::from_secs(1)));
+        let fallen = decayed(
+            &m,
+            Some(seen),
+            None,
+            seen + DECAY_START + Duration::from_secs(1),
+        );
         assert!((fallen.peak_dbfs - -51.0).abs() < 1e-9);
         assert!((fallen.rms_dbfs - -57.0).abs() < 1e-9);
         // And it runs off the bottom of the scale rather than stopping on it.
-        let gone = decayed(&m, Some(DECAY_START + Duration::from_secs(10)));
+        let gone = decayed(
+            &m,
+            Some(seen),
+            None,
+            seen + DECAY_START + Duration::from_secs(10),
+        );
         assert_eq!(gone.peak_dbfs, DECAY_FLOOR);
+    }
+
+    /// Decay a meter refreshed at `seen` with one pass every `step` until `end`,
+    /// the way `maintain_meters` does once per frame.
+    fn decay_per_frame(received: &Meter, seen: Instant, step: Duration, end: Instant) -> Meter {
+        let mut m = received.clone();
+        let mut last_pass = None;
+        let mut now = seen;
+        while now < end {
+            now = (now + step).min(end);
+            m = decayed(&m, Some(seen), last_pass, now);
+            last_pass = Some(now);
+        }
+        m
+    }
+
+    #[test]
+    fn the_fall_does_not_depend_on_how_often_it_is_applied() {
+        let received = meter(-6.0, -12.0);
+        let seen = Instant::now();
+        // A fifth of a second past the hold is 9 dB at any frame rate. Taking
+        // the whole time since the refresh off on every frame made a 50 fps
+        // meter lose ~49.5 dB here.
+        let end = seen + DECAY_START + Duration::from_millis(200);
+        let at_50fps = decay_per_frame(&received, seen, Duration::from_millis(20), end);
+        assert!(
+            (at_50fps.peak_dbfs - -15.0).abs() < 1e-9,
+            "{}",
+            at_50fps.peak_dbfs
+        );
+
+        // Many small passes land where one big one does, on both readings.
+        let end = seen + Duration::from_millis(1200);
+        let once = decayed(&received, Some(seen), None, end);
+        assert!((once.peak_dbfs - (-6.0 - 45.0 * 0.95)).abs() < 1e-9);
+        for fps in [30u32, 50, 60, 144, 1000] {
+            let stepped = decay_per_frame(&received, seen, Duration::from_secs(1) / fps, end);
+            assert!(
+                (stepped.peak_dbfs - once.peak_dbfs).abs() < 1e-9,
+                "{fps} fps: peak {} dB, one pass {} dB",
+                stepped.peak_dbfs,
+                once.peak_dbfs
+            );
+            assert!(
+                (stepped.rms_dbfs - once.rms_dbfs).abs() < 1e-9,
+                "{fps} fps: rms {} dB, one pass {} dB",
+                stepped.rms_dbfs,
+                once.rms_dbfs
+            );
+        }
     }
 }

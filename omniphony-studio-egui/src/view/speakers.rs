@@ -2,8 +2,6 @@
 //! updateSpeakerColorsFromSelection`, `applySpeakerLevel`,
 //! `scene/speaker-band-bars.js bandColor`).
 
-use std::time::Instant;
-
 use glam::{Mat4, Quat, Vec3};
 
 use crate::model::app_state::RoomRatio;
@@ -14,7 +12,7 @@ use crate::render::{
 };
 
 use super::objects::hsl_to_rgb;
-use super::{ViewSettings, dbfs_to_scale, decayed_level, scene_position};
+use super::{ViewSettings, dbfs_to_scale, scene_position};
 
 /// `setSpeakersGhosted`: how much of a speaker is left when the renderer is
 /// not feeding speakers at all.
@@ -103,7 +101,6 @@ pub fn collect(
     room: &RoomRatio,
     selected_object: Option<&str>,
     selected_speaker: Option<usize>,
-    now: Instant,
 ) -> Vec<SpeakerVisual> {
     let speakers = live.selected_speakers();
     let cutoffs = crossover_cutoffs(speakers);
@@ -132,12 +129,13 @@ pub fn collect(
             let spatialize = s.spatialize != 0;
             let base_color = band_color(speaker_band_index(s.freq_low, &edges), band_count);
             let base_opacity: f32 = if spatialize { 0.65 } else { 0.3 };
+            // Already decayed on the model (`maintain_meters`), the same
+            // number the speaker list shows.
             let rms = live
                 .app
                 .speaker_levels
                 .get(&key)
-                .map(|m| decayed_level(m.rms_dbfs, live.speaker_level_seen.get(&key).copied(), now))
-                .unwrap_or(-100.0);
+                .map_or(-100.0, |m| m.rms_dbfs);
             let scale = dbfs_to_scale(rms, 0.65, 2.2) * size_scale;
             let selected = selected_speaker == Some(index);
 

@@ -68,13 +68,16 @@ pub const TRAIL_MAX_POINTS: usize = 240;
 /// The whole live model: the host's `AppState` plus the UI-only mirrors.
 pub struct Live {
     pub app: AppState,
-    /// When each object's / speaker's meter last arrived, for the display
-    /// decay (`decayMeters`).
     /// Whether the renderer has ever published a master level. Until it has,
     /// the host derives one from the speakers.
     pub master_reported: bool,
+    /// When each object's / speaker's meter last arrived, for the display
+    /// decay (`decayMeters`).
     pub source_level_seen: HashMap<String, Instant>,
     pub speaker_level_seen: HashMap<String, Instant>,
+    /// When the display decay last ran (`app.lastMeterDecayAt`): each pass
+    /// only takes off the time since the previous one.
+    pub meter_decay_at: Option<Instant>,
     pub trails: HashMap<String, Trail>,
     /// Head-tracking quaternion `[w, x, y, z]` from `/omniphony/state/head_pose`.
     pub head_pose: Option<[f32; 4]>,
@@ -357,6 +360,7 @@ impl Live {
             master_reported: false,
             source_level_seen: HashMap::new(),
             speaker_level_seen: HashMap::new(),
+            meter_decay_at: None,
             trails: HashMap::new(),
             head_pose: None,
             object_sizes: HashMap::new(),
