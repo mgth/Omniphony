@@ -123,6 +123,8 @@ pub struct Live {
     pub log: VecDeque<LogLine>,
     /// Set while a config save is in flight (`app.saveRequested`).
     pub save_requested: bool,
+    /// What the view has asked the renderer to keep sending.
+    pub interests: crate::host::services::interests::Interests,
     /// The per-speaker test signal this side started, with the safety window
     /// the renderer does not keep itself.
     pub speaker_test: crate::host::services::speaker_test::SpeakerTestRun,
@@ -384,6 +386,7 @@ impl Live {
             peak_hold_db: HashMap::new(),
             log: VecDeque::new(),
             save_requested: false,
+            interests: Default::default(),
             speaker_test: Default::default(),
             recompute_deadline: None,
             recompute_timed_out: false,

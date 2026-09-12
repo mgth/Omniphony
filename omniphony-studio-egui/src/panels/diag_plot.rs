@@ -11,21 +11,19 @@
 //! renderer restart.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::time::{Duration, Instant};
 
 use egui::{Color32, Pos2, RichText, Stroke, Ui, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::app::StudioSpike;
 use crate::host::commands::diag;
+use crate::host::services::interests;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
 const WINDOW_OPTIONS_MS: &[u64] = &[5_000, 10_000, 30_000, 60_000];
 const RATE_OPTIONS_HZ: &[u32] = &[10, 20, 50, 100, 200];
 const TIERS: &[&str] = &["base", "advanced"];
-/// One OSC int a second keeps the renderer publishing.
-const KEEPALIVE: Duration = Duration::from_secs(1);
 /// The plot's own canvas, as the web sizes it.
 const CANVAS_HEIGHT: f32 = 240.0;
 
@@ -1017,24 +1015,19 @@ impl StudioSpike {
     /// Sample the published values, hold the publication open, and keep the
     /// window repainting while the plot is on screen.
     fn maintain_diag_publication(&mut self, open: bool, ctx: &egui::Context) {
+        // The core holds the publication open and restates it; the panel only
+        // says whether its plot is on screen, and samples what arrives.
+        interests::set_diagnostics_wanted(
+            &self.host,
+            open.then_some(self.prefs.diag_plot.rate_hz as f32),
+        );
         if !open {
-            if self.diag_keepalive_at.take().is_some() {
-                diag::control_diag_publication_enabled(&self.host, 0);
+            if self.diag_showing.take().is_some() {
                 self.diag_series.clear();
             }
             return;
         }
-        let now = Instant::now();
-        if self
-            .diag_keepalive_at
-            .is_none_or(|at| now.duration_since(at) >= KEEPALIVE)
-        {
-            diag::control_diag_publication_enabled(&self.host, 1);
-            // The rate is restated with the enable: a renderer that restarted
-            // came back on its own default.
-            diag::control_diag_rate_hz(&self.host, self.prefs.diag_plot.rate_hz as f32);
-            self.diag_keepalive_at = Some(now);
-        }
+        self.diag_showing = Some(());
         // A plot only redraws when something asks it to, and telemetry arrives
         // without any input event.
         ctx.request_repaint();

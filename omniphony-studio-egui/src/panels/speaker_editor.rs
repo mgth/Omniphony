@@ -35,7 +35,6 @@ pub enum CoordMode {
 /// test the user walked away from does not keep the room busy
 /// (`speaker-test.js`).
 /// The renderer expires the idle-feed arm after a keepalive window.
-const IDLE_FEED_REARM: std::time::Duration = std::time::Duration::from_secs(120);
 
 const TEST_MODES: &[(&str, &str)] = &[
     ("toggle", "speaker.testMode.toggle"),
@@ -656,29 +655,22 @@ impl StudioSpike {
     /// The renderer's input-to-output chain is kept warm while the Test pane
     /// is open on a speaker, so a test is audible with nothing playing. The
     /// arm expires renderer-side, hence the re-arm.
-    pub(crate) fn maintain_test_idle_feed(&mut self) {
-        // Ref-counted across the two things that need it (`test-idle-feed.js`):
-        // the speaker Test pane and the object injection. Both are keyed on the
-        // editor being *open* rather than merely configured, so a restored
+    pub(crate) fn declare_idle_feed_interest(&mut self) {
+        // Two things ask for it (`test-idle-feed.js`), and both are keyed on
+        // the editor being *open* rather than merely configured, so a restored
         // preference cannot make the host talk to a live renderer at startup.
-        let wanted = (self.speaker_tab == SpeakerTab::Test && self.selection.speaker.is_some())
-            || self.object_test_editor_open();
-        let now = std::time::Instant::now();
-        match (wanted, self.idle_feed_armed_at) {
-            (true, None) => {
-                gain::control_speaker_test_idle_feed(&self.host, true);
-                self.idle_feed_armed_at = Some(now);
-            }
-            (true, Some(at)) if now.duration_since(at) >= IDLE_FEED_REARM => {
-                gain::control_speaker_test_idle_feed(&self.host, true);
-                self.idle_feed_armed_at = Some(now);
-            }
-            (false, Some(_)) => {
-                gain::control_speaker_test_idle_feed(&self.host, false);
-                self.idle_feed_armed_at = None;
-            }
-            _ => {}
-        }
+        // The core holds the arm and renews it.
+        use crate::host::services::interests::{FeedClient, set_idle_feed_wanted};
+        set_idle_feed_wanted(
+            &self.host,
+            FeedClient::SpeakerTest,
+            self.speaker_tab == SpeakerTab::Test && self.selection.speaker.is_some(),
+        );
+        set_idle_feed_wanted(
+            &self.host,
+            FeedClient::ObjectTest,
+            self.object_test_editor_open(),
+        );
     }
 
     /// "Delay tools": the two bulk tools, each asking before it runs.

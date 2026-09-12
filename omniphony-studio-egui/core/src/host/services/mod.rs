@@ -10,6 +10,7 @@
 //! time, and says when it wants to be looked at again. The clock sleeps until
 //! then, or until something nudges it, so an idle Studio wakes for nothing.
 
+pub mod interests;
 pub mod meters;
 pub mod speaker_test;
 pub mod watchdog;
@@ -45,6 +46,9 @@ pub struct Services {
     pub meters: meters::Meters,
     pub speaker_test: speaker_test::SpeakerTest,
     pub watchdog: watchdog::Watchdog,
+    pub gain_tables: interests::GainTables,
+    pub idle_feed: interests::IdleFeed,
+    pub diagnostics: interests::Diagnostics,
 }
 
 impl Services {
@@ -56,6 +60,9 @@ impl Services {
             self.meters.tick(state, now),
             self.speaker_test.tick(state, now),
             self.watchdog.tick(state, now),
+            self.gain_tables.tick(state, now),
+            self.idle_feed.tick(state, now),
+            self.diagnostics.tick(state, now),
         ] {
             changed |= tick.changed;
             next = match (next, tick.next) {
