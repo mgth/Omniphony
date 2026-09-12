@@ -11,6 +11,7 @@
 //! then, or until something nudges it, so an idle Studio wakes for nothing.
 
 pub mod interests;
+pub mod jobs;
 pub mod meters;
 pub mod overlay;
 pub mod speaker_test;

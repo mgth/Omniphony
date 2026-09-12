@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, TryRecvError};
 
 use egui::{Color32, RichText, Sense, Ui};
 
@@ -626,16 +626,11 @@ impl StudioSpike {
 
     // ── the jobs ────────────────────────────────────────────────────────────
 
-    /// Start `work` on a thread, and mark the browser busy until it answers.
+    /// Start `work` off this thread, and mark the browser busy until it
+    /// answers. The core runs it and asks for the frame that will show the
+    /// answer, which arrives while nothing on screen is moving.
     fn start_sofa_job(&mut self, work: impl FnOnce() -> Job + Send + 'static) {
-        let (tx, rx) = channel();
-        let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(work());
-            // The answer arrives while nothing on screen is moving, so ask for
-            // the frame that will show it.
-            ctx.request_repaint();
-        });
+        let rx = crate::host::services::jobs::run(&self.host, work);
         if let Some(browser) = &mut self.sofa_browser {
             browser.busy = true;
             browser.job = Some(rx);
