@@ -111,7 +111,8 @@ pub struct StudioSpike {
     /// Target latency being typed, until Apply.
     pub(crate) latency_target_edit: Option<f64>,
     /// Adaptive-controller fields edited but not yet applied.
-    pub(crate) adaptive_edits: std::collections::BTreeMap<&'static str, f64>,
+    pub(crate) adaptive_edits:
+        std::collections::BTreeMap<crate::host::commands::adaptive::Param, f64>,
     /// Config profiles: the inline name editor, its text, and the pending
     /// delete confirmation.
     pub(crate) profile_editor: Option<crate::panels::profiles::NameEditor>,

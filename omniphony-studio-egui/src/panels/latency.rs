@@ -7,11 +7,10 @@
 //! buffer and sent together, because half a controller's settings applied on
 //! their own is a worse state than the one before the edit.
 
-use std::collections::BTreeMap;
-
 use egui::{Color32, RichText, Ui};
 
 use crate::app::StudioSpike;
+use crate::host::commands::adaptive::{self, Param, Switch};
 use crate::host::commands::resampling;
 use crate::i18n::{t, tf};
 use crate::model::app_state::AppState;
@@ -31,293 +30,192 @@ pub enum Gate {
     Silence,
 }
 
-/// One numeric parameter of the adaptive controller.
-pub struct Field {
-    pub key: &'static str,
+/// How one numeric parameter is drawn. What it *is* — the model field, the
+/// default, the range — is `Param`, in the core; this is the form around it.
+pub struct Row {
+    pub param: Param,
     pub label: &'static str,
     pub help: &'static str,
     pub unit: &'static str,
-    pub min: f64,
-    pub max: f64,
     pub step: f64,
     pub decimals: usize,
     pub gate: Gate,
-    pub get: fn(&AppState) -> f64,
-    pub set: fn(&mut AppState, f64),
 }
 
 /// The three subpanels of the web form, in its order.
-pub const SUBPANELS: &[(&str, &[Field])] = &[
-    ("adaptive.globalActions", GLOBAL_FIELDS),
-    ("adaptive.resamplingController", CONTROLLER_FIELDS),
-    ("adaptive.stabilizationPhases", STABILISATION_FIELDS),
+pub const SUBPANELS: &[(&str, &[Row])] = &[
+    ("adaptive.globalActions", GLOBAL_ROWS),
+    ("adaptive.resamplingController", CONTROLLER_ROWS),
+    ("adaptive.stabilizationPhases", STABILISATION_ROWS),
 ];
 
-const GLOBAL_FIELDS: &[Field] = &[
-    Field {
-        key: "high_recover_entry_margin_ms",
+const GLOBAL_ROWS: &[Row] = &[
+    Row {
+        param: Param::HighRecoverEntryMarginMs,
         label: "adaptive.threshold",
         help: "help.adaptive.threshold",
         unit: "ms",
-        min: 1.0,
-        max: 10_000.0,
         step: 1.0,
         decimals: 0,
         gate: Gate::FarMode,
-        get: |a| {
-            a.adaptive_resampling_high_recover_entry_margin_ms
-                .unwrap_or(1000) as f64
-        },
-        set: |a, v| a.adaptive_resampling_high_recover_entry_margin_ms = Some(v.round() as i64),
     },
-    Field {
-        key: "low_recover_entry_margin_ms",
+    Row {
+        param: Param::LowRecoverEntryMarginMs,
         label: "adaptive.lowRecoverEntryMargin",
         help: "help.adaptive.lowRecoverEntryMargin",
         unit: "ms",
-        min: 0.0,
-        max: 1000.0,
         step: 0.1,
         decimals: 1,
         gate: Gate::Always,
-        get: |a| {
-            a.adaptive_resampling_low_recover_entry_margin_ms
-                .unwrap_or(18.0)
-        },
-        set: |a, v| a.adaptive_resampling_low_recover_entry_margin_ms = Some(v),
     },
-    Field {
-        key: "low_recover_exit_margin_ms",
+    Row {
+        param: Param::LowRecoverExitMarginMs,
         label: "adaptive.lowRecoverExitMargin",
         help: "help.adaptive.lowRecoverExitMargin",
         unit: "ms",
-        min: 0.0,
-        max: 1000.0,
         step: 0.1,
         decimals: 1,
         gate: Gate::Always,
-        get: |a| {
-            a.adaptive_resampling_low_recover_exit_margin_ms
-                .unwrap_or(6.0)
-        },
-        set: |a, v| a.adaptive_resampling_low_recover_exit_margin_ms = Some(v),
     },
-    Field {
-        key: "far_mode_return_fade_in_ms",
+    Row {
+        param: Param::FarModeReturnFadeInMs,
         label: "adaptive.fadeNearReturn",
         help: "help.adaptive.fadeNearReturn",
         unit: "ms",
-        min: 0.0,
-        max: 10_000.0,
         step: 1.0,
         decimals: 0,
         gate: Gate::Silence,
-        get: |a| {
-            a.adaptive_resampling_far_mode_return_fade_in_ms
-                .unwrap_or(0) as f64
-        },
-        set: |a, v| a.adaptive_resampling_far_mode_return_fade_in_ms = Some(v.round() as i64),
     },
 ];
 
-const CONTROLLER_FIELDS: &[Field] = &[
-    Field {
-        key: "update_interval_callbacks",
+const CONTROLLER_ROWS: &[Row] = &[
+    Row {
+        param: Param::UpdateIntervalCallbacks,
         label: "adaptive.updateInterval",
         help: "help.adaptive.updateInterval",
         unit: "",
-        min: 1.0,
-        max: 1000.0,
         step: 1.0,
         decimals: 0,
         gate: Gate::Adaptive,
-        get: |a| a.adaptive_resampling_update_interval_callbacks.unwrap_or(1) as f64,
-        set: |a, v| a.adaptive_resampling_update_interval_callbacks = Some(v.round() as i64),
     },
-    // Edited in parts per million, stored as a ratio.
-    Field {
-        key: "max_adjust_ppm",
+    Row {
+        param: Param::MaxAdjustPpm,
         label: "adaptive.max",
         help: "help.adaptive.max",
         unit: "ppm",
-        min: 1.0,
-        max: 100_000.0,
         step: 1.0,
         decimals: 0,
         gate: Gate::Adaptive,
-        get: |a| (a.adaptive_resampling_max_adjust.unwrap_or(0.01) * 1e6).round(),
-        set: |a, v| a.adaptive_resampling_max_adjust = Some((v / 1e6).max(1e-6)),
     },
-    Field {
-        key: "kp_near",
+    Row {
+        param: Param::KpNear,
         label: "adaptive.kpNear",
         help: "help.adaptive.kpNear",
         unit: "",
-        min: 0.01,
-        max: 100.0,
         step: 0.001,
         decimals: 3,
         gate: Gate::Adaptive,
-        get: |a| a.adaptive_resampling_kp_near.unwrap_or(1.0),
-        set: |a, v| a.adaptive_resampling_kp_near = Some(v),
     },
-    Field {
-        key: "ki",
+    Row {
+        param: Param::Ki,
         label: "adaptive.ki",
         help: "help.adaptive.ki",
         unit: "",
-        min: 0.0,
-        max: 100.0,
         step: 0.001,
         decimals: 3,
         gate: Gate::Adaptive,
-        get: |a| a.adaptive_resampling_ki.unwrap_or(1.0),
-        set: |a, v| a.adaptive_resampling_ki = Some(v),
     },
-    // Measured to be inert; kept so the panel matches the renderer's schema.
-    Field {
-        key: "integral_discharge_ratio",
+    Row {
+        param: Param::IntegralDischargeRatio,
         label: "adaptive.integralDischarge",
         help: "help.adaptive.integralDischarge",
         unit: "",
-        min: 0.0,
-        max: 1.0,
         step: 0.001,
         decimals: 3,
         gate: Gate::Adaptive,
-        get: |a| {
-            a.adaptive_resampling_integral_discharge_ratio
-                .unwrap_or(0.25)
-        },
-        set: |a, v| a.adaptive_resampling_integral_discharge_ratio = Some(v),
     },
 ];
 
-const STABILISATION_FIELDS: &[Field] = &[
-    Field {
-        key: "low_recover_settle_stable_ms",
+const STABILISATION_ROWS: &[Row] = &[
+    Row {
+        param: Param::LowRecoverSettleStableMs,
         label: "adaptive.lowRecoverSettleStable",
         help: "help.adaptive.lowRecoverSettleStable",
         unit: "ms",
-        min: 0.0,
-        max: 10_000.0,
         step: 1.0,
         decimals: 0,
         gate: Gate::Always,
-        get: |a| {
-            a.adaptive_resampling_low_recover_settle_stable_ms
-                .unwrap_or(200.0)
-        },
-        set: |a, v| a.adaptive_resampling_low_recover_settle_stable_ms = Some(v.round()),
     },
-    Field {
-        key: "low_recover_settle_margin_ms",
+    Row {
+        param: Param::LowRecoverSettleMarginMs,
         label: "adaptive.lowRecoverSettleMargin",
         help: "help.adaptive.lowRecoverSettleMargin",
         unit: "ms",
-        min: 0.0,
-        max: 1000.0,
         step: 0.1,
         decimals: 1,
         gate: Gate::Always,
-        get: |a| {
-            a.adaptive_resampling_low_recover_settle_margin_ms
-                .unwrap_or(6.0)
-        },
-        set: |a, v| a.adaptive_resampling_low_recover_settle_margin_ms = Some(v),
     },
-    Field {
-        key: "low_recover_refill_delta_alpha",
+    Row {
+        param: Param::LowRecoverRefillDeltaAlpha,
         label: "adaptive.lowRecoverRefillDeltaAlpha",
         help: "help.adaptive.lowRecoverRefillDeltaAlpha",
         unit: "",
-        min: 0.0,
-        max: 1.0,
         step: 0.01,
         decimals: 2,
         gate: Gate::Always,
-        get: |a| {
-            a.adaptive_resampling_low_recover_refill_delta_alpha
-                .unwrap_or(0.5)
-        },
-        set: |a, v| a.adaptive_resampling_low_recover_refill_delta_alpha = Some(v),
     },
-    Field {
-        key: "control_smoothing_cutoff_hz",
+    Row {
+        param: Param::ControlSmoothingCutoffHz,
         label: "adaptive.controlSmoothingCutoffHz",
         help: "help.adaptive.controlSmoothingCutoffHz",
         unit: "Hz",
-        min: 0.001,
-        max: 20.0,
         step: 0.05,
         decimals: 3,
         gate: Gate::Always,
-        get: |a| {
-            a.adaptive_resampling_control_smoothing_cutoff_hz
-                .unwrap_or(0.5)
-        },
-        set: |a, v| a.adaptive_resampling_control_smoothing_cutoff_hz = Some(v),
     },
-    Field {
-        key: "control_smoothing_order",
+    Row {
+        param: Param::ControlSmoothingOrder,
         label: "adaptive.controlSmoothingOrder",
         help: "help.adaptive.controlSmoothingOrder",
         unit: "",
-        min: 1.0,
-        max: 2.0,
         step: 1.0,
         decimals: 0,
         gate: Gate::Always,
-        get: |a| a.adaptive_resampling_control_smoothing_order.unwrap_or(1) as f64,
-        set: |a, v| a.adaptive_resampling_control_smoothing_order = Some(v.round() as u32),
     },
 ];
 
-/// The switches, which are outside the dirty cycle: each sends at once.
-const SWITCHES: &[(&str, &str, fn(&AppState) -> bool, fn(&mut AppState, bool))] = &[
+/// The switches, in the web's order: the three far-mode actions first, the
+/// three diagnostics last.
+const SWITCHES: &[(Switch, &str, &str)] = &[
     (
+        Switch::HardRecoverHigh,
         "adaptive.hardRecoverHigh",
         "help.adaptive.hardRecoverHigh",
-        |a| {
-            a.adaptive_resampling_hard_recover_high_in_far_mode
-                .unwrap_or(1)
-                != 0
-        },
-        |a, v| a.adaptive_resampling_hard_recover_high_in_far_mode = Some(u8::from(v)),
     ),
     (
+        Switch::HardRecoverLow,
         "adaptive.hardRecoverLow",
         "help.adaptive.hardRecoverLow",
-        |a| {
-            a.adaptive_resampling_hard_recover_low_in_far_mode
-                .unwrap_or(0)
-                != 0
-        },
-        |a, v| a.adaptive_resampling_hard_recover_low_in_far_mode = Some(u8::from(v)),
     ),
     (
+        Switch::SilenceFar,
         "adaptive.silenceFar",
         "help.adaptive.silenceFar",
-        |a| a.adaptive_resampling_force_silence_in_far_mode.unwrap_or(1) != 0,
-        |a, v| a.adaptive_resampling_force_silence_in_far_mode = Some(u8::from(v)),
     ),
     (
+        Switch::UsePreBridgeClock,
         "adaptive.usePreBridgeClock",
         "help.adaptive.usePreBridgeClock",
-        |a| a.adaptive_resampling_use_pre_bridge_clock.unwrap_or(0) != 0,
-        |a, v| a.adaptive_resampling_use_pre_bridge_clock = Some(u8::from(v)),
     ),
     (
+        Switch::UseOutputPacing,
         "adaptive.useOutputPacing",
         "help.adaptive.useOutputPacing",
-        |a| a.adaptive_resampling_use_output_pacing.unwrap_or(0) != 0,
-        |a, v| a.adaptive_resampling_use_output_pacing = Some(u8::from(v)),
     ),
     (
+        Switch::DisableBackpressure,
         "adaptive.disableBackpressure",
         "help.adaptive.disableBackpressure",
-        |a| a.adaptive_resampling_disable_backpressure.unwrap_or(0) != 0,
-        |a, v| a.adaptive_resampling_disable_backpressure = Some(u8::from(v)),
     ),
 ];
 
@@ -502,15 +400,9 @@ impl StudioSpike {
                     .unwrap_or(1)
                     != 0
         };
-        let silence = {
-            let live = self.live.lock().unwrap();
-            live.app
-                .adaptive_resampling_force_silence_in_far_mode
-                .unwrap_or(1)
-                != 0
-        };
+        let silence = Switch::SilenceFar.get(&self.live.lock().unwrap().app);
 
-        for (index, (caption, fields)) in SUBPANELS.iter().enumerate() {
+        for (index, (caption, rows)) in SUBPANELS.iter().enumerate() {
             ui.add_space(4.0);
             ui.label(
                 RichText::new(t(caption))
@@ -525,67 +417,40 @@ impl StudioSpike {
                 _ => &[],
             };
             for i in switches {
-                let (label, help, get, set) = &SWITCHES[*i];
-                let mut value = {
-                    let live = self.live.lock().unwrap();
-                    get(&live.app)
-                };
+                let (switch, label, help) = &SWITCHES[*i];
+                let mut value = switch.get(&self.live.lock().unwrap().app);
                 // Label, help mark and switch on one line, the switch placed
                 // first: it used to fall to a line of its own below its label.
                 if widgets::label_row_help(ui, t(label), *help, |ui| {
                     widgets::switch(ui, &mut value).changed()
                 }) {
-                    {
-                        let mut live = self.live.lock().unwrap();
-                        set(&mut live.app, value);
-                        // The far mode is not a switch of its own: it is on
-                        // when any of its three actions is armed.
-                        let derived = live
-                            .app
-                            .adaptive_resampling_hard_recover_high_in_far_mode
-                            .unwrap_or(1)
-                            != 0
-                            || live
-                                .app
-                                .adaptive_resampling_hard_recover_low_in_far_mode
-                                .unwrap_or(0)
-                                != 0
-                            || live
-                                .app
-                                .adaptive_resampling_force_silence_in_far_mode
-                                .unwrap_or(1)
-                                != 0;
-                        live.app.adaptive_resampling_enable_far_mode = Some(u8::from(derived));
-                    }
-                    crate::host::commands::audio::send_audio_document(&self.host);
+                    adaptive::set_switch(&self.host, *switch, value);
                 }
             }
-            for field in *fields {
-                let enabled = match field.gate {
+            for row in *rows {
+                let enabled = match row.gate {
                     Gate::Always => true,
                     Gate::FarMode => far_mode,
                     Gate::Adaptive => adaptive_on,
                     Gate::Silence => silence,
                 };
-                let stored = {
-                    let live = self.live.lock().unwrap();
-                    (field.get)(&live.app)
-                };
-                let mut value = *self.adaptive_edits.get(field.key).unwrap_or(&stored);
+                let stored = row.param.get(&self.live.lock().unwrap().app);
+                let mut value = *self.adaptive_edits.get(&row.param).unwrap_or(&stored);
+                let (min, max) = row.param.range();
                 ui.add_enabled_ui(enabled, |ui| {
-                    widgets::label_row_help(ui, t(field.label), field.help, |ui| {
+                    widgets::label_row_help(ui, t(row.label), row.help, |ui| {
                         let mut drag = egui::DragValue::new(&mut value)
-                            .speed(field.step)
-                            .range(field.min..=field.max)
-                            .fixed_decimals(field.decimals);
-                        if !field.unit.is_empty() {
-                            drag = drag.suffix(format!(" {}", field.unit));
+                            .speed(row.step)
+                            .range(min..=max)
+                            .fixed_decimals(row.decimals);
+                        if !row.unit.is_empty() {
+                            drag = drag.suffix(format!(" {}", row.unit));
                         }
                         if ui
                             .add_sized(egui::vec2(84.0, ui.spacing().interact_size.y), drag)
                             .changed()
                         {
-                            self.adaptive_edits.insert(field.key, value);
+                            self.adaptive_edits.insert(row.param, value);
                         }
                     });
                 });
@@ -609,32 +474,11 @@ impl StudioSpike {
         });
     }
 
-    /// Write every edited field into the model and send the batch. The exit
-    /// margin is corrected against the entry margin first: the hysteresis has
-    /// to stay well formed whatever order the two were typed in.
+    /// Send the edits as one batch: the core clamps them, keeps the hysteresis
+    /// well formed and pushes the whole controller.
     fn apply_adaptive_edits(&mut self) {
-        let edits: BTreeMap<&'static str, f64> = std::mem::take(&mut self.adaptive_edits);
-        {
-            let mut live = self.live.lock().unwrap();
-            for (_, fields) in SUBPANELS {
-                for field in *fields {
-                    if let Some(value) = edits.get(field.key) {
-                        (field.set)(&mut live.app, value.clamp(field.min, field.max));
-                    }
-                }
-            }
-            let entry = live
-                .app
-                .adaptive_resampling_low_recover_entry_margin_ms
-                .unwrap_or(18.0);
-            let exit = live
-                .app
-                .adaptive_resampling_low_recover_exit_margin_ms
-                .unwrap_or(6.0);
-            live.app.adaptive_resampling_low_recover_exit_margin_ms =
-                Some(exit.min((entry - 0.1).max(0.0)));
-        }
-        crate::host::commands::audio::send_audio_document(&self.host);
+        let edits = std::mem::take(&mut self.adaptive_edits);
+        adaptive::apply_params(&self.host, &edits);
     }
 }
 

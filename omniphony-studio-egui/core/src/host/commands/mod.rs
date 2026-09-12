@@ -5,6 +5,7 @@
 //! sync with `src-tauri` until the two share a crate.
 #![allow(dead_code)]
 
+pub mod adaptive;
 pub mod app;
 pub mod audio;
 pub mod binaural;

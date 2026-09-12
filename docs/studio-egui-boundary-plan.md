@@ -226,9 +226,11 @@ and `raw-send` stay as tripwires.
 Done when `frame-tick` and `side-effect` are at zero. `App::ui` then only draws,
 and `App::logic` only handles UI concerns such as the preferences debounce.
 
-**Landed.** `frame-tick` and `side-effect` are at zero, and `model-write` is
-down to the two writes the adaptive controller's field table makes through its
-own setters. Every tick in the table above is a service in
+**Landed, and the baseline is empty**: every rule of the ratchet stands at
+zero, `model-write` included — the adaptive controller's field table was the
+last holder, and its identity (model field, default, range, the two corrections
+the set has to satisfy) is now `commands::adaptive`, leaving the panel a table
+of labels, steps and decimals. Every tick in the table above is a service in
 `core/src/host/services/`, each taking `now` and returning
 `Tick { changed, next }`; `ServiceClock` sleeps until the earliest deadline or
 a nudge. Two wakers hang off the one egui context: the listener's — and

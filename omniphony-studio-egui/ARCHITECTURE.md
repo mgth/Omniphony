@@ -40,7 +40,11 @@ The core's side is held by the toolchain:
   `impl AppState` or `impl Live` outside the core crate. Build the view's own
   type instead (`LatencyView::of(&AppState)`).
 
-The UI's side is held by the ratchet, under these rule ids:
+The UI's side is held by the ratchet. **Every rule stands at zero**: the
+baseline is empty, so any of these is now a new violation, never a pre-existing
+one.
+
+The rule ids:
 
 | Rule | What it forbids in the UI crate |
 |---|---|
@@ -120,8 +124,9 @@ per-panel struct.
 
 `tests/architecture.rs` scans `src/` lexically — comments skipped, string
 literals looked into only by `osc-address` — and counts each rule's violations
-per file. `tests/architecture-baseline.txt` holds the counts the port started
-with. `cargo test` fails when:
+per file. `tests/architecture-baseline.txt` holds what is left; it started at
+the port's 129 addresses, 131 raw sends, 77 model writes, 7 side effects and 9
+frame ticks, and is now empty. `cargo test` fails when:
 
 - **a count grew.** Move the code as the recipes above say. Raising the
   baseline (`UPDATE_ARCHITECTURE_BASELINE=allow-increase`) is the maintainer's
