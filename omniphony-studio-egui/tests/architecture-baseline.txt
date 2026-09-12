@@ -9,7 +9,7 @@
 # Totals:
 #   osc-address      56
 #   raw-send         58
-#   model-write      51
+#   model-write      47
 #   side-effect      7
 #   frame-tick       9
 #
@@ -40,7 +40,7 @@ model-write       src/panels/host_services.rs               3
 model-write       src/panels/latency.rs                     6
 model-write       src/panels/meters.rs                      4
 model-write       src/panels/object_test.rs                 5
-model-write       src/panels/renderer.rs                    16
+model-write       src/panels/renderer.rs                    12
 model-write       src/panels/speaker_layouts.rs             1
 side-effect       src/app.rs                                1
 side-effect       src/panels/connection.rs                  2

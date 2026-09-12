@@ -123,6 +123,11 @@ pub struct Live {
     pub log: VecDeque<LogLine>,
     /// Set while a config save is in flight (`app.saveRequested`).
     pub save_requested: bool,
+    /// When an unanswered recompute becomes an error, and whether it did.
+    /// The renderer's own message lands in `app.recompute_error`; this one is
+    /// ours, so it is a flag and the view says it in the user's language.
+    pub recompute_deadline: Option<Instant>,
+    pub recompute_timed_out: bool,
     /// Decoded `state:object_test:clip` document.
     pub object_test_clip: Option<serde_json::Value>,
     /// Script files declared by each backend, and the last one fetched.
@@ -376,6 +381,8 @@ impl Live {
             peak_hold_db: HashMap::new(),
             log: VecDeque::new(),
             save_requested: false,
+            recompute_deadline: None,
+            recompute_timed_out: false,
             object_test_clip: None,
             backend_files: HashMap::new(),
             backend_file_content: None,

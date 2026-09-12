@@ -124,6 +124,40 @@ pub fn control_distance_diffuse_mirror_axes(state: &SharedState, value: String) 
     );
 }
 
+/// Eight seconds without a `vbap:recomputing` broadcast is an unanswered
+/// recompute (`markRecomputePending`).
+pub const RECOMPUTE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// `markRecomputePending`: assume the engine will recompute, and arm the
+/// deadline that complains if it never says it did. Every command that
+/// re-plans the layout calls this as it sends.
+pub fn mark_recompute_pending(state: &SharedState) {
+    let mut live = state.inner.lock().unwrap();
+    live.app.vbap_recomputing = Some(true);
+    live.app.recompute_error = None;
+    live.recompute_timed_out = false;
+    live.recompute_deadline = Some(std::time::Instant::now() + RECOMPUTE_ACK_TIMEOUT);
+}
+
+/// Raise the no-answer flag once the deadline passes, and say when to look
+/// again. `None` means nothing is pending — the shape the core's services take
+/// in phase 3 of the boundary plan.
+pub fn tick_recompute(state: &SharedState, now: std::time::Instant) -> Option<std::time::Instant> {
+    let mut live = state.inner.lock().unwrap();
+    let deadline = live.recompute_deadline?;
+    if live.app.vbap_recomputing != Some(true) {
+        live.recompute_deadline = None;
+        return None;
+    }
+    if now < deadline {
+        return Some(deadline);
+    }
+    live.app.vbap_recomputing = Some(false);
+    live.recompute_timed_out = true;
+    live.recompute_deadline = None;
+    None
+}
+
 pub fn control_hybrid_external_backend(state: &SharedState, value: String) {
     if let Some(normalized) = valid_hybrid_inner_id(&value) {
         send_control(
