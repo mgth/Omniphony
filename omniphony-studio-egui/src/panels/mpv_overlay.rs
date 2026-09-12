@@ -12,6 +12,7 @@
 //! would not apply until the user touched each control in turn.
 
 use crate::app::StudioSpike;
+use crate::host::commands::mpv_overlay as cmd;
 use crate::view::trails::TrailMode;
 use crate::view::volumes::GradientStop;
 
@@ -68,44 +69,24 @@ impl StudioSpike {
         }
         self.overlay_pushed = Some(wanted);
         self.overlay_pushed_epoch = Some(epoch);
-        self.ctl.send_int(
-            "/omniphony/control/overlay/objects",
-            i32::from(wanted.objects),
-        );
-        self.ctl.send_int(
-            "/omniphony/control/overlay/labels",
-            i32::from(wanted.labels),
-        );
-        self.ctl.send_int(
-            "/omniphony/control/overlay/heatmap_enabled",
-            i32::from(wanted.heatmap),
-        );
-        self.ctl
-            .send_int("/omniphony/control/overlay/heatmap_bands", wanted.bands);
-        self.ctl.send_int(
-            "/omniphony/control/overlay/heatmap_colormap",
-            wanted.colormap,
-        );
+        cmd::mpv_overlay_set_objects(&self.host, wanted.objects);
+        cmd::mpv_overlay_set_labels(&self.host, wanted.labels);
+        cmd::mpv_overlay_set_heatmap_enabled(&self.host, wanted.heatmap);
+        cmd::mpv_overlay_set_heatmap_bands(&self.host, wanted.bands);
+        cmd::mpv_overlay_set_heatmap_colormap(&self.host, wanted.colormap);
         // The custom stops go with the colormap that uses them: pushing the
         // colormap without them would show the overlay's own gradient under
         // Studio's choice of "Custom".
-        self.ctl.send(
-            "/omniphony/control/overlay/heatmap_custom_stops",
-            stops_flat(&self.volume_settings.object_stops)
-                .into_iter()
-                .map(rosc::OscType::Float)
-                .collect(),
+        cmd::mpv_overlay_set_heatmap_custom_stops(
+            &self.host,
+            stops_flat(&self.volume_settings.object_stops),
         );
-        self.ctl.send(
-            "/omniphony/control/overlay/trails",
-            vec![
-                rosc::OscType::Int(i32::from(wanted.trails)),
-                rosc::OscType::Int(wanted.trail_ttl_ms as i32),
-                rosc::OscType::String(
-                    if wanted.trail_line { "line" } else { "diffuse" }.to_owned(),
-                ),
-                rosc::OscType::Float(wanted.teleport_threshold),
-            ],
+        cmd::mpv_overlay_set_trail_prefs(
+            &self.host,
+            wanted.trails,
+            wanted.trail_ttl_ms as u32,
+            if wanted.trail_line { "line" } else { "diffuse" }.to_owned(),
+            wanted.teleport_threshold,
         );
     }
 
