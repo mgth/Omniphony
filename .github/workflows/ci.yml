@@ -54,9 +54,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             omniphony-renderer/target
-          # omniphony-renderer/Cargo.lock is gitignored, so key off the tracked
-          # manifests instead (cache invalidates when a dependency changes).
-          key: ${{ runner.os }}-ci-cargo-${{ hashFiles('omniphony-renderer/**/Cargo.toml') }}
+          # Keyed off the lockfile: it names the exact versions the build will
+          # use, so the cache turns over when they do and not before.
+          key: ${{ runner.os }}-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-ci-cargo-
 
       # Fast fail before the heavy build if formatting drifts.
@@ -121,15 +121,19 @@ jobs:
           done
 
       # ── Rust: build + test (strict gate) ──────────────────────────────────
-      # No --locked: omniphony-renderer/Cargo.lock is gitignored (matches
-      # release.yml, which also resolves dependencies fresh).
+      # Every cargo invocation below passes --locked. Two things follow from it:
+      # the versions built are the ones the lockfile names, so a fresh upstream
+      # release cannot change what CI compiles (a broken `jiff 0.2.36` did
+      # exactly that, on all three platforms, with no commit moving); and a
+      # lockfile left stale by a manifest edit fails the build instead of being
+      # updated in place and forgotten.
       - name: Build renderer workspace
         working-directory: omniphony-renderer
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
 
       - name: Test renderer workspace
         working-directory: omniphony-renderer
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       # Compile-only gate for the release-only perf tests. The perf-gate
       # feature is off in the normal test run and its module is compiled out
@@ -139,7 +143,7 @@ jobs:
       # PR gate (see renderer/src/spatial_renderer/perf_gate.rs module doc).
       - name: Check perf-gate feature compiles (release)
         working-directory: omniphony-renderer
-        run: cargo check --release -p renderer --features perf-gate --tests
+        run: cargo check --release -p renderer --features perf-gate --tests --locked
 
       # ── C ABI smoke test (liborender) ──────────────────────────────────────
       # Compile and run the header/link smoke test against the debug cdylib
@@ -192,7 +196,7 @@ jobs:
 
       - name: Build native Studio
         working-directory: omniphony-studio-egui
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
 
       # The core must stay drawable by any UI toolkit (ARCHITECTURE.md): no
       # egui, eframe, wgpu, winit, accesskit or rfd anywhere in its dependency
@@ -201,7 +205,7 @@ jobs:
       - name: Check the native Studio core has no UI dependency
         working-directory: omniphony-studio-egui
         run: |
-          ui=$(cargo tree -p omniphony-studio-core -e normal --prefix none --format '{p}' \
+          ui=$(cargo tree -p omniphony-studio-core -e normal --prefix none --format '{p}' --locked \
             | grep -E '^(egui|eframe|egui-wgpu|egui_wgpu|epaint|emath|ecolor|wgpu|wgpu-[a-z]+|winit|rfd|accesskit[a-z_-]*) ' \
             | sort -u || true)
           if [ -n "$ui" ]; then
@@ -214,7 +218,7 @@ jobs:
       # protocol, model writes, I/O and timers out of the UI crate.
       - name: Test native Studio
         working-directory: omniphony-studio-egui
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       # ── Studio frontend build (no Tauri bundling / no sidecar) ─────────────
       - name: Install Studio npm dependencies
@@ -257,7 +261,7 @@ jobs:
       # silent-omission class the registry exists to kill.
       - name: Check options-schema ↔ Studio contract
         run: |
-          cargo run -q -p renderer --example dump_options_schema \
+          cargo run -q -p renderer --example dump_options_schema --locked \
             --manifest-path omniphony-renderer/Cargo.toml > /tmp/options-schema.json
           node omniphony-studio/scripts/check-options-schema.mjs /tmp/options-schema.json
 
@@ -285,12 +289,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             omniphony-renderer/target
-          key: macos-ci-cargo-${{ hashFiles('omniphony-renderer/**/Cargo.toml') }}
+          key: macos-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: macos-ci-cargo-
 
       - name: Build renderer workspace (macOS arm64)
         working-directory: omniphony-renderer
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
 
   build-windows:
     # Windows x64 compile gate. On Windows cpal always pulls its ASIO backend
@@ -320,7 +324,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             omniphony-renderer/target
-          key: windows-ci-cargo-${{ hashFiles('omniphony-renderer/**/Cargo.toml') }}
+          key: windows-ci-cargo-${{ hashFiles('omniphony-renderer/Cargo.lock') }}
           restore-keys: windows-ci-cargo-
 
       - name: Setup ASIO SDK
@@ -328,4 +332,4 @@ jobs:
 
       - name: Build renderer workspace (Windows x64)
         working-directory: omniphony-renderer
-        run: cargo build --workspace
+        run: cargo build --workspace --locked

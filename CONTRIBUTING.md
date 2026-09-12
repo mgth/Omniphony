@@ -170,6 +170,10 @@ for the full contract, the wide matrix, and how deferred thresholds are tracked.
 - Target `main`.
 - Keep PRs focused; describe what changed and why.
 - Make sure the three CI commands (fmt check, build, test) pass locally first.
+- **Changed a `Cargo.toml`? Commit the regenerated `Cargo.lock` with it.** CI
+  builds with `--locked`, so it fails rather than resolving a dependency the
+  repository has not recorded. Each workspace has its own lock:
+  `omniphony-renderer/`, `omniphony-studio-egui/`, `omniphony-studio/src-tauri/`.
 
 By contributing, you agree that your contributions are licensed under the
 project's `GPL-3.0-or-later` license.
