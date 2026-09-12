@@ -102,6 +102,15 @@ pub fn control_layout_config_apply(state: &SharedState) {
     );
 }
 
+/// Send a layout document, arm the recompute and commit it: the three steps
+/// that always go together when a whole layout changes (an import applied, a
+/// speaker added).
+pub fn apply_layout_document(state: &SharedState, payload: serde_json::Value) {
+    control_layout_config(state, payload);
+    super::render::mark_recompute_pending(state);
+    control_layout_config_apply(state);
+}
+
 pub fn control_speakers_config(state: &SharedState, payload: serde_json::Value) {
     send_json_control(&state.osc_tx, "/omniphony/control/config/speakers", payload);
 }

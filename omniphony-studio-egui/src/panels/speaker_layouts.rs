@@ -12,6 +12,7 @@ use egui::Ui;
 
 use crate::app::StudioSpike;
 use crate::host::commands::HostPaths;
+use crate::host::commands::speakers;
 use crate::i18n::{t, tf};
 use crate::model::layouts::{Layout, Speaker};
 
@@ -120,11 +121,7 @@ impl StudioSpike {
             };
             replace_layout_payload(layout)
         };
-        self.ctl
-            .send_json("/omniphony/control/config/layout", &payload);
-        self.mark_recompute_pending();
-        self.ctl
-            .send_no_args("/omniphony/control/config/layout/apply");
+        speakers::apply_layout_document(&self.host, payload);
     }
 
     fn export_layout(&mut self) {
@@ -189,9 +186,9 @@ impl StudioSpike {
             freq_low: None,
             freq_high: None,
         });
-        self.ctl.send_json(
-            "/omniphony/control/config/layout",
-            &serde_json::json!({ "addSpeaker": {
+        speakers::apply_layout_document(
+            &self.host,
+            serde_json::json!({ "addSpeaker": {
                 "name": name,
                 "azimuth": base.azimuth_deg,
                 "elevation": base.elevation_deg,
@@ -200,14 +197,11 @@ impl StudioSpike {
                 "delayMs": base.delay_ms.max(0.0),
             }}),
         );
-        self.mark_recompute_pending();
-        self.ctl
-            .send_no_args("/omniphony/control/config/layout/apply");
     }
 
     /// One line into the log overlay.
     pub(crate) fn log(&self, level: &str, target: &str, message: impl Into<String>) {
-        self.live.lock().unwrap().push_log(level, target, message);
+        crate::host::commands::app::push_log(&self.host, level, target, message.into());
     }
 }
 
