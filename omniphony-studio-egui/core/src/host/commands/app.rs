@@ -22,6 +22,73 @@ pub struct AboutInfo {
     description: &'static str,
 }
 
+/// The metering switch: the model, the listener's registration and the config
+/// file, which the next launch reads. The log line is the caller's.
+pub fn set_metering_enabled(state: &SharedState, enabled: bool) {
+    state.inner.lock().unwrap().app.osc_metering_enabled = Some(u8::from(enabled));
+    send_control(&state.osc_tx, OscControlMsg::SetMeteringEnabled { enabled });
+    let mut config = load_config(&state.config_dir);
+    config.osc_metering_enabled = enabled;
+    if let Err(e) = save_config(&state.config_dir, &config) {
+        eprintln!("[osc] could not save the configuration: {e}");
+    }
+}
+
+/// The meter publish rate, applied and sent.
+pub fn set_meter_rate_hz(state: &SharedState, hz: f32) {
+    state.inner.lock().unwrap().app.meter_rate_hz = Some(hz);
+    super::diag::control_metering_rate_hz(state, hz);
+}
+
+/// Lift the watchdog's suppression, which installing the service sets: turning
+/// auto-start back on is the user saying the watchdog may try again.
+pub fn resume_watchdog(state: &SharedState) {
+    state.watchdog.lock().unwrap().suppressed = false;
+}
+
+/// Point the client at a renderer: resolve the address (a hostname needs a
+/// lookup, done here so the failure can be shown), reconnect, and say so in
+/// the log. Returns the error message when nothing resolves.
+pub fn connect_to(
+    state: &SharedState,
+    host: &str,
+    port: u16,
+) -> Result<std::net::SocketAddr, String> {
+    let target = format!("{}:{}", host.trim(), port);
+    let addr = match target.parse::<std::net::SocketAddr>() {
+        Ok(addr) => addr,
+        Err(_) => {
+            use std::net::ToSocketAddrs;
+            match target.to_socket_addrs().ok().and_then(|mut a| a.next()) {
+                Some(addr) => addr,
+                None => {
+                    let message = format!("cannot resolve {target}");
+                    state
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .push_log("error", "osc", &message);
+                    return Err(message);
+                }
+            }
+        }
+    };
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::Reconnect {
+            host: addr.ip().to_string(),
+            rx_port: addr.port(),
+            listen_port: *state.listen_port.lock().unwrap(),
+        },
+    );
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .push_log("info", "osc", format!("connecting to {addr}"));
+    Ok(addr)
+}
+
 /// One line into the log the overlay shows. The view says what happened; the
 /// model keeps it.
 pub fn push_log(state: &SharedState, level: &str, target: &str, message: String) {

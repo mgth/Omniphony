@@ -260,6 +260,43 @@ fn resolve_orender_launch_spec(
 /// other build does not implement is silently dropped, which is close to
 /// undiagnosable from the UI. Returns `None` when no binary can be resolved at
 /// all; that is a separate, already-reported condition.
+/// At quit, take a renderer this Studio launched down with it, unless the
+/// user asked to keep it: a graceful quit first, so it writes its live-state
+/// handoff, then a kill if it has not gone within two seconds. A renderer this
+/// Studio did not start (a service, mpv's own) is left alone.
+pub fn stop_launched_renderer(state: &SharedState) {
+    let mut guard = state.renderer_child.lock().unwrap();
+    let Some(child) = guard.as_mut() else {
+        return;
+    };
+    if !matches!(child.try_wait(), Ok(None)) {
+        return;
+    }
+    if crate::host::config::load_config(&state.config_dir).keep_renderer_alive_on_quit {
+        return;
+    }
+    send_control(
+        &state.osc_tx,
+        OscControlMsg::SendNoArgs {
+            address: "/omniphony/control/quit".to_string(),
+        },
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+        }
+    }
+}
+
 pub fn expected_orender_path(app: &HostPaths, orender_path: Option<String>) -> Option<String> {
     // Takes the same optional override the launch commands do, so the caller
     // gets the answer for the settings it is actually about to use.
