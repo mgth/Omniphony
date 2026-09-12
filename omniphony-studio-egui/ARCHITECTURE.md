@@ -75,10 +75,11 @@ Not machine-checked, same rule:
 1. In `core/src/host/commands/<area>.rs`, write — or first look for — a typed
    function: `pub fn set_head_radius(state: &SharedState, metres: f32)`. It
    clamps, applies the optimistic value to the model through `state.inner`,
-   and sends with `send_control`. A realtime control stamps
-   `state.realtime_seq`, the counter panels share through
-   `StudioSpike::next_realtime_seq`. About 150 such functions were ported from
-   the Tauri host and are still unused: check that the one you reuse still
+   and sends with `send_control`. Apply what it *sent*, not what it was
+   given: a value the command rejected and the panel applied anyway reads as
+   accepted. A realtime control stamps `state.realtime_seq`, the counter panels
+   share through `StudioSpike::next_realtime_seq`. Some of the functions ported
+   from the Tauri host are still unused: check that the one you reuse still
    sends what the panel sends today.
 2. The panel calls it: `crate::host::commands::binaural::set_head_radius(&self.host, v)`.
 
@@ -88,20 +89,25 @@ it.
 
 ### Something that happens over time
 
-A service in `core/src/host/` with explicit state and
-`fn tick(&mut self, now: Instant) -> Option<Instant>` returning its next
-deadline. The UI declares what it wants (`set_idle_feed_wanted(true)` when the
-pane opens) rather than the service reading UI state. Until the core has its own
-clock (plan, phase 3), `app.rs` calls the tick from `App::logic` and hands the
-returned deadline to `request_repaint_after`. That driver is a stopgap: on
-Wayland eframe runs no pass at all while the window is minimised, `logic`
-included.
+A service in `core/src/host/services/` with explicit state and
+`fn tick(&mut self, state: &SharedState, now: Instant) -> Tick`, returning
+whether the model changed and when it is next due. Add it to `Services` and it
+runs on the core's own clock thread, which sleeps until the earliest deadline
+or until something nudges it. The UI declares what it wants
+(`set_idle_feed_wanted(true)` when the pane opens, `set_overlay_prefs` every
+draw) rather than the service reading UI state.
+
+Take `now` rather than reading the clock, so the test can drive time. Never
+check a deadline from draw code: on Wayland eframe runs no pass at all while
+the window is minimised, so a timer hung off a frame stops with the frames.
 
 ### I/O, threads and processes
 
 In a host service. Anything that can block — DNS, HTTP, spawning or waiting on
 a process, large files — runs off the UI thread and reports back through state
-the UI reads, plus a repaint request.
+the UI reads, plus a repaint request. `services::jobs::run` is the general
+form: it takes a closure, runs it on a named thread, and hands back a
+`Receiver` the UI polls.
 
 ### New state
 
@@ -136,5 +142,6 @@ after the rebase; do not merge the two numbers by hand.
 
 A rule is deleted from the test once the compiler enforces it. The crate split
 retired three that way: `toolkit-in-core`, `core-imports-ui` and `model-impl`.
-A read-only model handle will do the same for `model-write`. `osc-address` and
-`raw-send` stay as cheap tripwires.
+A read-only model handle will do the same for `model-write`. A rule at zero is
+not deleted: `osc-address`, `raw-send`, `side-effect` and `frame-tick` all
+stand at zero and stay as cheap tripwires.

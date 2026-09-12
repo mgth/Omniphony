@@ -1,7 +1,6 @@
 //! The application: viewport in the central panel, fixed-extent panels
 //! floated over it, camera input, picking, labels, stats.
 
-use std::net::ToSocketAddrs;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -275,12 +274,7 @@ impl StudioSpike {
 
         let osc_stats = OscStats::new();
         let register = match &args.register {
-            Some(hp) => Some(
-                hp.as_str()
-                    .to_socket_addrs()?
-                    .next()
-                    .ok_or("--register: no address resolved")?,
-            ),
+            Some(spec) => Some(osc::resolve(spec).ok_or("--register: no address resolved")?),
             None => None,
         };
         // Two wakers over one context. Everything that can give the clock
