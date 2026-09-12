@@ -9,4 +9,5 @@ pub mod control;
 pub mod json_store;
 pub mod peak_hold;
 pub mod runtime_env;
+pub mod services;
 pub mod timing_stats;
