@@ -219,8 +219,6 @@ pub struct StudioSpike {
     /// forget the renderer it just started.
     pub(crate) host: std::sync::Arc<crate::host::commands::SharedState>,
     /// When the watchdog last ticked, and since when the link has been down.
-    pub(crate) watchdog_tick: Option<Instant>,
-    pub(crate) disconnected_since: Option<Instant>,
     /// The OS service's state, and when it was last asked for. Asking means
     /// spawning a process, so it is not a per-frame question.
     pub(crate) service_status: Option<(Instant, bool, String)>,
@@ -370,6 +368,7 @@ impl StudioSpike {
             watchdog: Default::default(),
             auto_tune_snapshot: Default::default(),
             paths: crate::host::commands::HostPaths::default(),
+            stats: osc_stats.clone(),
         });
         // The core's own clock: it sleeps until a service is due or the waker
         // nudges it, so an idle Studio wakes for nothing.
@@ -476,9 +475,7 @@ impl StudioSpike {
             synthetic_bed_ids: Vec::new(),
             synthetic_bed_signature: None,
             host,
-            watchdog_tick: None,
             service_status: None,
-            disconnected_since: Some(Instant::now()),
             config_dir,
             ctx: cc.egui_ctx.clone(),
             sofa_browser: None,
@@ -1010,7 +1007,6 @@ impl eframe::App for StudioSpike {
         self.refresh_channel_catalog();
         self.sync_virtual_bed_objects(false);
         self.maintain_mpv_overlay();
-        self.maintain_renderer_watchdog();
         self.maintain_object_test_source();
         self.maintain_test_idle_feed();
         self.check_recompute_ack(&ctx);

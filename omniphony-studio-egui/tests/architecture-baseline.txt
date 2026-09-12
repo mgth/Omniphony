@@ -9,25 +9,22 @@
 # Totals:
 #   osc-address      0
 #   raw-send         0
-#   model-write      24
-#   side-effect      5
-#   frame-tick       8
+#   model-write      21
+#   side-effect      4
+#   frame-tick       6
 #
 # rule            file                                      count
 model-write       src/panels/auto_tune.rs                   4
 model-write       src/panels/channel_editor.rs              3
-model-write       src/panels/host_services.rs               3
 model-write       src/panels/latency.rs                     2
 model-write       src/panels/object_test.rs                 3
 model-write       src/panels/renderer.rs                    9
 side-effect       src/app.rs                                1
-side-effect       src/panels/host_services.rs               1
 side-effect       src/panels/sofa_browser.rs                1
 side-effect       src/panels/updates.rs                     2
 frame-tick        src/app.rs                                1
 frame-tick        src/panels/auto_tune.rs                   1
 frame-tick        src/panels/diag_plot.rs                   1
-frame-tick        src/panels/host_services.rs               1
 frame-tick        src/panels/mpv_overlay.rs                 1
 frame-tick        src/panels/object_test.rs                 1
 frame-tick        src/panels/speaker_editor.rs              1

@@ -98,6 +98,8 @@ pub struct SharedState {
     pub watchdog: Arc<Mutex<WatchdogControl>>,
     pub auto_tune_snapshot: Arc<Mutex<Option<serde_json::Value>>>,
     pub paths: HostPaths,
+    /// What the listener has seen, for the services that judge the link.
+    pub stats: Arc<crate::osc::OscStats>,
 }
 
 /// State of the local-renderer auto-start watchdog (host `main.rs`).
@@ -204,6 +206,7 @@ pub(crate) mod tests {
             watchdog: Default::default(),
             auto_tune_snapshot: Default::default(),
             paths: HostPaths::default(),
+            stats: crate::osc::OscStats::new(),
         }
     }
 }
