@@ -13,6 +13,7 @@
 pub mod interests;
 pub mod jobs;
 pub mod meters;
+pub mod object_test;
 pub mod overlay;
 pub mod speaker_test;
 pub mod updates;
@@ -53,6 +54,7 @@ pub struct Services {
     pub idle_feed: interests::IdleFeed,
     pub diagnostics: interests::Diagnostics,
     pub overlay: overlay::MpvOverlay,
+    pub object_test: object_test::ObjectTestSource,
 }
 
 impl Services {
@@ -68,6 +70,7 @@ impl Services {
             self.idle_feed.tick(state, now),
             self.diagnostics.tick(state, now),
             self.overlay.tick(state, now),
+            self.object_test.tick(state, now),
         ] {
             changed |= tick.changed;
             next = match (next, tick.next) {

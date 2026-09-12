@@ -127,6 +127,9 @@ pub struct Live {
     pub update_check: crate::host::services::updates::UpdateCheck,
     /// What the view is showing, for the mpv overlay to be kept in step with.
     pub overlay_prefs: Option<crate::host::services::overlay::OverlayPrefs>,
+    /// Whether the injected test object belongs in the room, and where the
+    /// user put it.
+    pub object_test_marker: crate::host::services::object_test::ObjectTestMarker,
     /// What the view has asked the renderer to keep sending.
     pub interests: crate::host::services::interests::Interests,
     /// The per-speaker test signal this side started, with the safety window
@@ -392,6 +395,7 @@ impl Live {
             save_requested: false,
             update_check: Default::default(),
             overlay_prefs: None,
+            object_test_marker: Default::default(),
             interests: Default::default(),
             speaker_test: Default::default(),
             recompute_deadline: None,
