@@ -10,7 +10,7 @@
     "test:labels": "node scripts/test-channel-aliases.mjs",
     "test:math": "node scripts/test-math.mjs",
     "lint:dead": "knip",
-    "tauri:build:linux": "NO_STRIP=true tauri build",
+    "tauri:build:linux": "NO_STRIP=true tauri build -- --locked",
     "tauri": "tauri"
   },
   "dependencies": {
