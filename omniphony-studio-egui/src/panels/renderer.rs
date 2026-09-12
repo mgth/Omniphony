@@ -6,6 +6,8 @@
 use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
+use crate::host::commands::SharedState;
+use crate::host::commands::{binaural, engine, render};
 use crate::i18n::{t, tf};
 use crate::ui::help::{self, Help};
 use crate::ui::section::Section;
@@ -159,20 +161,14 @@ impl StudioSpike {
         // Not optimistic: the renderer's echo is what moves the select, so a
         // rejected change does not leave the UI lying.
         match chosen {
-            OutputMode::Speaker => self
-                .ctl
-                .send_string("/omniphony/control/output_mode", "speaker"),
+            OutputMode::Speaker => binaural::control_output_mode(&self.host, "speaker".into()),
             OutputMode::BinauralDirect => {
-                self.ctl
-                    .send_string("/omniphony/control/output_mode", "binaural");
-                self.ctl
-                    .send_string("/omniphony/control/binaural_mode", "direct");
+                binaural::control_output_mode(&self.host, "binaural".into());
+                binaural::control_binaural_mode(&self.host, "direct".into());
             }
             OutputMode::BinauralCascaded => {
-                self.ctl
-                    .send_string("/omniphony/control/output_mode", "binaural");
-                self.ctl
-                    .send_string("/omniphony/control/binaural_mode", "cascaded");
+                binaural::control_output_mode(&self.host, "binaural".into());
+                binaural::control_binaural_mode(&self.host, "cascaded".into());
             }
         }
     }
@@ -269,15 +265,7 @@ impl StudioSpike {
                         })
                 });
                 if chosen != selection && allowed.contains(&chosen) {
-                    self.live
-                        .lock()
-                        .unwrap()
-                        .app
-                        .render_evaluation_mode_state
-                        .selection = Some(chosen.clone());
-                    self.mark_recompute_pending();
-                    self.ctl
-                        .send_string("/omniphony/control/render_evaluation_mode", &chosen);
+                    render::control_render_evaluation_mode(&self.host, chosen);
                 }
             },
         );
@@ -307,12 +295,34 @@ impl StudioSpike {
             ui.horizontal(|ui| {
                 // Steps are the room extent over the count: 2 units across X
                 // and Y, 1 unit up.
-                self.grid_field(ui, "X", cartesian.x_size, 1, |v| ("cartesian/x_size", v));
-                self.grid_field(ui, "Y", cartesian.y_size, 1, |v| ("cartesian/y_size", v));
-                self.grid_field(ui, "Z+", cartesian.z_size, 1, |v| ("cartesian/z_size", v));
-                self.grid_field(ui, "Z-", cartesian.z_neg_size, 0, |v| {
-                    ("cartesian/z_neg_size", v)
-                });
+                self.grid_field(
+                    ui,
+                    "X",
+                    cartesian.x_size,
+                    1,
+                    render::control_render_evaluation_cartesian_x_size,
+                );
+                self.grid_field(
+                    ui,
+                    "Y",
+                    cartesian.y_size,
+                    1,
+                    render::control_render_evaluation_cartesian_y_size,
+                );
+                self.grid_field(
+                    ui,
+                    "Z+",
+                    cartesian.z_size,
+                    1,
+                    render::control_render_evaluation_cartesian_z_size,
+                );
+                self.grid_field(
+                    ui,
+                    "Z-",
+                    cartesian.z_neg_size,
+                    0,
+                    render::control_render_evaluation_cartesian_z_neg_size,
+                );
             });
             ui.horizontal(|ui| {
                 step_label(
@@ -354,15 +364,27 @@ impl StudioSpike {
             );
             help::card(ui, "help.eval.polarGrid");
             ui.horizontal(|ui| {
-                self.grid_field(ui, "az", polar.azimuth_resolution, 1, |v| {
-                    ("polar/azimuth_resolution", v)
-                });
-                self.grid_field(ui, "el", polar.elevation_resolution, 1, |v| {
-                    ("polar/elevation_resolution", v)
-                });
-                self.grid_field(ui, "d", polar.distance_res, 1, |v| {
-                    ("polar/distance_res", v)
-                });
+                self.grid_field(
+                    ui,
+                    "az",
+                    polar.azimuth_resolution,
+                    1,
+                    render::control_render_evaluation_polar_azimuth_resolution,
+                );
+                self.grid_field(
+                    ui,
+                    "el",
+                    polar.elevation_resolution,
+                    1,
+                    render::control_render_evaluation_polar_elevation_resolution,
+                );
+                self.grid_field(
+                    ui,
+                    "d",
+                    polar.distance_res,
+                    1,
+                    render::control_render_evaluation_polar_distance_res,
+                );
             });
             ui.horizontal(|ui| {
                 step_label(ui, polar.azimuth_resolution.map(|n| 360.0 / n as f64), "°");
@@ -399,13 +421,7 @@ impl StudioSpike {
                     )
                     .changed()
                 {
-                    self.live.lock().unwrap().app.vbap_polar.distance_max =
-                        Some(distance_max as f64);
-                    self.mark_recompute_pending();
-                    self.ctl.send_float(
-                        "/omniphony/control/render_evaluation/polar/distance_max",
-                        distance_max.max(0.01),
-                    );
+                    render::control_render_evaluation_polar_distance_max(&self.host, distance_max);
                 }
             });
         }
@@ -418,17 +434,7 @@ impl StudioSpike {
                 "help.vbap.positionInterpolation",
                 &mut on,
             ) {
-                self.live
-                    .lock()
-                    .unwrap()
-                    .app
-                    .vbap_polar
-                    .position_interpolation = Some(on);
-                self.mark_recompute_pending();
-                self.ctl.send_int(
-                    "/omniphony/control/render_evaluation/position_interpolation",
-                    i32::from(on),
-                );
+                render::control_render_evaluation_position_interpolation(&self.host, i32::from(on));
             }
         }
 
@@ -445,10 +451,8 @@ impl StudioSpike {
                         .add(egui::DragValue::new(&mut value).range(0..=u32::MAX))
                         .changed()
                     {
-                        self.live.lock().unwrap().app.object_size_intervals = value;
-                        self.mark_recompute_pending();
-                        self.ctl.send_int(
-                            "/omniphony/control/render_evaluation/object_size_intervals",
+                        render::control_render_evaluation_object_size_intervals(
+                            &self.host,
                             value as i32,
                         );
                     }
@@ -465,7 +469,7 @@ impl StudioSpike {
         placeholder: &str,
         current: Option<u32>,
         floor: u32,
-        address: impl Fn(u32) -> (&'static str, u32),
+        send: fn(&SharedState, i32),
     ) {
         let mut value = current.unwrap_or(floor);
         ui.vertical(|ui| {
@@ -481,12 +485,7 @@ impl StudioSpike {
                 )
                 .changed()
             {
-                let (suffix, value) = address(value.max(floor));
-                self.mark_recompute_pending();
-                self.ctl.send_int(
-                    &format!("/omniphony/control/render_evaluation/{suffix}"),
-                    value as i32,
-                );
+                send(&self.host, value.max(floor) as i32);
             }
         });
     }
@@ -561,8 +560,7 @@ impl StudioSpike {
                     self.live.lock().unwrap().app.render_backend_state.selection =
                         Some(chosen.clone());
                     self.mark_recompute_pending();
-                    self.ctl
-                        .send_string("/omniphony/control/render_backend", &chosen);
+                    render::control_render_backend(&self.host, chosen);
                 }
             });
         });
@@ -784,20 +782,7 @@ impl StudioSpike {
 
     /// `sendBackendParam`: no optimistic write, the renderer echoes the value.
     fn send_backend_param(&mut self, backend: &str, key: &str, value: serde_json::Value) {
-        let arg = match value {
-            serde_json::Value::Bool(b) => rosc::OscType::Bool(b),
-            serde_json::Value::String(s) => rosc::OscType::String(s),
-            serde_json::Value::Number(n) => rosc::OscType::Float(n.as_f64().unwrap_or(0.0) as f32),
-            other => rosc::OscType::String(other.to_string()),
-        };
-        self.ctl.send(
-            "/omniphony/control/backend/param",
-            vec![
-                rosc::OscType::String(backend.to_owned()),
-                rosc::OscType::String(key.to_owned()),
-                arg,
-            ],
-        );
+        render::control_backend_param(&self.host, key.to_owned(), value, Some(backend.to_owned()));
     }
 
     // ── ramp, crossover, distance ────────────────────────────────────────
@@ -844,8 +829,7 @@ impl StudioSpike {
         );
         if chosen != current {
             self.live.lock().unwrap().app.audio.ramp_mode = Some(chosen.clone());
-            self.ctl
-                .send_string("/omniphony/control/ramp_mode", &chosen);
+            engine::control_ramp_mode(&self.host, chosen);
         }
     }
 
@@ -934,11 +918,7 @@ impl StudioSpike {
             "distance",
             |ui| {
                 if widgets::switch(ui, &mut enabled).changed() {
-                    self.live.lock().unwrap().app.distance_diffuse.enabled = Some(enabled);
-                    self.ctl.send_int(
-                        "/omniphony/control/distance_diffuse/enabled",
-                        i32::from(enabled),
-                    );
+                    render::control_distance_diffuse_enabled(&self.host, i32::from(enabled));
                 }
             },
         );
@@ -955,8 +935,7 @@ impl StudioSpike {
         ) {
             self.live.lock().unwrap().app.distance_diffuse.metric = Some(chosen.clone());
             self.mark_recompute_pending();
-            self.ctl
-                .send_string("/omniphony/control/distance_diffuse/metric", &chosen);
+            render::control_distance_diffuse_metric(&self.host, chosen);
         }
         self.mirror_axes_rows(ui, state.mirror_axes.unwrap_or_default());
         let mut threshold = state.threshold.unwrap_or(1.0) as f32;
@@ -970,10 +949,7 @@ impl StudioSpike {
             |v| format!("{v:.2}"),
         ) {
             self.live.lock().unwrap().app.distance_diffuse.threshold = Some(threshold as f64);
-            self.ctl.send_float(
-                "/omniphony/control/distance_diffuse/threshold",
-                threshold.max(0.01),
-            );
+            render::control_distance_diffuse_threshold(&self.host, threshold);
         }
         let mut curve = state.curve.unwrap_or(1.0) as f32;
         if widgets::value_slider_help(
@@ -986,8 +962,7 @@ impl StudioSpike {
             |v| format!("{v:.2}"),
         ) {
             self.live.lock().unwrap().app.distance_diffuse.curve = Some(curve as f64);
-            self.ctl
-                .send_float("/omniphony/control/distance_diffuse/curve", curve.max(0.0));
+            render::control_distance_diffuse_curve(&self.host, curve);
         }
     }
 
@@ -1027,10 +1002,7 @@ impl StudioSpike {
         if next != axes {
             self.live.lock().unwrap().app.distance_diffuse.mirror_axes = Some(next);
             self.mark_recompute_pending();
-            self.ctl.send_string(
-                "/omniphony/control/distance_diffuse/mirror_axes",
-                &next.to_arg(),
-            );
+            render::control_distance_diffuse_mirror_axes(&self.host, next.to_arg());
         }
     }
 
@@ -1085,8 +1057,7 @@ impl StudioSpike {
         if chosen != value {
             self.live.lock().unwrap().app.distance_model.value = Some(chosen.clone());
             self.mark_recompute_pending();
-            self.ctl
-                .send_string("/omniphony/control/distance_model", &chosen);
+            render::control_distance_model(&self.host, chosen);
         }
         // The metric only means something once a model is applied.
         if value != "none"
@@ -1099,8 +1070,7 @@ impl StudioSpike {
         {
             self.live.lock().unwrap().app.distance_model.metric = Some(chosen.clone());
             self.mark_recompute_pending();
-            self.ctl
-                .send_string("/omniphony/control/distance_model_metric", &chosen);
+            render::control_distance_model_metric(&self.host, chosen);
         }
     }
 
@@ -1148,17 +1118,7 @@ impl StudioSpike {
             let mut live = self.live.lock().unwrap();
             live.set_option(key, value.clone());
         }
-        let encoded = match &value {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        self.ctl.send(
-            "/omniphony/control/option",
-            vec![
-                rosc::OscType::String(key.to_owned()),
-                rosc::OscType::String(encoded),
-            ],
-        );
+        engine::control_option(&self.host, key.to_owned(), value);
     }
 }
 

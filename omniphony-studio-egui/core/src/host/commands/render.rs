@@ -287,6 +287,8 @@ pub fn control_hybrid_curve(state: &SharedState, points: Vec<[f32; 2]>) {
 }
 
 pub fn control_render_evaluation_object_size_intervals(state: &SharedState, value: i32) {
+    state.inner.lock().unwrap().app.object_size_intervals = value.max(0) as u32;
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -297,6 +299,7 @@ pub fn control_render_evaluation_object_size_intervals(state: &SharedState, valu
 }
 
 pub fn control_render_evaluation_cartesian_x_size(state: &SharedState, value: i32) {
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -307,6 +310,7 @@ pub fn control_render_evaluation_cartesian_x_size(state: &SharedState, value: i3
 }
 
 pub fn control_render_evaluation_cartesian_y_size(state: &SharedState, value: i32) {
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -317,6 +321,7 @@ pub fn control_render_evaluation_cartesian_y_size(state: &SharedState, value: i3
 }
 
 pub fn control_render_evaluation_cartesian_z_size(state: &SharedState, value: i32) {
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -327,6 +332,7 @@ pub fn control_render_evaluation_cartesian_z_size(state: &SharedState, value: i3
 }
 
 pub fn control_render_evaluation_cartesian_z_neg_size(state: &SharedState, value: i32) {
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -459,6 +465,14 @@ pub fn control_render_evaluation_mode(state: &SharedState, value: String) {
     ) {
         return;
     }
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .render_evaluation_mode_state
+        .selection = Some(normalized.clone());
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
@@ -469,6 +483,7 @@ pub fn control_render_evaluation_mode(state: &SharedState, value: String) {
 }
 
 pub fn control_render_evaluation_polar_azimuth_resolution(state: &SharedState, value: i32) {
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -479,6 +494,7 @@ pub fn control_render_evaluation_polar_azimuth_resolution(state: &SharedState, v
 }
 
 pub fn control_render_evaluation_polar_elevation_resolution(state: &SharedState, value: i32) {
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -489,6 +505,7 @@ pub fn control_render_evaluation_polar_elevation_resolution(state: &SharedState,
 }
 
 pub fn control_render_evaluation_polar_distance_res(state: &SharedState, value: i32) {
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -499,6 +516,8 @@ pub fn control_render_evaluation_polar_distance_res(state: &SharedState, value: 
 }
 
 pub fn control_render_evaluation_polar_distance_max(state: &SharedState, value: f32) {
+    state.inner.lock().unwrap().app.vbap_polar.distance_max = Some(f64::from(value.max(0.01)));
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
@@ -509,6 +528,14 @@ pub fn control_render_evaluation_polar_distance_max(state: &SharedState, value: 
 }
 
 pub fn control_render_evaluation_position_interpolation(state: &SharedState, enable: i32) {
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .vbap_polar
+        .position_interpolation = Some(enable != 0);
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -519,6 +546,7 @@ pub fn control_render_evaluation_position_interpolation(state: &SharedState, ena
 }
 
 pub fn control_distance_diffuse_enabled(state: &SharedState, enable: i32) {
+    state.inner.lock().unwrap().app.distance_diffuse.enabled = Some(enable != 0);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
