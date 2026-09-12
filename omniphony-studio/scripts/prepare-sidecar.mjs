@@ -21,7 +21,9 @@ const sidecarName = `orender-${targetTriple}${ext}`;
 const sidecarPath = join(binariesDir, sidecarName);
 const sourcePath = join(rendererDir, 'target', 'release', `orender${ext}`);
 
-execFileSync('cargo', ['build', '--release'], {
+// --locked, like CI: a release artefact must be built from the versions the
+// lockfile names, not from whatever the registry offers on the day.
+execFileSync('cargo', ['build', '--release', '--locked'], {
   cwd: rendererDir,
   stdio: 'inherit',
   env: {
@@ -49,7 +51,7 @@ console.log(`Prepared sidecar: ${sidecarPath}`);
 // the CLI sidecar above. The Linux artifact is named after its soname
 // (liborender.so.<ABI major>, read from the generated header) to match what
 // the loader probes.
-execFileSync('cargo', ['build', '--release', '-p', 'orender_ffi'], {
+execFileSync('cargo', ['build', '--release', '--locked', '-p', 'orender_ffi'], {
   cwd: rendererDir,
   stdio: 'inherit'
 });
