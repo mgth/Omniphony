@@ -864,7 +864,7 @@ impl StudioSpike {
         let room = self.live.lock().unwrap().app.room_ratio.clone();
         let distance = distance.max(0.01);
         let adm = polar_to_adm(&room, azimuth, elevation, distance);
-        let mut live = self.live.lock().unwrap();
+        let live = self.live.lock().unwrap();
         let mut channels = effective_channels(&self.channel_catalog, &live.app);
         let Some(target) = channels.iter_mut().find(|c| c.name == name) else {
             return;
@@ -901,7 +901,7 @@ impl StudioSpike {
     /// back in the snapshot.
     fn commit_channel(&mut self, name: &str, mutate: impl FnOnce(&mut Channel)) {
         let payload = {
-            let mut live = self.live.lock().unwrap();
+            let live = self.live.lock().unwrap();
             let mut channels = effective_channels(&self.channel_catalog, &live.app);
             let Some(target) = channels.iter_mut().find(|c| c.name == name) else {
                 return;
@@ -921,7 +921,7 @@ impl StudioSpike {
     /// keeps the editor, the 3D view and the audio in agreement.
     pub(crate) fn reset_virtual_bed(&mut self) {
         let payload = {
-            let mut live = self.live.lock().unwrap();
+            let live = self.live.lock().unwrap();
             let room = live.app.room_ratio.clone();
             let channels: Vec<Channel> = effective_channels(&self.channel_catalog, &live.app)
                 .iter()

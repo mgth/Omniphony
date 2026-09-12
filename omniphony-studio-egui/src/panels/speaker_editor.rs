@@ -867,10 +867,6 @@ impl StudioSpike {
         self.selection.speaker = Some(to);
     }
 
-    fn apply_layout(&mut self) {
-        speakers::control_speakers_apply(&self.host);
-    }
-
     /// `control_speaker_gain`: realtime, stamped so the renderer can drop a
     /// stale update.
     pub(crate) fn set_speaker_gain(&mut self, index: usize, gain: f32) {

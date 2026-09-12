@@ -1,7 +1,10 @@
-//! Control layer: the UI's handle on the renderer. Each method mirrors one
-//! Tauri command of `src-tauri/src/commands/*.rs` and sends the same OSC
-//! message through the listener's socket; the panels call these instead of
-//! `invoke(...)`.
+//! Raw control layer: one message, one call. It was the UI's handle on the
+//! renderer during the port; phase 2 of the boundary plan replaced every use
+//! of it with a typed command in `host::commands`, so nothing outside this
+//! crate sends by address any more.
+//!
+//! Kept `pub(crate)` for the commands that still find it convenient, and as
+//! the place where a new raw send would have to be justified.
 
 #![allow(dead_code)] // one method per host command, ported ahead of its panel
 use std::net::SocketAddr;
@@ -11,7 +14,7 @@ use rosc::OscType;
 use crate::osc::{Control, ControlTx};
 
 #[derive(Clone)]
-pub struct Ctl {
+pub(crate) struct Ctl {
     tx: ControlTx,
 }
 
