@@ -1,11 +1,14 @@
-//! wgpu scene renderer hosted by an egui paint callback.
+//! wgpu scene renderer, hosted by whatever owns the surface.
 //!
-//! Pattern (the same one Rerun uses): egui's own render pass has no depth
-//! attachment, so the scene is rendered in `prepare` into an offscreen
-//! MSAA colour + depth target sized to the widget in physical pixels, resolved
-//! into a sampled texture, and composited in `paint` with a full-screen
-//! triangle inside egui's pass. No CPU copies anywhere; the device and queue
-//! are egui's.
+//! Pattern (the same one Rerun uses): a UI's own render pass typically has no
+//! depth attachment, so the scene is rendered in [`SceneRenderer::prepare`]
+//! into an offscreen MSAA colour + depth target sized to the widget in physical
+//! pixels, resolved into a sampled texture, and composited in
+//! [`SceneRenderer::paint`] with a full-screen triangle inside the host's pass.
+//! No CPU copies anywhere; the device and queue are the host's.
+//!
+//! Nothing here names a toolkit. The Studio's adapter is `src/ui/scene.rs`,
+//! about thirty lines of it; another host implements the same two calls.
 //!
 //! Draw order inside the scene pass follows three.js: depth-tested lines,
 //! opaque meshes, then every blended element sorted by render order and
@@ -16,15 +19,16 @@ pub mod camera;
 pub mod head;
 pub mod volume;
 
-use std::sync::Arc;
-
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
 use volume::{VolumeDraw, VolumeRenderer};
 
-const MSAA_SAMPLES: u32 = 4;
+/// What the Studio asks for, and a sensible default for any host: the scene is
+/// thin lines and small sprites, where four samples is the difference between a
+/// speaker ring and a staircase.
+pub const DEFAULT_SAMPLES: u32 = 4;
 const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -310,8 +314,6 @@ impl FrameData {
     }
 }
 
-pub struct ViewportCallback(pub Arc<FrameData>);
-
 struct Targets {
     size: [u32; 2],
     msaa_view: wgpu::TextureView,
@@ -399,17 +401,34 @@ pub struct SceneRenderer {
     sprite_additive_first: u32,
     sprite_additive_count: u32,
     point_count: u32,
+    /// MSAA count of the offscreen scene pass, as the host asked for it.
+    samples: u32,
     targets: Option<Targets>,
 }
 
 impl SceneRenderer {
-    /// `head` is the loaded head model, or `None` to draw nothing for the
-    /// `Head` kind (the view falls back to a placeholder sphere).
+    /// `target_format` is the format of the surface the host will have this
+    /// paint into, `samples` the MSAA count for the offscreen scene pass
+    /// ([`DEFAULT_SAMPLES`] unless the host has a reason), and `head` the
+    /// loaded head model, or `None` to draw nothing for the `Head` kind (the
+    /// view falls back to a placeholder sphere).
+    ///
+    /// The target must be a non-sRGB format. The scene shades in linear light
+    /// and encodes to sRGB itself, because it shares a target with a UI that
+    /// writes gamma-space colours into a `*Unorm` surface; handing it an
+    /// `*Srgb` target would encode twice and wash the scene out. Making the
+    /// encode conditional is a shader change, not a constructor argument —
+    /// the trail points deliberately skip the OETF, and that case inverts.
     pub fn new(
         device: &wgpu::Device,
-        egui_target_format: wgpu::TextureFormat,
+        target_format: wgpu::TextureFormat,
+        samples: u32,
         head: Option<(Vec<MeshVertex>, Vec<u32>)>,
     ) -> Self {
+        debug_assert!(
+            !format!("{target_format:?}").ends_with("Srgb"),
+            "the scene encodes sRGB itself; an sRGB target would encode twice"
+        );
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("studio scene shaders"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders.wgsl").into()),
@@ -460,7 +479,7 @@ impl SceneRenderer {
             bias: wgpu::DepthBiasState::default(),
         };
         let msaa = wgpu::MultisampleState {
-            count: MSAA_SAMPLES,
+            count: samples,
             mask: !0,
             alpha_to_coverage_enabled: false,
         };
@@ -747,7 +766,7 @@ impl SceneRenderer {
                 entry_point: Some("fs_blit"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: egui_target_format,
+                    format: target_format,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -816,10 +835,11 @@ impl SceneRenderer {
             },
             SCENE_FORMAT,
             DEPTH_FORMAT,
-            MSAA_SAMPLES,
+            samples,
         );
 
         Self {
+            samples,
             mesh_opaque,
             mesh_blend_depth,
             mesh_blend_nodepth,
@@ -891,7 +911,7 @@ impl SceneRenderer {
         };
         let msaa = tex(
             "scene msaa",
-            MSAA_SAMPLES,
+            self.samples,
             SCENE_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
@@ -903,7 +923,7 @@ impl SceneRenderer {
         );
         let depth = tex(
             "scene depth",
-            MSAA_SAMPLES,
+            self.samples,
             DEPTH_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
@@ -1236,52 +1256,36 @@ impl SceneRenderer {
     }
 }
 
-impl egui_wgpu::CallbackTrait for ViewportCallback {
-    fn prepare(
-        &self,
+impl SceneRenderer {
+    /// Record this frame's scene. The host submits what comes back before the
+    /// pass it will call [`SceneRenderer::paint`] on.
+    pub fn prepare(
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _screen: &egui_wgpu::ScreenDescriptor,
-        _egui_encoder: &mut wgpu::CommandEncoder,
-        resources: &mut egui_wgpu::CallbackResources,
+        frame: &FrameData,
     ) -> Vec<wgpu::CommandBuffer> {
-        let Some(renderer) = resources.get_mut::<SceneRenderer>() else {
-            return Vec::new();
-        };
-        let frame = &*self.0;
-        renderer.ensure_targets(device, frame.size_px);
-        renderer.upload(device, queue, frame);
+        self.ensure_targets(device, frame.size_px);
+        self.upload(device, queue, frame);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("studio scene"),
         });
-        renderer.encode_scene(&mut encoder, frame);
-        renderer.encode_blur(&mut encoder, frame);
+        self.encode_scene(&mut encoder, frame);
+        self.encode_blur(&mut encoder, frame);
         vec![encoder.finish()]
     }
 
-    fn paint(
-        &self,
-        info: egui::PaintCallbackInfo,
-        pass: &mut wgpu::RenderPass<'static>,
-        resources: &egui_wgpu::CallbackResources,
-    ) {
-        let Some(renderer) = resources.get::<SceneRenderer>() else {
-            return;
-        };
-        let Some(t) = &renderer.targets else { return };
-        let vp = info.viewport_in_pixels();
-        if vp.width_px <= 0 || vp.height_px <= 0 {
+    /// Blit the resolved scene into the host's pass, over `viewport` — left,
+    /// top, width and height in physical pixels. Does nothing before the first
+    /// [`SceneRenderer::prepare`], or for an empty viewport.
+    pub fn paint(&self, pass: &mut wgpu::RenderPass<'static>, viewport: [f32; 4]) {
+        let Some(t) = &self.targets else { return };
+        let [left, top, width, height] = viewport;
+        if width <= 0.0 || height <= 0.0 {
             return;
         }
-        pass.set_viewport(
-            vp.left_px as f32,
-            vp.top_px as f32,
-            vp.width_px as f32,
-            vp.height_px as f32,
-            0.0,
-            1.0,
-        );
-        pass.set_pipeline(&renderer.blit_pipeline);
+        pass.set_viewport(left, top, width, height, 0.0, 1.0);
+        pass.set_pipeline(&self.blit_pipeline);
         pass.set_bind_group(0, &t.blit_bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
@@ -1427,7 +1431,7 @@ pub fn hex_linear(hex: u32) -> [f32; 3] {
     )
 }
 
-/// Linear RGB back to the sRGB bytes egui paints with, for the few places a
+/// Linear RGB back to the sRGB bytes an overlay paints with, for the few places a
 /// scene colour has to be handed to the overlay.
 pub fn linear_to_srgb_u8(rgb: [f32; 3]) -> [u8; 3] {
     let f = |v: f32| (v.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as u8;

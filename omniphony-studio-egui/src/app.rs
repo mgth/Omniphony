@@ -14,11 +14,11 @@ use crate::model::layouts::load_layouts;
 use crate::osc::dispatch::Live;
 use crate::osc::{self, OscStats, SharedLive};
 use crate::prefs::Prefs;
+use crate::render::SceneRenderer;
 use crate::render::camera::OrbitCamera;
-use crate::render::{SceneRenderer, ViewportCallback};
 use crate::stats::{FrameStats, ProcStats};
 use crate::ui::layout::{OverlayLayout, Side};
-use crate::ui::scene::{paint_shape, to_color32, to_pos2, to_screen_rect};
+use crate::ui::scene::{ViewportCallback, paint_shape, to_color32, to_pos2, to_screen_rect};
 use crate::view::{self, Selection, ViewSettings, VolumeSettings, VolumeState};
 
 /// How long after a selection change the lists keep the selected row in view,
@@ -239,7 +239,12 @@ impl StudioSpike {
         rs.renderer
             .write()
             .callback_resources
-            .insert(SceneRenderer::new(&rs.device, rs.target_format, head));
+            .insert(SceneRenderer::new(
+                &rs.device,
+                rs.target_format,
+                crate::render::DEFAULT_SAMPLES,
+                head,
+            ));
 
         let layouts = load_layouts(&args.layouts_dir);
         log::info!(

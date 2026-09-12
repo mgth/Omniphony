@@ -29,8 +29,9 @@ migration should carry them over rather than rewrite them. `view/` names no
 egui type at all — it works in `view::screen` (a `ScreenPos`, a `ScreenRect`,
 unmultiplied `[u8; 4]`, and a `Shape` for the overlay it composes but does not
 paint), and `src/ui/scene.rs` is the only file that knows both vocabularies.
-The `toolkit-in-scene` rule holds that side. `render/` is wgpu plus the
-`ViewportCallback` adapter, which the plan's phase 4 moves out too.
+`render/` names no toolkit either: `SceneRenderer::new(device, target_format,
+samples, head)` with a public `prepare` and `paint`, which is the whole of what
+a host has to call. The `toolkit-in-scene` rule holds both directories.
 
 ## Rules
 
@@ -57,7 +58,7 @@ The rule ids:
 | `model-write` | writing the model or host state: `live.app.x = …`, `live.app.sources.insert(…)`, `live.push_log(…)`, `….lock().unwrap().field = …` |
 | `side-effect` | spawning a thread or process, `thread::sleep`, file or network I/O (`fs::…`, `UdpSocket`, `to_socket_addrs`, `ureq`) |
 | `frame-tick` | defining a `maintain_*` function |
-| `toolkit-in-scene` | naming an egui type inside `view/` |
+| `toolkit-in-scene` | naming an egui type inside `view/` or `render/` |
 
 Two exemptions are written into the test with their reason: `main.rs` reads the
 CJK font and `render/head.rs` reads the head mesh, once, before the first

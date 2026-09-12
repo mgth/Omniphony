@@ -5,7 +5,54 @@
 //! egui, and the only place in the app that knows both vocabularies. Swapping
 //! the toolkit rewrites this file and leaves the projection alone.
 
+use std::sync::Arc;
+
+use crate::render::{FrameData, SceneRenderer};
 use crate::view::screen::{Color, ScreenPos, ScreenRect, Shape};
+
+/// One frame of the 3D scene, handed to egui as a paint callback.
+///
+/// The whole of what ties the scene renderer to this toolkit: egui asks for
+/// `prepare` and `paint`, `SceneRenderer` offers exactly those two, and the
+/// viewport it wants is a rectangle in physical pixels either way.
+pub struct ViewportCallback(pub Arc<FrameData>);
+
+impl egui_wgpu::CallbackTrait for ViewportCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen: &egui_wgpu::ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let Some(renderer) = resources.get_mut::<SceneRenderer>() else {
+            return Vec::new();
+        };
+        renderer.prepare(device, queue, &self.0)
+    }
+
+    fn paint(
+        &self,
+        info: egui::PaintCallbackInfo,
+        pass: &mut wgpu::RenderPass<'static>,
+        resources: &egui_wgpu::CallbackResources,
+    ) {
+        let Some(renderer) = resources.get::<SceneRenderer>() else {
+            return;
+        };
+        let vp = info.viewport_in_pixels();
+        renderer.paint(
+            pass,
+            [
+                vp.left_px as f32,
+                vp.top_px as f32,
+                vp.width_px as f32,
+                vp.height_px as f32,
+            ],
+        );
+    }
+}
 
 pub fn to_pos2(p: ScreenPos) -> egui::Pos2 {
     egui::pos2(p.x, p.y)
