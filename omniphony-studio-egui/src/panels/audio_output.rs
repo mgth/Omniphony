@@ -9,7 +9,7 @@
 use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
-use crate::host::audio_config::AudioConfig;
+use crate::host::commands::audio;
 use crate::i18n::{t, tf};
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
@@ -108,9 +108,7 @@ impl StudioSpike {
         );
         if chosen != current {
             // Deliberately outside the batched config, like the web panel.
-            self.live.lock().unwrap().app.audio.audio_output_backend = Some(chosen.clone());
-            self.ctl
-                .send_string("/omniphony/control/audio/output_backend", &chosen);
+            audio::control_audio_output_backend(&self.host, chosen);
         }
     }
 
@@ -148,8 +146,7 @@ impl StudioSpike {
                     .on_hover_text(t("audio.refreshDevices"))
                     .clicked()
                 {
-                    self.ctl
-                        .send_no_args("/omniphony/control/audio/output_devices/refresh");
+                    audio::refresh_output_devices(&self.host);
                 }
                 // Device names are long (`alsa_output.usb-…iec958-stereo`): the
                 // list is cut to its row and says the whole name on hover.
@@ -174,9 +171,7 @@ impl StudioSpike {
             },
         );
         if chosen != current {
-            self.live.lock().unwrap().app.audio.audio_output_device =
-                (!chosen.is_empty()).then_some(chosen);
-            self.send_audio_config();
+            audio::set_output_device(&self.host, chosen);
         }
     }
 
@@ -194,17 +189,10 @@ impl StudioSpike {
         ) {
             if named_pipe {
                 // Restore the path the switch remembered, if there is one.
-                let remembered = self.audio_pipe_path.clone();
-                self.live.lock().unwrap().app.audio.audio_output_file = Some(remembered.clone());
-                if !remembered.is_empty() {
-                    self.ctl
-                        .send_string("/omniphony/control/audio/output_file", &remembered);
-                }
+                audio::set_output_file(&self.host, self.audio_pipe_path.clone());
             } else {
                 self.audio_pipe_path = file.clone();
-                self.live.lock().unwrap().app.audio.audio_output_file = Some("-".to_owned());
-                self.ctl
-                    .send_string("/omniphony/control/audio/output_file", "-");
+                audio::set_output_file(&self.host, "-".to_owned());
             }
         }
         if named_pipe {
@@ -219,12 +207,10 @@ impl StudioSpike {
                     .lost_focus()
                 {
                     let trimmed = path.trim().to_owned();
-                    self.live.lock().unwrap().app.audio.audio_output_file = Some(trimmed.clone());
                     if !trimmed.is_empty() {
                         self.audio_pipe_path = trimmed.clone();
-                        self.ctl
-                            .send_string("/omniphony/control/audio/output_file", &trimmed);
                     }
+                    audio::set_output_file(&self.host, trimmed);
                 }
             });
         }
@@ -257,9 +243,7 @@ impl StudioSpike {
             },
         );
         if chosen != current {
-            self.live.lock().unwrap().app.audio.audio_output_file_format = Some(chosen.clone());
-            self.ctl
-                .send_string("/omniphony/control/audio/output_file_format", &chosen);
+            audio::control_audio_output_file_format(&self.host, chosen);
         }
     }
 
@@ -339,84 +323,7 @@ impl StudioSpike {
         });
         if let Some(rate) = apply {
             self.sample_rate_edit = Some(rate.to_string());
-            self.live.lock().unwrap().app.audio.audio_sample_rate = (rate > 0).then_some(rate);
-            self.send_audio_config();
-        }
-    }
-
-    /// `sendAudioConfig`: assemble the payload, let the host's resolver
-    /// correct it, send the effective document, then apply it.
-    pub(crate) fn send_audio_config(&mut self) {
-        let payload = {
-            let live = self.live.lock().unwrap();
-            let a = &live.app;
-            serde_json::json!({
-                "outputDevice": a.audio.audio_output_device,
-                "sampleRate": a.audio.audio_sample_rate,
-                "latencyTargetMs": a
-                    .latency
-                    .latency_requested_ms
-                    .or(a.latency.latency_target_ms),
-                // The adaptive controller rides the same document, so a
-                // parameter change and a device change cannot disagree.
-                "adaptiveResampling": {
-                    "enabled": a.adaptive_resampling.unwrap_or(0) != 0,
-                    "enableFarMode": a.adaptive_resampling_enable_far_mode.unwrap_or(0) != 0,
-                    "forceSilenceInFarMode": a
-                        .adaptive_resampling_force_silence_in_far_mode
-                        .unwrap_or(1)
-                        != 0,
-                    "hardRecoverHighInFarMode": a
-                        .adaptive_resampling_hard_recover_high_in_far_mode
-                        .unwrap_or(1)
-                        != 0,
-                    "hardRecoverLowInFarMode": a
-                        .adaptive_resampling_hard_recover_low_in_far_mode
-                        .unwrap_or(0)
-                        != 0,
-                    "farModeReturnFadeInMs": a.adaptive_resampling_far_mode_return_fade_in_ms,
-                    "kpNear": a.adaptive_resampling_kp_near,
-                    "ki": a.adaptive_resampling_ki,
-                    "integralDischargeRatio": a.adaptive_resampling_integral_discharge_ratio,
-                    "maxAdjust": a.adaptive_resampling_max_adjust,
-                    "highRecoverEntryMarginMs": a
-                        .adaptive_resampling_high_recover_entry_margin_ms,
-                    "updateIntervalCallbacks": a.adaptive_resampling_update_interval_callbacks,
-                    "lowRecoverSettleStableMs": a
-                        .adaptive_resampling_low_recover_settle_stable_ms,
-                    "lowRecoverEntryMarginMs": a
-                        .adaptive_resampling_low_recover_entry_margin_ms,
-                    "lowRecoverExitMarginMs": a.adaptive_resampling_low_recover_exit_margin_ms,
-                    "lowRecoverSettleMarginMs": a
-                        .adaptive_resampling_low_recover_settle_margin_ms,
-                    "lowRecoverRefillDeltaAlpha": a
-                        .adaptive_resampling_low_recover_refill_delta_alpha,
-                    "controlSmoothingCutoffHz": a
-                        .adaptive_resampling_control_smoothing_cutoff_hz,
-                    "controlSmoothingOrder": a.adaptive_resampling_control_smoothing_order,
-                    "paused": a.adaptive_resampling_paused.unwrap_or(0) != 0,
-                    "usePreBridgeClock": a.adaptive_resampling_use_pre_bridge_clock.unwrap_or(0) != 0,
-                    "useOutputPacing": a.adaptive_resampling_use_output_pacing.unwrap_or(0) != 0,
-                    "disableBackpressure": a
-                        .adaptive_resampling_disable_backpressure
-                        .unwrap_or(0)
-                        != 0,
-                }
-            })
-        };
-        let Ok(config) = serde_json::from_value::<AudioConfig>(payload) else {
-            log::warn!("[audio] could not build the configuration payload");
-            return;
-        };
-        let effective = config.resolve();
-        match serde_json::to_string(&effective) {
-            Ok(document) => {
-                self.ctl
-                    .send_string("/omniphony/control/config/audio", &document);
-                self.ctl
-                    .send_no_args("/omniphony/control/config/audio/apply");
-            }
-            Err(e) => log::warn!("[audio] could not serialise the configuration: {e}"),
+            audio::set_sample_rate(&self.host, rate);
         }
     }
 }

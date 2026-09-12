@@ -466,7 +466,7 @@ impl StudioSpike {
         let mut on = adaptive_on;
         if widgets::switch_row_help(ui, t("adaptive.title"), "help.adaptive.title", &mut on) {
             self.live.lock().unwrap().app.adaptive_resampling = Some(u8::from(on));
-            self.send_audio_config();
+            crate::host::commands::audio::send_audio_document(&self.host);
         }
         ui.horizontal_wrapped(|ui| {
             let label = if paused {
@@ -479,7 +479,7 @@ impl StudioSpike {
                 .clicked()
             {
                 self.live.lock().unwrap().app.adaptive_resampling_paused = Some(u8::from(!paused));
-                self.send_audio_config();
+                crate::host::commands::audio::send_audio_document(&self.host);
             }
             // Only reachable while paused: it is a diagnostic, not a control.
             if adaptive_on && paused && ui.button(t("adaptive.resetRatio")).clicked() {
@@ -566,7 +566,7 @@ impl StudioSpike {
                                 != 0;
                         live.app.adaptive_resampling_enable_far_mode = Some(u8::from(derived));
                     }
-                    self.send_audio_config();
+                    crate::host::commands::audio::send_audio_document(&self.host);
                 }
             }
             for field in *fields {
@@ -643,7 +643,7 @@ impl StudioSpike {
             live.app.adaptive_resampling_low_recover_exit_margin_ms =
                 Some(exit.min((entry - 0.1).max(0.0)));
         }
-        self.send_audio_config();
+        crate::host::commands::audio::send_audio_document(&self.host);
     }
 }
 

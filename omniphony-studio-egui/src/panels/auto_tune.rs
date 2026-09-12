@@ -552,7 +552,7 @@ impl StudioSpike {
                     Some(interval.max(1) as i64);
             }
         }
-        self.send_audio_config();
+        crate::host::commands::audio::send_audio_document(&self.host);
     }
 
     /// Closing the window mid-run would leave the controller on the values the
