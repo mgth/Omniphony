@@ -10,6 +10,7 @@
 use egui::{Color32, Pos2, RichText, Stroke, Ui, vec2};
 
 use crate::app::StudioSpike;
+use crate::host::commands::render;
 use crate::i18n::t;
 use crate::ui::{help, theme, widgets};
 
@@ -113,16 +114,7 @@ impl StudioSpike {
             external,
             &inner,
         ) {
-            self.live
-                .lock()
-                .unwrap()
-                .app
-                .render_backend_state
-                .hybrid
-                .external_backend = Some(chosen.clone());
-            self.mark_recompute_pending();
-            self.ctl
-                .send_string("/omniphony/control/hybrid/external_backend", &chosen);
+            render::control_hybrid_external_backend(&self.host, chosen);
         }
         if let Some(chosen) = backend_row(
             ui,
@@ -132,16 +124,7 @@ impl StudioSpike {
             internal,
             &inner,
         ) {
-            self.live
-                .lock()
-                .unwrap()
-                .app
-                .render_backend_state
-                .hybrid
-                .internal_backend = Some(chosen.clone());
-            self.mark_recompute_pending();
-            self.ctl
-                .send_string("/omniphony/control/hybrid/internal_backend", &chosen);
+            render::control_hybrid_internal_backend(&self.host, chosen);
         }
         let metric = hybrid
             .metric
@@ -164,16 +147,7 @@ impl StudioSpike {
                 ),
             ],
         ) {
-            self.live
-                .lock()
-                .unwrap()
-                .app
-                .render_backend_state
-                .hybrid
-                .metric = Some(chosen.clone());
-            self.mark_recompute_pending();
-            self.ctl
-                .send_string("/omniphony/control/hybrid/metric", &chosen);
+            render::control_hybrid_metric(&self.host, chosen);
         }
         let mut smoothing = hybrid.curve_smoothing.unwrap_or(0.0) as f32;
         if widgets::value_slider_help(
@@ -185,16 +159,7 @@ impl StudioSpike {
             0.01,
             |v| format!("{v:.2}"),
         ) {
-            self.live
-                .lock()
-                .unwrap()
-                .app
-                .render_backend_state
-                .hybrid
-                .curve_smoothing = Some(f64::from(smoothing));
-            self.mark_recompute_pending();
-            self.ctl
-                .send_float("/omniphony/control/hybrid/curve_smoothing", smoothing);
+            render::control_hybrid_curve_smoothing(&self.host, smoothing);
         }
         widgets::note(ui, t("hybrid.curveHint"));
         self.hybrid_curve(ui, hybrid, &metric);
@@ -386,24 +351,7 @@ impl StudioSpike {
     }
 
     fn commit_hybrid_curve(&mut self, points: Vec<[f64; 2]>) {
-        self.live
-            .lock()
-            .unwrap()
-            .app
-            .render_backend_state
-            .hybrid
-            .curve = points.clone();
-        self.mark_recompute_pending();
-        let flat: Vec<rosc::OscType> = points
-            .iter()
-            .flat_map(|p| {
-                [
-                    rosc::OscType::Float(p[0].clamp(0.0, 1.0) as f32),
-                    rosc::OscType::Float(p[1].clamp(0.0, 1.0) as f32),
-                ]
-            })
-            .collect();
-        self.ctl.send("/omniphony/control/hybrid/curve", flat);
+        render::set_hybrid_curve(&self.host, points);
     }
 }
 

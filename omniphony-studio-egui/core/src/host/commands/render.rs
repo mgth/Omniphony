@@ -160,6 +160,15 @@ pub fn tick_recompute(state: &SharedState, now: std::time::Instant) -> Option<st
 
 pub fn control_hybrid_external_backend(state: &SharedState, value: String) {
     if let Some(normalized) = valid_hybrid_inner_id(&value) {
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .app
+            .render_backend_state
+            .hybrid
+            .external_backend = Some(normalized.clone());
+        mark_recompute_pending(state);
         send_control(
             &state.osc_tx,
             OscControlMsg::SendString {
@@ -172,6 +181,15 @@ pub fn control_hybrid_external_backend(state: &SharedState, value: String) {
 
 pub fn control_hybrid_internal_backend(state: &SharedState, value: String) {
     if let Some(normalized) = valid_hybrid_inner_id(&value) {
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .app
+            .render_backend_state
+            .hybrid
+            .internal_backend = Some(normalized.clone());
+        mark_recompute_pending(state);
         send_control(
             &state.osc_tx,
             OscControlMsg::SendString {
@@ -191,16 +209,60 @@ fn valid_hybrid_inner_id(value: &str) -> Option<String> {
 }
 
 pub fn control_hybrid_metric(state: &SharedState, value: String) {
-    send_distance_metric(&state, "/omniphony/control/hybrid/metric", value);
+    let normalized = value.trim().to_ascii_lowercase();
+    if !matches!(normalized.as_str(), "spherical" | "chebyshev") {
+        return;
+    }
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .render_backend_state
+        .hybrid
+        .metric = Some(normalized.clone());
+    mark_recompute_pending(state);
+    send_distance_metric(state, "/omniphony/control/hybrid/metric", normalized);
 }
 
 pub fn control_hybrid_curve_smoothing(state: &SharedState, value: f32) {
+    let clamped = value.clamp(0.0, 1.0);
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .render_backend_state
+        .hybrid
+        .curve_smoothing = Some(f64::from(clamped));
+    mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
             address: "/omniphony/control/hybrid/curve_smoothing".to_string(),
-            value: value.clamp(0.0, 1.0),
+            value: clamped,
         },
+    );
+}
+
+/// The curve, as the editor holds it: the model keeps the points it dragged,
+/// the renderer is sent the same list flattened and clamped.
+pub fn set_hybrid_curve(state: &SharedState, points: Vec<[f64; 2]>) {
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .render_backend_state
+        .hybrid
+        .curve = points.clone();
+    mark_recompute_pending(state);
+    control_hybrid_curve(
+        state,
+        points
+            .iter()
+            .map(|p| [p[0] as f32, p[1] as f32])
+            .collect::<Vec<_>>(),
     );
 }
 
