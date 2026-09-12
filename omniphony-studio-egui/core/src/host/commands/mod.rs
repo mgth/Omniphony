@@ -181,3 +181,29 @@ pub fn send_distance_metric(state: &SharedState, address: &str, value: String) {
         },
     );
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A host state a test can call commands on: the model is real, and what
+    /// the commands send goes into a channel nothing reads.
+    pub(crate) fn state() -> SharedState {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Kept alive, so a send does not fail and change what is under test.
+        std::mem::forget(rx);
+        SharedState {
+            inner: Arc::new(Mutex::new(crate::osc::dispatch::Live::new(
+                crate::model::app_state::AppState::new(Vec::new()),
+            ))),
+            osc_tx: tx,
+            config_dir: std::path::PathBuf::from("/nonexistent"),
+            listen_port: Arc::new(Mutex::new(0)),
+            realtime_seq: AtomicI32::new(0),
+            renderer_child: Default::default(),
+            watchdog: Default::default(),
+            auto_tune_snapshot: Default::default(),
+            paths: HostPaths::default(),
+        }
+    }
+}

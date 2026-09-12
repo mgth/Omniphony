@@ -92,8 +92,6 @@ pub struct StudioSpike {
     pub(crate) speaker_test_mode: String,
     pub(crate) speaker_test_isolation: String,
     pub(crate) speaker_test_level_db: f32,
-    pub(crate) speaker_test_running: Option<usize>,
-    pub(crate) speaker_test_deadline: Option<Instant>,
     /// When the speaker-test idle feed was last armed (None = not armed).
     pub(crate) idle_feed_armed_at: Option<Instant>,
     /// Speaker selection of the previous frame, to notice a change.
@@ -414,8 +412,6 @@ impl StudioSpike {
             speaker_test_mode: "toggle".to_owned(),
             speaker_test_isolation: "test_only".to_owned(),
             speaker_test_level_db: -8.0,
-            speaker_test_running: None,
-            speaker_test_deadline: None,
             idle_feed_armed_at: None,
             last_speaker_selection: None,
             revealed_selection: Selection::default(),
@@ -988,13 +984,6 @@ impl StudioSpike {
 }
 
 impl eframe::App for StudioSpike {
-    /// Timers the renderer relies on this host for, which must not depend on
-    /// what is drawn. eframe calls this before every `ui` pass, and also while
-    /// it knows the window is hidden, when it skips `ui` altogether.
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.maintain_speaker_test(ctx);
-    }
-
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame_stats.tick();
         ui.input(|i| {

@@ -10,6 +10,7 @@ use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
 use crate::host::commands::{gain, speakers};
+use crate::host::services::speaker_test;
 use crate::i18n::t;
 use crate::model::layouts::Speaker;
 use crate::ui::{help, theme, widgets};
@@ -33,8 +34,6 @@ pub enum CoordMode {
 /// A burst stops itself after two seconds; a toggle stops after a minute so a
 /// test the user walked away from does not keep the room busy
 /// (`speaker-test.js`).
-const BURST: std::time::Duration = std::time::Duration::from_secs(2);
-const TOGGLE_SAFETY: std::time::Duration = std::time::Duration::from_secs(60);
 /// The renderer expires the idle-feed arm after a keepalive window.
 const IDLE_FEED_REARM: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -560,7 +559,7 @@ impl StudioSpike {
     }
 
     fn speaker_test_tab(&mut self, ui: &mut Ui, index: usize) {
-        let running = self.speaker_test_running == Some(index);
+        let running = self.live.lock().unwrap().speaker_test.running == Some(index);
         widgets::label_row_help(ui, t("speaker.test"), "help.speaker.test", |ui| {
             let label = if running {
                 t("speaker.testStop")
@@ -623,67 +622,26 @@ impl StudioSpike {
         }
     }
 
-    /// The start message. Sent again whenever something it carries changes.
-    fn send_speaker_test(&mut self, index: usize) {
-        // Peak dBFS to the peak linear amplitude the renderer clamps to.
-        let level = 10f32.powf(self.speaker_test_level_db / 20.0);
-        gain::control_speaker_test(
+    /// Start the test on a speaker. The core arms the safety window and stops
+    /// it on its own clock, whatever is on screen.
+    fn start_speaker_test(&mut self, index: usize) {
+        speaker_test::start(
             &self.host,
-            index as i32,
-            level,
+            index,
+            self.speaker_test_level_db,
             self.speaker_test_isolation.clone(),
+            &self.speaker_test_mode,
         );
     }
 
-    fn start_speaker_test(&mut self, index: usize) {
-        self.send_speaker_test(index);
-        self.speaker_test_running = Some(index);
-        let window = match self.speaker_test_mode.as_str() {
-            "burst" => Some(BURST),
-            "toggle" => Some(TOGGLE_SAFETY),
-            _ => None,
-        };
-        self.speaker_test_deadline = window.map(|window| std::time::Instant::now() + window);
-        // Woken from here too: `maintain_speaker_test` keeps the wake-up
-        // alive, but only once some later pass has run it.
-        if let Some(window) = window {
-            self.ctx.request_repaint_after(window);
-        }
-    }
-
-    /// Sent unconditionally: "nothing is running" is this side's belief, and
-    /// the renderer's state is the one that matters.
     pub(crate) fn stop_speaker_test(&mut self) {
-        if self.speaker_test_running.is_none() {
-            return;
-        }
-        self.speaker_test_running = None;
-        self.speaker_test_deadline = None;
-        gain::control_speaker_test(&self.host, -1, 0.0, self.speaker_test_isolation.clone());
-    }
-
-    /// A running burst or toggle test stops itself once its window has elapsed
-    /// (the `setTimeout` in `speaker-test.js`).
-    ///
-    /// Ticked from `App::logic`, not from the Test tab: the renderer has no
-    /// timeout of its own, so the stop must come whether or not the tab is
-    /// drawn (a collapsed overlay, a layout change that took the speaker away).
-    /// The repaint it asks for wakes the host at the deadline when nothing
-    /// else would, e.g. with metering off and no input.
-    pub(crate) fn maintain_speaker_test(&mut self, ctx: &egui::Context) {
-        let Some(deadline) = self.speaker_test_deadline else {
-            return;
-        };
-        match deadline.checked_duration_since(std::time::Instant::now()) {
-            Some(left) if !left.is_zero() => ctx.request_repaint_after(left),
-            _ => self.stop_speaker_test(),
-        }
+        speaker_test::stop(&self.host);
     }
 
     /// A test running on another speaker follows a new selection in toggle
     /// mode, and stops in the others (`onSpeakerSelectionChanged`).
     pub(crate) fn follow_speaker_selection(&mut self) {
-        let Some(running) = self.speaker_test_running else {
+        let Some(running) = self.live.lock().unwrap().speaker_test.running else {
             return;
         };
         match self.selection.speaker {

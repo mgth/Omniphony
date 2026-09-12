@@ -30,4 +30,4 @@ frame-tick        src/panels/diag_plot.rs                   1
 frame-tick        src/panels/host_services.rs               1
 frame-tick        src/panels/mpv_overlay.rs                 1
 frame-tick        src/panels/object_test.rs                 1
-frame-tick        src/panels/speaker_editor.rs              2
+frame-tick        src/panels/speaker_editor.rs              1
