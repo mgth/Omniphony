@@ -12,6 +12,7 @@
 
 pub mod meters;
 pub mod speaker_test;
+pub mod watchdog;
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -43,6 +44,7 @@ impl Tick {
 pub struct Services {
     pub meters: meters::Meters,
     pub speaker_test: speaker_test::SpeakerTest,
+    pub watchdog: watchdog::Watchdog,
 }
 
 impl Services {
@@ -53,6 +55,7 @@ impl Services {
         for tick in [
             self.meters.tick(state, now),
             self.speaker_test.tick(state, now),
+            self.watchdog.tick(state, now),
         ] {
             changed |= tick.changed;
             next = match (next, tick.next) {
