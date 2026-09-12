@@ -148,6 +148,12 @@ jobs:
           APPLE_SIGNING_IDENTITY: '-'
         with:
           projectPath: omniphony-studio
+          # Everything after `--` reaches the cargo Tauri runs for src-tauri,
+          # which is otherwise the one build in the repository that still
+          # resolves its dependencies freely. The CLI places these right after
+          # `build`, before its own flags, so nothing this action appends can
+          # displace them.
+          args: -- --locked
           tagName: ${{ github.ref_name }}
           releaseName: 'Omniphony ${{ github.ref_name }}'
           releaseDraft: true
