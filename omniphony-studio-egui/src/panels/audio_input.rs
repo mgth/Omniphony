@@ -9,6 +9,7 @@
 use egui::Ui;
 
 use crate::app::StudioSpike;
+use crate::host::commands::input;
 use crate::i18n::{t, tf};
 use crate::ui::section::Section;
 use crate::ui::widgets;
@@ -115,16 +116,7 @@ impl StudioSpike {
                     });
                 });
                 if chosen != mode {
-                    {
-                        let mut live = self.live.lock().unwrap();
-                        live.app.input_mode = Some(chosen.clone());
-                        if chosen == "pipewire_bridge" {
-                            // The PipeWire path has its own defaults.
-                            live.app.live_input.channels = Some(2);
-                            live.app.live_input.sample_rate = Some(192_000);
-                        }
-                    }
-                    self.send_input_config(false);
+                    input::set_input_mode(&self.host, chosen);
                 }
 
                 // The bridge path is exempt from the connection lock: it is
@@ -140,11 +132,7 @@ impl StudioSpike {
                         .lost_focus()
                         && path != bridge
                     {
-                        let value = path.trim().to_owned();
-                        self.live.lock().unwrap().app.render_bridge_path =
-                            (!value.is_empty()).then(|| value.clone());
-                        self.ctl
-                            .send_string("/omniphony/control/render/bridge_path", &value);
+                        input::set_render_bridge_path(&self.host, path.clone());
                     }
                 });
 
@@ -157,9 +145,7 @@ impl StudioSpike {
                         &mut node,
                         "omniphony",
                     ) {
-                        self.live.lock().unwrap().app.live_input.node =
-                            (!node.trim().is_empty()).then(|| node.trim().to_owned());
-                        self.send_input_config(false);
+                        input::set_live_input_node(&self.host, node.clone());
                     }
                     let mut description = description.clone();
                     if text_row(
@@ -169,9 +155,7 @@ impl StudioSpike {
                         &mut description,
                         "Omniphony Bridge Input",
                     ) {
-                        self.live.lock().unwrap().app.live_input.description =
-                            (!description.trim().is_empty()).then(|| description.trim().to_owned());
-                        self.send_input_config(false);
+                        input::set_live_input_description(&self.host, description.clone());
                     }
                     let mut chosen_clock = clock.clone();
                     widgets::label_row_info_keys(
@@ -204,7 +188,7 @@ impl StudioSpike {
                     if chosen_clock != clock {
                         // Held until Apply: the clock cannot change under a
                         // running bridge.
-                        self.live.lock().unwrap().app.live_input.clock_mode = Some(chosen_clock);
+                        input::set_live_input_clock_mode(&self.host, chosen_clock);
                     }
                 } else {
                     let mut pipe_path = pipe.clone();
@@ -215,11 +199,7 @@ impl StudioSpike {
                         &mut pipe_path,
                         t("input.autoDetect"),
                     ) {
-                        let value = pipe_path.trim().to_owned();
-                        self.live.lock().unwrap().app.orender_input_pipe =
-                            (!value.is_empty()).then(|| value.clone());
-                        self.ctl
-                            .send_string("/omniphony/control/render/input_pipe", &value);
+                        input::set_orender_input_pipe(&self.host, pipe_path.clone());
                     }
                 }
 
@@ -229,70 +209,9 @@ impl StudioSpike {
                     t("input.apply")
                 };
                 if ui.button(label).clicked() {
-                    self.apply_input(&mode, active.as_deref());
+                    input::apply_input(&self.host, &mode, active.as_deref());
                 }
             });
-    }
-
-    /// `sendInputConfig`: the whole input document, optionally applied.
-    fn send_input_config(&mut self, apply: bool) {
-        let payload = {
-            let live = self.live.lock().unwrap();
-            let input = &live.app.live_input;
-            serde_json::json!({
-                "mode": live.app.input_mode,
-                "liveInput": {
-                    "backend": input.backend,
-                    "node": input.node,
-                    "description": input.description,
-                    "layout": input.layout,
-                    "clockMode": input.clock_mode.clone().unwrap_or_else(|| "dac".into()),
-                    "channels": input.channels.unwrap_or(2),
-                    "sampleRate": input.sample_rate.unwrap_or(192_000),
-                    "map": input.map.clone().unwrap_or_else(|| "7.1-fixed".into()),
-                    "lfeMode": input.lfe_mode.clone().unwrap_or_else(|| "object".into()),
-                }
-            })
-        };
-        self.ctl
-            .send_json("/omniphony/control/config/input", &payload);
-        if apply {
-            self.ctl
-                .send_no_args("/omniphony/control/config/input/apply");
-        }
-    }
-
-    /// Apply: a bridge that has to be (re)started needs its path and clock
-    /// saved and the configuration reloaded; otherwise the input document is
-    /// enough.
-    fn apply_input(&mut self, mode: &str, active: Option<&str>) {
-        let clock = {
-            let live = self.live.lock().unwrap();
-            live.app
-                .live_input
-                .clock_mode
-                .clone()
-                .unwrap_or_else(|| "dac".to_owned())
-        };
-        let needs_bootstrap = mode == "pipe_bridge"
-            || (mode == "pipewire_bridge" && active != Some("pipewire_bridge"));
-        if needs_bootstrap {
-            let bridge = {
-                let live = self.live.lock().unwrap();
-                live.app.render_bridge_path.clone().unwrap_or_default()
-            };
-            self.ctl
-                .send_string("/omniphony/control/render/bridge_path", &bridge);
-            self.ctl
-                .send_string("/omniphony/control/input/live/clock_mode", &clock);
-            self.ctl.send_no_args("/omniphony/control/save_config");
-            self.ctl.send_no_args("/omniphony/control/reload_config");
-        } else {
-            self.live.lock().unwrap().app.input_apply_pending = Some(1);
-            self.ctl
-                .send_string("/omniphony/control/input/live/clock_mode", &clock);
-            self.send_input_config(true);
-        }
     }
 }
 

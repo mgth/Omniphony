@@ -7,14 +7,13 @@
 # and commit this file with the change.
 #
 # Totals:
-#   osc-address      84
-#   raw-send         86
-#   model-write      69
+#   osc-address      75
+#   raw-send         77
+#   model-write      60
 #   side-effect      7
 #   frame-tick       9
 #
 # rule            file                                      count
-osc-address       src/panels/audio_input.rs                 9
 osc-address       src/panels/audio_output.rs                8
 osc-address       src/panels/channel_editor.rs              1
 osc-address       src/panels/connection.rs                  2
@@ -33,7 +32,6 @@ osc-address       src/panels/sources_2d.rs                  2
 osc-address       src/panels/speaker_editor.rs              14
 osc-address       src/panels/speaker_layouts.rs             4
 raw-send          src/app.rs                                2
-raw-send          src/panels/audio_input.rs                 9
 raw-send          src/panels/audio_output.rs                8
 raw-send          src/panels/channel_editor.rs              1
 raw-send          src/panels/connection.rs                  2
@@ -51,7 +49,6 @@ raw-send          src/panels/sofa_browser.rs                1
 raw-send          src/panels/sources_2d.rs                  2
 raw-send          src/panels/speaker_editor.rs              14
 raw-send          src/panels/speaker_layouts.rs             4
-model-write       src/panels/audio_input.rs                 9
 model-write       src/panels/audio_output.rs                7
 model-write       src/panels/auto_tune.rs                   4
 model-write       src/panels/channel_editor.rs              6
