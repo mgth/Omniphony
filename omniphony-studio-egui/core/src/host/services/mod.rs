@@ -11,6 +11,7 @@
 //! then, or until something nudges it, so an idle Studio wakes for nothing.
 
 pub mod meters;
+pub mod speaker_test;
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -41,6 +42,7 @@ impl Tick {
 #[derive(Default)]
 pub struct Services {
     pub meters: meters::Meters,
+    pub speaker_test: speaker_test::SpeakerTest,
 }
 
 impl Services {
@@ -48,7 +50,10 @@ impl Services {
     pub fn tick(&mut self, state: &SharedState, now: Instant) -> Tick {
         let mut changed = false;
         let mut next: Option<Instant> = None;
-        for tick in [self.meters.tick(state, now)] {
+        for tick in [
+            self.meters.tick(state, now),
+            self.speaker_test.tick(state, now),
+        ] {
             changed |= tick.changed;
             next = match (next, tick.next) {
                 (Some(a), Some(b)) => Some(a.min(b)),
