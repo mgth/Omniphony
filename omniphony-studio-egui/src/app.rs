@@ -10,11 +10,10 @@ use egui::{Align2, Pos2, Rect};
 use glam::{Quat, Vec3};
 
 use crate::Args;
-use crate::host::control::Ctl;
 use crate::model::app_state::AppState;
 use crate::model::layouts::load_layouts;
 use crate::osc::dispatch::Live;
-use crate::osc::{self, Control, ControlTx, OscStats, SharedLive};
+use crate::osc::{self, OscStats, SharedLive};
 use crate::prefs::Prefs;
 use crate::render::camera::OrbitCamera;
 use crate::render::{SceneRenderer, ViewportCallback};
@@ -60,7 +59,6 @@ pub struct StudioSpike {
     pub(crate) head_loaded: bool,
     /// Eased head-pose rotation (`scene/head-pose.js`, slerp 0.4 per frame).
     pub(crate) head_rotation: Quat,
-    pub(crate) control: ControlTx,
     /// Gain-table targets currently subscribed, and the last (re)subscribe.
     pub(crate) subscribed_tables: Vec<i64>,
     /// Side-panel widths and collapsed flags, persisted with the prefs.
@@ -86,8 +84,6 @@ pub struct StudioSpike {
         Option<Result<crate::host::commands::mpv_config::MpvOrenderStatus, String>>,
     /// Which half of the renderer panel is showing.
     pub(crate) renderer_tab: crate::panels::renderer::RendererTab,
-    /// When an unanswered recompute request becomes an error.
-    pub(crate) recompute_deadline: Option<Instant>,
     /// Named-pipe path remembered while the file output is switched off.
     pub(crate) audio_pipe_path: String,
     /// Speaker editor: tab, and the test pane's own settings (the web keeps
@@ -220,8 +216,6 @@ pub struct StudioSpike {
     pub(crate) script_editor: Option<crate::panels::script_editor::ScriptEditor>,
     /// The auto-tune wizard, while it is open.
     pub(crate) auto_tune: Option<crate::panels::auto_tune::Wizard>,
-    /// Handle on the renderer: every control the panels expose goes through it.
-    pub(crate) ctl: Ctl,
     /// The host's own `SharedState`, kept for the whole session because the
     /// watchdog and the tracked child live in it: a fresh one per call would
     /// forget the renderer it just started.
@@ -325,7 +319,6 @@ impl StudioSpike {
         let mut layout = prefs.side_panels;
         layout.clamp_all(cc.egui_ctx.content_rect().width().max(800.0));
         prefs.side_panels = layout;
-        let ctl = Ctl::new(control.clone());
         // The OSC form starts from the same file the Tauri Studio writes, so
         // both hosts point at the same renderer by default.
         let (osc_host, osc_port) = match &args.register {
@@ -373,7 +366,6 @@ impl StudioSpike {
             volume_state: VolumeState::default(),
             head_loaded,
             head_rotation: Quat::IDENTITY,
-            control,
             subscribed_tables: Vec::new(),
             layout,
             prefs,
@@ -387,7 +379,6 @@ impl StudioSpike {
             osc_keep_alive: osc_config.keep_renderer_alive_on_quit,
             mpv_orender: None,
             renderer_tab: Default::default(),
-            recompute_deadline: None,
             audio_pipe_path: String::new(),
             speaker_tab: Default::default(),
             speaker_test_mode: "toggle".to_owned(),
@@ -477,7 +468,6 @@ impl StudioSpike {
             sofa_browser: None,
             script_editor: None,
             auto_tune: None,
-            ctl,
             last_subscribe: None,
         })
     }
@@ -521,7 +511,7 @@ impl StudioSpike {
             .is_none_or(|t| t.elapsed() >= Duration::from_secs(5));
         if wanted.is_empty() {
             if changed {
-                let _ = self.control.send(Control::UnsubscribeGainTable);
+                crate::host::commands::diag::unsubscribe_speaker_gaintable(&self.host);
                 self.subscribed_tables.clear();
             }
             return;
@@ -544,10 +534,11 @@ impl StudioSpike {
                     .collect()
             };
             for (target, have_version) in versions {
-                let _ = self.control.send(Control::SubscribeGainTable {
+                crate::host::commands::diag::subscribe_speaker_gaintable(
+                    &self.host,
                     have_version,
-                    speaker_index: target as i32,
-                });
+                    target as i32,
+                );
             }
             self.subscribed_tables = wanted;
             self.last_subscribe = Some(Instant::now());
@@ -948,18 +939,6 @@ impl StudioSpike {
     pub(crate) fn mark_prefs_dirty(&mut self) {
         self.prefs_dirty = true;
         self.prefs_dirty_since = None;
-    }
-
-    /// Next value of the realtime sequence counter: a monotonic stamp on
-    /// realtime controls, so the renderer can drop updates that arrive out of
-    /// order. It is the host's counter, the one `host::commands` stamps with,
-    /// so a control sent from a panel and one sent through a command share a
-    /// single sequence.
-    pub(crate) fn next_realtime_seq(&mut self) -> i32 {
-        self.host
-            .realtime_seq
-            .fetch_add(1, Ordering::Relaxed)
-            .wrapping_add(1)
     }
 
     fn maybe_print_stats(&mut self) {
