@@ -11,6 +11,7 @@
 use egui::Ui;
 
 use crate::app::StudioSpike;
+use crate::host::commands::engine;
 use crate::i18n::t;
 use crate::ui::section::Section;
 use crate::ui::widgets;
@@ -267,24 +268,7 @@ impl StudioSpike {
                 .or_else(|| spec.get("default").and_then(|v| v.as_f64()))
                 .unwrap_or(0.0);
             if let Some(sent) = param_slider(ui, key, spec, value) {
-                {
-                    let mut live = self.live.lock().unwrap();
-                    let params = live
-                        .app
-                        .live_options
-                        .object_generator_params
-                        .get_or_insert_with(|| serde_json::Value::Object(Default::default()));
-                    if let Some(map) = params.as_object_mut() {
-                        map.insert(key.to_owned(), serde_json::json!(sent));
-                    }
-                }
-                self.ctl.send(
-                    "/omniphony/control/object_generator/param",
-                    vec![
-                        rosc::OscType::String(key.to_owned()),
-                        rosc::OscType::Float(sent as f32),
-                    ],
-                );
+                engine::set_object_generator_param(&self.host, key, sent);
             }
         }
     }
@@ -333,24 +317,7 @@ impl StudioSpike {
             if let Some(sent) = row.inner {
                 // Kept at once, as the generator's are: the slider would
                 // otherwise snap back until the renderer's echo arrives.
-                {
-                    let mut live = self.live.lock().unwrap();
-                    let params = live
-                        .app
-                        .live_options
-                        .phantom_params
-                        .get_or_insert_with(|| serde_json::Value::Object(Default::default()));
-                    if let Some(map) = params.as_object_mut() {
-                        map.insert(key.to_owned(), serde_json::json!(sent));
-                    }
-                }
-                self.ctl.send(
-                    "/omniphony/control/phantom_extract/param",
-                    vec![
-                        rosc::OscType::String(key.to_owned()),
-                        rosc::OscType::Float(sent as f32),
-                    ],
-                );
+                engine::set_phantom_extract_param(&self.host, key, sent);
             }
         }
     }
