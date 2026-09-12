@@ -136,9 +136,8 @@ pub struct StudioSpike {
     /// Snap grid, keyed on the published interval counts it was built from.
     pub(crate) object_test_grid_cache: Option<([u32; 4], [Vec<f64>; 3])>,
     /// The renderer's fixed-channel catalogue, digested once per publication.
-    pub(crate) channel_catalog: crate::panels::channel_editor::ChannelCatalog,
     /// Which coordinate table the channel editor is showing.
-    pub(crate) channel_coord_mode: crate::panels::channel_editor::CoordMode,
+    pub(crate) channel_coord_mode: crate::host::channels::CoordMode,
     /// The sample rate being typed, until it is applied or abandoned.
     pub(crate) sample_rate_edit: Option<String>,
     /// Which gradient stop each custom-colormap editor has selected.
@@ -196,8 +195,6 @@ pub struct StudioSpike {
     /// Whether the About box is showing.
     pub(crate) about_open: bool,
     /// The at-rest bed markers this host owns, and what they were built from.
-    pub(crate) synthetic_bed_ids: Vec<String>,
-    pub(crate) synthetic_bed_signature: Option<u64>,
     /// Config directory this environment is assigned (`OMNIPHONY_CONFIG_DIR`).
     pub(crate) config_dir: std::path::PathBuf,
     /// A handle on the context, so a worker thread can ask for the frame that
@@ -431,8 +428,7 @@ impl StudioSpike {
             object_test_focus: None,
             object_test_orbit: Vec::new(),
             object_test_grid_cache: None,
-            channel_catalog: Default::default(),
-            channel_coord_mode: crate::panels::channel_editor::CoordMode::Cartesian,
+            channel_coord_mode: crate::host::channels::CoordMode::Cartesian,
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
             // executable's own directory.
@@ -464,8 +460,6 @@ impl StudioSpike {
             speaker_drag_grab: 0.0,
             speaker_move_pending: None,
             about_open: false,
-            synthetic_bed_ids: Vec::new(),
-            synthetic_bed_signature: None,
             host,
             service_status: None,
             config_dir,
@@ -955,8 +949,6 @@ impl eframe::App for StudioSpike {
             self.last_speaker_selection = self.selection.speaker;
             self.follow_speaker_selection();
         }
-        self.refresh_channel_catalog();
-        self.sync_virtual_bed_objects(false);
         self.declare_overlay_prefs();
         self.declare_object_test_marker();
         self.declare_idle_feed_interest();
