@@ -123,6 +123,21 @@ pub enum Control {
 
 pub type ControlTx = Sender<Control>;
 
+/// Resolve a `host:port` spec to the renderer's address.
+///
+/// A literal address takes the fast path; anything else is a hostname, and a
+/// hostname means a DNS lookup that can block for as long as the resolver
+/// takes. That is why it lives here: nothing on the UI's thread should be
+/// waiting on a network service to answer.
+pub fn resolve(target: &str) -> Option<SocketAddr> {
+    let target = target.trim();
+    if let Ok(addr) = target.parse::<SocketAddr>() {
+        return Some(addr);
+    }
+    use std::net::ToSocketAddrs;
+    target.to_socket_addrs().ok()?.next()
+}
+
 /// Bind the socket and start the listener thread. Returns the bound port so a
 /// `0` request can be reported (and fed by the synthetic generator).
 pub fn spawn_listener(

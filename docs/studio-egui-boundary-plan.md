@@ -226,6 +226,16 @@ and `raw-send` stay as tripwires.
 Done when `frame-tick` and `side-effect` are at zero. `App::ui` then only draws,
 and `App::logic` only handles UI concerns such as the preferences debounce.
 
+**Landed.** `frame-tick` and `side-effect` are at zero, and `model-write` is
+down to the two writes the adaptive controller's field table makes through its
+own setters. Every tick in the table above is a service in
+`core/src/host/services/`, each taking `now` and returning
+`Tick { changed, next }`; `ServiceClock` sleeps until the earliest deadline or
+a nudge. Two wakers hang off the one egui context: the listener's — and
+anything else that can give the clock work, including an interest the view just
+declared — repaints *and* nudges, while the clock's own only repaints, since
+nudging itself would spin.
+
 ### Phase 4: a neutral 3D engine (about 2 days, can wait for a real migration)
 
 - `view/` uses `glam::Vec2`, `[u8; 4]` (unmultiplied) and a `ScreenRect`, and

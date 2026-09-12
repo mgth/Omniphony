@@ -55,23 +55,14 @@ pub fn connect_to(
     port: u16,
 ) -> Result<std::net::SocketAddr, String> {
     let target = format!("{}:{}", host.trim(), port);
-    let addr = match target.parse::<std::net::SocketAddr>() {
-        Ok(addr) => addr,
-        Err(_) => {
-            use std::net::ToSocketAddrs;
-            match target.to_socket_addrs().ok().and_then(|mut a| a.next()) {
-                Some(addr) => addr,
-                None => {
-                    let message = format!("cannot resolve {target}");
-                    state
-                        .inner
-                        .lock()
-                        .unwrap()
-                        .push_log("error", "osc", &message);
-                    return Err(message);
-                }
-            }
-        }
+    let Some(addr) = crate::osc::resolve(&target) else {
+        let message = format!("cannot resolve {target}");
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .push_log("error", "osc", &message);
+        return Err(message);
     };
     send_control(
         &state.osc_tx,

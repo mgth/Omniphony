@@ -10,10 +10,8 @@
 #   osc-address      0
 #   raw-send         0
 #   model-write      2
-#   side-effect      1
-#   frame-tick       1
+#   side-effect      0
+#   frame-tick       0
 #
 # rule            file                                      count
 model-write       src/panels/latency.rs                     2
-side-effect       src/app.rs                                1
-frame-tick        src/panels/diag_plot.rs                   1

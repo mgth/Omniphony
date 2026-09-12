@@ -461,7 +461,7 @@ impl StudioSpike {
                 self.diag_canvas(ui, &metrics);
             })
             .is_some();
-        self.maintain_diag_publication(open, ui.ctx());
+        self.sample_diag_trace(open, ui.ctx());
     }
 
     fn diag_controls(&mut self, ui: &mut Ui, metrics: &[Metric]) {
@@ -1012,11 +1012,12 @@ impl StudioSpike {
         }
     }
 
-    /// Sample the published values, hold the publication open, and keep the
-    /// window repainting while the plot is on screen.
-    fn maintain_diag_publication(&mut self, open: bool, ctx: &egui::Context) {
-        // The core holds the publication open and restates it; the panel only
-        // says whether its plot is on screen, and samples what arrives.
+    /// Say whether the plot is on screen, and sample what arrives while it is.
+    ///
+    /// Not a controller tick: the publication is the core's — it holds it open
+    /// and restates it whether or not anything is being drawn. What is left
+    /// here is the trace the canvas above draws, which only a frame can want.
+    fn sample_diag_trace(&mut self, open: bool, ctx: &egui::Context) {
         interests::set_diagnostics_wanted(
             &self.host,
             open.then_some(self.prefs.diag_plot.rate_hz as f32),
