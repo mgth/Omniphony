@@ -11,7 +11,7 @@
 #   raw-send         0
 #   model-write      21
 #   side-effect      4
-#   frame-tick       4
+#   frame-tick       3
 #
 # rule            file                                      count
 model-write       src/panels/auto_tune.rs                   4
@@ -24,5 +24,4 @@ side-effect       src/panels/sofa_browser.rs                1
 side-effect       src/panels/updates.rs                     2
 frame-tick        src/panels/auto_tune.rs                   1
 frame-tick        src/panels/diag_plot.rs                   1
-frame-tick        src/panels/mpv_overlay.rs                 1
 frame-tick        src/panels/object_test.rs                 1

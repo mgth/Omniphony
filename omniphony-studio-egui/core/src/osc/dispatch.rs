@@ -123,6 +123,8 @@ pub struct Live {
     pub log: VecDeque<LogLine>,
     /// Set while a config save is in flight (`app.saveRequested`).
     pub save_requested: bool,
+    /// What the view is showing, for the mpv overlay to be kept in step with.
+    pub overlay_prefs: Option<crate::host::services::overlay::OverlayPrefs>,
     /// What the view has asked the renderer to keep sending.
     pub interests: crate::host::services::interests::Interests,
     /// The per-speaker test signal this side started, with the safety window
@@ -386,6 +388,7 @@ impl Live {
             peak_hold_db: HashMap::new(),
             log: VecDeque::new(),
             save_requested: false,
+            overlay_prefs: None,
             interests: Default::default(),
             speaker_test: Default::default(),
             recompute_deadline: None,

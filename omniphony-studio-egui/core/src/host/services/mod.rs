@@ -12,6 +12,7 @@
 
 pub mod interests;
 pub mod meters;
+pub mod overlay;
 pub mod speaker_test;
 pub mod watchdog;
 
@@ -49,6 +50,7 @@ pub struct Services {
     pub gain_tables: interests::GainTables,
     pub idle_feed: interests::IdleFeed,
     pub diagnostics: interests::Diagnostics,
+    pub overlay: overlay::MpvOverlay,
 }
 
 impl Services {
@@ -63,6 +65,7 @@ impl Services {
             self.gain_tables.tick(state, now),
             self.idle_feed.tick(state, now),
             self.diagnostics.tick(state, now),
+            self.overlay.tick(state, now),
         ] {
             changed |= tick.changed;
             next = match (next, tick.next) {
