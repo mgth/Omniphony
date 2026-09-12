@@ -246,6 +246,15 @@ nudging itself would spin.
   `prepare` and `paint`. `ViewportCallback` becomes a roughly 20-line adapter in
   the app. The `srgb_target` flag is what lets a host with an sRGB surface
   (winit, iced, Bevy) avoid encoding twice.
+
+  **Landed, except the flag.** `new(device, target_format, samples, head)`,
+  `prepare` returning the command buffers and `paint` taking a viewport in
+  physical pixels; the adapter is `src/ui/scene.rs`. `srgb_target` was left out
+  deliberately: it is a shader change rather than a constructor argument,
+  because the trail points deliberately skip the OETF and that case inverts
+  under an sRGB target, and the true path cannot be tested from a host whose
+  surface is `*Unorm`. The requirement is documented on `new` and
+  debug-asserted instead.
 - Optionally, extract `omniphony-studio-scene`.
 
 ### Phase 5: the Tauri Studio

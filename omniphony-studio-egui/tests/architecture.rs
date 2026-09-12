@@ -158,13 +158,13 @@ const RULES: &[Rule] = &[
     },
     Rule {
         id: "toolkit-in-scene",
-        why: "the 3D engine names an egui type: it is wgpu plus geometry, and the one part of the UI tier a migration should carry over unchanged",
-        fix: "say it in `view::screen` terms (ScreenPos, ScreenRect, [u8; 4], Shape) and convert in src/ui/scene.rs",
+        why: "the 3D engine names a toolkit type: it is wgpu plus geometry, and the part of the UI tier a migration should carry over unchanged",
+        fix: "say it in wgpu and `view::screen` terms, and adapt in src/ui/scene.rs",
         matchers: &[Matcher::Code(&[
             r"\begui(?:_wgpu)?\s*::",
             r"\buse\s+egui\b",
         ])],
-        only: &["src/view/"],
+        only: &["src/view/", "src/render/"],
         exempt: &[],
     },
 ];
