@@ -8,6 +8,7 @@ pub mod layout;
 pub mod markup;
 pub mod meter;
 pub mod overlay;
+pub mod scene;
 pub mod section;
 pub mod theme;
 pub mod widgets;

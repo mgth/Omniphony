@@ -18,6 +18,7 @@ use crate::render::camera::OrbitCamera;
 use crate::render::{SceneRenderer, ViewportCallback};
 use crate::stats::{FrameStats, ProcStats};
 use crate::ui::layout::{OverlayLayout, Side};
+use crate::ui::scene::{paint_shape, to_color32, to_pos2, to_screen_rect};
 use crate::view::{self, Selection, ViewSettings, VolumeSettings, VolumeState};
 
 /// How long after a selection change the lists keep the selected row in view,
@@ -170,7 +171,7 @@ pub struct StudioSpike {
     pub(crate) channel_edit_pin: Option<(String, glam::Vec3, Option<Instant>)>,
     /// Where the frequency gauges were drawn last frame, so a click on one
     /// selects its speaker the way a click on the cube does.
-    pub(crate) band_bar_hits: Vec<(usize, Rect)>,
+    pub(crate) band_bar_hits: Vec<(usize, crate::view::screen::ScreenRect)>,
     /// The measuring rectangle on the diagnostics plot, while one is drawn.
     pub(crate) diag_selection: Option<crate::panels::diag_plot::DiagSelection>,
     /// The orender binary this Studio would launch, resolved once at start-up.
@@ -602,7 +603,7 @@ impl StudioSpike {
                 &live,
                 &self.settings,
                 &self.camera,
-                rect,
+                to_screen_rect(rect),
                 ppp,
                 &self.selection,
                 &self.volume_settings,
@@ -634,18 +635,20 @@ impl StudioSpike {
         bars.sort_by(|a, b| b.depth.total_cmp(&a.depth));
         self.band_bar_hits.clear();
         for bar in &bars {
-            bar.paint(&painter);
+            for shape in bar.shapes() {
+                paint_shape(&painter, shape);
+            }
             self.band_bar_hits.push((bar.speaker, bar.rect()));
         }
         let mut labels = out.labels;
         labels.sort_by(|a, b| b.depth.total_cmp(&a.depth));
         for l in labels {
             painter.text(
-                l.pos,
+                to_pos2(l.pos),
                 Align2::CENTER_CENTER,
                 l.text,
                 egui::FontId::proportional(l.size),
-                l.color,
+                to_color32(l.color),
             );
         }
     }
@@ -658,7 +661,7 @@ impl StudioSpike {
             .band_bar_hits
             .iter()
             .rev()
-            .find(|(_, bar)| bar.contains(pointer))
+            .find(|(_, bar)| bar.contains(glam::Vec2::new(pointer.x, pointer.y)))
         {
             self.selection.speaker = Some(*index);
             self.selection.object = None;

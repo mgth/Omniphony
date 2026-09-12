@@ -2,19 +2,20 @@
 //! Studio's `sources.js`, `speakers.js`, `scene/*.js`, `trails.js` and
 //! `coordinates.js` rule for rule (see the phase 1 specs). Everything here is
 //! CPU-side: it produces a `FrameData` for the renderer plus the screen-space
-//! labels egui draws on top, and the pick lists the app uses for selection.
+//! labels the app draws on top, and the pick lists it uses for selection.
 
 pub mod gizmos;
 pub mod objects;
 pub mod room;
+pub mod screen;
 pub mod speakers;
 pub mod trails;
 pub mod volumes;
 
 use std::time::Instant;
 
-use egui::{Pos2, Rect};
 use glam::{Mat4, Quat, Vec3, Vec4};
+use screen::{Color, ScreenPos, ScreenRect, Shape};
 
 use crate::model::app_state::RoomRatio;
 use crate::osc::dispatch::Live;
@@ -105,11 +106,11 @@ pub struct Selection {
     pub speaker: Option<usize>,
 }
 
-/// A label to draw with egui over the viewport, in screen points.
+/// A label to draw over the viewport, in screen points.
 pub struct Label {
-    pub pos: Pos2,
+    pub pos: ScreenPos,
     pub text: String,
-    pub color: egui::Color32,
+    pub color: Color,
     /// Font size in points, from the sprite's world height and depth.
     pub size: f32,
     /// View depth, so far labels draw first.
@@ -119,21 +120,21 @@ pub struct Label {
 /// A speaker's frequency-extent gauge, drawn over the viewport.
 ///
 /// The web makes it a billboard sprite with the depth test off, which is a
-/// screen-space overlay by another name; egui draws it directly rather than
+/// screen-space overlay by another name; it is drawn on top rather than
 /// carrying a texture through the renderer for four rectangles and three
-/// ticks.
+/// ticks. This says what those are; the app puts them on screen.
 pub struct BandBar {
     /// The speaker it belongs to: the bar is a pick target too, as in the web.
     pub speaker: usize,
     /// Centre, in screen points.
-    pub pos: Pos2,
+    pub pos: ScreenPos,
     /// Height in points, from the sprite's world height at this depth.
     pub height: f32,
     /// The pass-band in hertz; zero means "open at this end".
     pub low: f32,
     pub high: f32,
     /// The lit segment's colour, the band's own.
-    pub color: egui::Color32,
+    pub color: Color,
     pub depth: f32,
 }
 
@@ -164,55 +165,67 @@ impl BandBar {
     }
 
     /// The bar's extent in screen points.
-    pub fn rect(&self) -> egui::Rect {
+    pub fn rect(&self) -> ScreenRect {
         let h = self.height;
-        egui::Rect::from_center_size(self.pos, egui::vec2(Self::CANVAS_W * h / Self::CANVAS_H, h))
+        ScreenRect::from_center_size(
+            self.pos,
+            glam::Vec2::new(Self::CANVAS_W * h / Self::CANVAS_H, h),
+        )
     }
 
-    pub fn paint(&self, painter: &egui::Painter) {
+    /// The bar as flat shapes. Composing it here rather than in a panel keeps
+    /// the gauge with the projection that placed it; painting it here would
+    /// need a toolkit.
+    pub fn shapes(&self) -> Vec<Shape> {
         let h = self.height;
         let scale = h / Self::CANVAS_H;
         let w = Self::CANVAS_W * scale;
         let top_left = self.rect().min;
-        let track = egui::Rect::from_min_size(
-            top_left + egui::vec2((w - Self::TRACK_W * scale) * 0.5, Self::PAD_Y * scale),
-            egui::vec2(Self::TRACK_W * scale, Self::TRACK_H * scale),
+        let track = ScreenRect::from_min_size(
+            top_left + glam::Vec2::new((w - Self::TRACK_W * scale) * 0.5, Self::PAD_Y * scale),
+            glam::Vec2::new(Self::TRACK_W * scale, Self::TRACK_H * scale),
         );
-        let radius =
-            egui::CornerRadius::same((Self::RADIUS * scale).round().clamp(0.0, 255.0) as u8);
+        let radius = Self::RADIUS * scale;
         let y_for = |hz: f32| track.top() + (1.0 - Self::log_pos(hz)) * track.height();
-        painter.rect_filled(
-            track,
-            radius,
-            egui::Color32::from_rgba_unmultiplied(16, 22, 30, 209),
-        );
         let (low, high) = Self::pass_band(self.low, self.high);
         // The lit segment is the speaker's role at a glance: a sub fills the
         // bottom, a tweeter the top, a mid a floating middle.
-        let lit = egui::Rect::from_min_max(
-            egui::pos2(track.left() + 2.0 * scale, y_for(high)),
-            egui::pos2(
+        let lit = ScreenRect::from_min_max(
+            glam::Vec2::new(track.left() + 2.0 * scale, y_for(high)),
+            glam::Vec2::new(
                 track.right() - 2.0 * scale,
-                (y_for(low)).max(y_for(high) + 2.0 * scale),
+                y_for(low).max(y_for(high) + 2.0 * scale),
             ),
         );
-        painter.rect_filled(lit.intersect(track), radius, self.color);
-        painter.rect_stroke(
-            track,
-            radius,
-            egui::Stroke::new(2.0 * scale, egui::Color32::from_white_alpha(71)),
-            egui::StrokeKind::Inside,
-        );
+        let mut shapes = vec![
+            Shape::Rect {
+                rect: track,
+                radius,
+                fill: Some([16, 22, 30, 209]),
+                stroke: None,
+            },
+            Shape::Rect {
+                rect: lit.intersect(track),
+                radius,
+                fill: Some(self.color),
+                stroke: None,
+            },
+            Shape::Rect {
+                rect: track,
+                radius,
+                fill: None,
+                stroke: Some((2.0 * scale, screen::white_alpha(71))),
+            },
+        ];
         // Decade ticks, so a segment can be read against the axis rather than
         // only compared with its neighbours.
-        for hz in [100.0, 1000.0, 10_000.0] {
-            let y = y_for(hz);
-            painter.hline(
-                (track.left() + 3.0 * scale)..=(track.right() - 3.0 * scale),
-                y,
-                egui::Stroke::new(scale.max(0.5), egui::Color32::from_white_alpha(56)),
-            );
-        }
+        shapes.extend([100.0, 1000.0, 10_000.0].map(|hz| Shape::HLine {
+            x: (track.left() + 3.0 * scale, track.right() - 3.0 * scale),
+            y: y_for(hz),
+            width: scale.max(0.5),
+            color: screen::white_alpha(56),
+        }));
+        shapes
     }
 }
 
@@ -253,7 +266,7 @@ pub fn build_frame(
     live: &Live,
     settings: &ViewSettings,
     camera: &OrbitCamera,
-    rect: Rect,
+    rect: ScreenRect,
     ppp: f32,
     selection: &Selection,
     volume_settings: &VolumeSettings,
@@ -282,14 +295,14 @@ pub fn build_frame(
     let mut pick_objects = Vec::new();
     let mut pick_speakers = Vec::new();
 
-    let project = |p: Vec3| -> Option<(Pos2, f32)> {
+    let project = |p: Vec3| -> Option<(ScreenPos, f32)> {
         let clip = view_proj * Vec4::new(p.x, p.y, p.z, 1.0);
         if clip.w <= 1e-4 {
             return None;
         }
         let ndc = clip.truncate() / clip.w;
         Some((
-            Pos2::new(
+            ScreenPos::new(
                 rect.min.x + (ndc.x + 1.0) * 0.5 * rect.width(),
                 rect.min.y + (1.0 - ndc.y) * 0.5 * rect.height(),
             ),
@@ -401,7 +414,7 @@ pub fn build_frame(
                     height: 0.22 * points_per_unit(depth),
                     low: sp.pass_band.0,
                     high: sp.pass_band.1,
-                    color: egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+                    color: screen::rgb(rgb[0], rgb[1], rgb[2]),
                     depth,
                 });
             }
@@ -409,12 +422,12 @@ pub fn build_frame(
                 && let Some((p, depth)) = project(sp.scene_pos + Vec3::new(0.0, 0.12, 0.0))
             {
                 labels.push(Label {
-                    pos: p + egui::vec2(0.0, 0.03 * points_per_unit(depth)),
+                    pos: p + glam::Vec2::new(0.0, 0.03 * points_per_unit(depth)),
                     text: sp.name.clone(),
                     color: if sp.ghosted {
-                        egui::Color32::from_white_alpha(77)
+                        screen::white_alpha(77)
                     } else {
-                        egui::Color32::WHITE
+                        screen::WHITE
                     },
                     size: (0.06 * points_per_unit(depth)).clamp(6.0, 48.0).round(),
                     depth,
@@ -480,9 +493,9 @@ pub fn build_frame(
                 // Sprite 0.42×0.16 with 36 px glyphs on a 96 px canvas → 0.06
                 // scene units of glyph height, centred on the mesh.
                 labels.push(Label {
-                    pos: p + egui::vec2(0.0, 0.03 * points_per_unit(depth)),
+                    pos: p + glam::Vec2::new(0.0, 0.03 * points_per_unit(depth)),
                     text: obj.label.clone(),
-                    color: egui::Color32::WHITE,
+                    color: screen::WHITE,
                     size: (0.06 * points_per_unit(depth)).clamp(6.0, 48.0).round(),
                     depth,
                 });
