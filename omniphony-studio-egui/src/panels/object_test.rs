@@ -11,6 +11,7 @@ use egui::{RichText, Ui};
 use serde::{Deserialize, Serialize};
 
 use crate::app::StudioSpike;
+use crate::host::commands::gain;
 use crate::i18n::t;
 use crate::ui::{help, theme, widgets};
 
@@ -222,10 +223,7 @@ impl StudioSpike {
             };
         } else {
             self.stop_object_test();
-            let mut live = self.live.lock().unwrap();
-            live.app.sources.remove(OBJECT_TEST_SOURCE_ID);
-            live.app.source_levels.remove(OBJECT_TEST_SOURCE_ID);
-            drop(live);
+            gain::remove_object_test_source(&self.host, OBJECT_TEST_SOURCE_ID);
             if self.selection.object.as_deref() == Some(OBJECT_TEST_SOURCE_ID) {
                 self.selection.object = None;
             }
@@ -410,10 +408,7 @@ impl StudioSpike {
                         .add_filter("WAV", &["wav"])
                         .pick_file()
                 {
-                    self.ctl.send_string(
-                        "/omniphony/control/object_test/clip",
-                        &path.to_string_lossy(),
-                    );
+                    gain::control_object_test_clip(&self.host, path.to_string_lossy().into_owned());
                 }
             });
         });
@@ -713,30 +708,29 @@ impl StudioSpike {
         let o = &self.prefs.object_test;
         let level = 10f64.powf(o.level_db / 20.0) as f32;
         let on = self.object_test_playing && !self.object_test_muted;
-        let args = vec![
-            rosc::OscType::Int(i32::from(on)),
-            rosc::OscType::Float(o.position[0] as f32),
-            rosc::OscType::Float(o.position[1] as f32),
-            rosc::OscType::Float(o.position[2] as f32),
-            rosc::OscType::Float(level.clamp(0.0, 1.0)),
-            rosc::OscType::Float(0.0),
-            rosc::OscType::String(o.isolation.clone()),
-            rosc::OscType::String(o.signal.clone()),
-        ];
-        self.ctl.send("/omniphony/control/object_test", args);
+        gain::control_object_test(
+            &self.host,
+            on,
+            o.position[0] as f32,
+            o.position[1] as f32,
+            o.position[2] as f32,
+            level,
+            0.0,
+            o.isolation.clone(),
+            o.signal.clone(),
+        );
     }
 
     fn send_object_test_rotation(&mut self) {
         let r = &self.prefs.object_test.rotation;
-        let args = vec![
-            rosc::OscType::String(r.axis.clone()),
-            rosc::OscType::Float(r.radius.clamp(0.0, 4.0) as f32),
-            rosc::OscType::Float(r.period.clamp(0.05, 600.0) as f32),
-            rosc::OscType::Float(r.azimuth as f32),
-            rosc::OscType::Float(r.elevation as f32),
-        ];
-        self.ctl
-            .send("/omniphony/control/object_test/rotation", args);
+        gain::control_object_test_rotation(
+            &self.host,
+            r.axis.clone(),
+            r.radius as f32,
+            r.period as f32,
+            r.azimuth as f32,
+            r.elevation as f32,
+        );
     }
 
     pub(crate) fn stop_object_test(&mut self) {
