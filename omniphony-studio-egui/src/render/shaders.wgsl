@@ -1,8 +1,12 @@
 // Scene shaders. Lit and unlit meshes shade in linear light and encode to
-// sRGB on output, because the offscreen target is Rgba8Unorm and egui's
-// swapchain expects gamma-encoded values (egui writes gamma-space colours into
-// the same non-sRGB target). Trail points are written raw, as the Studio's
-// custom ShaderMaterial does (see the phase 1 spec, colour-space caveat).
+// sRGB on output, because the offscreen target is Rgba8Unorm and the host's
+// surface is a non-sRGB one carrying gamma-encoded values — which is what a UI
+// toolkit compositing over this scene writes into it. A host with a real sRGB
+// surface would have the hardware encode, and would need `to_srgb` skipped
+// here; see `SceneRenderer::new`, which requires the non-sRGB form. Trail
+// points are written raw, as the Studio's custom ShaderMaterial does (see the
+// phase 1 spec, colour-space caveat) — that case inverts under an sRGB target,
+// which is why the switch is not a one-line flag.
 //
 // Lights follow scene/setup.js: warm key + cool fill directional lights, an
 // ambient term and a sky/ground hemisphere, with three.js' physical
@@ -254,7 +258,7 @@ fn fs_point(in: PointOut) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color.rgb, alpha);
 }
 
-// --- composite into egui's pass --------------------------------------------
+// --- composite into the host's pass -----------------------------------------
 
 @group(0) @binding(0) var scene_tex: texture_2d<f32>;
 @group(0) @binding(1) var scene_samp: sampler;
