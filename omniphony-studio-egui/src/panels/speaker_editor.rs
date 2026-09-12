@@ -9,6 +9,7 @@
 use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
+use crate::host::commands::{gain, speakers};
 use crate::i18n::t;
 use crate::model::layouts::Speaker;
 use crate::ui::{help, theme, widgets};
@@ -178,11 +179,7 @@ impl StudioSpike {
             Some(0) => self.move_speaker(index, index - 1),
             Some(1) => self.move_speaker(index, index + 1),
             Some(2) => {
-                self.ctl.send_json(
-                    "/omniphony/control/config/layout",
-                    &serde_json::json!({ "removeSpeaker": index }),
-                );
-                self.apply_layout();
+                speakers::control_speakers_remove(&self.host, index as i32);
                 self.selection.speaker = None;
             }
             _ => {}
@@ -630,13 +627,11 @@ impl StudioSpike {
     fn send_speaker_test(&mut self, index: usize) {
         // Peak dBFS to the peak linear amplitude the renderer clamps to.
         let level = 10f32.powf(self.speaker_test_level_db / 20.0);
-        self.ctl.send(
-            "/omniphony/control/speaker_test",
-            vec![
-                rosc::OscType::Int(index as i32),
-                rosc::OscType::Float(level.clamp(0.0, 1.0)),
-                rosc::OscType::String(self.speaker_test_isolation.clone()),
-            ],
+        gain::control_speaker_test(
+            &self.host,
+            index as i32,
+            level,
+            self.speaker_test_isolation.clone(),
         );
     }
 
@@ -664,14 +659,7 @@ impl StudioSpike {
         }
         self.speaker_test_running = None;
         self.speaker_test_deadline = None;
-        self.ctl.send(
-            "/omniphony/control/speaker_test",
-            vec![
-                rosc::OscType::Int(-1),
-                rosc::OscType::Float(0.0),
-                rosc::OscType::String(self.speaker_test_isolation.clone()),
-            ],
-        );
+        gain::control_speaker_test(&self.host, -1, 0.0, self.speaker_test_isolation.clone());
     }
 
     /// A running burst or toggle test stops itself once its window has elapsed
@@ -720,18 +708,15 @@ impl StudioSpike {
         let now = std::time::Instant::now();
         match (wanted, self.idle_feed_armed_at) {
             (true, None) => {
-                self.ctl
-                    .send_int("/omniphony/control/speaker_test/idle_feed", 1);
+                gain::control_speaker_test_idle_feed(&self.host, true);
                 self.idle_feed_armed_at = Some(now);
             }
             (true, Some(at)) if now.duration_since(at) >= IDLE_FEED_REARM => {
-                self.ctl
-                    .send_int("/omniphony/control/speaker_test/idle_feed", 1);
+                gain::control_speaker_test_idle_feed(&self.host, true);
                 self.idle_feed_armed_at = Some(now);
             }
             (false, Some(_)) => {
-                self.ctl
-                    .send_int("/omniphony/control/speaker_test/idle_feed", 0);
+                gain::control_speaker_test_idle_feed(&self.host, false);
                 self.idle_feed_armed_at = None;
             }
             _ => {}
@@ -754,12 +739,7 @@ impl StudioSpike {
 
     /// Delay belongs to the speakers document, not the layout.
     fn set_speaker_delay(&mut self, id: i32, delay_ms: f64) {
-        self.ctl.send_json(
-            "/omniphony/control/config/speakers",
-            &serde_json::json!({
-                "speakerEdits": [{ "id": id.max(0), "delayMs": delay_ms.max(0.0) }]
-            }),
-        );
+        speakers::control_speaker_delay(&self.host, id, delay_ms as f32);
     }
 
     /// The web asks with `window.confirm`; here a modal with the same text.
@@ -819,9 +799,9 @@ impl StudioSpike {
                     .enumerate()
                     .map(|(id, delay_ms)| serde_json::json!({ "id": id, "delayMs": delay_ms }))
                     .collect();
-                self.ctl.send_json(
-                    "/omniphony/control/config/speakers",
-                    &serde_json::json!({ "speakerEdits": edits }),
+                speakers::control_speakers_config(
+                    &self.host,
+                    serde_json::json!({ "speakerEdits": edits }),
                 );
             }
             DelayTool::DelayToDistance => {
@@ -849,11 +829,10 @@ impl StudioSpike {
                         })
                     })
                     .collect();
-                self.ctl.send_json(
-                    "/omniphony/control/config/layout",
-                    &serde_json::json!({ "speakerEdits": edits }),
+                speakers::apply_layout_document(
+                    &self.host,
+                    serde_json::json!({ "speakerEdits": edits }),
                 );
-                self.apply_layout();
             }
         }
     }
@@ -862,9 +841,9 @@ impl StudioSpike {
     /// The three coordinates in one edit, which is what a drag produces: three
     /// separate edits would be three layout applies for one move.
     pub(crate) fn edit_speaker_position(&mut self, id: i32, adm: [f64; 3]) {
-        self.ctl.send_json(
-            "/omniphony/control/config/layout",
-            &serde_json::json!({
+        speakers::apply_layout_document(
+            &self.host,
+            serde_json::json!({
                 "speakerEdits": [{
                     "id": id.max(0),
                     "coordMode": "cartesian",
@@ -874,53 +853,28 @@ impl StudioSpike {
                 }]
             }),
         );
-        self.apply_layout();
     }
 
     fn edit_speaker(&mut self, id: i32, key: &str, value: serde_json::Value) {
-        self.ctl.send_json(
-            "/omniphony/control/config/layout",
-            &serde_json::json!({
-                "speakerEdits": [{ "id": id.max(0), key: value }]
-            }),
+        speakers::apply_layout_document(
+            &self.host,
+            serde_json::json!({ "speakerEdits": [{ "id": id.max(0), key: value }] }),
         );
-        self.apply_layout();
     }
 
     pub(crate) fn move_speaker(&mut self, from: usize, to: usize) {
-        self.ctl.send_json(
-            "/omniphony/control/config/layout",
-            &serde_json::json!({ "moveSpeaker": { "from": from, "to": to } }),
-        );
-        self.apply_layout();
+        speakers::control_speakers_move(&self.host, from as i32, to as i32);
         self.selection.speaker = Some(to);
     }
 
     fn apply_layout(&mut self) {
-        self.mark_recompute_pending();
-        self.ctl
-            .send_no_args("/omniphony/control/config/layout/apply");
+        speakers::control_speakers_apply(&self.host);
     }
 
     /// `control_speaker_gain`: realtime, stamped so the renderer can drop a
     /// stale update.
     pub(crate) fn set_speaker_gain(&mut self, index: usize, gain: f32) {
-        let clamped = gain.clamp(0.0, 2.0);
-        self.live
-            .lock()
-            .unwrap()
-            .app
-            .speaker_gains
-            .insert(index.to_string(), clamped as f64);
-        let seq = self.next_realtime_seq();
-        self.ctl.send(
-            "/omniphony/control/realtime/speaker_gain",
-            vec![
-                rosc::OscType::Int(index as i32),
-                rosc::OscType::Float(clamped),
-                rosc::OscType::Int(seq),
-            ],
-        );
+        gain::control_speaker_gain(&self.host, index as i32, gain);
     }
 }
 

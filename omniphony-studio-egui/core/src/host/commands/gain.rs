@@ -10,6 +10,13 @@ use std::sync::atomic::Ordering;
 
 pub fn control_speaker_gain(state: &SharedState, id: i32, gain: f32) {
     let clamped = gain.max(0.0).min(2.0);
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .speaker_gains
+        .insert(id.max(0).to_string(), f64::from(clamped));
     let seq = state.realtime_seq.fetch_add(1, Ordering::Relaxed) + 1;
     send_control(
         &state.osc_tx,

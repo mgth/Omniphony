@@ -231,7 +231,10 @@ pub fn control_speaker_freq_high(state: &SharedState, id: i32, freq_high: f32) {
     );
 }
 
+/// Commit the layout. Every apply re-plans it, so the recompute is armed
+/// here rather than by each caller.
 pub fn control_speakers_apply(state: &SharedState) {
+    super::render::mark_recompute_pending(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
