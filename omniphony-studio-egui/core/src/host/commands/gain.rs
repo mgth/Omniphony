@@ -25,6 +25,7 @@ pub fn control_speaker_gain(state: &SharedState, id: i32, gain: f32) {
 }
 
 pub fn control_object_mute(state: &SharedState, id: i32, muted: i32) {
+    set_object_mute_local(state, &id.to_string(), muted != 0);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
@@ -35,6 +36,13 @@ pub fn control_object_mute(state: &SharedState, id: i32, muted: i32) {
 }
 
 pub fn control_speaker_mute(state: &SharedState, id: i32, muted: i32) {
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .speaker_mutes
+        .insert(id.to_string(), u8::from(muted != 0));
     send_json_control(
         &state.osc_tx,
         "/omniphony/control/config/speakers",
@@ -58,6 +66,20 @@ pub fn control_master_gain(state: &SharedState, gain: f32) {
             args: vec![rosc::OscType::Float(clamped), rosc::OscType::Int(seq)],
         },
     );
+}
+
+/// Mute an object in the model without telling the renderer, for a source
+/// this side owns: the injected test source is not addressable by index, so
+/// `control_object_mute` would send it as `NaN`. Its signal is stopped by
+/// whoever owns the transport.
+pub fn set_object_mute_local(state: &SharedState, id: &str, muted: bool) {
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .object_mutes
+        .insert(id.to_owned(), u8::from(muted));
 }
 
 pub fn control_loudness(state: &SharedState, enable: i32) {
