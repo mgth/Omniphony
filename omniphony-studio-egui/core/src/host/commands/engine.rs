@@ -96,6 +96,41 @@ pub fn control_option(state: &SharedState, key: String, value: serde_json::Value
 
 /// Set a live object-generator parameter (PAD: `strength` / `hpf_hz` /
 /// `gain_db`). Sent as `[key, value]`; the renderer clamps and applies it live.
+/// Remember a live parameter in the model, so the slider that set it reads
+/// its own value back instead of snapping until the renderer's echo arrives.
+fn remember_param(params: &mut Option<serde_json::Value>, key: &str, value: f64) {
+    let params = params.get_or_insert_with(|| serde_json::Value::Object(Default::default()));
+    if let Some(map) = params.as_object_mut() {
+        map.insert(key.to_owned(), serde_json::json!(value));
+    }
+}
+
+/// A generator parameter, remembered and sent.
+pub fn set_object_generator_param(state: &SharedState, key: &str, value: f64) {
+    remember_param(
+        &mut state
+            .inner
+            .lock()
+            .unwrap()
+            .app
+            .live_options
+            .object_generator_params,
+        key,
+        value,
+    );
+    control_object_generator_param(state, key.to_owned(), value as f32);
+}
+
+/// A phantom-extraction parameter, remembered and sent.
+pub fn set_phantom_extract_param(state: &SharedState, key: &str, value: f64) {
+    remember_param(
+        &mut state.inner.lock().unwrap().app.live_options.phantom_params,
+        key,
+        value,
+    );
+    control_phantom_extract_param(state, key.to_owned(), value as f32);
+}
+
 pub fn control_object_generator_param(state: &SharedState, key: String, value: f32) {
     let k = key.trim().to_ascii_lowercase();
     // Any non-empty key is accepted; the renderer validates it against the active
