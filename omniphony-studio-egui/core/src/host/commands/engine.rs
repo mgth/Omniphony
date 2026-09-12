@@ -165,6 +165,22 @@ pub fn control_phantom_extract_param(state: &SharedState, key: String, value: f3
 
 /// Set the parametrable virtual bed (a YAML `SpeakerLayout`, one entry per
 /// channel label). An empty string resets to the built-in canonical poses.
+/// The parametrable virtual bed, applied and sent. The document is what the
+/// channel editor built; the model shows it at once so the editor, the 3D view
+/// and the audio agree before the renderer echoes.
+pub fn set_virtual_bed(state: &SharedState, payload: serde_json::Value) {
+    state.inner.lock().unwrap().app.live_options.virtual_bed = Some(payload.clone());
+    if let Ok(value) = serde_json::to_string(&payload) {
+        control_virtual_bed(state, value);
+    }
+}
+
+/// A drag in flight moves the local copy only: the bed is a whole layout, and
+/// pushing one per pointer move would be a stream of layouts.
+pub fn preview_virtual_bed(state: &SharedState, payload: serde_json::Value) {
+    state.inner.lock().unwrap().app.live_options.virtual_bed = Some(payload);
+}
+
 pub fn control_virtual_bed(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
