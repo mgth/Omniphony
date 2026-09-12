@@ -17,6 +17,7 @@ use egui::{Color32, Pos2, RichText, Stroke, Ui, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::app::StudioSpike;
+use crate::host::commands::diag;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
@@ -546,8 +547,7 @@ impl StudioSpike {
                         {
                             self.prefs.diag_plot.rate_hz = *option;
                             self.mark_prefs_dirty();
-                            self.ctl
-                                .send_float("/omniphony/control/diag/rate_hz", *option as f32);
+                            diag::control_diag_rate_hz(&self.host, *option as f32);
                         }
                     }
                 });
@@ -1019,7 +1019,7 @@ impl StudioSpike {
     fn maintain_diag_publication(&mut self, open: bool, ctx: &egui::Context) {
         if !open {
             if self.diag_keepalive_at.take().is_some() {
-                self.ctl.send_int("/omniphony/control/diag/enabled", 0);
+                diag::control_diag_publication_enabled(&self.host, 0);
                 self.diag_series.clear();
             }
             return;
@@ -1029,13 +1029,10 @@ impl StudioSpike {
             .diag_keepalive_at
             .is_none_or(|at| now.duration_since(at) >= KEEPALIVE)
         {
-            self.ctl.send_int("/omniphony/control/diag/enabled", 1);
+            diag::control_diag_publication_enabled(&self.host, 1);
             // The rate is restated with the enable: a renderer that restarted
             // came back on its own default.
-            self.ctl.send_float(
-                "/omniphony/control/diag/rate_hz",
-                self.prefs.diag_plot.rate_hz as f32,
-            );
+            diag::control_diag_rate_hz(&self.host, self.prefs.diag_plot.rate_hz as f32);
             self.diag_keepalive_at = Some(now);
         }
         // A plot only redraws when something asks it to, and telemetry arrives
