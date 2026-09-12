@@ -9,13 +9,12 @@
 # Totals:
 #   osc-address      0
 #   raw-send         0
-#   model-write      18
+#   model-write      15
 #   side-effect      1
 #   frame-tick       2
 #
 # rule            file                                      count
 model-write       src/panels/auto_tune.rs                   4
-model-write       src/panels/channel_editor.rs              3
 model-write       src/panels/latency.rs                     2
 model-write       src/panels/renderer.rs                    9
 side-effect       src/app.rs                                1

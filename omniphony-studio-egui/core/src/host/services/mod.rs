@@ -17,6 +17,7 @@ pub mod object_test;
 pub mod overlay;
 pub mod speaker_test;
 pub mod updates;
+pub mod virtual_bed;
 pub mod watchdog;
 
 use std::sync::Arc;
@@ -55,6 +56,7 @@ pub struct Services {
     pub diagnostics: interests::Diagnostics,
     pub overlay: overlay::MpvOverlay,
     pub object_test: object_test::ObjectTestSource,
+    pub virtual_bed: virtual_bed::VirtualBed,
 }
 
 impl Services {
@@ -71,6 +73,7 @@ impl Services {
             self.diagnostics.tick(state, now),
             self.overlay.tick(state, now),
             self.object_test.tick(state, now),
+            self.virtual_bed.tick(state, now),
         ] {
             changed |= tick.changed;
             next = match (next, tick.next) {

@@ -353,7 +353,7 @@ impl StudioSpike {
                 });
             });
         if run {
-            self.reset_virtual_bed();
+            crate::host::commands::engine::reset_virtual_bed(&self.host);
         }
         if run || cancel || modal.should_close() {
             self.virtual_bed_reset_confirm = false;

@@ -169,16 +169,53 @@ pub fn control_phantom_extract_param(state: &SharedState, key: String, value: f3
 /// channel editor built; the model shows it at once so the editor, the 3D view
 /// and the audio agree before the renderer echoes.
 pub fn set_virtual_bed(state: &SharedState, payload: serde_json::Value) {
-    state.inner.lock().unwrap().app.live_options.virtual_bed = Some(payload.clone());
-    if let Ok(value) = serde_json::to_string(&payload) {
+    let value = serde_json::to_string(&payload).ok();
+    preview_virtual_bed(state, payload);
+    if let Some(value) = value {
         control_virtual_bed(state, value);
     }
+}
+
+/// Reset every channel to its catalogue corner, in cartesian mode.
+///
+/// Sending an empty string would hand the renderer its built-in *polar* poses,
+/// which the editor would then display as cartesian corners: the polar form
+/// would change while the cartesian fields stayed stale even though the mode
+/// read "cartesian". Pushing the explicit cartesian bed keeps the editor, the
+/// 3D view and the audio in agreement.
+pub fn reset_virtual_bed(state: &SharedState) {
+    use crate::host::channels::{Base, Channel, build_layout_payload, default_entry};
+    let payload = {
+        let live = state.inner.lock().unwrap();
+        let room = live.app.room_ratio.clone();
+        let channels: Vec<Channel> =
+            crate::host::channels::effective_channels(&live.channels, &live.app)
+                .iter()
+                .map(|channel| {
+                    let base = live.channels.base(&channel.name).cloned().unwrap_or(Base {
+                        name: channel.name.clone(),
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                        spatialize: true,
+                    });
+                    default_entry(&room, &base)
+                })
+                .collect();
+        build_layout_payload(&live.app, &channels)
+    };
+    set_virtual_bed(state, payload);
 }
 
 /// A drag in flight moves the local copy only: the bed is a whole layout, and
 /// pushing one per pointer move would be a stream of layouts.
 pub fn preview_virtual_bed(state: &SharedState, payload: serde_json::Value) {
     state.inner.lock().unwrap().app.live_options.virtual_bed = Some(payload);
+    // The bed's scene markers are published by a core service, so a bed the UI
+    // just changed has to reach the clock. Without this the markers would wait
+    // for whatever else wakes it — an incoming packet, which is exactly what a
+    // Studio editing its bed offline does not have.
+    (state.waker)();
 }
 
 pub fn control_virtual_bed(state: &SharedState, value: String) {
