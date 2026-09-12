@@ -17,22 +17,24 @@ state directly instead of a camelCase JSON mirror.
 
 | Path | Role |
 |---|---|
+| `core/` | `omniphony-studio-core`, the crate with no UI dependency: |
+| `core/src/osc/` | UDP listener, register/heartbeat, control channel; `dispatch.rs` applies events to the model |
+| `core/src/model/` | `AppState`, `RoomRatio`, layouts (copied from `src-tauri`) |
+| `core/src/host/` | What the Tauri host did outside the listener: the command handlers (ported), the OSC config, the preferences file, peak hold, timing stats |
+| `core/src/i18n.rs` | Strings, resolved against the web Studio's catalogues |
 | `src/main.rs` | CLI, fonts (system CJK fallback face), eframe launch |
 | `src/app.rs` | Panels, camera input, picking, gain-table subscriptions, stats |
-| `src/osc/` | UDP listener, register/heartbeat, control channel; `dispatch.rs` applies events to the model |
-| `src/model/` | `AppState`, `RoomRatio`, layouts (copied from `src-tauri`) |
-| `src/host/` | What the Tauri host did outside the listener: the command handlers (ported), the OSC config, preferences, peak hold, timing stats |
-| `src/ui/` | The Studio's look: theme, side-panel geometry, sections, generic widgets |
+| `src/prefs/` | What the UI remembers across launches (the file I/O is the core's) |
+| `src/ui/` | The Studio's look: theme, side-panel geometry, sections, generic widgets, file dialogs |
 | `src/panels/` | The panels themselves, one module per group of sections |
-| `src/i18n.rs` | Strings, resolved against the web Studio's `en.json` |
 | `src/view/` | Model → frame: objects, speakers, room, trails, volumes |
 | `src/render/` | wgpu renderer hosted by an `egui_wgpu::Callback`; camera; head glTF; volumes |
 
-The crate keeps a boundary between its core (`model`, `osc`, `host`,
-`auto_tune`) and its UI, so that egui can be replaced the way the web frontend
-was: see [`ARCHITECTURE.md`](ARCHITECTURE.md). `tests/architecture.rs` enforces
-it, and [`docs/studio-egui-boundary-plan.md`](../docs/studio-egui-boundary-plan.md)
-is the plan for the parts that do not respect it yet.
+The core is its own crate so that egui can be replaced the way the web
+frontend was: see [`ARCHITECTURE.md`](ARCHITECTURE.md). CI keeps UI crates out of
+its dependency graph, `tests/architecture.rs` keeps protocol and behaviour out
+of the UI, and [`docs/studio-egui-boundary-plan.md`](../docs/studio-egui-boundary-plan.md)
+is the plan for the parts that do not respect the boundary yet.
 
 ## Build and run
 

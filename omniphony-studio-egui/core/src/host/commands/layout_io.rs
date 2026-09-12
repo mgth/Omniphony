@@ -1,5 +1,6 @@
-//! Layout selection, import/export and the native file-dialog pickers (layouts,
-//! evaluation artifacts, bridge & orender executables).
+//! Layout selection and import/export, and what the file dialogs need from the
+//! core: where they start, what they remember, the names they propose. The
+//! dialogs themselves are UI (`ui::file_dialogs`).
 //!
 //! Unlike most command modules these touch the shared [`AppState`] layout list
 //! and the local filesystem rather than only forwarding over OSC.
@@ -11,7 +12,6 @@ use super::HostPaths;
 use super::SharedState;
 use crate::host::config::{load_config, save_config};
 use crate::model::layouts::{self, Layout};
-use rfd::FileDialog;
 use std::path::Path;
 
 pub fn select_layout(state: &SharedState, key: String) -> bool {
@@ -55,57 +55,35 @@ pub fn import_layout_from_path(
 /// Directory the import picker should open in: the user's last import dir if
 /// known, otherwise the bundled layouts dir (so a first-time user lands right
 /// on the shipped presets).
-fn import_start_dir(app: &HostPaths, state: &&SharedState) -> Option<std::path::PathBuf> {
+pub fn import_start_dir(app: &HostPaths, state: &SharedState) -> Option<std::path::PathBuf> {
     if let Some(dir) = load_config(&state.config_dir).last_layout_import_dir {
         let p = std::path::PathBuf::from(dir);
         if p.is_dir() {
             return Some(p);
         }
     }
+    presets_dir(app)
+}
+
+/// The bundled presets, where the "Presets" picker always opens.
+pub fn presets_dir(app: &HostPaths) -> Option<std::path::PathBuf> {
     app.resource_dir()
         .ok()
         .map(|d| d.join("layouts"))
         .filter(|p| p.is_dir())
 }
 
-pub fn pick_import_layout_path(app: &HostPaths, state: &SharedState) -> Option<String> {
-    let mut dialog = FileDialog::new().add_filter("Layout", &["json", "yaml", "yml"]);
-    if let Some(dir) = import_start_dir(&app, &state) {
-        dialog = dialog.set_directory(dir);
-    }
-    let picked = dialog.pick_file()?;
-
-    // Remember where the user imported from for next time.
-    if let Some(parent) = picked.parent() {
-        let mut cfg = load_config(&state.config_dir);
-        cfg.last_layout_import_dir = Some(parent.to_string_lossy().to_string());
-        let _ = save_config(&state.config_dir, &cfg);
-    }
-
-    Some(picked.to_string_lossy().to_string())
+/// Remember where the user imported from, for the next import.
+pub fn remember_import_dir(state: &SharedState, dir: &Path) {
+    let mut cfg = load_config(&state.config_dir);
+    cfg.last_layout_import_dir = Some(dir.to_string_lossy().to_string());
+    let _ = save_config(&state.config_dir, &cfg);
 }
 
-/// Picker for the dedicated "Presets" button: always opens in the bundled
-/// presets dir. Unlike the generic import picker it ignores — and doesn't
-/// update — the remembered import dir, since the presets live at a fixed
-/// location the user shouldn't have to navigate back to.
-pub fn pick_preset_layout_path(app: &HostPaths) -> Option<String> {
-    let mut dialog = FileDialog::new().add_filter("Layout", &["json", "yaml", "yml"]);
-    if let Some(dir) = app
-        .resource_dir()
-        .ok()
-        .map(|d| d.join("layouts"))
-        .filter(|p| p.is_dir())
-    {
-        dialog = dialog.set_directory(dir);
-    }
-    dialog
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string())
-}
-
-pub fn pick_export_layout_path(suggested_name: Option<String>) -> Option<String> {
-    let file_name = suggested_name
+/// The file name a layout export dialog proposes: the suggestion with a
+/// layout extension, `.yaml` when it has none, or `layout.yaml`.
+pub fn layout_export_file_name(suggested_name: Option<String>) -> String {
+    suggested_name
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -118,25 +96,12 @@ pub fn pick_export_layout_path(suggested_name: Option<String>) -> Option<String>
                 format!("{s}.yaml")
             }
         })
-        .unwrap_or_else(|| "layout.yaml".to_string());
-
-    FileDialog::new()
-        .add_filter("Layout YAML", &["yaml", "yml"])
-        .add_filter("Layout JSON", &["json"])
-        .set_file_name(&file_name)
-        .save_file()
-        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "layout.yaml".to_string())
 }
 
-pub fn pick_import_evaluation_artifact_path() -> Option<String> {
-    FileDialog::new()
-        .add_filter("Omniphony evaluator", &["oevl"])
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string())
-}
-
-pub fn pick_export_evaluation_artifact_path(suggested_name: Option<String>) -> Option<String> {
-    let file_name = suggested_name
+/// The file name an evaluation-artifact export dialog proposes.
+pub fn evaluation_export_file_name(suggested_name: Option<String>) -> String {
+    suggested_name
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -148,42 +113,7 @@ pub fn pick_export_evaluation_artifact_path(suggested_name: Option<String>) -> O
                 format!("{s}.oevl")
             }
         })
-        .unwrap_or_else(|| "evaluation.oevl".to_string());
-
-    FileDialog::new()
-        .add_filter("Omniphony evaluator", &["oevl"])
-        .set_file_name(&file_name)
-        .save_file()
-        .map(|path| path.to_string_lossy().to_string())
-}
-
-pub fn pick_bridge_path() -> Option<String> {
-    FileDialog::new()
-        .set_title("Select bridge library")
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string())
-}
-
-pub fn pick_orender_path() -> Option<String> {
-    FileDialog::new()
-        .set_title("Select orender executable")
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string())
-}
-
-/// Native picker for an editable backend file (e.g. a script `.lua`), restricted
-/// to `extensions` when non-empty. The returned path is in *this* machine's
-/// namespace, so the UI only offers Browse when the renderer is local
-/// (see `renderer_is_local`).
-pub fn pick_backend_file_path(extensions: Vec<String>) -> Option<String> {
-    let mut dialog = FileDialog::new().set_title("Select backend file");
-    if !extensions.is_empty() {
-        let exts: Vec<&str> = extensions.iter().map(String::as_str).collect();
-        dialog = dialog.add_filter("Backend file", &exts);
-    }
-    dialog
-        .pick_file()
-        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "evaluation.oevl".to_string())
 }
 
 pub fn export_layout_to_path(path: String, layout: Layout) -> Result<(), String> {

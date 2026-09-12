@@ -15,30 +15,40 @@ it is planned in [`docs/studio-egui-boundary-plan.md`](../docs/studio-egui-bound
 
 ## Two tiers
 
-| Tier | Modules | Owns | Must not |
+| Tier | Where | Owns | Must not |
 |---|---|---|---|
-| **Core** | `model/`, `osc/`, `host/`, `auto_tune/`, `i18n.rs`, `stats.rs` | the renderer protocol, the application and session state, everything that happens over time, all I/O | name egui, eframe, wgpu, winit or rfd; import `app`, `panels`, `ui`, `view` or `render` |
-| **UI** | `app.rs`, `main.rs`, `panels/`, `ui/`, `view/`, `render/` | drawing, input, view state (camera, selection, tabs, text being typed) | spell an OSC address, send raw control messages, write the model, do I/O, run periodic behaviour |
+| **Core** | `core/`, the crate `omniphony-studio-core`: `model/`, `osc/`, `host/`, `auto_tune/`, `i18n.rs`, `stats.rs` | the renderer protocol, the application and session state, everything that happens over time, all I/O | depend on any UI crate |
+| **UI** | this crate: `app.rs`, `main.rs`, `panels/`, `prefs/`, `ui/`, `view/`, `render/` | drawing, input, view state (camera, selection, tabs, text being typed), native dialogs | spell an OSC address, send raw control messages, write the model, do I/O, run periodic behaviour |
 
-The UI depends on the core, never the reverse. `view/` and `render/` sit in the
-UI tier but are toolkit-neutral by design — wgpu only, with egui confined to
-the `ViewportCallback` adapter and a few `Pos2`/`Color32` in `view/` that the
-plan removes. Keep them that way.
+The UI depends on the core, never the reverse. The app binds the core's
+modules at its root (`use omniphony_studio_core::{model, osc, …}` in
+`main.rs`), so UI code still names them `crate::model`, `crate::osc`, … .
+
+`view/` and `render/` sit in the UI tier but are toolkit-neutral by design —
+wgpu only, with egui confined to the `ViewportCallback` adapter and a few
+`Pos2`/`Color32` in `view/` that the plan removes. Keep them that way.
 
 ## Rules
 
-Each machine-checked rule has the id the ratchet reports it under.
+The core's side is held by the toolchain:
 
-| Rule | Tier | What it forbids |
-|---|---|---|
-| `osc-address` | UI | a string literal starting with `/omniphony/` |
-| `raw-send` | UI | `ctl.send*(…)`, `control.send(…)`, `send_control(…)`, `send_json_control(…)` |
-| `model-write` | UI | writing the model or host state: `live.app.x = …`, `live.app.sources.insert(…)`, `live.push_log(…)`, `….lock().unwrap().field = …` |
-| `model-impl` | UI | `impl AppState` or `impl Live` |
-| `side-effect` | UI | spawning a thread or process, `thread::sleep`, file or network I/O (`fs::…`, `UdpSocket`, `to_socket_addrs`, `ureq`) |
-| `frame-tick` | UI | defining a `maintain_*` function |
-| `toolkit-in-core` | Core | naming `egui`, `eframe`, `egui_wgpu`, `epaint`, `emath`, `ecolor`, `wgpu`, `winit` or `rfd` |
-| `core-imports-ui` | Core | `crate::app`, `crate::panels`, `crate::ui`, `crate::view`, `crate::render`, `crate::Args` |
+- **The core cannot import the UI.** It is a separate crate the app depends
+  on, so there is no path back.
+- **No UI crate in the core's graph.** A CI step fails when egui, eframe,
+  wgpu, winit, accesskit or rfd appears in `cargo tree -p omniphony-studio-core`.
+- **The UI cannot extend the model.** Rust's orphan rule rejects an
+  `impl AppState` or `impl Live` outside the core crate. Build the view's own
+  type instead (`LatencyView::of(&AppState)`).
+
+The UI's side is held by the ratchet, under these rule ids:
+
+| Rule | What it forbids in the UI crate |
+|---|---|
+| `osc-address` | a string literal starting with `/omniphony/` |
+| `raw-send` | `ctl.send*(…)`, `control.send(…)`, `send_control(…)`, `send_json_control(…)` |
+| `model-write` | writing the model or host state: `live.app.x = …`, `live.app.sources.insert(…)`, `live.push_log(…)`, `….lock().unwrap().field = …` |
+| `side-effect` | spawning a thread or process, `thread::sleep`, file or network I/O (`fs::…`, `UdpSocket`, `to_socket_addrs`, `ureq`) |
+| `frame-tick` | defining a `maintain_*` function |
 
 Two exemptions are written into the test with their reason: `main.rs` reads the
 CJK font and `render/head.rs` reads the head mesh, once, before the first
@@ -62,7 +72,7 @@ Not machine-checked, same rule:
 
 ### A new control
 
-1. In `src/host/commands/<area>.rs`, write — or first look for — a typed
+1. In `core/src/host/commands/<area>.rs`, write — or first look for — a typed
    function: `pub fn set_head_radius(state: &SharedState, metres: f32)`. It
    clamps, applies the optimistic value to the model through `state.inner`,
    and sends with `send_control`. A realtime control stamps
@@ -78,7 +88,7 @@ it.
 
 ### Something that happens over time
 
-A service in `src/host/` with explicit state and
+A service in `core/src/host/` with explicit state and
 `fn tick(&mut self, now: Instant) -> Option<Instant>` returning its next
 deadline. The UI declares what it wants (`set_idle_feed_wanted(true)` when the
 pane opens) rather than the service reading UI state. Until the core has its own
@@ -117,13 +127,14 @@ with. `cargo test` fails when:
   ```
 
   This mode rewrites the file only when nothing grew;
-- **a file sits outside every tier.** Add its module to `TIERS` in the test, on
-  the side of the boundary it belongs to.
+- **a file sits in no declared module.** Declare the module in `MODULES` in
+  the test if it draws; if it holds protocol, state or behaviour, it belongs in
+  `core/`.
 
 Two PRs that each lower the same line conflict on the baseline. Regenerate
 after the rebase; do not merge the two numbers by hand.
 
-A rule is deleted from the test once the compiler enforces it — the core in its
-own crate makes `toolkit-in-core` and `core-imports-ui` moot; a read-only model
-handle does the same for `model-write`. `osc-address` and `raw-send` stay as
-cheap tripwires.
+A rule is deleted from the test once the compiler enforces it. The crate split
+retired three that way: `toolkit-in-core`, `core-imports-ui` and `model-impl`.
+A read-only model handle will do the same for `model-write`. `osc-address` and
+`raw-send` stay as cheap tripwires.

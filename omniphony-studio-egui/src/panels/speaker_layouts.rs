@@ -71,10 +71,8 @@ impl StudioSpike {
         let paths = HostPaths::default();
         let state = self.host.clone();
         let path = match pick {
-            Pick::Presets => crate::host::commands::layout_io::pick_preset_layout_path(&paths),
-            Pick::Import => {
-                crate::host::commands::layout_io::pick_import_layout_path(&paths, &state)
-            }
+            Pick::Presets => crate::ui::file_dialogs::pick_preset_layout_path(&paths),
+            Pick::Import => crate::ui::file_dialogs::pick_import_layout_path(&paths, &state),
         };
         // An empty answer is a cancelled dialog, which is not a failure.
         let Some(path) = path.filter(|p| !p.trim().is_empty()) else {
@@ -142,7 +140,7 @@ impl StudioSpike {
         let Some(layout) = layout else { return };
         let suggested =
             crate::host::commands::layout_io::default_layout_export_name(layout.clone());
-        let Some(path) = crate::host::commands::layout_io::pick_export_layout_path(Some(suggested))
+        let Some(path) = crate::ui::file_dialogs::pick_export_layout_path(Some(suggested))
             .filter(|p| !p.trim().is_empty())
         else {
             return;

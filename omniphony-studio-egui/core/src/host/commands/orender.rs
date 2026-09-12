@@ -21,8 +21,11 @@ struct OrenderLaunchSpec {
     args: Vec<String>,
 }
 
+/// Public so the UI crate can name it; read serialised, like [`AboutInfo`].
+///
+/// [`AboutInfo`]: super::app::AboutInfo
 #[derive(serde::Serialize)]
-pub(crate) struct OrenderServiceStatus {
+pub struct OrenderServiceStatus {
     installed: bool,
     running: bool,
     manager: &'static str,
@@ -398,7 +401,7 @@ fn windows_service_bin_path(exec_path: &PathBuf, args: &[String]) -> String {
 
 /// Whether a managed orender service instance is running (watchdog gate: a
 /// service-owned renderer must not be doubled by an auto-started one).
-pub(crate) fn orender_service_running() -> bool {
+pub fn orender_service_running() -> bool {
     get_orender_service_status()
         .map(|status| status.running)
         .unwrap_or(false)
@@ -764,7 +767,7 @@ fn spawn_orender_process(
 
 /// Watchdog entry point: launch a standby renderer from the saved OSC config
 /// (binary discovery only — no user-supplied path or log level).
-pub(crate) fn autostart_orender(
+pub fn autostart_orender(
     app: &HostPaths,
     state: &SharedState,
 ) -> Result<serde_json::Value, String> {
@@ -826,11 +829,17 @@ mod tests {
 
     #[test]
     fn the_repo_root_is_the_checkout_that_holds_this_crate() {
-        // Two `parent()` steps from this crate's manifest, as in the Tauri
-        // host, land one level above the checkout.
+        // The search walks up from this crate's manifest until it finds the
+        // renderer, so it holds however deep the crate sits in the checkout —
+        // `omniphony-studio-egui/core/` since the core became its own crate.
         let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = repo_root().expect("tests run from a source tree");
-        assert_eq!(root, crate_dir.parent().unwrap());
+        assert!(
+            crate_dir.starts_with(&root),
+            "{} is not inside {}",
+            crate_dir.display(),
+            root.display()
+        );
         assert!(root.join("omniphony-studio-egui/Cargo.toml").is_file());
         // However deep the search starts inside the checkout.
         for start in [crate_dir.join("src/host/commands"), root.clone()] {

@@ -325,7 +325,7 @@ impl StudioSpike {
         let (state, stats, adaptive_on, paused, band, runtime_state) = {
             let live = self.live.lock().unwrap();
             (
-                live.app.clone_latency_view(),
+                LatencyView::of(&live.app),
                 live.latency_stats(),
                 live.app.adaptive_resampling.unwrap_or(0) != 0,
                 live.app.adaptive_resampling_paused.unwrap_or(0) != 0,
@@ -778,18 +778,20 @@ pub struct LatencyView {
     pub requested: Option<i64>,
 }
 
-impl AppState {
-    /// Snapshot of the latency block, so the panel does not hold the lock
-    /// while it draws.
-    pub fn clone_latency_view(&self) -> LatencyView {
-        LatencyView {
-            latency: self.latency.latency_ms,
-            instant: self.latency.latency_instant_ms,
-            control: self.latency.latency_control_ms,
-            smoothed: self.latency.latency_smoothed_ms,
-            downstream: self.latency.latency_downstream_ms,
-            target: self.latency.latency_target_ms,
-            requested: self.latency.latency_requested_ms,
+impl LatencyView {
+    /// Snapshot of the model's latency block, so the panel does not hold the
+    /// lock while it draws. A constructor on the view's own type rather than a
+    /// method on `AppState`: the model is the core's, and the UI does not
+    /// extend it.
+    pub fn of(app: &AppState) -> Self {
+        Self {
+            latency: app.latency.latency_ms,
+            instant: app.latency.latency_instant_ms,
+            control: app.latency.latency_control_ms,
+            smoothed: app.latency.latency_smoothed_ms,
+            downstream: app.latency.latency_downstream_ms,
+            target: app.latency.latency_target_ms,
+            requested: app.latency.latency_requested_ms,
         }
     }
 }

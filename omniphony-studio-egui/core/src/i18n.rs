@@ -16,35 +16,35 @@ use std::sync::{Mutex, OnceLock};
 const CATALOGUES: &[(&str, &str)] = &[
     (
         "en",
-        include_str!("../../omniphony-studio/src/i18n/en.json"),
+        include_str!("../../../omniphony-studio/src/i18n/en.json"),
     ),
     (
         "fr",
-        include_str!("../../omniphony-studio/src/i18n/fr.json"),
+        include_str!("../../../omniphony-studio/src/i18n/fr.json"),
     ),
     (
         "de",
-        include_str!("../../omniphony-studio/src/i18n/de.json"),
+        include_str!("../../../omniphony-studio/src/i18n/de.json"),
     ),
     (
         "ja",
-        include_str!("../../omniphony-studio/src/i18n/ja.json"),
+        include_str!("../../../omniphony-studio/src/i18n/ja.json"),
     ),
     (
         "es",
-        include_str!("../../omniphony-studio/src/i18n/es.json"),
+        include_str!("../../../omniphony-studio/src/i18n/es.json"),
     ),
     (
         "it",
-        include_str!("../../omniphony-studio/src/i18n/it.json"),
+        include_str!("../../../omniphony-studio/src/i18n/it.json"),
     ),
     (
         "pt-BR",
-        include_str!("../../omniphony-studio/src/i18n/pt-BR.json"),
+        include_str!("../../../omniphony-studio/src/i18n/pt-BR.json"),
     ),
     (
         "zh-CN",
-        include_str!("../../omniphony-studio/src/i18n/zh-CN.json"),
+        include_str!("../../../omniphony-studio/src/i18n/zh-CN.json"),
     ),
 ];
 

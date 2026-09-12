@@ -8,16 +8,16 @@
 //! panels over the viewport so panel expansion can never resize the scene.
 
 mod app;
-mod auto_tune;
-mod host;
-mod i18n;
-mod model;
-mod osc;
 mod panels;
+mod prefs;
 mod render;
-mod stats;
 mod ui;
 mod view;
+
+// The core's modules, bound at the crate root so the UI keeps reading them as
+// `crate::model`, `crate::osc`, … . Everything they hold is the core's; this
+// crate only draws it.
+use omniphony_studio_core::{auto_tune, host, i18n, model, osc, stats};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

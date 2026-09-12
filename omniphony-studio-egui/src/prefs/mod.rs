@@ -2,11 +2,17 @@
 //! (`spatialviz.*` keys); a native window has no such store, so they live in a
 //! JSON file next to the OSC config, under the same per-environment config
 //! directory (`OMNIPHONY_CONFIG_DIR`).
+//!
+//! What is stored is the UI's business, so the types live here; reading and
+//! writing the file is the core's (`host::json_store`).
+
+pub mod display;
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::host::json_store;
 use crate::panels::diag_plot::DiagPlotPrefs;
 use crate::panels::object_test::ObjectTestPrefs;
 use crate::panels::updates::UpdatePrefs;
@@ -27,7 +33,7 @@ pub struct Prefs {
     /// The `omniphony.updateCheck.*` keys of the release check.
     pub updates: UpdatePrefs,
     /// The Display panel: the web's effective-render and trail prefs.
-    pub display: super::display_prefs::DisplayPrefs,
+    pub display: display::DisplayPrefs,
 }
 
 fn path(config_dir: &Path) -> PathBuf {
@@ -35,25 +41,9 @@ fn path(config_dir: &Path) -> PathBuf {
 }
 
 pub fn load(config_dir: &Path) -> Prefs {
-    let file = path(config_dir);
-    let Ok(data) = std::fs::read_to_string(&file) else {
-        return Prefs::default();
-    };
-    match serde_json::from_str(&data) {
-        Ok(prefs) => prefs,
-        Err(e) => {
-            log::warn!("[prefs] {}: {e}; using defaults", file.display());
-            Prefs::default()
-        }
-    }
+    json_store::load(&path(config_dir))
 }
 
 pub fn save(config_dir: &Path, prefs: &Prefs) {
-    if let Err(e) = std::fs::create_dir_all(config_dir)
-        .map_err(|e| e.to_string())
-        .and_then(|()| serde_json::to_string_pretty(prefs).map_err(|e| e.to_string()))
-        .and_then(|data| std::fs::write(path(config_dir), data).map_err(|e| e.to_string()))
-    {
-        log::warn!("[prefs] could not save: {e}");
-    }
+    json_store::save(&path(config_dir), prefs);
 }

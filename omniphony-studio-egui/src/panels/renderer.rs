@@ -723,7 +723,7 @@ impl StudioSpike {
                     }
                     if browse
                         && let Some(path) =
-                            crate::host::commands::layout_io::pick_backend_file_path(extensions)
+                            crate::ui::file_dialogs::pick_backend_file_path(extensions)
                     {
                         text = path;
                         changed = true;
