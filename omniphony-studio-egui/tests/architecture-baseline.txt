@@ -9,9 +9,8 @@
 # Totals:
 #   osc-address      0
 #   raw-send         0
-#   model-write      2
+#   model-write      0
 #   side-effect      0
 #   frame-tick       0
 #
 # rule            file                                      count
-model-write       src/panels/latency.rs                     2
