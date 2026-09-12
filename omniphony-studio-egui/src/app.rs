@@ -294,10 +294,25 @@ impl StudioSpike {
             ),
             None => None,
         };
-        let repaint_ctx = cc.egui_ctx.clone();
+        // Two wakers over one context. The listener's also nudges the core's
+        // clock, since a packet may have given it something to do; the clock's
+        // only repaints — nudging itself from its own waker would spin.
+        let (clock, nudges) = crate::host::services::ServiceClock::new();
+        let repaint: osc::Waker = {
+            let ctx = cc.egui_ctx.clone();
+            Arc::new(move || ctx.request_repaint())
+        };
+        let waker: osc::Waker = {
+            let repaint = repaint.clone();
+            let clock = clock.clone();
+            Arc::new(move || {
+                repaint();
+                clock.nudge();
+            })
+        };
         let (port, control) = osc::spawn_listener(
             live.clone(),
-            Arc::new(move || repaint_ctx.request_repaint()),
+            waker,
             osc_stats.clone(),
             osc::ListenerConfig {
                 listen_port: args.listen_port,
@@ -347,6 +362,21 @@ impl StudioSpike {
         if object_field {
             volume_settings.object_field_enabled = true;
         }
+        let host = std::sync::Arc::new(crate::host::commands::SharedState {
+            inner: live_for_host,
+            osc_tx: control_for_host,
+            config_dir: config_dir.clone(),
+            listen_port: Arc::new(Mutex::new(port)),
+            realtime_seq: std::sync::atomic::AtomicI32::new(0),
+            renderer_child: Default::default(),
+            watchdog: Default::default(),
+            auto_tune_snapshot: Default::default(),
+            paths: crate::host::commands::HostPaths::default(),
+        });
+        // The core's own clock: it sleeps until a service is due or the waker
+        // nudges it, so an idle Studio wakes for nothing.
+        crate::host::services::spawn(host.clone(), repaint, nudges)?;
+
         Ok(Self {
             args,
             live,
@@ -449,17 +479,7 @@ impl StudioSpike {
             about_open: false,
             synthetic_bed_ids: Vec::new(),
             synthetic_bed_signature: None,
-            host: std::sync::Arc::new(crate::host::commands::SharedState {
-                inner: live_for_host,
-                osc_tx: control_for_host,
-                config_dir: config_dir.clone(),
-                listen_port: Arc::new(Mutex::new(port)),
-                realtime_seq: std::sync::atomic::AtomicI32::new(0),
-                renderer_child: Default::default(),
-                watchdog: Default::default(),
-                auto_tune_snapshot: Default::default(),
-                paths: crate::host::commands::HostPaths::default(),
-            }),
+            host,
             watchdog_tick: None,
             service_status: None,
             disconnected_since: Some(Instant::now()),
@@ -1000,7 +1020,6 @@ impl eframe::App for StudioSpike {
         }
         self.refresh_channel_catalog();
         self.sync_virtual_bed_objects(false);
-        self.maintain_meters();
         self.maintain_mpv_overlay();
         self.maintain_renderer_watchdog();
         self.maintain_object_test_source();

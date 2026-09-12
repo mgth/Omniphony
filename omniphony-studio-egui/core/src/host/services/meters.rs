@@ -9,7 +9,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::app::StudioSpike;
+use super::Tick;
+use crate::host::commands::SharedState;
 use crate::host::peak_hold::METER_DB_MIN;
 use crate::model::app_state::Meter;
 
@@ -89,38 +90,69 @@ pub fn decayed(
     }
 }
 
-impl StudioSpike {
+/// How often a decaying meter is stepped. The fall does not depend on it —
+/// each pass takes off the time since the previous one — so this is only how
+/// smooth it looks, and nothing runs while every meter is either fresh or on
+/// the floor.
+const DECAY_STEP: Duration = Duration::from_millis(33);
+
+/// The two meter behaviours the stream does not carry.
+#[derive(Default)]
+pub struct Meters;
+
+impl Meters {
     /// Fill in the master meter when the renderer never published one, and let
     /// every meter fall when its source goes quiet.
     ///
-    /// Both are done on the model rather than in each panel, so the list rows,
-    /// the master section and the 3D scene all read the same numbers.
-    pub(crate) fn maintain_meters(&mut self) {
-        let now = Instant::now();
-        let mut guard = self.live.lock().unwrap();
+    /// Done on the model rather than in each panel, so the list rows, the
+    /// master section and the 3D scene all read the same numbers.
+    pub fn tick(&mut self, state: &SharedState, now: Instant) -> Tick {
+        let mut guard = state.inner.lock().unwrap();
         // One reborrow, so each level map and its timestamps can be borrowed
-        // side by side instead of cloning the timestamps every frame.
+        // side by side instead of cloning the timestamps every pass.
         let live = &mut *guard;
         let last_pass = live.meter_decay_at.replace(now);
+        let mut changed = false;
+        let mut falling = false;
         for (id, meter) in live.app.speaker_levels.iter_mut() {
             let seen = live.speaker_level_seen.get(id).copied();
-            *meter = decayed(meter, seen, last_pass, now);
+            let next = decayed(meter, seen, last_pass, now);
+            changed |= next != *meter;
+            falling |= is_falling(&next, seen, now);
+            *meter = next;
         }
         for (id, meter) in live.app.source_levels.iter_mut() {
             let seen = live.source_level_seen.get(id).copied();
-            *meter = decayed(meter, seen, last_pass, now);
+            let next = decayed(meter, seen, last_pass, now);
+            changed |= next != *meter;
+            falling |= is_falling(&next, seen, now);
+            *meter = next;
         }
         // The renderer's own master level wins whenever it has published one;
         // this only fills a silence.
-        if live.master_reported {
-            return;
+        if !live.master_reported {
+            let levels: Vec<Meter> = live.app.speaker_levels.values().cloned().collect();
+            if let Some(master) = derived_master(&levels) {
+                changed |= live.app.master_level.as_ref() != Some(&master);
+                live.hold("master".to_owned(), master.peak_dbfs);
+                live.app.master_level = Some(master);
+            }
         }
-        let levels: Vec<Meter> = live.app.speaker_levels.values().cloned().collect();
-        if let Some(master) = derived_master(&levels) {
-            live.hold("master".to_owned(), master.peak_dbfs);
-            live.app.master_level = Some(master);
+        Tick {
+            changed,
+            next: falling.then(|| now + DECAY_STEP),
         }
     }
+}
+
+/// Whether this meter still has somewhere to fall: its hold has passed and it
+/// has not reached the floor. A meter that is neither is why the clock can go
+/// back to sleep.
+fn is_falling(meter: &Meter, seen: Option<Instant>, now: Instant) -> bool {
+    let Some(seen) = seen else {
+        return false;
+    };
+    now >= seen + DECAY_START && meter.peak_dbfs > DECAY_FLOOR
 }
 
 #[cfg(test)]

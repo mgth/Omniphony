@@ -42,7 +42,7 @@ pub struct SourcePosition {
     pub source_tag: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct Meter {
     #[serde(rename = "peakDbfs")]
     pub peak_dbfs: f64,
