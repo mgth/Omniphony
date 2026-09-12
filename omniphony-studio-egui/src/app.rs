@@ -146,9 +146,6 @@ pub struct StudioSpike {
     /// Which gradient stop each custom-colormap editor has selected.
     pub(crate) object_stop_selected: Option<usize>,
     pub(crate) speaker_stop_selected: Option<usize>,
-    /// What was last mirrored onto the mpv overlay, and for which snapshot.
-    pub(crate) overlay_pushed: Option<crate::panels::mpv_overlay::OverlayPrefs>,
-    pub(crate) overlay_pushed_epoch: Option<u64>,
     /// Which long-form info modal is open, by its i18n key prefix.
     pub(crate) info_modal_open: Option<crate::ui::help::Overlay>,
     /// Which scene-effects flyout is open, if any.
@@ -443,8 +440,6 @@ impl StudioSpike {
             update_check: None,
             object_stop_selected: None,
             speaker_stop_selected: None,
-            overlay_pushed: None,
-            overlay_pushed_epoch: None,
             info_modal_open: None,
             scene_fx_flyout_open: None,
             display_panel_open: false,
@@ -963,7 +958,7 @@ impl eframe::App for StudioSpike {
         }
         self.refresh_channel_catalog();
         self.sync_virtual_bed_objects(false);
-        self.maintain_mpv_overlay();
+        self.declare_overlay_prefs();
         self.maintain_object_test_source();
         self.declare_idle_feed_interest();
         self.check_recompute_ack(&ctx);
