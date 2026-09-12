@@ -10,6 +10,8 @@
 use egui::{RichText, Ui};
 
 use crate::app::StudioSpike;
+use crate::host::commands::SharedState;
+use crate::host::commands::binaural as cmd;
 use crate::i18n::{t, tf};
 use crate::ui::{theme, widgets};
 
@@ -167,10 +169,7 @@ impl StudioSpike {
             "help.binaural.diffuseFieldEq",
             &mut eq,
         ) {
-            self.ctl.send_int(
-                "/omniphony/control/binaural/diffuse_field_eq",
-                i32::from(eq),
-            );
+            cmd::control_binaural_diffuse_field_eq(&self.host, i32::from(eq));
         }
 
         // The head radius travels in metres; the slider is in centimetres.
@@ -184,8 +183,7 @@ impl StudioSpike {
             0.1,
             |v| format!("{v:.1}"),
         ) {
-            self.ctl
-                .send_float("/omniphony/control/binaural/head_radius", radius_cm / 100.0);
+            cmd::control_binaural_head_radius(&self.host, radius_cm / 100.0);
         }
 
         let lattice = {
@@ -330,8 +328,7 @@ impl StudioSpike {
             ),
             other => other.to_owned(),
         };
-        self.ctl
-            .send_string("/omniphony/control/binaural/hrir_source", &value);
+        cmd::control_hrir_source(&self.host, value);
     }
 
     fn distance_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
@@ -351,8 +348,7 @@ impl StudioSpike {
             0.1,
             |v| format!("{v:.1}"),
         ) {
-            self.ctl
-                .send_float("/omniphony/control/binaural/unit_scale", scale);
+            cmd::control_binaural_unit_scale(&self.host, scale);
         }
         let mut air = flag(doc, &["airAbsorption"], true);
         if widgets::switch_row_help(
@@ -361,8 +357,7 @@ impl StudioSpike {
             "help.binaural.airAbsorption",
             &mut air,
         ) {
-            self.ctl
-                .send_int("/omniphony/control/binaural/air_absorption", i32::from(air));
+            cmd::control_binaural_air_absorption(&self.host, i32::from(air));
         }
     }
 
@@ -382,10 +377,7 @@ impl StudioSpike {
             "help.binaural.earlyReflections",
             &mut reflections,
         ) {
-            self.ctl.send_int(
-                "/omniphony/control/binaural/reflections/enabled",
-                i32::from(reflections),
-            );
+            cmd::control_binaural_reflections_enabled(&self.host, i32::from(reflections));
         }
         if reflections {
             let mut level = number(doc, &["reflections", "level"], 0.5) as f32;
@@ -398,8 +390,7 @@ impl StudioSpike {
                 0.01,
                 |v| format!("{v:.2}"),
             ) {
-                self.ctl
-                    .send_float("/omniphony/control/binaural/reflections/level", level);
+                cmd::control_binaural_reflections_level(&self.host, level);
             }
             let room = doc
                 .and_then(|d| d.get("reflections"))
@@ -412,13 +403,9 @@ impl StudioSpike {
                     [get(0, 4.0), get(1, 5.0), get(2, 2.7)]
                 })
                 .unwrap_or([4.0, 5.0, 2.7]);
-            for (index, (axis, label)) in [
-                ("room_width", "W"),
-                ("room_depth", "D"),
-                ("room_height", "H"),
-            ]
-            .into_iter()
-            .enumerate()
+            for (index, (axis, label)) in [("width", "W"), ("depth", "D"), ("height", "H")]
+                .into_iter()
+                .enumerate()
             {
                 let mut value = room[index] as f32;
                 // One help for the three sliders, as the web has one label for
@@ -436,10 +423,7 @@ impl StudioSpike {
                     0.1,
                     |v| format!("{v:.1}"),
                 ) {
-                    self.ctl.send_float(
-                        &format!("/omniphony/control/binaural/reflections/{axis}"),
-                        value,
-                    );
+                    cmd::control_binaural_reflections_room(&self.host, axis.to_owned(), value);
                 }
             }
             // The cutoff travels in hertz; the slider is in kilohertz.
@@ -454,10 +438,7 @@ impl StudioSpike {
                 0.5,
                 |v| format!("{v:.1}"),
             ) {
-                self.ctl.send_float(
-                    "/omniphony/control/binaural/reflections/wall_cutoff",
-                    cutoff_khz * 1000.0,
-                );
+                cmd::control_binaural_reflections_wall_cutoff(&self.host, cutoff_khz * 1000.0);
             }
         }
 
@@ -469,10 +450,7 @@ impl StudioSpike {
             "help.binaural.lateReverb",
             &mut reverb,
         ) {
-            self.ctl.send_int(
-                "/omniphony/control/binaural/reverb/enabled",
-                i32::from(reverb),
-            );
+            cmd::control_binaural_reverb_enabled(&self.host, i32::from(reverb));
         }
         if !reverb {
             return;
@@ -487,8 +465,7 @@ impl StudioSpike {
             0.01,
             |v| format!("{v:.2}"),
         ) {
-            self.ctl
-                .send_float("/omniphony/control/binaural/reverb/level", level);
+            cmd::control_binaural_reverb_level(&self.host, level);
         }
         let mut rt60 = number(doc, &["reverb", "rt60S"], 0.35) as f32;
         if widgets::value_slider_help(
@@ -500,8 +477,7 @@ impl StudioSpike {
             0.05,
             |v| format!("{v:.2}"),
         ) {
-            self.ctl
-                .send_float("/omniphony/control/binaural/reverb/rt60", rt60);
+            cmd::control_binaural_reverb_rt60(&self.host, rt60);
         }
         let mut size = number(doc, &["reverb", "size"], 1.0) as f32;
         if widgets::value_slider_help(
@@ -513,28 +489,35 @@ impl StudioSpike {
             0.05,
             |v| format!("{v:.2}"),
         ) {
-            self.ctl
-                .send_float("/omniphony/control/binaural/reverb/size", size);
+            cmd::control_binaural_reverb_size(&self.host, size);
         }
         // The decay ratios are edited in octaves so unity sits mid-slider.
         self.decay_ratio_row(
             ui,
             t("binaural.reverbBassDecay"),
             "help.binaural.reverbBassDecay",
-            "rt60_low_ratio",
+            cmd::control_binaural_reverb_rt60_low_ratio,
             number(doc, &["reverb", "rt60LowRatio"], 1.0),
         );
         self.decay_ratio_row(
             ui,
             t("binaural.reverbTrebleDecay"),
             "help.binaural.reverbTrebleDecay",
-            "rt60_high_ratio",
+            cmd::control_binaural_reverb_rt60_high_ratio,
             number(doc, &["reverb", "rt60HighRatio"], 1.0),
         );
     }
 
-    /// A ratio slider whose scale is log2, so 1.0 is the centre.
-    fn decay_ratio_row(&mut self, ui: &mut Ui, label: &str, help: &str, address: &str, ratio: f64) {
+    /// A ratio slider whose scale is log2, so 1.0 is the centre. `send` is the
+    /// command the new ratio goes to, one per band.
+    fn decay_ratio_row(
+        &mut self,
+        ui: &mut Ui,
+        label: &str,
+        help: &str,
+        send: fn(&SharedState, f32),
+        ratio: f64,
+    ) {
         let mut octaves = if ratio > 0.0 {
             ratio.log2() as f32
         } else {
@@ -543,10 +526,7 @@ impl StudioSpike {
         if widgets::value_slider_help(ui, label, help, &mut octaves, -2.0..=2.0, 0.1, |v| {
             format!("{:.2}", 2f32.powf(v))
         }) {
-            self.ctl.send_float(
-                &format!("/omniphony/control/binaural/reverb/{address}"),
-                2f32.powf(octaves),
-            );
+            send(&self.host, 2f32.powf(octaves));
         }
     }
 
@@ -567,11 +547,10 @@ impl StudioSpike {
                     .clicked()
                 {
                     let axis = CALIBRATION_STEPS.get(step).copied().unwrap_or("front");
-                    self.ctl
-                        .send_string("/omniphony/control/head/calibrate", axis);
+                    cmd::control_head_calibrate(&self.host, axis.to_owned());
                 }
                 if ui.button(t("binaural.recenter")).clicked() {
-                    self.ctl.send_int("/omniphony/control/head/recenter", 1);
+                    cmd::control_head_recenter(&self.host);
                 }
             },
         );
@@ -608,8 +587,7 @@ impl StudioSpike {
                     .lost_focus()
                     && edited.trim() != address
                 {
-                    self.ctl
-                        .send_string("/omniphony/control/head/tracking/address", edited.trim());
+                    cmd::control_head_tracking_address(&self.host, edited.trim().to_owned());
                 }
             },
         );
@@ -639,8 +617,7 @@ impl StudioSpike {
             },
         );
         if chosen != format {
-            self.ctl
-                .send_string("/omniphony/control/head/tracking/format", &chosen);
+            cmd::control_head_tracking_format(&self.host, chosen.clone());
         }
 
         let mut smoothing = number(doc, &["tracking", "smoothing"], 0.2) as f32;
@@ -653,8 +630,7 @@ impl StudioSpike {
             0.01,
             |v| format!("{v:.2}"),
         ) {
-            self.ctl
-                .send_float("/omniphony/control/head/tracking/smoothing", smoothing);
+            cmd::control_head_tracking_smoothing(&self.host, smoothing);
         }
         let mut invert = flag(doc, &["tracking", "invert"], false);
         if widgets::switch_row_help(
@@ -663,8 +639,7 @@ impl StudioSpike {
             "help.binaural.invertRotation",
             &mut invert,
         ) {
-            self.ctl
-                .send_int("/omniphony/control/head/tracking/invert", i32::from(invert));
+            cmd::control_head_tracking_invert(&self.host, i32::from(invert));
         }
 
         // The live pose, as the tracker reports it.

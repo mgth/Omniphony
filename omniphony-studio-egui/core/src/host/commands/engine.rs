@@ -131,6 +131,10 @@ pub fn control_virtual_bed(state: &SharedState, value: String) {
 }
 
 pub fn control_drc_mode(state: &SharedState, value: String) {
+    // Applied here as well as sent: the control that changes the model is the
+    // one that tells the renderer, so a view never writes it (ARCHITECTURE.md).
+    // The renderer's echo replaces it a moment later.
+    state.inner.lock().unwrap().app.drc_mode = Some(value.clone());
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
@@ -141,11 +145,13 @@ pub fn control_drc_mode(state: &SharedState, value: String) {
 }
 
 pub fn control_drc_weight(state: &SharedState, value: f32) {
+    let clamped = value.clamp(0.0, 1.0);
+    state.inner.lock().unwrap().app.drc_weight = Some(clamped);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
             address: "/omniphony/control/input/drc_weight".to_string(),
-            value: value.clamp(0.0, 1.0),
+            value: clamped,
         },
     );
 }

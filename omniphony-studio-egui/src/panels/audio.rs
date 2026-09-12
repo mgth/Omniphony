@@ -6,6 +6,7 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::StudioSpike;
+use crate::host::commands::gain;
 use crate::host::peak_hold::{METER_DB_MIN, db_to_meter_percent};
 use crate::i18n::t;
 use crate::model::app_state::Meter;
@@ -113,9 +114,7 @@ impl StudioSpike {
                         &mut on,
                     ) && ready
                     {
-                        self.live.lock().unwrap().app.auto_gain = Some(on);
-                        self.ctl
-                            .send_int("/omniphony/control/auto_gain", i32::from(on));
+                        gain::control_auto_gain(&self.host, i32::from(on));
                     }
                 });
                 let mut db = ceiling as f32;
@@ -129,24 +128,16 @@ impl StudioSpike {
                         0.1,
                         |v| format!("{v:.1} dB"),
                     ) {
-                        self.live.lock().unwrap().app.auto_gain_ceiling_db = Some(db as f64);
-                        self.ctl
-                            .send_float("/omniphony/control/auto_gain_ceiling", db);
+                        gain::control_auto_gain_ceiling(&self.host, db);
                     }
                 });
             });
     }
 
-    /// Optimistic local write plus the realtime OSC message, like
-    /// `control_master_gain`.
+    /// The realtime master gain: clamped, applied and stamped by the core's
+    /// command, which owns the sequence counter.
     fn set_master_gain(&mut self, gain: f32) {
-        let clamped = gain.clamp(0.0, 2.0);
-        self.live.lock().unwrap().app.master_gain = Some(clamped as f64);
-        let seq = self.next_realtime_seq();
-        self.ctl.send(
-            "/omniphony/control/realtime/master_gain",
-            vec![rosc::OscType::Float(clamped), rosc::OscType::Int(seq)],
-        );
+        gain::control_master_gain(&self.host, gain);
     }
 }
 

@@ -5,6 +5,7 @@
 use egui::{Color32, RichText, Ui};
 
 use crate::app::StudioSpike;
+use crate::host::commands::{engine, gain};
 use crate::i18n::t;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
@@ -78,9 +79,7 @@ impl StudioSpike {
                     });
                 });
                 if chosen != mode {
-                    self.live.lock().unwrap().app.drc_mode = Some(chosen.clone());
-                    self.ctl
-                        .send_string("/omniphony/control/input/drc_mode", &chosen);
+                    engine::control_drc_mode(&self.host, chosen);
                 }
 
                 let mut percent = (weight * 100.0).round();
@@ -93,19 +92,14 @@ impl StudioSpike {
                     1.0,
                     |v| format!("{v:.0}%"),
                 ) {
-                    let value = (percent / 100.0).clamp(0.0, 1.0);
-                    self.live.lock().unwrap().app.drc_weight = Some(value);
-                    self.ctl
-                        .send_float("/omniphony/control/input/drc_weight", value);
+                    engine::control_drc_weight(&self.host, (percent / 100.0) as f32);
                 }
 
                 ui.separator();
                 let mut on = loudness;
                 if widgets::switch_row_help(ui, t("section.loudness"), "help.drc.loudness", &mut on)
                 {
-                    self.live.lock().unwrap().app.loudness = Some(u8::from(on));
-                    self.ctl
-                        .send_int("/omniphony/control/loudness", i32::from(on));
+                    gain::control_loudness(&self.host, i32::from(on));
                 }
                 for line in loudness_lines(source, gain) {
                     widgets::note(ui, &line);
