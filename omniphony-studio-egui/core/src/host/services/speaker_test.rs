@@ -45,6 +45,12 @@ pub fn start(state: &SharedState, index: usize, level_db: f32, isolation: String
     }
     // Peak dBFS to the peak linear amplitude the renderer clamps to.
     gain::control_speaker_test(state, index as i32, 10f32.powf(level_db / 20.0), isolation);
+    // The window was armed on the caller's thread, and the clock is asleep
+    // until whatever it last had pending — with a renderer connected and quiet
+    // that is the watchdog's seven seconds. Nothing else announces a deadline
+    // that did not exist a moment ago, so without this a two-second burst plays
+    // until the clock happens to wake on its own.
+    (state.waker)();
 }
 
 /// Stop whatever is playing. Sent unconditionally when something was: "nothing
@@ -114,5 +120,29 @@ mod tests {
         let tick = service.tick(&state, Instant::now() + TOGGLE_SAFETY * 2);
         assert!(!tick.changed && tick.next.is_none());
         assert_eq!(state.inner.lock().unwrap().speaker_test.running, Some(1));
+    }
+
+    #[test]
+    fn arming_a_window_tells_the_clock() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let woken = Arc::new(AtomicUsize::new(0));
+        let state = {
+            let woken = woken.clone();
+            crate::host::commands::tests::state_with_waker(Arc::new(move || {
+                woken.fetch_add(1, Ordering::Relaxed);
+            }))
+        };
+        // The clock sleeps until the earliest deadline it knew about when it
+        // last ran. A window armed after that is not one of them, so starting a
+        // test has to say so or the window is only noticed when something else
+        // happens to be due.
+        start(&state, 2, -8.0, "test_only".to_owned(), "burst");
+        assert_eq!(
+            woken.load(Ordering::Relaxed),
+            1,
+            "starting a test must wake the clock that has to end it"
+        );
     }
 }

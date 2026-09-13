@@ -253,6 +253,12 @@ pub(crate) mod tests {
     /// A host state a test can call commands on: the model is real, and what
     /// the commands send goes into a channel nothing reads.
     pub(crate) fn state() -> SharedState {
+        state_with_waker(Arc::new(|| {}))
+    }
+
+    /// The same, with a waker a test can watch: what a command announces to the
+    /// clock is part of its contract, since the clock is asleep otherwise.
+    pub(crate) fn state_with_waker(waker: crate::osc::Waker) -> SharedState {
         let (tx, rx) = std::sync::mpsc::channel();
         // Kept alive, so a send does not fail and change what is under test.
         std::mem::forget(rx);
@@ -269,7 +275,7 @@ pub(crate) mod tests {
             auto_tune_snapshot: Default::default(),
             paths: HostPaths::default(),
             stats: crate::osc::OscStats::new(),
-            waker: Arc::new(|| {}),
+            waker,
         }
     }
 }
