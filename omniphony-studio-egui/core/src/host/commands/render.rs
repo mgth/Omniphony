@@ -9,13 +9,14 @@ use omniphony_geometry::f64 as geometry;
 use super::OscControlMsg;
 use super::{SharedState, send_control, send_distance_metric};
 use crate::model::app_state::MirrorAxes;
+use crate::osc_contract;
 
 pub fn control_spread_min(state: &SharedState, value: f32) {
     let clamped = value.max(0.0).min(1.0);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/spread/min".to_string(),
+            address: osc_contract::CONTROL_SPREAD_MIN.to_string(),
             value: clamped,
         },
     );
@@ -26,7 +27,7 @@ pub fn control_spread_max(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/spread/max".to_string(),
+            address: osc_contract::CONTROL_SPREAD_MAX.to_string(),
             value: clamped,
         },
     );
@@ -36,7 +37,7 @@ pub fn control_spread_from_distance(state: &SharedState, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/spread/from_distance".to_string(),
+            address: osc_contract::CONTROL_SPREAD_FROM_DISTANCE.to_string(),
             value: if enable != 0 { 1 } else { 0 },
         },
     );
@@ -53,7 +54,7 @@ pub fn control_size_to_spread_mode(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/spread/size_to_spread_mode".to_string(),
+            address: osc_contract::CONTROL_SPREAD_SIZE_TO_SPREAD_MODE.to_string(),
             value: normalized,
         },
     );
@@ -64,7 +65,7 @@ pub fn control_spread_distance_range(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/spread/distance_range".to_string(),
+            address: osc_contract::CONTROL_SPREAD_DISTANCE_RANGE.to_string(),
             value: v,
         },
     );
@@ -75,7 +76,7 @@ pub fn control_spread_distance_curve(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/spread/distance_curve".to_string(),
+            address: osc_contract::CONTROL_SPREAD_DISTANCE_CURVE.to_string(),
             value: v,
         },
     );
@@ -94,7 +95,7 @@ pub fn control_distance_model(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/distance_model".to_string(),
+            address: osc_contract::CONTROL_DISTANCE_MODEL.to_string(),
             value: normalized,
         },
     );
@@ -105,7 +106,7 @@ pub fn control_distance_model_metric(state: &SharedState, value: String) {
     // drops anything that is not one of the two metrics, and a rejected value
     // applied locally would read as accepted.
     if let Some(sent) =
-        send_distance_metric(state, "/omniphony/control/distance_model_metric", value)
+        send_distance_metric(state, osc_contract::CONTROL_DISTANCE_MODEL_METRIC, value)
     {
         state.inner.lock().unwrap().app.distance_model.metric = Some(sent);
         mark_recompute_pending(state);
@@ -113,9 +114,11 @@ pub fn control_distance_model_metric(state: &SharedState, value: String) {
 }
 
 pub fn control_distance_diffuse_metric(state: &SharedState, value: String) {
-    if let Some(sent) =
-        send_distance_metric(state, "/omniphony/control/distance_diffuse/metric", value)
-    {
+    if let Some(sent) = send_distance_metric(
+        state,
+        &format!("{}metric", osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX),
+        value,
+    ) {
         state.inner.lock().unwrap().app.distance_diffuse.metric = Some(sent);
         mark_recompute_pending(state);
     }
@@ -131,7 +134,10 @@ pub fn control_distance_diffuse_mirror_axes(state: &SharedState, axes: MirrorAxe
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/distance_diffuse/mirror_axes".to_string(),
+            address: format!(
+                "{}mirror_axes",
+                osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX
+            ),
             value: axes.to_arg(),
         },
     );
@@ -185,7 +191,7 @@ pub fn control_hybrid_external_backend(state: &SharedState, value: String) {
         send_control(
             &state.osc_tx,
             OscControlMsg::SendString {
-                address: "/omniphony/control/hybrid/external_backend".to_string(),
+                address: format!("{}external_backend", osc_contract::CONTROL_HYBRID_PREFIX),
                 value: normalized,
             },
         );
@@ -206,7 +212,7 @@ pub fn control_hybrid_internal_backend(state: &SharedState, value: String) {
         send_control(
             &state.osc_tx,
             OscControlMsg::SendString {
-                address: "/omniphony/control/hybrid/internal_backend".to_string(),
+                address: format!("{}internal_backend", osc_contract::CONTROL_HYBRID_PREFIX),
                 value: normalized,
             },
         );
@@ -235,7 +241,11 @@ pub fn control_hybrid_metric(state: &SharedState, value: String) {
         .hybrid
         .metric = Some(normalized.clone());
     mark_recompute_pending(state);
-    send_distance_metric(state, "/omniphony/control/hybrid/metric", normalized);
+    send_distance_metric(
+        state,
+        &format!("{}metric", osc_contract::CONTROL_HYBRID_PREFIX),
+        normalized,
+    );
 }
 
 pub fn control_hybrid_curve_smoothing(state: &SharedState, value: f32) {
@@ -252,7 +262,7 @@ pub fn control_hybrid_curve_smoothing(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/hybrid/curve_smoothing".to_string(),
+            address: format!("{}curve_smoothing", osc_contract::CONTROL_HYBRID_PREFIX),
             value: clamped,
         },
     );
@@ -293,7 +303,7 @@ pub fn control_hybrid_curve(state: &SharedState, points: Vec<[f32; 2]>) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/hybrid/curve".to_string(),
+            address: format!("{}curve", osc_contract::CONTROL_HYBRID_PREFIX),
             args,
         },
     );
@@ -305,7 +315,7 @@ pub fn control_render_evaluation_object_size_intervals(state: &SharedState, valu
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_evaluation/object_size_intervals".to_string(),
+            address: osc_contract::CONTROL_RENDER_EVALUATION_OBJECT_SIZE_INTERVALS.to_string(),
             value: value.max(0),
         },
     );
@@ -316,7 +326,10 @@ pub fn control_render_evaluation_cartesian_x_size(state: &SharedState, value: i3
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_evaluation/cartesian/x_size".to_string(),
+            address: format!(
+                "{}x_size",
+                osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX
+            ),
             value: value.max(1),
         },
     );
@@ -327,7 +340,10 @@ pub fn control_render_evaluation_cartesian_y_size(state: &SharedState, value: i3
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_evaluation/cartesian/y_size".to_string(),
+            address: format!(
+                "{}y_size",
+                osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX
+            ),
             value: value.max(1),
         },
     );
@@ -338,7 +354,10 @@ pub fn control_render_evaluation_cartesian_z_size(state: &SharedState, value: i3
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_evaluation/cartesian/z_size".to_string(),
+            address: format!(
+                "{}z_size",
+                osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX
+            ),
             value: value.max(1),
         },
     );
@@ -349,7 +368,10 @@ pub fn control_render_evaluation_cartesian_z_neg_size(state: &SharedState, value
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_evaluation/cartesian/z_neg_size".to_string(),
+            address: format!(
+                "{}z_neg_size",
+                osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX
+            ),
             value: value.max(0),
         },
     );
@@ -374,7 +396,7 @@ pub fn control_render_backend(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/render_backend".to_string(),
+            address: osc_contract::CONTROL_RENDER_BACKEND.to_string(),
             value: normalized,
         },
     );
@@ -407,7 +429,7 @@ pub fn control_backend_param(
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/backend/param".to_string(),
+            address: osc_contract::CONTROL_BACKEND_PARAM.to_string(),
             args,
         },
     );
@@ -426,7 +448,7 @@ pub fn backend_file_get(state: &SharedState, backend: String, key: String, name:
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/backend/file/get".to_string(),
+            address: osc_contract::CONTROL_BACKEND_FILE_GET.to_string(),
             args,
         },
     );
@@ -438,7 +460,7 @@ pub fn backend_file_list(state: &SharedState, backend: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/backend/file/list".to_string(),
+            address: osc_contract::CONTROL_BACKEND_FILE_LIST.to_string(),
             args: vec![rosc::OscType::String(backend)],
         },
     );
@@ -457,7 +479,7 @@ pub fn backend_file_put(
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/backend/file/put".to_string(),
+            address: osc_contract::CONTROL_BACKEND_FILE_PUT.to_string(),
             args: vec![
                 rosc::OscType::String(backend),
                 rosc::OscType::String(key),
@@ -472,7 +494,7 @@ pub fn control_restore_render_backend(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_backend/restore".to_string(),
+            address: osc_contract::CONTROL_RENDER_BACKEND_RESTORE.to_string(),
             value: 1,
         },
     );
@@ -497,7 +519,7 @@ pub fn control_render_evaluation_mode(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/render_evaluation_mode".to_string(),
+            address: osc_contract::CONTROL_RENDER_EVALUATION_MODE.to_string(),
             value: normalized,
         },
     );
@@ -508,7 +530,10 @@ pub fn control_render_evaluation_polar_azimuth_resolution(state: &SharedState, v
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_evaluation/polar/azimuth_resolution".to_string(),
+            address: format!(
+                "{}azimuth_resolution",
+                osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX
+            ),
             value: value.max(1),
         },
     );
@@ -519,7 +544,10 @@ pub fn control_render_evaluation_polar_elevation_resolution(state: &SharedState,
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_evaluation/polar/elevation_resolution".to_string(),
+            address: format!(
+                "{}elevation_resolution",
+                osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX
+            ),
             value: value.max(1),
         },
     );
@@ -530,7 +558,10 @@ pub fn control_render_evaluation_polar_distance_res(state: &SharedState, value: 
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_evaluation/polar/distance_res".to_string(),
+            address: format!(
+                "{}distance_res",
+                osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX
+            ),
             value: value.max(1),
         },
     );
@@ -542,7 +573,10 @@ pub fn control_render_evaluation_polar_distance_max(state: &SharedState, value: 
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/render_evaluation/polar/distance_max".to_string(),
+            address: format!(
+                "{}distance_max",
+                osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX
+            ),
             value: value.max(0.01),
         },
     );
@@ -560,7 +594,7 @@ pub fn control_render_evaluation_position_interpolation(state: &SharedState, ena
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/render_evaluation/position_interpolation".to_string(),
+            address: osc_contract::CONTROL_RENDER_EVALUATION_POSITION_INTERPOLATION.to_string(),
             value: if enable != 0 { 1 } else { 0 },
         },
     );
@@ -571,7 +605,7 @@ pub fn control_distance_diffuse_enabled(state: &SharedState, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/distance_diffuse/enabled".to_string(),
+            address: format!("{}enabled", osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX),
             value: if enable != 0 { 1 } else { 0 },
         },
     );
@@ -583,7 +617,7 @@ pub fn control_distance_diffuse_threshold(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/distance_diffuse/threshold".to_string(),
+            address: format!("{}threshold", osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX),
             value: v,
         },
     );
@@ -595,7 +629,7 @@ pub fn control_distance_diffuse_curve(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/distance_diffuse/curve".to_string(),
+            address: format!("{}curve", osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX),
             value: v,
         },
     );
@@ -605,7 +639,7 @@ pub fn control_render_bridge_path(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/render/bridge_path".to_string(),
+            address: osc_contract::CONTROL_RENDER_BRIDGE_PATH.to_string(),
             value: value.trim().to_string(),
         },
     );
@@ -615,7 +649,7 @@ pub fn control_render_input_pipe(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/render/input_pipe".to_string(),
+            address: osc_contract::CONTROL_RENDER_INPUT_PIPE.to_string(),
             value: value.trim().to_string(),
         },
     );

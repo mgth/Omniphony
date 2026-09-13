@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rosc::OscType;
 
 use super::{OscControlMsg, SharedState, send_control};
+use crate::osc_contract;
 
 /// Fixed browse root. `path` arguments are relative to this and sanitised —
 /// the browser can never escape it.
@@ -289,7 +290,7 @@ pub fn upload_to_renderer(state: &SharedState, dir: &Path, path: &Path) -> Resul
     send_control(
         tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/binaural/hrtf_upload/begin".to_string(),
+            address: osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_BEGIN.to_string(),
             args: vec![OscType::String(name), OscType::Int(total as i32)],
         },
     );
@@ -298,7 +299,7 @@ pub fn upload_to_renderer(state: &SharedState, dir: &Path, path: &Path) -> Resul
         send_control(
             tx,
             OscControlMsg::SendArgs {
-                address: "/omniphony/control/binaural/hrtf_upload/chunk".to_string(),
+                address: osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_CHUNK.to_string(),
                 args: vec![OscType::Int(seq), OscType::Blob(chunk.to_vec())],
             },
         );
@@ -311,7 +312,7 @@ pub fn upload_to_renderer(state: &SharedState, dir: &Path, path: &Path) -> Resul
     send_control(
         tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/binaural/hrtf_upload/end".to_string(),
+            address: osc_contract::CONTROL_BINAURAL_HRTF_UPLOAD_END.to_string(),
             args: vec![OscType::Int(seq)],
         },
     );

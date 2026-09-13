@@ -7,6 +7,7 @@
 use super::OscControlMsg;
 use super::{SharedState, send_control};
 use crate::model::layouts;
+use crate::osc_contract;
 use std::fs;
 
 pub fn control_input_config(state: &SharedState, payload: serde_json::Value) {
@@ -17,7 +18,7 @@ pub fn control_input_config(state: &SharedState, payload: serde_json::Value) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/config/input".to_string(),
+            address: osc_contract::CONTROL_CONFIG_INPUT.to_string(),
             value: text,
         },
     );
@@ -27,7 +28,7 @@ pub fn control_input_config_apply(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/config/input/apply".to_string(),
+            address: osc_contract::CONTROL_CONFIG_INPUT_APPLY.to_string(),
         },
     );
 }
@@ -55,7 +56,7 @@ pub fn control_input_mode(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/mode".to_string(),
+            address: osc_contract::CONTROL_INPUT_MODE.to_string(),
             value: normalized.to_string(),
         },
     );
@@ -69,7 +70,7 @@ pub fn control_input_live_backend(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/backend".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_BACKEND.to_string(),
             value: trimmed,
         },
     );
@@ -79,7 +80,7 @@ pub fn control_input_live_node(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/node".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_NODE.to_string(),
             value: value.trim().to_string(),
         },
     );
@@ -89,7 +90,7 @@ pub fn control_input_live_description(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/description".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_DESCRIPTION.to_string(),
             value: value.trim().to_string(),
         },
     );
@@ -99,7 +100,7 @@ pub fn control_input_live_layout(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/layout".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_LAYOUT.to_string(),
             value: value.trim().to_string(),
         },
     );
@@ -120,14 +121,14 @@ pub fn import_input_layout_from_path(
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/layout".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_LAYOUT.to_string(),
             value: trimmed.to_string(),
         },
     );
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/layout_import".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_LAYOUT_IMPORT.to_string(),
             value: contents,
         },
     );
@@ -138,7 +139,7 @@ pub fn control_input_live_channels(state: &SharedState, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/input/live/channels".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_CHANNELS.to_string(),
             value: value.max(1),
         },
     );
@@ -148,7 +149,7 @@ pub fn control_input_live_sample_rate(state: &SharedState, value: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/input/live/sample_rate".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_SAMPLE_RATE.to_string(),
             value: value.max(1),
         },
     );
@@ -162,7 +163,7 @@ pub fn control_input_live_clock_mode(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/clock_mode".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_CLOCK_MODE.to_string(),
             value: trimmed,
         },
     );
@@ -176,7 +177,7 @@ pub fn control_input_live_map(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/map".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_MAP.to_string(),
             value: trimmed,
         },
     );
@@ -190,7 +191,7 @@ pub fn control_input_live_lfe_mode(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/live/lfe_mode".to_string(),
+            address: osc_contract::CONTROL_INPUT_LIVE_LFE_MODE.to_string(),
             value: trimmed,
         },
     );
@@ -307,7 +308,7 @@ pub fn control_input_apply(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/input/apply".to_string(),
+            address: osc_contract::CONTROL_INPUT_APPLY.to_string(),
         },
     );
 }

@@ -6,6 +6,7 @@
 
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::osc_contract;
 
 pub fn control_profile_switch(state: &SharedState, value: String) {
     let name = value.trim().to_string();
@@ -15,7 +16,7 @@ pub fn control_profile_switch(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/profile/switch".to_string(),
+            address: osc_contract::CONTROL_PROFILE_SWITCH.to_string(),
             value: name,
         },
     );
@@ -29,7 +30,7 @@ pub fn control_profile_create(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/profile/create".to_string(),
+            address: osc_contract::CONTROL_PROFILE_CREATE.to_string(),
             value: name,
         },
     );
@@ -43,7 +44,7 @@ pub fn control_profile_delete(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/profile/delete".to_string(),
+            address: osc_contract::CONTROL_PROFILE_DELETE.to_string(),
             value: name,
         },
     );
@@ -58,7 +59,7 @@ pub fn control_profile_rename(state: &SharedState, old: String, new: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/profile/rename".to_string(),
+            address: osc_contract::CONTROL_PROFILE_RENAME.to_string(),
             args: vec![rosc::OscType::String(old), rosc::OscType::String(new)],
         },
     );

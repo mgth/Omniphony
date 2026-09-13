@@ -5,12 +5,13 @@
 
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::osc_contract;
 
 pub fn control_audio_sample_rate(state: &SharedState, sample_rate: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/audio/sample_rate".to_string(),
+            address: osc_contract::CONTROL_AUDIO_SAMPLE_RATE.to_string(),
             value: sample_rate.max(0),
         },
     );
@@ -57,7 +58,7 @@ pub fn control_audio_config(
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/config/audio".to_string(),
+            address: osc_contract::CONTROL_CONFIG_AUDIO.to_string(),
             value: text,
         },
     );
@@ -160,7 +161,7 @@ pub fn control_audio_config_apply(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/config/audio/apply".to_string(),
+            address: osc_contract::CONTROL_CONFIG_AUDIO_APPLY.to_string(),
         },
     );
 }
@@ -169,7 +170,7 @@ pub fn control_audio_output_device(state: &SharedState, output_device: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/audio/output_device".to_string(),
+            address: osc_contract::CONTROL_AUDIO_OUTPUT_DEVICE.to_string(),
             value: output_device.trim().to_string(),
         },
     );
@@ -180,7 +181,7 @@ pub fn control_audio_output_backend(state: &SharedState, backend: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/audio/output_backend".to_string(),
+            address: osc_contract::CONTROL_AUDIO_OUTPUT_BACKEND.to_string(),
             value: backend.trim().to_string(),
         },
     );
@@ -190,7 +191,7 @@ pub fn control_audio_output_file(state: &SharedState, path: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/audio/output_file".to_string(),
+            address: osc_contract::CONTROL_AUDIO_OUTPUT_FILE.to_string(),
             value: path.trim().to_string(),
         },
     );
@@ -207,7 +208,7 @@ pub fn control_audio_output_file_format(state: &SharedState, format: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/audio/output_file_format".to_string(),
+            address: osc_contract::CONTROL_AUDIO_OUTPUT_FILE_FORMAT.to_string(),
             value: format.trim().to_string(),
         },
     );
@@ -217,7 +218,7 @@ pub fn refresh_output_devices(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/audio/output_devices/refresh".to_string(),
+            address: osc_contract::CONTROL_AUDIO_OUTPUT_DEVICES_REFRESH.to_string(),
         },
     );
 }

@@ -6,13 +6,14 @@
 use super::HostPaths;
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::osc_contract;
 
 pub fn control_metering_rate_hz(state: &SharedState, value: f32) {
     let clamped = value.max(1.0).min(1000.0);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/metering/rate_hz".to_string(),
+            address: osc_contract::CONTROL_METERING_RATE_HZ.to_string(),
             value: clamped,
         },
     );
@@ -23,7 +24,7 @@ pub fn control_diag_rate_hz(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/diag/rate_hz".to_string(),
+            address: osc_contract::CONTROL_DIAG_RATE_HZ.to_string(),
             value: clamped,
         },
     );
@@ -33,7 +34,7 @@ pub fn control_diag_publication_enabled(state: &SharedState, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/diag/enabled".to_string(),
+            address: osc_contract::CONTROL_DIAG_ENABLED.to_string(),
             value: if enable != 0 { 1 } else { 0 },
         },
     );
@@ -48,7 +49,7 @@ pub fn subscribe_speaker_gaintable(state: &SharedState, have_version: i32, speak
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/debug/speaker_gaintable/subscribe".to_string(),
+            address: osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_SUBSCRIBE.to_string(),
             args: vec![
                 rosc::OscType::Int(have_version.max(0)),
                 // Not clamped: -1 (GLOBAL_ENERGY_INDEX) selects the
@@ -65,7 +66,7 @@ pub fn unsubscribe_speaker_gaintable(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/debug/speaker_gaintable/unsubscribe".to_string(),
+            address: osc_contract::CONTROL_DEBUG_SPEAKER_GAINTABLE_UNSUBSCRIBE.to_string(),
         },
     );
 }

@@ -7,6 +7,7 @@
 use super::OscControlMsg;
 use super::{SharedState, send_control, send_json_control};
 use crate::model::app_state::RoomRatio;
+use crate::osc_contract;
 
 /// `applyRoomGeometryNow`: the five messages the web sends, in its order — the
 /// scale, the blend, the box, then the two extra depths — with the model
@@ -39,7 +40,7 @@ pub fn control_room_ratio(state: &SharedState, width: f32, length: f32, height: 
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloats3 {
-            address: "/omniphony/control/room_ratio".to_string(),
+            address: osc_contract::CONTROL_ROOM_RATIO.to_string(),
             a: w,
             b: l,
             c: h,
@@ -52,7 +53,7 @@ pub fn control_room_ratio_rear(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/room_ratio_rear".to_string(),
+            address: osc_contract::CONTROL_ROOM_RATIO_REAR.to_string(),
             value: v,
         },
     );
@@ -63,7 +64,7 @@ pub fn control_room_ratio_lower(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/room_ratio_lower".to_string(),
+            address: osc_contract::CONTROL_ROOM_RATIO_LOWER.to_string(),
             value: v,
         },
     );
@@ -74,7 +75,7 @@ pub fn control_room_ratio_center_blend(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/room_ratio_center_blend".to_string(),
+            address: osc_contract::CONTROL_ROOM_RATIO_CENTER_BLEND.to_string(),
             value: v,
         },
     );
@@ -84,20 +85,20 @@ pub fn control_layout_radius_m(state: &SharedState, value: f32) {
     let v = value.max(0.01);
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "radiusM": v }),
     );
 }
 
 pub fn control_layout_config(state: &SharedState, payload: serde_json::Value) {
-    send_json_control(&state.osc_tx, "/omniphony/control/config/layout", payload);
+    send_json_control(&state.osc_tx, osc_contract::CONTROL_CONFIG_LAYOUT, payload);
 }
 
 pub fn control_layout_config_apply(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/config/layout/apply".to_string(),
+            address: osc_contract::CONTROL_CONFIG_LAYOUT_APPLY.to_string(),
         },
     );
 }
@@ -112,13 +113,17 @@ pub fn apply_layout_document(state: &SharedState, payload: serde_json::Value) {
 }
 
 pub fn control_speakers_config(state: &SharedState, payload: serde_json::Value) {
-    send_json_control(&state.osc_tx, "/omniphony/control/config/speakers", payload);
+    send_json_control(
+        &state.osc_tx,
+        osc_contract::CONTROL_CONFIG_SPEAKERS,
+        payload,
+    );
 }
 
 pub fn control_speaker_az(state: &SharedState, id: i32, value: f32) {
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "azimuth": value }] }),
     );
 }
@@ -126,7 +131,7 @@ pub fn control_speaker_az(state: &SharedState, id: i32, value: f32) {
 pub fn control_speaker_el(state: &SharedState, id: i32, value: f32) {
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "elevation": value }] }),
     );
 }
@@ -134,7 +139,7 @@ pub fn control_speaker_el(state: &SharedState, id: i32, value: f32) {
 pub fn control_speaker_distance(state: &SharedState, id: i32, value: f32) {
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "distance": value.max(0.01) }] }),
     );
 }
@@ -142,7 +147,7 @@ pub fn control_speaker_distance(state: &SharedState, id: i32, value: f32) {
 pub fn control_speaker_x(state: &SharedState, id: i32, value: f32) {
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "x": value.clamp(-1.0, 1.0) }] }),
     );
 }
@@ -150,7 +155,7 @@ pub fn control_speaker_x(state: &SharedState, id: i32, value: f32) {
 pub fn control_speaker_y(state: &SharedState, id: i32, value: f32) {
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "y": value.clamp(-1.0, 1.0) }] }),
     );
 }
@@ -158,7 +163,7 @@ pub fn control_speaker_y(state: &SharedState, id: i32, value: f32) {
 pub fn control_speaker_z(state: &SharedState, id: i32, value: f32) {
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "z": value.clamp(-1.0, 1.0) }] }),
     );
 }
@@ -171,7 +176,7 @@ pub fn control_speaker_coord_mode(state: &SharedState, id: i32, value: String) {
     };
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "coordMode": normalized }] }),
     );
 }
@@ -180,7 +185,7 @@ pub fn control_speaker_delay(state: &SharedState, id: i32, delay_ms: f32) {
     let v = delay_ms.max(0.0);
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/speakers",
+        osc_contract::CONTROL_CONFIG_SPEAKERS,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "delayMs": v }] }),
     );
 }
@@ -188,7 +193,7 @@ pub fn control_speaker_delay(state: &SharedState, id: i32, delay_ms: f32) {
 pub fn control_speaker_spatialize(state: &SharedState, id: i32, spatialize: i32) {
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "spatialize": spatialize != 0 }] }),
     );
 }
@@ -200,7 +205,7 @@ pub fn control_speaker_name(state: &SharedState, id: i32, name: String) {
     }
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "name": trimmed }] }),
     );
 }
@@ -213,7 +218,7 @@ pub fn control_speaker_freq_low(state: &SharedState, id: i32, freq_low: f32) {
     };
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "freqLow": value }] }),
     );
 }
@@ -226,7 +231,7 @@ pub fn control_speaker_freq_high(state: &SharedState, id: i32, freq_high: f32) {
     };
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "speakerEdits": [{ "id": id.max(0), "freqHigh": value }] }),
     );
 }
@@ -238,7 +243,7 @@ pub fn control_speakers_apply(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/config/layout/apply".to_string(),
+            address: osc_contract::CONTROL_CONFIG_LAYOUT_APPLY.to_string(),
         },
     );
 }
@@ -259,7 +264,7 @@ pub fn control_speakers_add(
     };
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({
             "addSpeaker": {
                 "name": n,
@@ -277,7 +282,7 @@ pub fn control_speakers_add(
 pub fn control_speakers_remove(state: &SharedState, index: i32) {
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "removeSpeaker": index.max(0) }),
     );
     control_speakers_apply(state);
@@ -286,7 +291,7 @@ pub fn control_speakers_remove(state: &SharedState, index: i32) {
 pub fn control_speakers_move(state: &SharedState, from: i32, to: i32) {
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/layout",
+        osc_contract::CONTROL_CONFIG_LAYOUT,
         serde_json::json!({ "moveSpeaker": { "from": from.max(0), "to": to.max(0) } }),
     );
     control_speakers_apply(state);

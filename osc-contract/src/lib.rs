@@ -24,7 +24,7 @@
 //!
 //! * **Per-object mute** — [`CONTROL_OBJECT_PREFIX`] + `"{id}/mute"`, e.g.
 //!   `/omniphony/control/object/3/mute`.
-//! * **Hybrid backend** — `/omniphony/control/hybrid/{external_backend,
+//! * **Hybrid backend** — [`CONTROL_HYBRID_PREFIX`] + `{external_backend,
 //!   internal_backend,metric,curve,curve_smoothing}`.
 //! * **Distance diffuse** — `/omniphony/control/distance_diffuse/{enabled,
 //!   threshold,curve,metric,mirror_axes}`. `mirror_axes` takes the axes to
@@ -378,6 +378,23 @@ pub const CONTROL_RESUME: &str = "/omniphony/control/resume";
 
 /// Prefix for the per-object mute address. Append `"{id}/mute"`.
 pub const CONTROL_OBJECT_PREFIX: &str = "/omniphony/control/object/";
+
+// Families the engine matches by prefix and then by tail, rather than as whole
+// addresses. Naming the prefix is what both sides can share: the engine strips
+// it, a client appends to it, and neither spells the half the other relies on.
+
+/// Append `"enabled"`, `"threshold"`, `"curve"`, `"metric"` or `"mirror_axes"`.
+pub const CONTROL_DISTANCE_DIFFUSE_PREFIX: &str = "/omniphony/control/distance_diffuse/";
+/// Append `"external_backend"`, `"internal_backend"`, `"metric"`, `"curve"` or
+/// `"curve_smoothing"`.
+pub const CONTROL_HYBRID_PREFIX: &str = "/omniphony/control/hybrid/";
+/// Append `"x_size"`, `"y_size"`, `"z_size"` or `"z_neg_size"`.
+pub const CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX: &str =
+    "/omniphony/control/render_evaluation/cartesian/";
+/// Append `"azimuth_resolution"`, `"elevation_resolution"`, `"distance_res"` or
+/// `"distance_max"`.
+pub const CONTROL_RENDER_EVALUATION_POLAR_PREFIX: &str =
+    "/omniphony/control/render_evaluation/polar/";
 
 // ── State: engine → clients ─────────────────────────────────────────────────
 
@@ -834,29 +851,59 @@ mod tests {
             "../omniphony-renderer/orender_engine/src/osc/state_emit.rs",
             "../omniphony-renderer/orender_engine/src/osc/metadata_emit.rs",
             "../omniphony-renderer/orender_engine/src/osc/profiles.rs",
+            // The client's send path. A directory, so a command module added
+            // tomorrow is covered without anyone remembering to list it.
+            "../omniphony-studio-egui/core/src/host/commands/",
         ];
+
+        /// Every `.rs` under a directory, or the file itself.
+        fn sources(path: &Path) -> Vec<std::path::PathBuf> {
+            if path.is_file() {
+                return vec![path.to_owned()];
+            }
+            let mut out = Vec::new();
+            let entries = std::fs::read_dir(path)
+                .unwrap_or_else(|e| panic!("guard is stale: cannot read {}: {e}", path.display()));
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    out.extend(sources(&p));
+                } else if p.extension().is_some_and(|e| e == "rs") {
+                    out.push(p);
+                }
+            }
+            out.sort();
+            out
+        }
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut offenders = Vec::new();
         for rel in SOURCES {
-            let path = root.join(rel);
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("guard is stale: cannot read {}: {e}", path.display()));
-            for (n, line) in src.lines().enumerate() {
-                if line.trim_start().starts_with("//") {
-                    continue;
-                }
-                let mut rest = line;
-                while let Some(i) = rest.find("\"/omniphony/") {
-                    let after = &rest[i + 1..];
-                    let Some(end) = after.find('"') else { break };
-                    let addr = &after[..end];
-                    // A prefix is matched with `starts_with`; a template is
-                    // filled in by `format!`. Neither is a whole address.
-                    if !addr.ends_with('/') && !addr.contains('{') {
-                        offenders.push(format!("{}:{}: {addr}", rel, n + 1));
+            for path in sources(&root.join(rel)) {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("guard is stale: cannot read {}: {e}", path.display())
+                });
+                for (n, line) in src.lines().enumerate() {
+                    if line.trim_start().starts_with("//") {
+                        continue;
                     }
-                    rest = &after[end..];
+                    let mut rest = line;
+                    while let Some(i) = rest.find("\"/omniphony/") {
+                        let after = &rest[i + 1..];
+                        let Some(end) = after.find('"') else { break };
+                        let addr = &after[..end];
+                        // A prefix is matched with `starts_with`; a template is
+                        // filled in by `format!`. Neither is a whole address.
+                        if !addr.ends_with('/') && !addr.contains('{') {
+                            offenders.push(format!("{}:{}: {addr}", rel, n + 1));
+                        }
+                        rest = &after[end..];
+                    }
                 }
             }
         }
