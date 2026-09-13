@@ -63,7 +63,7 @@ impl RoomDimensions {
 impl StudioSpike {
     pub(crate) fn room_geometry_section(&mut self, ui: &mut Ui) {
         let (ratio, frozen) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.app.room_ratio.clone(),
                 live.app.render_backend_state.frozen_room_ratio,

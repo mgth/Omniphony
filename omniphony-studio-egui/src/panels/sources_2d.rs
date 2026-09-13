@@ -33,7 +33,7 @@ fn reason_text(reason: &str) -> &'static str {
 impl StudioSpike {
     pub(crate) fn sources_2d_section(&mut self, ui: &mut Ui) {
         let (placement, synthetic, generator, phantom, processing, generators, phantom_schema) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.option_str("surround_placement")
                     .unwrap_or_else(|| "side".to_owned()),
@@ -189,20 +189,8 @@ impl StudioSpike {
             },
         );
         if chosen != current {
-            // The renderer drops the previous generator's overrides, so the
-            // new one shows its declared defaults.
-            self.live
-                .lock()
-                .unwrap()
-                .app
-                .live_options
-                .object_generator_params = None;
-            let value = if chosen == "none" {
-                String::new()
-            } else {
-                chosen
-            };
-            self.set_option("object_generator_id", serde_json::json!(value));
+            let id = if chosen == "none" { "" } else { &chosen };
+            crate::host::commands::engine::set_object_generator(&self.host, id);
         }
     }
 
@@ -254,7 +242,7 @@ impl StudioSpike {
             return;
         };
         let stored = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app.live_options.object_generator_params.clone()
         };
         for spec in params {
@@ -282,7 +270,7 @@ impl StudioSpike {
             return;
         };
         let stored = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app.live_options.phantom_params.clone()
         };
         for spec in params {

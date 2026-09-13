@@ -30,7 +30,7 @@ impl StudioSpike {
     /// The canonical channel the selection names, if it names one.
     pub(crate) fn selected_channel(&self) -> Option<String> {
         let id = self.selection.object.as_deref()?;
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         let name = live
             .app
             .sources
@@ -45,7 +45,7 @@ impl StudioSpike {
             return;
         };
         let (channel, room, scale_m, direct) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let channels = effective_channels(&live.channels, &live.app);
             let Some(channel) = channels.into_iter().find(|c| c.name == name) else {
                 return;
@@ -141,7 +141,7 @@ impl StudioSpike {
         // A direct channel with a resolved speaker shows that speaker's own
         // coordinate mode; otherwise the editor's own choice decides.
         let speaker = direct.clone().flatten().and_then(|(index, _)| {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.selected_speakers().get(index).cloned()
         });
         let editable = channel.spatialize;
@@ -327,7 +327,7 @@ impl StudioSpike {
     /// path the output speakers use, so the channel lands exactly where it was
     /// put.
     fn set_channel_cartesian(&mut self, name: &str, adm: [f64; 3]) {
-        let room = self.live.lock().unwrap().app.room_ratio.clone();
+        let room = self.host.read().app.room_ratio.clone();
         let adm = [
             adm[0].clamp(-1.0, 1.0),
             adm[1].clamp(-1.0, 1.0),
@@ -360,10 +360,10 @@ impl StudioSpike {
             self.set_channel_polar(name, azimuth, elevation, distance);
             return;
         }
-        let room = self.live.lock().unwrap().app.room_ratio.clone();
+        let room = self.host.read().app.room_ratio.clone();
         let distance = distance.max(0.01);
         let adm = polar_to_adm(&room, azimuth, elevation, distance);
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         let mut channels = effective_channels(&live.channels, &live.app);
         let Some(target) = channels.iter_mut().find(|c| c.name == name) else {
             return;
@@ -381,7 +381,7 @@ impl StudioSpike {
     }
 
     fn set_channel_polar(&mut self, name: &str, azimuth: f64, elevation: f64, distance: f64) {
-        let room = self.live.lock().unwrap().app.room_ratio.clone();
+        let room = self.host.read().app.room_ratio.clone();
         let distance = if distance > 0.0 { distance } else { 0.01 };
         let adm = polar_to_adm(&room, azimuth, elevation, distance);
         self.commit_channel(name, |c| {
@@ -400,7 +400,7 @@ impl StudioSpike {
     /// back in the snapshot.
     fn commit_channel(&mut self, name: &str, mutate: impl FnOnce(&mut Channel)) {
         let payload = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let mut channels = effective_channels(&live.channels, &live.app);
             let Some(target) = channels.iter_mut().find(|c| c.name == name) else {
                 return;

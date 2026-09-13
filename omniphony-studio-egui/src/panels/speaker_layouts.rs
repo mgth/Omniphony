@@ -37,7 +37,7 @@ impl StudioSpike {
     /// would invalidate the table it is using.
     pub(crate) fn layout_actions(&mut self, ui: &mut Ui) {
         let frozen = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app.render_backend_state.frozen_speakers
         };
         // Four buttons need ~350 points on one line, more than the panel's
@@ -115,7 +115,7 @@ impl StudioSpike {
             return;
         }
         let payload = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let Some(layout) = live.app.layouts.iter().find(|l| l.key == key) else {
                 return;
             };
@@ -126,7 +126,7 @@ impl StudioSpike {
 
     fn export_layout(&mut self) {
         let layout = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let key = live.app.selected_layout_key.clone();
             live.app
                 .layouts
@@ -162,7 +162,7 @@ impl StudioSpike {
     /// put it inside the listener's head.
     fn add_speaker(&mut self) {
         let (name, speaker) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let speakers = live.selected_speakers();
             let base = self
                 .selection

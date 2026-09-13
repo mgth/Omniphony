@@ -71,7 +71,7 @@ impl StudioSpike {
                 .to_owned()
         };
         let facts = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             RendererFacts {
                 version: live.app.render_version.clone(),
                 abi: live.app.render_abi.clone(),

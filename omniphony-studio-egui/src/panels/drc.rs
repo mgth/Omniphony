@@ -26,7 +26,7 @@ fn gauge_colour(db: f64) -> Color32 {
 impl StudioSpike {
     pub(crate) fn drc_section(&mut self, ui: &mut Ui) {
         let (mode, modes, weight, loudness, metering, gain, source) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.app
                     .drc_mode

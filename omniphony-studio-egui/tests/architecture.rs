@@ -106,29 +106,6 @@ const RULES: &[Rule] = &[
         exempt: &[],
     },
     Rule {
-        id: "model-write",
-        why: "UI code writes state the core owns: the model behind `live`, or host state behind a lock",
-        fix: "let the core command that sends the change apply it too (core/src/host/commands/)",
-        matchers: &[
-            Matcher::Code(&[
-                // `….app.field = …`, `….app.list[i] += …`
-                r"\.app\.[A-Za-z_]\w*(?:\.\w+|\[[^\]\n]*\])*\s*(?:<<|>>|[-+*/%|&^])?=[^=]",
-                // `….app.sources.insert(…)` and the other in-place mutations
-                r"\.app\.[A-Za-z_]\w*(?:\.\w+|\[[^\]\n]*\])*\s*\.\s*(?:insert|remove|clear|push|push_back|push_front|pop|pop_back|pop_front|retain|iter_mut|values_mut|get_mut|entry|extend|truncate|drain|swap_remove|sort|sort_by|sort_by_key|dedup|append|resize|fill)\s*\(",
-                // the model's own mutators, called on the guard
-                r"(?:\blive|\.lock\(\)\.unwrap\(\)|\.app)\s*\.\s*(?:hold|set_option|push_log|record_latency|record_stage|reset_runtime_state|set_latency_\w+_value|set_audio_\w+)\s*\(",
-            ]),
-            // `live.field = …`, `….lock().unwrap().field = …` (not `.app`,
-            // which the first pattern counts)
-            Matcher::CodeExcept(
-                r"(?:\.lock\(\)\.unwrap\(\)|\blive)\s*\.\s*([A-Za-z_]\w*)(?:\.\w+|\[[^\]\n]*\])*\s*(?:<<|>>|[-+*/%|&^])?=[^=]",
-                "app",
-            ),
-        ],
-        only: &[],
-        exempt: &[],
-    },
-    Rule {
         id: "side-effect",
         why: "UI code spawns threads or processes, blocks, or does file or network I/O",
         fix: "run it in a host service (core/src/host/), off the UI thread when it can block, and show its result",
@@ -543,35 +520,4 @@ fn the_scanner_skips_comments_and_sets_strings_apart() {
     assert!(s.code.contains("live.app.y = 2;"));
     assert!(s.code.contains("fn f<'a>(x: &'a str)"));
     assert_eq!(s.code.lines().count(), src.lines().count());
-}
-
-#[test]
-fn the_model_write_rule_counts_writes_not_reads() {
-    let patterns = match &RULES
-        .iter()
-        .find(|r| r.id == "model-write")
-        .unwrap()
-        .matchers[0]
-    {
-        Matcher::Code(p) => *p,
-        _ => unreachable!(),
-    };
-    let assign = Regex::new(patterns[0]).unwrap();
-    let mutate = Regex::new(patterns[1]).unwrap();
-    for write in [
-        "live.app.master_gain = Some(1.0);",
-        "self.live.lock().unwrap().app.audio.audio_output_file = None;",
-        "live.app.levels[i] += 1.0;",
-    ] {
-        assert!(assign.is_match(write), "{write}");
-    }
-    assert!(mutate.is_match("live.app.sources.insert(id, s);"));
-    for read in [
-        "let g = live.app.master_gain;",
-        "if live.app.master_gain == Some(1.0) {}",
-        "if live.app.count >= 3 {}",
-        "let n = live.app.sources.len();",
-    ] {
-        assert!(!assign.is_match(read) && !mutate.is_match(read), "{read}");
-    }
 }

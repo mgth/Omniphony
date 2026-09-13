@@ -220,7 +220,7 @@ impl StudioSpike {
         // The frame's own copy moves at once, so the gizmo tracks the pointer
         // rather than the next state broadcast.
         self.gizmo_target = Some((target.clone(), scene));
-        let room = self.live.lock().unwrap().app.room_ratio.clone();
+        let room = self.host.read().app.room_ratio.clone();
         let adm = gizmos::scene_to_normalized(scene, &room);
         match target {
             GizmoTarget::Speaker(index) => {

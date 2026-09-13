@@ -28,7 +28,7 @@ const CLOCK_MODES: &[(&str, &str)] = &[
 impl StudioSpike {
     pub(crate) fn audio_input_section(&mut self, ui: &mut Ui) {
         let (mode, active, bridge, pipe, clock, error, node, description, pending) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.app
                     .input_mode

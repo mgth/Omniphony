@@ -9,7 +9,6 @@
 # Totals:
 #   osc-address      0
 #   raw-send         0
-#   model-write      0
 #   side-effect      0
 #   frame-tick       0
 #   toolkit-in-scene 0

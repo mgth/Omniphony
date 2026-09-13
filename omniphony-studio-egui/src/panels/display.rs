@@ -74,9 +74,8 @@ impl StudioSpike {
                     // flip it), so the row shows what the engine last
                     // published, as the scene-effects button does.
                     let mut overlay = self
-                        .live
-                        .lock()
-                        .unwrap()
+                        .host
+                        .read()
                         .overlay
                         .as_ref()
                         .and_then(|o| o.get("enabled"))
@@ -248,7 +247,7 @@ impl StudioSpike {
         let mut object_stop = self.object_stop_selected;
         let mut speaker_stop = self.speaker_stop_selected;
         let band_labels = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             crate::panels::row_glyphs::band_labels(&crate::model::layouts::crossover_cutoffs(
                 &live.selected_speakers(),
             ))

@@ -111,7 +111,7 @@ impl StudioSpike {
     /// they are addressed by ear, not by layout index.
     pub(crate) fn headphones_section(&mut self, ui: &mut Ui) {
         let mode = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
         };
         if mode == crate::panels::renderer::OutputMode::Speaker {
@@ -135,7 +135,7 @@ impl StudioSpike {
     }
 
     fn ear_rows(&self) -> Vec<Row> {
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         let muted = |ear: usize| {
             live.app
                 .binaural
@@ -187,7 +187,7 @@ impl StudioSpike {
         // stands down; the virtual-room mode shows both because it renders
         // through the speakers into the ears.
         let mode = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             crate::panels::renderer::OutputMode::from_state(live.app.binaural.as_ref())
         };
         if mode == crate::panels::renderer::OutputMode::BinauralDirect {
@@ -198,13 +198,13 @@ impl StudioSpike {
         // A clip lights the speaker's own chip for a second, restarting rather
         // than stacking when clips repeat.
         let clip = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.clip
                 .filter(|(_, at)| at.elapsed() < CLIP_FLASH)
                 .map(|(index, _)| index)
         };
         let layout_name = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app
                 .layouts
                 .iter()
@@ -398,12 +398,12 @@ impl StudioSpike {
     /// The band edges the layout's spatialized speakers imply. Derived, never
     /// stored: a stored copy goes stale the moment a band limit is edited.
     fn crossover_cutoffs(&self) -> Vec<f64> {
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         crate::model::layouts::crossover_cutoffs(&live.selected_speakers())
     }
 
     fn object_rows(&self) -> Vec<Row> {
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         // Trail points are filtered by age at draw time rather than pruned from
         // the store, so "is it moving" has to apply the same time-to-live —
         // otherwise a badge stays lit forever once its object has moved once.
@@ -541,7 +541,7 @@ impl StudioSpike {
     }
 
     fn speaker_rows(&self) -> Vec<Row> {
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         // The contribution overlay answers "where does *this* object go", so it
         // exists only while one is selected.
         let selected = self.selection.object.as_deref();
@@ -660,7 +660,7 @@ impl StudioSpike {
     /// entry is already the only one playing.
     fn solo(&mut self, id: &str, speaker: bool) {
         let ids: Vec<String> = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             if speaker {
                 (0..live.selected_speakers().len())
                     .map(|i| i.to_string())
@@ -673,7 +673,7 @@ impl StudioSpike {
             return;
         }
         let muted_now: Vec<bool> = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             ids.iter()
                 .map(|other| {
                     let map = if speaker {

@@ -25,7 +25,7 @@ pub enum NameEditor {
 impl StudioSpike {
     pub(crate) fn profiles_row(&mut self, ui: &mut Ui) {
         let (active, names) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.app.active_profile.clone(),
                 live.app.profile_names.clone(),

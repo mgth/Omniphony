@@ -18,8 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rosc::OscType;
 
-use super::{OscControlMsg, send_control};
-use crate::osc::ControlTx;
+use super::{OscControlMsg, SharedState, send_control};
 
 /// Fixed browse root. `path` arguments are relative to this and sanitised —
 /// the browser can never escape it.
@@ -267,7 +266,13 @@ pub fn import_local(dir: &Path, src: &Path) -> Result<PathBuf, String> {
 /// Takes the control sender rather than the whole `SharedState` so the upload
 /// can run on a worker thread: a file is up to a gigabyte, and chunking it on
 /// the frame loop would stop the window for the duration.
-pub fn upload_to_renderer(tx: &ControlTx, dir: &Path, path: &Path) -> Result<u32, String> {
+/// Send a cached SOFA file to the renderer in chunks.
+///
+/// Takes the state rather than the channel: handing a `ControlTx` out to a
+/// caller is handing out the ability to send anything, which is the one thing
+/// the UI is not allowed to have.
+pub fn upload_to_renderer(state: &SharedState, dir: &Path, path: &Path) -> Result<u32, String> {
+    let tx = &state.osc_tx;
     if path.parent() != Some(dir) {
         return Err("upload source must be a cached file".into());
     }

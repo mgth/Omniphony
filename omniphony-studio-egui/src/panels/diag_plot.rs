@@ -444,7 +444,7 @@ impl StudioSpike {
     /// section is exactly the gesture that says "I am looking at this".
     pub(crate) fn diagnostics_section(&mut self, ui: &mut Ui) {
         let schema = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app.latency.diag_schema.clone()
         };
         let metrics = metrics(schema.as_ref());
@@ -1038,7 +1038,7 @@ impl StudioSpike {
         let t = self.diag_started.elapsed().as_secs_f64() * 1000.0;
         let cutoff = t - WINDOW_OPTIONS_MS[WINDOW_OPTIONS_MS.len() - 1] as f64;
         let values = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app.latency.diag_values.clone()
         };
         let Some(values) = values else { return };

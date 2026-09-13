@@ -66,7 +66,7 @@ impl StudioSpike {
     /// Drawn in the renderer section's header, as the web draws it.
     pub(crate) fn renderer_perf(&mut self, ui: &mut Ui) {
         let metering = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app.osc_metering_enabled.unwrap_or(0) != 0
         };
         if !metering {
@@ -119,7 +119,7 @@ impl StudioSpike {
     /// Crossover time is *contained* in render time, so it is carved out of it
     /// rather than added: the four segments must sum to the frame's real cost.
     fn collect_perf(&self) -> Perf {
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         let positive = |v: Option<f64>| v.unwrap_or(0.0).max(0.0);
         let decode = positive(live.app.decode_time_ms);
         let render_total = positive(live.app.render_time_ms);
