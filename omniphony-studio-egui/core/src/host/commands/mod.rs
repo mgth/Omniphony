@@ -87,22 +87,78 @@ impl HostPaths {
     }
 }
 
-/// The host's `SharedState`, minus the auto-tune runner and the renderer
-/// watchdog (later phases).
+/// Everything the host owns: the model, the way out to the renderer, and the
+/// handful of things that outlive a single call.
+///
+/// Every field is `pub(crate)`. The UI holds one of these and calls functions
+/// on it; what it must not have is the ability to write the model behind the
+/// commands' back, or to send whatever it likes down `osc_tx`. That used to be
+/// a rule in `tests/architecture.rs`; making the fields unreachable is the
+/// compiler saying the same thing.
 pub struct SharedState {
-    pub inner: SharedLive,
-    pub osc_tx: ControlTx,
+    pub(crate) inner: SharedLive,
+    pub(crate) osc_tx: ControlTx,
+    /// Where this host keeps its configuration. A path, so reading it is
+    /// harmless; the UI names it when asking the core to load a file.
     pub config_dir: PathBuf,
-    pub listen_port: Arc<Mutex<u16>>,
-    pub realtime_seq: AtomicI32,
-    pub renderer_child: Arc<Mutex<Option<std::process::Child>>>,
-    pub watchdog: Arc<Mutex<WatchdogControl>>,
-    pub auto_tune_snapshot: Arc<Mutex<Option<serde_json::Value>>>,
-    pub paths: HostPaths,
+    pub(crate) listen_port: Arc<Mutex<u16>>,
+    pub(crate) realtime_seq: AtomicI32,
+    pub(crate) renderer_child: Arc<Mutex<Option<std::process::Child>>>,
+    pub(crate) watchdog: Arc<Mutex<WatchdogControl>>,
+    pub(crate) auto_tune_snapshot: Arc<Mutex<Option<serde_json::Value>>>,
+    pub(crate) paths: HostPaths,
     /// What the listener has seen, for the services that judge the link.
-    pub stats: Arc<crate::osc::OscStats>,
+    pub(crate) stats: Arc<crate::osc::OscStats>,
     /// How core work says it has something to show.
-    pub waker: crate::osc::Waker,
+    pub(crate) waker: crate::osc::Waker,
+}
+
+/// The model, readable and nothing more.
+///
+/// A `MutexGuard<Live>` derefs mutably, so whoever holds one can write the
+/// model — which is the whole of what the old `model-write` rule watched for.
+/// This hands out the same lock without that half, and there is no way from
+/// here to the other one.
+pub struct ModelRead<'a>(std::sync::MutexGuard<'a, crate::osc::dispatch::Live>);
+
+impl std::ops::Deref for ModelRead<'_> {
+    type Target = crate::osc::dispatch::Live;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl SharedState {
+    /// Build the host's state. The composition root calls this; the mutable
+    /// odds and ends start empty.
+    pub fn new(
+        inner: SharedLive,
+        osc_tx: ControlTx,
+        config_dir: PathBuf,
+        listen_port: u16,
+        stats: Arc<crate::osc::OscStats>,
+        waker: crate::osc::Waker,
+    ) -> Self {
+        Self {
+            inner,
+            osc_tx,
+            config_dir,
+            listen_port: Arc::new(Mutex::new(listen_port)),
+            realtime_seq: AtomicI32::new(0),
+            renderer_child: Default::default(),
+            watchdog: Default::default(),
+            auto_tune_snapshot: Default::default(),
+            paths: HostPaths::default(),
+            stats,
+            waker,
+        }
+    }
+
+    /// Read the model. Writing it is a command's job.
+    pub fn read(&self) -> ModelRead<'_> {
+        ModelRead(self.inner.lock().unwrap())
+    }
 }
 
 /// State of the local-renderer auto-start watchdog (host `main.rs`).

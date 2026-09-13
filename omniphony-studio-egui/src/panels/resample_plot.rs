@@ -212,7 +212,7 @@ impl StudioSpike {
         ctx.request_repaint();
         let t = self.diag_started.elapsed().as_secs_f64() * 1000.0;
         let sample = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             Sample {
                 t,
                 latency: live

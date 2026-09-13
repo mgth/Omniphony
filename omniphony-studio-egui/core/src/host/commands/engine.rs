@@ -72,6 +72,27 @@ pub fn control_ramp_mode(state: &SharedState, value: String) {
 /// a bool for toggles (forwarded as int 0/1), a number for future scalar
 /// kinds. Validation lives renderer-side against the registry spec — an
 /// unknown key or a bad value is dropped there, per the OSC contract.
+/// Pick the object generator, or `""` for none.
+///
+/// Its own command because changing it drops state: the renderer forgets the
+/// previous generator's parameter overrides, so the local copy has to go with
+/// it or the form would show the old generator's values under the new one's
+/// name until the next snapshot.
+pub fn set_object_generator(state: &SharedState, id: &str) {
+    state
+        .inner
+        .lock()
+        .unwrap()
+        .app
+        .live_options
+        .object_generator_params = None;
+    control_option(
+        state,
+        "object_generator_id".to_owned(),
+        serde_json::json!(id),
+    );
+}
+
 pub fn control_option(state: &SharedState, key: String, value: serde_json::Value) {
     let k = key.trim().to_ascii_lowercase();
     if k.is_empty() {

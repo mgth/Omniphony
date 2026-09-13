@@ -86,6 +86,28 @@ pub fn push_log(state: &SharedState, level: &str, target: &str, message: String)
     state.inner.lock().unwrap().push_log(level, target, message);
 }
 
+/// Empty the log ring the overlay shows.
+pub fn clear_log(state: &SharedState) {
+    state.inner.lock().unwrap().log.clear();
+}
+
+/// Take the backend file the renderer sent, if it is the one being waited for.
+///
+/// Taking rather than reading: the editor owns the content once it has it, and
+/// leaving the slot full would hand the same file to the next request that
+/// happened to name the same backend and key.
+pub fn take_backend_file(
+    state: &SharedState,
+    backend: &str,
+    key: &str,
+) -> Option<crate::osc::dispatch::BackendFile> {
+    let mut live = state.inner.lock().unwrap();
+    match &live.backend_file_content {
+        Some(f) if f.backend == backend && f.key == key => live.backend_file_content.take(),
+        _ => None,
+    }
+}
+
 pub fn get_state(state: &SharedState) -> serde_json::Value {
     let s = state.inner.lock().unwrap();
     serde_json::to_value(&s.app).unwrap_or(serde_json::Value::Null)

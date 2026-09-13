@@ -371,7 +371,7 @@ impl StudioSpike {
         if self.prefs.object_test.signal != "clip" {
             return;
         }
-        let clip = self.live.lock().unwrap().object_test_clip.clone();
+        let clip = self.host.read().object_test_clip.clone();
         ui.horizontal(|ui| {
             // Only the renderer knows: the file may be unreadable, at the wrong
             // rate, or longer than the cap.
@@ -541,7 +541,7 @@ impl StudioSpike {
     // -----------------------------------------------------------------------
 
     fn object_test_sheet(&mut self, ui: &mut Ui) {
-        let room = self.live.lock().unwrap().app.room_ratio.clone();
+        let room = self.host.read().app.room_ratio.clone();
         let space = sheet::Space {
             adm_view: self.prefs.object_test.adm_view,
             room: &room,
@@ -800,7 +800,7 @@ impl StudioSpike {
     /// all; the nodes themselves are read from the cache.
     fn ensure_object_test_grid(&mut self) -> bool {
         let key = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let c = &live.app.vbap_cartesian;
             [
                 c.x_size.unwrap_or(0),

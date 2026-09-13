@@ -39,7 +39,6 @@ fn layout_eq(a: &OverlayLayout, b: &OverlayLayout) -> bool {
 
 pub struct StudioSpike {
     pub(crate) args: Args,
-    pub(crate) live: SharedLive,
     pub(crate) osc_stats: Arc<OscStats>,
     pub(crate) camera: OrbitCamera,
     pub(crate) selection: Selection,
@@ -353,26 +352,20 @@ impl StudioSpike {
         if object_field {
             volume_settings.object_field_enabled = true;
         }
-        let host = std::sync::Arc::new(crate::host::commands::SharedState {
-            inner: live_for_host,
-            osc_tx: control_for_host,
-            config_dir: config_dir.clone(),
-            listen_port: Arc::new(Mutex::new(port)),
-            realtime_seq: std::sync::atomic::AtomicI32::new(0),
-            renderer_child: Default::default(),
-            watchdog: Default::default(),
-            auto_tune_snapshot: Default::default(),
-            paths: crate::host::commands::HostPaths::default(),
-            stats: osc_stats.clone(),
-            waker: waker.clone(),
-        });
+        let host = std::sync::Arc::new(crate::host::commands::SharedState::new(
+            live_for_host,
+            control_for_host,
+            config_dir.clone(),
+            port,
+            osc_stats.clone(),
+            waker.clone(),
+        ));
         // The core's own clock: it sleeps until a service is due or the waker
         // nudges it, so an idle Studio wakes for nothing.
         crate::host::services::spawn(host.clone(), repaint, nudges)?;
 
         Ok(Self {
             args,
-            live,
             osc_stats,
             camera: OrbitCamera::new(),
             selection: Selection::default(),
@@ -477,7 +470,7 @@ impl StudioSpike {
     /// wire quaternion is conjugated and permuted into the scene frame.
     fn ease_head_pose(&mut self, ctx: &egui::Context) {
         let target = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let binaural = live
                 .app
                 .binaural
@@ -603,7 +596,7 @@ impl StudioSpike {
         self.volume_settings.band_index = self.settings.heatmap_band_index;
         self.settings.heatmap_all_bands = self.volume_settings.all_bands;
         let out = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             view::build_frame(
                 &live,
                 &self.settings,
@@ -911,7 +904,7 @@ impl StudioSpike {
             return;
         }
         self.last_print = Instant::now();
-        let objects = self.live.lock().unwrap().app.sources.len();
+        let objects = self.host.read().app.sources.len();
         println!(
             "stats t={:.0}s fps={:.1} frame_ms={:.2} osc_pkt_s={:.0} objects={} rss_mb={:.0} cpu_pct={:.1} events={} pointer_moves={} pointer_over={}",
             self.osc_stats.start.elapsed().as_secs_f32(),

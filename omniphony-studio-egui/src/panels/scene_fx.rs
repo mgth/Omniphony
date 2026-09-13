@@ -235,9 +235,8 @@ impl StudioSpike {
         // toggled from an mpv keybind Studio never sees, so the button reflects
         // what the engine last published rather than a local flag.
         let mut overlay = self
-            .live
-            .lock()
-            .unwrap()
+            .host
+            .read()
             .overlay
             .as_ref()
             .and_then(|o| o.get("enabled"))

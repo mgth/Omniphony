@@ -65,7 +65,7 @@ fn text(doc: Option<&serde_json::Value>, path: &[&str]) -> Option<String> {
 impl StudioSpike {
     pub(crate) fn binaural_tab(&mut self, ui: &mut Ui) {
         let doc = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app.binaural.clone()
         };
         let doc = doc.as_ref();
@@ -187,7 +187,7 @@ impl StudioSpike {
         }
 
         let lattice = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.option_str("hrir_update_lattice")
                 .unwrap_or_else(|| "balanced".to_owned())
         };
@@ -643,7 +643,7 @@ impl StudioSpike {
         }
 
         // The live pose, as the tracker reports it.
-        let pose = self.live.lock().unwrap().head_pose;
+        let pose = self.host.read().head_pose;
         if let Some([w, x, y, z]) = pose {
             let (yaw, pitch, roll) = euler_degrees(w, x, y, z);
             ui.horizontal(|ui| {

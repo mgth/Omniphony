@@ -38,7 +38,7 @@ pub fn meter_fraction(db: f64) -> f32 {
 impl StudioSpike {
     pub(crate) fn master_section(&mut self, ui: &mut egui::Ui) {
         let (meter, hold, gain, auto_gain, ceiling, ready, realtime, clipping) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let meter = live.app.master_level.clone();
             (
                 meter,

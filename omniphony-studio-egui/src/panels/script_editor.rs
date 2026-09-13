@@ -258,7 +258,7 @@ impl StudioSpike {
         let renderer_is_local = editor.renderer_is_local;
         let extensions = editor.extensions.clone();
         let files: Vec<String> = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.backend_files
                 .get(&backend)
                 .cloned()
@@ -427,13 +427,7 @@ impl StudioSpike {
             return;
         }
         let (backend, key) = (editor.backend.clone(), editor.key.clone());
-        let file = {
-            let mut live = self.live.lock().unwrap();
-            match &live.backend_file_content {
-                Some(f) if f.backend == backend && f.key == key => live.backend_file_content.take(),
-                _ => None,
-            }
-        };
+        let file = crate::host::commands::app::take_backend_file(&self.host, &backend, &key);
         let Some(file) = file else { return };
         let Some(editor) = &mut self.script_editor else {
             return;

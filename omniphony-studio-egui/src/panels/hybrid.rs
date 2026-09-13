@@ -45,7 +45,7 @@ impl StudioSpike {
         values: &serde_json::Value,
     ) {
         let hybrid = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app.render_backend_state.hybrid.clone()
         };
         let external = hybrid

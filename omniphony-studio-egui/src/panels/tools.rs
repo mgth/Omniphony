@@ -12,7 +12,7 @@ impl StudioSpike {
         // something to read while listening.
         Section::titled("statsSection", "Stats").show(ui, |ui| {
             let (objects, epoch) = {
-                let live = self.live.lock().unwrap();
+                let live = self.host.read();
                 (live.app.sources.len(), live.snapshot_epoch)
             };
             egui::Grid::new("stats-grid")

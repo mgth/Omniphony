@@ -115,7 +115,7 @@ impl StudioSpike {
             return;
         };
         let (speaker, count, frozen, scale_m) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let speakers = live.selected_speakers();
             let Some(speaker) = speakers.get(index).cloned() else {
                 return;
@@ -248,7 +248,7 @@ impl StudioSpike {
 
             // Gain is realtime, like the master and the list rows.
             let gain = {
-                let live = self.live.lock().unwrap();
+                let live = self.host.read();
                 live.app
                     .speaker_gains
                     .get(&index.to_string())
@@ -558,7 +558,7 @@ impl StudioSpike {
     }
 
     fn speaker_test_tab(&mut self, ui: &mut Ui, index: usize) {
-        let running = self.live.lock().unwrap().speaker_test.running == Some(index);
+        let running = self.host.read().speaker_test.running == Some(index);
         widgets::label_row_help(ui, t("speaker.test"), "help.speaker.test", |ui| {
             let label = if running {
                 t("speaker.testStop")
@@ -640,7 +640,7 @@ impl StudioSpike {
     /// A test running on another speaker follows a new selection in toggle
     /// mode, and stops in the others (`onSpeakerSelectionChanged`).
     pub(crate) fn follow_speaker_selection(&mut self) {
-        let Some(running) = self.live.lock().unwrap().speaker_test.running else {
+        let Some(running) = self.host.read().speaker_test.running else {
             return;
         };
         match self.selection.speaker {
@@ -728,7 +728,7 @@ impl StudioSpike {
 
     fn run_delay_tool(&mut self, tool: DelayTool) {
         let (speakers, frozen, scale_m) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.selected_speakers().to_vec(),
                 live.app.render_backend_state.frozen_speakers,

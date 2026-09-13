@@ -54,7 +54,7 @@ impl StudioSpike {
         let right = layout.effective_width(crate::ui::layout::Side::Right) + SIDE_GAP;
         let width = (screen.width() - left - right).max(220.0);
         let entries: Vec<LogLine> = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.log.iter().rev().cloned().collect()
         };
         let filter = self.log_filter.to_lowercase();
@@ -158,7 +158,7 @@ impl StudioSpike {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(t("log.clear")).clicked() {
-                    self.live.lock().unwrap().log.clear();
+                    crate::host::commands::app::clear_log(&self.host);
                 }
                 if ui.button(t("log.copy")).clicked() {
                     let text = filtered
@@ -175,7 +175,7 @@ impl StudioSpike {
                         .desired_width(180.0),
                 );
                 let current = {
-                    let live = self.live.lock().unwrap();
+                    let live = self.host.read();
                     live.app.log_level.clone().unwrap_or_else(|| "info".into())
                 };
                 let mut chosen = current.clone();

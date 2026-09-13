@@ -222,7 +222,7 @@ const SWITCHES: &[(Switch, &str, &str)] = &[
 impl StudioSpike {
     pub(crate) fn latency_section(&mut self, ui: &mut Ui) {
         let (state, stats, adaptive_on, paused, band, runtime_state) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 LatencyView::of(&live.app),
                 live.latency_stats(),
@@ -260,7 +260,7 @@ impl StudioSpike {
     /// is allowed, centred on no correction at all.
     fn resample_meter(&mut self, ui: &mut Ui) {
         let (ratio, max_adjust) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.app.resample_ratio,
                 live.app.adaptive_resampling_max_adjust.unwrap_or(0.01),
@@ -384,7 +384,7 @@ impl StudioSpike {
 
         // The far mode fires when any of its three actions is armed.
         let far_mode = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app
                 .adaptive_resampling_hard_recover_high_in_far_mode
                 .unwrap_or(1)
@@ -400,7 +400,7 @@ impl StudioSpike {
                     .unwrap_or(1)
                     != 0
         };
-        let silence = Switch::SilenceFar.get(&self.live.lock().unwrap().app);
+        let silence = Switch::SilenceFar.get(&self.host.read().app);
 
         for (index, (caption, rows)) in SUBPANELS.iter().enumerate() {
             ui.add_space(4.0);
@@ -418,7 +418,7 @@ impl StudioSpike {
             };
             for i in switches {
                 let (switch, label, help) = &SWITCHES[*i];
-                let mut value = switch.get(&self.live.lock().unwrap().app);
+                let mut value = switch.get(&self.host.read().app);
                 // Label, help mark and switch on one line, the switch placed
                 // first: it used to fall to a line of its own below its label.
                 if widgets::label_row_help(ui, t(label), *help, |ui| {
@@ -434,7 +434,7 @@ impl StudioSpike {
                     Gate::Adaptive => adaptive_on,
                     Gate::Silence => silence,
                 };
-                let stored = row.param.get(&self.live.lock().unwrap().app);
+                let stored = row.param.get(&self.host.read().app);
                 let mut value = *self.adaptive_edits.get(&row.param).unwrap_or(&stored);
                 let (min, max) = row.param.range();
                 ui.add_enabled_ui(enabled, |ui| {

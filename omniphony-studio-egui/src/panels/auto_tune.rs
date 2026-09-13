@@ -75,7 +75,7 @@ impl StudioSpike {
 
     /// The run as the dialog reads it, or `None` when the wizard is closed.
     fn auto_tune_view(&self) -> Option<View> {
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         let run = live.auto_tune.as_ref()?;
         Some(View {
             state: run.machine.state(),
@@ -114,9 +114,8 @@ impl StudioSpike {
     }
 
     fn auto_tune_running(&self) -> bool {
-        self.live
-            .lock()
-            .unwrap()
+        self.host
+            .read()
             .auto_tune
             .as_ref()
             .is_some_and(auto_tune::Run::running)

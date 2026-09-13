@@ -106,7 +106,7 @@ impl StudioSpike {
     /// manager; that belongs with the service controls themselves, so this
     /// reports the handshake's own answer until then.
     fn producer_flavour(&self) -> Option<String> {
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         let caps = live.app.producer_capabilities.as_ref()?;
         caps.get("host")
             .and_then(|h| h.as_str())
@@ -118,7 +118,7 @@ impl StudioSpike {
     /// (`rendererIsForeign`): `None` while either path is unknown, and never
     /// true for an embedded producer, which was never ours to start.
     fn renderer_is_foreign(&self) -> Option<(String, String)> {
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         let embedded = live
             .app
             .producer_capabilities
@@ -137,7 +137,7 @@ impl StudioSpike {
     /// web shows them.
     fn connection_banners(&mut self, ui: &mut egui::Ui) {
         let bridge_error = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app
                 .render_bridge_error
                 .as_deref()
@@ -252,7 +252,7 @@ impl StudioSpike {
     pub(crate) fn metering_row(&mut self, ui: &mut egui::Ui) {
         const RATES_HZ: [u32; 5] = [10, 20, 50, 100, 200];
         let (metering_on, rate) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.app.osc_metering_enabled.unwrap_or(0) != 0,
                 live.app.meter_rate_hz.map_or(50, |hz| hz.round() as u32),
@@ -434,14 +434,7 @@ impl StudioSpike {
         let mut config = load_config(&self.config_dir);
         config.host = self.osc_host.trim().to_owned();
         config.osc_rx_port = self.osc_port;
-        config.osc_metering_enabled = self
-            .live
-            .lock()
-            .unwrap()
-            .app
-            .osc_metering_enabled
-            .unwrap_or(0)
-            != 0;
+        config.osc_metering_enabled = self.host.read().app.osc_metering_enabled.unwrap_or(0) != 0;
         if let Err(e) = save_config(&self.config_dir, &config) {
             log::warn!("[osc] could not save the configuration: {e}");
         }

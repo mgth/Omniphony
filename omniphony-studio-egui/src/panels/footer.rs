@@ -35,7 +35,7 @@ impl StudioSpike {
     /// a restart, and nothing else on screen says so.
     pub(crate) fn save_footer(&mut self, ctx: &egui::Context) {
         let (saved, error, pending) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.app.config_saved.unwrap_or(0) != 0,
                 live.app.save_error.clone(),
@@ -95,7 +95,7 @@ impl StudioSpike {
     /// one-segment cursor would be a control that cannot do anything.
     pub(crate) fn band_cursor(&mut self, ctx: &egui::Context, layout: &OverlayLayout) {
         let cutoffs = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             crate::model::layouts::crossover_cutoffs(&live.selected_speakers())
         };
         let count = cutoffs.len() + 1;

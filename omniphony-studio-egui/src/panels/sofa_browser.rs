@@ -592,7 +592,7 @@ impl StudioSpike {
     /// The active file, as the renderer reports it (`binaural.hrtfSofaPath`),
     /// so the highlight survives a Studio restart.
     fn active_sofa_path(&self) -> Option<PathBuf> {
-        let live = self.live.lock().unwrap();
+        let live = self.host.read();
         let path = live
             .app
             .binaural
@@ -699,13 +699,13 @@ impl StudioSpike {
         let dir = self.sofa_dir();
         let path = file.path.clone();
         let name = file.name.clone();
-        let tx = self.host.osc_tx.clone();
+        let host = self.host.clone();
         if let Some(browser) = &mut self.sofa_browser {
             browser.status(format!("Uploading {name} to the renderer…"), false);
         }
         self.start_sofa_job(move || Job::Uploaded {
             name,
-            result: sofa::upload_to_renderer(&tx, &dir, &path),
+            result: sofa::upload_to_renderer(&host, &dir, &path),
         });
     }
 

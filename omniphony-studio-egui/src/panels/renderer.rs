@@ -101,7 +101,7 @@ const METRICS: &[(&str, &str)] = &[
 impl StudioSpike {
     pub(crate) fn renderer_section(&mut self, ui: &mut Ui) {
         let summary = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let mode = live
                 .app
                 .render_evaluation_mode_state
@@ -134,7 +134,7 @@ impl StudioSpike {
 
     fn output_mode_row(&mut self, ui: &mut Ui) {
         let current = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             OutputMode::from_state(live.app.binaural.as_ref())
         };
         let mut chosen = current;
@@ -202,7 +202,7 @@ impl StudioSpike {
             intervals,
             meters_per_unit,
         ) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let s = &live.app.render_evaluation_mode_state;
             (
                 s.selection.clone().unwrap_or_else(|| "auto".to_owned()),
@@ -494,7 +494,7 @@ impl StudioSpike {
 
     fn backend_block(&mut self, ui: &mut Ui) {
         let (selection, effective, effective_label, available, values, frozen, status) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             let b = &live.app.render_backend_state;
             (
                 b.selection.clone().unwrap_or_else(|| "vbap".to_owned()),
@@ -786,7 +786,7 @@ impl StudioSpike {
 
     fn ramp_row(&mut self, ui: &mut Ui) {
         let current = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app
                 .audio
                 .ramp_mode
@@ -831,7 +831,7 @@ impl StudioSpike {
 
     fn crossover_block(&mut self, ui: &mut Ui) {
         let (crossover, kind, transition) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.app.live_options.crossover.clone(),
                 live.option_str("crossover_type")
@@ -901,7 +901,7 @@ impl StudioSpike {
 
     fn distance_diffuse_block(&mut self, ui: &mut Ui) {
         let state = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             live.app.distance_diffuse.clone()
         };
         ui.add_space(4.0);
@@ -998,7 +998,7 @@ impl StudioSpike {
 
     fn distance_model_block(&mut self, ui: &mut Ui) {
         let (value, metric) = {
-            let live = self.live.lock().unwrap();
+            let live = self.host.read();
             (
                 live.app
                     .distance_model

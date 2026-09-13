@@ -7,9 +7,10 @@ short version:
 - **Panels draw, and nothing else.** UI code (this crate: `app.rs`, `main.rs`,
   `panels/`, `prefs/`, `ui/`, `view/`, `render/`) never writes an
   `/omniphony/…` address, never calls `ctl.send*` or `control.send`, never
-  assigns into `live.app` or host state, never spawns a thread or process,
-  sleeps, or does file or network I/O, and never checks a deadline inside draw
-  code.
+  assigns into the model or host state — `SharedState::read()` gives a
+  read-only handle and there is no other way in — never spawns a thread or
+  process, sleeps, or does file or network I/O, and never checks a deadline
+  inside draw code.
 - **A new control** is a typed function in `core/src/host/commands/` that clamps,
   applies the optimistic value and sends. The panel calls it with `&self.host`.
   Look for an existing one first: about 150 were ported from the Tauri host and

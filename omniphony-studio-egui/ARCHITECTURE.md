@@ -44,6 +44,11 @@ The core's side is held by the toolchain:
 - **The UI cannot extend the model.** Rust's orphan rule rejects an
   `impl AppState` or `impl Live` outside the core crate. Build the view's own
   type instead (`LatencyView::of(&AppState)`).
+- **The UI cannot write the model.** `SharedState::read()` hands out a
+  `ModelRead`, which derefs to `Live` and not `&mut Live`. Every field of
+  `SharedState` that holds interior mutability — the model, the control
+  channel, the watchdog, the renderer child — is `pub(crate)`, so there is no
+  second way in either.
 
 The UI's side is held by the ratchet. **Every rule stands at zero**: the
 baseline is empty, so any of these is now a new violation, never a pre-existing
@@ -55,7 +60,6 @@ The rule ids:
 |---|---|
 | `osc-address` | a string literal starting with `/omniphony/` |
 | `raw-send` | `ctl.send*(…)`, `control.send(…)`, `send_control(…)`, `send_json_control(…)` |
-| `model-write` | writing the model or host state: `live.app.x = …`, `live.app.sources.insert(…)`, `live.push_log(…)`, `….lock().unwrap().field = …` |
 | `side-effect` | spawning a thread or process, `thread::sleep`, file or network I/O (`fs::…`, `UdpSocket`, `to_socket_addrs`, `ureq`) |
 | `frame-tick` | defining a `maintain_*` function |
 | `toolkit-in-scene` | naming an egui type inside `view/` or `render/` |
@@ -152,7 +156,15 @@ Two PRs that each lower the same line conflict on the baseline. Regenerate
 after the rebase; do not merge the two numbers by hand.
 
 A rule is deleted from the test once the compiler enforces it. The crate split
-retired three that way: `toolkit-in-core`, `core-imports-ui` and `model-impl`.
-A read-only model handle will do the same for `model-write`. A rule at zero is
-not deleted: `osc-address`, `raw-send`, `side-effect` and `frame-tick` all
-stand at zero and stay as cheap tripwires.
+retired three that way — `toolkit-in-core`, `core-imports-ui` and `model-impl`
+— and the read-only handle retired `model-write`: with no `&mut Live` to be
+had, the scanner had nothing left to find that the compiler would not. A rule
+at zero is not deleted otherwise: `osc-address`, `raw-send`, `side-effect`,
+`frame-tick` and `toolkit-in-scene` all stand at zero and stay as cheap
+tripwires.
+
+Retiring `model-write` was worth more than the line it saved. A lexical scan
+reads one line at a time, so a member chain split across lines slipped past it
+— `.app\n.live_options\n.field = None` was a model write in a panel that the
+rule never counted, and `live.log.clear()` was another. The compiler found
+both the moment the handle stopped derefing mutably.
