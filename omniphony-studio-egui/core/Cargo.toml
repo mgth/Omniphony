@@ -2,7 +2,10 @@
 name = "omniphony-studio-core"
 version.workspace = true
 edition = "2024"
-rust-version = "1.95"
+# The app's pin is egui's (1.97); the core's own floor is lower, and saying so
+# is what lets the Tauri Studio depend on this crate from a stable toolchain.
+# Verified building on 1.94.
+rust-version = "1.94"
 license = "GPL-3.0-or-later"
 description = "Omniphony Studio's core: the renderer protocol, the application state and behaviour, and no UI toolkit"
 publish = false
