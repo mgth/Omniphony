@@ -11,6 +11,5 @@
 #   raw-send         0
 #   side-effect      0
 #   frame-tick       0
-#   toolkit-in-scene 0
 #
 # rule            file                                      count
