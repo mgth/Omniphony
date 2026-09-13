@@ -145,6 +145,14 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo check --release -p renderer --features perf-gate --tests --locked
 
+      # The OSC contract is a crate of its own, shared by the engine and the
+      # Studio and a member of neither workspace, so `--workspace` above does
+      # not reach it. Its tests are the guard that both ends name addresses
+      # instead of spelling them — the failure it catches is a typo that
+      # compiles, matches nothing and silently disables a control.
+      - name: Test the OSC contract
+        run: cargo test --locked --manifest-path osc-contract/Cargo.toml
+
       # ── C ABI smoke test (liborender) ──────────────────────────────────────
       # Compile and run the header/link smoke test against the debug cdylib
       # (debug builds skip the soname so the bare .so links directly). Guards

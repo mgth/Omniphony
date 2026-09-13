@@ -819,19 +819,21 @@ mod tests {
     fn osc_sources_reference_the_contract_instead_of_spelling_addresses() {
         use std::path::Path;
 
-        // Relative to this crate's root, so the guard follows the files.
+        // Relative to this crate's root, so the guard follows the files. Both
+        // ends of the wire are listed: an address only works if the two agree,
+        // and a typo on the client side fails exactly as silently.
         const SOURCES: &[&str] = &[
-            "src/osc.rs",
-            "src/command.rs",
-            "../host_audio/src/lib.rs",
-            "../orender_engine/src/osc.rs",
-            "../orender_engine/src/osc/dispatch.rs",
-            "../orender_engine/src/osc/transport.rs",
-            "../orender_engine/src/osc/export.rs",
-            "../orender_engine/src/osc/recompute.rs",
-            "../orender_engine/src/osc/state_emit.rs",
-            "../orender_engine/src/osc/metadata_emit.rs",
-            "../orender_engine/src/osc/profiles.rs",
+            "../omniphony-renderer/runtime_control/src/osc.rs",
+            "../omniphony-renderer/runtime_control/src/command.rs",
+            "../omniphony-renderer/host_audio/src/lib.rs",
+            "../omniphony-renderer/orender_engine/src/osc.rs",
+            "../omniphony-renderer/orender_engine/src/osc/dispatch.rs",
+            "../omniphony-renderer/orender_engine/src/osc/transport.rs",
+            "../omniphony-renderer/orender_engine/src/osc/export.rs",
+            "../omniphony-renderer/orender_engine/src/osc/recompute.rs",
+            "../omniphony-renderer/orender_engine/src/osc/state_emit.rs",
+            "../omniphony-renderer/orender_engine/src/osc/metadata_emit.rs",
+            "../omniphony-renderer/orender_engine/src/osc/profiles.rs",
         ];
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
