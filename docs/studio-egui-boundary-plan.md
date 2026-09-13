@@ -267,6 +267,53 @@ between it and the egui crate. Decide at the cutover:
 - **Keep it.** Make `src-tauri` depend on `omniphony-studio-core` and delete its
   copies.
 
+#### Where this actually stands (measured 2026-09-13)
+
+**The cutover has not happened, and nothing schedules it.** No release or
+integration workflow mentions `omniphony-studio-egui`; `release.yml` and
+`integration-build.yml` both build the Tauri bundle, and `packaging/` has
+nothing for the egui app. CI builds and tests the egui Studio, and that is the
+whole of its distribution. The Tauri Studio is the product.
+
+So "retire it" is not a decision anyone can take today — it would delete the
+only Studio that ships. Making the egui Studio shippable is packaging work that
+has not started, and it is the real precondition for this phase.
+
+Both are alive. Over the three months to 2026-09-13, 78 commits touched
+`src-tauri` and 120 touched `omniphony-studio-egui`.
+
+**The duplication, measured.** 25 files share a name between
+`omniphony-studio/src-tauri/src/` and `omniphony-studio-egui/core/src/`; 6614 of
+their lines are identical, out of 8351 on the Tauri side and 9134 on the core's.
+Six files are the same file twice, at 99% or better:
+
+| File | Identical / Tauri lines |
+|---|---|
+| `layouts.rs` | 1111 / 1114 |
+| `audio_config.rs` | 440 / 440 |
+| `mpv_config.rs` | 378 / 381 |
+| `peak_hold.rs` | 294 / 294 |
+| `timing_stats.rs` | 274 / 274 |
+| `runtime_env.rs` | 104 / 104 |
+
+That is 2607 lines of the Tauri host which *are* the core, verbatim.
+
+**And they have started to drift**, which is the cost that grows: `render.rs`
+(388 identical of 572 / 708), `engine.rs` (129 of 185 / 304), `input.rs` (161 of
+221 / 314). Some of that gap is phase 2 and 3 work the core received and the
+Tauri host did not.
+
+**Recommendation: do the decision-independent half now.** Make `src-tauri`
+depend on `omniphony-studio-core` and delete the six verbatim files. It is the
+"keep it" bullet's mechanics, but it commits to nothing: if the egui Studio
+later ships and wins, the Tauri crate is deleted and the core stays; if it does
+not, the duplication is gone either way. It also stops the drift while the
+question is open, which is the only thing here that gets worse by waiting.
+
+It touches the shipped Studio, so it wants its own PR and a bundle build before
+it lands — `integration-build.yml` on demand is the check that matters, since
+`ci.yml` never builds a Tauri bundle.
+
 ## Definition of done
 
 - `omniphony-studio-core` builds and tests without any UI crate in its graph,
