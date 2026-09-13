@@ -6,6 +6,7 @@
 
 use super::OscControlMsg;
 use super::{SharedState, send_control, send_json_control};
+use crate::osc_contract;
 use std::sync::atomic::Ordering;
 
 pub fn control_speaker_gain(state: &SharedState, id: i32, gain: f32) {
@@ -21,7 +22,7 @@ pub fn control_speaker_gain(state: &SharedState, id: i32, gain: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/realtime/speaker_gain".to_string(),
+            address: osc_contract::CONTROL_REALTIME_SPEAKER_GAIN.to_string(),
             args: vec![
                 rosc::OscType::Int(id),
                 rosc::OscType::Float(clamped),
@@ -36,7 +37,7 @@ pub fn control_object_mute(state: &SharedState, id: i32, muted: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: format!("/omniphony/control/object/{id}/mute"),
+            address: format!("{}{id}/mute", osc_contract::CONTROL_OBJECT_PREFIX),
             value: if muted != 0 { 1 } else { 0 },
         },
     );
@@ -52,7 +53,7 @@ pub fn control_speaker_mute(state: &SharedState, id: i32, muted: i32) {
         .insert(id.to_string(), u8::from(muted != 0));
     send_json_control(
         &state.osc_tx,
-        "/omniphony/control/config/speakers",
+        osc_contract::CONTROL_CONFIG_SPEAKERS,
         serde_json::json!({
             "speakerEdits": [{
                 "id": id.max(0),
@@ -69,7 +70,7 @@ pub fn control_master_gain(state: &SharedState, gain: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/realtime/master_gain".to_string(),
+            address: osc_contract::CONTROL_REALTIME_MASTER_GAIN.to_string(),
             args: vec![rosc::OscType::Float(clamped), rosc::OscType::Int(seq)],
         },
     );
@@ -94,7 +95,7 @@ pub fn control_loudness(state: &SharedState, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/loudness".to_string(),
+            address: osc_contract::CONTROL_LOUDNESS.to_string(),
             value: if enable != 0 { 1 } else { 0 },
         },
     );
@@ -105,7 +106,7 @@ pub fn control_auto_gain(state: &SharedState, enable: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/auto_gain".to_string(),
+            address: osc_contract::CONTROL_AUTO_GAIN.to_string(),
             value: if enable != 0 { 1 } else { 0 },
         },
     );
@@ -117,7 +118,7 @@ pub fn control_auto_gain_ceiling(state: &SharedState, db: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/auto_gain_ceiling".to_string(),
+            address: osc_contract::CONTROL_AUTO_GAIN_CEILING.to_string(),
             value: clamped,
         },
     );
@@ -137,7 +138,7 @@ pub fn control_speaker_test_idle_feed(state: &SharedState, enable: bool) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/speaker_test/idle_feed".to_string(),
+            address: osc_contract::CONTROL_SPEAKER_TEST_IDLE_FEED.to_string(),
             value: if enable { 1 } else { 0 },
         },
     );
@@ -164,7 +165,7 @@ pub fn control_object_test(
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/object_test".to_string(),
+            address: osc_contract::CONTROL_OBJECT_TEST.to_string(),
             args: vec![
                 rosc::OscType::Int(i32::from(on)),
                 // Clamped here as well as renderer-side, same reasoning as the
@@ -197,7 +198,7 @@ pub fn control_object_test_rotation(
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/object_test/rotation".to_string(),
+            address: osc_contract::CONTROL_OBJECT_TEST_ROTATION.to_string(),
             args: vec![
                 rosc::OscType::String(axis),
                 rosc::OscType::Float(radius.clamp(0.0, 4.0)),
@@ -219,7 +220,7 @@ pub fn control_object_test_clip(state: &SharedState, path: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/object_test/clip".to_string(),
+            address: osc_contract::CONTROL_OBJECT_TEST_CLIP.to_string(),
             value: path,
         },
     );
@@ -229,7 +230,7 @@ pub fn control_speaker_test(state: &SharedState, id: i32, level: f32, isolation:
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/speaker_test".to_string(),
+            address: osc_contract::CONTROL_SPEAKER_TEST.to_string(),
             args: vec![
                 rosc::OscType::Int(id),
                 // Clamped here as well as renderer-side: this drives a speaker,

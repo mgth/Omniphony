@@ -10,6 +10,7 @@ publish = false
 # No UI crate belongs here: not egui, eframe, wgpu, winit or rfd. CI fails
 # the build if one appears in this crate's dependency graph.
 [dependencies]
+omniphony-osc-contract = { version = "0.1.0", path = "../../osc-contract" }
 # Canonical coordinate math shared with the renderer; dependency-free by design.
 omniphony-geometry = { path = "../../omniphony-renderer/omniphony-geometry" }
 # OSC transport, same crate/version as the Tauri Studio.

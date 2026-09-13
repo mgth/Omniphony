@@ -5,12 +5,13 @@
 
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::osc_contract;
 
 pub fn control_save_config(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/save_config".to_string(),
+            address: osc_contract::CONTROL_SAVE_CONFIG.to_string(),
         },
     );
 }
@@ -19,7 +20,7 @@ pub fn control_reload_config(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/reload_config".to_string(),
+            address: osc_contract::CONTROL_RELOAD_CONFIG.to_string(),
         },
     );
 }
@@ -45,7 +46,7 @@ pub fn control_log_level(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/log_level".to_string(),
+            address: osc_contract::CONTROL_LOG_LEVEL.to_string(),
             value: trimmed,
         },
     );
@@ -60,7 +61,7 @@ pub fn control_ramp_mode(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/ramp_mode".to_string(),
+            address: osc_contract::CONTROL_RAMP_MODE.to_string(),
             value: trimmed,
         },
     );
@@ -114,7 +115,7 @@ pub fn control_option(state: &SharedState, key: String, value: serde_json::Value
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/option".to_string(),
+            address: osc_contract::CONTROL_OPTION.to_string(),
             args: vec![rosc::OscType::String(k), arg],
         },
     );
@@ -167,7 +168,7 @@ pub fn control_object_generator_param(state: &SharedState, key: String, value: f
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/object_generator/param".to_string(),
+            address: osc_contract::CONTROL_OBJECT_GENERATOR_PARAM.to_string(),
             args: vec![rosc::OscType::String(k), rosc::OscType::Float(value)],
         },
     );
@@ -183,7 +184,7 @@ pub fn control_phantom_extract_param(state: &SharedState, key: String, value: f3
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/phantom_extract/param".to_string(),
+            address: osc_contract::CONTROL_PHANTOM_EXTRACT_PARAM.to_string(),
             args: vec![rosc::OscType::String(k), rosc::OscType::Float(value)],
         },
     );
@@ -248,7 +249,7 @@ pub fn control_virtual_bed(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/virtual_bed".to_string(),
+            address: osc_contract::CONTROL_VIRTUAL_BED.to_string(),
             value,
         },
     );
@@ -262,7 +263,7 @@ pub fn control_drc_mode(state: &SharedState, value: String) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
-            address: "/omniphony/control/input/drc_mode".to_string(),
+            address: osc_contract::CONTROL_INPUT_DRC_MODE.to_string(),
             value,
         },
     );
@@ -274,7 +275,7 @@ pub fn control_drc_weight(state: &SharedState, value: f32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendFloat {
-            address: "/omniphony/control/input/drc_weight".to_string(),
+            address: osc_contract::CONTROL_INPUT_DRC_WEIGHT.to_string(),
             value: clamped,
         },
     );
@@ -287,7 +288,7 @@ pub fn control_export_layout(state: &SharedState, name: Option<String>) {
             send_control(
                 &state.osc_tx,
                 OscControlMsg::SendString {
-                    address: "/omniphony/control/layout/export".to_string(),
+                    address: osc_contract::CONTROL_LAYOUT_EXPORT.to_string(),
                     value: trimmed.to_string(),
                 },
             );
@@ -297,7 +298,7 @@ pub fn control_export_layout(state: &SharedState, name: Option<String>) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/layout/export".to_string(),
+            address: osc_contract::CONTROL_LAYOUT_EXPORT.to_string(),
         },
     );
 }

@@ -5,6 +5,7 @@
 
 use super::OscControlMsg;
 use super::{SharedState, send_control};
+use crate::osc_contract;
 
 pub fn mpv_overlay_set_trail_prefs(
     state: &SharedState,
@@ -18,7 +19,7 @@ pub fn mpv_overlay_set_trail_prefs(
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/overlay/trails".to_string(),
+            address: osc_contract::CONTROL_OVERLAY_TRAILS.to_string(),
             args: vec![
                 rosc::OscType::Int(if enabled { 1 } else { 0 }),
                 rosc::OscType::Int(ttl_ms as i32),
@@ -36,7 +37,7 @@ pub fn mpv_overlay_set_active(state: &SharedState, enabled: bool) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/overlay/enabled".to_string(),
+            address: osc_contract::CONTROL_OVERLAY_ENABLED.to_string(),
             value: if enabled { 1 } else { 0 },
         },
     );
@@ -48,7 +49,7 @@ pub fn mpv_overlay_set_labels(state: &SharedState, enabled: bool) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/overlay/labels".to_string(),
+            address: osc_contract::CONTROL_OVERLAY_LABELS.to_string(),
             value: if enabled { 1 } else { 0 },
         },
     );
@@ -61,7 +62,7 @@ pub fn mpv_overlay_set_objects(state: &SharedState, visible: bool) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/overlay/objects".to_string(),
+            address: osc_contract::CONTROL_OVERLAY_OBJECTS.to_string(),
             value: if visible { 1 } else { 0 },
         },
     );
@@ -73,7 +74,7 @@ pub fn mpv_overlay_set_heatmap_enabled(state: &SharedState, enabled: bool) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/overlay/heatmap_enabled".to_string(),
+            address: osc_contract::CONTROL_OVERLAY_HEATMAP_ENABLED.to_string(),
             value: if enabled { 1 } else { 0 },
         },
     );
@@ -85,7 +86,7 @@ pub fn mpv_overlay_set_heatmap_bands(state: &SharedState, count: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/overlay/heatmap_bands".to_string(),
+            address: osc_contract::CONTROL_OVERLAY_HEATMAP_BANDS.to_string(),
             value: count.clamp(1, 12),
         },
     );
@@ -98,7 +99,7 @@ pub fn mpv_overlay_set_heatmap_colormap(state: &SharedState, colormap: i32) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendInt {
-            address: "/omniphony/control/overlay/heatmap_colormap".to_string(),
+            address: osc_contract::CONTROL_OVERLAY_HEATMAP_COLORMAP.to_string(),
             value: colormap.clamp(0, 4),
         },
     );
@@ -111,7 +112,7 @@ pub fn mpv_overlay_set_heatmap_custom_stops(state: &SharedState, stops: Vec<f32>
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
-            address: "/omniphony/control/overlay/heatmap_custom_stops".to_string(),
+            address: osc_contract::CONTROL_OVERLAY_HEATMAP_CUSTOM_STOPS.to_string(),
             args,
         },
     );

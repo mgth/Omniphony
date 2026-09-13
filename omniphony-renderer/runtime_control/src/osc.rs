@@ -1746,7 +1746,8 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/render_evaluation/cartesian/") {
+    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_RENDER_EVALUATION_CARTESIAN_PREFIX)
+    {
         let size = match msg.args.first() {
             Some(OscType::Int(i)) => Some((*i).max(1) as usize),
             Some(OscType::Float(f)) => Some((*f).round().max(1.0) as usize),
@@ -1825,7 +1826,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/render_evaluation/polar/") {
+    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_RENDER_EVALUATION_POLAR_PREFIX) {
         match rest {
             "azimuth_resolution" | "elevation_resolution" => {
                 let res = match msg.args.first() {
@@ -1926,7 +1927,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/hybrid/") {
+    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_HYBRID_PREFIX) {
         let mut live = ctx.renderer.live.write();
         let mut changed = false;
         match rest {
@@ -2049,7 +2050,7 @@ pub fn apply_simple_osc_control(
         return Some(effects);
     }
 
-    if let Some(rest) = addr.strip_prefix("/omniphony/control/distance_diffuse/") {
+    if let Some(rest) = addr.strip_prefix(osc_contract::CONTROL_DISTANCE_DIFFUSE_PREFIX) {
         match rest {
             "enabled" => {
                 if let Some(v) = parse_bool_arg(msg.args.first()) {

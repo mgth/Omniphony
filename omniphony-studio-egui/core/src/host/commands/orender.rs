@@ -9,6 +9,7 @@ use super::HostPaths;
 use super::OscControlMsg;
 use super::{SharedState, send_control};
 use crate::host::config::{load_config, save_config};
+use crate::osc_contract;
 use std::env;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -278,7 +279,7 @@ pub fn stop_launched_renderer(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/quit".to_string(),
+            address: osc_contract::CONTROL_QUIT.to_string(),
         },
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -343,7 +344,7 @@ fn stop_non_service_orender_if_running(state: &SharedState) -> Result<(), String
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/quit".to_string(),
+            address: osc_contract::CONTROL_QUIT.to_string(),
         },
     );
     wait_for_orender_disconnect(state, 10_000)
@@ -855,7 +856,7 @@ pub fn stop_orender(state: &SharedState) {
     send_control(
         &state.osc_tx,
         OscControlMsg::SendNoArgs {
-            address: "/omniphony/control/quit".to_string(),
+            address: osc_contract::CONTROL_QUIT.to_string(),
         },
     );
 }
