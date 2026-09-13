@@ -1,0 +1,22 @@
+[package]
+name = "omniphony-studio-scene"
+version.workspace = true
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-or-later"
+description = "Omniphony Studio's 3D scene: what to draw, and the wgpu renderer that draws it, with no UI toolkit"
+publish = false
+
+# No UI toolkit belongs here: not egui, eframe, winit, rfd or accesskit. wgpu is
+# the renderer, not a toolkit, and is the point of the crate. CI fails the build
+# if a toolkit appears in this crate's dependency graph.
+[dependencies]
+omniphony-studio-core = { path = "../core" }
+omniphony-geometry = { path = "../../omniphony-renderer/omniphony-geometry" }
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+glam = { version = "0.30", features = ["bytemuck"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }

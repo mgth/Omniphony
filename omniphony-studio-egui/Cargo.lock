@@ -2581,12 +2581,28 @@ dependencies = [
  "log",
  "omniphony-geometry",
  "omniphony-studio-core",
+ "omniphony-studio-scene",
  "regex",
  "rfd",
  "rosc",
  "serde",
  "serde_json",
  "ureq",
+ "wgpu",
+]
+
+[[package]]
+name = "omniphony-studio-scene"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "gltf",
+ "log",
+ "omniphony-geometry",
+ "omniphony-studio-core",
+ "serde",
+ "serde_json",
  "wgpu",
 ]
 

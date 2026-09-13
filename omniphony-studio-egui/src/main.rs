@@ -10,14 +10,16 @@
 mod app;
 mod panels;
 mod prefs;
-mod render;
 mod ui;
-mod view;
 
 // The core's modules, bound at the crate root so the UI keeps reading them as
 // `crate::model`, `crate::osc`, … . Everything they hold is the core's; this
 // crate only draws it.
 use omniphony_studio_core::{auto_tune, host, i18n, model, osc, stats};
+// The 3D scene is its own crate, for the same reason the core is: a crate
+// cannot name a toolkit it does not depend on. Bound here so the app's modules
+// keep writing `crate::view::…` and `crate::render::…`.
+use omniphony_studio_scene::{render, view};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -5,7 +5,7 @@ frontend was replaced by egui. Read `ARCHITECTURE.md` before changing it. The
 short version:
 
 - **Panels draw, and nothing else.** UI code (this crate: `app.rs`, `main.rs`,
-  `panels/`, `prefs/`, `ui/`, `view/`, `render/`) never writes an
+  `panels/`, `prefs/`, `ui/`) never writes an
   `/omniphony/…` address, never calls `ctl.send*` or `control.send`, never
   assigns into the model or host state — `SharedState::read()` gives a
   read-only handle and there is no other way in — never spawns a thread or
@@ -20,7 +20,10 @@ short version:
   `panels/`.
 - **The core** is the crate `core/` (`omniphony-studio-core`). Never add a UI
   crate to its `Cargo.toml`: egui, eframe, wgpu, winit, accesskit and rfd are
-  all out, and CI checks. If the core needs something from the UI, take a
+  all out, and CI checks.
+- **The 3D scene** is the crate `scene/` (`omniphony-studio-scene`): `view/`
+  and `render/`. wgpu belongs there; a UI toolkit does not, and CI checks that
+  too. Its adapter to egui is `src/ui/scene.rs`. If the core needs something from the UI, take a
   neutral callback, as `osc::Waker` does.
 
 `tests/architecture.rs` enforces this with a per-file ratchet, and CI runs it.
