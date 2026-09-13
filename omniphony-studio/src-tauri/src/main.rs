@@ -2,17 +2,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_state;
-mod audio_config;
+pub(crate) use omniphony_studio_core::host::audio_config;
+pub(crate) use omniphony_studio_core::host::peak_hold;
+pub(crate) use omniphony_studio_core::host::runtime_env;
+pub(crate) use omniphony_studio_core::host::timing_stats;
+pub(crate) use omniphony_studio_core::model::layouts;
 mod auto_tune;
 mod commands;
 mod config;
 mod engine_deploy;
-mod layouts;
 mod osc_listener;
 mod osc_parser;
-mod peak_hold;
-mod runtime_env;
-mod timing_stats;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI32;

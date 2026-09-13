@@ -357,3 +357,15 @@ jobs:
       - name: Build renderer workspace (Windows x64)
         working-directory: omniphony-renderer
         run: cargo build --workspace --locked
+
+      # The native Studio's core, which the Tauri host depends on. Its Windows
+      # path — the process-tree working-set readout — had never been compiled
+      # for Windows by anything: the Linux job builds the whole egui workspace,
+      # this job built only the renderer, and the Tauri host carried its own
+      # copy of the module. It did not compile, and nothing said so.
+      #
+      # Run from the repository root on purpose. `omniphony-studio-egui` pins a
+      # toolchain for egui's sake; the core does not need it, and the Tauri host
+      # builds it on stable, which is what this checks.
+      - name: Build the native Studio core (Windows x64)
+        run: cargo build --locked --manifest-path omniphony-studio-egui/core/Cargo.toml

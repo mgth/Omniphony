@@ -2,7 +2,10 @@
 name = "omniphony-studio-core"
 version.workspace = true
 edition = "2024"
-rust-version = "1.95"
+# The app's pin is egui's (1.97); the core's own floor is lower, and saying so
+# is what lets the Tauri Studio depend on this crate from a stable toolchain.
+# Verified building on 1.94.
+rust-version = "1.94"
 license = "GPL-3.0-or-later"
 description = "Omniphony Studio's core: the renderer protocol, the application state and behaviour, and no UI toolkit"
 publish = false
@@ -30,3 +33,16 @@ ureq = { version = "2", default-features = false, features = ["tls", "json", "gz
 # renderer and the Tauri host; pure Rust, and without the default features it
 # brings no DSP (we read three strings, never convolve).
 sofar = { git = "https://github.com/mgth/sofar", rev = "c03ff5cfd997d316ae330e2735e82311769b45a3", default-features = false }
+
+# The stats panel sums the process tree's working set on Windows, which needs
+# ToolHelp to walk the children and ProcessStatus to read each one. Declared
+# here because this crate uses it: the Tauri host had its own copy of the same
+# dependency, which is exactly how this went unnoticed — nothing built the core
+# for Windows until it became that host's dependency.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
