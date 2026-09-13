@@ -1,0 +1,10 @@
+[package]
+name = "omniphony-osc-contract"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "The Omniphony OSC control/state address contract, shared by the engine and its clients."
+
+# No dependencies, deliberately: this is the one thing both sides of the wire
+# agree on, and anything it pulled in would be pulled into both.
+[dependencies]

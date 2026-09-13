@@ -646,9 +646,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.1"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8498c871161e1742aaa9d52551b2d6ebdd4c3d45a3be423e3728f33b955be550"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
 dependencies = [
  "cfg-if",
 ]
@@ -1570,6 +1570,10 @@ name = "omniphony-geometry"
 version = "0.1.0"
 
 [[package]]
+name = "omniphony-osc-contract"
+version = "0.1.0"
+
+[[package]]
 name = "omniphony-renderer"
 version = "0.2.5"
 dependencies = [
@@ -1986,6 +1990,7 @@ dependencies = [
  "chrono",
  "log",
  "omniphony-geometry",
+ "omniphony-osc-contract",
  "renderer",
  "rosc",
  "serde",
