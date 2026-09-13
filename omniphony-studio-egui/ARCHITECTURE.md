@@ -18,20 +18,21 @@ it is planned in [`docs/studio-egui-boundary-plan.md`](../docs/studio-egui-bound
 | Tier | Where | Owns | Must not |
 |---|---|---|---|
 | **Core** | `core/`, the crate `omniphony-studio-core`: `model/`, `osc/`, `host/`, `auto_tune/`, `i18n.rs`, `stats.rs` | the renderer protocol, the application and session state, everything that happens over time, all I/O | depend on any UI crate |
-| **UI** | this crate: `app.rs`, `main.rs`, `panels/`, `prefs/`, `ui/`, `view/`, `render/` | drawing, input, view state (camera, selection, tabs, text being typed), native dialogs | spell an OSC address, send raw control messages, write the model, do I/O, run periodic behaviour |
+| **Scene** | `scene/`, the crate `omniphony-studio-scene`: `view/`, `render/` | what the 3D scene shows, and the wgpu that draws it | depend on a UI toolkit |
+| **UI** | this crate: `app.rs`, `main.rs`, `panels/`, `prefs/`, `ui/` | drawing, input, view state (camera, selection, tabs, text being typed), native dialogs | spell an OSC address, send raw control messages, write the model, do I/O, run periodic behaviour |
 
-The UI depends on the core, never the reverse. The app binds the core's
-modules at its root (`use omniphony_studio_core::{model, osc, …}` in
-`main.rs`), so UI code still names them `crate::model`, `crate::osc`, … .
+The UI depends on the core and the scene, never the reverse; the scene depends
+on the core. The app binds both at its root (`use omniphony_studio_core::{model,
+osc, …}` and `use omniphony_studio_scene::{render, view};` in `main.rs`), so UI
+code still names them `crate::model`, `crate::view`, … .
 
-`view/` and `render/` sit in the UI tier but are toolkit-neutral by design: a
-migration should carry them over rather than rewrite them. `view/` names no
-egui type at all — it works in `view::screen` (a `ScreenPos`, a `ScreenRect`,
-unmultiplied `[u8; 4]`, and a `Shape` for the overlay it composes but does not
-paint), and `src/ui/scene.rs` is the only file that knows both vocabularies.
-`render/` names no toolkit either: `SceneRenderer::new(device, target_format,
-samples, head)` with a public `prepare` and `paint`, which is the whole of what
-a host has to call. The `toolkit-in-scene` rule holds both directories.
+The scene is the part a migration carries over rather than rewrites, and it is
+a crate so that the compiler says so. `view` works in `view::screen` — a
+`ScreenPos`, a `ScreenRect`, unmultiplied `[u8; 4]`, and a `Shape` for the
+overlay it composes but does not paint. `render` offers
+`SceneRenderer::new(device, target_format, samples, head)` with a public
+`prepare` and `paint`, which is the whole of what a host must call.
+`src/ui/scene.rs` is the only file that knows both vocabularies.
 
 ## Rules
 
@@ -41,6 +42,9 @@ The core's side is held by the toolchain:
   on, so there is no path back.
 - **No UI crate in the core's graph.** A CI step fails when egui, eframe,
   wgpu, winit, accesskit or rfd appears in `cargo tree -p omniphony-studio-core`.
+- **No toolkit in the scene's graph.** The same step for
+  `omniphony-studio-scene`, minus wgpu: the scene *is* wgpu, and a toolkit
+  there would mean the 3D engine had been tied to one again.
 - **The UI cannot extend the model.** Rust's orphan rule rejects an
   `impl AppState` or `impl Live` outside the core crate. Build the view's own
   type instead (`LatencyView::of(&AppState)`).
@@ -62,7 +66,6 @@ The rule ids:
 | `raw-send` | `ctl.send*(…)`, `control.send(…)`, `send_control(…)`, `send_json_control(…)` |
 | `side-effect` | spawning a thread or process, `thread::sleep`, file or network I/O (`fs::…`, `UdpSocket`, `to_socket_addrs`, `ureq`) |
 | `frame-tick` | defining a `maintain_*` function |
-| `toolkit-in-scene` | naming an egui type inside `view/` or `render/` |
 
 Two exemptions are written into the test with their reason: `main.rs` reads the
 CJK font and `render/head.rs` reads the head mesh, once, before the first
@@ -160,8 +163,9 @@ retired three that way — `toolkit-in-core`, `core-imports-ui` and `model-impl`
 — and the read-only handle retired `model-write`: with no `&mut Live` to be
 had, the scanner had nothing left to find that the compiler would not. A rule
 at zero is not deleted otherwise: `osc-address`, `raw-send`, `side-effect`,
-`frame-tick` and `toolkit-in-scene` all stand at zero and stay as cheap
-tripwires.
+`frame-tick` all stand at zero and stay as cheap tripwires.
+`toolkit-in-scene` lasted two commits: the scene became a crate, and a crate
+cannot name a toolkit it does not depend on.
 
 Retiring `model-write` was worth more than the line it saved. A lexical scan
 reads one line at a time, so a member chain split across lines slipped past it

@@ -2,7 +2,7 @@
 # protocol, the state and the behaviour, with no UI crate) and this one, the
 # egui frontend that draws it. See ARCHITECTURE.md.
 [workspace]
-members = [".", "core"]
+members = [".", "core", "scene"]
 
 [workspace.package]
 # Shared, so the core's `CARGO_PKG_VERSION` (the About box) is the app's.
@@ -26,6 +26,7 @@ path = "src/main.rs"
 [dependencies]
 # Protocol, state and behaviour. Everything below it is for drawing.
 omniphony-studio-core = { path = "core" }
+omniphony-studio-scene = { path = "scene" }
 # Canonical coordinate math shared with the renderer; dependency-free by design.
 omniphony-geometry = { path = "../omniphony-renderer/omniphony-geometry" }
 

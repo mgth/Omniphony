@@ -49,8 +49,6 @@ const MODULES: &[&str] = &[
     "src/panels/",
     "src/prefs/",
     "src/ui/",
-    "src/view/",
-    "src/render/",
 ];
 
 /// How a rule finds its violations in a scanned file.
@@ -71,17 +69,8 @@ struct Rule {
     /// Where the code goes instead.
     fix: &'static str,
     matchers: &'static [Matcher],
-    /// Path prefixes the rule applies to; empty means the whole UI crate.
-    only: &'static [&'static str],
     /// Files the rule does not apply to, each for a stated reason.
     exempt: &'static [&'static str],
-}
-
-impl Rule {
-    fn applies_to(&self, path: &str) -> bool {
-        !self.exempt.contains(&path)
-            && (self.only.is_empty() || self.only.iter().any(|p| path.starts_with(p)))
-    }
 }
 
 const RULES: &[Rule] = &[
@@ -90,7 +79,6 @@ const RULES: &[Rule] = &[
         why: "UI code spells a renderer OSC address: it speaks the wire protocol instead of asking the core",
         fix: "add a typed function in core/src/host/commands/ (clamp, update the model, send) and call it",
         matchers: &[Matcher::LiteralPrefix("/omniphony/")],
-        only: &[],
         exempt: &[],
     },
     Rule {
@@ -102,7 +90,6 @@ const RULES: &[Rule] = &[
             r"\bcontrol\s*\.\s*send\s*\(",
             r"\bsend_(?:json_)?control\s*\(",
         ])],
-        only: &[],
         exempt: &[],
     },
     Rule {
@@ -122,26 +109,13 @@ const RULES: &[Rule] = &[
         ])],
         // Start-up assets, read once before the first frame: the fonts the
         // composition root installs and the head mesh the renderer draws.
-        only: &[],
-        exempt: &["src/main.rs", "src/render/head.rs"],
+        exempt: &["src/main.rs"],
     },
     Rule {
         id: "frame-tick",
         why: "periodic behaviour defined in UI code runs only when the toolkit draws a frame",
         fix: "make it a host service with `tick(now) -> Option<Instant>` whose deadline schedules the next wake",
         matchers: &[Matcher::Code(&[r"\bfn\s+maintain_\w+"])],
-        only: &[],
-        exempt: &[],
-    },
-    Rule {
-        id: "toolkit-in-scene",
-        why: "the 3D engine names a toolkit type: it is wgpu plus geometry, and the part of the UI tier a migration should carry over unchanged",
-        fix: "say it in wgpu and `view::screen` terms, and adapt in src/ui/scene.rs",
-        matchers: &[Matcher::Code(&[
-            r"\begui(?:_wgpu)?\s*::",
-            r"\buse\s+egui\b",
-        ])],
-        only: &["src/view/", "src/render/"],
         exempt: &[],
     },
 ];
@@ -346,7 +320,7 @@ fn measure(root: &Path) -> (Counts, Vec<String>) {
             .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
         let scanned = scan(&text);
         for (rule, patterns) in RULES.iter().zip(&compiled) {
-            if !rule.applies_to(&rel) {
+            if rule.exempt.contains(&rel.as_str()) {
                 continue;
             }
             let mut n = 0;

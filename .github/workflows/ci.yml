@@ -222,6 +222,22 @@ jobs:
             exit 1
           fi
 
+      # The scene is the other half a migration carries over. wgpu is allowed
+      # here and nowhere else — it is the renderer, not a toolkit — but a
+      # toolkit in this graph would mean the 3D engine had been tied to one
+      # again, which is what phase 4 undid.
+      - name: Check the native Studio scene has no toolkit dependency
+        working-directory: omniphony-studio-egui
+        run: |
+          ui=$(cargo tree -p omniphony-studio-scene -e normal --prefix none --format '{p}' --locked \
+            | grep -E '^(egui|eframe|egui-wgpu|egui_wgpu|epaint|emath|ecolor|winit|rfd|accesskit[a-z_-]*) ' \
+            | sort -u || true)
+          if [ -n "$ui" ]; then
+            echo "::error::omniphony-studio-scene depends on a UI toolkit (see omniphony-studio-egui/ARCHITECTURE.md):"
+            echo "$ui"
+            exit 1
+          fi
+
       # Includes the architecture ratchet (tests/architecture.rs), which keeps
       # protocol, model writes, I/O and timers out of the UI crate.
       - name: Test native Studio
