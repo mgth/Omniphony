@@ -168,6 +168,9 @@ pub struct StudioSpike {
     /// The object the editor is holding in place, and until when: `None` is a
     /// pin that lasts as long as the drag does.
     pub(crate) channel_edit_pin: Option<(String, glam::Vec3, Option<Instant>)>,
+    /// The speaker the editor is holding in place, and until when: `None` is
+    /// a pin that lasts as long as the drag does.
+    pub(crate) speaker_edit_pin: Option<(usize, glam::Vec3, Option<Instant>)>,
     /// Where the frequency gauges were drawn last frame, so a click on one
     /// selects its speaker the way a click on the cube does.
     pub(crate) band_bar_hits: Vec<(usize, crate::view::screen::ScreenRect)>,
@@ -443,6 +446,7 @@ impl StudioSpike {
             gizmo_target: None,
             gizmo_drag: None,
             channel_edit_pin: None,
+            speaker_edit_pin: None,
             band_bar_hits: Vec::new(),
             diag_selection: None,
             expected_orender_path: crate::host::commands::orender::expected_orender_path(
@@ -509,9 +513,15 @@ impl StudioSpike {
 
         let aspect = rect.width() / rect.height().max(1.0);
         // A gizmo drag takes the primary button before the camera does: an
-        // orbit under a drag would move the thing being aimed with.
+        // orbit under a drag would move the thing being aimed with. The grab
+        // is tested where the button went down, not where the pointer is now:
+        // a widget that also senses clicks only reports the drag once the
+        // pointer has travelled `max_click_dist`, and that much off a handle
+        // a few points wide is a miss every time.
         if response.drag_started_by(egui::PointerButton::Primary)
-            && let Some(p) = response.interact_pointer_pos()
+            && let Some(p) = ui
+                .input(|i| i.pointer.press_origin())
+                .or_else(|| response.interact_pointer_pos())
         {
             self.begin_gizmo_drag(p, rect, aspect);
         }
@@ -590,6 +600,23 @@ impl StudioSpike {
             .channel_edit_pin
             .as_ref()
             .map(|(id, at, _)| (id.clone(), *at));
+        // The speaker pin expires the same way; nothing streams a speaker, so
+        // the frame that drops it has to be asked for.
+        match self
+            .speaker_edit_pin
+            .as_ref()
+            .and_then(|(_, _, until)| *until)
+        {
+            Some(until) if Instant::now() >= until => self.speaker_edit_pin = None,
+            Some(until) => ui
+                .ctx()
+                .request_repaint_after(until.saturating_duration_since(Instant::now())),
+            None => {}
+        }
+        self.settings.speaker_edit_pin = self
+            .speaker_edit_pin
+            .as_ref()
+            .map(|(index, at, _)| (*index, *at));
         let ppp = ui.ctx().pixels_per_point();
         // One band for everything: the band cursor and the Heatmaps select
         // write `heatmap_band_index`, and the volumes read it from here.

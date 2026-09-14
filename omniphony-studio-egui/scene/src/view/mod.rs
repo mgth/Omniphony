@@ -65,6 +65,12 @@ pub struct ViewSettings {
     /// `channelEditPinId` / `channelEditPinPos`: an object whose position the
     /// editor owns for the moment, so the live stream cannot fight a drag.
     pub channel_edit_pin: Option<(String, Vec3)>,
+    /// The speaker whose position the editor owns for the moment, and where.
+    /// Speakers are drawn from the renderer's state, which only learns of a
+    /// move on release: the pin is what makes the cube and its gizmo follow
+    /// the pointer, and it outlives the release long enough for the renderer
+    /// to echo the new position back.
+    pub speaker_edit_pin: Option<(usize, Vec3)>,
     /// `app.speakerSize` (default 0.08).
     pub speaker_size: f32,
     /// `app.vbapCartesianFaceGridEnabled` ("Grid", default false).
@@ -92,6 +98,7 @@ impl Default for ViewSettings {
             gizmo: gizmos::GizmoState::default(),
             hybrid_point: None,
             channel_edit_pin: None,
+            speaker_edit_pin: None,
             speaker_size: 0.08,
             vbap_grid: false,
             trails: TrailSettings::default(),

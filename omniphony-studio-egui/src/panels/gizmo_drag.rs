@@ -9,7 +9,9 @@
 //! while a gizmo is being dragged — an orbit under a drag would move the thing
 //! you are aiming with — and a speaker's edit is sent once, on release, while
 //! a virtual bed channel's is sent continuously, because the renderer's bed
-//! would otherwise snap the channel back between updates.
+//! would otherwise snap the channel back between updates. Either way the
+//! frame draws the target from the renderer's state, so the drag pins the
+//! target at the pointer for as long as it lasts, and a little beyond.
 
 use std::time::{Duration, Instant};
 
@@ -24,6 +26,10 @@ use crate::view::gizmos::{
 /// How close to the ring or the arc a press has to be to grab it, as a
 /// fraction of the radius. A line is one pixel wide and nobody can hit that.
 const GRAB: f32 = 0.12;
+/// The least a grab may demand on screen, in points. The cartesian handles
+/// are drawn a few points across once the camera is at any distance; a
+/// target that small is not one.
+const MIN_GRAB_PX: f32 = 10.0;
 /// The wheel's distance steps, coarse and fine.
 const WHEEL_STEP: f32 = 0.05;
 const WHEEL_STEP_FINE: f32 = 0.01;
@@ -62,14 +68,23 @@ impl StudioSpike {
         let (origin, dir) = self.viewport_ray(pointer, rect, aspect);
         let (az, el, dist) = spherical(at);
         let distance = dist.max(0.01);
+        let eye = self.camera.eye();
+        let fov_y = self.camera.fov_y;
+        let height = rect.height();
         match gizmo.mode {
             EditMode::Polar if gizmo.polar_armed => {
                 // The ring lies in the horizontal plane; the arc stands in the
                 // speaker's own azimuth plane. Whichever the press landed on
-                // is the angle being dragged.
+                // is the angle being dragged. The slack is the web's fraction
+                // of the radius, but never under the on-screen floor.
+                let slack = |hit: Vec3| {
+                    (GRAB * distance).max(
+                        MIN_GRAB_PX * scene_units_per_point((hit - eye).length(), fov_y, height),
+                    )
+                };
                 if let Some(hit) = ray_plane(origin, dir, Vec3::Y) {
                     let radial = (hit.x * hit.x + hit.z * hit.z).sqrt();
-                    if (radial - distance).abs() <= GRAB * distance {
+                    if (radial - distance).abs() <= slack(hit) {
                         self.gizmo_drag = Some(GizmoDrag {
                             kind: DragKind::Azimuth,
                             az_deg: az,
@@ -81,7 +96,7 @@ impl StudioSpike {
                 }
                 let normal = arc_normal(az);
                 if let Some(hit) = ray_plane(origin, dir, normal)
-                    && (hit.length() - distance).abs() <= GRAB * distance
+                    && (hit.length() - distance).abs() <= slack(hit)
                 {
                     self.gizmo_drag = Some(GizmoDrag {
                         kind: DragKind::Elevation,
@@ -98,13 +113,15 @@ impl StudioSpike {
                 let radius = 0.045 * scale;
                 for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
                     let handle = at + axis * 0.45 * scale;
-                    // The handle is a sphere; a press inside it takes its axis.
+                    // The handle is a sphere; a press inside it, or within
+                    // the on-screen floor of it, takes its axis.
                     let to_handle = handle - origin;
                     let along = to_handle.dot(dir);
                     if along <= 0.0 {
                         continue;
                     }
-                    if (to_handle - dir * along).length() <= radius * 1.6 {
+                    let grab = grab_radius(radius, (handle - eye).length(), fov_y, height);
+                    if (to_handle - dir * along).length() <= grab {
                         self.gizmo_drag = Some(GizmoDrag {
                             kind: DragKind::Cartesian {
                                 axis,
@@ -224,6 +241,15 @@ impl StudioSpike {
         let adm = gizmos::scene_to_normalized(scene, &room);
         match target {
             GizmoTarget::Speaker(index) => {
+                // Hold the cube, and so its gizmo, at the pointer: the frame
+                // draws speakers from the renderer's state, which only learns
+                // of the move on release. 600 ms past that, as for a channel,
+                // covers the echo; no expiry while the pointer is down.
+                self.speaker_edit_pin = Some((
+                    index,
+                    scene,
+                    send.then(|| Instant::now() + Duration::from_millis(600)),
+                ));
                 if send {
                     self.edit_speaker_position(index as i32, adm);
                 }
@@ -250,6 +276,18 @@ impl StudioSpike {
     }
 }
 
+/// The scene-space size of one point of the viewport at `depth` from the eye,
+/// for a vertical field of view `fov_y` over a viewport `height` points tall.
+pub(crate) fn scene_units_per_point(depth: f32, fov_y: f32, height: f32) -> f32 {
+    2.0 * depth * (fov_y * 0.5).tan() / height.max(1.0)
+}
+
+/// How far from a handle a press may land and still take it: the handle's own
+/// radius with the web's slack, but never less than `MIN_GRAB_PX` on screen.
+pub(crate) fn grab_radius(handle_radius: f32, depth: f32, fov_y: f32, height: f32) -> f32 {
+    (handle_radius * 1.6).max(MIN_GRAB_PX * scene_units_per_point(depth, fov_y, height))
+}
+
 /// The normal of the vertical plane the elevation arc stands in.
 fn arc_normal(az_deg: f32) -> Vec3 {
     let az = az_deg.to_radians();
@@ -271,6 +309,24 @@ fn from_spherical(az_deg: f32, el_deg: f32, distance: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A handle the camera has shrunk to a few points still takes a press
+    /// within the on-screen floor; a big one keeps its own radius and the
+    /// web's slack.
+    #[test]
+    fn a_grab_is_never_smaller_than_the_on_screen_floor() {
+        let fov_y = 65f32.to_radians();
+        let unit = scene_units_per_point(10.0, fov_y, 1000.0);
+        assert!((unit - 2.0 * 10.0 * (fov_y / 2.0).tan() / 1000.0).abs() < 1e-7);
+        // The cartesian handle at that depth: 0.045 * 0.08 * 10 = 0.036 scene
+        // units, under three points on screen.
+        let small = grab_radius(0.036, 10.0, fov_y, 1000.0);
+        assert!((small - MIN_GRAB_PX * unit).abs() < 1e-6, "{small}");
+        assert!(small > 0.036 * 1.6);
+        // A handle already wider than the floor keeps the web's rule.
+        let large = grab_radius(1.0, 10.0, fov_y, 1000.0);
+        assert!((large - 1.6).abs() < 1e-6, "{large}");
+    }
 
     /// The arc stands in the plane that contains the speaker and the vertical,
     /// so its normal is horizontal and square to the speaker's direction.
