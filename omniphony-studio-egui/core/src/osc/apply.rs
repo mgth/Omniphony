@@ -819,7 +819,7 @@ pub fn send_gaintable_nack(
 pub fn normalize_input_mode(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "bridge" | "pipe_bridge" => Some("pipe_bridge"),
-        "live" | "pipewire" | "pipewire_bridge" => Some("pipewire_bridge"),
+        "live" | "pipewire" | "pipewire_bridge" => Some("pipewire"),
         _ => None,
     }
 }

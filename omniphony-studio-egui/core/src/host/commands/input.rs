@@ -36,15 +36,15 @@ pub fn control_input_config_apply(state: &SharedState) {
 /// Canonical spelling of an input mode, or `None` if it is not one.
 ///
 /// The protocol carries historical aliases — `bridge` for `pipe_bridge`, and
-/// `live` / `pipewire` (the removed PCM-only sink) for `pipewire_bridge`, the
-/// sink that replaced it. Both directions go through here: the frontend used
-/// to re-implement this table when reading a snapshot, which meant the same
-/// aliases were resolved in two places and only one of them was the
-/// authority.
+/// `live` / `pipewire_bridge` for `pipewire` (the names the PipeWire input
+/// went by while a PCM-only sink still existed beside it). Both directions go
+/// through here: the frontend used to re-implement this table when reading a
+/// snapshot, which meant the same aliases were resolved in two places and only
+/// one of them was the authority.
 pub fn normalize_input_mode(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
         "bridge" | "pipe_bridge" => Some("pipe_bridge"),
-        "live" | "pipewire" | "pipewire_bridge" => Some("pipewire_bridge"),
+        "live" | "pipewire" | "pipewire_bridge" => Some("pipewire"),
         _ => None,
     }
 }
@@ -231,7 +231,7 @@ pub fn set_input_mode(state: &SharedState, mode: String) {
     {
         let mut live = state.inner.lock().unwrap();
         live.app.input_mode = Some(mode.clone());
-        if mode == "pipewire_bridge" {
+        if mode == "pipewire" {
             live.app.live_input.channels = Some(2);
             live.app.live_input.sample_rate = Some(192_000);
         }
@@ -287,7 +287,7 @@ pub fn apply_input(state: &SharedState, mode: &str, active: Option<&str>) {
             .unwrap_or_else(|| "dac".to_owned())
     };
     let needs_bootstrap =
-        mode == "pipe_bridge" || (mode == "pipewire_bridge" && active != Some("pipewire_bridge"));
+        mode == "pipe_bridge" || (mode == "pipewire" && active != Some("pipewire"));
     if needs_bootstrap {
         let bridge = {
             let live = state.inner.lock().unwrap();

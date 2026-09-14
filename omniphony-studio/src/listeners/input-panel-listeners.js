@@ -23,12 +23,12 @@ export function setupInputPanelListeners() {
   if (inputModeSelectEl) {
     inputModeSelectEl.addEventListener('change', () => {
       const previousMode = app.inputMode;
-      const value = ['pipewire_bridge', 'pipe_bridge'].includes(inputModeSelectEl.value)
+      const value = ['pipewire', 'pipe_bridge'].includes(inputModeSelectEl.value)
         ? inputModeSelectEl.value
         : 'pipe_bridge';
       app.inputMode = value;
       app.inputModeDirty = true;
-      if (value === 'pipewire_bridge' && previousMode !== 'pipewire_bridge') {
+      if (value === 'pipewire' && previousMode !== 'pipewire') {
         app.liveInput.channels = 2;
         app.liveInput.sampleRate = 192000;
       }
@@ -180,7 +180,7 @@ export function setupInputPanelListeners() {
       const activeMode = app.inputActiveMode || 'pipe_bridge';
       const needsBridgeBootstrap =
         requestedMode === 'pipe_bridge'
-        || (requestedMode === 'pipewire_bridge' && activeMode !== 'pipewire_bridge');
+        || (requestedMode === 'pipewire' && activeMode !== 'pipewire');
       if (needsBridgeBootstrap) {
         const value = String(oscBridgePathInputEl?.value || '').trim();
         const clockMode = app.liveInput.clockMode || 'dac';
