@@ -15,6 +15,7 @@ use crate::host::commands::gain;
 use crate::host::services::object_test::{ObjectTestMarker, set_object_test_marker};
 use crate::i18n::t;
 use crate::ui::{help, theme, widgets};
+use crate::view::gizmos;
 
 use super::object_test_sheet as sheet;
 
@@ -413,7 +414,7 @@ impl StudioSpike {
     }
 
     fn object_test_snap_row(&mut self, ui: &mut Ui) {
-        let has_grid = self.ensure_object_test_grid();
+        let has_grid = self.ensure_vbap_grid();
         let mut snap = self.prefs.object_test.snap;
         widgets::label_row_help(ui, t("objectTest.snap"), "help.objectTestSnap", |ui| {
             ui.add_enabled_ui(has_grid, |ui| {
@@ -601,9 +602,9 @@ impl StudioSpike {
         self.object_test_keys(ui);
 
         self.rebuild_object_test_orbit();
-        let snap = self.prefs.object_test.snap && self.ensure_object_test_grid();
+        let snap = self.prefs.object_test.snap && self.ensure_vbap_grid();
         let grid = snap
-            .then(|| self.object_test_grid_cache.as_ref().map(|(_, a)| a))
+            .then(|| self.vbap_grid_cache.as_ref().map(|(_, a)| a))
             .flatten();
         let overlay = sheet::Overlay {
             position: self.prefs.object_test.position,
@@ -671,15 +672,15 @@ impl StudioSpike {
             next[1].clamp(-1.0, 1.0),
             next[2].clamp(-1.0, 1.0),
         ];
-        self.ensure_object_test_grid();
+        self.ensure_vbap_grid();
         let snapped = match (
             self.prefs.object_test.snap && !bypass_snap,
-            self.object_test_grid_cache.as_ref(),
+            self.vbap_grid_cache.as_ref(),
         ) {
             (true, Some((_, axes))) => [
-                nearest(&axes[0], clamped[0]),
-                nearest(&axes[1], clamped[1]),
-                nearest(&axes[2], clamped[2]),
+                gizmos::snap_to_nodes(clamped[0], &axes[0]),
+                gizmos::snap_to_nodes(clamped[1], &axes[1]),
+                gizmos::snap_to_nodes(clamped[2], &axes[2]),
             ],
             _ => clamped,
         };
@@ -797,8 +798,9 @@ impl StudioSpike {
     /// Rebuilt only when the published interval counts change: they are stable
     /// for a whole session, and rebuilding three node lists per frame to draw
     /// the same ticks would be pure churn. Returns whether there is a grid at
-    /// all; the nodes themselves are read from the cache.
-    fn ensure_object_test_grid(&mut self) -> bool {
+    /// all; the nodes themselves are read from the cache. The speaker gizmo's
+    /// cartesian drag snaps to the same nodes.
+    pub(crate) fn ensure_vbap_grid(&mut self) -> bool {
         let key = {
             let live = self.host.read();
             let c = &live.app.vbap_cartesian;
@@ -812,17 +814,17 @@ impl StudioSpike {
         // The published sizes are INTERVAL counts, not node counts: the
         // renderer adds one before handing them to the axis builder.
         if key[0] < 1 || key[1] < 1 || key[2] < 1 {
-            self.object_test_grid_cache = None;
+            self.vbap_grid_cache = None;
             return false;
         }
-        if self.object_test_grid_cache.as_ref().map(|(k, _)| *k) != Some(key) {
+        if self.vbap_grid_cache.as_ref().map(|(k, _)| *k) != Some(key) {
             use omniphony_geometry::f64 as g;
             let axes = [
                 g::evenly_spaced_axis(key[0] as usize + 1, -1.0, 1.0),
                 g::evenly_spaced_axis(key[1] as usize + 1, -1.0, 1.0),
                 g::cartesian_z_axis(key[2] as usize + 1, key[3] as usize),
             ];
-            self.object_test_grid_cache = Some((key, axes));
+            self.vbap_grid_cache = Some((key, axes));
         }
         true
     }
@@ -872,15 +874,6 @@ fn normalize3(v: [f64; 3]) -> [f64; 3] {
     } else {
         [v[0] / n, v[1] / n, v[2] / n]
     }
-}
-
-/// The grid node a coordinate would be rounded to anyway.
-fn nearest(nodes: &[f64], value: f64) -> f64 {
-    nodes
-        .iter()
-        .copied()
-        .min_by(|a, b| (a - value).abs().total_cmp(&(b - value).abs()))
-        .unwrap_or(value)
 }
 
 /// Label on the left, a select on the right.
@@ -974,13 +967,5 @@ mod tests {
         };
         let (fu, fv) = orbit_plane(&free);
         assert!(fu[2].abs() < 1e-9 && fv[2].abs() < 1e-9);
-    }
-
-    #[test]
-    fn the_grid_snap_picks_the_node_a_nearest_cell_lookup_would_round_to() {
-        let nodes = [-1.0, -0.5, 0.0, 0.5, 1.0];
-        assert_eq!(nearest(&nodes, 0.24), 0.0);
-        assert_eq!(nearest(&nodes, 0.26), 0.5);
-        assert_eq!(nearest(&nodes, -2.0), -1.0);
     }
 }

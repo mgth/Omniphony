@@ -114,6 +114,25 @@ pub fn snap_drag_angle(deg: f32, radial_delta: f32) -> f32 {
     }
 }
 
+/// Which ADM axis a scene axis is: the swizzle `scene_to_adm` applied to the
+/// axis vector, read back as the index it lands on.
+pub fn adm_axis_of(scene_axis: Vec3) -> usize {
+    use omniphony_geometry::f32 as g;
+    let adm = g::scene_to_adm([scene_axis.x, scene_axis.y, scene_axis.z]);
+    (0..3)
+        .max_by(|&a, &b| adm[a].abs().total_cmp(&adm[b].abs()))
+        .unwrap_or(0)
+}
+
+/// `value` moved to the nearest of `nodes`; unchanged when there are none.
+pub fn snap_to_nodes(value: f64, nodes: &[f64]) -> f64 {
+    nodes
+        .iter()
+        .copied()
+        .min_by(|a, b| (a - value).abs().total_cmp(&(b - value).abs()))
+        .unwrap_or(value)
+}
+
 /// `channelPlacement(name) === 'virtual'`: the channel is spatialised into an
 /// object rather than sent straight to a speaker, which is what makes its
 /// position something the editor owns.
@@ -348,6 +367,28 @@ pub fn emit_cartesian(p: Vec3, cam_pos: Vec3, frame: &mut FrameData) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scene depth is ADM y, scene up is ADM z and scene right is ADM x, and
+    /// a negative axis lands on the same index as its positive.
+    #[test]
+    fn a_scene_axis_names_its_adm_axis() {
+        assert_eq!(adm_axis_of(Vec3::X), 1);
+        assert_eq!(adm_axis_of(Vec3::Y), 2);
+        assert_eq!(adm_axis_of(Vec3::Z), 0);
+        assert_eq!(adm_axis_of(-Vec3::Z), 0);
+    }
+
+    /// The nearest node wins, and a value with nothing to snap to is left
+    /// where it is.
+    #[test]
+    fn snapping_takes_the_nearest_node() {
+        let nodes = [-1.0, -0.5, 0.0, 0.5, 1.0];
+        assert_eq!(snap_to_nodes(0.2, &nodes), 0.0);
+        assert_eq!(snap_to_nodes(0.3, &nodes), 0.5);
+        assert_eq!(snap_to_nodes(-0.76, &nodes), -1.0);
+        assert_eq!(snap_to_nodes(7.0, &nodes), 1.0);
+        assert_eq!(snap_to_nodes(0.37, &[]), 0.37);
+    }
 
     /// The angles the ring and the arc are scaled by are the scene's own, and
     /// a speaker straight overhead is at ninety degrees rather than at an

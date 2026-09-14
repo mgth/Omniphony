@@ -133,8 +133,10 @@ pub struct StudioSpike {
     /// The orbit path, rebuilt in place each frame so drawing it allocates
     /// nothing after the first.
     pub(crate) object_test_orbit: Vec<[f64; 3]>,
-    /// Snap grid, keyed on the published interval counts it was built from.
-    pub(crate) object_test_grid_cache: Option<([u32; 4], [Vec<f64>; 3])>,
+    /// The VBAP cartesian grid's nodes, keyed on the published interval
+    /// counts they were built from: the object test's snap grid and the
+    /// speaker gizmo's.
+    pub(crate) vbap_grid_cache: Option<([u32; 4], [Vec<f64>; 3])>,
     /// The renderer's fixed-channel catalogue, digested once per publication.
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::host::channels::CoordMode,
@@ -426,7 +428,7 @@ impl StudioSpike {
             object_test_drag: None,
             object_test_focus: None,
             object_test_orbit: Vec::new(),
-            object_test_grid_cache: None,
+            vbap_grid_cache: None,
             channel_coord_mode: crate::host::channels::CoordMode::Cartesian,
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
@@ -527,7 +529,10 @@ impl StudioSpike {
         }
         if self.gizmo_drag.is_some() {
             if let Some(p) = response.interact_pointer_pos() {
-                self.update_gizmo_drag(p, rect, aspect);
+                // The command modifier (ctrl here) frees a cartesian drag
+                // from the grid.
+                let free = ui.input(|i| i.modifiers.command);
+                self.update_gizmo_drag(p, rect, aspect, free);
             }
             // The drag ends when the button does, not when the pointer stops
             // moving: a pause mid-drag is not a release.

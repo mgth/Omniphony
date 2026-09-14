@@ -12,6 +12,10 @@
 //! would otherwise snap the channel back between updates. Either way the
 //! frame draws the target from the renderer's state, so the drag pins the
 //! target at the pointer for as long as it lasts, and a little beyond.
+//!
+//! A cartesian drag lands on the VBAP cartesian grid, the one the room faces
+//! can show, unless the command modifier (ctrl) is held; the polar drags
+//! snap by angle, and are freed by pulling inside the ring.
 
 use std::time::{Duration, Instant};
 
@@ -145,7 +149,8 @@ impl StudioSpike {
     }
 
     /// Follow the pointer. `send` is false here: a speaker commits on release.
-    pub(crate) fn update_gizmo_drag(&mut self, pointer: Pos2, rect: Rect, aspect: f32) {
+    /// `free` lifts the cartesian grid snap for this step.
+    pub(crate) fn update_gizmo_drag(&mut self, pointer: Pos2, rect: Rect, aspect: f32, free: bool) {
         let Some(drag) = self.gizmo_drag.clone() else {
             return;
         };
@@ -180,7 +185,14 @@ impl StudioSpike {
                 start_pos,
             } => {
                 let t = project_ray_onto_axis(origin, dir, axis_origin, axis);
-                start_pos + axis * (t - start_t)
+                let pulled = start_pos + axis * (t - start_t);
+                // On the grid unless freed: the moved coordinate alone, so
+                // the other two stay wherever the layout has them.
+                if free {
+                    pulled
+                } else {
+                    self.snapped_along(pulled, axis)
+                }
             }
         };
         self.gizmo_drag = Some(next);
@@ -221,6 +233,23 @@ impl StudioSpike {
         let send = matches!(target, GizmoTarget::Channel(_));
         self.commit_gizmo_position(from_spherical(az, el, next), send);
         true
+    }
+
+    /// `scene` with its coordinate along `axis` moved to the nearest node of
+    /// the VBAP cartesian grid, the object test's cached one; unchanged while
+    /// the renderer has published none.
+    fn snapped_along(&mut self, scene: Vec3, axis: Vec3) -> Vec3 {
+        if !self.ensure_vbap_grid() {
+            return scene;
+        }
+        let Some((_, axes)) = self.vbap_grid_cache.as_ref() else {
+            return scene;
+        };
+        let adm_axis = gizmos::adm_axis_of(axis);
+        let room = self.host.read().app.room_ratio.clone();
+        let mut adm = gizmos::scene_to_normalized(scene, &room);
+        adm[adm_axis] = gizmos::snap_to_nodes(adm[adm_axis], &axes[adm_axis]);
+        crate::view::scene_position(adm, &room)
     }
 
     /// The speaker as the editor should show it while the gizmo holds it:
