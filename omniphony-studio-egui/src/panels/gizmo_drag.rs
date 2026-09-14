@@ -19,6 +19,7 @@ use egui::{Pos2, Rect};
 use glam::Vec3;
 
 use crate::app::StudioSpike;
+use crate::model::app_state::RoomRatio;
 use crate::view::gizmos::{
     self, EditMode, GizmoTarget, project_ray_onto_axis, ray_plane, snap_drag_angle, spherical,
 };
@@ -234,11 +235,20 @@ impl StudioSpike {
         let Some((target, _)) = self.gizmo_target.clone() else {
             return;
         };
+        let room = self.host.read().app.room_ratio.clone();
+        let adm = gizmos::scene_to_normalized(scene, &room);
+        // A speaker lives in the layout's cube, and the conversion above
+        // clamps to it. Anchoring and pinning the clamped position holds the
+        // cube at the wall while the pointer is beyond it, instead of letting
+        // it out and snapping it back on release. A channel is not clamped
+        // here: its position is polar and the renderer's bed owns its range.
+        let scene = match target {
+            GizmoTarget::Speaker(_) => clamped_to_layout(scene, &room),
+            GizmoTarget::Channel(_) => scene,
+        };
         // The frame's own copy moves at once, so the gizmo tracks the pointer
         // rather than the next state broadcast.
         self.gizmo_target = Some((target.clone(), scene));
-        let room = self.host.read().app.room_ratio.clone();
-        let adm = gizmos::scene_to_normalized(scene, &room);
         match target {
             GizmoTarget::Speaker(index) => {
                 // Hold the cube, and so its gizmo, at the pointer: the frame
@@ -276,6 +286,12 @@ impl StudioSpike {
     }
 }
 
+/// The scene position a speaker can actually take: the layout is written in
+/// the normalised cube, so the round trip through it stops at the walls.
+pub(crate) fn clamped_to_layout(scene: Vec3, room: &RoomRatio) -> Vec3 {
+    crate::view::scene_position(gizmos::scene_to_normalized(scene, room), room)
+}
+
 /// The scene-space size of one point of the viewport at `depth` from the eye,
 /// for a vertical field of view `fov_y` over a viewport `height` points tall.
 pub(crate) fn scene_units_per_point(depth: f32, fov_y: f32, height: f32) -> f32 {
@@ -309,6 +325,27 @@ fn from_spherical(az_deg: f32, el_deg: f32, distance: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The layout's cube is the limit a speaker stops at: a point inside
+    /// comes back where it was, a point beyond a wall comes back on it.
+    #[test]
+    fn a_speaker_stops_at_the_layout_cube() {
+        let room = RoomRatio::default();
+        let inside = Vec3::new(0.3, 0.2, -0.4);
+        let back = clamped_to_layout(inside, &room);
+        assert!((back - inside).length() < 1e-4, "{back:?}");
+        let beyond = inside * 40.0;
+        let wall = clamped_to_layout(beyond, &room);
+        let adm = gizmos::scene_to_normalized(wall, &room);
+        assert!(adm.iter().all(|c| c.abs() <= 1.0 + 1e-6), "{adm:?}");
+        assert!(
+            adm.iter().any(|c| (c.abs() - 1.0).abs() < 1e-6),
+            "not on a wall: {adm:?}"
+        );
+        assert!(wall.length() < beyond.length());
+        // And the wall is where it stays: the clamp is idempotent.
+        assert!((clamped_to_layout(wall, &room) - wall).length() < 1e-4);
+    }
 
     /// A handle the camera has shrunk to a few points still takes a press
     /// within the on-screen floor; a big one keeps its own radius and the
