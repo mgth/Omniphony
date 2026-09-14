@@ -110,6 +110,10 @@ const CJK_FONT_CANDIDATES: &[&str] = &[
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    log::info!(
+        "omniphony-studio-egui {} starting",
+        env!("CARGO_PKG_VERSION")
+    );
     let args = Args::parse();
 
     let mut wgpu_options = egui_wgpu::WgpuConfiguration::default();
