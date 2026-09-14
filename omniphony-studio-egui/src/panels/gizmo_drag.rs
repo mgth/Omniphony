@@ -20,6 +20,7 @@ use glam::Vec3;
 
 use crate::app::StudioSpike;
 use crate::model::app_state::RoomRatio;
+use crate::model::layouts::Speaker;
 use crate::view::gizmos::{
     self, EditMode, GizmoTarget, project_ray_onto_axis, ray_plane, snap_drag_angle, spherical,
 };
@@ -222,6 +223,21 @@ impl StudioSpike {
         true
     }
 
+    /// The speaker as the editor should show it while the gizmo holds it:
+    /// at the pin, with the polar readout the renderer will derive from the
+    /// cartesian edit. `None` when the state is the right source.
+    pub(crate) fn speaker_at_edit_pin(&self, index: usize, speaker: &Speaker) -> Option<Speaker> {
+        let (pinned, scene, _) = self.speaker_edit_pin.as_ref()?;
+        if *pinned != index {
+            return None;
+        }
+        let room = self.host.read().app.room_ratio.clone();
+        Some(speaker_at(
+            speaker,
+            gizmos::scene_to_normalized(*scene, &room),
+        ))
+    }
+
     fn viewport_ray(&self, pointer: Pos2, rect: Rect, aspect: f32) -> (Vec3, Vec3) {
         let ndc_x = (pointer.x - rect.min.x) / rect.width() * 2.0 - 1.0;
         let ndc_y = 1.0 - (pointer.y - rect.min.y) / rect.height() * 2.0;
@@ -286,6 +302,22 @@ impl StudioSpike {
     }
 }
 
+/// `speaker` moved to the normalised `adm` position, its polar readout
+/// derived the way the renderer derives it from a cartesian edit.
+pub(crate) fn speaker_at(speaker: &Speaker, adm: [f64; 3]) -> Speaker {
+    let (azimuth_deg, elevation_deg, distance_m) =
+        omniphony_geometry::f64::hydrate_from_cartesian(adm[0], adm[1], adm[2]);
+    Speaker {
+        x: adm[0],
+        y: adm[1],
+        z: adm[2],
+        azimuth_deg,
+        elevation_deg,
+        distance_m,
+        ..speaker.clone()
+    }
+}
+
 /// The scene position a speaker can actually take: the layout is written in
 /// the normalised cube, so the round trip through it stops at the walls.
 pub(crate) fn clamped_to_layout(scene: Vec3, room: &RoomRatio) -> Vec3 {
@@ -325,6 +357,26 @@ fn from_spherical(az_deg: f32, el_deg: f32, distance: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A held speaker reads at the pin, in both coordinate systems, and keeps
+    /// everything that is not a position.
+    #[test]
+    fn the_readout_follows_the_pin_in_both_coordinate_systems() {
+        let speaker: Speaker = serde_json::from_value(serde_json::json!({
+            "id": "Ltf", "x": -0.5, "y": 0.5, "z": 0.0, "delay_ms": 3.5
+        }))
+        .unwrap();
+        let held = speaker_at(&speaker, [0.2, 0.9, 0.3]);
+        assert_eq!((held.x, held.y, held.z), (0.2, 0.9, 0.3));
+        let (az, el, dist) = omniphony_geometry::f64::hydrate_from_cartesian(0.2, 0.9, 0.3);
+        assert_eq!(
+            (held.azimuth_deg, held.elevation_deg, held.distance_m),
+            (az, el, dist)
+        );
+        assert!(az > 0.0 && el > 0.0 && dist > 0.9, "{az} {el} {dist}");
+        assert_eq!(held.id, "Ltf");
+        assert_eq!(held.delay_ms, 3.5);
+    }
 
     /// The layout's cube is the limit a speaker stops at: a point inside
     /// comes back where it was, a point beyond a wall comes back on it.

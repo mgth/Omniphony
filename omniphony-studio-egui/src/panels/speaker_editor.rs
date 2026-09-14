@@ -193,6 +193,10 @@ impl StudioSpike {
         frozen: bool,
     ) {
         let id = index as i32;
+        // While the gizmo holds this speaker, the readouts follow the pointer
+        // rather than the state, as the web's editor did during a drag.
+        let held = self.speaker_at_edit_pin(index, speaker);
+        let speaker = held.as_ref().unwrap_or(speaker);
         ui.add_enabled_ui(!frozen, |ui| {
             // Name.
             let mut name = speaker.id.clone();
