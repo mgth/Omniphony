@@ -282,15 +282,12 @@ impl StudioSpike {
         };
         let room = self.host.read().app.room_ratio.clone();
         let adm = gizmos::scene_to_normalized(scene, &room);
-        // A speaker lives in the layout's cube, and the conversion above
-        // clamps to it. Anchoring and pinning the clamped position holds the
-        // cube at the wall while the pointer is beyond it, instead of letting
-        // it out and snapping it back on release. A channel is not clamped
-        // here: its position is polar and the renderer's bed owns its range.
-        let scene = match target {
-            GizmoTarget::Speaker(_) => clamped_to_layout(scene, &room),
-            GizmoTarget::Channel(_) => scene,
-        };
+        // Both targets live in the layout's cube: the conversion above clamps
+        // to it, and so does the bed's `polar_to_adm` for a channel. Anchoring
+        // and pinning the clamped position holds the target at the wall while
+        // the pointer is beyond it, instead of letting it out and snapping it
+        // back on release.
+        let scene = clamped_to_layout(scene, &room);
         // The frame's own copy moves at once, so the gizmo tracks the pointer
         // rather than the next state broadcast.
         self.gizmo_target = Some((target.clone(), scene));
