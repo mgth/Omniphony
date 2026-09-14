@@ -166,7 +166,11 @@ pub fn collect(
             SpeakerVisual {
                 index,
                 name: s.id.clone(),
-                scene_pos: scene_position([s.x, s.y, s.z], room),
+                scene_pos: pinned_position(
+                    settings.speaker_edit_pin,
+                    index,
+                    scene_position([s.x, s.y, s.z], room),
+                ),
                 spatialize,
                 muted: live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),
                 selected,
@@ -179,6 +183,16 @@ pub fn collect(
             }
         })
         .collect()
+}
+
+/// The editor's pin wins over the state for the one speaker it holds: a
+/// state bundle arriving mid-drag carries the position the speaker had before
+/// the drag started, and would put it back there.
+pub fn pinned_position(pin: Option<(usize, Vec3)>, index: usize, from_state: Vec3) -> Vec3 {
+    match pin {
+        Some((pinned, at)) if pinned == index => at,
+        _ => from_state,
+    }
 }
 
 /// Cube with `MeshStandardMaterial` look: depth-written even though blended
@@ -226,6 +240,20 @@ pub fn emit(sp: &SpeakerVisual, settings: &ViewSettings, frame: &mut FrameData) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pin replaces the state's position for the speaker it names and
+    /// leaves every other one alone.
+    #[test]
+    fn the_edit_pin_holds_only_its_own_speaker() {
+        let pin = Some((2, Vec3::new(0.5, 0.25, -0.5)));
+        let from_state = Vec3::new(-1.0, 0.0, 1.0);
+        assert_eq!(
+            pinned_position(pin, 2, from_state),
+            Vec3::new(0.5, 0.25, -0.5)
+        );
+        assert_eq!(pinned_position(pin, 1, from_state), from_state);
+        assert_eq!(pinned_position(None, 2, from_state), from_state);
+    }
 
     /// The face the driver is on ends up pointing at the listener, wherever
     /// the speaker is, and the cube keeps no roll: its local +Y stays in the

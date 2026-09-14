@@ -133,8 +133,10 @@ pub struct StudioSpike {
     /// The orbit path, rebuilt in place each frame so drawing it allocates
     /// nothing after the first.
     pub(crate) object_test_orbit: Vec<[f64; 3]>,
-    /// Snap grid, keyed on the published interval counts it was built from.
-    pub(crate) object_test_grid_cache: Option<([u32; 4], [Vec<f64>; 3])>,
+    /// The VBAP cartesian grid's nodes, keyed on the published interval
+    /// counts they were built from: the object test's snap grid and the
+    /// speaker gizmo's.
+    pub(crate) vbap_grid_cache: Option<([u32; 4], [Vec<f64>; 3])>,
     /// The renderer's fixed-channel catalogue, digested once per publication.
     /// Which coordinate table the channel editor is showing.
     pub(crate) channel_coord_mode: crate::host::channels::CoordMode,
@@ -168,6 +170,9 @@ pub struct StudioSpike {
     /// The object the editor is holding in place, and until when: `None` is a
     /// pin that lasts as long as the drag does.
     pub(crate) channel_edit_pin: Option<(String, glam::Vec3, Option<Instant>)>,
+    /// The speaker the editor is holding in place, and until when: `None` is
+    /// a pin that lasts as long as the drag does.
+    pub(crate) speaker_edit_pin: Option<(usize, glam::Vec3, Option<Instant>)>,
     /// Where the frequency gauges were drawn last frame, so a click on one
     /// selects its speaker the way a click on the cube does.
     pub(crate) band_bar_hits: Vec<(usize, crate::view::screen::ScreenRect)>,
@@ -423,7 +428,7 @@ impl StudioSpike {
             object_test_drag: None,
             object_test_focus: None,
             object_test_orbit: Vec::new(),
-            object_test_grid_cache: None,
+            vbap_grid_cache: None,
             channel_coord_mode: crate::host::channels::CoordMode::Cartesian,
             // No bundle here, so the resolver falls through to the paths a
             // native build actually has: the repo's own build, then the
@@ -443,6 +448,7 @@ impl StudioSpike {
             gizmo_target: None,
             gizmo_drag: None,
             channel_edit_pin: None,
+            speaker_edit_pin: None,
             band_bar_hits: Vec::new(),
             diag_selection: None,
             expected_orender_path: crate::host::commands::orender::expected_orender_path(
@@ -509,15 +515,24 @@ impl StudioSpike {
 
         let aspect = rect.width() / rect.height().max(1.0);
         // A gizmo drag takes the primary button before the camera does: an
-        // orbit under a drag would move the thing being aimed with.
+        // orbit under a drag would move the thing being aimed with. The grab
+        // is tested where the button went down, not where the pointer is now:
+        // a widget that also senses clicks only reports the drag once the
+        // pointer has travelled `max_click_dist`, and that much off a handle
+        // a few points wide is a miss every time.
         if response.drag_started_by(egui::PointerButton::Primary)
-            && let Some(p) = response.interact_pointer_pos()
+            && let Some(p) = ui
+                .input(|i| i.pointer.press_origin())
+                .or_else(|| response.interact_pointer_pos())
         {
             self.begin_gizmo_drag(p, rect, aspect);
         }
         if self.gizmo_drag.is_some() {
             if let Some(p) = response.interact_pointer_pos() {
-                self.update_gizmo_drag(p, rect, aspect);
+                // The command modifier (ctrl here) frees a cartesian drag
+                // from the grid.
+                let free = ui.input(|i| i.modifiers.command);
+                self.update_gizmo_drag(p, rect, aspect, free);
             }
             // The drag ends when the button does, not when the pointer stops
             // moving: a pause mid-drag is not a release.
@@ -590,6 +605,23 @@ impl StudioSpike {
             .channel_edit_pin
             .as_ref()
             .map(|(id, at, _)| (id.clone(), *at));
+        // The speaker pin expires the same way; nothing streams a speaker, so
+        // the frame that drops it has to be asked for.
+        match self
+            .speaker_edit_pin
+            .as_ref()
+            .and_then(|(_, _, until)| *until)
+        {
+            Some(until) if Instant::now() >= until => self.speaker_edit_pin = None,
+            Some(until) => ui
+                .ctx()
+                .request_repaint_after(until.saturating_duration_since(Instant::now())),
+            None => {}
+        }
+        self.settings.speaker_edit_pin = self
+            .speaker_edit_pin
+            .as_ref()
+            .map(|(index, at, _)| (*index, *at));
         let ppp = ui.ctx().pixels_per_point();
         // One band for everything: the band cursor and the Heatmaps select
         // write `heatmap_band_index`, and the volumes read it from here.

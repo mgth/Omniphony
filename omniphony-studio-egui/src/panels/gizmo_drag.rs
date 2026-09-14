@@ -9,7 +9,13 @@
 //! while a gizmo is being dragged — an orbit under a drag would move the thing
 //! you are aiming with — and a speaker's edit is sent once, on release, while
 //! a virtual bed channel's is sent continuously, because the renderer's bed
-//! would otherwise snap the channel back between updates.
+//! would otherwise snap the channel back between updates. Either way the
+//! frame draws the target from the renderer's state, so the drag pins the
+//! target at the pointer for as long as it lasts, and a little beyond.
+//!
+//! A cartesian drag lands on the VBAP cartesian grid, the one the room faces
+//! can show, unless the command modifier (ctrl) is held; the polar drags
+//! snap by angle, and are freed by pulling inside the ring.
 
 use std::time::{Duration, Instant};
 
@@ -17,6 +23,8 @@ use egui::{Pos2, Rect};
 use glam::Vec3;
 
 use crate::app::StudioSpike;
+use crate::model::app_state::RoomRatio;
+use crate::model::layouts::Speaker;
 use crate::view::gizmos::{
     self, EditMode, GizmoTarget, project_ray_onto_axis, ray_plane, snap_drag_angle, spherical,
 };
@@ -24,6 +32,10 @@ use crate::view::gizmos::{
 /// How close to the ring or the arc a press has to be to grab it, as a
 /// fraction of the radius. A line is one pixel wide and nobody can hit that.
 const GRAB: f32 = 0.12;
+/// The least a grab may demand on screen, in points. The cartesian handles
+/// are drawn a few points across once the camera is at any distance; a
+/// target that small is not one.
+const MIN_GRAB_PX: f32 = 10.0;
 /// The wheel's distance steps, coarse and fine.
 const WHEEL_STEP: f32 = 0.05;
 const WHEEL_STEP_FINE: f32 = 0.01;
@@ -62,14 +74,23 @@ impl StudioSpike {
         let (origin, dir) = self.viewport_ray(pointer, rect, aspect);
         let (az, el, dist) = spherical(at);
         let distance = dist.max(0.01);
+        let eye = self.camera.eye();
+        let fov_y = self.camera.fov_y;
+        let height = rect.height();
         match gizmo.mode {
             EditMode::Polar if gizmo.polar_armed => {
                 // The ring lies in the horizontal plane; the arc stands in the
                 // speaker's own azimuth plane. Whichever the press landed on
-                // is the angle being dragged.
+                // is the angle being dragged. The slack is the web's fraction
+                // of the radius, but never under the on-screen floor.
+                let slack = |hit: Vec3| {
+                    (GRAB * distance).max(
+                        MIN_GRAB_PX * scene_units_per_point((hit - eye).length(), fov_y, height),
+                    )
+                };
                 if let Some(hit) = ray_plane(origin, dir, Vec3::Y) {
                     let radial = (hit.x * hit.x + hit.z * hit.z).sqrt();
-                    if (radial - distance).abs() <= GRAB * distance {
+                    if (radial - distance).abs() <= slack(hit) {
                         self.gizmo_drag = Some(GizmoDrag {
                             kind: DragKind::Azimuth,
                             az_deg: az,
@@ -81,7 +102,7 @@ impl StudioSpike {
                 }
                 let normal = arc_normal(az);
                 if let Some(hit) = ray_plane(origin, dir, normal)
-                    && (hit.length() - distance).abs() <= GRAB * distance
+                    && (hit.length() - distance).abs() <= slack(hit)
                 {
                     self.gizmo_drag = Some(GizmoDrag {
                         kind: DragKind::Elevation,
@@ -98,13 +119,15 @@ impl StudioSpike {
                 let radius = 0.045 * scale;
                 for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
                     let handle = at + axis * 0.45 * scale;
-                    // The handle is a sphere; a press inside it takes its axis.
+                    // The handle is a sphere; a press inside it, or within
+                    // the on-screen floor of it, takes its axis.
                     let to_handle = handle - origin;
                     let along = to_handle.dot(dir);
                     if along <= 0.0 {
                         continue;
                     }
-                    if (to_handle - dir * along).length() <= radius * 1.6 {
+                    let grab = grab_radius(radius, (handle - eye).length(), fov_y, height);
+                    if (to_handle - dir * along).length() <= grab {
                         self.gizmo_drag = Some(GizmoDrag {
                             kind: DragKind::Cartesian {
                                 axis,
@@ -126,7 +149,8 @@ impl StudioSpike {
     }
 
     /// Follow the pointer. `send` is false here: a speaker commits on release.
-    pub(crate) fn update_gizmo_drag(&mut self, pointer: Pos2, rect: Rect, aspect: f32) {
+    /// `free` lifts the cartesian grid snap for this step.
+    pub(crate) fn update_gizmo_drag(&mut self, pointer: Pos2, rect: Rect, aspect: f32, free: bool) {
         let Some(drag) = self.gizmo_drag.clone() else {
             return;
         };
@@ -161,7 +185,14 @@ impl StudioSpike {
                 start_pos,
             } => {
                 let t = project_ray_onto_axis(origin, dir, axis_origin, axis);
-                start_pos + axis * (t - start_t)
+                let pulled = start_pos + axis * (t - start_t);
+                // On the grid unless freed: the moved coordinate alone, so
+                // the other two stay wherever the layout has them.
+                if free {
+                    pulled
+                } else {
+                    self.snapped_along(pulled, axis)
+                }
             }
         };
         self.gizmo_drag = Some(next);
@@ -204,6 +235,38 @@ impl StudioSpike {
         true
     }
 
+    /// `scene` with its coordinate along `axis` moved to the nearest node of
+    /// the VBAP cartesian grid, the object test's cached one; unchanged while
+    /// the renderer has published none.
+    fn snapped_along(&mut self, scene: Vec3, axis: Vec3) -> Vec3 {
+        if !self.ensure_vbap_grid() {
+            return scene;
+        }
+        let Some((_, axes)) = self.vbap_grid_cache.as_ref() else {
+            return scene;
+        };
+        let adm_axis = gizmos::adm_axis_of(axis);
+        let room = self.host.read().app.room_ratio.clone();
+        let mut adm = gizmos::scene_to_normalized(scene, &room);
+        adm[adm_axis] = gizmos::snap_to_nodes(adm[adm_axis], &axes[adm_axis]);
+        crate::view::scene_position(adm, &room)
+    }
+
+    /// The speaker as the editor should show it while the gizmo holds it:
+    /// at the pin, with the polar readout the renderer will derive from the
+    /// cartesian edit. `None` when the state is the right source.
+    pub(crate) fn speaker_at_edit_pin(&self, index: usize, speaker: &Speaker) -> Option<Speaker> {
+        let (pinned, scene, _) = self.speaker_edit_pin.as_ref()?;
+        if *pinned != index {
+            return None;
+        }
+        let room = self.host.read().app.room_ratio.clone();
+        Some(speaker_at(
+            speaker,
+            gizmos::scene_to_normalized(*scene, &room),
+        ))
+    }
+
     fn viewport_ray(&self, pointer: Pos2, rect: Rect, aspect: f32) -> (Vec3, Vec3) {
         let ndc_x = (pointer.x - rect.min.x) / rect.width() * 2.0 - 1.0;
         let ndc_y = 1.0 - (pointer.y - rect.min.y) / rect.height() * 2.0;
@@ -217,13 +280,31 @@ impl StudioSpike {
         let Some((target, _)) = self.gizmo_target.clone() else {
             return;
         };
+        let room = self.host.read().app.room_ratio.clone();
+        let adm = gizmos::scene_to_normalized(scene, &room);
+        // A speaker lives in the layout's cube, and the conversion above
+        // clamps to it. Anchoring and pinning the clamped position holds the
+        // cube at the wall while the pointer is beyond it, instead of letting
+        // it out and snapping it back on release. A channel is not clamped
+        // here: its position is polar and the renderer's bed owns its range.
+        let scene = match target {
+            GizmoTarget::Speaker(_) => clamped_to_layout(scene, &room),
+            GizmoTarget::Channel(_) => scene,
+        };
         // The frame's own copy moves at once, so the gizmo tracks the pointer
         // rather than the next state broadcast.
         self.gizmo_target = Some((target.clone(), scene));
-        let room = self.host.read().app.room_ratio.clone();
-        let adm = gizmos::scene_to_normalized(scene, &room);
         match target {
             GizmoTarget::Speaker(index) => {
+                // Hold the cube, and so its gizmo, at the pointer: the frame
+                // draws speakers from the renderer's state, which only learns
+                // of the move on release. 600 ms past that, as for a channel,
+                // covers the echo; no expiry while the pointer is down.
+                self.speaker_edit_pin = Some((
+                    index,
+                    scene,
+                    send.then(|| Instant::now() + Duration::from_millis(600)),
+                ));
                 if send {
                     self.edit_speaker_position(index as i32, adm);
                 }
@@ -250,6 +331,40 @@ impl StudioSpike {
     }
 }
 
+/// `speaker` moved to the normalised `adm` position, its polar readout
+/// derived the way the renderer derives it from a cartesian edit.
+pub(crate) fn speaker_at(speaker: &Speaker, adm: [f64; 3]) -> Speaker {
+    let (azimuth_deg, elevation_deg, distance_m) =
+        omniphony_geometry::f64::hydrate_from_cartesian(adm[0], adm[1], adm[2]);
+    Speaker {
+        x: adm[0],
+        y: adm[1],
+        z: adm[2],
+        azimuth_deg,
+        elevation_deg,
+        distance_m,
+        ..speaker.clone()
+    }
+}
+
+/// The scene position a speaker can actually take: the layout is written in
+/// the normalised cube, so the round trip through it stops at the walls.
+pub(crate) fn clamped_to_layout(scene: Vec3, room: &RoomRatio) -> Vec3 {
+    crate::view::scene_position(gizmos::scene_to_normalized(scene, room), room)
+}
+
+/// The scene-space size of one point of the viewport at `depth` from the eye,
+/// for a vertical field of view `fov_y` over a viewport `height` points tall.
+pub(crate) fn scene_units_per_point(depth: f32, fov_y: f32, height: f32) -> f32 {
+    2.0 * depth * (fov_y * 0.5).tan() / height.max(1.0)
+}
+
+/// How far from a handle a press may land and still take it: the handle's own
+/// radius with the web's slack, but never less than `MIN_GRAB_PX` on screen.
+pub(crate) fn grab_radius(handle_radius: f32, depth: f32, fov_y: f32, height: f32) -> f32 {
+    (handle_radius * 1.6).max(MIN_GRAB_PX * scene_units_per_point(depth, fov_y, height))
+}
+
 /// The normal of the vertical plane the elevation arc stands in.
 fn arc_normal(az_deg: f32) -> Vec3 {
     let az = az_deg.to_radians();
@@ -271,6 +386,65 @@ fn from_spherical(az_deg: f32, el_deg: f32, distance: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A held speaker reads at the pin, in both coordinate systems, and keeps
+    /// everything that is not a position.
+    #[test]
+    fn the_readout_follows_the_pin_in_both_coordinate_systems() {
+        let speaker: Speaker = serde_json::from_value(serde_json::json!({
+            "id": "Ltf", "x": -0.5, "y": 0.5, "z": 0.0, "delay_ms": 3.5
+        }))
+        .unwrap();
+        let held = speaker_at(&speaker, [0.2, 0.9, 0.3]);
+        assert_eq!((held.x, held.y, held.z), (0.2, 0.9, 0.3));
+        let (az, el, dist) = omniphony_geometry::f64::hydrate_from_cartesian(0.2, 0.9, 0.3);
+        assert_eq!(
+            (held.azimuth_deg, held.elevation_deg, held.distance_m),
+            (az, el, dist)
+        );
+        assert!(az > 0.0 && el > 0.0 && dist > 0.9, "{az} {el} {dist}");
+        assert_eq!(held.id, "Ltf");
+        assert_eq!(held.delay_ms, 3.5);
+    }
+
+    /// The layout's cube is the limit a speaker stops at: a point inside
+    /// comes back where it was, a point beyond a wall comes back on it.
+    #[test]
+    fn a_speaker_stops_at_the_layout_cube() {
+        let room = RoomRatio::default();
+        let inside = Vec3::new(0.3, 0.2, -0.4);
+        let back = clamped_to_layout(inside, &room);
+        assert!((back - inside).length() < 1e-4, "{back:?}");
+        let beyond = inside * 40.0;
+        let wall = clamped_to_layout(beyond, &room);
+        let adm = gizmos::scene_to_normalized(wall, &room);
+        assert!(adm.iter().all(|c| c.abs() <= 1.0 + 1e-6), "{adm:?}");
+        assert!(
+            adm.iter().any(|c| (c.abs() - 1.0).abs() < 1e-6),
+            "not on a wall: {adm:?}"
+        );
+        assert!(wall.length() < beyond.length());
+        // And the wall is where it stays: the clamp is idempotent.
+        assert!((clamped_to_layout(wall, &room) - wall).length() < 1e-4);
+    }
+
+    /// A handle the camera has shrunk to a few points still takes a press
+    /// within the on-screen floor; a big one keeps its own radius and the
+    /// web's slack.
+    #[test]
+    fn a_grab_is_never_smaller_than_the_on_screen_floor() {
+        let fov_y = 65f32.to_radians();
+        let unit = scene_units_per_point(10.0, fov_y, 1000.0);
+        assert!((unit - 2.0 * 10.0 * (fov_y / 2.0).tan() / 1000.0).abs() < 1e-7);
+        // The cartesian handle at that depth: 0.045 * 0.08 * 10 = 0.036 scene
+        // units, under three points on screen.
+        let small = grab_radius(0.036, 10.0, fov_y, 1000.0);
+        assert!((small - MIN_GRAB_PX * unit).abs() < 1e-6, "{small}");
+        assert!(small > 0.036 * 1.6);
+        // A handle already wider than the floor keeps the web's rule.
+        let large = grab_radius(1.0, 10.0, fov_y, 1000.0);
+        assert!((large - 1.6).abs() < 1e-6, "{large}");
+    }
 
     /// The arc stands in the plane that contains the speaker and the vertical,
     /// so its normal is horizontal and square to the speaker's direction.
