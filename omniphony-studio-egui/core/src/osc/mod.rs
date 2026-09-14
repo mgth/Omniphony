@@ -215,7 +215,20 @@ fn listener_loop(
                         if outcome.reregister
                             && let Some(addr) = register
                         {
-                            log::warn!("[osc] renderer does not know this client; re-registering");
+                            if outcome.lost_registration {
+                                // Once per episode, on the transition: the
+                                // unknown-client reply keeps arriving on the
+                                // renderer's own heartbeat cadence, so logging
+                                // every one of them at `warn` would repeat
+                                // indefinitely.
+                                log::warn!(
+                                    "[osc] renderer does not know this client; re-registering"
+                                );
+                            } else {
+                                log::debug!(
+                                    "[osc] renderer does not know this client; re-registering"
+                                );
+                            }
                             send_register(&socket, addr, port, metering);
                         }
                         if outcome.ack {
@@ -357,6 +370,9 @@ struct PacketOutcome {
     change: Change,
     ack: bool,
     reregister: bool,
+    /// The unknown-client reply that set `reregister` ended a registered
+    /// episode (as opposed to repeating while one is already lost).
+    lost_registration: bool,
 }
 
 impl Default for Change {
@@ -386,7 +402,9 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
             return;
         }
         HeartbeatResponse::Unknown => {
-            stats.registered.store(false, Ordering::Relaxed);
+            // Remember whether this reply ends a registered episode, so the
+            // loop logs the transition once and the retries at `debug`.
+            out.lost_registration = stats.registered.swap(false, Ordering::Relaxed);
             out.reregister = true;
             return;
         }
@@ -420,7 +438,11 @@ fn send_register(socket: &UdpSocket, to: SocketAddr, listen_port: u16, metering:
         "/omniphony/control/metering",
         i32::from(metering),
     );
-    log::info!("[osc] register sent to {to} (listen_port={listen_port}, metering={metering})");
+    // `debug`, not `info`: the snapshot-retry timer re-registers every
+    // SNAPSHOT_REQUEST_INTERVAL until the state bundle has arrived, so at
+    // `info` this line alone streams for as long as no renderer answers - the
+    // normal standalone state.
+    log::debug!("[osc] register sent to {to} (listen_port={listen_port}, metering={metering})");
 }
 
 fn send_int(socket: &UdpSocket, to: SocketAddr, addr: &str, value: i32) {

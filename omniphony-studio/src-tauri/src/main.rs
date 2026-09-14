@@ -130,6 +130,12 @@ pub(crate) fn send_distance_metric(state: &State<SharedState>, address: &str, va
 // ── main ─────────────────────────────────────────────────────────────────
 
 fn main() {
+    // Install the sink for this crate's `log::*` calls: without it they are
+    // silently discarded. `info` is the desktop-app default; RUST_LOG overrides
+    // it with the usual per-module syntax (e.g. `RUST_LOG=omniphony_studio=debug`).
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    log::info!("omniphony-studio {} starting", env!("CARGO_PKG_VERSION"));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {

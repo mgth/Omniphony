@@ -817,7 +817,10 @@ fn send_register(socket: &UdpSocket, host: &str, rx_port: u16, listen_port: u16)
         rx_port,
         listen_port as i32,
     );
-    log::info!("[osc] register sent → udp://{host}:{rx_port} listen_port={listen_port}");
+    // `debug`, not `info`: the snapshot-retry and heartbeat-timeout timers both
+    // re-register on a fixed cadence (1 s / 5 s), so at `info` this line alone
+    // streams for as long as no renderer answers — the normal standalone state.
+    log::debug!("[osc] register sent → udp://{host}:{rx_port} listen_port={listen_port}");
 }
 
 fn send_metering_enabled(socket: &UdpSocket, host: &str, rx_port: u16, enabled: bool) {
@@ -1044,10 +1047,15 @@ fn osc_thread(
             send_heartbeat(&socket, &host, osc_rx_port, listen_port);
 
             if last_ack_at.elapsed() >= HEARTBEAT_ACK_TIMEOUT {
-                log::warn!("[osc] heartbeat timeout, re-registering");
                 if is_connected {
+                    // Warn once per disconnect episode, on the transition. The
+                    // retry itself repeats every HEARTBEAT_INTERVAL and stays at
+                    // `debug` so a renderer-less Studio does not warn forever.
+                    log::warn!("[osc] heartbeat timeout, re-registering");
                     is_connected = false;
                     emit_osc_status(&app, &state, "reconnecting");
+                } else {
+                    log::debug!("[osc] still no heartbeat ack, re-registering");
                 }
                 send_register(&socket, &host, osc_rx_port, listen_port);
                 last_snapshot_request_at = Instant::now();
@@ -1287,13 +1295,18 @@ fn handle_packet(
                     return;
                 }
                 HeartbeatResponse::Unknown => {
-                    log::info!("[osc] heartbeat/unknown → re-registering");
                     send_register(socket, host, osc_rx_port, listen_port);
                     send_metering_enabled(socket, host, osc_rx_port, metering_enabled);
                     *last_ack_at = Instant::now();
                     if *is_connected {
+                        // Once per episode: an unrecognised heartbeat form keeps
+                        // arriving on the peer's own cadence, so logging every
+                        // one of them at `info` would repeat indefinitely.
+                        log::info!("[osc] heartbeat/unknown → re-registering");
                         *is_connected = false;
                         emit_osc_status(app, state, "reconnecting");
+                    } else {
+                        log::debug!("[osc] heartbeat/unknown → re-registering");
                     }
                     return;
                 }
