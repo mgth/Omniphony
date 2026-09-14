@@ -141,3 +141,59 @@ pub fn spawn(
             }
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    /// A burst has to end on time with the clock parked on a distant deadline.
+    ///
+    /// That is the ordinary case, not a contrived one: with a renderer
+    /// connected and quiet the watchdog is the only service still due, seven
+    /// seconds out, and the loop is asleep until then. This ran for 6.8s of a
+    /// 2s window before `speaker_test::start` woke the clock.
+    #[test]
+    fn a_burst_ends_on_time_while_the_clock_is_parked() {
+        // `clock` is held to the end: dropping the sender would end the loop.
+        let (clock, nudges) = ServiceClock::new();
+        // Wired as the app wires it: what the host announces reaches the clock.
+        let state = Arc::new(crate::host::commands::tests::state_with_waker({
+            let clock = clock.clone();
+            Arc::new(move || clock.nudge())
+        }));
+        // Connected and just heard from, which is what pushes the watchdog's
+        // next visit out to its full window.
+        state.stats.registered.store(true, Ordering::Relaxed);
+        state.stats.packets.store(1, Ordering::Relaxed);
+        state.stats.last_packet_ms.store(
+            state.stats.start.elapsed().as_millis() as u64,
+            Ordering::Relaxed,
+        );
+
+        spawn(state.clone(), Arc::new(|| {}), nudges).unwrap();
+        // Let the loop take its pass and settle into the long sleep.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let started = Instant::now();
+        speaker_test::start(&state, 3, -8.0, "test_only".to_owned(), "burst");
+        // Generous, because a loaded machine is allowed to be late; the
+        // failure this guards against overshoots by seconds, not milliseconds.
+        let slack = Duration::from_millis(1500);
+        while state.inner.lock().unwrap().speaker_test.running.is_some() {
+            assert!(
+                started.elapsed() < speaker_test::BURST + slack,
+                "burst outlived its {:?} window",
+                speaker_test::BURST
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            started.elapsed() >= speaker_test::BURST,
+            "burst was cut short of its {:?} window",
+            speaker_test::BURST
+        );
+        drop(clock);
+    }
+}
