@@ -16,7 +16,7 @@ use crate::ui::widgets;
 
 const MODES: &[(&str, &str)] = &[
     ("pipe_bridge", "input.mode.pipe_bridge"),
-    ("pipewire_bridge", "input.mode.pipewire_bridge"),
+    ("pipewire", "input.mode.pipewire"),
 ];
 
 const CLOCK_MODES: &[(&str, &str)] = &[
@@ -48,10 +48,10 @@ impl StudioSpike {
                 live.app.input_apply_pending.unwrap_or(0) != 0,
             )
         };
-        let pipewire = mode == "pipewire_bridge";
+        let pipewire = mode == "pipewire";
         let summary = if pipewire {
             tf(
-                "input.summary.pipewireBridge",
+                "input.summary.pipewire",
                 &[
                     ("requested", mode_label(&mode)),
                     ("active", mode_label(active.as_deref().unwrap_or(""))),
@@ -217,7 +217,7 @@ impl StudioSpike {
 
 fn mode_label(mode: &str) -> &'static str {
     match mode {
-        "pipewire_bridge" => t("input.mode.pipewire_bridge"),
+        "pipewire" => t("input.mode.pipewire"),
         "pipe_bridge" => t("input.mode.pipe_bridge"),
         _ => "—",
     }
