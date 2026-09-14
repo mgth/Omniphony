@@ -5,6 +5,15 @@ use std::path::PathBuf;
 use std::process::Command;
 use vergen_gitcl::{Emitter, GitclBuilder};
 
+// The repository root, resolved relative to this crate instead of by git's
+// upward discovery — this crate sits two levels below it. See the twin in the
+// root build.rs for why upward discovery must not be trusted (tarball builds
+// nested inside an unrelated repository); both files are kept in sync.
+fn repo_root() -> Option<PathBuf> {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").ok()?);
+    Some(manifest_dir.parent()?.parent()?.to_path_buf())
+}
+
 // Resolve a path inside the git directory, if it exists. See the twin in the
 // root build.rs for why this exists; both are kept in sync.
 fn git_path(arg: &str) -> Option<PathBuf> {
@@ -61,22 +70,42 @@ fn emit_git_rerun_triggers() {
 // connected renderer's real build in About — making a liborender-vs-orender
 // version skew immediately visible.
 fn main() -> Result<()> {
-    emit_git_rerun_triggers();
+    // Only trust git when `.git` exists at the expected repo root; vergen and
+    // `git rev-parse` both search upward from the crate dir, so the nearest
+    // repository they find is then guaranteed to be ours and not an enclosing
+    // one. Release tags are `v<semver>`, hence the `v[0-9]*` match — without it
+    // describe never matches a tag and degrades to a bare commit hash.
+    let in_repo = repo_root().is_some_and(|root| root.join(".git").exists());
 
-    let gitcl = GitclBuilder::default()
-        .describe(true, true, Some("[0-9]*"))
-        .build()?;
+    let git_ok = in_repo && {
+        emit_git_rerun_triggers();
 
-    let gitcl_res = Emitter::default()
-        .idempotent()
-        .fail_on_error()
-        .add_instructions(&gitcl)
-        .and_then(|emitter| emitter.emit());
+        let gitcl_res = GitclBuilder::default()
+            .describe(true, true, Some("v[0-9]*"))
+            .build()
+            .map_err(anyhow::Error::from)
+            .and_then(|gitcl| {
+                Emitter::default()
+                    .idempotent()
+                    .fail_on_error()
+                    .add_instructions(&gitcl)?
+                    .emit()
+            });
 
-    if let Err(e) = gitcl_res {
-        eprintln!("Warning: Failed to generate git information: {e:?}");
-        eprintln!("Using fallback version information");
-        println!("cargo:rustc-env=VERGEN_GIT_DESCRIBE=unknown");
+        if let Err(e) = &gitcl_res {
+            eprintln!("Warning: Failed to generate git information: {e:?}");
+            eprintln!("Using fallback version information");
+        }
+        gitcl_res.is_ok()
+    };
+
+    if !git_ok {
+        // Tarball build (or broken repo): stamp the package version rather
+        // than letting the binary claim a commit it was not built from.
+        println!(
+            "cargo:rustc-env=VERGEN_GIT_DESCRIBE=v{}",
+            env::var("CARGO_PKG_VERSION")?
+        );
     }
 
     let now = match env::var("SOURCE_DATE_EPOCH") {
