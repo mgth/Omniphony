@@ -21,6 +21,7 @@ use crate::host::commands::engine;
 use crate::i18n::t;
 use crate::model::app_state::RoomRatio;
 use crate::ui::{help, theme, widgets};
+use crate::view::gizmos::EditMode;
 
 // ---------------------------------------------------------------------------
 // The panel
@@ -174,6 +175,17 @@ impl StudioSpike {
                 self.channel_polar_table(ui, &name, position, &room, scale_m, editable)
             }
         }
+        // The speaker editor's "3D Edit" toggle, which the web had on this
+        // editor too: a virtual channel is dragged with the same gizmo. A
+        // direct channel sits where its speaker is and has nothing to arm.
+        self.gizmo_button(
+            ui,
+            match mode {
+                CoordMode::Cartesian => EditMode::Cartesian,
+                CoordMode::Polar => EditMode::Polar,
+            },
+            !editable,
+        );
     }
 
     /// The output speaker a direct channel actually reaches: the renderer's

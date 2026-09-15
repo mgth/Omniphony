@@ -18,6 +18,7 @@ use crate::render::{
     FrameData, LineVertex, MeshInstance, MeshItem, MeshKind, hex_linear, with_alpha,
 };
 
+use crate::host::channels::{ChannelCatalog, effective_channels};
 use crate::model::app_state::{AppState, RoomRatio};
 
 use super::Label;
@@ -51,8 +52,12 @@ pub struct GizmoState {
 pub enum GizmoTarget {
     /// A speaker, by its index in the layout.
     Speaker(usize),
-    /// A virtual bed channel, by name.
-    Channel(String),
+    /// A virtual bed channel: the scene object standing for it, by id — the
+    /// bed's own marker, or a stream source named after the channel while a
+    /// stream plays — and the canonical channel name the bed is edited by.
+    /// The pin that holds the object under the pointer is keyed by the id,
+    /// the edit by the name.
+    Channel { id: String, name: String },
 }
 
 /// A scene position back to the normalised ADM triple the layout is written
@@ -133,26 +138,28 @@ pub fn snap_to_nodes(value: f64, nodes: &[f64]) -> f64 {
         .unwrap_or(value)
 }
 
-/// `channelPlacement(name) === 'virtual'`: the channel is spatialised into an
-/// object rather than sent straight to a speaker, which is what makes its
-/// position something the editor owns.
-pub fn is_virtual_channel(app: &AppState, name: &str) -> bool {
-    let Some(speakers) = app
-        .live_options
-        .virtual_bed
-        .as_ref()
-        .and_then(|bed| bed.get("speakers"))
-        .and_then(serde_json::Value::as_array)
-    else {
-        return false;
-    };
-    speakers.iter().any(|entry| {
-        entry.get("name").and_then(serde_json::Value::as_str) == Some(name)
-            && entry
-                .get("spatialize")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true)
-    })
+/// The channel a selected object stands for, when its position is the
+/// editor's to move: the source's name resolved to its canonical channel,
+/// and that channel spatialised into an object rather than sent straight to
+/// a speaker (`channelPlacement(name) === 'virtual'`). Decided by the same
+/// `effective_channels` the channel editor reads, so the gizmo appears
+/// exactly when the editor's "3D Edit" toggle is enabled — and not from the
+/// renderer's published bed, which is `null` until one is configured.
+pub fn virtual_channel_of(
+    catalog: &ChannelCatalog,
+    app: &AppState,
+    object_id: &str,
+) -> Option<String> {
+    let name = app
+        .sources
+        .get(object_id)
+        .and_then(|s| s.name.clone())
+        .unwrap_or_else(|| object_id.to_owned());
+    let canonical = catalog.canonical(app, &name)?;
+    effective_channels(catalog, app)
+        .into_iter()
+        .find(|c| c.name == canonical && c.spatialize)
+        .map(|c| c.name)
 }
 
 /// `cartesianToSpherical`: azimuth and elevation in degrees, and the distance.
@@ -367,6 +374,38 @@ pub fn emit_cartesian(p: Vec3, cam_pos: Vec3, frame: &mut FrameData) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::app_state::SourcePosition;
+
+    /// The gizmo's channel is the editor's channel: a source named after a
+    /// bed channel resolves to it exactly when the editor holds it virtual,
+    /// and anything else resolves to nothing.
+    #[test]
+    fn the_gizmo_follows_the_editor_on_what_a_virtual_channel_is() {
+        let mut app = AppState::default();
+        // Nothing published: the catalogue falls back to the canonical bed.
+        let mut catalog = ChannelCatalog::default();
+        catalog.refresh(&app);
+        app.sources.insert(
+            "L".to_owned(),
+            SourcePosition {
+                name: Some("L".to_owned()),
+                ..Default::default()
+            },
+        );
+        app.sources
+            .insert("obj-42".to_owned(), SourcePosition::default());
+        let editor_says = effective_channels(&catalog, &app)
+            .into_iter()
+            .find(|c| c.name == "L")
+            .map(|c| c.spatialize);
+        assert!(editor_says.is_some(), "the fallback bed has no L");
+        assert_eq!(
+            virtual_channel_of(&catalog, &app, "L"),
+            editor_says.filter(|v| *v).map(|_| "L".to_owned())
+        );
+        assert_eq!(virtual_channel_of(&catalog, &app, "obj-42"), None);
+        assert_eq!(virtual_channel_of(&catalog, &app, "nope"), None);
+    }
 
     /// Scene depth is ADM y, scene up is ADM z and scene right is ADM x, and
     /// a negative axis lands on the same index as its positive.

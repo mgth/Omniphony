@@ -230,7 +230,7 @@ impl StudioSpike {
         }
         // A channel is sent per tick: its position lives in the renderer's bed,
         // which would put it back where it was between ticks otherwise.
-        let send = matches!(target, GizmoTarget::Channel(_));
+        let send = matches!(target, GizmoTarget::Channel { .. });
         self.commit_gizmo_position(from_spherical(az, el, next), send);
         true
     }
@@ -282,15 +282,12 @@ impl StudioSpike {
         };
         let room = self.host.read().app.room_ratio.clone();
         let adm = gizmos::scene_to_normalized(scene, &room);
-        // A speaker lives in the layout's cube, and the conversion above
-        // clamps to it. Anchoring and pinning the clamped position holds the
-        // cube at the wall while the pointer is beyond it, instead of letting
-        // it out and snapping it back on release. A channel is not clamped
-        // here: its position is polar and the renderer's bed owns its range.
-        let scene = match target {
-            GizmoTarget::Speaker(_) => clamped_to_layout(scene, &room),
-            GizmoTarget::Channel(_) => scene,
-        };
+        // Both targets live in the layout's cube: the conversion above clamps
+        // to it, and so does the bed's `polar_to_adm` for a channel. Anchoring
+        // and pinning the clamped position holds the target at the wall while
+        // the pointer is beyond it, instead of letting it out and snapping it
+        // back on release.
+        let scene = clamped_to_layout(scene, &room);
         // The frame's own copy moves at once, so the gizmo tracks the pointer
         // rather than the next state broadcast.
         self.gizmo_target = Some((target.clone(), scene));
@@ -309,12 +306,13 @@ impl StudioSpike {
                     self.edit_speaker_position(index as i32, adm);
                 }
             }
-            GizmoTarget::Channel(name) => {
+            GizmoTarget::Channel { id, name } => {
                 // Hold the object here until the renderer has had time to echo
                 // the new bed back: 600 ms, as in the web, and no expiry at all
-                // while the pointer is still down.
+                // while the pointer is still down. Keyed by the object's id,
+                // which is what the frame draws by; the bed is edited by name.
                 self.channel_edit_pin = Some((
-                    name.clone(),
+                    id.clone(),
                     scene,
                     send.then(|| Instant::now() + Duration::from_millis(600)),
                 ));

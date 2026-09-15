@@ -248,7 +248,14 @@ impl StudioSpike {
                     self.polar_table(ui, id, speaker, scale_m);
                 }
             }
-            self.gizmo_button(ui, mode, frozen);
+            self.gizmo_button(
+                ui,
+                match mode {
+                    CoordMode::Cartesian => EditMode::Cartesian,
+                    CoordMode::Polar => EditMode::Polar,
+                },
+                frozen,
+            );
 
             // Gain is realtime, like the master and the list rows.
             let gain = {
@@ -339,14 +346,11 @@ impl StudioSpike {
         });
     }
 
-    /// The editor's "3D Edit" toggle: it arms the gizmo for the mode being
-    /// edited, and only one mode is ever armed — two sets of handles on one
-    /// speaker would be two answers to the same question.
-    fn gizmo_button(&mut self, ui: &mut Ui, mode: CoordMode, frozen: bool) {
-        let wanted = match mode {
-            CoordMode::Cartesian => EditMode::Cartesian,
-            CoordMode::Polar => EditMode::Polar,
-        };
+    /// The "3D Edit" toggle of the speaker and channel editors: it arms the
+    /// gizmo for the mode being edited, and only one mode is ever armed — two
+    /// sets of handles on one target would be two answers to the same
+    /// question.
+    pub(crate) fn gizmo_button(&mut self, ui: &mut Ui, wanted: EditMode, frozen: bool) {
         let gizmo = self.settings.gizmo;
         let armed = gizmo.mode == wanted
             && match wanted {
