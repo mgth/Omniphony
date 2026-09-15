@@ -37,7 +37,8 @@ fn paint_chevron(ui: &Ui, rect: egui::Rect, openness: f32) {
     ));
 }
 
-/// What a section's title opens, built only when it is clicked.
+/// What a section's "i" opens, built only when the glyph is hovered or
+/// clicked.
 #[derive(Clone, Copy)]
 enum Explains<'a> {
     /// A `<prefix>.infoTitle` / `<prefix>.infoBody` pair.
@@ -55,6 +56,12 @@ pub struct Section<'a> {
     /// A two-state button at the header's right end (`.panel-toggle-btn`),
     /// and what it says on hover. See [`Section::header_toggled`].
     header_toggle: Option<(bool, &'a str)>,
+}
+
+/// Where the header row's rect of the last frame is kept, so the "i" can be
+/// shown for a pointer anywhere on the row.
+fn row_id(section: &str) -> egui::Id {
+    egui::Id::new(("section-header-row", section))
 }
 
 /// Where a header toggle leaves its click for the caller to pick up.
@@ -92,16 +99,17 @@ impl<'a> Section<'a> {
     }
 
     /// A `help.*` string explaining the whole section, opened in the centred
-    /// overlay under the section's own title.
+    /// overlay under the section's own title, from the header's "i".
     pub fn help(mut self, key: &'a str) -> Self {
         self.explains = Some(Explains::Help(key));
         self
     }
 
-    /// The prefix of an `<id>.infoTitle` / `<id>.infoBody` pair. The web
-    /// promotes the title itself into the trigger — a dotted underline and a
-    /// pointer — rather than hanging an "i" button beside it, so the thing you
-    /// click is the thing you are asking about.
+    /// The prefix of an `<id>.infoTitle` / `<id>.infoBody` pair, opened from
+    /// the header's "i". The web made the title itself the trigger; here the
+    /// title opens the section, as a title is expected to, and the "i" beside
+    /// it only shows while the pointer is over the header — or always, on a
+    /// touch screen, where nothing hovers.
     pub fn info(mut self, key: &'a str) -> Self {
         self.explains = Some(Explains::Info(key));
         self
@@ -150,11 +158,27 @@ impl<'a> Section<'a> {
                     .selectable(false),
             );
             if let Some(explains) = self.explains {
-                // The title is the trigger: the thing you click is the thing
-                // you are asking about.
-                super::help::overlay_trigger(ui, &title, || match explains {
+                // The "i" beside the title: shown while the header is under
+                // the pointer (last frame's row, so the whole row counts, not
+                // just the title), always on a touch screen. Faded in, and
+                // its space always taken.
+                let row = ui.ctx().data(|d| d.get_temp::<egui::Rect>(row_id(self.id)));
+                let (hovered_row, touch) = ui.ctx().input(|i| {
+                    let over = i
+                        .pointer
+                        .latest_pos()
+                        .is_some_and(|p| row.is_some_and(|r| r.contains(p)));
+                    (over, i.has_touch_screen())
+                });
+                let visibility = ui.ctx().animate_bool_with_time(
+                    id.with("info-glyph"),
+                    hovered_row || touch,
+                    0.12,
+                );
+                let section_title = &self.title;
+                super::help::info_glyph(ui, visibility, || match explains {
                     Explains::Info(prefix) => super::help::Overlay::info(prefix),
-                    Explains::Help(key) => super::help::Overlay::titled(&self.title, key),
+                    Explains::Help(key) => super::help::Overlay::titled(section_title, key),
                 });
             }
             if self.summary.is_some() || self.header_toggle.is_some() {
@@ -189,15 +213,12 @@ impl<'a> Section<'a> {
                     );
                 });
             }
-            // A title that opens a modal is the modal's trigger, not the
-            // section's: the chevron keeps the disclosure to itself, or one
-            // click would both explain the section and close it.
-            if self.explains.is_some() {
-                chevron
-            } else {
-                chevron.union(title)
-            }
+            // The title opens the section, as a title is expected to; the
+            // help has its own glyph.
+            chevron.union(title)
         });
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(row_id(self.id), header.response.rect));
         if header.inner.clicked() {
             state.toggle(ui);
         }

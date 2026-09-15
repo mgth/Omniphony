@@ -1,10 +1,12 @@
 //! Help, one at a time (`controls/inline-help.js`, `modals.js`).
 //!
-//! Two kinds, one gesture. A parameter's help opens in place, in a small
-//! framed card under its row; a panel's help — what a whole section is for —
-//! opens centred over everything, in the help overlay. Either way the thing
-//! you click is the name of what you are asking about, marked by a dotted
-//! underline: no "?" beside every label.
+//! Two kinds. A parameter's help opens in place, in a small framed card under
+//! its row, and the thing you click is the name of what you are asking about,
+//! marked by a dotted underline: no "?" beside every label. A panel's help —
+//! what a whole section is for — opens centred over everything, in the help
+//! overlay, from a small "i" beside the section's title that only shows while
+//! the pointer is over the header (always, on a touch screen): a title is for
+//! opening the section, so it cannot also be the help's trigger.
 //!
 //! Only one help is ever open. Opening a card closes the one before it,
 //! opening the overlay closes any card, and a click anywhere but on the open
@@ -224,6 +226,97 @@ pub fn overlay_title(
     response
 }
 
+/// How long an excerpt may run before it is cut.
+const EXCERPT_MAX: usize = 160;
+
+/// A break the markup asked for, kept apart from the words until the cut.
+const BREAK: char = '\u{1}';
+
+/// The first sentence of a help body, as plain text, for a tooltip: the tags
+/// dropped (`<br>`, `<p>` and `<li>` end the excerpt as a sentence would),
+/// whitespace collapsed, and the rest cut at the first sentence end or at
+/// `EXCERPT_MAX` characters, with an ellipsis when something was left out.
+pub fn excerpt(body: &str) -> String {
+    let mut text = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(open) = rest.find('<') {
+        text.push_str(&rest[..open]);
+        let Some(close) = rest[open..].find('>') else {
+            rest = &rest[open..];
+            break;
+        };
+        let tag = rest[open + 1..open + close].trim().to_ascii_lowercase();
+        if ["br", "p", "/p", "li"].iter().any(|t| tag.starts_with(t)) {
+            text.push(' ');
+            text.push(BREAK);
+        }
+        rest = &rest[open + close + 1..];
+    }
+    text.push_str(rest);
+    let mut out = String::new();
+    let mut cut = false;
+    for word in text.split_whitespace() {
+        if word.starts_with(BREAK) {
+            cut = !out.is_empty();
+            break;
+        }
+        let next_len = out.chars().count() + word.chars().count() + usize::from(!out.is_empty());
+        if next_len > EXCERPT_MAX {
+            cut = true;
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+        if word.ends_with(['.', '!', '?']) {
+            break;
+        }
+    }
+    if cut {
+        out.push('…');
+    }
+    out
+}
+
+/// A small "i" that opens `overlay`: a ring with the letter in it, drawn at
+/// `visibility` (0 = not there, 1 = fully drawn — the caller animates it),
+/// accent-coloured under the pointer, with the help's first sentence as its
+/// tooltip. The space is taken whatever the visibility, so a header does not
+/// shift when the glyph fades in. Returns the glyph's response; a click opens
+/// the overlay here.
+pub fn info_glyph(ui: &mut Ui, visibility: f32, overlay: impl Fn() -> Overlay) -> Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::click());
+    if visibility <= 0.0 {
+        return response;
+    }
+    let hovered = response.hovered();
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let colour = if hovered {
+        theme::ACCENT
+    } else {
+        theme::TEXT_DIM
+    }
+    .gamma_multiply(visibility);
+    let painter = ui.painter();
+    let centre = rect.center();
+    painter.circle_stroke(centre, 5.5, egui::Stroke::new(1.0, colour));
+    painter.text(
+        centre,
+        egui::Align2::CENTER_CENTER,
+        "i",
+        egui::FontId::proportional(9.0),
+        colour,
+    );
+    if response.clicked() {
+        claim(ui.ctx());
+        open_overlay(ui.ctx(), overlay());
+    }
+    response.on_hover_text(excerpt(&overlay().body))
+}
+
 /// Make an existing, clickable response the trigger of `overlay`, which is
 /// only built once clicked.
 pub fn overlay_trigger(ui: &Ui, response: &Response, overlay: impl FnOnce() -> Overlay) {
@@ -301,6 +394,30 @@ pub fn end_frame(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tooltip gets the first sentence, as plain text, and knows when it
+    /// has left something out.
+    #[test]
+    fn the_excerpt_is_the_first_sentence_without_its_markup() {
+        assert_eq!(
+            excerpt("The <strong>room</strong> in metres. Then the rest.<br>And more."),
+            "The room in metres."
+        );
+        assert_eq!(
+            excerpt("<b>Term:</b> what it does<br>Next term: more"),
+            "Term: what it does…"
+        );
+        assert_eq!(excerpt("  spaced   out\n words "), "spaced out words");
+        assert_eq!(excerpt(""), "");
+        let long = "word ".repeat(80);
+        let cut = excerpt(&long);
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(
+            cut.chars().count() <= EXCERPT_MAX + 1,
+            "{}",
+            cut.chars().count()
+        );
+    }
 
     #[test]
     fn a_key_without_a_translation_is_no_help() {
