@@ -52,8 +52,12 @@ pub struct GizmoState {
 pub enum GizmoTarget {
     /// A speaker, by its index in the layout.
     Speaker(usize),
-    /// A virtual bed channel, by name.
-    Channel(String),
+    /// A virtual bed channel: the scene object standing for it, by id — the
+    /// bed's own marker, or a stream source named after the channel while a
+    /// stream plays — and the canonical channel name the bed is edited by.
+    /// The pin that holds the object under the pointer is keyed by the id,
+    /// the edit by the name.
+    Channel { id: String, name: String },
 }
 
 /// A scene position back to the normalised ADM triple the layout is written

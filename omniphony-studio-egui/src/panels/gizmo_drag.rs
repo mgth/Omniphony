@@ -230,7 +230,7 @@ impl StudioSpike {
         }
         // A channel is sent per tick: its position lives in the renderer's bed,
         // which would put it back where it was between ticks otherwise.
-        let send = matches!(target, GizmoTarget::Channel(_));
+        let send = matches!(target, GizmoTarget::Channel { .. });
         self.commit_gizmo_position(from_spherical(az, el, next), send);
         true
     }
@@ -306,12 +306,13 @@ impl StudioSpike {
                     self.edit_speaker_position(index as i32, adm);
                 }
             }
-            GizmoTarget::Channel(name) => {
+            GizmoTarget::Channel { id, name } => {
                 // Hold the object here until the renderer has had time to echo
                 // the new bed back: 600 ms, as in the web, and no expiry at all
-                // while the pointer is still down.
+                // while the pointer is still down. Keyed by the object's id,
+                // which is what the frame draws by; the bed is edited by name.
                 self.channel_edit_pin = Some((
-                    name.clone(),
+                    id.clone(),
                     scene,
                     send.then(|| Instant::now() + Duration::from_millis(600)),
                 ));

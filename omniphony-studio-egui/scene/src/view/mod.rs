@@ -463,10 +463,13 @@ pub fn build_frame(
             .map(|sp| (gizmos::GizmoTarget::Speaker(index), sp.scene_pos)),
         None => selection.object.as_deref().and_then(|id| {
             let name = gizmos::virtual_channel_of(&live.channels, &live.app, id)?;
-            objects
-                .iter()
-                .find(|o| o.id == id)
-                .map(|o| (gizmos::GizmoTarget::Channel(name), o.scene_pos))
+            objects.iter().find(|o| o.id == id).map(|o| {
+                let target = gizmos::GizmoTarget::Channel {
+                    id: id.to_owned(),
+                    name,
+                };
+                (target, o.scene_pos)
+            })
         }),
     };
     if let Some((_, target)) = gizmo_target.clone() {
