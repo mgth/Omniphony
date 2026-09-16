@@ -464,7 +464,9 @@ impl StudioSpike {
             .sources
             .iter()
             .map(|(id, src)| {
-                let (base, _semantic) = view::objects::base_color(id, src.name.as_deref());
+                // The stored tag, as the scene reads it: a name is not a tag,
+                // and one starting with an A or a B is not a semantic colour.
+                let (base, semantic) = view::objects::base_color(id, src.source_tag.as_deref());
                 let name = view::objects::display_name(id, src.name.as_deref());
                 let (strip_icon, strip) = object_badge(id, &name, src.kind.as_deref());
                 let direct = direct_speaker(src.fixed, src.direct_speaker_index, speakers.len())
@@ -510,7 +512,9 @@ impl StudioSpike {
                                 .map(|bands| band_contributions(bands, spk))
                         })
                         .unwrap_or_default(),
-                    colorized: self.settings.object_colors_enabled,
+                    // `applyObjectItemColor`: the switch, or a semantic A/B
+                    // colour, which shows regardless.
+                    colorized: self.settings.object_colors_enabled || semantic,
                     details: show_details.then(|| {
                         let (coords, target, target_hover) = match direct {
                             Some(speaker) => (

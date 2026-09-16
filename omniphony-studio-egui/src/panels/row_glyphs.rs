@@ -285,6 +285,21 @@ pub fn band_bars(ui: &mut Ui, cutoffs: &[f64], gains: &[f64]) {
 mod tests {
     use super::*;
 
+    /// `color-mix` interpolates premultiplied: an opaque accent at 34 % over
+    /// the badge's `rgba(0, 0, 0, 0.55)` keeps 34 % of its light and lands
+    /// at 70 % opacity, which is what the web's coloured badge shows.
+    #[test]
+    fn the_badge_tint_is_a_premultiplied_mix() {
+        use super::{STRIP_BG, mix};
+        let red = egui::Color32::from_rgb(255, 0, 0);
+        assert_eq!(
+            mix(red, 0.34, STRIP_BG),
+            egui::Color32::from_rgba_premultiplied(87, 0, 0, 179)
+        );
+        assert_eq!(mix(red, 1.0, STRIP_BG), red);
+        assert_eq!(mix(red, 0.0, STRIP_BG), STRIP_BG);
+    }
+
     #[test]
     fn the_glyph_says_which_of_the_four_shapes_the_band_limits_describe() {
         assert_eq!(Filter::of(None, None), Filter::Full);
@@ -335,6 +350,10 @@ const STRIP_MOVING_RING: Color32 = Color32::from_rgba_premultiplied(42, 78, 86, 
 /// The badge while the renderer reports a clip on this speaker.
 const STRIP_CLIP: Color32 = Color32::from_rgba_premultiplied(217, 50, 41, 217);
 const STRIP_TEXT: Color32 = Color32::from_rgb(0xd9, 0xec, 0xff);
+/// `#edf5ff`: the code on a badge that carries an object's colour.
+const STRIP_TEXT_ACCENTED: Color32 = Color32::from_rgb(0xed, 0xf5, 0xff);
+/// What the coloured badge's inset ring is mixed toward, `rgba(255, 255, 255, 0.12)`.
+const STRIP_RING_BASE: Color32 = Color32::from_rgba_premultiplied(31, 31, 31, 31);
 
 /// The synthesized object kinds the badge shows as an icon instead of a code
 /// (`applyObjectIdentity`): `▲` a height-upmix object, `◇` a phantom.
@@ -374,11 +393,24 @@ pub fn id_strip(
     accent: Option<Color32>,
     state: StripState,
 ) -> Vec<egui::Shape> {
-    let mut shapes = Vec::with_capacity(2);
+    let mut shapes = Vec::with_capacity(3);
+    // `.object-colorized`: the accent tints the badge and rings it, at rest
+    // and while moving, with the web's own shares.
     let (fill, ring) = match state {
-        StripState::Rest => (accent.map_or(STRIP_BG, |a| colour_or(a, STRIP_BG)), None),
-        StripState::Moving => (STRIP_MOVING, Some(STRIP_MOVING_RING)),
+        StripState::Rest => (
+            accent.map_or(STRIP_BG, |a| mix(a, 0.34, STRIP_BG)),
+            accent.map(|a| mix(a, 0.52, STRIP_RING_BASE)),
+        ),
+        StripState::Moving => (
+            accent.map_or(STRIP_MOVING, |a| mix(a, 0.55, STRIP_MOVING)),
+            Some(accent.map_or(STRIP_MOVING_RING, |a| mix(a, 0.64, STRIP_MOVING_RING))),
+        ),
         StripState::Clipping => (STRIP_CLIP, None),
+    };
+    let text = if accent.is_some() {
+        STRIP_TEXT_ACCENTED
+    } else {
+        STRIP_TEXT
     };
     shapes.push(egui::Shape::rect_filled(rect, 6.0, fill));
     if let Some(ring) = ring {
@@ -393,7 +425,7 @@ pub fn id_strip(
     // the web's `.object-type-icon` does; it never rotates.
     if let Some(icon) = icon {
         let (glyph, colour) = match icon {
-            BadgeIcon::Height => ("▲", STRIP_TEXT),
+            BadgeIcon::Height => ("▲", text),
             BadgeIcon::Phantom => ("◇", PHANTOM_ICON),
         };
         let galley =
@@ -416,20 +448,17 @@ pub fn id_strip(
         .map(f32::from)
         .find(|size| {
             ui.fonts_mut(|f| {
-                f.layout_no_wrap(
-                    label.to_owned(),
-                    egui::FontId::proportional(*size),
-                    STRIP_TEXT,
-                )
-                .size()
-                .x <= room
+                f.layout_no_wrap(label.to_owned(), egui::FontId::proportional(*size), text)
+                    .size()
+                    .x
+                    <= room
             })
         })
         .unwrap_or(STRIP_TEXT_MIN);
     let mut job = egui::text::LayoutJob::simple_singleline(
         label.to_owned(),
         egui::FontId::proportional(size),
-        STRIP_TEXT,
+        text,
     );
     job.wrap = egui::text::TextWrapping {
         max_width: room,
@@ -447,21 +476,22 @@ pub fn id_strip(
         rect.center().y + size.x * 0.5,
     );
     shapes.push(egui::Shape::Text(
-        egui::epaint::TextShape::new(anchor, galley, STRIP_TEXT)
-            .with_angle(-std::f32::consts::FRAC_PI_2),
+        egui::epaint::TextShape::new(anchor, galley, text).with_angle(-std::f32::consts::FRAC_PI_2),
     ));
     shapes
 }
 
-/// A coloured object keeps its own accent under the badge, mixed toward the
-/// neutral background exactly as `color-mix(… 34%, rgba(0,0,0,0.55))`.
-fn colour_or(accent: Color32, base: Color32) -> Color32 {
-    let mix = |a: u8, b: u8| ((f32::from(a) * 0.34) + (f32::from(b) * 0.66)).round() as u8;
+/// CSS `color-mix(in srgb, accent <share>, base)`: the two are interpolated
+/// premultiplied, as the spec has it, so an opaque accent over a translucent
+/// base comes out both tinted and more opaque.
+fn mix(accent: Color32, share: f32, base: Color32) -> Color32 {
+    let channel =
+        |a: u8, b: u8| (f32::from(a) * share + f32::from(b) * (1.0 - share)).round() as u8;
     Color32::from_rgba_premultiplied(
-        mix(accent.r(), base.r()),
-        mix(accent.g(), base.g()),
-        mix(accent.b(), base.b()),
-        mix(accent.a(), base.a()),
+        channel(accent.r(), base.r()),
+        channel(accent.g(), base.g()),
+        channel(accent.b(), base.b()),
+        channel(accent.a(), base.a()),
     )
 }
 
