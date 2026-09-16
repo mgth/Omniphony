@@ -2630,7 +2630,7 @@ version = "0.1.0"
 
 [[package]]
 name = "omniphony-studio"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "env_logger",
  "flate2",
@@ -2655,7 +2655,7 @@ dependencies = [
 
 [[package]]
 name = "omniphony-studio-core"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "log",
