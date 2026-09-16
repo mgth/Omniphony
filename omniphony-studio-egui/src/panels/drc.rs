@@ -45,66 +45,65 @@ impl StudioSpike {
             (weight * 100.0).round(),
             if loudness { "ON" } else { "OFF" }
         );
-        Section::new("drcSection", "section.drc")
+        let mut section = Section::new("drcSection", "section.drc")
             .info("drc")
-            .summary(summary)
-            .show(ui, |ui| {
-                // The gauge only means something while the renderer is
-                // metering, so it follows that switch like the web does.
-                if metering {
-                    drc_gauge(ui, gain);
-                }
-
-                // The mode list is the renderer's, plus whatever it currently
-                // reports, so an unknown mode is never silently dropped.
-                let mut options = modes.clone();
-                if !options.iter().any(|m| *m == mode) {
-                    options.push(mode.clone());
-                }
-                if options.is_empty() {
-                    options.push("Off".to_owned());
-                }
-                let mut chosen = mode.clone();
-                widgets::label_row_help(ui, t("input.drc"), "help.drc.mode", |ui| {
-                    widgets::bounded_combo(ui, 120.0, |ui, w| {
-                        egui::ComboBox::from_id_salt("drc-mode")
-                            .selected_text(&mode)
-                            .width(w)
-                            .truncate()
-                            .show_ui(ui, |ui| {
-                                for option in &options {
-                                    ui.selectable_value(&mut chosen, option.clone(), option);
-                                }
-                            })
-                    });
+            .summary(summary);
+        // The gauge sits in the header, as `#drcGaugeRow` does, so it stays
+        // in view with the section folded. It only means something while the
+        // renderer is metering, so it follows that switch like the web does.
+        if metering {
+            section = section.header_widget(move |ui| drc_gauge(ui, gain));
+        }
+        section.show(ui, |ui| {
+            // The mode list is the renderer's, plus whatever it currently
+            // reports, so an unknown mode is never silently dropped.
+            let mut options = modes.clone();
+            if !options.iter().any(|m| *m == mode) {
+                options.push(mode.clone());
+            }
+            if options.is_empty() {
+                options.push("Off".to_owned());
+            }
+            let mut chosen = mode.clone();
+            widgets::label_row_help(ui, t("input.drc"), "help.drc.mode", |ui| {
+                widgets::bounded_combo(ui, 120.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("drc-mode")
+                        .selected_text(&mode)
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for option in &options {
+                                ui.selectable_value(&mut chosen, option.clone(), option);
+                            }
+                        })
                 });
-                if chosen != mode {
-                    engine::control_drc_mode(&self.host, chosen);
-                }
-
-                let mut percent = (weight * 100.0).round();
-                if widgets::value_slider_help(
-                    ui,
-                    t("input.drc_weight"),
-                    "help.drc.weight",
-                    &mut percent,
-                    0.0..=100.0,
-                    1.0,
-                    |v| format!("{v:.0}%"),
-                ) {
-                    engine::control_drc_weight(&self.host, (percent / 100.0) as f32);
-                }
-
-                ui.separator();
-                let mut on = loudness;
-                if widgets::switch_row_help(ui, t("section.loudness"), "help.drc.loudness", &mut on)
-                {
-                    gain::control_loudness(&self.host, i32::from(on));
-                }
-                for line in loudness_lines(source, gain) {
-                    widgets::note(ui, &line);
-                }
             });
+            if chosen != mode {
+                engine::control_drc_mode(&self.host, chosen);
+            }
+
+            let mut percent = (weight * 100.0).round();
+            if widgets::value_slider_help(
+                ui,
+                t("input.drc_weight"),
+                "help.drc.weight",
+                &mut percent,
+                0.0..=100.0,
+                1.0,
+                |v| format!("{v:.0}%"),
+            ) {
+                engine::control_drc_weight(&self.host, (percent / 100.0) as f32);
+            }
+
+            ui.separator();
+            let mut on = loudness;
+            if widgets::switch_row_help(ui, t("section.loudness"), "help.drc.loudness", &mut on) {
+                gain::control_loudness(&self.host, i32::from(on));
+            }
+            for line in loudness_lines(source, gain) {
+                widgets::note(ui, &line);
+            }
+        });
     }
 }
 
@@ -128,32 +127,41 @@ fn loudness_lines(source: Option<f64>, gain: Option<f64>) -> Vec<String> {
     ]
 }
 
-/// A right-anchored bar: the correction grows leftwards from unity.
+/// `linearToDb` with the web's floor: the reported gain in dB, -100 for
+/// silence or nonsense. `None` is a gauge nothing has been reported to yet,
+/// which the web leaves empty at "0.0 dB" rather than full at the floor.
+fn reading_db(gain: Option<f64>) -> Option<f64> {
+    gain.map(|g| {
+        let db = if g > 0.0 { 20.0 * g.log10() } else { -100.0 };
+        if db.is_finite() { db } else { -100.0 }
+    })
+}
+
+/// A right-anchored bar: the correction grows leftwards from unity. It shares
+/// the header with the summary (`flex: 1 1 auto; min-width: 60px`), so it
+/// takes a share of what is left of the row rather than all of it.
 fn drc_gauge(ui: &mut Ui, gain: Option<f64>) {
-    let db = match gain {
-        Some(g) if g > 0.0 => 20.0 * g.log10(),
-        _ => -100.0,
-    };
-    let db = if db.is_finite() { db } else { -100.0 };
+    let db = reading_db(gain);
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width().min(120.0), 6.0),
+            egui::vec2((ui.available_width() * 0.35).clamp(60.0, 120.0), 6.0),
             egui::Sense::hover(),
         );
         let painter = ui.painter();
         painter.rect_filled(rect, 3.0, Color32::from_rgb(0x22, 0x22, 0x22));
-        let fraction = ((db.abs() / 20.0).min(1.0)) as f32;
-        if fraction > 0.0 {
-            let mut fill = rect;
-            fill.set_left(rect.right() - rect.width() * fraction);
-            painter.rect_filled(fill, 3.0, gauge_colour(db));
+        // `maxDelta`: the bar is full at 20 dB either way.
+        if let Some(db) = db {
+            let fraction = ((db.abs() / 20.0).min(1.0)) as f32;
+            if fraction > 0.0 {
+                let mut fill = rect;
+                fill.set_left(rect.right() - rect.width() * fraction);
+                painter.rect_filled(fill, 3.0, gauge_colour(db));
+            }
         }
-        let text = if db <= -100.0 {
-            "0.0 dB".to_owned()
-        } else if db >= 0.0 {
-            format!("+{db:.1} dB")
-        } else {
-            format!("{db:.1} dB")
+        let text = match db {
+            None => "0.0 dB".to_owned(),
+            Some(db) if db >= 0.0 => format!("+{db:.1} dB"),
+            Some(db) => format!("{db:.1} dB"),
         };
         ui.label(
             RichText::new(text)
@@ -162,4 +170,20 @@ fn drc_gauge(ui: &mut Ui, gain: Option<f64>) {
                 .color(theme::TEXT_MUTED),
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reading_db;
+
+    /// `linearToDb`: unity is 0 dB, half is -6 dB, silence and nonsense are
+    /// the -100 dB floor, and a gauge nothing was reported to has no reading.
+    #[test]
+    fn the_gauge_reads_the_gain_in_db_with_the_webs_floor() {
+        assert_eq!(reading_db(None), None);
+        assert_eq!(reading_db(Some(1.0)), Some(0.0));
+        assert!((reading_db(Some(0.5)).unwrap() + 6.02).abs() < 0.01);
+        assert_eq!(reading_db(Some(0.0)), Some(-100.0));
+        assert_eq!(reading_db(Some(f64::NAN)), Some(-100.0));
+    }
 }
