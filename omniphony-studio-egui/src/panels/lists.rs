@@ -935,88 +935,115 @@ fn list_row(
     } else {
         egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 20))
     };
-    let response = egui::Frame::new()
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(theme::CONTROL_RADIUS)
-        .inner_margin(egui::Margin::symmetric(7, 4))
-        .show(ui, |ui| {
-            let mut strip_rect = egui::Rect::NOTHING;
-            ui.horizontal(|ui| {
-                // The badge spans the whole row, band bars included, so its
-                // shapes are reserved here and filled in once the content
-                // below has been laid out and its height is known.
-                let slot = ui.painter().add(egui::Shape::Noop);
-                let (reserved, _) =
-                    ui.allocate_exact_size(vec2(row_glyphs::STRIP_W, 0.0), Sense::hover());
-                let content = ui
-                    .vertical(|ui| {
-                        if let Some(details) = &row.details {
-                            details_line(ui, details);
-                        }
-                        row_line(ui, row, &mut action);
-                        if !row.band_gains.is_empty() {
-                            row_glyphs::band_bars(ui, cutoffs, &row.band_gains);
-                        }
-                    })
-                    .response
-                    .rect;
-                strip_rect = egui::Rect::from_min_max(
-                    egui::pos2(reserved.left(), content.top()),
-                    egui::pos2(reserved.right(), content.bottom()),
-                );
-                let state = if state.flash {
-                    row_glyphs::StripState::Clipping
-                } else if row.moving {
-                    row_glyphs::StripState::Moving
-                } else {
-                    row_glyphs::StripState::Rest
-                };
-                ui.painter().set(
-                    slot,
-                    egui::Shape::Vec(row_glyphs::id_strip(
-                        ui,
-                        strip_rect,
-                        &row.strip,
-                        row.strip_icon,
-                        row.colorized.then_some(row.colour),
-                        state,
-                    )),
-                );
-            });
-            // The badge is the drag handle, as in the web: the row itself stays
-            // a click target for selection.
-            // The id is spelled out rather than derived from the ui, because
-            // the three lists number their rows from zero independently and
-            // would otherwise ask egui for the same widget twice in one frame.
-            let strip = ui.interact(
-                strip_rect,
-                egui::Id::new(("row-strip", list, row.id.as_str())),
-                if row.speaker {
-                    Sense::click_and_drag()
-                } else {
-                    Sense::click()
-                },
-            );
-            if strip.drag_started() {
-                action = RowAction::DragStart;
-            }
-            if row.speaker {
-                if strip.hovered() && !strip.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                }
-                strip.on_hover_text("Drag to reorder");
-            } else if row.strip_icon.is_some() {
-                // The name hides behind the icon, so it shows on hover.
-                strip.on_hover_text(&row.label);
-            }
-        })
-        .response
-        .interact(Sense::click());
+    // The row is a click target for selection, as in the web. It is sensed by
+    // the ui the frame is drawn in, not by the frame: a ui's sense is
+    // registered beneath its children, so the M and S squares and the badge
+    // take their own clicks and the row gets the rest. The frame's response
+    // is created after the content, on top of it, and took the squares'
+    // clicks for the row.
+    let response = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(("row", list, row.id.as_str()))
+                .sense(Sense::click()),
+            |ui| {
+                egui::Frame::new()
+                    .fill(fill)
+                    .stroke(stroke)
+                    .corner_radius(theme::CONTROL_RADIUS)
+                    .inner_margin(egui::Margin::symmetric(7, 4))
+                    .show(ui, |ui| {
+                        row_body(ui, list, row, state, cutoffs, &mut action)
+                    });
+            },
+        )
+        .response;
     if response.clicked() && matches!(action, RowAction::None) {
         action = RowAction::Select;
     }
     (action, response.rect)
+}
+
+/// What a row's frame holds: the badge down its left, then the details line,
+/// the meter line and the band bars.
+fn row_body(
+    ui: &mut Ui,
+    list: &str,
+    row: &Row,
+    state: RowState,
+    cutoffs: &[f64],
+    action: &mut RowAction,
+) {
+    let mut strip_rect = egui::Rect::NOTHING;
+    ui.horizontal(|ui| {
+        // The badge spans the whole row, band bars included, so its shapes
+        // are reserved here and filled in once the content below has been
+        // laid out and its height is known.
+        let slot = ui.painter().add(egui::Shape::Noop);
+        let (reserved, _) = ui.allocate_exact_size(vec2(row_glyphs::STRIP_W, 0.0), Sense::hover());
+        let content = ui
+            .vertical(|ui| {
+                if let Some(details) = &row.details {
+                    details_line(ui, details);
+                }
+                row_line(ui, row, action);
+                if !row.band_gains.is_empty() {
+                    row_glyphs::band_bars(ui, cutoffs, &row.band_gains);
+                }
+            })
+            .response
+            .rect;
+        strip_rect = egui::Rect::from_min_max(
+            egui::pos2(reserved.left(), content.top()),
+            egui::pos2(reserved.right(), content.bottom()),
+        );
+        let state = if state.flash {
+            row_glyphs::StripState::Clipping
+        } else if row.moving {
+            row_glyphs::StripState::Moving
+        } else {
+            row_glyphs::StripState::Rest
+        };
+        ui.painter().set(
+            slot,
+            egui::Shape::Vec(row_glyphs::id_strip(
+                ui,
+                strip_rect,
+                &row.strip,
+                row.strip_icon,
+                row.colorized.then_some(row.colour),
+                state,
+            )),
+        );
+    });
+    // The badge is the drag handle, as in the web. It sits over the row, so a
+    // plain click on it is its own, and selects as one on the row does.
+    // The id is spelled out rather than derived from the ui, because the
+    // three lists number their rows from zero independently and would
+    // otherwise ask egui for the same widget twice in one frame.
+    let strip = ui.interact(
+        strip_rect,
+        egui::Id::new(("row-strip", list, row.id.as_str())),
+        if row.speaker {
+            Sense::click_and_drag()
+        } else {
+            Sense::click()
+        },
+    );
+    if strip.drag_started() {
+        *action = RowAction::DragStart;
+    } else if strip.clicked() {
+        *action = RowAction::Select;
+    }
+    if row.speaker {
+        if strip.hovered() && !strip.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+        strip.on_hover_text("Drag to reorder");
+    } else if row.strip_icon.is_some() {
+        // The name hides behind the icon, so it shows on hover.
+        strip.on_hover_text(&row.label);
+    }
 }
 
 /// `.object-head`: the coordinates on the left, cut short when the row is
@@ -1189,6 +1216,98 @@ mod tests {
         object_badge,
     };
     use crate::panels::row_glyphs::BadgeIcon;
+
+    /// The M and S squares of a row take their own clicks; a click anywhere
+    /// else on the row selects it. The row's click sense sits beneath its
+    /// squares: the frame's response, registered after the content, used to
+    /// sit over them and take every click for the row.
+    #[test]
+    fn the_squares_of_a_row_take_their_own_clicks() {
+        use super::{Row, RowAction, RowState, list_row};
+        let row = Row {
+            id: "3".to_owned(),
+            label: "Ls".to_owned(),
+            meter: None,
+            hold: None,
+            muted: false,
+            colour: egui::Color32::WHITE,
+            detail: None,
+            position: None,
+            spatialize: true,
+            speaker: true,
+            freq_low: None,
+            freq_high: None,
+            contribution: None,
+            band_gains: Vec::new(),
+            size: None,
+            moving: false,
+            strip: "Ls".to_owned(),
+            strip_icon: None,
+            colorized: false,
+            details: None,
+        };
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 100.0));
+        let mut run = |events: Vec<egui::Event>| {
+            let mut out = (RowAction::None, egui::Rect::NOTHING);
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    out = list_row(ui, "test", &row, RowState::default(), &[]);
+                },
+            );
+            // Nothing paints here; egui still wants its font atlas taken.
+            output.textures_delta.clear();
+            out
+        };
+        let rect = run(Vec::new()).1;
+        let name = |action: RowAction| match action {
+            RowAction::None => "none",
+            RowAction::Select => "select",
+            RowAction::Mute => "mute",
+            RowAction::Solo => "solo",
+            RowAction::DragStart => "drag",
+        };
+        // A click at `x`, halfway down the row: move there, press, release.
+        let mut click = |x: f32| {
+            let pos = egui::pos2(x, rect.center().y);
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            run(vec![egui::Event::PointerMoved(pos)]);
+            run(vec![button(true)]);
+            name(run(vec![button(false)]).0)
+        };
+        // Walk in from the right edge: the margin, S, M, then the meter.
+        let mut seen: Vec<&str> = Vec::new();
+        let mut x = rect.right() - 2.0;
+        while x > rect.center().x {
+            let hit = click(x);
+            if seen.last() != Some(&hit) {
+                seen.push(hit);
+            }
+            x -= 2.0;
+        }
+        let first = |hit: &str| {
+            seen.iter()
+                .position(|h| *h == hit)
+                .unwrap_or_else(|| panic!("no {hit} in {seen:?}"))
+        };
+        assert!(first("solo") < first("mute"), "{seen:?}");
+        let meter = seen.iter().rposition(|h| *h == "select").expect("a select");
+        assert!(first("mute") < meter, "{seen:?}");
+        assert!(
+            !seen.contains(&"none") && !seen.contains(&"drag"),
+            "{seen:?}"
+        );
+    }
 
     #[test]
     fn a_dragged_row_lands_below_the_centres_it_has_passed() {
