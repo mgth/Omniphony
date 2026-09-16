@@ -23,6 +23,8 @@ struct Row {
     meter: Option<Meter>,
     hold: Option<f64>,
     muted: bool,
+    /// The one entry left playing while every other is muted: its S is lit.
+    soloed: bool,
     colour: Color32,
     /// Extra note shown after the label (bed channels, gain).
     detail: Option<String>,
@@ -117,6 +119,14 @@ impl StudioSpike {
         if mode == crate::panels::renderer::OutputMode::Speaker {
             return;
         }
+        // A mute pattern that no longer matches the solo interpretation
+        // drops it, as the web does.
+        if let Some(solo) = self.ear_solo {
+            let muted = self.ear_muted();
+            if muted[solo] || !muted[1 - solo] {
+                self.ear_solo = None;
+            }
+        }
         let rows = self.ear_rows();
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
@@ -128,13 +138,16 @@ impl StudioSpike {
         );
         for (ear, row) in rows.iter().enumerate() {
             let (action, _) = list_row(ui, "ears", row, RowState::default(), &[]);
-            if matches!(action, RowAction::Mute) {
-                self.set_ear_muted(ear, !row.muted);
+            match action {
+                RowAction::Mute => self.toggle_ear_mute(ear, !row.muted),
+                RowAction::Solo => self.toggle_ear_solo(ear),
+                _ => {}
             }
         }
     }
 
-    fn ear_rows(&self) -> Vec<Row> {
+    /// The two ears' mutes, from the engine's `ears` state.
+    fn ear_muted(&self) -> [bool; 2] {
         let live = self.host.read();
         let muted = |ear: usize| {
             live.app
@@ -146,6 +159,12 @@ impl StudioSpike {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
         };
+        [muted(0), muted(1)]
+    }
+
+    fn ear_rows(&self) -> Vec<Row> {
+        let muted = self.ear_muted();
+        let live = self.host.read();
         ["L", "R"]
             .into_iter()
             .enumerate()
@@ -158,7 +177,8 @@ impl StudioSpike {
                     strip_icon: None,
                     meter: live.ear_levels.get(&key).cloned(),
                     hold: live.peak_hold(&format!("ear:{key}")),
-                    muted: muted(ear),
+                    muted: muted[ear],
+                    soloed: self.ear_solo == Some(ear),
                     colour: theme::TEXT,
                     detail: None,
                     position: None,
@@ -180,6 +200,29 @@ impl StudioSpike {
     /// `control_ear_mute`: the ear is the argument, not an index into a layout.
     fn set_ear_muted(&mut self, ear: usize, muted: bool) {
         crate::host::commands::binaural::control_ear_mute(&self.host, ear as u32, muted);
+    }
+
+    /// `toggleEarMute`: a manual mute drops the solo interpretation; the
+    /// buttons then just mirror the two raw mutes.
+    fn toggle_ear_mute(&mut self, ear: usize, muted: bool) {
+        self.ear_solo = None;
+        self.set_ear_muted(ear, muted);
+    }
+
+    /// `toggleEarSolo`: the other ear is muted and this one is not; pressed
+    /// again, the other ear comes back. Which of the two was pressed is
+    /// remembered here, as the web does: the two raw mutes alone cannot
+    /// tell a solo from a manual mute of the other ear.
+    fn toggle_ear_solo(&mut self, ear: usize) {
+        let other = 1 - ear;
+        if self.ear_solo == Some(ear) {
+            self.ear_solo = None;
+            self.set_ear_muted(other, false);
+        } else {
+            self.ear_solo = Some(ear);
+            self.set_ear_muted(ear, false);
+            self.set_ear_muted(other, true);
+        }
     }
 
     pub(crate) fn speakers_section(&mut self, ui: &mut Ui) {
@@ -434,6 +477,7 @@ impl StudioSpike {
                     meter: live.app.source_levels.get(id).cloned(),
                     hold: live.peak_hold(&format!("src:{id}")),
                     muted: live.app.object_mutes.get(id).is_some_and(|m| *m != 0),
+                    soloed: false,
                     colour: Color32::from_rgb(
                         (base[0].powf(1.0 / 2.2) * 255.0) as u8,
                         (base[1].powf(1.0 / 2.2) * 255.0) as u8,
@@ -537,6 +581,7 @@ impl StudioSpike {
                 _ => a.id.cmp(&b.id),
             },
         });
+        mark_solo(&mut rows);
         rows
     }
 
@@ -550,7 +595,8 @@ impl StudioSpike {
         let source_rms = selected
             .and_then(|id| live.app.source_levels.get(id))
             .map(|m| m.rms_dbfs);
-        live.selected_speakers()
+        let mut rows: Vec<Row> = live
+            .selected_speakers()
             .iter()
             .enumerate()
             .map(|(index, speaker)| {
@@ -564,6 +610,7 @@ impl StudioSpike {
                     meter: live.app.speaker_levels.get(&key).cloned(),
                     hold: live.peak_hold(&format!("spk:{key}")),
                     muted: live.app.speaker_mutes.get(&key).is_some_and(|m| *m != 0),
+                    soloed: false,
                     colour: theme::TEXT,
                     detail: gain
                         .filter(|g| (*g - 1.0).abs() > 1e-3)
@@ -588,7 +635,9 @@ impl StudioSpike {
                         .unwrap_or_default(),
                 }
             })
-            .collect()
+            .collect();
+        mark_solo(&mut rows);
+        rows
     }
 
     /// Apply what the row's controls asked for: selection, mute, solo.
@@ -901,6 +950,26 @@ fn autoscroll(ui: &mut Ui, pointer_y: f32) {
     }
 }
 
+/// `getSoloTarget`: with more than one entry and exactly one of them not
+/// muted, that one is soloed and its S is lit.
+fn mark_solo(rows: &mut [Row]) {
+    if rows.len() <= 1 {
+        return;
+    }
+    let mut unmuted = rows.iter().enumerate().filter(|(_, row)| !row.muted);
+    let Some((target, _)) = unmuted.next() else {
+        return;
+    };
+    if unmuted.next().is_some() {
+        return;
+    }
+    rows[target].soloed = true;
+}
+
+/// `.info-item.is-muted`: a muted row fades to this, squares and badge
+/// included. The web's `.is-dimmed` (0.45, the rows that are not the solo
+/// target) never shows on its own: those rows are muted, and this wins.
+const MUTED_OPACITY: f32 = 0.35;
 /// The level readout's column, the web's `8ch` of tabular monospace.
 const READOUT_W: f32 = 48.0;
 /// One `.toggle-btn` square.
@@ -947,6 +1016,9 @@ fn list_row(
                 .id_salt(("row", list, row.id.as_str()))
                 .sense(Sense::click()),
             |ui| {
+                if row.muted {
+                    ui.multiply_opacity(MUTED_OPACITY);
+                }
                 egui::Frame::new()
                     .fill(fill)
                     .stroke(stroke)
@@ -1159,7 +1231,7 @@ fn row_line(ui: &mut Ui, row: &Row, action: &mut RowAction) {
         // scroll area, which widens the next row's slack, and the list fans out
         // as it goes down.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if toggle_letter(ui, "S", false).clicked() {
+            if toggle_letter(ui, "S", row.soloed).clicked() {
                 *action = RowAction::Solo;
             }
             if toggle_letter(ui, "M", row.muted).clicked() {
@@ -1217,6 +1289,53 @@ mod tests {
     };
     use crate::panels::row_glyphs::BadgeIcon;
 
+    /// `getSoloTarget`: the one row left unmuted among several is the solo
+    /// target, lit. Two unmuted, or a single row, is no solo at all.
+    #[test]
+    fn the_only_unmuted_row_of_several_is_soloed() {
+        use super::{Row, mark_solo};
+        let row = |id: &str, muted: bool| Row {
+            id: id.to_owned(),
+            label: id.to_owned(),
+            meter: None,
+            hold: None,
+            muted,
+            soloed: false,
+            colour: egui::Color32::WHITE,
+            detail: None,
+            position: None,
+            spatialize: true,
+            speaker: true,
+            freq_low: None,
+            freq_high: None,
+            contribution: None,
+            band_gains: Vec::new(),
+            size: None,
+            moving: false,
+            strip: id.to_owned(),
+            strip_icon: None,
+            colorized: false,
+            details: None,
+        };
+        let soloed = |rows: &[Row]| -> Vec<bool> { rows.iter().map(|r| r.soloed).collect() };
+
+        let mut rows = vec![row("0", true), row("1", false), row("2", true)];
+        mark_solo(&mut rows);
+        assert_eq!(soloed(&rows), [false, true, false]);
+
+        let mut rows = vec![row("0", false), row("1", false), row("2", true)];
+        mark_solo(&mut rows);
+        assert_eq!(soloed(&rows), [false; 3]);
+
+        let mut rows = vec![row("0", false)];
+        mark_solo(&mut rows);
+        assert_eq!(soloed(&rows), [false]);
+
+        let mut rows = vec![row("0", true), row("1", true)];
+        mark_solo(&mut rows);
+        assert_eq!(soloed(&rows), [false; 2]);
+    }
+
     /// The M and S squares of a row take their own clicks; a click anywhere
     /// else on the row selects it. The row's click sense sits beneath its
     /// squares: the frame's response, registered after the content, used to
@@ -1230,6 +1349,7 @@ mod tests {
             meter: None,
             hold: None,
             muted: false,
+            soloed: false,
             colour: egui::Color32::WHITE,
             detail: None,
             position: None,
@@ -1248,7 +1368,7 @@ mod tests {
         };
         let ctx = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 100.0));
-        let mut run = |events: Vec<egui::Event>| {
+        let run = |events: Vec<egui::Event>| {
             let mut out = (RowAction::None, egui::Rect::NOTHING);
             let mut output = ctx.run_ui(
                 egui::RawInput {
@@ -1273,7 +1393,7 @@ mod tests {
             RowAction::DragStart => "drag",
         };
         // A click at `x`, halfway down the row: move there, press, release.
-        let mut click = |x: f32| {
+        let click = |x: f32| {
             let pos = egui::pos2(x, rect.center().y);
             let button = |pressed| egui::Event::PointerButton {
                 pos,
