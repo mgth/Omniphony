@@ -19,6 +19,7 @@ import {
   pushMpvOverlayTrailPrefs
 } from '../mpvOverlay.js';
 import { registerGradientEditor, setGradientEditorOnChange } from '../scene/gradient-editor.js';
+import { syncSceneEffectsBar } from '../controls/scene-effects-bar.js';
 import { invoke } from '@tauri-apps/api/core';
 
 const GAINTABLE_CONSUMER_SOLO = 'speakerSoloVolume';
@@ -353,9 +354,12 @@ export function setupTrailsAndDisplayListeners() {
 
   const globalEnergyHeatmapToggleEl = document.getElementById('globalEnergyHeatmapToggle');
   // The engine owns the overlay display prefs and republishes them on every
-  // change, including an mpv keybind Studio never sees. Re-render the switches
-  // from that state so the UI cannot claim something the overlay isn't doing.
+  // change, including an mpv keybind or another client Studio never sees.
+  // Re-render the switches from that state — the overlay's own switch first —
+  // so the UI cannot claim something the overlay isn't doing.
   onOverlayState(() => {
+    const mpvOverlayEl = document.getElementById('mpvOverlayToggle');
+    if (mpvOverlayEl) mpvOverlayEl.checked = getMpvOverlayStatus().enabled;
     const trailEl = document.getElementById('trailToggle');
     if (trailEl) trailEl.checked = app.trailsEnabled;
     const showObjectsEl = document.getElementById('showObjectsToggle');
@@ -368,6 +372,9 @@ export function setupTrailsAndDisplayListeners() {
     if (trailModeEl) trailModeEl.value = app.trailRenderMode;
     applyObjectsVisibility();
     refreshObjectEnergyHeatmapNow();
+    // Setting `checked` fires no `change`, and the scene-effects bar mirrors
+    // these checkboxes on `change`: tell it to look again.
+    syncSceneEffectsBar();
   });
 
   if (globalEnergyHeatmapToggleEl) {
