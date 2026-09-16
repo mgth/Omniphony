@@ -197,6 +197,9 @@ pub struct StudioSpike {
     /// showing the new order until the layout does, rather than flicking
     /// back to the old one for the round trip.
     pub(crate) speaker_move_pending: Option<crate::panels::lists::PendingMove>,
+    /// The ear soloed from its S, kept as the web keeps it: the two raw
+    /// mutes alone cannot tell a solo from a manual mute of the other ear.
+    pub(crate) ear_solo: Option<usize>,
     /// Whether the About box is showing.
     pub(crate) about_open: bool,
     /// The at-rest bed markers this host owns, and what they were built from.
@@ -461,6 +464,7 @@ impl StudioSpike {
             speaker_row_rects: Vec::new(),
             speaker_drag_grab: 0.0,
             speaker_move_pending: None,
+            ear_solo: None,
             about_open: false,
             host,
             service_status: None,
