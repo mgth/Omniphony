@@ -1644,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "orender_ffi"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bridge_api",
