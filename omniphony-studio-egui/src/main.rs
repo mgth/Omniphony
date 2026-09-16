@@ -1,9 +1,9 @@
-//! Spike: native egui/wgpu host for Omniphony Studio.
+//! Native egui/wgpu host for Omniphony Studio.
 //!
-//! Phase 0 of the frontend replacement study (see README.md). This binary
-//! exists to answer measurable questions — frame rate under OSC load, idle
-//! CPU, resident memory, CJK text, IME — not to be a product. It listens to
-//! the same OSC addresses as the Tauri Studio, draws objects and speakers in a
+//! Started as phase 0 of the frontend replacement study (see README.md) to
+//! answer measurable questions — frame rate under OSC load, idle CPU, resident
+//! memory, CJK text, IME — and grown into the Studio itself. It listens to the
+//! same OSC addresses as the Tauri Studio, draws objects and speakers in a
 //! wgpu viewport hosted by an egui paint callback, and floats fixed-extent
 //! panels over the viewport so panel expansion can never resize the scene.
 
@@ -62,8 +62,9 @@ pub struct Args {
 
     /// Directory of Studio layout files (`layouts/*.yaml`), loaded with the
     /// host's layout loader. A live renderer replaces the selection with its
-    /// own `/state/layout`.
-    #[arg(long, default_value = "../layouts")]
+    /// own `/state/layout`. Default: the `layouts/` shipped with this
+    /// executable, else the checkout's.
+    #[arg(long, default_value_os_t = default_layouts_dir())]
     pub layouts_dir: PathBuf,
 
     /// Layout key to show before a renderer sends its own (default: 7.1.4).
@@ -85,10 +86,9 @@ pub struct Args {
     pub no_vsync: bool,
 
     /// Listener head model (glTF binary). Missing file → placeholder sphere.
-    #[arg(
-        long,
-        default_value = "../omniphony-studio/assets/la_dame_de_brassempouy_centered.glb"
-    )]
+    /// Default: the one shipped in `assets/` with this executable, else the
+    /// checkout's.
+    #[arg(long, default_value_os_t = default_head_model())]
     pub head_model: PathBuf,
 
     /// Start with trails disabled (measurements).
@@ -99,6 +99,32 @@ pub struct Args {
     /// measurements; it is off by default like in the Studio).
     #[arg(long, default_value_t = false)]
     pub object_field: bool,
+}
+
+/// The head model file, under `assets/` wherever the assets are.
+const HEAD_MODEL_FILE: &str = "la_dame_de_brassempouy_centered.glb";
+
+/// The checkout this binary was built from, for a run from the source tree:
+/// the layouts and the head model are read from it when nothing ships next to
+/// the executable. Resolved at build time, so the run's working directory
+/// does not matter.
+fn checkout_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate directory has a parent")
+}
+
+fn default_layouts_dir() -> PathBuf {
+    host::bundle::resource_dir()
+        .map(|dir| dir.join("layouts"))
+        .unwrap_or_else(|| checkout_root().join("layouts"))
+}
+
+fn default_head_model() -> PathBuf {
+    host::bundle::resource_dir()
+        .map(|dir| dir.join("assets"))
+        .unwrap_or_else(|| checkout_root().join("omniphony-studio").join("assets"))
+        .join(HEAD_MODEL_FILE)
 }
 
 /// Probed in order when `--cjk-font` is not given.

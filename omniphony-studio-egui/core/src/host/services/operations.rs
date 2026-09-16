@@ -2,7 +2,7 @@
 //! its result; DNS, files and service-manager processes run on the worker.
 
 use crate::host::{
-    commands::{HostPaths, SharedState, app, orender},
+    commands::{SharedState, app, orender},
     config::{load_config, save_config},
 };
 use std::sync::{
@@ -99,10 +99,10 @@ fn execute(state: &SharedState, action: Action) -> Result<(), String> {
         Action::RestartPipewire => orender::restart_pipewire_services(),
         action @ (Action::Launch | Action::InstallService) => {
             let config = load_config(&state.config_dir);
-            let paths = HostPaths::default();
+            let paths = &state.paths;
             let result = match action {
                 Action::Launch => orender::launch_orender(
-                    &paths,
+                    paths,
                     state,
                     config.host,
                     config.osc_rx_port,
@@ -112,7 +112,7 @@ fn execute(state: &SharedState, action: Action) -> Result<(), String> {
                     None,
                 ),
                 _ => orender::install_orender_service(
-                    &paths,
+                    paths,
                     state,
                     config.host,
                     config.osc_rx_port,

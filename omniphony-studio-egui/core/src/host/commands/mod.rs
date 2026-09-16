@@ -80,6 +80,17 @@ pub struct HostPaths {
 }
 
 impl HostPaths {
+    /// The paths of a shipped Studio: the resources found next to the
+    /// executable (see [`crate::host::bundle`]), nothing else resolved. A
+    /// checkout build gets no resource directory and finds its renderer
+    /// through the checkout instead.
+    pub fn bundled() -> Self {
+        Self {
+            resource_dir: crate::host::bundle::resource_dir(),
+            ..Self::default()
+        }
+    }
+
     pub fn resource_dir(&self) -> Result<PathBuf, String> {
         self.resource_dir
             .clone()
@@ -151,7 +162,7 @@ impl SharedState {
             renderer_child: Default::default(),
             watchdog: Default::default(),
             auto_tune_snapshot: Default::default(),
-            paths: HostPaths::default(),
+            paths: HostPaths::bundled(),
             stats,
             waker,
         }

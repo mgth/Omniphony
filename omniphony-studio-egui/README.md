@@ -47,9 +47,24 @@ cargo run --release -- --synthetic 24 --rate 100 --stats-interval 1
 ```
 
 Flags: `--register host:port` (live renderer, read-only for audio),
-`--listen-port N`, `--layouts-dir ../layouts`, `--layout-key 7.1.4`,
+`--listen-port N`, `--layouts-dir dir`, `--layout-key 7.1.4`,
 `--head-model path.glb`, `--cjk-font path`, `--object-field`, `--no-trails`,
 `--no-vsync`, `--synthetic-stop-after S`.
+
+The layouts and the head model default to the copies shipped next to the
+executable (`layouts/`, `assets/` — the release archive's layout, or a
+package's `share/omniphony-studio-egui/`) and, for a checkout build, to the
+checkout's own; the working directory plays no part. The renderer is found
+the same way: next to the executable, then on `PATH`, then the checkout's
+build.
+
+## Shipping
+
+Every `v*` release attaches one archive per platform,
+`omniphony-studio-egui-<tag>-<platform>.{tar.gz,zip}`, holding the Studio, the
+`orender` renderer built from the same commit, the layouts and the head model
+(`.github/workflows/release.yml`). Arch users have `packaging/arch/omniphony-studio-egui`,
+which depends on the `orender` package instead of bundling it.
 
 ![phase 2, the panels over the phase 1 viewport](phase2-screenshot.png)
 

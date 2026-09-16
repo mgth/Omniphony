@@ -69,7 +69,7 @@ impl StudioSpike {
     }
 
     fn import_layout(&mut self, pick: Pick) {
-        let paths = HostPaths::default();
+        let paths = HostPaths::bundled();
         let state = self.host.clone();
         let path = match pick {
             Pick::Presets => crate::ui::file_dialogs::pick_preset_layout_path(&paths),

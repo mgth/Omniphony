@@ -16,7 +16,7 @@ edition = "2024"
 # rust-toolchain.toml next to this file.
 rust-version = "1.95"
 license = "GPL-3.0-or-later"
-description = "Spike: native egui/wgpu host for Omniphony Studio (phase 0 of the frontend replacement study)"
+description = "Omniphony Studio, the native egui/wgpu host"
 publish = false
 
 [[bin]]

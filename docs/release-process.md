@@ -8,7 +8,8 @@ amend this file whenever a release teaches something new.
 
 | Component | Repo | Tag namespace | Version line |
 |---|---|---|---|
-| Omniphony Studio bundle | `mgth/Omniphony` | `v*` (e.g. `v0.5.1`) | stack version |
+| Omniphony Studio bundle (Tauri host) | `mgth/Omniphony` | `v*` (e.g. `v0.5.1`) | stack version |
+| Omniphony Studio, native host (egui/wgpu) | `mgth/Omniphony` | same `v*` tag, one archive per platform on the same release | stack version (`omniphony-studio-egui/Cargo.toml`, `[workspace.package]`) |
 | Standalone liborender | `mgth/Omniphony` | `liborender-v*` | `orender_ffi` crate version (kept in step with the stack since 0.5.0) |
 | mpv player bundle | assets on `mgth/Omniphony`, source in `mgth/mpv-omniphony` | `mpv-v*` | stack version |
 | mpv fork branches | `mgth/mpv` | `orender-v*` | stack version (plain `v*` collides with upstream mpv's ancient tags) |
@@ -48,8 +49,17 @@ Never push to `main` directly — open a PR. Six files change (verified at
 5. `omniphony-studio/src-tauri/tauri.conf.json` — `"version"`
 6. `omniphony-renderer/orender_ffi/Cargo.toml` — `version` (in step with the
    stack since 0.5.0)
+7. `omniphony-studio-egui/Cargo.toml` — `[workspace.package] version`, which
+   the three native Studio crates share (it is the About box's version and
+   what the update check compares against the release tags — a native Studio
+   left at an older number would offer its own release as an update)
+8. `omniphony-studio-egui/Cargo.lock` — regenerate with
+   `cargo update -w --offline` (from `omniphony-studio-egui/`; the three
+   workspace entries move, nothing else)
 
-`omniphony-renderer/Cargo.lock` is gitignored — nothing to commit there.
+`omniphony-renderer/Cargo.lock` is tracked since 0.5.2 (#481) but carries no
+version of its own to bump: the root crate's number is not user-visible
+(`orender --version` prints the commit).
 
 Merge the PR once CI is green.
 
@@ -81,8 +91,17 @@ The tag push triggers `release.yml`:
 - **build-studio** — Linux (`.deb`/`.rpm`/`.AppImage`), Windows
   (`.msi`/`.exe`), macOS arm64 (`.dmg`/`.app.tar.gz`, ad-hoc signed, not
   notarized). tauri-action creates a **draft** release named
-  "Omniphony vX.Y.Z". Seven assets expected; whole run took ~17 min at 0.5.1
-  (Linux is the slowest job at ~11 min).
+  "Omniphony vX.Y.Z". Seven Tauri assets expected; whole run took ~17 min at
+  0.5.1 (Linux is the slowest job at ~11 min).
+- **native Studio**, same job, after tauri-action: builds
+  `omniphony-studio-egui` on its pinned toolchain and attaches
+  `omniphony-studio-egui-vX.Y.Z-{linux-x86_64.tar.gz,windows-x86_64.zip,macos-arm64.zip}`
+  to the draft with `gh release upload` — the Studio, the `orender` sidecar
+  the Tauri build just prepared (same commit), `layouts/`, `assets/` and the
+  licence, in one directory. Three more assets, **ten** in all. The Studio
+  finds those files next to its executable (`core/src/host/bundle.rs`); no
+  installer, no engine deploy for mpv (that stays the Tauri bundle's job, or
+  the `orender` package's).
 
 The draft's URL is `releases/tag/untagged-<hash>` until it is published —
 that is normal, not a broken tag association; it becomes `releases/tag/vX.Y.Z`
@@ -181,11 +200,14 @@ truth: `packaging/arch/` in this repo, `packaging/` in mpv-omniphony).
 |---|---|
 | `orender` | every `v*` release |
 | `omniphony-studio` | every `v*` release |
+| `omniphony-studio-egui` | every `v*` release (from 0.6.0; template in `packaging/arch/omniphony-studio-egui`, depends on `orender` and links its layouts) |
 | `mpv-omniphony` | when an `mpv-v*` bundle was cut: `_tag`, `depends=('orender>=X.Y.Z')` (the release-train couple) |
 | `mpv-omniphony-fel` | with mpv-omniphony; also refresh `_mpvcommit` to the mpv master SHA the local FEL build verified (`scripts/build-fel-local.sh`) |
-| `harletty-bridge` | on its own 0.7.x line only — never the stack number |
+| `harletty-bridge` | on its own line only (0.7.x, 0.8.x…) — never the stack number. Its `_omniver` names the Omniphony source tag the bridge's path-deps (`bridge_api`/`spdif`/`sys`) are taken from: the current Studio `v*` tag (the `liborender-v*` one is optional and may not exist for the release) |
 
-Per package: bump `pkgver` (+ `_tag`/pins), reset `pkgrel=1`, `updpkgsums`,
+The templates in `packaging/arch/` are kept in step with the AUR clones (the
+clones had drifted ahead — licence fix, engine resource — until 0.6.0 synced
+them back). Per package: bump `pkgver` (+ `_tag`/pins), reset `pkgrel=1`, `updpkgsums`,
 build-test with `makepkg -fCd` (`-d` because the runtime `orender` dep need
 not be installed locally), `makepkg --printsrcinfo > .SRCINFO`, commit
 `upgpkg: <pkg> X.Y.Z-1`, push `master`.
