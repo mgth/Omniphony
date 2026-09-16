@@ -1,5 +1,5 @@
-//! `.info-section`: a rule, a header made of a title, an optional one-line
-//! summary and a chevron, and a body that expands in place.
+//! `.info-section`: a rule, a header made of a title, an optional widget, an
+//! optional one-line summary and a chevron, and a body that expands in place.
 //!
 //! The body takes its full height. The web bounds an open section
 //! (`--panel-open-max-height: min(44vh, 420px)`) and scrolls it inside; here
@@ -55,6 +55,9 @@ pub struct Section<'a> {
     /// A two-state button at the header's right end (`.panel-toggle-btn`),
     /// and what it says on hover. See [`Section::header_toggled`].
     header_toggle: Option<(bool, &'a str)>,
+    /// Drawn in the header between the title and the summary, whether the
+    /// section is open or closed: a readout worth keeping in view.
+    header_widget: Option<Box<dyn FnOnce(&mut Ui) + 'a>>,
 }
 
 /// Where a header toggle leaves its click for the caller to pick up.
@@ -73,6 +76,7 @@ impl<'a> Section<'a> {
             explains: None,
             default_open: false,
             header_toggle: None,
+            header_widget: None,
         }
     }
 
@@ -115,6 +119,14 @@ impl<'a> Section<'a> {
         self
     }
 
+    /// A widget in the header, between the title and the summary, drawn
+    /// whether the section is open or closed — as `#drcGaugeRow` sits in its
+    /// header, in view while the section is folded.
+    pub fn header_widget(mut self, draw: impl FnOnce(&mut Ui) + 'a) -> Self {
+        self.header_widget = Some(Box::new(draw));
+        self
+    }
+
     /// Whether the header toggle of section `id` was clicked this frame.
     pub fn header_toggled(ui: &Ui, id: &str) -> bool {
         ui.ctx()
@@ -128,11 +140,20 @@ impl<'a> Section<'a> {
     }
 
     pub fn show<R>(self, ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> Option<R> {
-        let id = ui.make_persistent_id(("section", self.id));
+        let Section {
+            id: section_id,
+            title,
+            summary,
+            explains,
+            default_open,
+            header_toggle,
+            header_widget,
+        } = self;
+        let id = ui.make_persistent_id(("section", section_id));
         let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
             ui.ctx(),
             id,
-            self.default_open,
+            default_open,
         );
         ui.add_space(theme::PANEL_GAP);
         ui.separator();
@@ -141,25 +162,28 @@ impl<'a> Section<'a> {
             let (rect, chevron) =
                 ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
             paint_chevron(ui, rect, openness);
-            let text = egui::RichText::new(&self.title)
+            let text = egui::RichText::new(&title)
                 .size(theme::FONT_SIZE_SECTION)
                 .color(theme::TEXT_STRONG);
-            let title = ui.add(
+            let title_response = ui.add(
                 egui::Label::new(text)
                     .sense(egui::Sense::click())
                     .selectable(false),
             );
-            if let Some(explains) = self.explains {
+            if let Some(explains) = explains {
                 // The title is the trigger: the thing you click is the thing
                 // you are asking about.
-                super::help::overlay_trigger(ui, &title, || match explains {
+                super::help::overlay_trigger(ui, &title_response, || match explains {
                     Explains::Info(prefix) => super::help::Overlay::info(prefix),
-                    Explains::Help(key) => super::help::Overlay::titled(&self.title, key),
+                    Explains::Help(key) => super::help::Overlay::titled(&title, key),
                 });
             }
-            if self.summary.is_some() || self.header_toggle.is_some() {
+            if let Some(draw) = header_widget {
+                draw(ui);
+            }
+            if summary.is_some() || header_toggle.is_some() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some((on, hover)) = self.header_toggle {
+                    if let Some((on, hover)) = header_toggle {
                         let (rect, response) =
                             ui.allocate_exact_size(egui::vec2(16.0, 14.0), egui::Sense::click());
                         if response.hovered() {
@@ -172,10 +196,10 @@ impl<'a> Section<'a> {
                         paint_chevron(ui, rect, if on { 1.0 } else { 0.0 });
                         if response.on_hover_text(hover).clicked() {
                             ui.ctx()
-                                .data_mut(|d| d.insert_temp(toggle_id(self.id), true));
+                                .data_mut(|d| d.insert_temp(toggle_id(section_id), true));
                         }
                     }
-                    let Some(summary) = &self.summary else {
+                    let Some(summary) = &summary else {
                         return;
                     };
                     ui.add(
@@ -192,15 +216,38 @@ impl<'a> Section<'a> {
             // A title that opens a modal is the modal's trigger, not the
             // section's: the chevron keeps the disclosure to itself, or one
             // click would both explain the section and close it.
-            if self.explains.is_some() {
+            if explains.is_some() {
                 chevron
             } else {
-                chevron.union(title)
+                chevron.union(title_response)
             }
         });
         if header.inner.clicked() {
             state.toggle(ui);
         }
         state.show_body_unindented(ui, body).map(|r| r.inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Section;
+
+    /// The header widget draws while the section is closed; the body does
+    /// not. That is what keeps a gauge in view with its section folded.
+    #[test]
+    fn the_header_widget_shows_while_the_section_is_closed() {
+        let ctx = egui::Context::default();
+        let (mut widget_drawn, mut body_drawn) = (false, false);
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            Section::titled("closed", "Closed")
+                .default_open(false)
+                .header_widget(|_| widget_drawn = true)
+                .show(ui, |_| body_drawn = true);
+        });
+        // Nothing paints here; egui still wants its font atlas taken.
+        output.textures_delta.clear();
+        assert!(widget_drawn, "the header widget did not draw");
+        assert!(!body_drawn, "the body drew while closed");
     }
 }
