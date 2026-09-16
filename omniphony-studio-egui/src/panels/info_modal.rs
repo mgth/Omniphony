@@ -3,13 +3,14 @@
 //!
 //! A dozen sections carry a long-form explanation — what a backend is, what the
 //! adaptive controller does, how the heatmaps are computed — and a few a short
-//! `help.*` string about the whole section. Either opens here, centred, from a
-//! click on the section's own title (see `ui::help`). The request travels from
-//! the header through egui's temporary data rather than through a return
-//! value, so a section stays a pure widget.
+//! `help.*` string about the whole section. Either opens here, centred, from
+//! the "i" beside the section's title (see `ui::help`). The request travels
+//! from the header through egui's temporary data rather than through a return
+//! value, so a section stays a pure widget. There is no close button: a click
+//! anywhere outside, or Escape, closes it, and the absence of a button is what
+//! says so.
 
 use crate::app::StudioSpike;
-use crate::i18n::t;
 use crate::ui::{help, markup, theme, widgets};
 
 impl StudioSpike {
@@ -25,7 +26,6 @@ impl StudioSpike {
         let Some(overlay) = &self.info_modal_open else {
             return;
         };
-        let mut close = false;
         let modal = egui::Modal::new(egui::Id::new("info-modal-window"))
             .frame(widgets::modal_frame())
             .show(ctx, |ui| {
@@ -44,12 +44,8 @@ impl StudioSpike {
                     .show(ui, |ui| {
                         markup::info_body(ui, &overlay.body);
                     });
-                ui.add_space(theme::PANEL_GAP);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    close = ui.button(t("common.close")).clicked();
-                });
             });
-        if close || modal.should_close() {
+        if modal.should_close() {
             self.info_modal_open = None;
         }
     }
