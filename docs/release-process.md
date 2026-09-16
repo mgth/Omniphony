@@ -48,7 +48,10 @@ Never push to `main` directly — open a PR. Six files change (verified at
    `cargo update -p omniphony-studio --offline` (from `src-tauri/`)
 5. `omniphony-studio/src-tauri/tauri.conf.json` — `"version"`
 6. `omniphony-renderer/orender_ffi/Cargo.toml` — `version` (in step with the
-   stack since 0.5.0)
+   stack since 0.5.0), then regenerate `omniphony-renderer/Cargo.lock` with
+   `cargo update -p orender_ffi --offline` (from `omniphony-renderer/`). The
+   lockfile is tracked since #481 and names the crate's version; CI builds
+   with `--locked` and rejects a stale entry within a minute (it did at 0.6.0)
 7. `omniphony-studio-egui/Cargo.toml` — `[workspace.package] version`, which
    the three native Studio crates share (it is the About box's version and
    what the update check compares against the release tags — a native Studio
@@ -57,9 +60,8 @@ Never push to `main` directly — open a PR. Six files change (verified at
    `cargo update -w --offline` (from `omniphony-studio-egui/`; the three
    workspace entries move, nothing else)
 
-`omniphony-renderer/Cargo.lock` is tracked since 0.5.2 (#481) but carries no
-version of its own to bump: the root crate's number is not user-visible
-(`orender --version` prints the commit).
+The renderer's root crate keeps its own number: it is not user-visible
+(`orender --version` prints the release tag or the commit).
 
 Merge the PR once CI is green.
 
