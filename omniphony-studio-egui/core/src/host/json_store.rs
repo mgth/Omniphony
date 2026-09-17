@@ -245,8 +245,21 @@ mod tests {
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), 1);
         writer.submit(2);
         writer.submit(3);
-        release.send(()).unwrap();
+        // Release the blocked write only after shutdown has begun. Otherwise
+        // write 3 can fail before closing and legitimately be retried by the
+        // final flush, making the attempt count depend on thread scheduling.
+        let shared = writer.shared.clone();
+        let releaser = std::thread::spawn(move || {
+            let (lock, changed) = &*shared;
+            let mut state = lock.lock().unwrap();
+            while !state.closing {
+                state = changed.wait(state).unwrap();
+            }
+            drop(state);
+            release.send(()).unwrap();
+        });
         assert_eq!(writer.shutdown(), Err("write 3 failed".into()));
+        releaser.join().unwrap();
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![3]);
     }
 }
