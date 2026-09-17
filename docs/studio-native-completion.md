@@ -302,8 +302,8 @@ polls without waiting, shows pending work and refuses duplicate operations. A
 result invalidated by closing the section cannot replace the next fresh read.
 Write failures remain visible until reopening the section and are logged by
 the core. Tests use controlled channels and never modify the user's mpv file.
-This does not yet move the other layout/configuration file operations off the
-UI thread or provide cancellation of all generic background jobs (lots07–08).
+Layout/configuration operations and owned background jobs are covered by the
+subsequent changes described in this record. OS calls remain non-forcible.
 
 ### File choices during connection transitions
 
@@ -328,8 +328,8 @@ the original document with defaults.
 
 External edits to osc_config.json are loaded on the next Studio start. This is
 one writer per host instance, not cross-process locking: simultaneous instances
-still use last-writer-wins persistence. Local layout content import/export and
-native picker filesystem checks remain separate non-blocking-I/O work.
+still use last-writer-wins persistence. Layout file bytes and directory probes
+use the owned jobs described above.
 
 ### Generated backend file-path drafts
 
@@ -344,6 +344,7 @@ backend/session and bounded storage. The core session token also rejects drafts
 during connection transitions and revalidates immediately around command
 queuing, preventing a path typed in profile A from being applied to profile B.
 The targeted workspace suite passes 339 tests; one manual benchmark is ignored.
+
 
 ### Preference schema compatibility
 
