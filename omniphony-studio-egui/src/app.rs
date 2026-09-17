@@ -230,7 +230,7 @@ pub struct StudioSpike {
     /// When the watchdog last ticked, and since when the link has been down.
     /// The OS service's state, and when it was last asked for. Asking means
     /// spawning a process, so it is not a per-frame question.
-    pub(crate) service_status: Option<(Instant, bool, String)>,
+    pub(crate) host_operations: crate::host::services::operations::Operations,
 }
 
 impl StudioSpike {
@@ -483,7 +483,7 @@ impl StudioSpike {
             ear_solo: None,
             about_open: false,
             host,
-            service_status: None,
+            host_operations: Default::default(),
             config_dir,
             ctx: cc.egui_ctx.clone(),
             sofa_browser: None,

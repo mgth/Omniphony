@@ -187,6 +187,7 @@ impl StudioSpike {
     /// renderer's host and port, this client's listen port and the metering
     /// switch, with a Connect button that re-registers.
     pub(crate) fn osc_section(&mut self, ui: &mut egui::Ui) {
+        self.host_operations.poll();
         let listen_port = self.osc_stats.listen_port.load(Ordering::Relaxed);
         let shown = Section::new("oscSection", "osc.configTitle")
             .info("osc")
@@ -211,7 +212,13 @@ impl StudioSpike {
                     );
                 });
                 self.host_switches(ui);
-                if ui.button(t("osc.connect")).clicked() {
+                if ui
+                    .add_enabled(
+                        !self.host_operations.pending(),
+                        egui::Button::new(t("osc.connect")),
+                    )
+                    .clicked()
+                {
                     self.connect();
                 }
                 ui.separator();
@@ -406,19 +413,13 @@ impl StudioSpike {
     /// Point the client at the configured renderer and save the choice, like
     /// `save_osc_config` + the host's `Reconnect`.
     fn connect(&mut self) {
-        if app_cmd::connect_to(&self.host, &self.osc_host, self.osc_port).is_err() {
-            return;
-        }
-        // Only the form's own fields: starting from the defaults instead
-        // turned auto-start back on and forgot the import directory on every
-        // Connect.
-        let mut config = load_config(&self.config_dir);
-        config.host = self.osc_host.trim().to_owned();
-        config.osc_rx_port = self.osc_port;
-        config.osc_metering_enabled = self.host.read().app.osc_metering_enabled.unwrap_or(0) != 0;
-        if let Err(e) = save_config(&self.config_dir, &config) {
-            log::warn!("[osc] could not save the configuration: {e}");
-        }
+        self.host_operations.request(
+            &self.host,
+            crate::host::services::operations::Action::Connect {
+                host: self.osc_host.clone(),
+                port: self.osc_port,
+            },
+        );
     }
 }
 

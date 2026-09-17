@@ -1,4 +1,8 @@
 {
+  "osc.service.notInstalled": "Not installed",
+  "osc.service.installed": "Installed",
+  "osc.service.running": "Running",
+  "common.refresh": "Refresh",
   "common.valueRequired": "A value is required.",
   "backend.file.editor.waitCancelled": "Waiting cancelled; your edits were kept. The renderer may still finish the request.",
   "backend.file.editor.cancelWait": "Cancel wait",

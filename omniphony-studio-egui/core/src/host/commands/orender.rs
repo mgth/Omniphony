@@ -27,9 +27,9 @@ struct OrenderLaunchSpec {
 /// [`AboutInfo`]: super::app::AboutInfo
 #[derive(serde::Serialize)]
 pub struct OrenderServiceStatus {
-    installed: bool,
-    running: bool,
-    manager: &'static str,
+    pub installed: bool,
+    pub running: bool,
+    pub manager: &'static str,
 }
 
 fn first_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
