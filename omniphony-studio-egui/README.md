@@ -8,10 +8,11 @@ web frontend. Phase 0 (the spike and its measurements) is documented in
 (the panels) in
 [`docs/studio-native-ui-phase2.md`](../docs/studio-native-ui-phase2.md).
 
-The crate reuses the Tauri host's OSC parser, state model and domain-state
-appliers verbatim (`src/osc/parser.rs`, `src/model/`, `src/osc/apply.rs`), so
-both hosts speak the same protocol and keep the same state; the UI reads that
-state directly instead of a camelCase JSON mirror.
+The toolkit-free core owns OSC, state and domain behavior. The scene is a
+separate wgpu crate; the frontend owns drawing and view state. Start with the
+[contributor guide](CONTRIBUTING.md) for build commands, a first control and
+upgrade checks. The [completion plan](../docs/studio-native-completion.md)
+records current acceptance gaps; the phase reports above are historical.
 
 ## Layout
 
@@ -28,8 +29,8 @@ state directly instead of a camelCase JSON mirror.
 | `src/ui/` | The Studio's look: theme, side-panel geometry, sections, generic widgets, file dialogs |
 | `src/panels/` | The panels themselves, one module per group of sections |
 | `PANELS.md` | How a panel is laid out: the section, its groups, their insets and rows |
-| `src/view/` | Model → frame: objects, speakers, room, trails, volumes |
-| `src/render/` | wgpu renderer hosted by an `egui_wgpu::Callback`; camera; head glTF; volumes |
+| `scene/src/view/` | Model → frame: objects, speakers, room, trails, volumes |
+| `scene/src/render/` | wgpu renderer hosted by an `egui_wgpu::Callback`; camera; head glTF; volumes |
 
 The core is its own crate so that egui can be replaced the way the web
 frontend was: see [`ARCHITECTURE.md`](ARCHITECTURE.md). CI keeps UI crates out of
@@ -46,7 +47,7 @@ cd omniphony-studio-egui
 cargo run --release -- --synthetic 24 --rate 100 --stats-interval 1
 ```
 
-Flags: `--register host:port` (live renderer, read-only for audio),
+Flags: `--register host:port` (live renderer; controls can modify it),
 `--listen-port N`, `--layouts-dir dir`, `--layout-key 7.1.4`,
 `--head-model path.glb`, `--cjk-font path`, `--object-field`, `--no-trails`,
 `--no-vsync`, `--synthetic-stop-after S`.
