@@ -13,6 +13,7 @@ use crate::host::commands::{gain, speakers};
 use crate::host::services::speaker_test;
 use crate::i18n::t;
 use crate::model::layouts::Speaker;
+use crate::ui::group::Group;
 use crate::ui::{help, theme, widgets};
 use crate::view::gizmos::EditMode;
 
@@ -29,6 +30,12 @@ pub enum SpeakerTab {
 pub enum CoordMode {
     Cartesian,
     Polar,
+}
+
+/// The coordinates group's title: the web's label without the colon it
+/// carries as a row label (`Coordinates:`, `Coordonnées :`, `座標：`).
+pub(crate) fn coordinates_title() -> &'static str {
+    t("speaker.coordinates").trim_end_matches([':', '：', ' ', '\u{a0}'])
 }
 
 /// A burst stops itself after two seconds; a toggle stops after a minute so a
@@ -218,43 +225,48 @@ impl StudioSpike {
             } else {
                 CoordMode::Cartesian
             };
-            widgets::label_row_help(
-                ui,
-                t("speaker.coordinates"),
-                "help.speaker.position",
-                |ui| {
-                    let mut chosen = mode;
-                    ui.selectable_value(&mut chosen, CoordMode::Polar, t("common.polarShort"));
-                    ui.selectable_value(
-                        &mut chosen,
-                        CoordMode::Cartesian,
-                        t("common.cartesianShort"),
-                    );
-                    if chosen != mode {
-                        let value = match chosen {
-                            CoordMode::Cartesian => "cartesian",
-                            CoordMode::Polar => "polar",
-                        };
-                        self.edit_speaker(id, "coordMode", serde_json::json!(value));
+            // Coordinates: the mode in the bar, the two tables and the 3D
+            // edit toggle in the inset.
+            let mut chosen = mode;
+            Group::new(coordinates_title())
+                .help("help.speaker.position")
+                .actions(|ui| {
+                    if let Some(picked) = widgets::toggle_buttons(
+                        ui,
+                        &mode,
+                        &[
+                            (CoordMode::Polar, t("common.polarShort")),
+                            (CoordMode::Cartesian, t("common.cartesianShort")),
+                        ],
+                    ) {
+                        chosen = picked;
                     }
-                },
-            );
-            match mode {
-                CoordMode::Cartesian => {
-                    self.cartesian_table(ui, id, speaker, scale_m);
-                }
-                CoordMode::Polar => {
-                    self.polar_table(ui, id, speaker, scale_m);
-                }
+                })
+                .show(ui, |ui| {
+                    match mode {
+                        CoordMode::Cartesian => {
+                            self.cartesian_table(ui, id, speaker, scale_m);
+                        }
+                        CoordMode::Polar => {
+                            self.polar_table(ui, id, speaker, scale_m);
+                        }
+                    }
+                    self.gizmo_button(
+                        ui,
+                        match mode {
+                            CoordMode::Cartesian => EditMode::Cartesian,
+                            CoordMode::Polar => EditMode::Polar,
+                        },
+                        frozen,
+                    );
+                });
+            if chosen != mode {
+                let value = match chosen {
+                    CoordMode::Cartesian => "cartesian",
+                    CoordMode::Polar => "polar",
+                };
+                self.edit_speaker(id, "coordMode", serde_json::json!(value));
             }
-            self.gizmo_button(
-                ui,
-                match mode {
-                    CoordMode::Cartesian => EditMode::Cartesian,
-                    CoordMode::Polar => EditMode::Polar,
-                },
-                frozen,
-            );
 
             // Gain is realtime, like the master and the list rows.
             let gain = {

@@ -11,6 +11,7 @@ use egui::Ui;
 use crate::app::StudioSpike;
 use crate::host::commands::input;
 use crate::i18n::{t, tf};
+use crate::ui::group::Group;
 use crate::ui::section::Section;
 use crate::ui::widgets;
 
@@ -136,71 +137,77 @@ impl StudioSpike {
                     }
                 });
 
+                // The fields of the mode chosen, in a group of their own
+                // (`#inputLiveFields` / `#inputBridgeFields`).
                 if pipewire {
-                    let mut node = node.clone();
-                    if text_row(
-                        ui,
-                        t("input.node"),
-                        "help.input.node",
-                        &mut node,
-                        "omniphony",
-                    ) {
-                        input::set_live_input_node(&self.host, node.clone());
-                    }
-                    let mut description = description.clone();
-                    if text_row(
-                        ui,
-                        t("input.description"),
-                        "help.input.description",
-                        &mut description,
-                        "Omniphony Bridge Input",
-                    ) {
-                        input::set_live_input_description(&self.host, description.clone());
-                    }
-                    let mut chosen_clock = clock.clone();
-                    widgets::label_row_info_keys(
-                        ui,
-                        t("input.clock"),
-                        "input.clockInfoTitle",
-                        "input.clockInfoBody",
-                        |ui| {
-                            widgets::bounded_combo(ui, 150.0, |ui, w| {
-                                egui::ComboBox::from_id_salt("input-clock")
-                                    .selected_text(t(CLOCK_MODES
-                                        .iter()
-                                        .find(|(id, _)| *id == clock)
-                                        .map(|(_, key)| *key)
-                                        .unwrap_or("input.clock.dac")))
-                                    .width(w)
-                                    .truncate()
-                                    .show_ui(ui, |ui| {
-                                        for (id, key) in CLOCK_MODES {
-                                            ui.selectable_value(
-                                                &mut chosen_clock,
-                                                (*id).to_owned(),
-                                                t(key),
-                                            );
-                                        }
-                                    })
-                            });
-                        },
-                    );
-                    if chosen_clock != clock {
-                        // Held until Apply: the clock cannot change under a
-                        // running bridge.
-                        input::set_live_input_clock_mode(&self.host, chosen_clock);
-                    }
+                    Group::new(t("input.liveSource")).show(ui, |ui| {
+                        let mut node = node.clone();
+                        if text_row(
+                            ui,
+                            t("input.node"),
+                            "help.input.node",
+                            &mut node,
+                            "omniphony",
+                        ) {
+                            input::set_live_input_node(&self.host, node.clone());
+                        }
+                        let mut description = description.clone();
+                        if text_row(
+                            ui,
+                            t("input.description"),
+                            "help.input.description",
+                            &mut description,
+                            "Omniphony Bridge Input",
+                        ) {
+                            input::set_live_input_description(&self.host, description.clone());
+                        }
+                        let mut chosen_clock = clock.clone();
+                        widgets::label_row_info_keys(
+                            ui,
+                            t("input.clock"),
+                            "input.clockInfoTitle",
+                            "input.clockInfoBody",
+                            |ui| {
+                                widgets::bounded_combo(ui, 150.0, |ui, w| {
+                                    egui::ComboBox::from_id_salt("input-clock")
+                                        .selected_text(t(CLOCK_MODES
+                                            .iter()
+                                            .find(|(id, _)| *id == clock)
+                                            .map(|(_, key)| *key)
+                                            .unwrap_or("input.clock.dac")))
+                                        .width(w)
+                                        .truncate()
+                                        .show_ui(ui, |ui| {
+                                            for (id, key) in CLOCK_MODES {
+                                                ui.selectable_value(
+                                                    &mut chosen_clock,
+                                                    (*id).to_owned(),
+                                                    t(key),
+                                                );
+                                            }
+                                        })
+                                });
+                            },
+                        );
+                        if chosen_clock != clock {
+                            // Held until Apply: the clock cannot change under a
+                            // running bridge.
+                            input::set_live_input_clock_mode(&self.host, chosen_clock);
+                        }
+                    });
                 } else {
-                    let mut pipe_path = pipe.clone();
-                    if text_row(
-                        ui,
-                        t("input.pipe"),
-                        "help.input.pipe",
-                        &mut pipe_path,
-                        t("input.autoDetect"),
-                    ) {
-                        input::set_orender_input_pipe(&self.host, pipe_path.clone());
-                    }
+                    Group::new(t("input.bridgeInput")).show(ui, |ui| {
+                        let mut pipe_path = pipe.clone();
+                        if text_row(
+                            ui,
+                            t("input.pipe"),
+                            "help.input.pipe",
+                            &mut pipe_path,
+                            t("input.autoDetect"),
+                        ) {
+                            input::set_orender_input_pipe(&self.host, pipe_path.clone());
+                        }
+                    });
                 }
 
                 let label = if pending {

@@ -358,37 +358,10 @@ impl StudioSpike {
         );
     }
 
-    /// The adaptive controller: its switches, its three groups of numbers,
-    /// and the pause control.
+    /// The adaptive controller: its three groups of numbers, the controller's
+    /// own switch in its group's bar, and the pause control under it.
     fn adaptive_form(&mut self, ui: &mut Ui, adaptive_on: bool, paused: bool) {
-        ui.separator();
         let mut on = adaptive_on;
-        if widgets::switch_row_help(ui, t("adaptive.title"), "help.adaptive.title", &mut on) {
-            resampling::set_adaptive_resampling_enabled(&self.host, on);
-        }
-        ui.horizontal_wrapped(|ui| {
-            let label = if paused {
-                format!("▶ {}", t("adaptive.resume"))
-            } else {
-                format!("⏸ {}", t("adaptive.pause"))
-            };
-            if ui
-                .add_enabled(adaptive_on, egui::Button::new(label))
-                .clicked()
-            {
-                resampling::set_adaptive_resampling_paused(&self.host, !paused);
-            }
-            // Only reachable while paused: it is a diagnostic, not a control.
-            if adaptive_on && paused && ui.button(t("adaptive.resetRatio")).clicked() {
-                resampling::control_adaptive_resampling_reset_ratio(&self.host);
-            }
-            // The wizard patches this controller live, so it only makes sense
-            // while there is one running to patch.
-            if adaptive_on && !paused {
-                self.auto_tune_button(ui);
-            }
-        });
-
         // The far mode fires when any of its three actions is armed.
         let far_mode = {
             let live = self.host.read();
@@ -418,7 +391,19 @@ impl StudioSpike {
                 2 => &[3, 4, 5],
                 _ => &[],
             };
-            Group::new(t(caption)).show(ui, |ui| {
+            // The controller's group carries the switch that runs it
+            // (`#adaptiveResamplingToggle`), with the pause and the wizard
+            // as its first row.
+            let mut group = Group::new(t(caption));
+            if index == 1 {
+                group = group.help("help.adaptive.title").actions(|ui| {
+                    widgets::switch(ui, &mut on);
+                });
+            }
+            group.show(ui, |ui| {
+                if index == 1 {
+                    self.adaptive_run_row(ui, adaptive_on, paused);
+                }
                 for i in switches {
                     let (switch, label, help) = &SWITCHES[*i];
                     let mut value = switch.get(&self.host.read().app);
@@ -461,6 +446,10 @@ impl StudioSpike {
             });
         }
 
+        if on != adaptive_on {
+            resampling::set_adaptive_resampling_enabled(&self.host, on);
+        }
+
         let dirty = !self.adaptive_edits.is_empty();
         ui.horizontal(|ui| {
             if ui
@@ -474,6 +463,33 @@ impl StudioSpike {
                 .clicked()
             {
                 self.adaptive_edits.clear();
+            }
+        });
+    }
+
+    /// Pause or resume the controller, reset its ratio while paused, and the
+    /// auto-tune wizard while it runs.
+    fn adaptive_run_row(&mut self, ui: &mut Ui, adaptive_on: bool, paused: bool) {
+        ui.horizontal_wrapped(|ui| {
+            let label = if paused {
+                format!("▶ {}", t("adaptive.resume"))
+            } else {
+                format!("⏸ {}", t("adaptive.pause"))
+            };
+            if ui
+                .add_enabled(adaptive_on, egui::Button::new(label))
+                .clicked()
+            {
+                resampling::set_adaptive_resampling_paused(&self.host, !paused);
+            }
+            // Only reachable while paused: it is a diagnostic, not a control.
+            if adaptive_on && paused && ui.button(t("adaptive.resetRatio")).clicked() {
+                resampling::control_adaptive_resampling_reset_ratio(&self.host);
+            }
+            // The wizard patches this controller live, so it only makes sense
+            // while there is one running to patch.
+            if adaptive_on && !paused {
+                self.auto_tune_button(ui);
             }
         });
     }

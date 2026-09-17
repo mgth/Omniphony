@@ -10,6 +10,7 @@ use crate::host::commands::gain;
 use crate::host::peak_hold::{METER_DB_MIN, db_to_meter_percent};
 use crate::i18n::t;
 use crate::model::app_state::Meter;
+use crate::ui::group::Group;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
@@ -94,34 +95,37 @@ impl StudioSpike {
                     });
                 });
 
-                // The clip dot belongs to this row, as it belongs to the web's
-                // label span — not to a horizontal wrapped around the row,
-                // which would leave the help card no width to open into.
+                // `#autoGainSection`: the switch in the bar with the clip dot
+                // beside it — the web draws the dot in the label — and the
+                // ceiling in the inset.
                 let mut on = auto_gain;
-                if widgets::switch_row_help_leading(
-                    ui,
-                    |ui| clip_indicator(ui, clipping),
-                    t("autoGain.title"),
-                    "help.master.autoGain",
-                    &mut on,
-                ) && ready
-                {
+                let mut db = ceiling as f32;
+                let ceiling_changed = Group::new(t("autoGain.title"))
+                    .help("help.master.autoGain")
+                    .actions(|ui| {
+                        widgets::switch(ui, &mut on);
+                        clip_indicator(ui, clipping);
+                    })
+                    .show(ui, |ui| {
+                        ui.add_enabled_ui(ready, |ui| {
+                            widgets::value_slider_help(
+                                ui,
+                                t("autoGain.ceiling"),
+                                "help.master.ceiling",
+                                &mut db,
+                                -12.0..=0.0,
+                                0.1,
+                                |v| format!("{v:.1} dB"),
+                            )
+                        })
+                        .inner
+                    });
+                if on != auto_gain && ready {
                     gain::control_auto_gain(&self.host, i32::from(on));
                 }
-                let mut db = ceiling as f32;
-                ui.add_enabled_ui(ready, |ui| {
-                    if widgets::value_slider_help(
-                        ui,
-                        t("autoGain.ceiling"),
-                        "help.master.ceiling",
-                        &mut db,
-                        -12.0..=0.0,
-                        0.1,
-                        |v| format!("{v:.1} dB"),
-                    ) {
-                        gain::control_auto_gain_ceiling(&self.host, db);
-                    }
-                });
+                if ceiling_changed {
+                    gain::control_auto_gain_ceiling(&self.host, db);
+                }
             });
     }
 

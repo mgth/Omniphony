@@ -20,6 +20,7 @@ use crate::host::channels::{
 use crate::host::commands::engine;
 use crate::i18n::t;
 use crate::model::app_state::RoomRatio;
+use crate::ui::group::Group;
 use crate::ui::{help, theme, widgets};
 use crate::view::gizmos::EditMode;
 
@@ -157,35 +158,50 @@ impl StudioSpike {
             None => Some([channel.x, channel.y, channel.z]),
         };
 
-        ui.add_enabled_ui(editable, |ui| {
-            ui.horizontal(|ui| {
-                let mut chosen = mode;
-                ui.selectable_value(&mut chosen, CoordMode::Cartesian, t("common.cartesian"));
-                ui.selectable_value(&mut chosen, CoordMode::Polar, t("common.polar"));
-                if chosen != mode {
-                    self.channel_coord_mode = chosen;
+        // Coordinates: the mode in the bar, the table and the 3D edit toggle
+        // in the inset, as the speaker editor lays them out.
+        let mut chosen = mode;
+        Group::new(super::speaker_editor::coordinates_title())
+            .help("help.speaker.position")
+            .actions(|ui| {
+                ui.add_enabled_ui(editable, |ui| {
+                    if let Some(picked) = widgets::toggle_buttons(
+                        ui,
+                        &mode,
+                        &[
+                            (CoordMode::Cartesian, t("common.cartesian")),
+                            (CoordMode::Polar, t("common.polar")),
+                        ],
+                    ) {
+                        chosen = picked;
+                    }
+                });
+            })
+            .show(ui, |ui| {
+                match mode {
+                    CoordMode::Cartesian => {
+                        self.channel_cartesian_table(ui, &name, position, &room, scale_m, editable)
+                    }
+                    CoordMode::Polar => {
+                        self.channel_polar_table(ui, &name, position, &room, scale_m, editable)
+                    }
                 }
+                // The speaker editor's "3D Edit" toggle, which the web had on
+                // this editor too: a virtual channel is dragged with the same
+                // gizmo. A direct channel sits where its speaker is and has
+                // nothing to arm.
+                self.gizmo_button(
+                    ui,
+                    match mode {
+                        CoordMode::Cartesian => EditMode::Cartesian,
+                        CoordMode::Polar => EditMode::Polar,
+                    },
+                    !editable,
+                );
             });
-        });
-        match mode {
-            CoordMode::Cartesian => {
-                self.channel_cartesian_table(ui, &name, position, &room, scale_m, editable)
-            }
-            CoordMode::Polar => {
-                self.channel_polar_table(ui, &name, position, &room, scale_m, editable)
-            }
+        if chosen != mode {
+            self.channel_coord_mode = chosen;
         }
-        // The speaker editor's "3D Edit" toggle, which the web had on this
-        // editor too: a virtual channel is dragged with the same gizmo. A
-        // direct channel sits where its speaker is and has nothing to arm.
-        self.gizmo_button(
-            ui,
-            match mode {
-                CoordMode::Cartesian => EditMode::Cartesian,
-                CoordMode::Polar => EditMode::Polar,
-            },
-            !editable,
-        );
     }
 
     /// The output speaker a direct channel actually reaches: the renderer's

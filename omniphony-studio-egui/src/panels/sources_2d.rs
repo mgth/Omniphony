@@ -13,6 +13,7 @@ use egui::Ui;
 use crate::app::StudioSpike;
 use crate::host::commands::engine;
 use crate::i18n::t;
+use crate::ui::group::Group;
 use crate::ui::section::Section;
 use crate::ui::widgets;
 
@@ -114,34 +115,19 @@ impl StudioSpike {
                     },
                 );
 
-                // Height generator, then its declared parameters.
-                self.generator_row(ui, &generator, generators.as_ref());
+                // Height generator, then phantom extraction: each a group
+                // with its choice in the bar and, in the inset, why it is or
+                // is not running and the parameters it declares.
                 let height_reason = effective_reason(
                     &generator != "none" && !generator.is_empty(),
                     synthetic,
                     processing.as_ref(),
                     "height",
                 );
-                // `objectGeneratorNoHeightNote`: only while the generator is
-                // chosen and not running. "Off" would repeat the select, and
-                // "active" is what choosing it meant.
-                if height_reason != "off" && height_reason != "active" {
-                    widgets::note(ui, reason_text(&height_reason));
-                }
-                if let Some(schema) = generators.as_ref() {
-                    self.generator_params(ui, &generator, schema);
-                }
-
-                // Phantom extraction, then its own parameters.
-                self.phantom_row(ui, &phantom);
+                self.generator_group(ui, &generator, generators.as_ref(), &height_reason);
                 let phantom_reason =
                     effective_reason(phantom != "off", synthetic, processing.as_ref(), "phantom");
-                widgets::note(ui, reason_text(&phantom_reason));
-                if phantom != "off"
-                    && let Some(schema) = phantom_schema.as_ref()
-                {
-                    self.phantom_params(ui, schema, phantom == "spectral");
-                }
+                self.phantom_group(ui, &phantom, phantom_schema.as_ref(), &phantom_reason);
 
                 // The channel layout every fixed channel is placed by. The
                 // editor for one channel opens from the objects list. Aligned
@@ -156,7 +142,13 @@ impl StudioSpike {
             });
     }
 
-    fn generator_row(&mut self, ui: &mut Ui, current: &str, schema: Option<&serde_json::Value>) {
+    fn generator_group(
+        &mut self,
+        ui: &mut Ui,
+        current: &str,
+        schema: Option<&serde_json::Value>,
+        reason: &str,
+    ) {
         let options = generator_options(schema);
         let current = if current.is_empty() {
             "none".to_owned()
@@ -164,11 +156,9 @@ impl StudioSpike {
             current.to_owned()
         };
         let mut chosen = current.clone();
-        widgets::label_row_help(
-            ui,
-            t("twoDSources.objectGeneratorLabel"),
-            "help.objectGenerator",
-            |ui| {
+        Group::new(t("twoDSources.objectGeneratorLabel"))
+            .help("help.objectGenerator")
+            .actions(|ui| {
                 widgets::bounded_combo(ui, 160.0, |ui, w| {
                     egui::ComboBox::from_id_salt("object-generator")
                         .selected_text(
@@ -186,26 +176,40 @@ impl StudioSpike {
                             }
                         })
                 });
-            },
-        );
+            })
+            .show(ui, |ui| {
+                // `objectGeneratorNoHeightNote`: only while the generator is
+                // chosen and not running. "Off" would repeat the select, and
+                // "active" is what choosing it meant.
+                if reason != "off" && reason != "active" {
+                    widgets::note(ui, reason_text(reason));
+                }
+                if let Some(schema) = schema {
+                    self.generator_params(ui, &current, schema);
+                }
+            });
         if chosen != current {
             let id = if chosen == "none" { "" } else { &chosen };
             crate::host::commands::engine::set_object_generator(&self.host, id);
         }
     }
 
-    fn phantom_row(&mut self, ui: &mut Ui, current: &str) {
+    fn phantom_group(
+        &mut self,
+        ui: &mut Ui,
+        current: &str,
+        schema: Option<&serde_json::Value>,
+        reason: &str,
+    ) {
         let options = [
             ("off", "twoDSources.phantomOff"),
             ("broadband", "twoDSources.phantomBroadband"),
             ("spectral", "twoDSources.phantomSpectral"),
         ];
         let mut chosen = current.to_owned();
-        widgets::label_row_help(
-            ui,
-            t("twoDSources.phantomLabel"),
-            "help.phantomExtract",
-            |ui| {
+        Group::new(t("twoDSources.phantomLabel"))
+            .help("help.phantomExtract")
+            .actions(|ui| {
                 widgets::bounded_combo(ui, 160.0, |ui, w| {
                     egui::ComboBox::from_id_salt("phantom-extract")
                         .selected_text(t(options
@@ -221,8 +225,15 @@ impl StudioSpike {
                             }
                         })
                 });
-            },
-        );
+            })
+            .show(ui, |ui| {
+                widgets::note(ui, reason_text(reason));
+                if current != "off"
+                    && let Some(schema) = schema
+                {
+                    self.phantom_params(ui, schema, current == "spectral");
+                }
+            });
         if chosen != current {
             self.set_option("phantom_extract_mode", serde_json::json!(chosen));
         }

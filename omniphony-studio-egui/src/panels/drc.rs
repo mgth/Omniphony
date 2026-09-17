@@ -7,6 +7,7 @@ use egui::{Color32, RichText, Ui};
 use crate::app::StudioSpike;
 use crate::host::commands::{engine, gain};
 use crate::i18n::t;
+use crate::ui::group::Group;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
@@ -64,44 +65,56 @@ impl StudioSpike {
             if options.is_empty() {
                 options.push("Off".to_owned());
             }
+            // DRC: the mode in the bar, its weight in the inset.
             let mut chosen = mode.clone();
-            widgets::label_row_help(ui, t("input.drc"), "help.drc.mode", |ui| {
-                widgets::bounded_combo(ui, 120.0, |ui, w| {
-                    egui::ComboBox::from_id_salt("drc-mode")
-                        .selected_text(&mode)
-                        .width(w)
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for option in &options {
-                                ui.selectable_value(&mut chosen, option.clone(), option);
-                            }
-                        })
+            let mut percent = (weight * 100.0).round();
+            let weight_changed = Group::new(t("input.drc"))
+                .help("help.drc.mode")
+                .actions(|ui| {
+                    widgets::bounded_combo(ui, 120.0, |ui, w| {
+                        egui::ComboBox::from_id_salt("drc-mode")
+                            .selected_text(&mode)
+                            .width(w)
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                for option in &options {
+                                    ui.selectable_value(&mut chosen, option.clone(), option);
+                                }
+                            })
+                    });
+                })
+                .show(ui, |ui| {
+                    widgets::value_slider_help(
+                        ui,
+                        t("input.drc_weight"),
+                        "help.drc.weight",
+                        &mut percent,
+                        0.0..=100.0,
+                        1.0,
+                        |v| format!("{v:.0}%"),
+                    )
                 });
-            });
             if chosen != mode {
                 engine::control_drc_mode(&self.host, chosen);
             }
-
-            let mut percent = (weight * 100.0).round();
-            if widgets::value_slider_help(
-                ui,
-                t("input.drc_weight"),
-                "help.drc.weight",
-                &mut percent,
-                0.0..=100.0,
-                1.0,
-                |v| format!("{v:.0}%"),
-            ) {
+            if weight_changed {
                 engine::control_drc_weight(&self.host, (percent / 100.0) as f32);
             }
 
-            ui.separator();
+            // Loudness: the switch in the bar, what it measures in the inset.
             let mut on = loudness;
-            if widgets::switch_row_help(ui, t("section.loudness"), "help.drc.loudness", &mut on) {
+            Group::new(t("section.loudness"))
+                .help("help.drc.loudness")
+                .actions(|ui| {
+                    widgets::switch(ui, &mut on);
+                })
+                .show(ui, |ui| {
+                    for line in loudness_lines(source, gain) {
+                        widgets::note(ui, &line);
+                    }
+                });
+            if on != loudness {
                 gain::control_loudness(&self.host, i32::from(on));
-            }
-            for line in loudness_lines(source, gain) {
-                widgets::note(ui, &line);
             }
         });
     }

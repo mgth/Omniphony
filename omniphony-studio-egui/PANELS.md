@@ -205,9 +205,15 @@ if chosen != current {
 |---|---|---|
 | Renderer (`renderer.rs`) | Backend, Evaluation, Distance model, Distance diffuse, Ramp; Crossover on both tabs | follows this document |
 | Renderer › Binaural tab (`binaural.rs`) | HRTF, Distance, Listening room, Head tracking | follows |
-| Latency (`latency.rs`) | Global far actions, Local resampling controller, Stabilization phases | follows (the adaptive form) |
-| Speaker editor (`speaker_editor.rs`) | Edit / Test tabs | `tab_bar`; its rows are not reviewed yet |
-| Display, Trails, Heatmaps (`display.rs`) | the web draws one card with sub-cards: objects, trails, speakers, heatmaps | to review: the sub-cards are candidates for groups |
-| Audio input (`audio_input.rs`) | the web wraps the form in `.input-panel-shell` | to review |
-| Audio output, Master, DRC, OSC, Room geometry, Fixed-channel sources, Diagnostics, Object test editor, Channel editor | — | to review against this document |
+| Latency (`latency.rs`) | Global far actions, Local resampling controller (its switch in the bar, pause and the wizard in the inset), Stabilization phases | follows |
+| Master (`audio.rs`) | Auto-gain (switch and clip dot in the bar, ceiling in the inset) | follows |
+| DRC / Loudness (`drc.rs`) | DRC (mode; weight), Loudness (switch; readouts) | follows |
+| Audio input (`audio_input.rs`) | Bridge input or Live source, after the mode row | follows |
+| Fixed-channel sources (`sources_2d.rs`) | Height generator (choice; reason and parameters), Phantom extraction (likewise) | follows |
+| Display (`display.rs`, the scene panel) | Object appearance, Trails, Speakers — each with its show switch in the bar | follows |
+| Heatmaps (`display.rs`) | Objects, Total energy, Speakers, Usage breaks — each with its switch in the bar — and Common parameters | follows |
+| Speaker editor (`speaker_editor.rs`) | Edit / Test tabs (`tab_bar`); Coordinates (mode in the bar; tables and 3D edit in the inset) | follows |
+| Channel editor (`channel_editor.rs`) | Coordinates, as the speaker editor's | follows |
+| Object injection editor (`object_test.rs`) | Rotation axis (axis in the bar; radius, turn time, free-axis angles in the inset) | follows |
+| Audio output, OSC, Room geometry, Diagnostics | — | rows only: nothing to group. OSC's renderer buttons stay a row under a rule for want of a title of their own |
 | Objects, Speakers, Headphones lists | — | lists: rows are the content, no group |
