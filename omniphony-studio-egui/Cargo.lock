@@ -2563,6 +2563,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sofar",
+ "tempfile",
  "ureq",
  "windows-sys 0.59.0",
 ]

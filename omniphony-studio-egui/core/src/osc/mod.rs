@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
 
+use crate::host::runtime::{StopToken, Worker};
 use dispatch::{Change, Live, apply_event};
 use parser::{CoordinateFormat, HeartbeatResponse, is_heartbeat_address, parse_osc_message};
 
@@ -167,27 +168,26 @@ pub fn spawn_listener(
     waker: Waker,
     stats: Arc<OscStats>,
     cfg: ListenerConfig,
-) -> std::io::Result<(u16, ControlTx)> {
+) -> std::io::Result<(u16, ControlTx, Worker)> {
     let socket = UdpSocket::bind(("0.0.0.0", cfg.listen_port))?;
     let port = socket.local_addr()?.port();
     socket.set_read_timeout(Some(READ_TIMEOUT))?;
     stats.listen_port.store(u64::from(port), Ordering::Relaxed);
     let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("osc-listener".into())
-        .spawn(move || {
-            listener_loop(
-                socket,
-                port,
-                live,
-                waker,
-                stats,
-                cfg.register,
-                cfg.metering,
-                rx,
-            )
-        })?;
-    Ok((port, tx))
+    let worker = Worker::spawn("osc-listener", move |stop| {
+        listener_loop(
+            socket,
+            port,
+            live,
+            waker,
+            stats,
+            cfg.register,
+            cfg.metering,
+            rx,
+            stop,
+        )
+    })?;
+    Ok((port, tx, worker))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -200,6 +200,7 @@ fn listener_loop(
     register: Option<SocketAddr>,
     metering: bool,
     control: Receiver<Control>,
+    stop: StopToken,
 ) {
     let mut buf = vec![0u8; RECV_BUF];
     let mut last_heartbeat = Instant::now();
@@ -222,12 +223,9 @@ fn listener_loop(
 
     loop {
         match socket.recv_from(&mut buf) {
-            Ok((n, from)) => {
-                // Renderer replies use a separate ephemeral UDP socket. Restrict
-                // the peer IP, not its port; listen-only accepts any sender.
-                if !accepts_sender(register, from) {
-                    continue;
-                }
+            // Replies use a separate ephemeral socket; reject other IPs
+            // without starving control draining or shutdown below.
+            Ok((n, from)) if accepts_sender(register, from) => {
                 stats.packets.fetch_add(1, Ordering::Relaxed);
                 stats
                     .last_packet_ms
@@ -268,6 +266,7 @@ fn listener_loop(
                     Err(e) => log::debug!("[osc] undecodable packet ({n} bytes): {e:?}"),
                 }
             }
+            Ok(_) => {}
             Err(e)
                 if matches!(
                     e.kind(),
@@ -356,6 +355,10 @@ fn listener_loop(
             }
         }
 
+        if stop.cancelled() {
+            stats.registered.store(false, Ordering::Relaxed);
+            return;
+        }
         if let Some(addr) = register {
             let now = Instant::now();
             // Until the renderer's state bundle has fully arrived, keep asking
@@ -578,111 +581,151 @@ pub fn spawn_synthetic(
     rate_hz: f32,
     target_port: u16,
     stop_after: Option<Duration>,
-) -> std::io::Result<()> {
+) -> std::io::Result<Worker> {
     let socket = UdpSocket::bind(("127.0.0.1", 0))?;
     socket.connect(("127.0.0.1", target_port))?;
     let period = Duration::from_secs_f32(1.0 / rate_hz.max(1.0));
-    std::thread::Builder::new()
-        .name("osc-synthetic".into())
-        .spawn(move || {
-            let start = Instant::now();
-            let mut next = start;
-            let mut generation: i64 = 0;
-            let mut tick: u64 = 0;
-            log::info!("[synthetic] {count} objects at {rate_hz} Hz to udp/{target_port}");
-            loop {
-                if let Some(limit) = stop_after
-                    && start.elapsed() >= limit
-                {
-                    log::info!("[synthetic] stopped after {:.1} s", limit.as_secs_f32());
-                    return;
-                }
-                let t = start.elapsed().as_secs_f32();
-                let mut content: Vec<OscPacket> = Vec::with_capacity(count as usize + 2);
-                content.push(OscPacket::Message(OscMessage {
-                    addr: "/omniphony/spatial/frame".into(),
-                    args: vec![
-                        OscType::Long((t * 48_000.0) as i64),
-                        OscType::Long(1),
-                        OscType::Int(count as i32),
-                        OscType::Int(0),
-                    ],
-                }));
-                for i in 0..count {
-                    let phase = i as f32 * std::f32::consts::TAU / count.max(1) as f32;
-                    let x = 0.9 * (0.7 * t + phase).sin();
-                    let y = 0.9 * (0.5 * t + 1.3 * phase).cos();
-                    let z = 0.45 + 0.45 * (0.3 * t + 0.7 * phase).sin();
-                    let name = SYNTH_NAMES[i as usize % SYNTH_NAMES.len()];
-                    if tick == 0 {
-                        // Every fourth object is a bed channel, every fifth a
-                        // height object, to exercise the kind colouring.
-                        let fixed = i % 4 == 0;
-                        let kind = if i % 5 == 0 { "height" } else { "" };
-                        content.push(OscPacket::Message(OscMessage {
-                            addr: format!("/omniphony/object/{i}/meta"),
-                            args: vec![
-                                OscType::Int(i32::from(fixed)),
-                                OscType::String(format!("{name} {i}")),
-                                OscType::Long(1),
-                                OscType::String(kind.to_owned()),
-                            ],
-                        }));
-                    }
+    Worker::spawn("osc-synthetic", move |stop| {
+        let start = Instant::now();
+        let mut next = start;
+        let mut generation: i64 = 0;
+        let mut tick: u64 = 0;
+        log::info!("[synthetic] {count} objects at {rate_hz} Hz to udp/{target_port}");
+        while !stop.cancelled() {
+            if let Some(limit) = stop_after
+                && start.elapsed() >= limit
+            {
+                log::info!("[synthetic] stopped after {:.1} s", limit.as_secs_f32());
+                return;
+            }
+            let t = start.elapsed().as_secs_f32();
+            let mut content: Vec<OscPacket> = Vec::with_capacity(count as usize + 2);
+            content.push(OscPacket::Message(OscMessage {
+                addr: "/omniphony/spatial/frame".into(),
+                args: vec![
+                    OscType::Long((t * 48_000.0) as i64),
+                    OscType::Long(1),
+                    OscType::Int(count as i32),
+                    OscType::Int(0),
+                ],
+            }));
+            for i in 0..count {
+                let phase = i as f32 * std::f32::consts::TAU / count.max(1) as f32;
+                let x = 0.9 * (0.7 * t + phase).sin();
+                let y = 0.9 * (0.5 * t + 1.3 * phase).cos();
+                let z = 0.45 + 0.45 * (0.3 * t + 0.7 * phase).sin();
+                let name = SYNTH_NAMES[i as usize % SYNTH_NAMES.len()];
+                if tick == 0 {
+                    // Every fourth object is a bed channel, every fifth a
+                    // height object, to exercise the kind colouring.
+                    let fixed = i % 4 == 0;
+                    let kind = if i % 5 == 0 { "height" } else { "" };
                     content.push(OscPacket::Message(OscMessage {
-                        addr: format!("/omniphony/object/{i}/xyz"),
+                        addr: format!("/omniphony/object/{i}/meta"),
                         args: vec![
-                            OscType::Float(x),
-                            OscType::Float(y),
-                            OscType::Float(z),
-                            OscType::Int(-1),
-                            OscType::Int(0),
-                            OscType::Int(0),
-                            OscType::Int(0),
-                            OscType::Long(generation),
+                            OscType::Int(i32::from(fixed)),
                             OscType::String(format!("{name} {i}")),
+                            OscType::Long(1),
+                            OscType::String(kind.to_owned()),
                         ],
                     }));
-                    // A slow level sweep so meter-driven visuals move.
-                    let level = -40.0 + 30.0 * (0.9 * t + phase).sin().abs();
-                    content.push(OscPacket::Message(OscMessage {
-                        addr: format!("/omniphony/meter/object/{i}"),
-                        args: vec![OscType::Float(level), OscType::Float(level - 6.0)],
-                    }));
                 }
-                generation += 1;
-                tick += 1;
-                let bundle = OscPacket::Bundle(OscBundle {
-                    timetag: OscTime {
-                        seconds: 0,
-                        fractional: 1,
-                    },
-                    content,
-                });
-                match encoder::encode(&bundle) {
-                    Ok(bytes) => {
-                        if let Err(e) = socket.send(&bytes) {
-                            log::warn!("[synthetic] send failed: {e}");
-                        }
-                    }
-                    Err(e) => log::warn!("[synthetic] encode failed: {e:?}"),
-                }
-                next += period;
-                let now = Instant::now();
-                if next > now {
-                    std::thread::sleep(next - now);
-                } else {
-                    // Fell behind (e.g. suspended); resync instead of bursting.
-                    next = now;
-                }
+                content.push(OscPacket::Message(OscMessage {
+                    addr: format!("/omniphony/object/{i}/xyz"),
+                    args: vec![
+                        OscType::Float(x),
+                        OscType::Float(y),
+                        OscType::Float(z),
+                        OscType::Int(-1),
+                        OscType::Int(0),
+                        OscType::Int(0),
+                        OscType::Int(0),
+                        OscType::Long(generation),
+                        OscType::String(format!("{name} {i}")),
+                    ],
+                }));
+                // A slow level sweep so meter-driven visuals move.
+                let level = -40.0 + 30.0 * (0.9 * t + phase).sin().abs();
+                content.push(OscPacket::Message(OscMessage {
+                    addr: format!("/omniphony/meter/object/{i}"),
+                    args: vec![OscType::Float(level), OscType::Float(level - 6.0)],
+                }));
             }
-        })?;
-    Ok(())
+            generation += 1;
+            tick += 1;
+            let bundle = OscPacket::Bundle(OscBundle {
+                timetag: OscTime {
+                    seconds: 0,
+                    fractional: 1,
+                },
+                content,
+            });
+            match encoder::encode(&bundle) {
+                Ok(bytes) => {
+                    if let Err(e) = socket.send(&bytes) {
+                        log::warn!("[synthetic] send failed: {e}");
+                    }
+                }
+                Err(e) => log::warn!("[synthetic] encode failed: {e:?}"),
+            }
+            next += period;
+            let now = Instant::now();
+            if next > now {
+                stop.wait(Some(next - now));
+            } else {
+                // Fell behind (e.g. suspended); resync instead of bursting.
+                next = now;
+            }
+        }
+    })
 }
 
 #[cfg(test)]
 mod connection_tests {
     use super::*;
+
+    #[test]
+    fn listener_shutdown_flushes_final_commands_and_releases_its_port() {
+        for _ in 0..4 {
+            let renderer = UdpSocket::bind("127.0.0.1:0").unwrap();
+            renderer
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let live = Arc::new(Mutex::new(Live::new(
+                crate::model::app_state::AppState::new(Vec::new()),
+            )));
+            let (port, tx, mut worker) = spawn_listener(
+                live.clone(),
+                Arc::new(|| {}),
+                OscStats::new(),
+                ListenerConfig {
+                    listen_port: 0,
+                    register: Some(renderer.local_addr().unwrap()),
+                    metering: false,
+                },
+            )
+            .unwrap();
+            tx.send(Control::Send {
+                address: "/test/final-stop".into(),
+                args: vec![],
+            })
+            .unwrap();
+            worker.shutdown();
+            let mut observed = false;
+            let mut buffer = [0; 2048];
+            // Two registration messages precede the final command.
+            for _ in 0..3 {
+                let (size, _) = renderer.recv_from(&mut buffer).unwrap();
+                if let Ok((_, OscPacket::Message(message))) = decoder::decode_udp(&buffer[..size]) {
+                    observed |= message.addr == "/test/final-stop";
+                }
+            }
+            assert!(observed);
+            assert_eq!(Arc::strong_count(&live), 1);
+            let rebound = UdpSocket::bind(("0.0.0.0", port)).unwrap();
+            drop(rebound);
+        }
+    }
 
     #[test]
     fn replies_from_a_separate_renderer_socket_are_accepted() {

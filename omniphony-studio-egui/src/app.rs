@@ -224,6 +224,9 @@ pub struct StudioSpike {
     /// watchdog and the tracked child live in it: a fresh one per call would
     /// forget the renderer it just started.
     pub(crate) host: std::sync::Arc<crate::host::commands::SharedState>,
+    listener: crate::host::runtime::Worker,
+    services: crate::host::services::ServiceRuntime,
+    synthetic: Option<crate::host::runtime::Worker>,
     /// When the watchdog last ticked, and since when the link has been down.
     /// The OS service's state, and when it was last asked for. Asking means
     /// spawning a process, so it is not a per-frame question.
@@ -299,7 +302,7 @@ impl StudioSpike {
         // something to do nudges it as well as repainting: an applied packet, a
         // finished job, an interest the view just declared. The clock's own
         // waker only repaints — nudging itself would spin.
-        let (clock, nudges) = crate::host::services::ServiceClock::new();
+        let clock = crate::host::services::ServiceClock::default();
         let repaint: osc::Waker = {
             let ctx = cc.egui_ctx.clone();
             Arc::new(move || ctx.request_repaint())
@@ -312,7 +315,7 @@ impl StudioSpike {
                 clock.nudge();
             })
         };
-        let (port, control) = osc::spawn_listener(
+        let (port, control, listener) = osc::spawn_listener(
             live.clone(),
             waker.clone(),
             osc_stats.clone(),
@@ -323,11 +326,13 @@ impl StudioSpike {
             },
         )?;
         log::info!("[osc] listening on udp/{port}");
-        if args.synthetic > 0 {
+        let synthetic = if args.synthetic > 0 {
             let stop = (args.synthetic_stop_after > 0.0)
                 .then(|| Duration::from_secs_f32(args.synthetic_stop_after));
-            osc::spawn_synthetic(args.synthetic, args.rate, port, stop)?;
-        }
+            Some(osc::spawn_synthetic(args.synthetic, args.rate, port, stop)?)
+        } else {
+            None
+        };
 
         let mut prefs = crate::prefs::load(&config_dir);
         // The language is applied before the first frame, so nothing is drawn
@@ -374,9 +379,12 @@ impl StudioSpike {
         ));
         // The core's own clock: it sleeps until a service is due or the waker
         // nudges it, so an idle Studio wakes for nothing.
-        crate::host::services::spawn(host.clone(), repaint, nudges)?;
+        let services = crate::host::services::spawn(host.clone(), repaint, clock)?;
 
         Ok(Self {
+            listener,
+            services,
+            synthetic,
             args,
             osc_stats,
             camera: OrbitCamera::new(),
@@ -1003,8 +1011,13 @@ impl eframe::App for StudioSpike {
     /// `beforeunload`: a test left playing would outlive the window, so the
     /// renderer is told to stop before this host goes away.
     fn on_exit(&mut self) {
-        self.stop_speaker_test();
+        self.services.stop_audio_operations(&self.host);
+        if let Some(synthetic) = &mut self.synthetic {
+            synthetic.shutdown();
+        }
         self.stop_object_test();
+        self.services.shutdown();
         self.stop_launched_renderer();
+        self.listener.shutdown();
     }
 }
