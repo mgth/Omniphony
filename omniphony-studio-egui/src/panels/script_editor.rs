@@ -29,9 +29,6 @@ pub struct ScriptEditor {
     pub key: String,
     pub language: Option<String>,
     pub extensions: Vec<String>,
-    /// The renderer is this machine, so a local path is meaningful and Browse
-    /// is worth offering.
-    pub renderer_is_local: bool,
     /// The name field: what a save writes under.
     pub name: String,
     /// The buffer.
@@ -316,7 +313,6 @@ impl StudioSpike {
             key: key.to_owned(),
             language,
             extensions,
-            renderer_is_local: crate::host::commands::app::renderer_is_local(&self.host),
             ..Default::default()
         });
         crate::host::commands::render::backend_file_list(&self.host, backend.to_owned());
@@ -370,7 +366,7 @@ impl StudioSpike {
             return;
         };
         let (backend, key) = (editor.backend.clone(), editor.key.clone());
-        let renderer_is_local = editor.renderer_is_local;
+        let renderer_is_local = crate::host::commands::app::renderer_is_local(&self.host);
         let files: Vec<String> = {
             let live = self.host.read();
             live.backend_files

@@ -183,7 +183,7 @@ pub fn get_osc_config(state: &SharedState) -> OscConfig {
     load_config(&state.config_dir)
 }
 
-/// Loopback test shared by [`renderer_is_local`] and the auto-start watchdog.
+/// Hostname loopback test used by the auto-start watchdog.
 pub fn host_is_local(host: &str) -> bool {
     let host = host.trim().trim_matches(['[', ']']);
     host.is_empty()
@@ -192,12 +192,17 @@ pub fn host_is_local(host: &str) -> bool {
         || host.starts_with("127.")
 }
 
-/// Whether the configured renderer host is loopback, so the renderer shares this
+/// Whether the active transport target is loopback, so the renderer shares this
 /// machine's filesystem. The native Browse dialog returns a path in this machine's
 /// namespace, so the UI only offers it for editable file params when this is true;
 /// editing a remote renderer's files still works through the OSC content channel.
 pub fn renderer_is_local(state: &SharedState) -> bool {
-    host_is_local(&load_config(&state.config_dir).host)
+    state
+        .stats
+        .target
+        .lock()
+        .unwrap()
+        .is_some_and(|target| target.ip().is_loopback())
 }
 
 pub fn get_about_info() -> AboutInfo {
@@ -256,6 +261,32 @@ pub fn auto_tune_snapshot_peek(state: &SharedState) -> Option<serde_json::Value>
 #[cfg(test)]
 mod reconnect_tests {
     use super::*;
+
+    #[test]
+    fn local_file_access_follows_transport_instead_of_persisted_preferences() {
+        let mut state = crate::host::commands::tests::state();
+        let directory = tempfile::tempdir().unwrap();
+        state.config_dir = directory.path().into();
+        for saved_host in ["127.0.0.1", "192.0.2.10"] {
+            save_config(
+                &state.config_dir,
+                &OscConfig {
+                    host: saved_host.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for (target, local) in [
+                (None, false),
+                (Some("127.0.0.1:9000"), true),
+                (Some("192.0.2.10:9000"), false),
+                (Some("127.0.0.2:9010"), true),
+            ] {
+                *state.stats.target.lock().unwrap() = target.map(|value| value.parse().unwrap());
+                assert_eq!(renderer_is_local(&state), local);
+            }
+        }
+    }
 
     #[test]
     fn slow_initial_resolution_cannot_replace_a_newer_manual_target() {
