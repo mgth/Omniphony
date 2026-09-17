@@ -3,7 +3,8 @@
 This records executed checks, not a declaration of complete port parity. Keep
 new results tied to a commit and distinguish a software rendering environment
 from supported hardware/OS acceptance. The [completion plan](studio-native-completion.md)
-defines the remaining scenarios.
+defines the remaining scenarios. The [manual platform procedure](studio-native-manual-validation.md)
+provides isolated commands, expected outcomes and a sign-off template.
 
 ## Linux software-rendering smoke, 2026-09-17
 
@@ -84,3 +85,13 @@ configuration and temporary output directory and never captures the user's
 desktop. It accepts extra Studio flags after its three numeric arguments and
 `STUDIO_BINARY` for an installed executable. Its timing windows differ from the
 short observations above; retain each run's log and environment when comparing.
+
+
+## Reproducible frame-interval percentiles
+
+Stats output now includes nearest-rank p50/p95 of the last 256 raw UI frame
+intervals and their sample count. Collection uses a fixed array without per-frame
+allocation; sorting occurs only when the user requested a stats print. These
+values include scheduling/idle gaps and are not GPU execution times. This
+instrumentation was added after the software-rendering measurements above;
+those historical results remain averages and are not retroactively percentiles.

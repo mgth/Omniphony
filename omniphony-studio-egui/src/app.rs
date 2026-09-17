@@ -955,8 +955,9 @@ impl StudioSpike {
         }
         self.last_print = Instant::now();
         let objects = self.host.read().app.sources.len();
+        let (samples, p50, p95) = self.frame_stats.interval_percentiles().unwrap_or_default();
         println!(
-            "stats t={:.0}s fps={:.1} frame_ms={:.2} osc_pkt_s={:.0} objects={} rss_mb={:.0} cpu_pct={:.1} events={} pointer_moves={} pointer_over={}",
+            "stats t={:.0}s fps={:.1} frame_ms={:.2} osc_pkt_s={:.0} objects={} rss_mb={:.0} cpu_pct={:.1} events={} pointer_moves={} pointer_over={} frame_samples={} frame_interval_p50_ms={:.2} frame_interval_p95_ms={:.2}",
             self.osc_stats.start.elapsed().as_secs_f32(),
             self.frame_stats.fps,
             self.frame_stats.frame_ms,
@@ -967,6 +968,9 @@ impl StudioSpike {
             self.input_events,
             self.pointer_moves,
             self.pointer_over,
+            samples,
+            p50,
+            p95,
         );
         self.input_events = 0;
         self.pointer_moves = 0;

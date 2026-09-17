@@ -3,7 +3,12 @@
 
 use std::time::{Duration, Instant};
 
+const FRAME_SAMPLES: usize = 256;
+
 pub struct FrameStats {
+    intervals: [f32; FRAME_SAMPLES],
+    interval_count: usize,
+    interval_cursor: usize,
     last_frame: Instant,
     window_start: Instant,
     frames_in_window: u32,
@@ -16,6 +21,9 @@ impl FrameStats {
     pub fn new() -> Self {
         let now = Instant::now();
         Self {
+            intervals: [0.0; FRAME_SAMPLES],
+            interval_count: 0,
+            interval_cursor: 0,
             last_frame: now,
             window_start: now,
             frames_in_window: 0,
@@ -24,10 +32,31 @@ impl FrameStats {
         }
     }
 
+    fn record_interval(&mut self, milliseconds: f32) {
+        self.intervals[self.interval_cursor] = milliseconds;
+        self.interval_cursor = (self.interval_cursor + 1) % FRAME_SAMPLES;
+        self.interval_count = (self.interval_count + 1).min(FRAME_SAMPLES);
+    }
+
+    /// Nearest-rank percentiles of the last 256 UI frame intervals. Called
+    /// only when printing requested statistics, not by the per-frame hot path.
+    /// These include scheduling/idle gaps and are not GPU execution times.
+    pub fn interval_percentiles(&self) -> Option<(usize, f32, f32)> {
+        let count = self.interval_count;
+        if count == 0 {
+            return None;
+        }
+        let mut sorted = self.intervals;
+        sorted[..count].sort_unstable_by(f32::total_cmp);
+        let percentile = |percent: usize| sorted[(count * percent).div_ceil(100) - 1];
+        Some((count, percentile(50), percentile(95)))
+    }
+
     pub fn tick(&mut self) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32() * 1000.0;
         self.last_frame = now;
+        self.record_interval(dt);
         self.frame_ms = if self.frame_ms == 0.0 {
             dt
         } else {
@@ -109,4 +138,25 @@ fn cpu_ticks() -> Option<u64> {
 #[cfg(not(target_os = "linux"))]
 fn cpu_ticks() -> Option<u64> {
     None
+}
+
+#[cfg(test)]
+mod frame_interval_tests {
+    use super::*;
+    #[test]
+    fn percentiles_use_raw_intervals_and_forget_overwritten_frames() {
+        let mut stats = FrameStats::new();
+        assert_eq!(stats.interval_percentiles(), None);
+        for interval in 1..=20 {
+            stats.record_interval(interval as f32);
+        }
+        assert_eq!(stats.interval_percentiles(), Some((20, 10.0, 19.0)));
+        for _ in 0..FRAME_SAMPLES {
+            stats.record_interval(5.0);
+        }
+        assert_eq!(
+            stats.interval_percentiles(),
+            Some((FRAME_SAMPLES, 5.0, 5.0))
+        );
+    }
 }
