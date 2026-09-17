@@ -8,6 +8,7 @@ pub mod channels;
 pub mod commands;
 pub mod config;
 pub mod control;
+pub mod diagnostics;
 pub mod json_store;
 pub mod peak_hold;
 pub mod process;
