@@ -36,6 +36,12 @@ impl TextDraft {
         width: f32,
         allow_empty: bool,
     ) -> Option<String> {
+        if !ui.is_enabled() {
+            // Disabling a text edit surrenders focus. It is not a user commit
+            // (e.g. disconnect or a frozen layout while text was being typed).
+            self.discard();
+            self.reset(source);
+        }
         let frame = ui.ctx().cumulative_frame_nr();
         if self
             .last_frame
@@ -62,6 +68,9 @@ impl TextDraft {
         {
             response.surrender_focus();
             self.reset(source);
+            return None;
+        }
+        if !ui.is_enabled() {
             return None;
         }
         self.active |= response.has_focus() || response.changed();
@@ -220,6 +229,33 @@ mod tests {
         output.textures_delta.clear();
         assert_eq!(frame(&ctx, &mut draft, 1, "second", false, vec![]), None);
         assert_eq!(draft.text, "second");
+    }
+
+    #[test]
+    fn disabling_a_focused_field_never_commits_its_draft() {
+        let ctx = egui::Context::default();
+        let mut draft = TextDraft::default();
+        frame(&ctx, &mut draft, 1, "before", true, vec![]);
+        frame(
+            &ctx,
+            &mut draft,
+            1,
+            "before",
+            false,
+            vec![egui::Event::Text("X".into())],
+        );
+        let mut commit = None;
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            ui.disable();
+            commit = draft.show(ui, 1usize, "before", "", 170.0, false);
+        });
+        output.textures_delta.clear();
+        assert!(commit.is_none());
+        assert_eq!(
+            frame(&ctx, &mut draft, 1, "new connection", false, vec![]),
+            None
+        );
+        assert_eq!(draft.text, "new connection");
     }
 
     #[test]
