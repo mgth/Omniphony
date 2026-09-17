@@ -407,7 +407,7 @@ impl StudioSpike {
             let mut group = Group::new(t(caption));
             if index == 1 {
                 group = group.help("help.adaptive.title").actions(|ui| {
-                    widgets::switch(ui, &mut on);
+                    widgets::switch(ui, &mut on, t(caption));
                 });
             }
             group.show(ui, |ui| {
@@ -420,7 +420,7 @@ impl StudioSpike {
                     // Label, help mark and switch on one line, the switch placed
                     // first: it used to fall to a line of its own below its label.
                     if widgets::label_row_help(ui, t(label), *help, |ui| {
-                        widgets::switch(ui, &mut value).changed()
+                        widgets::switch(ui, &mut value, t(label)).changed()
                     }) {
                         adaptive::set_switch(&self.host, *switch, value);
                     }

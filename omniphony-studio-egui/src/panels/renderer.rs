@@ -1016,7 +1016,7 @@ impl StudioSpike {
         Group::new(t("distance.title"))
             .info("distance")
             .actions(|ui| {
-                widgets::switch(ui, &mut on);
+                widgets::switch(ui, &mut on, t("distance.title"));
             })
             .show(ui, |ui| {
                 // The parameters collapse with the effect, as in the web panel.
@@ -1093,7 +1093,7 @@ impl StudioSpike {
                 RichText::new(t(key))
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_FAINT),
-                |ui| widgets::switch(ui, on),
+                |ui| widgets::switch(ui, on, t(key)),
             );
         }
         if next != axes {

@@ -276,7 +276,7 @@ impl StudioSpike {
                          Diag publication has its own rate in the diag plot controls.",
                     );
             });
-            widgets::switch(ui, &mut metering).changed()
+            widgets::switch(ui, &mut metering, t("osc.metering")).changed()
         });
         if toggled {
             app_cmd::set_metering_enabled(&self.host, metering);

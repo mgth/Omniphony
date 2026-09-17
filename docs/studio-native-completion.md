@@ -337,3 +337,12 @@ by defaults. Recover by opening it with a compatible Studio, or restoring/moving
 the affected preferences file while Studio is closed, then restarting. Future
 migrations must be explicit and covered by fixtures. Concurrent Studio instances
 still use last-writer-wins; browser localStorage import remains separate work.
+### Shared control accessibility
+
+Every custom switch now exposes its translated visible label and checked state
+to AccessKit. Keyboard focus draws an outline inside the existing control bounds.
+The two shared slider layouts expose their separate labels without duplicating
+painted text or changing the native slider's value, range and actions. Headless
+tests exercise the accessibility tree, keyboard activation and disabled controls.
+This is partial lot14 coverage: specialized controls, actual platform screen
+readers, CJK/IME, and visual acceptance still need separate validation.

@@ -103,7 +103,11 @@ impl StudioSpike {
                     Group::new(t("display.objectAppearance"))
                         .help("help.display.showObjects")
                         .actions(|ui| {
-                            widgets::switch(ui, &mut s.objects_visible);
+                            widgets::switch(
+                                ui,
+                                &mut s.objects_visible,
+                                t("display.objectAppearance"),
+                            );
                         })
                         .show(ui, |ui| {
                             widgets::label_row_help(
@@ -158,13 +162,19 @@ impl StudioSpike {
                                 ui,
                                 t("effectiveRender.title"),
                                 "effectiveRender",
-                                |ui| widgets::switch(ui, &mut s.effective_render_enabled),
+                                |ui| {
+                                    widgets::switch(
+                                        ui,
+                                        &mut s.effective_render_enabled,
+                                        t("effectiveRender.title"),
+                                    )
+                                },
                             );
                         });
                     Group::new(t("trail.title"))
                         .info("trail")
                         .actions(|ui| {
-                            widgets::switch(ui, &mut s.trails.enabled);
+                            widgets::switch(ui, &mut s.trails.enabled, t("trail.title"));
                         })
                         .show(ui, |ui| {
                             widgets::label_row_help(ui, t("trail.mode"), "help.trail.mode", |ui| {
@@ -209,7 +219,7 @@ impl StudioSpike {
                     Group::new(t("display.speakers"))
                         .help("help.display.showSpeakers")
                         .actions(|ui| {
-                            widgets::switch(ui, &mut s.speakers_visible);
+                            widgets::switch(ui, &mut s.speakers_visible, t("display.speakers"));
                         })
                         .show(ui, |ui| {
                             widgets::switch_row_help(
@@ -288,7 +298,7 @@ impl StudioSpike {
                 Group::new(t("heatmap.objects"))
                     .help("help.heatmap.objectEnergy")
                     .actions(|ui| {
-                        widgets::switch(ui, &mut v.object_field_enabled);
+                        widgets::switch(ui, &mut v.object_field_enabled, t("heatmap.objects"));
                     })
                     .show(ui, |ui| {
                         combo(
@@ -319,7 +329,7 @@ impl StudioSpike {
                 Group::new(t("heatmap.global"))
                     .help("help.heatmap.globalEnergy")
                     .actions(|ui| {
-                        widgets::switch(ui, &mut v.global_enabled);
+                        widgets::switch(ui, &mut v.global_enabled, t("heatmap.global"));
                     })
                     .show(ui, |ui| {
                         widgets::slider_line_help(
@@ -334,7 +344,7 @@ impl StudioSpike {
                 Group::new(t("heatmap.speakers"))
                     .help("help.heatmap.speakerVolume")
                     .actions(|ui| {
-                        widgets::switch(ui, &mut v.speaker_enabled);
+                        widgets::switch(ui, &mut v.speaker_enabled, t("heatmap.speakers"));
                     })
                     .show(ui, |ui| {
                         combo(
@@ -354,7 +364,11 @@ impl StudioSpike {
                 Group::new(t("heatmap.discontinuity"))
                     .help("help.heatmap.discontinuity")
                     .actions(|ui| {
-                        widgets::switch(ui, &mut v.discontinuity_enabled);
+                        widgets::switch(
+                            ui,
+                            &mut v.discontinuity_enabled,
+                            t("heatmap.discontinuity"),
+                        );
                     })
                     .show(ui, |ui| {
                         widgets::label_row_help(

@@ -204,7 +204,7 @@ impl StudioSpike {
             t("objectTest.feature"),
             "help.objectTestFeature",
             |ui| {
-                if widgets::switch(ui, &mut on).changed() {
+                if widgets::switch(ui, &mut on, t("objectTest.feature")).changed() {
                     self.set_object_test_feature(on);
                 }
             },
@@ -258,7 +258,7 @@ impl StudioSpike {
             t("objectTest.admView"),
             "help.objectTestAdmView",
             |ui| {
-                if widgets::switch(ui, &mut adm).changed() {
+                if widgets::switch(ui, &mut adm, t("objectTest.admView")).changed() {
                     self.prefs.object_test.adm_view = adm;
                     self.mark_prefs_dirty();
                 }
@@ -426,7 +426,7 @@ impl StudioSpike {
         let mut snap = self.prefs.object_test.snap;
         widgets::label_row_help(ui, t("objectTest.snap"), "help.objectTestSnap", |ui| {
             ui.add_enabled_ui(has_grid, |ui| {
-                if widgets::switch(ui, &mut snap).changed() {
+                if widgets::switch(ui, &mut snap, t("objectTest.snap")).changed() {
                     self.prefs.object_test.snap = snap;
                     self.mark_prefs_dirty();
                     if snap {
