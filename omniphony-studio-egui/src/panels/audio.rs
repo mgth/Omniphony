@@ -154,26 +154,16 @@ const READOUT_ADVANCES: f32 = 9.0;
 /// floors the bar at its own height, so an overlay dragged to its narrowest
 /// shortens the bar rather than pushing the readout out of the panel.
 fn master_meter(ui: &mut Ui, peak: f64, hold: f64, readout: &str) {
-    let font = egui::TextStyle::Monospace.resolve(ui.style());
-    let (advance, row_height) = ui.fonts_mut(|f| (f.glyph_width(&font, '0'), f.row_height(&font)));
-    let box_width = advance * READOUT_ADVANCES;
-    let bar_width = ui.available_width() - box_width - ui.spacing().item_spacing.x;
-    crate::ui::meter::level_meter_sized(
-        ui,
-        bar_width,
-        meter_fraction(peak),
-        (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
-        hold >= 0.0,
-        None,
-    );
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(box_width, row_height), egui::Sense::hover());
-    ui.painter().text(
-        rect.right_center(),
-        egui::Align2::RIGHT_CENTER,
-        readout,
-        font,
-        theme::TEXT_STRONG,
-    );
+    crate::ui::meter::row_with_readout(ui, READOUT_ADVANCES, readout, |ui, width| {
+        crate::ui::meter::level_meter_sized(
+            ui,
+            width,
+            meter_fraction(peak),
+            (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
+            hold >= 0.0,
+            None,
+        );
+    });
 }
 
 /// `.clip-indicator`: a 9 px dot that turns red for a second on every clip.
