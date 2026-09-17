@@ -52,6 +52,7 @@ pub struct StudioSpike {
     pub(crate) pick_speakers: Vec<(usize, Vec3, f32)>,
     pub(crate) volume_settings: VolumeSettings,
     pub(crate) volume_state: VolumeState,
+    pub(crate) volume_input: view::volumes::VolumeInput,
     pub(crate) head_loaded: bool,
     /// Eased head-pose rotation (`scene/head-pose.js`, slerp 0.4 per frame).
     pub(crate) head_rotation: Quat,
@@ -416,6 +417,7 @@ impl StudioSpike {
             pick_speakers: Vec::new(),
             volume_settings,
             volume_state: VolumeState::default(),
+            volume_input: Default::default(),
             head_loaded,
             head_rotation: Quat::IDENTITY,
             layout,
@@ -662,8 +664,10 @@ impl StudioSpike {
         // write `heatmap_band_index`, and the volumes read it from here.
         self.volume_settings.band_index = self.settings.heatmap_band_index;
         self.settings.heatmap_all_bands = self.volume_settings.all_bands;
-        let out = {
+        let mut out = {
             let live = self.host.read();
+            self.volume_input
+                .capture(&live, &self.volume_settings, self.selection.speaker);
             view::build_frame(
                 &live,
                 &self.settings,
@@ -671,13 +675,19 @@ impl StudioSpike {
                 to_screen_rect(rect),
                 ppp,
                 &self.selection,
-                &self.volume_settings,
-                &mut self.volume_state,
                 self.head_rotation,
                 self.head_loaded,
                 Instant::now(),
             )
         };
+        // CPU volume sampling cannot retain the model guard: it only accepts
+        // the owned inputs captured above. OSC and safety services can proceed.
+        out.frame.volumes = view::volumes::build(
+            &self.volume_input,
+            &self.volume_settings,
+            &mut self.volume_state,
+            Instant::now(),
+        );
         self.pick_objects = out.pick_objects;
         self.pick_speakers = out.pick_speakers;
         // A drag owns the anchor while it lasts: the frame's copy is the

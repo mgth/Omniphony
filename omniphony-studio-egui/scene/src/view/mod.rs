@@ -276,8 +276,6 @@ pub fn build_frame(
     rect: ScreenRect,
     ppp: f32,
     selection: &Selection,
-    volume_settings: &VolumeSettings,
-    volume_state: &mut VolumeState,
     // Eased head-pose rotation and whether the glTF head is available.
     head_rotation: Quat,
     head_loaded: bool,
@@ -539,16 +537,6 @@ pub fn build_frame(
     if let Some(p) = shadow_pos {
         room::emit_face_shadows(p, &bounds, &mut frame);
     }
-
-    frame.volumes = volumes::build(
-        live,
-        volume_settings,
-        volume_state,
-        &bounds,
-        &room,
-        selection.speaker,
-        now,
-    );
 
     FrameOutput {
         frame,

@@ -88,7 +88,7 @@ pub struct Live {
     pub object_band_rms: HashMap<String, Vec<f64>>,
     /// Decoded speaker gain tables keyed by speaker index; `-1` is the
     /// all-speaker energy field.
-    pub gain_tables: HashMap<i64, GainTable>,
+    pub gain_tables: HashMap<i64, std::sync::Arc<GainTable>>,
     pub gaintable_unavailable: Option<serde_json::Value>,
     pub overlay: Option<serde_json::Value>,
     pub object_test_position: Option<ObjectTestPosition>,
@@ -826,7 +826,8 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         OscEvent::StateDebugSpeakerGaintableChunk { bytes } => match gaintable_on_chunk(&bytes) {
             Some(table) => {
                 live.gaintable_unavailable = None;
-                live.gain_tables.insert(table.speaker_index(), table);
+                live.gain_tables
+                    .insert(table.speaker_index(), std::sync::Arc::new(table));
                 Change::Scene
             }
             None => Change::None,
