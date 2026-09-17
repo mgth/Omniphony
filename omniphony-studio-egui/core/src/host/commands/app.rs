@@ -108,6 +108,17 @@ pub fn take_backend_file(
     }
 }
 
+/// Consume a failure only for the editor that requested this parameter.
+pub fn take_backend_file_error(state: &SharedState, backend: &str, key: &str) -> Option<String> {
+    let mut live = state.inner.lock().unwrap();
+    match &live.backend_file_error {
+        Some(error) if error.backend == backend && error.key == key => {
+            live.backend_file_error.take().map(|error| error.message)
+        }
+        _ => None,
+    }
+}
+
 pub fn get_state(state: &SharedState) -> serde_json::Value {
     let s = state.inner.lock().unwrap();
     serde_json::to_value(&s.app).unwrap_or(serde_json::Value::Null)

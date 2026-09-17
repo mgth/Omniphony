@@ -35,8 +35,35 @@ pub struct ScriptEditor {
     /// The buffer.
     pub text: String,
     pub status: Option<(String, bool)>,
-    /// A `get` is out and its answer has not arrived.
-    pub awaiting: bool,
+    /// Snapshot of the view buffer at request time, to protect ongoing typing.
+    pending: Option<Pending>,
+}
+
+#[derive(Clone, Debug)]
+enum Pending {
+    Load { text: String },
+    Save,
+}
+
+impl ScriptEditor {
+    fn accept_content(&mut self, file: crate::osc::dispatch::BackendFile) {
+        match self.pending.take() {
+            Some(Pending::Load { text }) if text == self.text => {
+                self.text = file.content;
+                self.name = file.name;
+                self.status = Some((t("backend.file.editor.loaded").to_owned(), false));
+            }
+            Some(Pending::Load { .. }) => {
+                self.status = Some((t("backend.file.editor.editedDuringLoad").to_owned(), true));
+            }
+            Some(Pending::Save) => {
+                // Acknowledgement is about the submitted revision. Typing and
+                // filename edits made since Save belong to the next revision.
+                self.status = Some((t("backend.file.editor.saved").to_owned(), false));
+            }
+            None => {}
+        }
+    }
 }
 
 /// What one run of the highlighter found. Ranges are byte offsets into the
@@ -228,7 +255,9 @@ impl StudioSpike {
             return;
         };
         editor.status = Some((t("backend.file.editor.loading").to_owned(), false));
-        editor.awaiting = true;
+        editor.pending = Some(Pending::Load {
+            text: editor.text.clone(),
+        });
         let (backend, key) = (editor.backend.clone(), editor.key.clone());
         crate::host::commands::render::backend_file_get(&self.host, backend, key, name);
     }
@@ -288,37 +317,43 @@ impl StudioSpike {
 
         let mut open: Option<String> = None;
         let mut action = None;
-        ui.horizontal_wrapped(|ui| {
-            egui::ComboBox::from_id_salt("script-editor-managed")
-                .selected_text(t("backend.file.editor.pickerDefault"))
-                .width(140.0)
-                .show_ui(ui, |ui| {
-                    for name in &files {
-                        if ui.selectable_label(false, name).clicked() {
-                            open = Some(name.clone());
+        let busy = self
+            .script_editor
+            .as_ref()
+            .is_some_and(|e| e.pending.is_some());
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                egui::ComboBox::from_id_salt("script-editor-managed")
+                    .selected_text(t("backend.file.editor.pickerDefault"))
+                    .width(140.0)
+                    .show_ui(ui, |ui| {
+                        for name in &files {
+                            if ui.selectable_label(false, name).clicked() {
+                                open = Some(name.clone());
+                            }
                         }
-                    }
-                });
-            let Some(editor) = &mut self.script_editor else {
-                return;
-            };
-            ui.add(
-                egui::TextEdit::singleline(&mut editor.name)
-                    .desired_width(160.0)
-                    .hint_text(t("backend.file.editor.filenamePlaceholder")),
-            );
-            if renderer_is_local && ui.button(t("backend.file.browse")).clicked() {
-                action = Some(Action::Browse);
-            }
-            if ui.button(t("backend.file.editor.new")).clicked() {
-                action = Some(Action::New);
-            }
-            if ui.button(t("backend.file.editor.reload")).clicked() {
-                action = Some(Action::Reload);
-            }
-            if ui.button(t("backend.file.editor.save")).clicked() {
-                action = Some(Action::Save);
-            }
+                    });
+                let Some(editor) = &mut self.script_editor else {
+                    return;
+                };
+                ui.add(
+                    egui::TextEdit::singleline(&mut editor.name)
+                        .desired_width(160.0)
+                        .hint_text(t("backend.file.editor.filenamePlaceholder")),
+                );
+                if renderer_is_local && ui.button(t("backend.file.browse")).clicked() {
+                    action = Some(Action::Browse);
+                }
+                if ui.button(t("backend.file.editor.new")).clicked() {
+                    action = Some(Action::New);
+                }
+                if ui.button(t("backend.file.editor.reload")).clicked() {
+                    action = Some(Action::Reload);
+                }
+                if ui.button(t("backend.file.editor.save")).clicked() {
+                    action = Some(Action::Save);
+                }
+            });
         });
 
         // The editor itself takes what the toolbar and the status line leave.
@@ -380,7 +415,7 @@ impl StudioSpike {
                         .unwrap_or("txt".to_owned());
                     editor.name = format!("untitled.{ext}");
                     editor.text.clear();
-                    editor.awaiting = false;
+                    editor.pending = None;
                     editor.status = Some((t("backend.file.editor.new").to_owned(), false));
                 }
             }
@@ -407,6 +442,7 @@ impl StudioSpike {
             return;
         }
         editor.status = Some((t("backend.file.editor.saving").to_owned(), false));
+        editor.pending = Some(Pending::Save);
         let (backend, key, content) = (
             editor.backend.clone(),
             editor.key.clone(),
@@ -423,21 +459,25 @@ impl StudioSpike {
         let Some(editor) = &self.script_editor else {
             return;
         };
-        if !editor.awaiting {
+        if editor.pending.is_none() {
             return;
         }
         let (backend, key) = (editor.backend.clone(), editor.key.clone());
-        let file = crate::host::commands::app::take_backend_file(&self.host, &backend, &key);
-        let Some(file) = file else { return };
-        let Some(editor) = &mut self.script_editor else {
+        if let Some(message) =
+            crate::host::commands::app::take_backend_file_error(&self.host, &backend, &key)
+        {
+            if let Some(editor) = &mut self.script_editor {
+                editor.pending = None;
+                editor.status = Some((message, true));
+            }
             return;
-        };
-        editor.text = file.content;
-        if !file.name.is_empty() {
-            editor.name = file.name;
         }
-        editor.awaiting = false;
-        editor.status = Some((t("backend.file.editor.loaded").to_owned(), false));
+        if let Some(file) =
+            crate::host::commands::app::take_backend_file(&self.host, &backend, &key)
+            && let Some(editor) = &mut self.script_editor
+        {
+            editor.accept_content(file);
+        }
     }
 }
 
@@ -451,6 +491,59 @@ enum Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reply() -> crate::osc::dispatch::BackendFile {
+        crate::osc::dispatch::BackendFile {
+            backend: "script".into(),
+            key: "file".into(),
+            name: "saved.lua".into(),
+            content: "remote".into(),
+        }
+    }
+
+    #[test]
+    fn save_ack_does_not_replace_newer_typing() {
+        let mut editor = ScriptEditor {
+            text: "newer revision".into(),
+            name: "next.lua".into(),
+            pending: Some(Pending::Save),
+            ..Default::default()
+        };
+        editor.accept_content(reply());
+        assert_eq!(editor.text, "newer revision");
+        assert_eq!(editor.name, "next.lua");
+        assert!(editor.pending.is_none());
+        assert!(!editor.status.unwrap().1);
+    }
+
+    #[test]
+    fn load_preserves_typing_started_after_request() {
+        let mut editor = ScriptEditor {
+            text: "typed".into(),
+            pending: Some(Pending::Load {
+                text: String::new(),
+            }),
+            ..Default::default()
+        };
+        editor.accept_content(reply());
+        assert_eq!(editor.text, "typed");
+        assert!(editor.status.unwrap().1);
+    }
+
+    #[test]
+    fn load_replaces_unchanged_buffer_once() {
+        let mut editor = ScriptEditor {
+            pending: Some(Pending::Load {
+                text: String::new(),
+            }),
+            ..Default::default()
+        };
+        editor.accept_content(reply());
+        assert_eq!(editor.text, "remote");
+        editor.text = "typed".into();
+        editor.accept_content(reply());
+        assert_eq!(editor.text, "typed");
+    }
 
     fn kinds(src: &str) -> Vec<(&str, Tok)> {
         tokenize(src)

@@ -1,5 +1,7 @@
 {
   "common.valueRequired": "Une valeur est nécessaire.",
+  "backend.file.editor.editedDuringLoad": "Le texte a changé pendant le chargement ; vos modifications sont conservées. Rechargez pour les remplacer.",
+  "backend.file.editor.saved": "Enregistré.",
   "app.title": "Omniphony Studio",
   "app.subtitle": "Contrôle spatial",
   "updates.checkLabel": "Vérifier les mises à jour au démarrage",

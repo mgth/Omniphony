@@ -117,3 +117,12 @@ toolkit. Guard failures must not be hidden by a failed dependency inspection.
 
 Full completion requires green CI and review, no known blocking regression,
 manual platform/audio evidence, and documented remaining intentional differences.
+
+### Script editor, first correction
+
+Save acknowledgements finish the pending state without replacing newer typing;
+load replies preserve a buffer edited after the request, and renderer errors
+reach the editor. A new request clears buffered old replies. These behaviours
+have unit coverage. Lot 03 remains open: the legacy protocol has no correlation
+identifier for late same-parameter responses; request deadlines and dirty-close
+confirmation still need implementation.
