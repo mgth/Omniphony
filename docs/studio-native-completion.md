@@ -228,3 +228,14 @@ Legacy renderers remain usable through their untagged replies, with the
 unavoidable old ambiguity after an interrupted same-parameter request. Upgrade
 the renderer to obtain strict correlation. Both standalone and embedded
 renderer capability documents advertise the extension.
+
+### Independent profile panel
+
+The profile picker owns its editor, draft, focus request and confirmation in a
+`ProfilePanel`. It draws from a core snapshot and returns a typed intent; it can
+be tested without constructing Studio, a renderer, a window or a GPU. The core
+revalidates create/rename/delete against the latest echo and sends multi-command
+operations in order. Tests cover changed selections, duplicates, deletion of
+the last or removed profile, and multiple UI frames with Unicode typing/paste,
+Enter and Escape. This establishes the lot11 extraction pattern; remaining
+panels and context-backed help/section state still need migration.

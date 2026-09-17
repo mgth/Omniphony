@@ -115,12 +115,7 @@ pub struct StudioSpike {
     /// Adaptive-controller fields edited but not yet applied.
     pub(crate) adaptive_edits:
         std::collections::BTreeMap<crate::host::commands::adaptive::Param, f64>,
-    /// Config profiles: the inline name editor, its text, and the pending
-    /// delete confirmation.
-    pub(crate) profile_editor: Option<crate::panels::profiles::NameEditor>,
-    pub(crate) profile_name_edit: String,
-    pub(crate) profile_name_focus: bool,
-    pub(crate) profile_delete_confirm: Option<String>,
+    pub(crate) profiles: crate::panels::profiles::ProfilePanel,
     /// A bulk delay tool waiting for its confirmation: both rewrite every
     /// speaker, so neither runs on a single click.
     pub(crate) delay_tool_confirm: Option<crate::panels::speaker_editor::DelayTool>,
@@ -454,10 +449,7 @@ impl StudioSpike {
             prtf_freq_scale: 100.0,
             latency_target_edit: None,
             adaptive_edits: Default::default(),
-            profile_editor: None,
-            profile_name_edit: String::new(),
-            profile_name_focus: false,
-            profile_delete_confirm: None,
+            profiles: Default::default(),
             delay_tool_confirm: None,
             virtual_bed_reset_confirm: false,
             object_test_playing: false,
