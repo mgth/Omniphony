@@ -105,6 +105,11 @@ pub struct Live {
     pub snapshot_epoch: u64,
     /// Layout imports must not outlive a transport reset or local profile intent.
     pub(crate) layout_context_generation: u64,
+    /// Latest reserved DNS intent and latest reconnect not yet drained by the
+    /// transport. Kept separately: a newer DNS failure must not make an older
+    /// queued reconnect look complete to a native file picker.
+    pub(crate) pending_connection_request: Option<u64>,
+    pub(crate) queued_connection_request: Option<u64>,
     /// Origin of the millisecond clock the rolling windows are keyed on.
     pub started: Instant,
     /// Instant latency over the last four seconds, so the meter can show the
@@ -441,6 +446,8 @@ impl Live {
             last_frame_reset: None,
             snapshot_epoch: 0,
             layout_context_generation: 0,
+            pending_connection_request: None,
+            queued_connection_request: None,
             started: Instant::now(),
         }
     }

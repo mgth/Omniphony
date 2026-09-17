@@ -65,6 +65,7 @@ fn finish_session_operations(state: &SharedState) {
 pub fn begin_connection(state: &SharedState) -> u64 {
     let mut request = state.connection_request.lock().unwrap();
     *request = request.wrapping_add(1);
+    state.inner.lock().unwrap().pending_connection_request = Some(*request);
     *request
 }
 
@@ -102,6 +103,12 @@ fn connect_resolved(
         Err(_) => format!("{host}:{port}"),
     };
     let Some(addr) = resolve(&target).filter(std::net::SocketAddr::is_ipv4) else {
+        // A failed old lookup must not clear a newer pending intent. A
+        // reconnect already queued earlier remains in its separate slot.
+        let current = state.connection_request.lock().unwrap();
+        if *current == request {
+            state.inner.lock().unwrap().pending_connection_request = None;
+        }
         let message = format!("cannot resolve {target}");
         state
             .inner
@@ -115,9 +122,15 @@ fn connect_resolved(
         return Err("connection request superseded".into());
     }
     finish_session_operations(state);
+    {
+        let mut live = state.inner.lock().unwrap();
+        live.pending_connection_request = None;
+        live.queued_connection_request = Some(request);
+    }
     send_control(
         &state.osc_tx,
         OscControlMsg::Reconnect {
+            request,
             host: addr.ip().to_string(),
             rx_port: addr.port(),
             listen_port: *state.listen_port.lock().unwrap(),
@@ -289,6 +302,36 @@ mod reconnect_tests {
     }
 
     #[test]
+    fn dns_failure_does_not_revalidate_choices_started_during_resolution() {
+        let state = crate::host::commands::tests::state();
+        let request = begin_connection(&state);
+        let token = crate::host::commands::layout_io::SessionToken::new(&state);
+        assert!(!token.is_current(&state));
+        assert!(connect_resolved(&state, "invalid.example", 9000, request, |_| None).is_err());
+        assert!(state.read().pending_connection_request.is_none());
+        assert!(
+            !token.is_current(&state),
+            "a choice born during transition stays invalid"
+        );
+        assert!(crate::host::commands::layout_io::SessionToken::new(&state).is_current(&state));
+    }
+
+    #[test]
+    fn failed_dns_preserves_newer_intent_and_older_queued_reconnect() {
+        let state = crate::host::commands::tests::state();
+        connect_to(&state, "127.0.0.1", 9000).unwrap();
+        let queued = state.read().queued_connection_request.unwrap();
+        let old = begin_connection(&state);
+        let newest = begin_connection(&state);
+        assert!(connect_resolved(&state, "invalid.example", 9000, old, |_| None).is_err());
+        assert_eq!(state.read().pending_connection_request, Some(newest));
+        assert!(connect_resolved(&state, "invalid.example", 9000, newest, |_| None).is_err());
+        assert_eq!(state.read().pending_connection_request, None);
+        assert_eq!(state.read().queued_connection_request, Some(queued));
+        assert!(!crate::host::commands::layout_io::SessionToken::new(&state).is_current(&state));
+    }
+
+    #[test]
     fn slow_initial_resolution_cannot_replace_a_newer_manual_target() {
         let mut state = crate::host::commands::tests::state();
         let (tx, commands) = std::sync::mpsc::channel();
@@ -309,7 +352,7 @@ mod reconnect_tests {
         let queued: Vec<_> = commands.try_iter().collect();
         assert_eq!(queued.len(), 1);
         assert!(
-            matches!(&queued[0], crate::osc::Control::Reconnect { target } if *target == "127.0.0.2:9010".parse().unwrap())
+            matches!(&queued[0], crate::osc::Control::Reconnect { target, .. } if *target == "127.0.0.2:9010".parse().unwrap())
         );
     }
 
