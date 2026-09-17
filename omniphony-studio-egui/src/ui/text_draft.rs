@@ -198,6 +198,7 @@ mod tests {
                     }
                 },
             );
+            output.textures_delta.clear();
         }
         assert_eq!(emitted, ["move"]);
     }
