@@ -230,7 +230,7 @@ impl StudioSpike {
         // mpv.conf can change outside Studio (a hand edit, another machine),
         // so it is re-read every time the section opens rather than cached.
         if shown.is_none() {
-            self.mpv_orender = None;
+            self.mpv_orender.invalidate();
         }
     }
 
@@ -318,10 +318,11 @@ impl StudioSpike {
             self.save_host_switches();
         }
 
-        let status = self
-            .mpv_orender
-            .get_or_insert_with(crate::host::commands::mpv_config::mpv_orender_status)
-            .clone();
+        self.mpv_orender.refresh(&self.host);
+        let Some(status) = self.mpv_orender.status.clone() else {
+            ui.spinner();
+            return;
+        };
         let (mut enabled, conflict) = match &status {
             Ok(status) => (
                 status.state == MpvOrenderState::Enabled,
@@ -332,37 +333,23 @@ impl StudioSpike {
         // A hand-written `ad=` wins: Studio never edits a line it did not
         // write, so the switch is inert until the user resolves it.
         let flipped = ui
-            .add_enabled_ui(!conflict && status.is_ok(), |ui| {
-                widgets::switch_row_help(
-                    ui,
-                    t("osc.mpvOrender"),
-                    "help.osc.mpvOrender",
-                    &mut enabled,
-                )
-            })
+            .add_enabled_ui(
+                !conflict && status.is_ok() && !self.mpv_orender.pending(),
+                |ui| {
+                    widgets::switch_row_help(
+                        ui,
+                        t("osc.mpvOrender"),
+                        "help.osc.mpvOrender",
+                        &mut enabled,
+                    )
+                },
+            )
             .inner;
         if flipped {
-            match crate::host::commands::mpv_config::mpv_orender_set(enabled) {
-                Ok(status) => {
-                    let key = if enabled {
-                        "log.mpvOrenderEnabled"
-                    } else {
-                        "log.mpvOrenderDisabled"
-                    };
-                    self.log("info", "mpv", tf(key, &[("path", &status.path)]));
-                    self.mpv_orender = Some(Ok(status));
-                }
-                Err(error) => {
-                    // The file was not changed: re-read it, which puts the
-                    // switch back and shows a refused conflict as such.
-                    self.log(
-                        "error",
-                        "mpv",
-                        tf("log.mpvOrenderFailed", &[("error", &error)]),
-                    );
-                    self.mpv_orender = None;
-                }
-            }
+            self.mpv_orender.set_enabled(&self.host, enabled);
+        }
+        if self.mpv_orender.pending() {
+            ui.spinner();
         }
         let (note, colour) = match &status {
             Ok(status) if conflict => (

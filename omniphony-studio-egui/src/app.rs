@@ -75,8 +75,7 @@ pub struct StudioSpike {
     /// What the user's mpv.conf says about `ad=orender`, read when the OSC
     /// section opens (the file can change behind Studio's back) and dropped
     /// when it closes. `Err` is the read failure, shown in place of the path.
-    pub(crate) mpv_orender:
-        Option<Result<crate::host::commands::mpv_config::MpvOrenderStatus, String>>,
+    pub(crate) mpv_orender: crate::host::services::mpv_config::MpvConfig,
     /// Which half of the renderer panel is showing.
     pub(crate) renderer_tab: crate::panels::renderer::RendererTab,
     /// Named-pipe path remembered while the file output is switched off.
@@ -427,7 +426,7 @@ impl StudioSpike {
             osc_port,
             osc_auto_start: osc_config.auto_start_renderer,
             osc_keep_alive: osc_config.keep_renderer_alive_on_quit,
-            mpv_orender: None,
+            mpv_orender: Default::default(),
             renderer_tab: Default::default(),
             audio_pipe_path: String::new(),
             input_edits: Default::default(),

@@ -276,3 +276,13 @@ jobs, and SOFA completions are consumed from application logic even while its
 panel is hidden. Unused synchronous picker entry points were removed. Closing
 an OS dialog or interrupting a filesystem call is not guaranteed by dropping a
 Rust future; the owned-job shutdown limitations above still apply.
+### mpv configuration work off the UI thread
+
+Opening the OSC section and changing its mpv decoder switch now schedule core
+jobs instead of reading or rewriting mpv.conf in the paint callback. The view
+polls without waiting, shows pending work and refuses duplicate operations. A
+result invalidated by closing the section cannot replace the next fresh read.
+Write failures remain visible until reopening the section and are logged by
+the core. Tests use controlled channels and never modify the user's mpv file.
+This does not yet move the other layout/configuration file operations off the
+UI thread or provide cancellation of all generic background jobs (lots07–08).
