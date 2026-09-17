@@ -253,6 +253,16 @@ jobs:
         working-directory: omniphony-studio
         run: npm run build
 
+      # This host has a separate build tree from both the renderer and native
+      # Studio. Cache it too so core changes do not rebuild GTK/WebKit every PR.
+      - name: Cache the Tauri host build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio/src-tauri/target
+          key: ${{ runner.os }}-studio-tauri-${{ hashFiles('omniphony-studio/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-studio-tauri-
+
       # Type-check the web host as a consumer of the shared native core. No
       # sidecar/resource bundle is needed for this compatibility gate.
       - name: Check Tauri host against the shared core
