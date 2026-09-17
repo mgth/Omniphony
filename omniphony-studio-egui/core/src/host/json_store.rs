@@ -77,6 +77,23 @@ pub struct Writer<T> {
     debounce: Duration,
 }
 impl<T: Serialize + Send + 'static> Writer<T> {
+    /// Preserve unreadable or newer documents until the user recovers them.
+    /// This writer owns no thread and never accepts snapshots for persistence.
+    pub fn read_only(error: String) -> Self {
+        Self {
+            shared: Arc::new((
+                Mutex::new(State {
+                    pending: None,
+                    closing: true,
+                    error: Some(error),
+                }),
+                Condvar::new(),
+            )),
+            worker: None,
+            debounce: Duration::ZERO,
+        }
+    }
+
     pub fn new(
         path: PathBuf,
         debounce: Duration,
@@ -175,6 +192,15 @@ impl<T> Drop for Writer<T> {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+    #[test]
+    fn read_only_writer_keeps_the_error_and_discards_all_submissions() {
+        let mut writer = Writer::read_only("Newer preference format".into());
+        writer.submit(42_u32);
+        assert!(writer.shared.0.lock().unwrap().pending.is_none());
+        assert!(writer.worker.is_none());
+        assert_eq!(writer.shutdown(), Err("Newer preference format".into()));
+    }
+
     #[test]
     fn failed_serialization_preserves_previous_document() {
         struct Invalid;

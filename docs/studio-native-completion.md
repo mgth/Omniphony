@@ -326,3 +326,14 @@ backend/session and bounded storage. The core session token also rejects drafts
 during connection transitions and revalidates immediately around command
 queuing, preventing a path typed in profile A from being applied to profile B.
 The targeted workspace suite passes 339 tests; one manual benchmark is ignored.
+
+### Preference schema compatibility
+
+Native preferences now save `schema_version: 1`; unversioned native JSON loads as
+version 1 without dropping known preferences. Unknown versions, malformed JSON
+and failed legacy migration keep defaults in memory but disable saving for that
+session, with the error visible. The original document is never silently replaced
+by defaults. Recover by opening it with a compatible Studio, or restoring/moving
+the affected preferences file while Studio is closed, then restarting. Future
+migrations must be explicit and covered by fixtures. Concurrent Studio instances
+still use last-writer-wins; browser localStorage import remains separate work.

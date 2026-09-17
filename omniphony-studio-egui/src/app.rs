@@ -331,12 +331,13 @@ impl StudioSpike {
             None
         };
 
-        let (mut prefs, prefs_error) =
+        let (mut prefs, prefs_error, prefs_writable) =
             crate::prefs::load(&config_dir, &args.layouts_dir.join(".studio-egui"));
         let prefs_writer = crate::prefs::writer(
             &config_dir,
             repaint.clone(),
             prefs_error.or(config_migration_error),
+            prefs_writable,
         )?;
         // The language is applied before the first frame, so nothing is drawn
         // in English and then redrawn.
