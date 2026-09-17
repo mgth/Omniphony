@@ -72,7 +72,7 @@ to Studio. A forced termination is cleanup, not a successful shutdown result.
 | V02 Geometry | Capture the settled scene, expand Room Geometry and other long sections, scroll their content, then collapse them. Repeat at 1400×900 and 1000×700. | Expansion keeps the outer overlay bounds and scene projection stable. Overflow scrolls internally. Narrow panels can be resized/collapsed without losing controls. |
 | V03 Navigation | Orbit, zoom, pan, select a speaker/object, move its gizmo, toggle trails and volume. | Picking follows the displayed geometry; labels remain legible; no unexpected scene jump or stale selection. |
 | V04 Keyboard | Tab through connection, speaker and profile controls. Toggle switches with Space, use arrows on sliders, Enter/Escape in text fields. | Visible focus; each control works without a pointer; a disabled control cannot send a command. |
-| V05 Text and IME | Type/paste accents and CJK text in a name and script draft; use real IME composition before committing. Change selection while editing. | Composition is not committed early; typing survives frames and renderer echoes; Enter/blur commits once, Escape cancels, selection changes do not edit the old entity. |
+| V05 Text and IME | Type/paste accents and CJK text in a name and script draft; use real IME composition before committing. Change selection while editing. | Composition is not committed early; typing survives frames and renderer echoes; in single-line fields Enter/blur commits once and Escape cancels; script Enter inserts a newline; selection changes do not edit the old entity. |
 | V06 Screen reader | With the platform reader enabled, inspect shared switches and sliders, their enabled state and values. | Accessible names match visible labels; roles, checked/value state and keyboard actions are exposed. Record unnamed custom controls as failures. |
 | V07 Locale/scale | Repeat key controls in English/French, at 100% and 200% scale where supported; switch monitors with different scales. | No essential label is clipped or untranslated; glyphs and focus remain usable; the 3D callback covers the viewport after scale changes. |
 | V08 Quiet/hidden | After the synthetic feed stops, wait five seconds; sample CPU/RSS for ten seconds. Repeat while minimized, then restore. | Receive rate goes to zero, the view settles, CPU returns close to the platform idle baseline and RSS does not grow continuously. Restoring displays current state. |
@@ -130,14 +130,14 @@ device selected. Do not install/uninstall an existing personal or system service
 ## Persistence, installation and upgrade
 
 Use only copies inside the isolated namespace. Its files are under
-`$OMNIPHONY_CONFIG_DIR/studio` (PowerShell: `$env:OMNIPHONY_CONFIG_DIR`).
+`$OMNIPHONY_CONFIG_DIR/studio` (PowerShell: `(Join-Path $env:OMNIPHONY_CONFIG_DIR 'studio')`).
 
 | ID | Steps | Pass criteria |
 |---|---|---|
 | P01 Final flush | Change a display/host preference and immediately quit; reopen the same namespace. | Newest setting survives, with no truncated JSON or temporary-file residue. |
 | P02 Write failure | Make the disposable configuration destination unwritable, edit, restore permissions and retry/restart. | Failure is visible; previous valid data survives; writable sessions retry and final flush succeeds. |
 | P03 Corrupt/future | With Studio closed, replace a copied `studio-egui-prefs.json` with invalid JSON, then with `{"schema_version":999}`; also test invalid `osc_config.json`. | Studio reports the error and preserves the original bytes; session defaults/changes do not overwrite an incompatible document. Restore a compatible copy while closed, then restart. |
-| P04 Legacy | Exercise old unversioned native preferences and a disposable legacy checkout namespace; run migration twice. | Supported values survive; an existing destination is not overwritten; original files remain available. Browser localStorage is not automatically migrated: record this known difference. |
+| P04 Legacy | Test unversioned preferences in the isolated namespace. For checkout migration, use a disposable OS user/VM, unset the explicit namespace override, provide a copied legacy `layouts/.studio-egui` through `--layouts-dir`, and run twice with `--listen-only`. | Supported values survive; an existing destination is not overwritten; original files remain available. Explicit namespace overrides intentionally skip checkout migration. Browser localStorage is not automatically migrated: record this known difference. |
 | P05 Clean archive | On a clean supported OS image, unpack the candidate, run from another directory, select the bundled renderer and exercise V01/V09/L01. | No developer toolchain/checkout is required; resources and sidecar are present, versions agree, and the correct native archive is discoverable for update. Record OS signing/quarantine prompts. |
 | P06 Upgrade/rollback | Keep old/new archives separately, back up the test namespace, open it with the new version, then restore the backup and old version. | Upgrade preserves supported settings and rollback from the backup works. Never rely on an older binary rewriting an unsupported new schema. |
 
