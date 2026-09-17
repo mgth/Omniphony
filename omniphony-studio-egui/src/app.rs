@@ -764,6 +764,7 @@ impl StudioSpike {
         // on its height a frame later, so the lists keep checking for a moment
         // rather than once.
         if self.selection != self.revealed_selection {
+            self.speaker_name_edit.discard();
             self.revealed_selection = self.selection.clone();
             let picked = self.selection.object.is_some() || self.selection.speaker.is_some();
             self.reveal_until = picked.then(|| Instant::now() + REVEAL_WINDOW);

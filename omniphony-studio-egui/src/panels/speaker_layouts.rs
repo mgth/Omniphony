@@ -93,6 +93,7 @@ impl StudioSpike {
                 if let Some(key) = key {
                     self.apply_layout_to_renderer(&key);
                 }
+                self.speaker_name_edit.discard();
                 self.selection.speaker = None;
                 self.log(
                     "info",

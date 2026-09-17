@@ -9,6 +9,7 @@ use egui::{Id, Key, TextEdit, Ui};
 #[derive(Default)]
 pub struct TextDraft {
     target: Option<Id>,
+    last_frame: Option<u64>,
     text: String,
     original: String,
     active: bool,
@@ -16,6 +17,13 @@ pub struct TextDraft {
 }
 
 impl TextDraft {
+    /// A structural action invalidates the entity this text belonged to.
+    pub fn discard(&mut self) {
+        self.target = None;
+        self.active = false;
+        self.invalid = false;
+    }
+
     /// `key` identifies the edited entity, not its current text. Changing it
     /// discards the previous entity's draft rather than committing it to the
     /// newly selected one. Empty text is valid for paths that mean "auto".
@@ -28,6 +36,14 @@ impl TextDraft {
         width: f32,
         allow_empty: bool,
     ) -> Option<String> {
+        let frame = ui.ctx().cumulative_frame_nr();
+        if self
+            .last_frame
+            .is_some_and(|last| frame > last.saturating_add(1))
+        {
+            self.discard();
+        }
+        self.last_frame = Some(frame);
         let id = ui.make_persistent_id(key);
         if self.target != Some(id) {
             self.target = Some(id);
@@ -129,6 +145,80 @@ mod tests {
         );
         output.textures_delta.clear();
         commit
+    }
+
+    #[test]
+    fn structural_click_discards_blur_before_the_new_entity_draws() {
+        let ctx = egui::Context::default();
+        let mut draft = TextDraft::default();
+        let mut button = egui::Rect::NOTHING;
+        let mut emitted = Vec::new();
+        for frame in 0..4 {
+            let events = match frame {
+                1 => vec![egui::Event::Text("X".into())],
+                2 => vec![
+                    egui::Event::PointerMoved(button.center()),
+                    egui::Event::PointerButton {
+                        pos: button.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                    egui::Event::PointerButton {
+                        pos: button.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    },
+                ],
+                _ => vec![],
+            };
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let response = ui.button("Move up");
+                    button = response.rect;
+                    if response.clicked() {
+                        emitted.push("move");
+                        draft.discard();
+                        return;
+                    }
+                    if frame == 0 {
+                        let id = ui.make_persistent_id("speaker");
+                        ui.memory_mut(|m| m.request_focus(id));
+                    }
+                    if draft
+                        .show(ui, "speaker", "Speaker", "", 170.0, false)
+                        .is_some()
+                    {
+                        emitted.push("rename");
+                    }
+                },
+            );
+        }
+        assert_eq!(emitted, ["move"]);
+    }
+
+    #[test]
+    fn hiding_then_reopening_a_field_discards_an_uncommitted_draft() {
+        let ctx = egui::Context::default();
+        let mut draft = TextDraft::default();
+        frame(&ctx, &mut draft, 1, "first", true, vec![]);
+        frame(
+            &ctx,
+            &mut draft,
+            1,
+            "first",
+            false,
+            vec![egui::Event::Text("X".into())],
+        );
+        let mut output = ctx.run_ui(Default::default(), |_ui| {});
+        output.textures_delta.clear();
+        assert_eq!(frame(&ctx, &mut draft, 1, "second", false, vec![]), None);
+        assert_eq!(draft.text, "second");
     }
 
     #[test]

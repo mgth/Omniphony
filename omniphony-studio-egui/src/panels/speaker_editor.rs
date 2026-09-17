@@ -142,7 +142,10 @@ impl StudioSpike {
                 .color(theme::TEXT_STRONG),
         );
         self.speaker_tabs(ui);
-        self.layout_row(ui, index, count, frozen);
+        if self.layout_row(ui, index, count, frozen) {
+            self.speaker_name_edit.discard();
+            return; // the captured index no longer identifies this speaker
+        }
         match self.speaker_tab {
             SpeakerTab::Edit => self.speaker_edit_tab(ui, index, &speaker, scale_m, frozen),
             SpeakerTab::Test => self.speaker_test_tab(ui, index),
@@ -168,7 +171,7 @@ impl StudioSpike {
 
     /// Reorder and delete. Both rewrite the layout, so both are refused while
     /// the backend has the speakers frozen.
-    fn layout_row(&mut self, ui: &mut Ui, index: usize, count: usize, frozen: bool) {
+    fn layout_row(&mut self, ui: &mut Ui, index: usize, count: usize, frozen: bool) -> bool {
         let clicked = widgets::label_buttons_help(
             ui,
             t("speaker.layout"),
@@ -188,6 +191,7 @@ impl StudioSpike {
             }
             _ => {}
         }
+        clicked.is_some()
     }
 
     fn speaker_edit_tab(
@@ -199,6 +203,7 @@ impl StudioSpike {
         frozen: bool,
     ) {
         let id = index as i32;
+        let layout_key = self.host.read().app.selected_layout_key.clone();
         // While the gizmo holds this speaker, the readouts follow the pointer
         // rather than the state, as the web's editor did during a drag.
         let held = self.speaker_at_edit_pin(index, speaker);
@@ -208,7 +213,7 @@ impl StudioSpike {
             let name = widgets::label_row_help(ui, t("common.name"), "help.speaker.name", |ui| {
                 self.speaker_name_edit.show(
                     ui,
-                    ("speaker-name", index),
+                    ("speaker-name", &layout_key, index),
                     &speaker.id,
                     "",
                     150.0,
