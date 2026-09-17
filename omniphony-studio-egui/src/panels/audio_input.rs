@@ -13,7 +13,16 @@ use crate::host::commands::input;
 use crate::i18n::{t, tf};
 use crate::ui::group::Group;
 use crate::ui::section::Section;
+use crate::ui::text_draft::TextDraft;
 use crate::ui::widgets;
+
+#[derive(Default)]
+pub(crate) struct InputEdits {
+    bridge: TextDraft,
+    pipe: TextDraft,
+    node: TextDraft,
+    description: TextDraft,
+}
 
 const MODES: &[(&str, &str)] = &[
     ("pipe_bridge", "input.mode.pipe_bridge"),
@@ -122,44 +131,43 @@ impl StudioSpike {
 
                 // The bridge path is exempt from the connection lock: it is
                 // how a missing bridge gets fixed.
-                let mut path = bridge.clone();
-                widgets::label_row_help(ui, t("input.bridgeBinary"), "help.input.bridge", |ui| {
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut path)
-                                .desired_width(170.0)
-                                .hint_text(t("input.autoDetect")),
-                        )
-                        .lost_focus()
-                        && path != bridge
-                    {
-                        input::set_render_bridge_path(&self.host, path.clone());
-                    }
-                });
+                if let Some(path) = text_row(
+                    ui,
+                    "bridge-path",
+                    t("input.bridgeBinary"),
+                    "help.input.bridge",
+                    &mut self.input_edits.bridge,
+                    &bridge,
+                    t("input.autoDetect"),
+                ) {
+                    input::set_render_bridge_path(&self.host, path);
+                }
 
                 // The fields of the mode chosen, in a group of their own
                 // (`#inputLiveFields` / `#inputBridgeFields`).
                 if pipewire {
                     Group::new(t("input.liveSource")).show(ui, |ui| {
-                        let mut node = node.clone();
-                        if text_row(
+                        if let Some(node) = text_row(
                             ui,
+                            "input-node",
                             t("input.node"),
                             "help.input.node",
-                            &mut node,
+                            &mut self.input_edits.node,
+                            &node,
                             "omniphony",
                         ) {
-                            input::set_live_input_node(&self.host, node.clone());
+                            input::set_live_input_node(&self.host, node);
                         }
-                        let mut description = description.clone();
-                        if text_row(
+                        if let Some(description) = text_row(
                             ui,
+                            "input-description",
                             t("input.description"),
                             "help.input.description",
-                            &mut description,
+                            &mut self.input_edits.description,
+                            &description,
                             "Omniphony Bridge Input",
                         ) {
-                            input::set_live_input_description(&self.host, description.clone());
+                            input::set_live_input_description(&self.host, description);
                         }
                         let mut chosen_clock = clock.clone();
                         widgets::label_row_info_keys(
@@ -197,15 +205,16 @@ impl StudioSpike {
                     });
                 } else {
                     Group::new(t("input.bridgeInput")).show(ui, |ui| {
-                        let mut pipe_path = pipe.clone();
-                        if text_row(
+                        if let Some(path) = text_row(
                             ui,
+                            "input-pipe",
                             t("input.pipe"),
                             "help.input.pipe",
-                            &mut pipe_path,
+                            &mut self.input_edits.pipe,
+                            &pipe,
                             t("input.autoDetect"),
                         ) {
-                            input::set_orender_input_pipe(&self.host, pipe_path.clone());
+                            input::set_orender_input_pipe(&self.host, path);
                         }
                     });
                 }
@@ -230,18 +239,17 @@ fn mode_label(mode: &str) -> &'static str {
     }
 }
 
-/// Label plus a text field that commits when it loses focus.
-fn text_row(ui: &mut Ui, label: &str, help: &str, value: &mut String, hint: &str) -> bool {
-    let mut committed = false;
-    let before = value.clone();
+/// Label plus a persistent text draft; paths can be empty to select auto.
+fn text_row(
+    ui: &mut Ui,
+    key: &str,
+    label: &str,
+    help: &str,
+    draft: &mut TextDraft,
+    source: &str,
+    hint: &str,
+) -> Option<String> {
     widgets::label_row_help(ui, label, help, |ui| {
-        committed = ui
-            .add(
-                egui::TextEdit::singleline(value)
-                    .desired_width(170.0)
-                    .hint_text(hint),
-            )
-            .lost_focus();
-    });
-    committed && *value != before
+        draft.show(ui, key, source, hint, 170.0, true)
+    })
 }

@@ -196,23 +196,23 @@ impl StudioSpike {
             }
         }
         if named_pipe {
-            let mut path = if file == "-" { String::new() } else { file };
-            widgets::label_row_help(ui, t("audio.outputFile"), "help.audio.outputFile", |ui| {
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut path)
-                            .desired_width(180.0)
-                            .hint_text("/path/to/fifo"),
+            let path =
+                widgets::label_row_help(ui, t("audio.outputFile"), "help.audio.outputFile", |ui| {
+                    self.output_path_edit.show(
+                        ui,
+                        "output-file",
+                        if file == "-" { "" } else { &file },
+                        "/path/to/fifo",
+                        180.0,
+                        true,
                     )
-                    .lost_focus()
-                {
-                    let trimmed = path.trim().to_owned();
-                    if !trimmed.is_empty() {
-                        self.audio_pipe_path = trimmed.clone();
-                    }
-                    audio::set_output_file(&self.host, trimmed);
+                });
+            if let Some(path) = path {
+                if !path.is_empty() {
+                    self.audio_pipe_path = path.clone();
                 }
-            });
+                audio::set_output_file(&self.host, path);
+            }
         }
         let current = audio
             .audio_output_file_format
