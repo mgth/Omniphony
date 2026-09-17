@@ -95,3 +95,25 @@ allocation; sorting occurs only when the user requested a stats print. These
 values include scheduling/idle gaps and are not GPU execution times. This
 instrumentation was added after the software-rendering measurements above;
 those historical results remain averages and are not retroactively percentiles.
+
+## Final combined release smoke
+
+The combined candidate `9100bc10` was built in release mode after all planned
+code changes and the pending-connection file-choice correction. The native
+workspace passed 344 tests; the manual CPU benchmark remained intentionally
+ignored in that run. Version manifests and lockfiles agree on 0.6.0. No tag or
+release was published.
+
+The staged executable reported 0.6.0 in its startup log, found its sibling
+layouts and head mesh while launched outside the checkout, and ran 24 synthetic
+objects at 100 Hz for eight seconds on the same Xvfb/software-Vulkan environment.
+Nine stats records contained ordered positive frame percentiles; the last
+contained 256 samples, p50 20.71 ms and p95 23.85 ms. This is an output/resource
+smoke, not a new hardware benchmark or a whole-run latency percentile.
+
+A graceful WM_DELETE_WINDOW request to the owned window did **not** exit within
+ten seconds. The harness then terminated and waited for its own process. This
+remains a failed shutdown observation on this software graphics stack, consistent
+with the earlier minimal eframe reproduction; it is not a passing V09 result or
+a demonstrated Studio runtime teardown failure. Real-GPU and supported-platform
+V09 runs remain required by the manual procedure.
