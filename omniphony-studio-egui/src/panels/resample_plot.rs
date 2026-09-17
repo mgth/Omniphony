@@ -210,7 +210,7 @@ impl StudioSpike {
     /// Poll the three values the plot draws, and keep the window repainting.
     pub(crate) fn poll_resample_sample(&mut self, ctx: &egui::Context) {
         ctx.request_repaint();
-        let t = self.diag_started.elapsed().as_secs_f64() * 1000.0;
+        let t = self.resample_started.elapsed().as_secs_f64() * 1000.0;
         let sample = {
             let live = self.host.read();
             Sample {

@@ -157,12 +157,11 @@ pub struct StudioSpike {
     pub(crate) resample_series: crate::panels::resample_plot::ResampleSeries,
     /// Diagnostics plot: the sampled series, when the plot started, whether it
     /// is frozen, and when publication was last re-asserted.
-    pub(crate) diag_series: crate::panels::diag_plot::DiagSeries,
-    pub(crate) diag_started: Instant,
+    pub(crate) diag_trace: crate::host::diagnostics::Trace,
+    pub(crate) resample_started: Instant,
     pub(crate) diag_paused: bool,
     /// Whether the plot was on screen last frame, so its series is cleared
     /// once when it goes away.
-    pub(crate) diag_showing: Option<()>,
     /// What the edit gizmo is on, and where: the drag handlers' anchor, kept
     /// from the last frame and moved locally while a drag is in flight.
     pub(crate) gizmo_target: Option<(crate::view::gizmos::GizmoTarget, glam::Vec3)>,
@@ -477,10 +476,9 @@ impl StudioSpike {
             display_panel_open: false,
             resample_plot_open: false,
             resample_series: Default::default(),
-            diag_series: Default::default(),
-            diag_started: Instant::now(),
+            diag_trace: Default::default(),
+            resample_started: Instant::now(),
             diag_paused: false,
-            diag_showing: None,
             gizmo_target: None,
             gizmo_drag: None,
             channel_edit_pin: None,

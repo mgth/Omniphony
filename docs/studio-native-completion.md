@@ -153,3 +153,13 @@ using the default namespace. Existing destination files, including invalid
 ones, are never replaced by migration; sources remain available for rollback.
 An explicit `OMNIPHONY_CONFIG_DIR` stays isolated. This migrates native JSON,
 not browser localStorage; transfer from the web UI remains an acceptance gap.
+
+### Diagnostic reception history
+
+Diagnostic traces now consume a core-owned history populated at OSC reception,
+with a timestamp per packet. Repainting never invents samples; minimized windows
+retain arrivals. History is bounded to 64 selected metrics, 12,001 samples each
+and a 60-second retention window. The view copies only arrivals after its cursor;
+pause freezes its cache and time axis while reception continues. Reconnect clears
+the trace. Gaps longer than one second break plotted lines and reject FFT windows.
+The separate resampler plot and scene model-lock measurements remain in lot13.

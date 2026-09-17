@@ -418,6 +418,8 @@ fn reset_connection_model(model: &mut Live) {
     let mut fresh = Live::new(app);
     fresh.overlay_prefs = model.overlay_prefs.take();
     fresh.interests = std::mem::take(&mut model.interests);
+    fresh.diagnostics = std::mem::take(&mut model.diagnostics);
+    fresh.diagnostics.restart();
     fresh.log = std::mem::take(&mut model.log);
     fresh.snapshot_epoch = model.snapshot_epoch.wrapping_add(1);
     *model = fresh;
@@ -825,5 +827,29 @@ mod connection_tests {
         assert_eq!(apply_event(&mut live, event()), Change::Snapshot);
         assert_eq!(live.app.orender_input_pipe.as_deref(), Some("input.pipe"));
         assert_eq!(apply_event(&mut live, event()), Change::None);
+    }
+    #[test]
+    fn reconnect_keeps_diagnostic_selection_without_a_ui_frame() {
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        live.diagnostics
+            .select(&std::collections::BTreeSet::from(["x".into()]));
+        apply_event(
+            &mut live,
+            parser::OscEvent::StateDiagValues {
+                value: "{\"x\":1}".into(),
+            },
+        );
+        let mut trace = crate::host::diagnostics::Trace::default();
+        live.diagnostics.copy_to(&mut trace);
+        reset_connection_model(&mut live);
+        apply_event(
+            &mut live,
+            parser::OscEvent::StateDiagValues {
+                value: "{\"x\":2}".into(),
+            },
+        );
+        live.diagnostics.copy_to(&mut trace);
+        assert_eq!(trace.series["x"].len(), 1);
+        assert_eq!(trace.series["x"][0].1, 2.0);
     }
 }

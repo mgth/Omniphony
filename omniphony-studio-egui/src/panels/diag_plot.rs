@@ -10,7 +10,7 @@
 //! The enable is re-asserted once a second — cheap, and it self-heals after a
 //! renderer restart.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 
 use egui::{Color32, Pos2, RichText, Stroke, Ui, vec2};
 use serde::{Deserialize, Serialize};
@@ -46,10 +46,10 @@ const MEAN_COLOUR: Color32 = Color32::from_rgb(0xff, 0xd1, 0x66);
 const PLOT_BG: Color32 = Color32::from_rgb(0x0f, 0x17, 0x24);
 
 /// The uniform grid the spectrum is computed on, and so its sample rate:
-/// 50 Hz, Nyquist 25 Hz — the web's `POLL_INTERVAL_MS`. Samples arrive on the
-/// frame loop rather than on a timer, so this is a grid the series is
-/// resampled onto and not a claim about when they were taken.
+/// 50 Hz, Nyquist 25 Hz — the web's `POLL_INTERVAL_MS`. Reception timestamps
+/// are resampled onto this grid, independently of the display frame rate.
 const SAMPLE_INTERVAL_MS: f64 = 20.0;
+const MAX_GAP_MS: f64 = 1_000.0;
 const FFT_SAMPLE_RATE_HZ: f64 = 1000.0 / SAMPLE_INTERVAL_MS;
 /// Visible range below the peak, and the floor a bin is clamped to.
 const FFT_DB_SPAN: f64 = 60.0;
@@ -197,17 +197,20 @@ pub struct DiagSelection {
 /// the renderer republishes unchanged would otherwise read as a stretch of
 /// zeroes broken by a spike, which says something about the publication rate
 /// rather than about the metric.
-fn transformed(series: &VecDeque<(f64, f64)>, diff: bool) -> Vec<(f64, f64)> {
+fn transformed<'a>(
+    series: impl IntoIterator<Item = &'a (f64, f64)>,
+    diff: bool,
+) -> Vec<(f64, f64)> {
     if !diff {
         return series
-            .iter()
+            .into_iter()
             .filter(|(_, v)| v.is_finite())
             .copied()
             .collect();
     }
     let mut out = Vec::new();
     let mut last: Option<(f64, f64)> = None;
-    for (t, v) in series.iter().filter(|(_, v)| v.is_finite()) {
+    for (t, v) in series.into_iter().filter(|(_, v)| v.is_finite()) {
         let Some((t0, v0)) = last else {
             last = Some((*t, *v));
             continue;
@@ -222,6 +225,21 @@ fn transformed(series: &VecDeque<(f64, f64)>, diff: bool) -> Vec<(f64, f64)> {
         last = Some((*t, *v));
     }
     out
+}
+
+/// Split on reception timestamps BEFORE deriving changes. Constant values are
+/// still receipts; slow-changing metrics must not look disconnected.
+fn transformed_segments(series: &VecDeque<(f64, f64)>, diff: bool) -> Vec<Vec<(f64, f64)>> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    for i in 1..series.len() {
+        if series[i].0 - series[i - 1].0 > MAX_GAP_MS {
+            result.push(transformed(series.range(start..i), diff));
+            start = i;
+        }
+    }
+    result.push(transformed(series.range(start..), diff));
+    result
 }
 
 /// Largest power of two not greater than `n`.
@@ -458,10 +476,13 @@ impl StudioSpike {
             .summary(summary)
             .show(ui, |ui| {
                 self.diag_controls(ui, &metrics);
+                self.sample_diag_trace(true);
                 self.diag_canvas(ui, &metrics);
             })
             .is_some();
-        self.sample_diag_trace(open, ui.ctx());
+        if !open {
+            self.sample_diag_trace(false);
+        }
     }
 
     fn diag_controls(&mut self, ui: &mut Ui, metrics: &[Metric]) {
@@ -591,13 +612,17 @@ impl StudioSpike {
                     // name alone is wider than the panel is cut to it instead,
                     // and says its whole name on hover.
                     if ui
-                        .add(egui::Button::selectable(on, text).truncate())
+                        .add_enabled(
+                            on || self.prefs.diag_plot.selected.len()
+                                < crate::host::diagnostics::MAX_METRICS,
+                            egui::Button::selectable(on, text).truncate(),
+                        )
                         .on_hover_text(&metric.label)
                         .clicked()
                     {
                         if on {
                             self.prefs.diag_plot.selected.remove(&metric.name);
-                            self.diag_series.remove(&metric.name);
+                            self.diag_trace.series.remove(&metric.name);
                         } else {
                             self.prefs.diag_plot.selected.insert(metric.name.clone());
                         }
@@ -641,8 +666,7 @@ impl StudioSpike {
             );
             return;
         }
-        let now_ms = self.diag_started.elapsed().as_secs_f64() * 1000.0;
-        let t_max = now_ms;
+        let t_max = self.diag_trace.end_ms;
         let t_min = t_max - self.prefs.diag_plot.window_ms as f64;
         let panel_h = rect.height() / showing.len() as f32;
         let mut panels = Vec::with_capacity(showing.len());
@@ -793,7 +817,7 @@ impl StudioSpike {
             Stroke::new(1.0, Color32::from_white_alpha(18)),
         );
         let unit = self.display_unit(metric);
-        let Some(series) = self.diag_series.get(&metric.name) else {
+        let Some(series) = self.diag_trace.series.get(&metric.name) else {
             painter.text(
                 rect.left_top() + vec2(4.0, 2.0),
                 egui::Align2::LEFT_TOP,
@@ -803,9 +827,12 @@ impl StudioSpike {
             );
             return PanelInfo::empty(rect, unit);
         };
-        let visible: Vec<(f64, f64)> = transformed(series, self.prefs.diag_plot.diff)
-            .into_iter()
+        let segments = transformed_segments(series, self.prefs.diag_plot.diff);
+        let visible: Vec<(f64, f64)> = segments
+            .iter()
+            .flatten()
             .filter(|(t, _)| *t >= t_min)
+            .copied()
             .collect();
         if visible.is_empty() {
             painter.text(
@@ -839,14 +866,18 @@ impl StudioSpike {
         let y_for = |v: f64| {
             rect.top() + (((v_max - v) / (v_max - v_min)) as f32) * (rect.height() - 4.0) + 2.0
         };
-        let points: Vec<Pos2> = visible
-            .iter()
-            .map(|(t, v)| egui::pos2(x_for(*t), y_for(*v)))
-            .collect();
-        painter.add(egui::Shape::line(
-            points,
-            Stroke::new(1.5, colour_for(&metric.name)),
-        ));
+        // A silence in reception is a gap, not a measured straight line.
+        for segment in &segments {
+            let points: Vec<Pos2> = segment
+                .iter()
+                .filter(|(t, _)| *t >= t_min)
+                .map(|(t, v)| egui::pos2(x_for(*t), y_for(*v)))
+                .collect();
+            painter.add(egui::Shape::line(
+                points,
+                Stroke::new(1.5, colour_for(&metric.name)),
+            ));
+        }
 
         // The mean as a dashed reference, so the baseline stays readable even
         // when the trace is noisy around it. Meaningless when the window's
@@ -923,16 +954,24 @@ impl StudioSpike {
             );
         };
         let unit = self.display_unit(metric);
-        let Some(series) = self.diag_series.get(&metric.name) else {
+        let Some(series) = self.diag_trace.series.get(&metric.name) else {
             note(format!("{}: no data", metric.label));
             return PanelInfo::empty(rect, unit);
         };
-        let series = transformed(series, self.prefs.diag_plot.diff);
+        let series = transformed_segments(series, self.prefs.diag_plot.diff)
+            .pop()
+            .unwrap_or_default();
         // The transform is bounded by both what has been collected and the
         // window the user chose, so a shorter window is also a coarser
         // spectrum — which is the trade the window control is making.
         let in_window = (self.prefs.diag_plot.window_ms as f64 / SAMPLE_INTERVAL_MS) as usize;
-        let n = floor_pow2(series.len()).min(floor_pow2(in_window));
+        let duration_samples = series
+            .first()
+            .zip(series.last())
+            .map_or(0, |(first, last)| {
+                ((last.0 - first.0) / SAMPLE_INTERVAL_MS) as usize + 1
+            });
+        let n = floor_pow2(duration_samples).min(floor_pow2(in_window));
         if n < FFT_MIN_N {
             note(format!(
                 "{}: building FFT… (need ≥ {:.1}s)",
@@ -1012,53 +1051,29 @@ impl StudioSpike {
         }
     }
 
-    /// Say whether the plot is on screen, and sample what arrives while it is.
-    ///
-    /// Not a controller tick: the publication is the core's — it holds it open
-    /// and restates it whether or not anything is being drawn. What is left
-    /// here is the trace the canvas above draws, which only a frame can want.
-    fn sample_diag_trace(&mut self, open: bool, ctx: &egui::Context) {
+    /// The UI declares interest and copies new arrivals. Pause freezes only
+    /// this view; the core continues to collect telemetry while minimized.
+    fn sample_diag_trace(&mut self, open: bool) {
         interests::set_diagnostics_wanted(
             &self.host,
             open.then_some(self.prefs.diag_plot.rate_hz as f32),
         );
+        let empty = BTreeSet::new();
+        crate::host::diagnostics::select(
+            &self.host,
+            if open {
+                &self.prefs.diag_plot.selected
+            } else {
+                &empty
+            },
+        );
         if !open {
-            if self.diag_showing.take().is_some() {
-                self.diag_series.clear();
-            }
+            self.diag_trace = Default::default();
             return;
         }
-        self.diag_showing = Some(());
-        // A plot only redraws when something asks it to, and telemetry arrives
-        // without any input event.
-        ctx.request_repaint();
-        if self.diag_paused {
-            return;
+        if !self.diag_paused {
+            self.host.read().diagnostics.copy_to(&mut self.diag_trace);
         }
-        let t = self.diag_started.elapsed().as_secs_f64() * 1000.0;
-        let cutoff = t - WINDOW_OPTIONS_MS[WINDOW_OPTIONS_MS.len() - 1] as f64;
-        let values = {
-            let live = self.host.read();
-            live.app.latency.diag_values.clone()
-        };
-        let Some(values) = values else { return };
-        for name in &self.prefs.diag_plot.selected {
-            let Some(v) = values.get(name).and_then(serde_json::Value::as_f64) else {
-                continue;
-            };
-            let series = self
-                .diag_series
-                .entry(name.clone())
-                .or_insert_with(VecDeque::new);
-            series.push_back((t, v));
-            while series.front().is_some_and(|(t0, _)| *t0 < cutoff) {
-                series.pop_front();
-            }
-        }
-        // Series of metrics that are no longer selected are dropped on
-        // deselection; this catches the ones a schema change removed.
-        self.diag_series
-            .retain(|name, _| self.prefs.diag_plot.selected.contains(name));
     }
 }
 
@@ -1099,7 +1114,6 @@ fn frequency_grid(painter: &egui::Painter, rect: egui::Rect, f_max: f64) {
 
 /// Series held per metric, keyed by name: the plot is the only reader, and a
 /// map per sample would allocate at the poll rate.
-pub type DiagSeries = HashMap<String, VecDeque<(f64, f64)>>;
 
 #[cfg(test)]
 mod tests {
@@ -1183,6 +1197,22 @@ mod tests {
     fn a_gap_is_interpolated_onto_the_grid() {
         let series = [(0.0, 0.0), (40.0, 2.0)];
         assert_eq!(uniform_resample(&series, 3), Some(vec![0.0, 1.0, 2.0]));
+    }
+
+    #[test]
+    fn reception_gaps_are_distinct_from_slow_changes() {
+        let series: VecDeque<_> = (0..=400)
+            .map(|i| (i as f64 * 20.0, (i / 100) as f64))
+            .collect();
+        let segments = transformed_segments(&series, true);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].len(), 4);
+        assert!(uniform_resample(&segments[0], 64).is_some());
+        let mut broken = series;
+        broken.push_back((12_000.0, 9.0));
+        let segments = transformed_segments(&broken, true);
+        assert_eq!(segments.len(), 2);
+        assert!(segments[1].is_empty()); // no derivative across the gap
     }
 
     /// The derivative is taken between changes: a republished identical value

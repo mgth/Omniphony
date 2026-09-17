@@ -67,6 +67,7 @@ pub const TRAIL_MAX_POINTS: usize = 240;
 
 /// The whole live model: the host's `AppState` plus the UI-only mirrors.
 pub struct Live {
+    pub diagnostics: crate::host::diagnostics::History,
     pub app: AppState,
     /// Whether the renderer has ever published a master level. Until it has,
     /// the host derives one from the speakers.
@@ -413,6 +414,7 @@ impl Live {
             channels: Default::default(),
             auto_tune: None,
             interests: Default::default(),
+            diagnostics: Default::default(),
             speaker_test: Default::default(),
             recompute_deadline: None,
             recompute_timed_out: false,
@@ -880,11 +882,15 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateDiagSchema { value } => {
             live.app.latency.diag_schema = serde_json::from_str(&value).ok();
-            Change::None
+            Change::Scene
         }
         OscEvent::StateDiagValues { value } => {
-            live.app.latency.diag_values = serde_json::from_str(&value).ok();
-            Change::None
+            let Ok(values) = serde_json::from_str::<serde_json::Value>(&value) else {
+                return Change::None;
+            };
+            live.diagnostics.record(&values, Instant::now());
+            live.app.latency.diag_values = Some(values);
+            Change::Scene
         }
         OscEvent::StateObjectGenerators { value } => {
             live.object_generators_schema = serde_json::from_str(&value).ok();
