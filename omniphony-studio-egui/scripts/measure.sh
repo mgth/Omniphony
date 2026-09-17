@@ -4,7 +4,7 @@
 # Runs the release binary with a synthetic feed that stops after FEED_SECS,
 # samples process CPU (utime+stime from /proc) and RSS during the feed and
 # again once the window has gone quiet, and keeps the stats lines the app
-# prints. Optionally takes a screenshot while the feed runs.
+# prints.
 #
 #   scripts/measure.sh [objects] [rate_hz] [feed_secs] [extra Studio flags...]
 #
