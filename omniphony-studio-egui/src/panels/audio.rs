@@ -52,30 +52,18 @@ impl StudioSpike {
                     .is_some_and(|(_, at)| at.elapsed() < std::time::Duration::from_secs(1)),
             )
         };
+        // The meter sits in the header, as `.master-header` has it: the bar
+        // between the title and the readout, in view whether the section is
+        // open or folded. The bar follows the peak, the cursor is the held
+        // peak, and the readout — the RMS — is the section's own summary.
+        let peak = meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
+        let hold = hold.unwrap_or(peak);
         Section::new("masterSection", "master.title")
             .default_open(true)
             .help("help.master.gain")
+            .header_widget(move |ui| master_meter(ui, peak, hold))
             .summary(format_level(meter.as_ref()))
             .show(ui, |ui| {
-                // Meter: the bar follows the peak, the readout is the RMS, the
-                // cursor is the held peak.
-                ui.horizontal(|ui| {
-                    let peak = meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
-                    let hold = hold.unwrap_or(peak);
-                    crate::ui::meter::level_meter(
-                        ui,
-                        meter_fraction(peak),
-                        (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
-                        hold >= 0.0,
-                        None,
-                    );
-                    ui.label(
-                        RichText::new(format_level(meter.as_ref()))
-                            .monospace()
-                            .color(theme::TEXT_STRONG),
-                    );
-                });
-
                 // Gain: 0..2 linear, sent as a realtime message with a
                 // sequence number so the renderer can drop stale updates.
                 let enabled = ready && gain.is_some() && realtime;
@@ -148,6 +136,21 @@ pub fn supports_realtime(capabilities: &Option<serde_json::Value>, key: &str) ->
         .and_then(|c| c.get("realtime"))
         .and_then(|r| r.as_array())
         .is_some_and(|values| values.iter().any(|v| v.as_str() == Some(key)))
+}
+
+/// The master meter drawn in the section header. It shares the row with the
+/// readout the summary carries (`flex: 1 1 auto; min-width: 0` in the web),
+/// so it takes a share of what is left rather than all of it — the same
+/// bound the DRC gauge uses.
+fn master_meter(ui: &mut Ui, peak: f64, hold: f64) {
+    crate::ui::meter::level_meter_sized(
+        ui,
+        (ui.available_width() * 0.35).clamp(60.0, crate::ui::meter::MAX_WIDTH),
+        meter_fraction(peak),
+        (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
+        hold >= 0.0,
+        None,
+    );
 }
 
 /// `.clip-indicator`: a 9 px dot that turns red for a second on every clip.
