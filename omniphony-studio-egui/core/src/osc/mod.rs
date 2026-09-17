@@ -223,9 +223,9 @@ fn listener_loop(
     loop {
         match socket.recv_from(&mut buf) {
             Ok((n, from)) => {
-                // Delayed packets from a previous renderer cannot contaminate
-                // the newly selected session. Listen-only accepts any sender.
-                if register.is_some_and(|target| from != target) {
+                // Renderer replies use a separate ephemeral UDP socket. Restrict
+                // the peer IP, not its port; listen-only accepts any sender.
+                if !accepts_sender(register, from) {
                     continue;
                 }
                 stats.packets.fetch_add(1, Ordering::Relaxed);
@@ -397,23 +397,24 @@ fn listener_loop(
     }
 }
 
+fn accepts_sender(target: Option<SocketAddr>, sender: SocketAddr) -> bool {
+    target.is_none_or(|target| target.ip() == sender.ip())
+}
+
 fn reset_connection_model(model: &mut Live) {
+    // Keep local choices and logs. Every measurement, test run and fetched
+    // schema belongs to the old producer, including auto-tune's revert data.
     model.app.reset_runtime_state();
-    model.master_reported = false;
-    model.source_level_seen.clear();
-    model.speaker_level_seen.clear();
-    model.gain_tables.clear();
-    model.trails.clear();
-    model.object_sizes.clear();
-    model.object_band_rms.clear();
-    model.overlay = None;
-    model.head_pose = None;
-    model.options_schema = None;
-    model.object_generators_schema = None;
-    model.phantom_schema = None;
-    model.backend_files.clear();
-    model.backend_file_content = None;
-    model.snapshot_epoch = model.snapshot_epoch.wrapping_add(1);
+    let app = std::mem::replace(
+        &mut model.app,
+        crate::model::app_state::AppState::new(Vec::new()),
+    );
+    let mut fresh = Live::new(app);
+    fresh.overlay_prefs = model.overlay_prefs.take();
+    fresh.interests = std::mem::take(&mut model.interests);
+    fresh.log = std::mem::take(&mut model.log);
+    fresh.snapshot_epoch = model.snapshot_epoch.wrapping_add(1);
+    *model = fresh;
 }
 
 #[derive(Default)]
@@ -445,6 +446,12 @@ fn handle_packet(packet: &OscPacket, live: &mut Live, stats: &OscStats, out: &mu
 
 fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut PacketOutcome) {
     stats.messages.fetch_add(1, Ordering::Relaxed);
+    if m.addr == crate::osc_contract::STATE_SHUTDOWN {
+        stats.registered.store(false, Ordering::Relaxed);
+        live.app.osc_snapshot_ready = false;
+        out.change = out.change.max(Change::Snapshot);
+        return;
+    }
     match is_heartbeat_address(&m.addr) {
         HeartbeatResponse::Ack => {
             if let Some(epoch) = m.args.iter().find_map(|arg| match arg {
@@ -678,6 +685,27 @@ mod connection_tests {
     use super::*;
 
     #[test]
+    fn replies_from_a_separate_renderer_socket_are_accepted() {
+        let control = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let replies = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        replies
+            .send_to(b"reply", client.local_addr().unwrap())
+            .unwrap();
+        let (_, sender) = client.recv_from(&mut [0; 64]).unwrap();
+        assert_ne!(control.local_addr().unwrap().port(), sender.port());
+        assert!(accepts_sender(Some(control.local_addr().unwrap()), sender));
+        assert!(!accepts_sender(
+            Some("127.0.0.2:9000".parse().unwrap()),
+            sender
+        ));
+        assert!(accepts_sender(None, sender));
+    }
+
+    #[test]
     fn registration_epochs_ignore_repeated_acks_and_track_producer_swaps() {
         let stats = OscStats::new();
         let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
@@ -712,6 +740,34 @@ mod connection_tests {
             &mut PacketOutcome::default(),
         );
         assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
+    }
+
+    #[test]
+    fn graceful_shutdown_disconnects_immediately_after_a_fresh_ack() {
+        let stats = OscStats::new();
+        *stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        handle_message(
+            &OscMessage {
+                addr: "/omniphony/heartbeat/ack".into(),
+                args: vec![],
+            },
+            &mut live,
+            &stats,
+            &mut PacketOutcome::default(),
+        );
+        let mut outcome = PacketOutcome::default();
+        handle_message(
+            &OscMessage {
+                addr: crate::osc_contract::STATE_SHUTDOWN.into(),
+                args: vec![],
+            },
+            &mut live,
+            &stats,
+            &mut outcome,
+        );
+        assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
+        assert_eq!(outcome.change, Change::Snapshot);
     }
 
     #[test]

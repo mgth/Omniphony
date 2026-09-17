@@ -346,7 +346,9 @@ fn stop_non_service_orender_if_running(state: &SharedState) -> Result<(), String
             address: osc_contract::CONTROL_QUIT.to_string(),
         },
     );
-    wait_for_orender_disconnect(state, 10_000)
+    // A lost goodbye is detected by the 10s ack timeout on a 5s heartbeat
+    // cadence. Allow that full bound plus queue/scheduler slack.
+    wait_for_orender_disconnect(state, 20_000)
 }
 
 #[cfg(target_os = "windows")]
