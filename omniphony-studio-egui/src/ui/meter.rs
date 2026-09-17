@@ -41,8 +41,6 @@ const PEAK_OVER: Color32 = Color32::from_rgb(0xff, 0x3b, 0x3b);
 const PEAK_HALF: f32 = 1.0;
 /// The bar's own height, `height: 6px`.
 pub const HEIGHT: f32 = 6.0;
-/// The web caps these at a readable width rather than letting them run.
-const MAX_WIDTH: f32 = 120.0;
 
 /// Where 0 dBFS sits on the scale — the start of the clipping zone (90.9 %).
 pub fn clip_start() -> f32 {
@@ -161,23 +159,15 @@ const CONTRIB: [(f32, [u8; 3]); 2] = [(0.0, [0x8a, 0xf0, 0xff]), (1.0, [0xff, 0x
 /// are read as foreground and background rather than as one bar.
 const UNDER_CONTRIB: u8 = 97; // 0.38 × 255
 
-/// `.meter-bar.level-meter`: `level` and `peak` are already mapped to 0..1 by
-/// the caller (`meter_fraction`), `clipping` says the held peak crossed 0 dBFS.
-/// `contribution` is the selected object's share of this row, on the same
-/// scale, painted over the level.
-pub fn level_meter(
-    ui: &mut Ui,
-    level: f32,
-    peak: Option<f32>,
-    clipping: bool,
-    contribution: Option<f32>,
-) -> Response {
-    let width = ui.available_width().min(MAX_WIDTH);
-    level_meter_sized(ui, width, level, peak, clipping, contribution)
-}
-
-/// The same meter at a width the caller decides — a list row gives it the slack
-/// its grid column would have (`1fr`), instead of the capped stand-alone width.
+/// `.meter-bar.level-meter` at a width the caller decides: `level` and `peak`
+/// are already mapped to 0..1 by the caller (`meter_fraction`), `clipping`
+/// says the held peak crossed 0 dBFS, and `contribution` is the selected
+/// object's share of this row, on the same scale, painted over the level.
+///
+/// Every caller shares its row with something — a list row's grid column, a
+/// section header's readout — so what is left of the row is the caller's to
+/// work out. A width under [`HEIGHT`] is floored there, so a panel dragged to
+/// its narrowest shortens the bar instead of inverting it.
 pub fn level_meter_sized(
     ui: &mut Ui,
     width: f32,

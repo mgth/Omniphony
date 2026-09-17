@@ -52,30 +52,20 @@ impl StudioSpike {
                     .is_some_and(|(_, at)| at.elapsed() < std::time::Duration::from_secs(1)),
             )
         };
+        // The meter sits in the header, as `.master-header` has it: the bar
+        // between the title and the readout, in view whether the section is
+        // open or folded. The bar follows the peak, the cursor is the held
+        // peak, the readout is the RMS. Bar and readout are one widget rather
+        // than a header widget and the section's summary, so the readout gets
+        // the fixed box the web gives it instead of a summary's own metrics.
+        let peak = meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
+        let hold = hold.unwrap_or(peak);
+        let readout = format_level(meter.as_ref());
         Section::new("masterSection", "master.title")
             .default_open(true)
             .help("help.master.gain")
-            .summary(format_level(meter.as_ref()))
+            .header_widget(move |ui| master_meter(ui, peak, hold, &readout))
             .show(ui, |ui| {
-                // Meter: the bar follows the peak, the readout is the RMS, the
-                // cursor is the held peak.
-                ui.horizontal(|ui| {
-                    let peak = meter.as_ref().map_or(METER_DB_MIN, |m| m.peak_dbfs);
-                    let hold = hold.unwrap_or(peak);
-                    crate::ui::meter::level_meter(
-                        ui,
-                        meter_fraction(peak),
-                        (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
-                        hold >= 0.0,
-                        None,
-                    );
-                    ui.label(
-                        RichText::new(format_level(meter.as_ref()))
-                            .monospace()
-                            .color(theme::TEXT_STRONG),
-                    );
-                });
-
                 // Gain: 0..2 linear, sent as a realtime message with a
                 // sequence number so the renderer can drop stale updates.
                 let enabled = ready && gain.is_some() && realtime;
@@ -150,6 +140,42 @@ pub fn supports_realtime(capabilities: &Option<serde_json::Value>, key: &str) ->
         .is_some_and(|values| values.iter().any(|v| v.as_str() == Some(key)))
 }
 
+/// The readout's box, in monospace advances. It is fixed on purpose — the
+/// web's `.fixed-metric` pins it at `8ch` with `tabular-nums` — because a box
+/// that fits the current reading would drag the bar a few points left and
+/// right every time the number gained or lost a digit. Nine holds the widest
+/// reading there can be, `-100.0 dB`: the parser clamps `rms_dbfs` to
+/// -100…0 dBFS, and the `— dB` placeholder is shorter still.
+const READOUT_ADVANCES: f32 = 9.0;
+
+/// The master meter drawn in the section header, laid out as `.master-header`
+/// is: the readout takes its fixed box at the right end, and the bar takes
+/// everything else (`flex: 1 1 auto; min-width: 0`). `level_meter_sized`
+/// floors the bar at its own height, so an overlay dragged to its narrowest
+/// shortens the bar rather than pushing the readout out of the panel.
+fn master_meter(ui: &mut Ui, peak: f64, hold: f64, readout: &str) {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let (advance, row_height) = ui.fonts_mut(|f| (f.glyph_width(&font, '0'), f.row_height(&font)));
+    let box_width = advance * READOUT_ADVANCES;
+    let bar_width = ui.available_width() - box_width - ui.spacing().item_spacing.x;
+    crate::ui::meter::level_meter_sized(
+        ui,
+        bar_width,
+        meter_fraction(peak),
+        (hold > METER_DB_MIN).then(|| meter_fraction(hold)),
+        hold >= 0.0,
+        None,
+    );
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(box_width, row_height), egui::Sense::hover());
+    ui.painter().text(
+        rect.right_center(),
+        egui::Align2::RIGHT_CENTER,
+        readout,
+        font,
+        theme::TEXT_STRONG,
+    );
+}
+
 /// `.clip-indicator`: a 9 px dot that turns red for a second on every clip.
 fn clip_indicator(ui: &mut Ui, active: bool) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
@@ -171,4 +197,32 @@ fn clip_indicator(ui: &mut Ui, active: bool) {
         );
     }
     response.on_hover_text("Clip");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{READOUT_ADVANCES, format_level};
+    use crate::model::app_state::Meter;
+
+    /// The readout's box is a fixed number of advances so the bar beside it
+    /// never moves, which only holds while every reading fits in it. The
+    /// parser clamps `rms_dbfs` to -100…0 dBFS, so the widest is the floor.
+    #[test]
+    fn every_reading_fits_the_fixed_readout_box() {
+        let box_chars = READOUT_ADVANCES as usize;
+        let reading = |db| {
+            format_level(Some(&Meter {
+                peak_dbfs: db,
+                rms_dbfs: db,
+            }))
+            .chars()
+            .count()
+        };
+        assert_eq!(reading(-100.0), box_chars, "the floor is what the box fits");
+        for db in [0.0, -0.1, -9.9, -12.3, -60.0, -99.9] {
+            assert!(reading(db) <= box_chars, "{db} dBFS overflows the box");
+        }
+        // The "— dB" placeholder is shorter still.
+        assert!(format_level(None).chars().count() <= box_chars);
+    }
 }
