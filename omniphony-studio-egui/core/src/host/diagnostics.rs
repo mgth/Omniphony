@@ -38,6 +38,16 @@ pub struct Trace {
     sequence: u64,
 }
 impl History {
+    /// A producer change invalidates data, not the view's collection interests.
+    pub fn restart(&mut self) {
+        self.started = Instant::now();
+        self.latest = self.started;
+        self.sequence = 0;
+        for samples in self.series.values_mut() {
+            samples.clear();
+        }
+    }
+
     pub fn select(&mut self, selected: &BTreeSet<String>) {
         self.series.retain(|key, _| selected.contains(key));
         for key in selected.iter().take(MAX_METRICS) {

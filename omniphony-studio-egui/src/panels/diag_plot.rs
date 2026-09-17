@@ -197,17 +197,20 @@ pub struct DiagSelection {
 /// the renderer republishes unchanged would otherwise read as a stretch of
 /// zeroes broken by a spike, which says something about the publication rate
 /// rather than about the metric.
-fn transformed(series: &VecDeque<(f64, f64)>, diff: bool) -> Vec<(f64, f64)> {
+fn transformed<'a>(
+    series: impl IntoIterator<Item = &'a (f64, f64)>,
+    diff: bool,
+) -> Vec<(f64, f64)> {
     if !diff {
         return series
-            .iter()
+            .into_iter()
             .filter(|(_, v)| v.is_finite())
             .copied()
             .collect();
     }
     let mut out = Vec::new();
     let mut last: Option<(f64, f64)> = None;
-    for (t, v) in series.iter().filter(|(_, v)| v.is_finite()) {
+    for (t, v) in series.into_iter().filter(|(_, v)| v.is_finite()) {
         let Some((t0, v0)) = last else {
             last = Some((*t, *v));
             continue;
@@ -222,6 +225,21 @@ fn transformed(series: &VecDeque<(f64, f64)>, diff: bool) -> Vec<(f64, f64)> {
         last = Some((*t, *v));
     }
     out
+}
+
+/// Split on reception timestamps BEFORE deriving changes. Constant values are
+/// still receipts; slow-changing metrics must not look disconnected.
+fn transformed_segments(series: &VecDeque<(f64, f64)>, diff: bool) -> Vec<Vec<(f64, f64)>> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    for i in 1..series.len() {
+        if series[i].0 - series[i - 1].0 > MAX_GAP_MS {
+            result.push(transformed(series.range(start..i), diff));
+            start = i;
+        }
+    }
+    result.push(transformed(series.range(start..), diff));
+    result
 }
 
 /// Largest power of two not greater than `n`.
@@ -244,12 +262,6 @@ fn uniform_resample(series: &[(f64, f64)], n: usize) -> Option<Vec<f64>> {
     let t_end = series[series.len() - 1].0;
     let t_start = t_end - (n - 1) as f64 * SAMPLE_INTERVAL_MS;
     if t_start < series[0].0 {
-        return None;
-    }
-    if series
-        .windows(2)
-        .any(|w| w[1].0 > t_start && w[1].0 - w[0].0 > MAX_GAP_MS)
-    {
         return None;
     }
     let mut out = Vec::with_capacity(n);
@@ -464,10 +476,13 @@ impl StudioSpike {
             .summary(summary)
             .show(ui, |ui| {
                 self.diag_controls(ui, &metrics);
+                self.sample_diag_trace(true);
                 self.diag_canvas(ui, &metrics);
             })
             .is_some();
-        self.sample_diag_trace(open);
+        if !open {
+            self.sample_diag_trace(false);
+        }
     }
 
     fn diag_controls(&mut self, ui: &mut Ui, metrics: &[Metric]) {
@@ -812,9 +827,12 @@ impl StudioSpike {
             );
             return PanelInfo::empty(rect, unit);
         };
-        let visible: Vec<(f64, f64)> = transformed(series, self.prefs.diag_plot.diff)
-            .into_iter()
+        let segments = transformed_segments(series, self.prefs.diag_plot.diff);
+        let visible: Vec<(f64, f64)> = segments
+            .iter()
+            .flatten()
             .filter(|(t, _)| *t >= t_min)
+            .copied()
             .collect();
         if visible.is_empty() {
             painter.text(
@@ -849,9 +867,10 @@ impl StudioSpike {
             rect.top() + (((v_max - v) / (v_max - v_min)) as f32) * (rect.height() - 4.0) + 2.0
         };
         // A silence in reception is a gap, not a measured straight line.
-        for segment in visible.chunk_by(|a, b| b.0 - a.0 <= MAX_GAP_MS) {
+        for segment in &segments {
             let points: Vec<Pos2> = segment
                 .iter()
+                .filter(|(t, _)| *t >= t_min)
                 .map(|(t, v)| egui::pos2(x_for(*t), y_for(*v)))
                 .collect();
             painter.add(egui::Shape::line(
@@ -939,12 +958,20 @@ impl StudioSpike {
             note(format!("{}: no data", metric.label));
             return PanelInfo::empty(rect, unit);
         };
-        let series = transformed(series, self.prefs.diag_plot.diff);
+        let series = transformed_segments(series, self.prefs.diag_plot.diff)
+            .pop()
+            .unwrap_or_default();
         // The transform is bounded by both what has been collected and the
         // window the user chose, so a shorter window is also a coarser
         // spectrum — which is the trade the window control is making.
         let in_window = (self.prefs.diag_plot.window_ms as f64 / SAMPLE_INTERVAL_MS) as usize;
-        let n = floor_pow2(series.len()).min(floor_pow2(in_window));
+        let duration_samples = series
+            .first()
+            .zip(series.last())
+            .map_or(0, |(first, last)| {
+                ((last.0 - first.0) / SAMPLE_INTERVAL_MS) as usize + 1
+            });
+        let n = floor_pow2(duration_samples).min(floor_pow2(in_window));
         if n < FFT_MIN_N {
             note(format!(
                 "{}: building FFT… (need ≥ {:.1}s)",
@@ -1168,9 +1195,24 @@ mod tests {
     /// spectrum.
     #[test]
     fn a_gap_is_interpolated_onto_the_grid() {
-        assert!(uniform_resample(&[(0.0, 0.0), (2000.0, 2.0)], 64).is_none());
         let series = [(0.0, 0.0), (40.0, 2.0)];
         assert_eq!(uniform_resample(&series, 3), Some(vec![0.0, 1.0, 2.0]));
+    }
+
+    #[test]
+    fn reception_gaps_are_distinct_from_slow_changes() {
+        let series: VecDeque<_> = (0..=400)
+            .map(|i| (i as f64 * 20.0, (i / 100) as f64))
+            .collect();
+        let segments = transformed_segments(&series, true);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].len(), 4);
+        assert!(uniform_resample(&segments[0], 64).is_some());
+        let mut broken = series;
+        broken.push_back((12_000.0, 9.0));
+        let segments = transformed_segments(&broken, true);
+        assert_eq!(segments.len(), 2);
+        assert!(segments[1].is_empty()); // no derivative across the gap
     }
 
     /// The derivative is taken between changes: a republished identical value
