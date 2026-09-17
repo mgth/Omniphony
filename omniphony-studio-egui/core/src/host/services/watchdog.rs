@@ -84,7 +84,10 @@ impl Watchdog {
         // Re-read the configuration at check time, so a panel edit applies
         // without a restart.
         let cfg = load_config(&state.config_dir);
-        if !cfg.auto_start_renderer || !app::host_is_local(&cfg.host) {
+        let Some(target) = *state.stats.target.lock().unwrap() else {
+            return due;
+        };
+        if !cfg.auto_start_renderer || !target.ip().is_loopback() {
             return due;
         }
         {
@@ -112,7 +115,7 @@ impl Watchdog {
         }
         // Something already holds the port — an mpv-embedded renderer we lost
         // contact with, most likely. Starting a second one would fight it.
-        if std::net::UdpSocket::bind(("0.0.0.0", cfg.osc_rx_port)).is_err() {
+        if std::net::UdpSocket::bind(("0.0.0.0", target.port())).is_err() {
             state.watchdog.lock().unwrap().check_requested_at = None;
             return due;
         }

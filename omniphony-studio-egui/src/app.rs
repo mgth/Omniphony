@@ -286,18 +286,19 @@ impl StudioSpike {
         // carries the metering choice: a client that registers with metering
         // off gets no meters until someone touches the switch, and each client
         // is subscribed on its own.
-        let config_dir = crate::host::runtime_env::config_dir()
-            .map(|dir| dir.join("studio"))
-            .unwrap_or_else(|| args.layouts_dir.join(".studio-egui"));
+        let config_dir = crate::host::startup::config_dir()?;
         let osc_config = crate::host::config::load_config(&config_dir);
+        let startup = crate::host::startup::Startup::new(
+            &osc_config,
+            args.register.as_deref(),
+            args.listen_port,
+            args.listen_only,
+            args.synthetic > 0,
+        )?;
         app.osc_metering_enabled = Some(u8::from(osc_config.osc_metering_enabled));
         let live: SharedLive = Arc::new(Mutex::new(Live::new(app)));
 
         let osc_stats = OscStats::new();
-        let register = match &args.register {
-            Some(spec) => Some(osc::resolve(spec).ok_or("--register: no address resolved")?),
-            None => None,
-        };
         // Two wakers over one context. Everything that can give the clock
         // something to do nudges it as well as repainting: an applied packet, a
         // finished job, an interest the view just declared. The clock's own
@@ -320,8 +321,8 @@ impl StudioSpike {
             waker.clone(),
             osc_stats.clone(),
             osc::ListenerConfig {
-                listen_port: args.listen_port,
-                register,
+                listen_port: startup.listen_port,
+                register: None,
                 metering: osc_config.osc_metering_enabled,
             },
         )?;
@@ -343,16 +344,10 @@ impl StudioSpike {
         prefs.side_panels = layout;
         // The OSC form starts from the same file the Tauri Studio writes, so
         // both hosts point at the same renderer by default.
-        let (osc_host, osc_port) = match &args.register {
-            Some(spec) => match spec.rsplit_once(':') {
-                Some((host, port)) => (
-                    host.to_owned(),
-                    port.parse().unwrap_or(osc_config.osc_rx_port),
-                ),
-                None => (spec.clone(), osc_config.osc_rx_port),
-            },
-            None => (osc_config.host.clone(), osc_config.osc_rx_port),
-        };
+        let (osc_host, osc_port) = startup
+            .target
+            .clone()
+            .unwrap_or_else(|| (osc_config.host.clone(), osc_config.osc_rx_port));
 
         let live_for_host = live.clone();
         let control_for_host = control.clone();
@@ -377,6 +372,23 @@ impl StudioSpike {
             osc_stats.clone(),
             waker.clone(),
         ));
+        if startup.passive {
+            crate::host::commands::app::suppress_autostart(&host);
+        }
+        if let Some((target_host, target_port)) = startup.target {
+            let request = crate::host::commands::app::begin_connection(&host);
+            let connect_host = host.clone();
+            // Resolution may block; neither first paint nor service deadlines
+            // should depend on the network resolver.
+            let _ = crate::host::services::jobs::run(&host, move || {
+                crate::host::commands::app::connect_requested(
+                    &connect_host,
+                    &target_host,
+                    target_port,
+                    request,
+                )
+            });
+        }
         // The core's own clock: it sleeps until a service is due or the waker
         // nudges it, so an idle Studio wakes for nothing.
         let services = crate::host::services::spawn(host.clone(), repaint, clock)?;

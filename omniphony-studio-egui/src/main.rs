@@ -29,17 +29,21 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "omniphony-studio-egui",
-    about = "Native egui/wgpu spike for Omniphony Studio"
+    about = "Omniphony Studio, the native egui/wgpu host"
 )]
 pub struct Args {
     /// UDP port to listen on for OSC (0 = OS-assigned, printed at startup).
-    #[arg(long, default_value_t = 0)]
-    pub listen_port: u16,
+    #[arg(long)]
+    pub listen_port: Option<u16>,
+
+    /// Listen without registering or automatically launching a renderer.
+    #[arg(long, conflicts_with = "register")]
+    pub listen_only: bool,
 
     /// Register with a live renderer at host:port (e.g. 127.0.0.1:9000) and
-    /// keep the heartbeat alive. Read-only: the spike never sends control
-    /// changes, so it cannot disturb a live session.
-    #[arg(long)]
+    /// keep the heartbeat alive. Defaults to the saved renderer. Controls
+    /// modify that renderer; use --listen-only for passive inspection.
+    #[arg(long, conflicts_with = "synthetic")]
     pub register: Option<String>,
 
     /// Number of synthetic moving objects fed over UDP loopback (0 = off).
@@ -123,7 +127,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
-            .with_title("Omniphony Studio — egui spike"),
+            .with_title("Omniphony Studio"),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options,
         ..Default::default()

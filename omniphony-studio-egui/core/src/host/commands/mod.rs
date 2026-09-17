@@ -103,6 +103,7 @@ pub struct SharedState {
     pub config_dir: PathBuf,
     pub(crate) listen_port: Arc<Mutex<u16>>,
     pub(crate) realtime_seq: AtomicI32,
+    pub(crate) connection_request: Mutex<u64>,
     pub(crate) renderer_child: Arc<Mutex<Option<std::process::Child>>>,
     pub(crate) watchdog: Arc<Mutex<WatchdogControl>>,
     pub(crate) auto_tune_snapshot: Arc<Mutex<Option<serde_json::Value>>>,
@@ -146,6 +147,7 @@ impl SharedState {
             config_dir,
             listen_port: Arc::new(Mutex::new(listen_port)),
             realtime_seq: AtomicI32::new(0),
+            connection_request: Mutex::new(0),
             renderer_child: Default::default(),
             watchdog: Default::default(),
             auto_tune_snapshot: Default::default(),
@@ -203,7 +205,11 @@ pub fn send_control(tx: &ControlTx, msg: OscControlMsg) {
         },
         OscControlMsg::SendArgs { address, args } => Control::Send { address, args },
         OscControlMsg::Reconnect { host, rx_port, .. } => {
-            match format!("{host}:{rx_port}").parse() {
+            match host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .map(|ip| std::net::SocketAddr::new(ip, rx_port))
+            {
                 Ok(target) => Control::Reconnect { target },
                 Err(e) => {
                     log::warn!("[control] reconnect target {host}:{rx_port}: {e}");
@@ -270,6 +276,7 @@ pub(crate) mod tests {
             config_dir: std::path::PathBuf::from("/nonexistent"),
             listen_port: Arc::new(Mutex::new(0)),
             realtime_seq: AtomicI32::new(0),
+            connection_request: Mutex::new(0),
             renderer_child: Default::default(),
             watchdog: Default::default(),
             auto_tune_snapshot: Default::default(),
