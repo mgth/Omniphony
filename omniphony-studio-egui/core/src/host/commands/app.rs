@@ -46,6 +46,14 @@ pub fn resume_watchdog(state: &SharedState) {
     state.watchdog.lock().unwrap().suppressed = false;
 }
 
+/// Finish operations on the current destination before enqueuing a target
+/// change. The transport drains this channel in order, so STOP/restoration
+/// are sent to the old renderer even when the next action reconnects elsewhere.
+fn finish_session_operations(state: &SharedState) {
+    crate::host::services::speaker_test::stop(state);
+    crate::host::services::auto_tune::revert(state);
+}
+
 /// Point the client at a renderer: resolve the address (a hostname needs a
 /// lookup, done here so the failure can be shown), reconnect, and say so in
 /// the log. Returns the error message when nothing resolves.
@@ -64,6 +72,7 @@ pub fn connect_to(
             .push_log("error", "osc", &message);
         return Err(message);
     };
+    finish_session_operations(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::Reconnect {
@@ -172,6 +181,7 @@ pub fn save_osc_config(state: &SharedState, mut config: OscConfig) -> Result<(),
             enabled: config.osc_metering_enabled,
         },
     );
+    finish_session_operations(state);
     let listen_port = *state.listen_port.lock().unwrap();
     send_control(
         &state.osc_tx,
@@ -204,4 +214,37 @@ pub fn auto_tune_snapshot_take(state: &SharedState) -> Option<serde_json::Value>
 
 pub fn auto_tune_snapshot_peek(state: &SharedState) -> Option<serde_json::Value> {
     state.auto_tune_snapshot.lock().unwrap().clone()
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_stops_an_active_burst_before_switching_even_to_same_target() {
+        for destination in ["127.0.0.1", "127.0.0.2"] {
+            let mut state = crate::host::commands::tests::state();
+            let (tx, rx) = std::sync::mpsc::channel();
+            state.osc_tx = tx;
+            *state.stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+            crate::host::services::speaker_test::start(
+                &state,
+                2,
+                -10.0,
+                "test_only".into(),
+                "burst",
+            );
+            rx.try_iter().for_each(drop);
+            connect_to(&state, destination, 9000).unwrap();
+            let commands: Vec<_> = rx.try_iter().collect();
+            assert!(
+                matches!(&commands[0], crate::osc::Control::Send { args, .. } if matches!(args.first(), Some(rosc::OscType::Int(-1))))
+            );
+            assert!(matches!(
+                &commands[1],
+                crate::osc::Control::Reconnect { .. }
+            ));
+            assert!(state.read().speaker_test.running.is_none());
+        }
+    }
 }
