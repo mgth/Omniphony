@@ -127,3 +127,8 @@ covers the complete code stack, including the version/schema/accessibility and
 resampler changes. It does not repeat the graphics smoke or change the failed
 software-stack shutdown observation above. Real GPU, Windows and macOS manual
 acceptance remains to be recorded using the separate procedure.
+
+For reproduction, use the merged revision of [PR #534](https://github.com/mgth/Omniphony/pull/534),
+which contains the complete integrated production tree tested above. The short
+candidate identifiers in this record identify local validation snapshots;
+they are not published release tags.
