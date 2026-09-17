@@ -102,7 +102,7 @@ impl StudioSpike {
                 let ceiling_changed = Group::new(t("autoGain.title"))
                     .help("help.master.autoGain")
                     .actions(|ui| {
-                        widgets::switch(ui, &mut on);
+                        widgets::switch(ui, &mut on, t("autoGain.title"));
                         clip_indicator(ui, clipping);
                     })
                     .show(ui, |ui| {

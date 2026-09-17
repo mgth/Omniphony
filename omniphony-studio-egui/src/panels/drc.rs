@@ -106,7 +106,7 @@ impl StudioSpike {
             Group::new(t("section.loudness"))
                 .help("help.drc.loudness")
                 .actions(|ui| {
-                    widgets::switch(ui, &mut on);
+                    widgets::switch(ui, &mut on, t("section.loudness"));
                 })
                 .show(ui, |ui| {
                     for line in loudness_lines(source, gain) {

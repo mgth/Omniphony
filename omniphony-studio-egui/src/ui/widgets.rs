@@ -13,14 +13,14 @@ use super::theme;
 
 /// `.inline-toggle input[type="checkbox"]`: 34×18 track, 12 px thumb, green
 /// when on.
-pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
+pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(34.0, 18.0), Sense::click());
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
     }
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *on, "")
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *on, label)
     });
     if ui.is_rect_visible(rect) {
         let how_on = ui.ctx().animate_bool_responsive(response.id, *on);
@@ -39,7 +39,11 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
             rect,
             9.0,
             track,
-            egui::Stroke::new(1.0, theme::CONTROL_BORDER),
+            if response.has_focus() {
+                ui.visuals().selection.stroke
+            } else {
+                egui::Stroke::new(1.0, theme::CONTROL_BORDER)
+            },
             egui::StrokeKind::Inside,
         );
         let x = egui::lerp((rect.left() + 9.0)..=(rect.right() - 9.0), how_on);
@@ -291,7 +295,7 @@ pub fn fitted_field_width(ui: &Ui, texts: &[&str], fields: usize, min: f32, max:
 
 /// Label left, switch right (`.inline-toggle`). Returns true when toggled.
 pub fn switch_row(ui: &mut Ui, label: &str, on: &mut bool) -> bool {
-    label_row(ui, label, |ui| switch(ui, on).changed())
+    label_row(ui, label, |ui| switch(ui, on, label).changed())
 }
 
 /// `switch_row` whose label opens `help`.
@@ -301,7 +305,7 @@ pub fn switch_row_help<'h>(
     help: impl Into<Help<'h>>,
     on: &mut bool,
 ) -> bool {
-    label_row_help(ui, label, help, |ui| switch(ui, on).changed())
+    label_row_help(ui, label, help, |ui| switch(ui, on, label).changed())
 }
 
 /// `switch_row_help` with a glyph of its own before the label — the web draws
@@ -324,7 +328,7 @@ pub fn switch_row_help_leading<'h>(
         label.into(),
         Some(&mut leading),
         Some(Trigger::Card(help)),
-        |ui| switch(ui, on).changed(),
+        |ui| switch(ui, on, label).changed(),
     );
     super::help::card(ui, help);
     out
@@ -441,11 +445,20 @@ fn slider_row(
         );
         let room = ui.available_width() - label_width - ui.spacing().item_spacing.x;
         ui.spacing_mut().slider_width = room.clamp(MIN_TRACK, full_track.max(MIN_TRACK));
-        stepped(egui::Slider::new(value, range), step)
+        let response = stepped(egui::Slider::new(value, range), step)
             .show_value(false)
-            .ui(ui)
-            .changed()
+            .ui(ui);
+        name_control(&response, label);
+        response.changed()
     })
+}
+
+/// Name a control whose visible label is drawn separately. Preserve the
+/// built-in slider's numeric range/actions and emit no duplicate change event.
+fn name_control(response: &Response, label: &str) {
+    response.ctx.accesskit_node_builder(response.id, |node| {
+        node.set_label(label);
+    });
 }
 
 /// The connection dot of the OSC panel: a filled circle plus a caption.
@@ -592,7 +605,9 @@ fn slider_line_with(
             }
         });
         ui.spacing_mut().slider_width = ui.available_width().max(MIN_TRACK);
-        ui.add(stepped(egui::Slider::new(value, range), step).show_value(false))
+        let response = ui.add(stepped(egui::Slider::new(value, range), step).show_value(false));
+        name_control(&response, label);
+        response
     })
     .inner
 }
@@ -683,4 +698,84 @@ pub fn tab_bar<T: PartialEq + Clone>(ui: &mut Ui, current: &T, options: &[(T, &s
         }
     });
     picked
+}
+
+#[cfg(test)]
+mod accessibility_tests {
+    use super::*;
+    use egui::accesskit::{Action, Role, Toggled};
+
+    #[test]
+    fn switches_and_shared_sliders_expose_labels_values_and_actions() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut on = true;
+        let mut gain = 0.5;
+        let mut radius = 0.2;
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            switch_row(ui, "Mesures audio", &mut on);
+            value_slider(ui, "Gain", &mut gain, 0.0..=1.0, 0.1, |v| v.to_string());
+            slider_line(ui, "Rayon", &mut radius, 0.0..=1.0, 0.1);
+            ui.add_enabled_ui(false, |ui| {
+                switch(ui, &mut on, "Indisponible");
+            });
+        });
+        let tree = output.platform_output.accesskit_update.as_ref().unwrap();
+        let node = |label: &str| {
+            &tree
+                .nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some(label))
+                .unwrap()
+                .1
+        };
+        assert_eq!(node("Mesures audio").role(), Role::CheckBox);
+        assert_eq!(node("Mesures audio").toggled(), Some(Toggled::True));
+        assert!(node("Mesures audio").supports_action(Action::Click));
+        for label in ["Gain", "Rayon"] {
+            assert_eq!(node(label).role(), Role::Slider);
+            assert!(node(label).numeric_value().is_some());
+            assert_eq!(node(label).min_numeric_value(), Some(0.0));
+            assert_eq!(node(label).max_numeric_value(), Some(1.0));
+            assert!(node(label).supports_action(Action::Increment));
+        }
+        assert!(node("Indisponible").is_disabled());
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn keyboard_activation_toggles_once_and_respects_disabled_state() {
+        let ctx = egui::Context::default();
+        let mut on = false;
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            switch(ui, &mut on, "Mesures audio").request_focus();
+        });
+        output.textures_delta.clear();
+        let key = || egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let mut changed = false;
+        let mut focused = false;
+        let mut output = ctx.run_ui(key(), |ui| {
+            let response = switch(ui, &mut on, "Mesures audio");
+            changed = response.changed();
+            focused = response.has_focus();
+            assert_eq!(response.rect.size(), vec2(34.0, 18.0));
+        });
+        output.textures_delta.clear();
+        assert!(on && changed && focused);
+        let mut output = ctx.run_ui(key(), |ui| {
+            ui.disable();
+            assert!(!switch(ui, &mut on, "Mesures audio").changed());
+        });
+        output.textures_delta.clear();
+        assert!(on);
+    }
 }

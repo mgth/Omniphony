@@ -39,7 +39,7 @@ impl StudioSpike {
         self.maybe_check_updates();
         let mut enabled = self.prefs.updates.enabled;
         widgets::label_row_help(ui, t("updates.checkLabel"), "help.updates.check", |ui| {
-            if widgets::switch(ui, &mut enabled).changed() {
+            if widgets::switch(ui, &mut enabled, t("updates.checkLabel")).changed() {
                 self.prefs.updates.enabled = enabled;
                 self.mark_prefs_dirty();
                 if enabled {
