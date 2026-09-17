@@ -346,3 +346,13 @@ painted text or changing the native slider's value, range and actions. Headless
 tests exercise the accessibility tree, keyboard activation and disabled controls.
 This is partial lot14 coverage: specialized controls, actual platform screen
 readers, CJK/IME, and visual acceptance still need separate validation.
+### Resampler reception history
+
+The latency/rate plot now uses independently timestamped OSC arrivals and the
+same bounded core history as diagnostics. Two consumers (plot and tuning wizard)
+share a cache without duplicate samples; missing UI frames do not drop arrivals.
+Closing both consumers releases history, and producer reset clears it while
+preserving collection interest. Gaps over one second break curves; the target
+latency is explicitly a guide for the current setting, not a measured trace.
+The plot no longer requests continuous repaint. Tests exercise independent
+publication timestamps, repeated copies, no-frame reception and reconnect/reopen.

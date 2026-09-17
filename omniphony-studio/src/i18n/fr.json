@@ -598,6 +598,7 @@
   "common.cancel": "Annuler",
   "common.close": "Fermer",
   "telemetry.plotToggle": "Afficher / masquer le graphique resample / latence",
+  "telemetry.waiting": "En attente de télémétrie…",
   "autoTune.openButton": "Auto-tune…",
   "autoTune.openButtonTitle": "Lancer l'auto-tuner PI du contrôleur de resampling local",
   "autoTune.title": "Auto-tune PI",

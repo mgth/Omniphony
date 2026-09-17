@@ -96,9 +96,7 @@ impl StudioSpike {
         }
         // The sparkline is the wizard's own picture of the run, and it is fed
         // whether or not the telemetry plot is open.
-        if self.auto_tune_running() {
-            self.poll_resample_sample(ctx);
-        }
+        self.poll_resample_sample(ctx);
         let modal = egui::Modal::new(egui::Id::new("auto-tune"))
             .frame(widgets::modal_frame())
             .show(ctx, |ui| {
