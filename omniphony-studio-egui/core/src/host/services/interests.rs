@@ -50,6 +50,8 @@ pub fn set_gain_tables_wanted(state: &SharedState, targets: &[i64]) {
     let mut live = state.inner.lock().unwrap();
     if live.interests.gain_tables != targets {
         live.interests.gain_tables = targets.to_vec();
+        drop(live);
+        (state.waker)();
     }
 }
 
@@ -60,13 +62,21 @@ pub fn set_idle_feed_wanted(state: &SharedState, client: FeedClient, wanted: boo
     match (wanted, held) {
         (true, false) => live.interests.idle_feed.push(client),
         (false, true) => live.interests.idle_feed.retain(|c| *c != client),
-        _ => {}
+        _ => return,
     }
+    drop(live);
+    (state.waker)();
 }
 
 /// The diagnostics plot is on screen, at this publish rate, or is not.
 pub fn set_diagnostics_wanted(state: &SharedState, rate_hz: Option<f32>) {
-    state.inner.lock().unwrap().interests.diagnostics = rate_hz;
+    let rate_hz = rate_hz.filter(|rate| rate.is_finite() && *rate > 0.0);
+    let mut live = state.inner.lock().unwrap();
+    if live.interests.diagnostics != rate_hz {
+        live.interests.diagnostics = rate_hz;
+        drop(live);
+        (state.waker)();
+    }
 }
 
 /// The gain-table subscription, negotiated by version and repaired on a
@@ -190,6 +200,30 @@ impl Diagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_interests_wake_once_and_unchanged_frames_do_not() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let observed = wakes.clone();
+        let state = crate::host::commands::tests::state_with_waker(Arc::new(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        }));
+        for _ in 0..3 {
+            set_gain_tables_wanted(&state, &[-1, 2]);
+            set_idle_feed_wanted(&state, FeedClient::SpeakerTest, true);
+            set_diagnostics_wanted(&state, Some(30.0));
+            super::super::overlay::set_overlay_prefs(&state, Default::default());
+        }
+        assert_eq!(wakes.load(Ordering::Relaxed), 4);
+        set_gain_tables_wanted(&state, &[]);
+        set_idle_feed_wanted(&state, FeedClient::SpeakerTest, false);
+        set_diagnostics_wanted(&state, None);
+        assert_eq!(wakes.load(Ordering::Relaxed), 7);
+    }
 
     #[test]
     fn the_idle_feed_is_held_by_whoever_still_wants_it() {

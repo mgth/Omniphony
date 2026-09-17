@@ -773,8 +773,12 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             Change::Scene
         }
         OscEvent::StateOverlay { json } => {
-            live.overlay = serde_json::from_str(&json).ok();
-            Change::None
+            let Ok(overlay) = serde_json::from_str(&json) else {
+                return Change::None;
+            };
+            let changed = live.overlay.as_ref() != Some(&overlay);
+            live.overlay = Some(overlay);
+            snapshot_if(changed)
         }
         OscEvent::StateHeadPose { w, x, y, z } => {
             live.head_pose = Some([w, x, y, z]);
