@@ -222,6 +222,10 @@ const SWITCHES: &[(Switch, &str, &str)] = &[
 
 impl StudioSpike {
     pub(crate) fn latency_section(&mut self, ui: &mut Ui) {
+        let policy = crate::host::capabilities::ActionPolicy::of(&self.host);
+        if !policy.audio_output {
+            return;
+        }
         let (state, stats, adaptive_on, paused, band, runtime_state) = {
             let live = self.host.read();
             (
@@ -257,9 +261,15 @@ impl StudioSpike {
                 // the web: the gauge says where the rate is now, the plot says
                 // how it got there.
                 self.resample_plot(ui);
-                self.target_latency_row(ui, target);
+                ui.add_enabled_ui(policy.renderer_ready, |ui| {
+                    self.target_latency_row(ui, target)
+                });
                 band_indicator(ui, runtime_state.as_deref(), band.as_deref());
-                self.adaptive_form(ui, adaptive_on, paused);
+                if policy.adaptive_resampling {
+                    ui.add_enabled_ui(policy.renderer_ready, |ui| {
+                        self.adaptive_form(ui, adaptive_on, paused)
+                    });
+                }
             });
     }
 

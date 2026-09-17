@@ -761,8 +761,12 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             Change::None
         }
         OscEvent::StateCapabilities { value } => {
-            live.app.producer_capabilities = serde_json::from_str(&value).ok();
-            Change::None
+            let Ok(caps) = serde_json::from_str(&value) else {
+                return Change::None;
+            };
+            let changed = live.app.producer_capabilities.as_ref() != Some(&caps);
+            live.app.producer_capabilities = Some(caps);
+            snapshot_if(changed)
         }
         OscEvent::StateSession { value } => {
             live.app.producer_session = serde_json::from_str(&value).ok();
