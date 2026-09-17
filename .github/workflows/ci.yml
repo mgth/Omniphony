@@ -1,10 +1,9 @@
 name: CI
 
 # Integration gate for the `main` (integration) and `release` branches.
-# Fast, Linux-only validation that formatting is clean, the renderer workspace
-# builds + all its tests pass (including doctests), and the Studio frontend
-# builds. Deliberately does NOT bundle Tauri or build the Windows/ASIO target —
-# those are covered by the heavier tag-triggered release.yml.
+# Linux validates formatting, tests, native Studio, the web frontend and the
+# Tauri host. macOS and Windows compile the renderer; Windows also checks the
+# shared Studio core. Release archives are built by release.yml.
 #
 # NOTE on scope: `clippy` is NOT gated yet — the workspace currently has ~70
 # clippy warnings plus a couple of deny-level lints, several inside hot audio
@@ -213,7 +212,8 @@ jobs:
       - name: Check the native Studio core has no UI dependency
         working-directory: omniphony-studio-egui
         run: |
-          ui=$(cargo tree -p omniphony-studio-core -e normal --prefix none --format '{p}' --locked \
+          tree=$(cargo tree -p omniphony-studio-core -e normal --prefix none --format '{p}' --locked)
+          ui=$(printf '%s\n' "$tree" \
             | grep -E '^(egui|eframe|egui-wgpu|egui_wgpu|epaint|emath|ecolor|wgpu|wgpu-[a-z]+|winit|rfd|accesskit[a-z_-]*) ' \
             | sort -u || true)
           if [ -n "$ui" ]; then
@@ -229,7 +229,8 @@ jobs:
       - name: Check the native Studio scene has no toolkit dependency
         working-directory: omniphony-studio-egui
         run: |
-          ui=$(cargo tree -p omniphony-studio-scene -e normal --prefix none --format '{p}' --locked \
+          tree=$(cargo tree -p omniphony-studio-scene -e normal --prefix none --format '{p}' --locked)
+          ui=$(printf '%s\n' "$tree" \
             | grep -E '^(egui|eframe|egui-wgpu|egui_wgpu|epaint|emath|ecolor|winit|rfd|accesskit[a-z_-]*) ' \
             | sort -u || true)
           if [ -n "$ui" ]; then
