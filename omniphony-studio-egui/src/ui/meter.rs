@@ -41,8 +41,6 @@ const PEAK_OVER: Color32 = Color32::from_rgb(0xff, 0x3b, 0x3b);
 const PEAK_HALF: f32 = 1.0;
 /// The bar's own height, `height: 6px`.
 pub const HEIGHT: f32 = 6.0;
-/// The web caps these at a readable width rather than letting them run.
-pub const MAX_WIDTH: f32 = 120.0;
 
 /// Where 0 dBFS sits on the scale — the start of the clipping zone (90.9 %).
 pub fn clip_start() -> f32 {
@@ -167,8 +165,9 @@ const UNDER_CONTRIB: u8 = 97; // 0.38 × 255
 /// object's share of this row, on the same scale, painted over the level.
 ///
 /// Every caller shares its row with something — a list row's grid column, a
-/// section header's readout — so the width is the caller's to bound, up to
-/// [`MAX_WIDTH`].
+/// section header's readout — so what is left of the row is the caller's to
+/// work out. A width under [`HEIGHT`] is floored there, so a panel dragged to
+/// its narrowest shortens the bar instead of inverting it.
 pub fn level_meter_sized(
     ui: &mut Ui,
     width: f32,
