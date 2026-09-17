@@ -25,9 +25,6 @@ use crate::view::{self, Selection, ViewSettings, VolumeSettings, VolumeState};
 /// long enough for the pinned editor to settle on its height.
 const REVEAL_WINDOW: Duration = Duration::from_millis(400);
 
-/// How long the preferences wait for changes to settle before being written.
-const PREFS_DEBOUNCE: Duration = Duration::from_millis(600);
-
 /// True when two layouts describe the same panels (they hold only floats and
 /// flags, so a field-wise comparison is enough to know whether to persist).
 fn layout_eq(a: &OverlayLayout, b: &OverlayLayout) -> bool {
@@ -62,7 +59,7 @@ pub struct StudioSpike {
     pub(crate) layout: OverlayLayout,
     pub(crate) prefs: Prefs,
     pub(crate) prefs_dirty: bool,
-    pub(crate) prefs_dirty_since: Option<Instant>,
+    pub(crate) prefs_writer: crate::host::json_store::Writer<Prefs>,
     /// Log overlay: expanded state and the filter box's text.
     pub(crate) log_expanded: bool,
     pub(crate) log_filter: String,
@@ -287,6 +284,8 @@ impl StudioSpike {
         // off gets no meters until someone touches the switch, and each client
         // is subscribed on its own.
         let config_dir = crate::host::startup::config_dir()?;
+        let config_migration_error =
+            crate::host::config::migrate_legacy(&config_dir, &args.layouts_dir).err();
         let osc_config = crate::host::config::load_config(&config_dir);
         let startup = crate::host::startup::Startup::new(
             &osc_config,
@@ -335,7 +334,13 @@ impl StudioSpike {
             None
         };
 
-        let mut prefs = crate::prefs::load(&config_dir);
+        let (mut prefs, prefs_error) =
+            crate::prefs::load(&config_dir, &args.layouts_dir.join(".studio-egui"));
+        let prefs_writer = crate::prefs::writer(
+            &config_dir,
+            repaint.clone(),
+            prefs_error.or(config_migration_error),
+        )?;
         // The language is applied before the first frame, so nothing is drawn
         // in English and then redrawn.
         crate::i18n::set_locale(prefs.locale.as_deref().unwrap_or("auto"));
@@ -417,7 +422,7 @@ impl StudioSpike {
             layout,
             prefs,
             prefs_dirty: false,
-            prefs_dirty_since: None,
+            prefs_writer,
             log_expanded: false,
             log_filter: String::new(),
             osc_host,
@@ -877,7 +882,6 @@ impl StudioSpike {
             self.layout = layout;
             self.prefs.side_panels = layout;
             self.prefs_dirty = true;
-            self.prefs_dirty_since = None;
         }
         // The web writes its display prefs to `localStorage` on every change;
         // here a change marks the file for the same debounced write as the
@@ -926,31 +930,10 @@ impl StudioSpike {
         backdrop
     }
 
-    /// Write the preferences out once the user has stopped dragging a panel
-    /// edge (the web writes to `localStorage` on every change; a file wants a
-    /// debounce).
-    ///
-    /// The window only repaints when something happens, so waiting for "the
-    /// next frame after the delay" could wait for ever: with the renderer idle
-    /// the frames stop, and a toggled setting or a dragged panel edge was
-    /// never written. The debounce asks for the frame it is waiting on.
-    fn persist_prefs(&mut self, ctx: &egui::Context) {
-        if !self.prefs_dirty {
-            return;
-        }
-        match self.prefs_dirty_since {
-            Some(since) if since.elapsed() < PREFS_DEBOUNCE => {
-                ctx.request_repaint_after(PREFS_DEBOUNCE.saturating_sub(since.elapsed()));
-            }
-            Some(_) => {
-                crate::prefs::save(&self.config_dir, &self.prefs);
-                self.prefs_dirty = false;
-                self.prefs_dirty_since = None;
-            }
-            None => {
-                self.prefs_dirty_since = Some(Instant::now());
-                ctx.request_repaint_after(PREFS_DEBOUNCE);
-            }
+    fn persist_prefs(&mut self) {
+        if self.prefs_dirty {
+            self.prefs_writer.submit(self.prefs.clone());
+            self.prefs_dirty = false;
         }
     }
 
@@ -958,7 +941,6 @@ impl StudioSpike {
     /// debounce so a burst of changes writes once.
     pub(crate) fn mark_prefs_dirty(&mut self) {
         self.prefs_dirty = true;
-        self.prefs_dirty_since = None;
     }
 
     fn maybe_print_stats(&mut self) {
@@ -1016,7 +998,7 @@ impl eframe::App for StudioSpike {
         self.declare_idle_feed_interest();
         self.check_recompute_ack(&ctx);
         self.declare_gaintable_interest();
-        self.persist_prefs(&ctx);
+        self.persist_prefs();
         self.maybe_print_stats();
     }
 
@@ -1031,5 +1013,9 @@ impl eframe::App for StudioSpike {
         self.services.shutdown();
         self.stop_launched_renderer();
         self.listener.shutdown();
+        self.persist_prefs();
+        if let Err(error) = self.prefs_writer.shutdown() {
+            log::error!("[prefs] final save failed: {error}");
+        }
     }
 }

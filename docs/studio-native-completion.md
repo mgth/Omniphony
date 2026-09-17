@@ -136,3 +136,20 @@ DNS runs off the first-paint path. The config namespace matches Tauri by default
 and continues to honor `OMNIPHONY_CONFIG_DIR/studio`. Resource discovery for
 installed archives belongs to the existing native distribution PR; migration of
 the old checkout-relative native preferences remains in lot10.
+
+### Durable preferences
+
+Native preferences use a single owned background writer, with one coalesced
+pending snapshot. The core owns the debounce, including while minimized;
+shutdown bypasses it and joins the final write. Save failures remain visible
+in the connection header and retry at a bounded cadence. OSC configuration
+and native preferences replace the destination atomically after serializing
+and syncing a sibling temporary file. This protects the prior document when
+serialization or writing fails; power-loss durability of the directory entry
+is not promised on every filesystem.
+
+Legacy `layouts/.studio-egui` JSON files are validated and copied once when
+using the default namespace. Existing destination files, including invalid
+ones, are never replaced by migration; sources remain available for rollback.
+An explicit `OMNIPHONY_CONFIG_DIR` stays isolated. This migrates native JSON,
+not browser localStorage; transfer from the web UI remains an acceptance gap.

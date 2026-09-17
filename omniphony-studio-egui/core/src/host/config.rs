@@ -62,7 +62,20 @@ pub fn load_config(config_dir: &PathBuf) -> OscConfig {
 }
 
 pub fn save_config(config_dir: &PathBuf, cfg: &OscConfig) -> Result<(), String> {
-    std::fs::create_dir_all(config_dir).map_err(|e| e.to_string())?;
-    let data = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(config_path(config_dir), data).map_err(|e| e.to_string())
+    super::json_store::save(&config_path(config_dir), cfg)
+}
+
+/// Carry a checkout's native connection settings into the stable namespace.
+/// An explicit runtime namespace is intentionally isolated from legacy files.
+pub fn migrate_legacy(
+    config_dir: &std::path::Path,
+    layouts_dir: &std::path::Path,
+) -> Result<(), String> {
+    if super::runtime_env::config_dir().is_some() {
+        return Ok(());
+    }
+    super::json_store::migrate::<OscConfig>(
+        &layouts_dir.join(".studio-egui/osc_config.json"),
+        &config_dir.join("osc_config.json"),
+    )
 }
