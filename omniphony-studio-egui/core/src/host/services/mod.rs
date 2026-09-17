@@ -11,6 +11,7 @@
 //! then, or until something nudges it, so an idle Studio wakes for nothing.
 
 pub mod auto_tune;
+pub mod backend_files;
 pub mod interests;
 pub mod jobs;
 pub mod meters;
@@ -69,6 +70,7 @@ impl Services {
         let mut next: Option<Instant> = None;
         for tick in [
             self.meters.tick(state, now),
+            backend_files::tick(state, now),
             self.speaker_test.tick(state, now),
             self.gain_tables.tick(state, now),
             self.idle_feed.tick(state, now),

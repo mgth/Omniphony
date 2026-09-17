@@ -113,7 +113,7 @@ impl StudioSpike {
         }
     }
 
-    fn auto_tune_running(&self) -> bool {
+    pub(crate) fn auto_tune_running(&self) -> bool {
         self.host
             .read()
             .auto_tune
@@ -367,10 +367,6 @@ impl StudioSpike {
     pub(crate) fn auto_tune_quit_guard(&mut self, ctx: &egui::Context) {
         if !self.auto_tune_running() {
             return;
-        }
-        if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.auto_tune_quit_asked = true;
         }
         if !self.auto_tune_quit_asked {
             return;
