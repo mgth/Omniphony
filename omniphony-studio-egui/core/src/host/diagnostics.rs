@@ -82,6 +82,30 @@ impl History {
             }
         }
     }
+    /// Record an independently published scalar without allocating a JSON object.
+    pub fn record_value(&mut self, key: &str, value: f64, at: Instant) {
+        let Some(samples) = self.series.get_mut(key) else {
+            return;
+        };
+        self.sequence = self.sequence.wrapping_add(1);
+        self.latest = at;
+        while samples
+            .front()
+            .is_some_and(|s| at.saturating_duration_since(s.at) > WINDOW)
+        {
+            samples.pop_front();
+        }
+        if value.is_finite() {
+            if samples.len() >= MAX_SAMPLES {
+                samples.pop_front();
+            }
+            samples.push_back(Sample {
+                sequence: self.sequence,
+                at,
+                value,
+            });
+        }
+    }
     /// Copy only arrivals newer than the UI cursor; repeated paints add nothing.
     pub fn copy_to(&self, trace: &mut Trace) {
         if trace.started != Some(self.started) {
@@ -117,9 +141,49 @@ pub fn select(state: &super::commands::SharedState, selected: &BTreeSet<String>)
     state.inner.lock().unwrap().diagnostics.select(selected);
 }
 
+/// Independent resampler publications use the same bounded, timestamped cache.
+/// Interest persists while a window is minimized, and is released when both
+/// consumers (the plot and the tuning wizard) are closed.
+pub fn select_resample(state: &super::commands::SharedState, plot_open: bool) {
+    let mut live = state.inner.lock().unwrap();
+    let wanted = plot_open || live.auto_tune.is_some();
+    if live.resample_wanted != wanted {
+        live.resample_wanted = wanted;
+        live.resampling.restart();
+        live.resampling.select(&if wanted {
+            BTreeSet::from(["latency".into(), "ppm".into()])
+        } else {
+            BTreeSet::new()
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn independently_published_scalars_keep_their_own_timestamps() {
+        let mut history = History::default();
+        history.select(&BTreeSet::from(["latency".into(), "ppm".into()]));
+        let start = history.started;
+        history.record_value("latency", 3.0, start);
+        history.record_value("ppm", 7.0, start + Duration::from_millis(5));
+        history.record_value("latency", 4.0, start + Duration::from_secs(2));
+        let mut trace = Trace::default();
+        history.copy_to(&mut trace);
+        history.copy_to(&mut trace);
+        assert_eq!(
+            trace.series["latency"],
+            VecDeque::from([(0.0, 3.0), (2000.0, 4.0)])
+        );
+        assert_eq!(trace.series["ppm"], VecDeque::from([(5.0, 7.0)]));
+        history.restart();
+        history.record_value("ppm", 8.0, history.started);
+        history.copy_to(&mut trace);
+        assert!(trace.series["latency"].is_empty());
+        assert_eq!(trace.series["ppm"], VecDeque::from([(0.0, 8.0)]));
+    }
+
     #[test]
     fn arrivals_survive_missing_frames_without_duplicate_paint_samples() {
         let mut history = History::default();

@@ -445,6 +445,9 @@ fn reset_connection_model(model: &mut Live) {
     fresh.interests = std::mem::take(&mut model.interests);
     fresh.diagnostics = std::mem::take(&mut model.diagnostics);
     fresh.diagnostics.restart();
+    fresh.resampling = std::mem::take(&mut model.resampling);
+    fresh.resampling.restart();
+    fresh.resample_wanted = model.resample_wanted;
     fresh.log = std::mem::take(&mut model.log);
     fresh.snapshot_epoch = model.snapshot_epoch.wrapping_add(1);
     fresh.layout_context_generation = model.layout_context_generation.wrapping_add(1);
@@ -904,6 +907,40 @@ mod connection_tests {
         reset_connection_model(&mut state.inner.lock().unwrap());
         assert!(!token.is_current(&state));
     }
+    #[test]
+    fn resampler_arrivals_survive_no_frames_and_reconnect_resets_the_trace() {
+        let state = crate::host::commands::tests::state();
+        crate::host::diagnostics::select_resample(&state, true);
+        let mut trace = crate::host::diagnostics::Trace::default();
+        {
+            let mut live = state.inner.lock().unwrap();
+            for value in [10.0, 20.0, 30.0] {
+                apply_event(&mut live, parser::OscEvent::StateLatencySmoothed { value });
+            }
+            apply_event(
+                &mut live,
+                parser::OscEvent::StateResampleRatio { value: 1.001 },
+            );
+            live.resampling.copy_to(&mut trace);
+            live.resampling.copy_to(&mut trace);
+            assert_eq!(trace.series["latency"].len(), 3);
+            assert_eq!(trace.series["ppm"].len(), 1);
+            reset_connection_model(&mut live);
+            apply_event(
+                &mut live,
+                parser::OscEvent::StateLatencySmoothed { value: 40.0 },
+            );
+            live.resampling.copy_to(&mut trace);
+            assert_eq!(trace.series["latency"].len(), 1);
+            assert_eq!(trace.series["latency"][0].1, 40.0);
+            assert!(trace.series["ppm"].is_empty());
+        }
+        crate::host::diagnostics::select_resample(&state, false);
+        crate::host::diagnostics::select_resample(&state, true);
+        state.read().resampling.copy_to(&mut trace);
+        assert!(trace.series.values().all(|samples| samples.is_empty()));
+    }
+
     #[test]
     fn reconnect_keeps_diagnostic_selection_without_a_ui_frame() {
         let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));

@@ -69,6 +69,8 @@ pub const TRAIL_MAX_POINTS: usize = 240;
 pub struct Live {
     pub diagnostics: crate::host::diagnostics::History,
     pub backend_file_pending: Option<crate::host::services::backend_files::Pending>,
+    pub resampling: crate::host::diagnostics::History,
+    pub(crate) resample_wanted: bool,
     pub app: AppState,
     /// Whether the renderer has ever published a master level. Until it has,
     /// the host derives one from the speakers.
@@ -429,6 +431,8 @@ impl Live {
             auto_tune: None,
             interests: Default::default(),
             diagnostics: Default::default(),
+            resampling: Default::default(),
+            resample_wanted: false,
             speaker_test: Default::default(),
             recompute_deadline: None,
             recompute_timed_out: false,
@@ -873,7 +877,13 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateLatencySmoothed { value } => {
             live.app.set_latency_smoothed_value(value);
-            Change::None
+            live.resampling
+                .record_value("latency", value, Instant::now());
+            if live.resample_wanted {
+                Change::Scene
+            } else {
+                Change::None
+            }
         }
         OscEvent::StateLatencyDownstream { value } => {
             live.app.set_latency_downstream_value(value);
@@ -881,7 +891,11 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateLatencyTarget { value } => {
             live.app.set_latency_target_value(value);
-            Change::None
+            if live.resample_wanted {
+                Change::Scene
+            } else {
+                Change::None
+            }
         }
         OscEvent::StateLatencyTargetRequested { value } => {
             live.app.set_latency_requested_value(value);
@@ -965,7 +979,13 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         }
         OscEvent::StateResampleRatio { value } => {
             live.app.resample_ratio = Some(value);
-            Change::None
+            live.resampling
+                .record_value("ppm", (value - 1.0) * 1e6, Instant::now());
+            if live.resample_wanted {
+                Change::Scene
+            } else {
+                Change::None
+            }
         }
         OscEvent::StateRenderBridgePath { value } => {
             live.app.render_bridge_path = non_empty(value);

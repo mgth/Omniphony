@@ -152,11 +152,10 @@ pub struct StudioSpike {
     pub(crate) display_panel_open: bool,
     /// Resample sparkline: whether it is showing, and what it has sampled.
     pub(crate) resample_plot_open: bool,
-    pub(crate) resample_series: crate::panels::resample_plot::ResampleSeries,
+    pub(crate) resample_series: crate::host::diagnostics::Trace,
     /// Diagnostics plot: the sampled series, when the plot started, whether it
     /// is frozen, and when publication was last re-asserted.
     pub(crate) diag_trace: crate::host::diagnostics::Trace,
-    pub(crate) resample_started: Instant,
     pub(crate) diag_paused: bool,
     /// Whether the plot was on screen last frame, so its series is cleared
     /// once when it goes away.
@@ -477,7 +476,6 @@ impl StudioSpike {
             resample_plot_open: false,
             resample_series: Default::default(),
             diag_trace: Default::default(),
-            resample_started: Instant::now(),
             diag_paused: false,
             gizmo_target: None,
             gizmo_drag: None,
@@ -1012,6 +1010,7 @@ impl eframe::App for StudioSpike {
         self.declare_overlay_prefs();
         self.declare_object_test_marker();
         self.declare_idle_feed_interest();
+        crate::host::diagnostics::select_resample(&self.host, self.resample_plot_open);
         self.check_recompute_ack(&ctx);
         self.declare_gaintable_interest();
         self.persist_prefs();

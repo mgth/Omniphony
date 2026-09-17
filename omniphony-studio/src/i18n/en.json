@@ -598,6 +598,7 @@
   "common.cancel": "Cancel",
   "common.close": "Close",
   "telemetry.plotToggle": "Toggle resample / latency plot",
+  "telemetry.waiting": "Waiting for telemetry…",
   "autoTune.openButton": "Auto-tune…",
   "autoTune.openButtonTitle": "Run the PI auto-tuner on the local resampling controller",
   "autoTune.title": "PI Auto-tune",
