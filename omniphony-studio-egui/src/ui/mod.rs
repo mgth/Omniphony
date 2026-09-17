@@ -6,6 +6,7 @@ pub mod group;
 pub mod help;
 pub mod icons;
 pub mod layout;
+pub mod layout_transfer;
 pub mod markup;
 pub mod meter;
 pub mod overlay;

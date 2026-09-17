@@ -13,6 +13,11 @@ pub fn control_profile_switch(state: &SharedState, value: String) {
     if name.is_empty() {
         return;
     }
+    let _session = state.connection_request.lock().unwrap();
+    {
+        let mut live = state.inner.lock().unwrap();
+        live.layout_context_generation = live.layout_context_generation.wrapping_add(1);
+    }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
@@ -26,6 +31,11 @@ pub fn control_profile_create(state: &SharedState, value: String) {
     let name = value.trim().to_string();
     if name.is_empty() {
         return;
+    }
+    let _session = state.connection_request.lock().unwrap();
+    {
+        let mut live = state.inner.lock().unwrap();
+        live.layout_context_generation = live.layout_context_generation.wrapping_add(1);
     }
     send_control(
         &state.osc_tx,
@@ -41,6 +51,11 @@ pub fn control_profile_delete(state: &SharedState, value: String) {
     if name.is_empty() {
         return;
     }
+    let _session = state.connection_request.lock().unwrap();
+    {
+        let mut live = state.inner.lock().unwrap();
+        live.layout_context_generation = live.layout_context_generation.wrapping_add(1);
+    }
     send_control(
         &state.osc_tx,
         OscControlMsg::SendString {
@@ -55,6 +70,11 @@ pub fn control_profile_rename(state: &SharedState, old: String, new: String) {
     let new = new.trim().to_string();
     if old.is_empty() || new.is_empty() {
         return;
+    }
+    let _session = state.connection_request.lock().unwrap();
+    {
+        let mut live = state.inner.lock().unwrap();
+        live.layout_context_generation = live.layout_context_generation.wrapping_add(1);
     }
     send_control(
         &state.osc_tx,

@@ -254,3 +254,21 @@ call. Shutdown can still wait for a file operation, resolver or interactive
 service authorization already in progress. Those operations are deliberately
 not killed halfway through a system change; cancellation and platform timing
 acceptance remain part of lots07–08.
+
+### Non-blocking layout transfers
+
+Layout imports/exports use asynchronous native pickers and host-owned workers
+for directory probing, parsing and writing. Only one transfer per panel can be
+pending. Application logic consumes completions even when the panel is hidden;
+worker/future completion wakes it without a polling timer. Export captures the
+chosen layout before the dialog; import revalidates connection intent, session
+epoch, active profile and frozen speakers before changing the model or sending
+the replacement. Cancelling the picker leaves the model/draft untouched, and
+errors remain visible. Layout replacement normalization now belongs to the core.
+Tests cover stale sessions, profiles, freeze, duplicate keys and worker file
+round trips. Native dialog behavior on each OS remains manual acceptance.
+
+Other native file pickers (backend files, evaluator and executable selection)
+still use modal platform APIs; their file processing has separate ownership.
+Closing an OS dialog or interrupting a filesystem call is not guaranteed by
+dropping a Rust future. The owned-job shutdown limitations above still apply.
