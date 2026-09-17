@@ -194,3 +194,11 @@ cargo test -p omniphony-studio-scene --release --locked volume_cpu_benchmark -- 
 
 Full frame/GPU, minimized CPU/RSS and service-deadline measurements remain
 separate acceptance work in lot13.
+
+### Shared wire parser
+
+The Tauri host now re-exports the core's OSC parser and event types instead of
+maintaining a second 1,444-line copy. Existing parser tests remain in the core;
+serialization and public event variants are unchanged. Linux CI type-checks the
+Tauri host with its committed lockfile, without requiring a release sidecar
+bundle, to catch shared-core dependency and API drift before release.

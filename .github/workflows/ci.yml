@@ -253,6 +253,14 @@ jobs:
         working-directory: omniphony-studio
         run: npm run build
 
+      # Type-check the web host as a consumer of the shared native core. No
+      # sidecar/resource bundle is needed for this compatibility gate.
+      - name: Check Tauri host against the shared core
+        working-directory: omniphony-studio/src-tauri
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":null}}'
+        run: cargo check --locked
+
       # Drift pins for the renderer<->Studio mirrors (channel-spelling
       # normalisation, geometry golden vectors) — hard gates, like knip below.
       - name: Channel-alias parity tests
