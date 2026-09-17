@@ -297,3 +297,18 @@ remain ineligible even if resolution later fails. Only a matching transport
 reset clears its queued transition; an old producer restart, a superseded DNS
 failure or an older queued command cannot release a newer transition. Tests
 exercise all these interleavings without a network lookup or live renderer.
+### Connection configuration without per-command disk access
+
+One core-owned configuration snapshot now backs metering, host switches,
+connection changes, import-directory memory, the launcher and watchdog. Patches
+are serialized in memory, preserving unrelated fields even when commands run
+concurrently, and submitted in the same order to an atomic background writer.
+The writer coalesces changes, retries failed writes and flushes at shutdown.
+The connection header reports persistence failures. Invalid/unreadable input is
+read-only for the session, while session changes remain usable and never replace
+the original document with defaults.
+
+External edits to osc_config.json are loaded on the next Studio start. This is
+one writer per host instance, not cross-process locking: simultaneous instances
+still use last-writer-wins persistence. Local layout content import/export and
+native picker filesystem checks remain separate non-blocking-I/O work.

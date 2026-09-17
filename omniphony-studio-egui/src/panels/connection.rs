@@ -9,7 +9,6 @@ use egui::Color32;
 use crate::app::StudioSpike;
 use crate::host::commands::app as app_cmd;
 use crate::host::commands::mpv_config::MpvOrenderState;
-use crate::host::config::{load_config, save_config};
 use crate::i18n::{t, tf};
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
@@ -51,7 +50,16 @@ impl StudioSpike {
     /// `#oscStatus` row.
     pub(crate) fn connection_line(&mut self, ui: &mut egui::Ui) {
         if let Some(error) = self.prefs_writer.error() {
-            ui.colored_label(theme::WARN, format!("Preferences: {error}"));
+            ui.colored_label(
+                theme::WARN,
+                tf("status.preferencesSaveError", &[("error", &error)]),
+            );
+        }
+        if let Some(error) = self.host.config_error() {
+            ui.colored_label(
+                theme::WARN,
+                tf("status.connectionConfigError", &[("error", &error)]),
+            );
         }
         let port = self.osc_stats.listen_port.load(Ordering::Relaxed);
         let state = self.osc_state();
@@ -383,13 +391,11 @@ impl StudioSpike {
         );
     }
 
-    /// Write the two host switches into `osc_config.json`, leaving every
-    /// other field as the file has it.
+    /// Patch the shared host configuration and queue its atomic persistence.
     fn save_host_switches(&self) {
-        let mut config = load_config(&self.config_dir);
-        config.auto_start_renderer = self.osc_auto_start;
-        config.keep_renderer_alive_on_quit = self.osc_keep_alive;
-        if let Err(e) = save_config(&self.config_dir, &config) {
+        if let Err(e) =
+            app_cmd::set_host_switches(&self.host, self.osc_auto_start, self.osc_keep_alive)
+        {
             log::warn!("[osc] could not save the configuration: {e}");
         }
     }

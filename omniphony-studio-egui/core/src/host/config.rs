@@ -79,3 +79,151 @@ pub fn migrate_legacy(
         &config_dir.join("osc_config.json"),
     )
 }
+
+struct RuntimeState {
+    config: OscConfig,
+    closing: bool,
+}
+
+/// One in-memory connection configuration per host. Reads and typed patches
+/// never perform disk I/O; a coalescing writer persists complete snapshots.
+/// External file edits are picked up at the next host start.
+pub struct RuntimeConfig {
+    value: std::sync::Mutex<RuntimeState>,
+    writer: std::sync::Mutex<Option<super::json_store::Writer<OscConfig>>>,
+    initial_error: Option<String>,
+}
+impl RuntimeConfig {
+    pub fn new(directory: &PathBuf, wake: crate::osc::Waker) -> Self {
+        let path = config_path(directory);
+        let (value, mut error) = super::json_store::load::<OscConfig>(&path);
+        // A corrupt/unreadable file must not be overwritten with defaults.
+        let writer = if error.is_none() {
+            match super::json_store::Writer::new(
+                path,
+                std::time::Duration::from_millis(200),
+                wake,
+                None,
+            ) {
+                Ok(writer) => Some(writer),
+                Err(failure) => {
+                    error = Some(failure.to_string());
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Self {
+            value: std::sync::Mutex::new(RuntimeState {
+                config: value,
+                closing: false,
+            }),
+            writer: std::sync::Mutex::new(writer),
+            initial_error: error,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn memory() -> Self {
+        Self {
+            value: std::sync::Mutex::new(RuntimeState {
+                config: OscConfig::default(),
+                closing: false,
+            }),
+            writer: std::sync::Mutex::new(None),
+            initial_error: None,
+        }
+    }
+    pub fn snapshot(&self) -> OscConfig {
+        self.value.lock().unwrap().config.clone()
+    }
+    pub fn update(&self, patch: impl FnOnce(&mut OscConfig)) -> Result<(), String> {
+        let mut value = self.value.lock().unwrap();
+        if value.closing {
+            return Err("Connection configuration is closing".into());
+        }
+        patch(&mut value.config);
+        // Keep the snapshot submission ordered with the patch. Otherwise two
+        // concurrent commands could submit older state after a newer patch.
+        if let Some(writer) = &*self.writer.lock().unwrap() {
+            writer.submit(value.config.clone());
+        }
+        self.initial_error.clone().map_or(Ok(()), Err)
+    }
+    pub fn error(&self) -> Option<String> {
+        self.initial_error.clone().or_else(|| {
+            self.writer
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(super::json_store::Writer::error)
+        })
+    }
+    pub fn shutdown(&self) -> Result<(), String> {
+        self.value.lock().unwrap().closing = true;
+        if let Some(writer) = &mut *self.writer.lock().unwrap() {
+            writer.shutdown()?;
+        }
+        self.initial_error.clone().map_or(Ok(()), Err)
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    use std::sync::Arc;
+    #[test]
+    fn concurrent_patches_preserve_other_fields_and_flush_the_latest_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_path_buf();
+        let config = Arc::new(RuntimeConfig::new(&path, Arc::new(|| {})));
+        let first = config.clone();
+        let worker = std::thread::spawn(move || {
+            for index in 0..100 {
+                first
+                    .update(|cfg| cfg.host = format!("host-{index}"))
+                    .unwrap();
+            }
+        });
+        for index in 0..100 {
+            config
+                .update(|cfg| {
+                    cfg.last_layout_import_dir = Some(format!("directory-{index}"));
+                    cfg.keep_renderer_alive_on_quit = true;
+                })
+                .unwrap();
+        }
+        worker.join().unwrap();
+        config.shutdown().unwrap();
+        let saved = load_config(&path);
+        assert_eq!(saved.host, "host-99");
+        assert_eq!(
+            saved.last_layout_import_dir.as_deref(),
+            Some("directory-99")
+        );
+        assert!(saved.keep_renderer_alive_on_quit);
+        assert!(
+            config
+                .update(|_| panic!("must not run after close"))
+                .is_err()
+        );
+        config.shutdown().unwrap();
+    }
+    #[test]
+    fn malformed_config_stays_read_only_while_session_changes_are_available() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_path_buf();
+        let file = config_path(&path);
+        std::fs::write(&file, "invalid document").unwrap();
+        let config = RuntimeConfig::new(&path, Arc::new(|| {}));
+        assert!(config.error().is_some());
+        assert!(
+            config
+                .update(|cfg| cfg.keep_renderer_alive_on_quit = true)
+                .is_err()
+        );
+        assert!(config.snapshot().keep_renderer_alive_on_quit);
+        assert!(config.shutdown().is_err());
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "invalid document");
+    }
+}

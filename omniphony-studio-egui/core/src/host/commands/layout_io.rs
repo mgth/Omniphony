@@ -10,7 +10,6 @@
 use super::HostPaths;
 
 use super::SharedState;
-use crate::host::config::{load_config, save_config};
 use crate::model::layouts::{self, Layout};
 use std::path::Path;
 
@@ -229,7 +228,7 @@ pub fn selected_layout(state: &SharedState) -> Option<Layout> {
 /// known, otherwise the bundled layouts dir (so a first-time user lands right
 /// on the shipped presets).
 pub fn import_start_dir(app: &HostPaths, state: &SharedState) -> Option<std::path::PathBuf> {
-    if let Some(dir) = load_config(&state.config_dir).last_layout_import_dir {
+    if let Some(dir) = state.config.snapshot().last_layout_import_dir {
         let p = std::path::PathBuf::from(dir);
         if p.is_dir() {
             return Some(p);
@@ -248,9 +247,12 @@ pub fn presets_dir(app: &HostPaths) -> Option<std::path::PathBuf> {
 
 /// Remember where the user imported from, for the next import.
 pub fn remember_import_dir(state: &SharedState, dir: &Path) {
-    let mut cfg = load_config(&state.config_dir);
-    cfg.last_layout_import_dir = Some(dir.to_string_lossy().to_string());
-    let _ = save_config(&state.config_dir, &cfg);
+    if let Err(error) = state
+        .config
+        .update(|cfg| cfg.last_layout_import_dir = Some(dir.to_string_lossy().to_string()))
+    {
+        log::warn!("[osc] {error}");
+    }
 }
 
 /// The file name a layout export dialog proposes: the suggestion with a

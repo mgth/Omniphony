@@ -1,10 +1,7 @@
 //! Bounded user-triggered host work. Drawing can submit one operation and read
 //! its result; DNS, files and service-manager processes run on the worker.
 
-use crate::host::{
-    commands::{SharedState, app, orender},
-    config::{load_config, save_config},
-};
+use crate::host::commands::{SharedState, app, orender};
 use std::sync::{
     Arc,
     mpsc::{Receiver, TryRecvError},
@@ -84,11 +81,12 @@ fn execute(state: &SharedState, action: Action) -> Result<(), String> {
         Action::Refresh => Ok(()),
         Action::Connect { host, port } => {
             app::connect_to(state, &host, port)?;
-            let mut config = load_config(&state.config_dir);
-            config.host = host.trim().to_owned();
-            config.osc_rx_port = port;
-            config.osc_metering_enabled = state.read().app.osc_metering_enabled.unwrap_or(0) != 0;
-            save_config(&state.config_dir, &config)
+            let metering = state.read().app.osc_metering_enabled.unwrap_or(0) != 0;
+            state.config.update(|config| {
+                config.host = host.trim().to_owned();
+                config.osc_rx_port = port;
+                config.osc_metering_enabled = metering;
+            })
         }
         Action::Stop => {
             orender::stop_orender(state);
@@ -98,7 +96,7 @@ fn execute(state: &SharedState, action: Action) -> Result<(), String> {
         Action::UninstallService => orender::uninstall_orender_service(),
         Action::RestartPipewire => orender::restart_pipewire_services(),
         action @ (Action::Launch | Action::InstallService) => {
-            let config = load_config(&state.config_dir);
+            let config = state.config.snapshot();
             let paths = &state.paths;
             let result = match action {
                 Action::Launch => orender::launch_orender(
