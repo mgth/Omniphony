@@ -155,10 +155,13 @@ pub type ControlTx = Sender<Control>;
 pub fn resolve(target: &str) -> Option<SocketAddr> {
     let target = target.trim();
     if let Ok(addr) = target.parse::<SocketAddr>() {
-        return Some(addr);
+        return addr.is_ipv4().then_some(addr);
     }
     use std::net::ToSocketAddrs;
-    target.to_socket_addrs().ok()?.next()
+    target
+        .to_socket_addrs()
+        .ok()?
+        .find(std::net::SocketAddr::is_ipv4)
 }
 
 /// Bind the socket and start the listener thread. Returns the bound port so a

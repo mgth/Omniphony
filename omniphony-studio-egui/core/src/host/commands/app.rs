@@ -60,6 +60,14 @@ fn finish_session_operations(state: &SharedState) {
     crate::host::services::auto_tune::revert(state);
 }
 
+/// Reserve an intent before scheduling DNS, so a delayed startup request
+/// cannot replace a later manual connection.
+pub fn begin_connection(state: &SharedState) -> u64 {
+    let mut request = state.connection_request.lock().unwrap();
+    *request = request.wrapping_add(1);
+    *request
+}
+
 /// Point the client at a renderer: resolve the address (a hostname needs a
 /// lookup, done here so the failure can be shown), reconnect, and say so in
 /// the log. Returns the error message when nothing resolves.
@@ -68,12 +76,32 @@ pub fn connect_to(
     host: &str,
     port: u16,
 ) -> Result<std::net::SocketAddr, String> {
+    let request = begin_connection(state);
+    connect_requested(state, host, port, request)
+}
+
+pub fn connect_requested(
+    state: &SharedState,
+    host: &str,
+    port: u16,
+    request: u64,
+) -> Result<std::net::SocketAddr, String> {
+    connect_resolved(state, host, port, request, crate::osc::resolve)
+}
+
+fn connect_resolved(
+    state: &SharedState,
+    host: &str,
+    port: u16,
+    request: u64,
+    resolve: impl FnOnce(&str) -> Option<std::net::SocketAddr>,
+) -> Result<std::net::SocketAddr, String> {
     let host = host.trim().trim_matches(['[', ']']);
     let target = match host.parse::<std::net::IpAddr>() {
         Ok(ip) => std::net::SocketAddr::new(ip, port).to_string(),
         Err(_) => format!("{host}:{port}"),
     };
-    let Some(addr) = crate::osc::resolve(&target) else {
+    let Some(addr) = resolve(&target).filter(std::net::SocketAddr::is_ipv4) else {
         let message = format!("cannot resolve {target}");
         state
             .inner
@@ -82,6 +110,10 @@ pub fn connect_to(
             .push_log("error", "osc", &message);
         return Err(message);
     };
+    let current = state.connection_request.lock().unwrap();
+    if *current != request {
+        return Err("connection request superseded".into());
+    }
     finish_session_operations(state);
     send_control(
         &state.osc_tx,
@@ -191,16 +223,7 @@ pub fn save_osc_config(state: &SharedState, mut config: OscConfig) -> Result<(),
             enabled: config.osc_metering_enabled,
         },
     );
-    finish_session_operations(state);
-    let listen_port = *state.listen_port.lock().unwrap();
-    send_control(
-        &state.osc_tx,
-        OscControlMsg::Reconnect {
-            host: config.host,
-            rx_port: config.osc_rx_port,
-            listen_port,
-        },
-    );
+    connect_to(state, &config.host, config.osc_rx_port)?;
     Ok(())
 }
 
@@ -229,6 +252,31 @@ pub fn auto_tune_snapshot_peek(state: &SharedState) -> Option<serde_json::Value>
 #[cfg(test)]
 mod reconnect_tests {
     use super::*;
+
+    #[test]
+    fn slow_initial_resolution_cannot_replace_a_newer_manual_target() {
+        let mut state = crate::host::commands::tests::state();
+        let (tx, commands) = std::sync::mpsc::channel();
+        state.osc_tx = tx;
+        let state = std::sync::Arc::new(state);
+        let request = begin_connection(&state);
+        let (release, blocked) = std::sync::mpsc::channel();
+        let initial = state.clone();
+        let worker = std::thread::spawn(move || {
+            connect_resolved(&initial, "slow.example", 9000, request, |_| {
+                blocked.recv().unwrap();
+                Some("127.0.0.1:9000".parse().unwrap())
+            })
+        });
+        connect_to(&state, "127.0.0.2", 9010).unwrap();
+        release.send(()).unwrap();
+        assert!(worker.join().unwrap().is_err());
+        let queued: Vec<_> = commands.try_iter().collect();
+        assert_eq!(queued.len(), 1);
+        assert!(
+            matches!(&queued[0], crate::osc::Control::Reconnect { target } if *target == "127.0.0.2:9010".parse().unwrap())
+        );
+    }
 
     #[test]
     fn reconnect_stops_an_active_burst_before_switching_even_to_same_target() {

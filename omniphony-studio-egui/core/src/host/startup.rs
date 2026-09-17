@@ -24,6 +24,11 @@ impl Startup {
         } else if let Some(spec) = register {
             let (host, port) = spec.rsplit_once(':').ok_or("expected host:port")?;
             let host = host.trim().trim_matches(['[', ']']);
+            if host.contains(':') {
+                return Err(
+                    "IPv6 renderer endpoints are not supported by the IPv4 OSC transport".into(),
+                );
+            }
             if host.is_empty() {
                 return Err("renderer host cannot be empty".into());
             }
@@ -78,9 +83,10 @@ mod tests {
         let plan = Startup::new(&config, None, None, false, false).unwrap();
         assert_eq!(plan.target, Some(("saved.example".into(), 9012)));
         assert_eq!(plan.listen_port, 9013);
-        let plan = Startup::new(&config, Some("[::1]:9014"), Some(0), false, false).unwrap();
-        assert_eq!(plan.target, Some(("::1".into(), 9014)));
+        let plan = Startup::new(&config, Some("127.0.0.2:9014"), Some(0), false, false).unwrap();
+        assert_eq!(plan.target, Some(("127.0.0.2".into(), 9014)));
         assert_eq!(plan.listen_port, 0);
+        assert!(Startup::new(&config, Some("[::1]:9014"), None, false, false).is_err());
     }
     #[test]
     fn passive_modes_never_attach_to_the_saved_renderer() {

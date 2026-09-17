@@ -376,11 +376,17 @@ impl StudioSpike {
             crate::host::commands::app::suppress_autostart(&host);
         }
         if let Some((target_host, target_port)) = startup.target {
+            let request = crate::host::commands::app::begin_connection(&host);
             let connect_host = host.clone();
             // Resolution may block; neither first paint nor service deadlines
             // should depend on the network resolver.
             let _ = crate::host::services::jobs::run(&host, move || {
-                crate::host::commands::app::connect_to(&connect_host, &target_host, target_port)
+                crate::host::commands::app::connect_requested(
+                    &connect_host,
+                    &target_host,
+                    target_port,
+                    request,
+                )
             });
         }
         // The core's own clock: it sleeps until a service is due or the waker
