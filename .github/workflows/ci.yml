@@ -253,6 +253,16 @@ jobs:
         working-directory: omniphony-studio
         run: npm run build
 
+      # This host has a separate build tree from both the renderer and native
+      # Studio. Cache it too so core changes do not rebuild GTK/WebKit every PR.
+      - name: Cache the Tauri host build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio/src-tauri/target
+          key: ${{ runner.os }}-studio-tauri-${{ hashFiles('omniphony-studio/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-studio-tauri-
+
       # Type-check the web host as a consumer of the shared native core. No
       # sidecar/resource bundle is needed for this compatibility gate.
       - name: Check Tauri host against the shared core
@@ -328,6 +338,23 @@ jobs:
         working-directory: omniphony-renderer
         run: cargo build --workspace --locked
 
+      # The native Studio ships on macOS too (release.yml attaches an archive
+      # per platform). Until this step existed only the Linux job compiled it,
+      # so a platform-specific break — wgpu's Metal path, winit, the file
+      # dialogs — surfaced at release time. Same toolchain pin and build tree
+      # as the Linux job.
+      - name: Cache the native Studio build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: macos-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: macos-studio-egui-
+
+      - name: Build native Studio (macOS arm64)
+        working-directory: omniphony-studio-egui
+        run: cargo build --workspace --locked
+
   build-windows:
     # Windows x64 compile gate. On Windows cpal always pulls its ASIO backend
     # (audio_output enables the feature per-target; the workspace `asio` feature
@@ -377,3 +404,19 @@ jobs:
       # builds it on stable, which is what this checks.
       - name: Build the native Studio core (Windows x64)
         run: cargo build --locked --manifest-path omniphony-studio-egui/core/Cargo.toml
+
+      # The whole native Studio, on its pinned toolchain this time: it ships
+      # on Windows (release.yml attaches an archive per platform), and the
+      # step above only proves the core. Run from inside the directory so the
+      # pin applies.
+      - name: Cache the native Studio build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: windows-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: windows-studio-egui-
+
+      - name: Build native Studio (Windows x64)
+        working-directory: omniphony-studio-egui
+        run: cargo build --workspace --locked

@@ -13,7 +13,7 @@
 use std::time::{Duration, Instant};
 
 use super::Tick;
-use crate::host::commands::{HostPaths, SharedState, app, orender};
+use crate::host::commands::{SharedState, app, orender};
 use crate::host::config::load_config;
 use crate::i18n::t;
 
@@ -122,7 +122,7 @@ impl Watchdog {
         if stop.cancelled() {
             return Tick::idle();
         }
-        match orender::autostart_orender(&HostPaths::default(), state) {
+        match orender::autostart_orender(&state.paths, state) {
             Ok(info) => {
                 let command = info
                     .get("command")

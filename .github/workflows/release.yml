@@ -2,7 +2,8 @@ name: Release
 
 # Triggered by a version tag (v*) or manually.
 # Creates a draft GitHub release with Linux (.deb, .AppImage), Windows (.msi,
-# .exe) and macOS arm64 (.dmg/.app) bundles.
+# .exe) and macOS arm64 (.dmg/.app) bundles of the Tauri Studio, plus one
+# archive per platform of the native (egui/wgpu) Studio.
 on:
   push:
     tags: ['v*']
@@ -110,6 +111,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libpipewire-0.3-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
             pkg-config
 
       # Required to compile cpal with ASIO support on Windows. Licensing rationale
@@ -158,3 +161,73 @@ jobs:
           releaseName: 'Omniphony ${{ github.ref_name }}'
           releaseDraft: true
           prerelease: false
+
+      # ── Native Studio (egui/wgpu) ─────────────────────────────────────────
+      # The same release ships the native Studio as a plain archive per
+      # platform: the binary, the renderer it launches (the sidecar the Tauri
+      # build just prepared, so the same commit), the layouts and the head
+      # model, laid out as `HostPaths::bundled()` and the asset defaults expect
+      # — everything beside the executable. Built after tauri-action so the
+      # draft release exists by the time the archive is attached to it.
+      #
+      # Its own build tree and toolchain: rust-toolchain.toml in the crate
+      # pins a newer rustc than the renderer's, and rustup installs it when
+      # cargo runs from inside the directory.
+      - name: Cache the native Studio build
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: omniphony-studio-egui/target
+          key: ${{ runner.os }}-studio-egui-${{ hashFiles('omniphony-studio-egui/Cargo.lock', 'omniphony-studio-egui/rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-studio-egui-
+
+      - name: Build the native Studio
+        working-directory: omniphony-studio-egui
+        run: cargo build --release --locked
+
+      - name: Stage the native Studio archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux)   platform=linux-x86_64;   exe= ;;
+            Windows) platform=windows-x86_64; exe=.exe ;;
+            macOS)   platform=macos-arm64;    exe= ;;
+            *) echo "unexpected runner OS: $RUNNER_OS" >&2; exit 1 ;;
+          esac
+          name="omniphony-studio-egui-${GITHUB_REF_NAME}-${platform}"
+          dir="staging/$name"
+          mkdir -p "$dir/layouts/legacy" "$dir/assets"
+          cp "omniphony-studio-egui/target/release/omniphony-studio-egui$exe" "$dir/"
+          # The sidecar carries the host triple in its name; the Studio looks
+          # for a plain `orender` next to itself.
+          cp omniphony-studio/src-tauri/binaries/orender-*"$exe" "$dir/orender$exe"
+          cp layouts/*.yaml "$dir/layouts/"
+          cp layouts/legacy/*.yaml "$dir/layouts/legacy/"
+          cp omniphony-studio/assets/la_dame_de_brassempouy_centered.glb "$dir/assets/"
+          cp LICENSE "$dir/"
+          ls -laR "$dir"
+          cd staging
+          case "$RUNNER_OS" in
+            Linux)   archive="$name.tar.gz"; tar czf "$archive" "$name" ;;
+            Windows) archive="$name.zip";    7z a -tzip "$archive" "$name" > /dev/null ;;
+            macOS)   archive="$name.zip";    zip -qr "$archive" "$name" ;;
+          esac
+          echo "archive=staging/$archive" >> "$GITHUB_ENV"
+
+      - name: Upload the native Studio archive (workflow artifact)
+        uses: actions/upload-artifact@v7
+        with:
+          name: studio-egui-${{ runner.os }}
+          path: ${{ env.archive }}
+
+      # Attached to the draft tauri-action created for this tag. `gh` finds a
+      # draft by its tag name (drafts have no ref yet, so the tag lookup alone
+      # would miss it). A manual dispatch has no tag and no draft: the
+      # workflow artifact above is its output.
+      - name: Attach the native Studio archive to the draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" "$archive" --clobber --repo "$GITHUB_REPOSITORY"

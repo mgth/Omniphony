@@ -488,7 +488,7 @@ impl StudioSpike {
             band_bar_hits: Vec::new(),
             diag_selection: None,
             expected_orender_path: crate::host::commands::orender::expected_orender_path(
-                &crate::host::commands::HostPaths::default(),
+                &crate::host::commands::HostPaths::bundled(),
                 None,
             ),
             hybrid_tab: "hybrid".to_owned(),

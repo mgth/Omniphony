@@ -3,6 +3,7 @@
 //! the control layer that turns UI actions into OSC messages.
 
 pub mod audio_config;
+pub mod bundle;
 pub mod capabilities;
 pub mod channels;
 pub mod commands;
