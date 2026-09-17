@@ -20,6 +20,9 @@ impl StudioSpike {
     /// Launch, Stop, and the OS service. They live under the OSC section,
     /// where the connection they are about is reported.
     pub(crate) fn renderer_controls(&mut self, ui: &mut Ui) {
+        if !crate::host::capabilities::ActionPolicy::of(&self.host).manage_process {
+            return;
+        }
         let (installed, manager) = self.service_status();
         ui.horizontal_wrapped(|ui| {
             if ui.button(t("osc.orender.launch")).clicked() {

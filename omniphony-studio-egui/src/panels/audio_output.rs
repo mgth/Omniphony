@@ -24,12 +24,16 @@ const FILE_FORMATS: &[(&str, &str)] = &[
 
 impl StudioSpike {
     pub(crate) fn audio_output_section(&mut self, ui: &mut Ui) {
+        let policy = crate::host::capabilities::ActionPolicy::of(&self.host);
+        if !policy.audio_output {
+            return;
+        }
         let (audio, devices, ready, unroutable, mapping) = {
             let live = self.host.read();
             (
                 live.app.audio.clone(),
                 live.app.audio.audio_output_devices.clone(),
-                live.app.osc_snapshot_ready,
+                policy.renderer_ready,
                 live.app
                     .live_options
                     .output_channel_mapping_unroutable

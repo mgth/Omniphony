@@ -37,6 +37,7 @@ const CLOCK_MODES: &[(&str, &str)] = &[
 
 impl StudioSpike {
     pub(crate) fn audio_input_section(&mut self, ui: &mut Ui) {
+        let policy = crate::host::capabilities::ActionPolicy::of(&self.host);
         let (mode, active, bridge, pipe, clock, error, node, description, pending) = {
             let live = self.host.read();
             (
@@ -111,24 +112,6 @@ impl StudioSpike {
                 }
                 widgets::note(ui, &status);
 
-                let mut chosen = mode.clone();
-                widgets::label_row_help(ui, t("input.mode"), "help.input.mode", |ui| {
-                    widgets::bounded_combo(ui, 150.0, |ui, w| {
-                        egui::ComboBox::from_id_salt("input-mode")
-                            .selected_text(mode_label(&mode))
-                            .width(w)
-                            .truncate()
-                            .show_ui(ui, |ui| {
-                                for (id, key) in MODES {
-                                    ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
-                                }
-                            })
-                    });
-                });
-                if chosen != mode {
-                    input::set_input_mode(&self.host, chosen);
-                }
-
                 // The bridge path is exempt from the connection lock: it is
                 // how a missing bridge gets fixed.
                 if let Some(path) = text_row(
@@ -143,90 +126,113 @@ impl StudioSpike {
                     input::set_render_bridge_path(&self.host, path);
                 }
 
-                // The fields of the mode chosen, in a group of their own
-                // (`#inputLiveFields` / `#inputBridgeFields`).
-                if pipewire {
-                    Group::new(t("input.liveSource")).show(ui, |ui| {
-                        if let Some(node) = text_row(
-                            ui,
-                            "input-node",
-                            t("input.node"),
-                            "help.input.node",
-                            &mut self.input_edits.node,
-                            &node,
-                            "omniphony",
-                        ) {
-                            input::set_live_input_node(&self.host, node);
-                        }
-                        if let Some(description) = text_row(
-                            ui,
-                            "input-description",
-                            t("input.description"),
-                            "help.input.description",
-                            &mut self.input_edits.description,
-                            &description,
-                            "Omniphony Bridge Input",
-                        ) {
-                            input::set_live_input_description(&self.host, description);
-                        }
-                        let mut chosen_clock = clock.clone();
-                        widgets::label_row_info_keys(
-                            ui,
-                            t("input.clock"),
-                            "input.clockInfoTitle",
-                            "input.clockInfoBody",
-                            |ui| {
-                                widgets::bounded_combo(ui, 150.0, |ui, w| {
-                                    egui::ComboBox::from_id_salt("input-clock")
-                                        .selected_text(t(CLOCK_MODES
-                                            .iter()
-                                            .find(|(id, _)| *id == clock)
-                                            .map(|(_, key)| *key)
-                                            .unwrap_or("input.clock.dac")))
-                                        .width(w)
-                                        .truncate()
-                                        .show_ui(ui, |ui| {
-                                            for (id, key) in CLOCK_MODES {
-                                                ui.selectable_value(
-                                                    &mut chosen_clock,
-                                                    (*id).to_owned(),
-                                                    t(key),
-                                                );
-                                            }
-                                        })
-                                });
-                            },
-                        );
-                        if chosen_clock != clock {
-                            // Held until Apply: the clock cannot change under a
-                            // running bridge.
-                            input::set_live_input_clock_mode(&self.host, chosen_clock);
-                        }
-                    });
-                } else {
-                    Group::new(t("input.bridgeInput")).show(ui, |ui| {
-                        if let Some(path) = text_row(
-                            ui,
-                            "input-pipe",
-                            t("input.pipe"),
-                            "help.input.pipe",
-                            &mut self.input_edits.pipe,
-                            &pipe,
-                            t("input.autoDetect"),
-                        ) {
-                            input::set_orender_input_pipe(&self.host, path);
-                        }
-                    });
+                if !policy.input {
+                    return;
                 }
+                ui.add_enabled_ui(policy.renderer_ready, |ui| {
+                    let mut chosen = mode.clone();
+                    widgets::label_row_help(ui, t("input.mode"), "help.input.mode", |ui| {
+                        widgets::bounded_combo(ui, 150.0, |ui, w| {
+                            egui::ComboBox::from_id_salt("input-mode")
+                                .selected_text(mode_label(&mode))
+                                .width(w)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    for (id, key) in MODES {
+                                        ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
+                                    }
+                                })
+                        });
+                    });
+                    if chosen != mode {
+                        input::set_input_mode(&self.host, chosen);
+                    }
 
-                let label = if pending {
-                    t("input.applyPending")
-                } else {
-                    t("input.apply")
-                };
-                if ui.button(label).clicked() {
-                    input::apply_input(&self.host, &mode, active.as_deref());
-                }
+                    // The fields of the mode chosen, in a group of their own
+                    // (`#inputLiveFields` / `#inputBridgeFields`).
+                    if pipewire {
+                        Group::new(t("input.liveSource")).show(ui, |ui| {
+                            if let Some(node) = text_row(
+                                ui,
+                                "input-node",
+                                t("input.node"),
+                                "help.input.node",
+                                &mut self.input_edits.node,
+                                &node,
+                                "omniphony",
+                            ) {
+                                input::set_live_input_node(&self.host, node);
+                            }
+                            if let Some(description) = text_row(
+                                ui,
+                                "input-description",
+                                t("input.description"),
+                                "help.input.description",
+                                &mut self.input_edits.description,
+                                &description,
+                                "Omniphony Bridge Input",
+                            ) {
+                                input::set_live_input_description(&self.host, description);
+                            }
+                            let mut chosen_clock = clock.clone();
+                            widgets::label_row_info_keys(
+                                ui,
+                                t("input.clock"),
+                                "input.clockInfoTitle",
+                                "input.clockInfoBody",
+                                |ui| {
+                                    widgets::bounded_combo(ui, 150.0, |ui, w| {
+                                        egui::ComboBox::from_id_salt("input-clock")
+                                            .selected_text(t(CLOCK_MODES
+                                                .iter()
+                                                .find(|(id, _)| *id == clock)
+                                                .map(|(_, key)| *key)
+                                                .unwrap_or("input.clock.dac")))
+                                            .width(w)
+                                            .truncate()
+                                            .show_ui(ui, |ui| {
+                                                for (id, key) in CLOCK_MODES {
+                                                    ui.selectable_value(
+                                                        &mut chosen_clock,
+                                                        (*id).to_owned(),
+                                                        t(key),
+                                                    );
+                                                }
+                                            })
+                                    });
+                                },
+                            );
+                            if chosen_clock != clock {
+                                // Held until Apply: the clock cannot change under a
+                                // running bridge.
+                                input::set_live_input_clock_mode(&self.host, chosen_clock);
+                            }
+                        });
+                    } else {
+                        Group::new(t("input.bridgeInput")).show(ui, |ui| {
+                            if let Some(path) = text_row(
+                                ui,
+                                "input-pipe",
+                                t("input.pipe"),
+                                "help.input.pipe",
+                                &mut self.input_edits.pipe,
+                                &pipe,
+                                t("input.autoDetect"),
+                            ) {
+                                input::set_orender_input_pipe(&self.host, path);
+                            }
+                        });
+                    }
+
+                    let label = if pending {
+                        t("input.applyPending")
+                    } else {
+                        t("input.apply")
+                    };
+                    if ui.button(label).clicked() {
+                        input::apply_input(&self.host, &mode, active.as_deref());
+                    }
+                });
             });
     }
 }
