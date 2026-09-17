@@ -1015,6 +1015,7 @@ impl eframe::App for StudioSpike {
         }
         self.stop_object_test();
         self.services.shutdown();
+        self.host.shutdown_jobs();
         self.stop_launched_renderer();
         self.listener.shutdown();
         self.persist_prefs();

@@ -44,8 +44,6 @@ pub fn parse_version(tag: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// The newest release of the ones GitHub returned, ignoring drafts and
-
-/// The newest release of the ones GitHub returned, ignoring drafts and
 /// pre-releases.
 fn newest(releases: &serde_json::Value) -> Option<Release> {
     releases
@@ -120,32 +118,38 @@ pub fn start_check(state: &std::sync::Arc<SharedState>) {
         }
         live.update_check = UpdateCheck::Running;
     }
-    let state = std::sync::Arc::clone(state);
-    std::thread::Builder::new()
-        .name("studio-update-check".into())
-        .spawn(move || {
-            let found = fetch_latest();
-            match found {
-                Ok(Some(release)) => {
-                    state.inner.lock().unwrap().update_check = UpdateCheck::Found {
-                        tag: release.tag,
-                        html_url: release.html_url,
-                    }
-                }
-                Ok(None) => state.inner.lock().unwrap().update_check = UpdateCheck::NoneFound,
-                Err(error) => {
-                    state.inner.lock().unwrap().update_check = UpdateCheck::Idle;
-                    app::push_log(
-                        &state,
-                        "warn",
-                        "updates",
-                        tf("updates.checkFailed", &[("error", &error)]),
-                    );
+    let host = std::sync::Arc::clone(state);
+    let submitted = super::jobs::try_run(state, move || {
+        let state = host;
+        let found = fetch_latest();
+        match found {
+            Ok(Some(release)) => {
+                state.inner.lock().unwrap().update_check = UpdateCheck::Found {
+                    tag: release.tag,
+                    html_url: release.html_url,
                 }
             }
-            (state.waker)();
-        })
-        .ok();
+            Ok(None) => state.inner.lock().unwrap().update_check = UpdateCheck::NoneFound,
+            Err(error) => {
+                state.inner.lock().unwrap().update_check = UpdateCheck::Idle;
+                app::push_log(
+                    &state,
+                    "warn",
+                    "updates",
+                    tf("updates.checkFailed", &[("error", &error)]),
+                );
+            }
+        }
+    });
+    if let Err(error) = submitted {
+        state.inner.lock().unwrap().update_check = UpdateCheck::Idle;
+        app::push_log(
+            state,
+            "warn",
+            "updates",
+            tf("updates.checkFailed", &[("error", &error)]),
+        );
+    }
 }
 
 fn fetch_latest() -> Result<Option<Release>, String> {
@@ -170,6 +174,14 @@ fn fetch_latest() -> Result<Option<Release>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_job_does_not_leave_update_check_running() {
+        let state = std::sync::Arc::new(crate::host::commands::tests::state());
+        state.shutdown_jobs();
+        start_check(&state);
+        assert_eq!(state.read().update_check, UpdateCheck::Idle);
+    }
 
     #[test]
     fn only_a_three_number_v_tag_is_a_studio_release() {

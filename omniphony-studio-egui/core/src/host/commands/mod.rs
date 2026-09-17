@@ -107,6 +107,7 @@ impl HostPaths {
 /// a rule in `tests/architecture.rs`; making the fields unreachable is the
 /// compiler saying the same thing.
 pub struct SharedState {
+    pub(crate) jobs: crate::host::services::jobs::Jobs,
     pub(crate) inner: SharedLive,
     pub(crate) osc_tx: ControlTx,
     /// Where this host keeps its configuration. A path, so reading it is
@@ -153,6 +154,7 @@ impl SharedState {
         waker: crate::osc::Waker,
     ) -> Self {
         Self {
+            jobs: Default::default(),
             inner,
             osc_tx,
             config_dir,
@@ -166,6 +168,11 @@ impl SharedState {
             stats,
             waker,
         }
+    }
+
+    /// Refuse new jobs and finish every accepted operation before tearing down the host.
+    pub fn shutdown_jobs(&self) {
+        self.jobs.shutdown();
     }
 
     /// Read the model. Writing it is a command's job.
@@ -280,6 +287,7 @@ pub(crate) mod tests {
         // Kept alive, so a send does not fail and change what is under test.
         std::mem::forget(rx);
         SharedState {
+            jobs: Default::default(),
             inner: Arc::new(Mutex::new(crate::osc::dispatch::Live::new(
                 crate::model::app_state::AppState::new(Vec::new()),
             ))),

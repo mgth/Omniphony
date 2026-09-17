@@ -239,3 +239,18 @@ operations in order. Tests cover changed selections, duplicates, deletion of
 the last or removed profile, and multiple UI frames with Unicode typing/paste,
 Enter and Escape. This establishes the lot11 extraction pattern; remaining
 panels and context-backed help/section state still need migration.
+### Owned background work
+
+The host now owns generic jobs and release checks, accepts at most eight active
+jobs and refuses excess work instead of creating an unbounded thread/queue set.
+Completed handles are reaped. Shutdown stops audio services, rejects new jobs
+and joins accepted operations before stopping a Studio-launched renderer and
+the listener. Rejected release checks leave their running state and report an
+error. Tests cover capacity, completion, rejection, panic handling and dropping
+the last host reference from a worker.
+
+This is cooperative lifecycle ownership, not forcible cancellation of an OS
+call. Shutdown can still wait for a file operation, resolver or interactive
+service authorization already in progress. Those operations are deliberately
+not killed halfway through a system change; cancellation and platform timing
+acceptance remain part of lots07–08.
