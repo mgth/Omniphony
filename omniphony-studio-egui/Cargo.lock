@@ -2552,7 +2552,7 @@ version = "0.1.0"
 
 [[package]]
 name = "omniphony-studio-core"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "log",
@@ -2570,7 +2570,7 @@ dependencies = [
 
 [[package]]
 name = "omniphony-studio-egui"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "bytemuck",
  "clap",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "omniphony-studio-scene"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "bytemuck",
  "glam",

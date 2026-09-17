@@ -6,7 +6,7 @@ members = [".", "core", "scene"]
 
 [workspace.package]
 # Shared, so the core's `CARGO_PKG_VERSION` (the About box) is the app's.
-version = "0.1.0"
+version = "0.6.0"
 
 [package]
 name = "omniphony-studio-egui"
