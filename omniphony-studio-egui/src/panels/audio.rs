@@ -94,19 +94,20 @@ impl StudioSpike {
                     });
                 });
 
-                ui.horizontal(|ui| {
-                    clip_indicator(ui, clipping);
-                    let mut on = auto_gain;
-                    if widgets::switch_row_help(
-                        ui,
-                        t("autoGain.title"),
-                        "help.master.autoGain",
-                        &mut on,
-                    ) && ready
-                    {
-                        gain::control_auto_gain(&self.host, i32::from(on));
-                    }
-                });
+                // The clip dot belongs to this row, as it belongs to the web's
+                // label span — not to a horizontal wrapped around the row,
+                // which would leave the help card no width to open into.
+                let mut on = auto_gain;
+                if widgets::switch_row_help_leading(
+                    ui,
+                    |ui| clip_indicator(ui, clipping),
+                    t("autoGain.title"),
+                    "help.master.autoGain",
+                    &mut on,
+                ) && ready
+                {
+                    gain::control_auto_gain(&self.host, i32::from(on));
+                }
                 let mut db = ceiling as f32;
                 ui.add_enabled_ui(ready, |ui| {
                     if widgets::value_slider_help(

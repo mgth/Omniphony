@@ -395,6 +395,50 @@ pub fn end_frame(ctx: &egui::Context) {
 mod tests {
     use super::*;
 
+    /// An open card is a paragraph across the row's width. It was a tall
+    /// sliver of nothing once: the auto-gain row sat in a `ui.horizontal` of
+    /// its own, the row took every point that horizontal had, and the card
+    /// drawn after it was allocated a width of zero — so its text wrapped one
+    /// glyph per line, out of sight, and opening the help looked like opening
+    /// a large empty panel.
+    #[test]
+    fn an_open_card_is_a_paragraph_and_not_a_sliver() {
+        let ctx = egui::Context::default();
+        let help = Help::from("help.master.autoGain");
+        assert!(!help.is_empty(), "the catalogue lost the auto-gain help");
+        ctx.data_mut(|d| d.insert_temp(open_id(), help.id));
+        let mut block = egui::Rect::NOTHING;
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            ui.vertical(|ui| {
+                // A panel's width, so the card has to wrap to a few lines.
+                ui.set_max_width(400.0);
+                let mut on = false;
+                crate::ui::widgets::switch_row_help_leading(
+                    ui,
+                    |ui| {
+                        ui.allocate_exact_size(egui::vec2(9.0, 9.0), Sense::hover());
+                    },
+                    "Auto-gain (anti-clip)",
+                    help,
+                    &mut on,
+                );
+                block = ui.min_rect();
+            });
+        });
+        // Nothing paints here; egui still wants its font atlas taken.
+        output.textures_delta.clear();
+        assert!(
+            block.width() > 300.0,
+            "row and card took {} of the 400 offered",
+            block.width()
+        );
+        assert!(
+            block.height() < 200.0,
+            "the card wrapped into a sliver {} tall",
+            block.height()
+        );
+    }
+
     /// A tooltip gets the first sentence, as plain text, and knows when it
     /// has left something out.
     #[test]

@@ -69,7 +69,7 @@ pub fn label_row<R>(
     label: impl Into<egui::WidgetText>,
     add_right: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    labelled(ui, label.into(), None, add_right)
+    labelled(ui, label.into(), None, None, add_right)
 }
 
 /// `label_row` whose label opens `help` in a card under the row (see
@@ -81,7 +81,7 @@ pub fn label_row_help<'h, R>(
     add_right: impl FnOnce(&mut Ui) -> R,
 ) -> R {
     let help = help.into();
-    let out = labelled(ui, label.into(), Some(Trigger::Card(help)), add_right);
+    let out = labelled(ui, label.into(), None, Some(Trigger::Card(help)), add_right);
     super::help::card(ui, help);
     out
 }
@@ -98,6 +98,7 @@ pub fn label_row_info_keys<R>(
     labelled(
         ui,
         label.into(),
+        None,
         Some(Trigger::InfoKeys(title_key, body_key)),
         add_right,
     )
@@ -114,6 +115,7 @@ pub fn label_row_info<R>(
     labelled(
         ui,
         label.into(),
+        None,
         Some(Trigger::Info(info_prefix)),
         add_right,
     )
@@ -122,10 +124,16 @@ pub fn label_row_info<R>(
 fn labelled<R>(
     ui: &mut Ui,
     label: egui::WidgetText,
+    leading: Option<&mut dyn FnMut(&mut Ui)>,
     help: Option<Trigger<'_>>,
     add_right: impl FnOnce(&mut Ui) -> R,
 ) -> R {
     ui.horizontal(|ui| {
+        // Drawn in the row itself, before the label, rather than beside the
+        // row in a horizontal of the caller's own: see `switch_row_help_leading`.
+        if let Some(draw) = leading {
+            draw(ui);
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let out = add_right(ui);
             // What the controls left, from the row's own left edge. The label
@@ -226,7 +234,7 @@ pub fn label_buttons_help<'h>(
             .sum::<f32>();
     let mut clicked = None;
     if needed <= ui.available_width() {
-        labelled(ui, label.into(), Some(Trigger::Card(help)), |ui| {
+        labelled(ui, label.into(), None, Some(Trigger::Card(help)), |ui| {
             // Right to left: the last button is placed first.
             for (index, (text, enabled)) in buttons.iter().enumerate().rev() {
                 if ui.add_enabled(*enabled, egui::Button::new(*text)).clicked() {
@@ -237,7 +245,7 @@ pub fn label_buttons_help<'h>(
         super::help::card(ui, help);
         return clicked;
     }
-    labelled(ui, label.into(), Some(Trigger::Card(help)), |_| {});
+    labelled(ui, label.into(), None, Some(Trigger::Card(help)), |_| {});
     super::help::card(ui, help);
     ui.columns(buttons.len().max(1), |columns| {
         for (index, (column, (text, enabled))) in columns.iter_mut().zip(buttons).enumerate() {
@@ -294,6 +302,32 @@ pub fn switch_row_help<'h>(
     on: &mut bool,
 ) -> bool {
     label_row_help(ui, label, help, |ui| switch(ui, on).changed())
+}
+
+/// `switch_row_help` with a glyph of its own before the label — the web draws
+/// the clip dot inside the auto-gain label's span, not beside its row.
+///
+/// It is a variant rather than a `ui.horizontal` at the call site because the
+/// help card cannot live in a horizontal: the row takes the whole width it is
+/// offered, so a card drawn after it there is allocated nothing, and an opened
+/// card becomes a tall sliver of nothing instead of a paragraph.
+pub fn switch_row_help_leading<'h>(
+    ui: &mut Ui,
+    mut leading: impl FnMut(&mut Ui),
+    label: &str,
+    help: impl Into<Help<'h>>,
+    on: &mut bool,
+) -> bool {
+    let help = help.into();
+    let out = labelled(
+        ui,
+        label.into(),
+        Some(&mut leading),
+        Some(Trigger::Card(help)),
+        |ui| switch(ui, on).changed(),
+    );
+    super::help::card(ui, help);
+    out
 }
 
 /// A `.toggle-btn` group: one active value out of a list of (value, label).
@@ -386,7 +420,7 @@ fn slider_row(
         .size()
         .x;
     let full_track = ui.spacing().slider_width;
-    labelled(ui, label.into(), help, |ui| {
+    labelled(ui, label.into(), None, help, |ui| {
         ui.add_sized(
             vec2(64.0, ui.spacing().interact_size.y),
             egui::Label::new(
@@ -565,6 +599,42 @@ fn decimals_for(step: f64) -> usize {
         return 2;
     }
     (-step.log10()).ceil().max(0.0) as usize
+}
+
+#[cfg(test)]
+mod row_tests {
+    use super::{Sense, switch_row_help_leading};
+
+    /// A help row must stay a child of the vertical flow it is given: the row
+    /// takes the whole width offered, so whatever follows it inside a
+    /// horizontal gets nothing — and what follows it is its own help card.
+    /// That is why the clip dot is the row's leading glyph and not a sibling
+    /// in a `ui.horizontal` around it.
+    #[test]
+    fn a_row_with_a_leading_glyph_leaves_its_card_the_whole_width() {
+        let ctx = egui::Context::default();
+        let (mut before, mut after) = (0.0, 0.0);
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            ui.vertical(|ui| {
+                before = ui.available_width();
+                let mut on = false;
+                switch_row_help_leading(
+                    ui,
+                    |ui| {
+                        ui.allocate_exact_size(egui::vec2(9.0, 9.0), Sense::hover());
+                    },
+                    "Auto-gain (anti-clip)",
+                    "help.master.autoGain",
+                    &mut on,
+                );
+                after = ui.available_width();
+            });
+        });
+        // Nothing paints here; egui still wants its font atlas taken.
+        output.textures_delta.clear();
+        assert!(before > 0.0);
+        assert_eq!(after, before, "the row ate the width its card needs");
+    }
 }
 
 #[cfg(test)]
