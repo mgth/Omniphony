@@ -978,6 +978,10 @@ impl StudioSpike {
 }
 
 impl eframe::App for StudioSpike {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.guard_unsaved_quit(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame_stats.tick();
         ui.input(|i| {

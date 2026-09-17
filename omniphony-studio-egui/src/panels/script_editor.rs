@@ -256,7 +256,47 @@ fn highlight(src: &str, language: Option<&str>, wrap_width: f32) -> LayoutJob {
     job
 }
 
+#[derive(Debug, PartialEq)]
+enum QuitPrompt {
+    None,
+    Script,
+    AutoTune,
+}
+fn guard_quit_request(ctx: &egui::Context, script_pending: bool, auto_tune: bool) -> QuitPrompt {
+    if !ctx.input(|i| i.viewport().close_requested()) || (!script_pending && !auto_tune) {
+        return QuitPrompt::None;
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    ctx.request_repaint();
+    if script_pending {
+        QuitPrompt::Script
+    } else {
+        QuitPrompt::AutoTune
+    }
+}
+
 impl StudioSpike {
+    /// eframe also calls logic while hidden; quit guards must not depend on UI.
+    pub(crate) fn guard_unsaved_quit(&mut self, ctx: &egui::Context) {
+        match guard_quit_request(
+            ctx,
+            self.script_editor
+                .as_ref()
+                .is_some_and(ScriptEditor::needs_confirmation),
+            self.auto_tune_running(),
+        ) {
+            QuitPrompt::Script => {
+                if let Some(editor) = &mut self.script_editor {
+                    editor.confirm = Some(Action::Quit);
+                }
+            }
+            QuitPrompt::AutoTune => self.auto_tune_quit_asked = true,
+            QuitPrompt::None => {}
+        }
+    }
+
     /// Open the editor for one backend file param.
     pub(crate) fn open_script_editor(
         &mut self,
@@ -305,15 +345,6 @@ impl StudioSpike {
             });
         if modal.should_close() {
             self.request_script_action(Action::Close, ctx);
-        }
-        if ctx.input(|i| i.viewport().close_requested())
-            && self
-                .script_editor
-                .as_ref()
-                .is_some_and(ScriptEditor::needs_confirmation)
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.request_script_action(Action::Quit, ctx);
         }
     }
 
@@ -482,7 +513,11 @@ impl StudioSpike {
                 crate::host::services::backend_files::cancel(&self.host);
                 self.script_editor = None;
                 if matches!(action, Action::Quit) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    if self.auto_tune_running() {
+                        self.auto_tune_quit_asked = true;
+                    } else {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 }
             }
             Action::Open(name) => {
@@ -712,6 +747,39 @@ mod tests {
         editor.text.push_str(" newer");
         editor.accept_content(reply());
         assert!(editor.dirty());
+    }
+
+    #[test]
+    fn hidden_window_close_is_cancelled_without_a_ui_pass() {
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+        viewport.minimized = Some(true);
+        viewport.events.push(egui::ViewportEvent::Close);
+        for (script, tune, expected) in [
+            (true, false, QuitPrompt::Script),
+            (true, true, QuitPrompt::Script),
+            (false, true, QuitPrompt::AutoTune),
+        ] {
+            let output = ctx.run_logic(&input, |ctx| {
+                assert_eq!(guard_quit_request(ctx, script, tune), expected)
+            });
+            let commands = &output.viewport_commands[&egui::ViewportId::ROOT];
+            assert!(
+                commands
+                    .iter()
+                    .any(|c| matches!(c, egui::ViewportCommand::CancelClose))
+            );
+            assert!(
+                commands
+                    .iter()
+                    .any(|c| matches!(c, egui::ViewportCommand::Minimized(false)))
+            );
+        }
+        let output = ctx.run_logic(&input, |ctx| {
+            assert_eq!(guard_quit_request(ctx, false, false), QuitPrompt::None)
+        });
+        assert!(output.viewport_commands.is_empty());
     }
 
     fn kinds(src: &str) -> Vec<(&str, Tok)> {

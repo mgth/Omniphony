@@ -416,10 +416,23 @@ fn reset_connection_model(model: &mut Live) {
         crate::model::app_state::AppState::new(Vec::new()),
     );
     let mut fresh = Live::new(app);
+    // Terminal outcomes must survive until the view consumes them, even if
+    // several producers come and go while the window is hidden.
     fresh.backend_file_error = model
         .backend_file_pending
         .take()
-        .map(crate::host::services::backend_files::interrupted);
+        .map(crate::host::services::backend_files::interrupted)
+        .or_else(|| model.backend_file_error.take())
+        .or_else(|| {
+            model
+                .backend_file_content
+                .take()
+                .map(|file| dispatch::BackendFileError {
+                    backend: file.backend,
+                    key: file.key,
+                    failure: dispatch::BackendFileFailure::ConnectionChanged,
+                })
+        });
     fresh.overlay_prefs = model.overlay_prefs.take();
     fresh.interests = std::mem::take(&mut model.interests);
     fresh.diagnostics = std::mem::take(&mut model.diagnostics);
@@ -855,5 +868,36 @@ mod connection_tests {
         live.diagnostics.copy_to(&mut trace);
         assert_eq!(trace.series["x"].len(), 1);
         assert_eq!(trace.series["x"][0].1, 2.0);
+    }
+    #[test]
+    fn file_request_outcomes_survive_repeated_resets_until_consumed() {
+        use crate::host::{commands::app, services::backend_files};
+        use dispatch::BackendFileFailure;
+        for complete in 0..3 {
+            let state = crate::host::commands::tests::state();
+            backend_files::begin(&state, "script", "file");
+            if complete == 1 {
+                let due = state.read().backend_file_pending.as_ref().unwrap().due;
+                backend_files::tick(&state, due);
+            } else if complete == 2 {
+                apply_event(
+                    &mut state.inner.lock().unwrap(),
+                    parser::OscEvent::StateBackendFileContent {
+                        backend: "script".into(),
+                        key: "file".into(),
+                        name: "file.lua".into(),
+                        content: "saved".into(),
+                    },
+                );
+            }
+            reset_connection_model(&mut state.inner.lock().unwrap());
+            reset_connection_model(&mut state.inner.lock().unwrap());
+            let failure = app::take_backend_file_error(&state, "script", "file").unwrap();
+            assert!(matches!(
+                (complete, failure),
+                (1, BackendFileFailure::TimedOut) | (0 | 2, BackendFileFailure::ConnectionChanged)
+            ));
+            assert!(app::take_backend_file_error(&state, "script", "file").is_none());
+        }
     }
 }
