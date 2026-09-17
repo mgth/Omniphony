@@ -115,6 +115,7 @@ pub struct StudioSpike {
     /// Adaptive-controller fields edited but not yet applied.
     pub(crate) adaptive_edits:
         std::collections::BTreeMap<crate::host::commands::adaptive::Param, f64>,
+    pub(crate) file_picker: Option<crate::ui::file_dialogs::PendingPicker>,
     pub(crate) layout_transfer: crate::ui::layout_transfer::LayoutTransfer,
     pub(crate) profiles: crate::panels::profiles::ProfilePanel,
     /// A bulk delay tool waiting for its confirmation: both rewrite every
@@ -450,6 +451,7 @@ impl StudioSpike {
             prtf_freq_scale: 100.0,
             latency_target_edit: None,
             adaptive_edits: Default::default(),
+            file_picker: None,
             layout_transfer: Default::default(),
             profiles: Default::default(),
             delay_tool_confirm: None,
@@ -974,6 +976,8 @@ impl StudioSpike {
 impl eframe::App for StudioSpike {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.guard_unsaved_quit(ctx);
+        self.poll_file_picker(ctx);
+        self.poll_sofa_job();
         if self.layout_transfer.poll(ctx, &self.host) {
             self.speaker_name_edit.discard();
             self.selection.speaker = None;

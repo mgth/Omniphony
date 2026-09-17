@@ -403,12 +403,19 @@ impl StudioSpike {
                 None => widgets::note(ui, t("objectTest.clipNone")),
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(t("objectTest.clipChoose")).clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("WAV", &["wav"])
-                        .pick_file()
+                let local = crate::host::commands::app::renderer_is_local(&self.host);
+                if ui
+                    .add_enabled(
+                        local && self.file_picker.is_none(),
+                        egui::Button::new(t("objectTest.clipChoose")),
+                    )
+                    .clicked()
                 {
-                    gain::control_object_test_clip(&self.host, path.to_string_lossy().into_owned());
+                    self.pick_files(
+                        ui.ctx(),
+                        crate::ui::file_dialogs::Purpose::ObjectClip,
+                        &["wav".into()],
+                    );
                 }
             });
         });

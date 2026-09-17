@@ -4,7 +4,7 @@
 use crate::{
     host::commands::{
         SharedState,
-        layout_io::{self, ImportRequest},
+        layout_io::{self, SessionToken},
     },
     i18n::tf,
     model::layouts::Layout,
@@ -23,7 +23,7 @@ use std::{
 type Picker = Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>;
 enum Operation {
     Import {
-        request: ImportRequest,
+        request: SessionToken,
         remember: bool,
     },
     Export(Layout),
@@ -39,7 +39,7 @@ enum Pending {
     },
     Read {
         result: Receiver<Result<Layout, String>>,
-        request: ImportRequest,
+        request: SessionToken,
         path: PathBuf,
     },
     Write {
@@ -70,7 +70,7 @@ impl LayoutTransfer {
         self.error = None;
         self.pending = Some(Pending::Directory {
             operation: Operation::Import {
-                request: ImportRequest::new(host),
+                request: SessionToken::new(host),
                 remember: !presets,
             },
             result: layout_io::prepare_import(host, presets),

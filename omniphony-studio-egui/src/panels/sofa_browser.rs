@@ -64,6 +64,10 @@ pub enum Job {
         result: Result<u32, String>,
     },
     Imported(Result<usize, String>),
+    Deleted {
+        note: String,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Default)]
@@ -173,7 +177,6 @@ impl StudioSpike {
     }
 
     pub(crate) fn sofa_browser_modal(&mut self, ctx: &egui::Context) {
-        self.poll_sofa_job();
         if self.sofa_browser.is_none() {
             return;
         }
@@ -360,7 +363,7 @@ impl StudioSpike {
                     .on_hover_text("Copy .sofa files from this machine into the cache")
                     .clicked()
                 {
-                    self.import_sofa_from_disk();
+                    self.import_sofa_from_disk(ui.ctx());
                 }
             });
         });
@@ -712,29 +715,29 @@ impl StudioSpike {
     fn delete_sofa(&mut self, paths: &[PathBuf], note: &str) {
         let dir = self.sofa_dir();
         let paths = paths.to_vec();
-        match sofa::delete_local(&dir, &paths) {
-            Ok(()) => {
-                self.list_local_sofa();
-                if let Some(browser) = &mut self.sofa_browser {
-                    browser.status(note.to_owned(), false);
-                }
-            }
-            Err(error) => {
-                if let Some(browser) = &mut self.sofa_browser {
-                    browser.status(error, true);
-                }
-            }
-        }
+        let note = note.to_owned();
+        self.start_sofa_job(move || Job::Deleted {
+            note,
+            result: sofa::delete_local(&dir, &paths),
+        });
     }
 
-    fn import_sofa_from_disk(&mut self) {
-        let Some(picked) = rfd::FileDialog::new()
-            .set_title("Import SOFA files")
-            .add_filter("SOFA", &["sofa"])
-            .pick_files()
-        else {
+    fn import_sofa_from_disk(&mut self, ctx: &egui::Context) {
+        self.pick_files(
+            ctx,
+            crate::ui::file_dialogs::Purpose::Sofa,
+            &["sofa".into()],
+        );
+    }
+
+    pub(crate) fn import_selected_sofa(&mut self, picked: Vec<PathBuf>) {
+        let Some(browser) = &mut self.sofa_browser else {
             return;
         };
+        if browser.busy {
+            browser.status("Import not started: another SOFA operation is running. Try again when it finishes.", true);
+            return;
+        }
         let dir = self.sofa_dir();
         self.start_sofa_job(move || {
             let mut done = 0usize;
@@ -756,7 +759,7 @@ impl StudioSpike {
         );
     }
 
-    fn poll_sofa_job(&mut self) {
+    pub(crate) fn poll_sofa_job(&mut self) {
         let Some(rx) = self.sofa_browser.as_ref().and_then(|b| b.job.as_ref()) else {
             return;
         };
@@ -776,6 +779,19 @@ impl StudioSpike {
             browser.busy = false;
         }
         match job {
+            Job::Deleted { note, result } => match result {
+                Ok(()) => {
+                    self.list_local_sofa();
+                    if let Some(browser) = &mut self.sofa_browser {
+                        browser.status(note, false);
+                    }
+                }
+                Err(error) => {
+                    if let Some(browser) = &mut self.sofa_browser {
+                        browser.status(error, true);
+                    }
+                }
+            },
             Job::Listed(Ok(files)) => {
                 if let Some(browser) = &mut self.sofa_browser {
                     browser.local = files;

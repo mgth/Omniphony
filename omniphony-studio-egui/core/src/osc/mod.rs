@@ -847,6 +847,14 @@ mod connection_tests {
         assert_eq!(apply_event(&mut live, event()), Change::None);
     }
     #[test]
+    fn transport_reset_invalidates_native_file_choices_before_new_ack() {
+        let state = crate::host::commands::tests::state();
+        crate::host::commands::app::begin_connection(&state);
+        let token = crate::host::commands::layout_io::SessionToken::new(&state);
+        reset_connection_model(&mut state.inner.lock().unwrap());
+        assert!(!token.is_current(&state));
+    }
+    #[test]
     fn reconnect_keeps_diagnostic_selection_without_a_ui_frame() {
         let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
         live.diagnostics

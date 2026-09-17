@@ -268,7 +268,11 @@ errors remain visible. Layout replacement normalization now belongs to the core.
 Tests cover stale sessions, profiles, freeze, duplicate keys and worker file
 round trips. Native dialog behavior on each OS remains manual acceptance.
 
-Other native file pickers (backend files, evaluator and executable selection)
-still use modal platform APIs; their file processing has separate ownership.
-Closing an OS dialog or interrupting a filesystem call is not guaranteed by
-dropping a Rust future. The owned-job shutdown limitations above still apply.
+Backend/script, WAV clip and SOFA pickers also run asynchronously with a single
+pending picker and an explicit repaint waker. Renderer-directed choices reject a
+changed session/profile and a non-local active target; returning to a script
+editor rechecks its identity and dirty-document guard. SOFA deletion uses owned
+jobs, and SOFA completions are consumed from application logic even while its
+panel is hidden. Unused synchronous picker entry points were removed. Closing
+an OS dialog or interrupting a filesystem call is not guaranteed by dropping a
+Rust future; the owned-job shutdown limitations above still apply.

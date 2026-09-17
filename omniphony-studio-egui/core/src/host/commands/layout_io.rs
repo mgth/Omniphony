@@ -54,13 +54,14 @@ pub fn import_layout_from_path(
 
 /// Identity captured when the user starts choosing a layout. A late file read
 /// must not replace a different renderer session or profile.
-pub struct ImportRequest {
+#[derive(Debug)]
+pub struct SessionToken {
     request: u64,
     epoch: u64,
     context_generation: u64,
     profile: Option<String>,
 }
-impl ImportRequest {
+impl SessionToken {
     pub fn new(state: &SharedState) -> Self {
         let request = *state.connection_request.lock().unwrap();
         let live = state.inner.lock().unwrap();
@@ -73,6 +74,52 @@ impl ImportRequest {
             profile: live.app.active_profile.clone(),
             context_generation: live.layout_context_generation,
         }
+    }
+
+    /// Whether a delayed UI choice still belongs to this renderer/profile.
+    /// Commands revalidate on the application thread before queuing their work.
+    pub fn is_current(&self, state: &SharedState) -> bool {
+        let request = state.connection_request.lock().unwrap();
+        let live = state.inner.lock().unwrap();
+        *request == self.request
+            && state
+                .stats
+                .connection_epoch
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == self.epoch
+            && live.layout_context_generation == self.context_generation
+            && live.app.active_profile == self.profile
+    }
+
+    /// Keep validation and queuing a local-file action in one connection
+    /// critical section. In particular a DNS worker cannot enqueue Reconnect
+    /// between a successful validation and the caller's control message.
+    pub fn with_local_target<R>(&self, state: &SharedState, work: impl FnOnce() -> R) -> Option<R> {
+        let request = state.connection_request.lock().unwrap();
+        {
+            let live = state.inner.lock().unwrap();
+            if *request != self.request
+                || state
+                    .stats
+                    .connection_epoch
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    != self.epoch
+                || live.layout_context_generation != self.context_generation
+                || live.app.active_profile != self.profile
+            {
+                return None;
+            }
+        }
+        if !state
+            .stats
+            .target
+            .lock()
+            .unwrap()
+            .is_some_and(|target| target.ip().is_loopback())
+        {
+            return None;
+        }
+        Some(work())
     }
 
     /// Runs on the application thread after the worker returns. Filesystem
@@ -347,7 +394,7 @@ mod tests {
     fn delayed_import_revalidates_session_profile_and_freeze() {
         for change in 0..6 {
             let state = super::super::tests::state();
-            let request = ImportRequest::new(&state);
+            let request = SessionToken::new(&state);
             match change {
                 0 => {
                     super::super::app::begin_connection(&state);
@@ -377,15 +424,41 @@ mod tests {
                     super::super::profiles::control_profile_switch(&state, "another".into());
                 }
             }
+            assert!(!request.is_current(&state) || change == 3);
             assert!(request.apply(&state, fixture_layout()).is_err());
             assert!(state.read().app.layouts.is_empty());
         }
     }
     #[test]
+    fn a_file_choice_kept_through_confirmation_is_revalidated_at_send_time() {
+        let state = super::super::tests::state();
+        *state.stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+        let token = SessionToken::new(&state);
+        assert_eq!(token.with_local_target(&state, || 42), Some(42));
+        super::super::app::begin_connection(&state);
+        assert_eq!(
+            token.with_local_target(&state, || panic!("stale file GET must not be sent")),
+            None::<()>
+        );
+        let token = SessionToken::new(&state);
+        *state.stats.target.lock().unwrap() = Some("192.0.2.1:9000".parse().unwrap());
+        assert_eq!(
+            token.with_local_target(&state, || panic!("local path must not be sent remotely")),
+            None::<()>
+        );
+    }
+    #[test]
+    fn ordinary_snapshot_changes_do_not_invalidate_a_native_file_choice() {
+        let state = super::super::tests::state();
+        let token = SessionToken::new(&state);
+        state.inner.lock().unwrap().snapshot_epoch += 1;
+        assert!(token.is_current(&state));
+    }
+    #[test]
     fn accepted_import_preserves_existing_layout_and_marks_recompute() {
         let state = super::super::tests::state();
         for _ in 0..2 {
-            ImportRequest::new(&state)
+            SessionToken::new(&state)
                 .apply(&state, fixture_layout())
                 .unwrap();
         }

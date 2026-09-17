@@ -23,6 +23,8 @@ use crate::ui::{theme, widgets};
 /// renderer says that file is.
 #[derive(Clone, Debug, Default)]
 pub struct ScriptEditor {
+    /// Identity of this document navigation, independent of text edits.
+    pub navigation: std::sync::Arc<()>,
     pub backend: String,
     pub key: String,
     pub language: Option<String>,
@@ -49,6 +51,10 @@ enum Pending {
 }
 
 impl ScriptEditor {
+    fn accepts_navigation(&self, navigation: &std::sync::Arc<()>) -> bool {
+        std::sync::Arc::ptr_eq(&self.navigation, navigation)
+    }
+
     fn dirty(&self) -> bool {
         self.text != self.saved_text || self.name != self.saved_name
     }
@@ -507,8 +513,67 @@ impl StudioSpike {
         }
     }
 
+    pub(crate) fn open_picked_script(
+        &mut self,
+        ctx: &egui::Context,
+        backend: &str,
+        key: &str,
+        path: String,
+        navigation: std::sync::Arc<()>,
+        session: std::sync::Arc<crate::host::commands::layout_io::SessionToken>,
+    ) {
+        if self.script_editor.as_ref().is_some_and(|editor| {
+            editor.backend == backend && editor.key == key && editor.accepts_navigation(&navigation)
+        }) {
+            self.request_script_action(
+                Action::Picked {
+                    path,
+                    navigation,
+                    session,
+                },
+                ctx,
+            );
+        }
+    }
+
     fn apply_script_action(&mut self, action: Action, ctx: &egui::Context) {
+        if matches!(action, Action::Open(_) | Action::New | Action::Reload)
+            && let Some(editor) = &mut self.script_editor
+        {
+            editor.navigation = std::sync::Arc::new(());
+        }
         match action {
+            Action::Picked {
+                path,
+                navigation,
+                session,
+            } => {
+                if !self
+                    .script_editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.accepts_navigation(&navigation))
+                {
+                    return;
+                }
+                let host = self.host.clone();
+                if session
+                    .with_local_target(&host, || {
+                        if let Some(editor) = &mut self.script_editor {
+                            editor.navigation = std::sync::Arc::new(());
+                            editor.name = path.clone();
+                        }
+                        self.request_backend_file(Some(path));
+                    })
+                    .is_none()
+                {
+                    if let Some(editor) = &mut self.script_editor {
+                        editor.status = Some((
+                            "File choice discarded: renderer session or profile changed".into(),
+                            true,
+                        ));
+                    }
+                }
+            }
             Action::Close | Action::Quit => {
                 crate::host::services::backend_files::cancel(&self.host);
                 self.script_editor = None;
@@ -527,16 +592,14 @@ impl StudioSpike {
                 self.request_backend_file(Some(name));
             }
             Action::Browse => {
-                let extensions = self
-                    .script_editor
-                    .as_ref()
-                    .map(|e| e.extensions.clone())
-                    .unwrap_or_default();
-                if let Some(path) = crate::ui::file_dialogs::pick_backend_file_path(extensions) {
-                    if let Some(editor) = &mut self.script_editor {
-                        editor.name = path.clone();
-                    }
-                    self.request_backend_file(Some(path));
+                if let Some(editor) = &self.script_editor {
+                    let purpose = crate::ui::file_dialogs::Purpose::Script {
+                        navigation: editor.navigation.clone(),
+                        backend: editor.backend.clone(),
+                        key: editor.key.clone(),
+                    };
+                    let extensions = editor.extensions.clone();
+                    self.pick_files(ctx, purpose, &extensions);
                 }
             }
             Action::New => {
@@ -630,6 +693,11 @@ enum Action {
     Close,
     Quit,
     Open(String),
+    Picked {
+        path: String,
+        navigation: std::sync::Arc<()>,
+        session: std::sync::Arc<crate::host::commands::layout_io::SessionToken>,
+    },
     Browse,
     New,
     Reload,
@@ -639,6 +707,19 @@ enum Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_choice_identity_survives_typing_but_not_navigation_or_reopening() {
+        let mut editor = ScriptEditor::default();
+        let pending = editor.navigation.clone();
+        editor.text.push_str("new typing");
+        assert!(editor.accepts_navigation(&pending));
+        assert!(editor.needs_confirmation());
+        editor.navigation = std::sync::Arc::new(());
+        assert!(!editor.accepts_navigation(&pending));
+        let reopened = ScriptEditor::default();
+        assert!(!reopened.accepts_navigation(&pending));
+    }
 
     fn reply() -> crate::osc::dispatch::BackendFile {
         crate::osc::dispatch::BackendFile {
