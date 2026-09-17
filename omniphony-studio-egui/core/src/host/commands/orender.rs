@@ -325,8 +325,7 @@ fn run_command(mut cmd: ProcessCommand, action: &str) -> Result<String, String> 
 fn wait_for_orender_disconnect(state: &SharedState, timeout_ms: u64) -> Result<(), String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     loop {
-        let status = state.inner.lock().unwrap().osc_status.clone();
-        if status.as_deref() != Some("connected") {
+        if state.stats.connection_state() != crate::osc::ConnectionState::Connected {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
@@ -337,7 +336,7 @@ fn wait_for_orender_disconnect(state: &SharedState, timeout_ms: u64) -> Result<(
 }
 
 fn stop_non_service_orender_if_running(state: &SharedState) -> Result<(), String> {
-    let is_connected = state.inner.lock().unwrap().osc_status.as_deref() == Some("connected");
+    let is_connected = state.stats.connection_state() == crate::osc::ConnectionState::Connected;
     if !is_connected {
         return Ok(());
     }

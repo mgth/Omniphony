@@ -46,6 +46,15 @@ pub type SharedLive = Arc<Mutex<Live>>;
 /// from the listener thread and must be cheap and non-blocking.
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
+/// Transport state shared by panels and host commands. Only the listener
+/// changes registration; drawing never guesses connectivity from frame timing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionState {
+    Initializing,
+    Connected,
+    Reconnecting,
+}
+
 pub struct OscStats {
     pub packets: AtomicU64,
     pub messages: AtomicU64,
@@ -53,6 +62,8 @@ pub struct OscStats {
     pub ignored: AtomicU64,
     pub heartbeat_acks: AtomicU64,
     pub registered: AtomicBool,
+    /// Advances once per newly acknowledged registration, not per snapshot.
+    pub connection_epoch: AtomicU64,
     pub listen_port: AtomicU64,
     /// Milliseconds since `start` at the last received packet.
     pub last_packet_ms: AtomicU64,
@@ -70,11 +81,22 @@ impl OscStats {
             ignored: AtomicU64::new(0),
             heartbeat_acks: AtomicU64::new(0),
             registered: AtomicBool::new(false),
+            connection_epoch: AtomicU64::new(0),
             listen_port: AtomicU64::new(0),
             last_packet_ms: AtomicU64::new(0),
             start: Instant::now(),
             target: Mutex::new(None),
         })
+    }
+
+    pub fn connection_state(&self) -> ConnectionState {
+        if self.registered.load(Ordering::Relaxed) {
+            ConnectionState::Connected
+        } else if self.target.lock().unwrap().is_some() {
+            ConnectionState::Reconnecting
+        } else {
+            ConnectionState::Initializing
+        }
     }
 
     pub fn since_last_packet(&self) -> Option<Duration> {
@@ -200,7 +222,12 @@ fn listener_loop(
 
     loop {
         match socket.recv_from(&mut buf) {
-            Ok((n, _from)) => {
+            Ok((n, from)) => {
+                // Delayed packets from a previous renderer cannot contaminate
+                // the newly selected session. Listen-only accepts any sender.
+                if register.is_some_and(|target| from != target) {
+                    continue;
+                }
                 stats.packets.fetch_add(1, Ordering::Relaxed);
                 stats
                     .last_packet_ms
@@ -280,7 +307,11 @@ fn listener_loop(
                     stats.registered.store(false, Ordering::Relaxed);
                     last_ack = Instant::now();
                     last_snapshot_request = Instant::now();
-                    live.lock().unwrap().app.osc_snapshot_ready = false;
+                    {
+                        let mut model = live.lock().unwrap();
+                        reset_connection_model(&mut model);
+                    }
+                    repaint_pending = true;
                     send_register(&socket, target, port, metering);
                 }
                 Control::SetMetering { enabled } => {
@@ -344,6 +375,7 @@ fn listener_loop(
                 {
                     log::warn!("[osc] heartbeat timeout, re-registering");
                     stats.registered.store(false, Ordering::Relaxed);
+                    repaint_pending = true;
                     send_register(&socket, addr, port, metering);
                 }
             }
@@ -363,6 +395,25 @@ fn listener_loop(
             }
         }
     }
+}
+
+fn reset_connection_model(model: &mut Live) {
+    model.app.reset_runtime_state();
+    model.master_reported = false;
+    model.source_level_seen.clear();
+    model.speaker_level_seen.clear();
+    model.gain_tables.clear();
+    model.trails.clear();
+    model.object_sizes.clear();
+    model.object_band_rms.clear();
+    model.overlay = None;
+    model.head_pose = None;
+    model.options_schema = None;
+    model.object_generators_schema = None;
+    model.phantom_schema = None;
+    model.backend_files.clear();
+    model.backend_file_content = None;
+    model.snapshot_epoch = model.snapshot_epoch.wrapping_add(1);
 }
 
 #[derive(Default)]
@@ -396,7 +447,26 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
     stats.messages.fetch_add(1, Ordering::Relaxed);
     match is_heartbeat_address(&m.addr) {
         HeartbeatResponse::Ack => {
-            stats.registered.store(true, Ordering::Relaxed);
+            if let Some(epoch) = m.args.iter().find_map(|arg| match arg {
+                OscType::Int(epoch) => Some(*epoch),
+                _ => None,
+            }) {
+                let changed = live
+                    .app
+                    .producer_epoch
+                    .is_some_and(|previous| previous != epoch);
+                if changed {
+                    reset_connection_model(live);
+                    stats.registered.store(false, Ordering::Relaxed);
+                    out.reregister = true;
+                    out.change = out.change.max(Change::Snapshot);
+                }
+                live.app.producer_epoch = Some(epoch);
+            }
+            if !stats.registered.swap(true, Ordering::Relaxed) {
+                stats.connection_epoch.fetch_add(1, Ordering::Relaxed);
+                out.change = out.change.max(Change::Snapshot);
+            }
             stats.heartbeat_acks.fetch_add(1, Ordering::Relaxed);
             out.ack = true;
             return;
@@ -406,6 +476,7 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
             // loop logs the transition once and the retries at `debug`.
             out.lost_registration = stats.registered.swap(false, Ordering::Relaxed);
             out.reregister = true;
+            out.change = out.change.max(Change::Snapshot);
             return;
         }
         HeartbeatResponse::None => {}
@@ -600,4 +671,57 @@ pub fn spawn_synthetic(
             }
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    #[test]
+    fn registration_epochs_ignore_repeated_acks_and_track_producer_swaps() {
+        let stats = OscStats::new();
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        assert_eq!(stats.connection_state(), ConnectionState::Initializing);
+        *stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+        assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
+        let ack = |epoch| OscMessage {
+            addr: "/omniphony/heartbeat/ack".into(),
+            args: vec![OscType::Int(epoch)],
+        };
+        handle_message(&ack(1), &mut live, &stats, &mut PacketOutcome::default());
+        assert_eq!(stats.connection_state(), ConnectionState::Connected);
+        assert_eq!(stats.connection_epoch.load(Ordering::Relaxed), 1);
+        let mut unchanged = PacketOutcome::default();
+        handle_message(&ack(1), &mut live, &stats, &mut unchanged);
+        assert_eq!(unchanged.change, Change::None);
+        assert_eq!(stats.connection_epoch.load(Ordering::Relaxed), 1);
+        live.app.orender_input_pipe = Some("stale".into());
+        let mut swapped = PacketOutcome::default();
+        handle_message(&ack(2), &mut live, &stats, &mut swapped);
+        assert!(swapped.reregister);
+        assert!(live.app.orender_input_pipe.is_none());
+        assert_eq!(live.app.producer_epoch, Some(2));
+        assert_eq!(stats.connection_epoch.load(Ordering::Relaxed), 2);
+        handle_message(
+            &OscMessage {
+                addr: "/omniphony/heartbeat/unknown".into(),
+                args: vec![],
+            },
+            &mut live,
+            &stats,
+            &mut PacketOutcome::default(),
+        );
+        assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
+    }
+
+    #[test]
+    fn input_pipe_is_applied_and_repaints_only_on_change() {
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        let event = || parser::OscEvent::StateInputPipe {
+            value: "input.pipe".into(),
+        };
+        assert_eq!(apply_event(&mut live, event()), Change::Snapshot);
+        assert_eq!(live.app.orender_input_pipe.as_deref(), Some("input.pipe"));
+        assert_eq!(apply_event(&mut live, event()), Change::None);
+    }
 }

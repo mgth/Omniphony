@@ -3,7 +3,6 @@
 //! reconnect form of `controls/osc.js`.
 
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use egui::Color32;
 
@@ -15,26 +14,17 @@ use crate::i18n::{t, tf};
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
-/// A packet this recent means the renderer is still talking to us.
-const ALIVE: Duration = Duration::from_secs(7);
 /// `status.connectingHint`'s link, unwrapped from the HTML the web renders.
 const MPV_RELEASES: &str = "https://github.com/mgth/mpv-omniphony/releases";
 
-/// The four states the web's status line reports (`app.oscStatusState`).
-///
-/// The web is told which one it is in by its own connection machinery; this
-/// host derives it from what its listener actually knows, which is the same
-/// information one layer down. `Error` is reserved for the auto-start watchdog
-/// of a later pass — nothing here can distinguish a failure from a renderer
-/// that has simply not come up yet.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum OscState {
-    Initializing,
-    Connected,
-    Reconnecting,
+pub use crate::osc::ConnectionState as OscState;
+
+trait ConnectionPresentation {
+    fn key(self) -> &'static str;
+    fn colour(self) -> Color32;
 }
 
-impl OscState {
+impl ConnectionPresentation for OscState {
     fn key(self) -> &'static str {
         match self {
             OscState::Initializing => "status.initializing",
@@ -54,16 +44,7 @@ impl OscState {
 
 impl StudioSpike {
     pub(crate) fn osc_state(&self) -> OscState {
-        let registered = self.osc_stats.registered.load(Ordering::Relaxed);
-        let recent = self
-            .osc_stats
-            .since_last_packet()
-            .is_some_and(|d| d < ALIVE);
-        match (*self.osc_stats.target.lock().unwrap(), registered && recent) {
-            (_, true) => OscState::Connected,
-            (Some(_), false) => OscState::Reconnecting,
-            (None, false) => OscState::Initializing,
-        }
+        self.osc_stats.connection_state()
     }
 
     /// The status line: a coloured dot and one line of text, like the web

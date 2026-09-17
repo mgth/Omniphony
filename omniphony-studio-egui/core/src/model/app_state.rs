@@ -665,8 +665,6 @@ pub struct AppState {
     pub live_input: LiveInputState,
     #[serde(rename = "orenderInputPipe")]
     pub orender_input_pipe: Option<String>,
-    #[serde(rename = "oscStatus")]
-    pub osc_status: Option<String>,
     #[serde(rename = "producerCapabilities")]
     pub producer_capabilities: Option<serde_json::Value>,
     #[serde(rename = "producerSession")]
@@ -949,7 +947,6 @@ impl Default for AppState {
             render_bridge_error: None,
             live_input: LiveInputState::default(),
             orender_input_pipe: None,
-            osc_status: Some("initializing".to_string()),
             producer_capabilities: None,
             producer_session: None,
             producer_epoch: None,

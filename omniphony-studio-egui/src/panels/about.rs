@@ -78,7 +78,8 @@ impl StudioSpike {
                 executable: live.app.render_executable.clone(),
                 config_path: live.app.render_config_path.clone(),
                 config_status: live.app.render_config_status.clone(),
-                connected: live.app.osc_status.as_deref() == Some("connected"),
+                connected: self.osc_stats.connection_state()
+                    == crate::osc::ConnectionState::Connected,
             }
         };
         let modal = egui::Modal::new(egui::Id::new("about-modal"))
