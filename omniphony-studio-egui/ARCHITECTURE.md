@@ -131,7 +131,11 @@ form: it takes a closure, runs it on a named thread, and hands back a
 Application and session state (what a test is doing, what was last sent, when
 something expires) belongs to the core. View state (camera, selection, the open
 tab, the text being typed) belongs to the UI, in `StudioSpike` or in a
-per-panel struct.
+per-panel struct. For an independent panel, follow `panels/profiles.rs`:
+`ProfilePanel::show` takes a core `Snapshot` and returns an optional typed
+`Action`. Only the small application adapter needs `SharedState`; the core
+validates the intent against current state. Tests can feed snapshots and input
+frames without constructing the application or a renderer.
 
 ## The ratchet
 
