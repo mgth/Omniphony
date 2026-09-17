@@ -1,14 +1,18 @@
 # Native Studio completion and acceptance plan
 
-Status: implementation planned. Reference: `6e6db009` plus the slider echo fix
-in PR #511. This is the current execution checklist; the native UI phase notes
-remain historical records, not statements of present parity.
+Execution record for the native hardening workflow, based on the initial
+`6e6db009` audit. The implementation references and acceptance evidence below
+replace the initial bug inventory; older phase notes remain historical records.
 
-Keep the toolkit-free core, toolkit-free wgpu scene and drawing-only UI. Each
-concern gets a dedicated branch, tests and review before merging with green CI.
-Do not raise the architecture baseline. Update this checklist with evidence as
-work lands. A checked box means the acceptance criteria passed, not just that
-code was written.
+The user authorized independent agent review and integration with green CI.
+Each concern has its own PR. The toolkit-free core, toolkit-free wgpu scene
+and drawing-only UI remain enforced; the architecture baseline stays at zero.
+
+Hardware/platform acceptance is delivered as a reproducible procedure, as
+requested: [manual validation](studio-native-manual-validation.md). Its rows
+are **NOT RUN** until someone executes them on the specified machine. Automated
+checks and software-renderer observations do not imply audio, real-GPU,
+screen-reader or installed-package acceptance on Windows/macOS.
 
 ## Delivery sequence
 
@@ -31,14 +35,12 @@ code was written.
 | 15 | Contributor documentation and CI | incremental | A newcomer can build, reproduce and add a control using the guide |
 | 16 | Native distribution and parity sign-off | 02–10, 14, 15 | Installed archives tested on all supported platforms; remaining differences explicit |
 
-## Existing work to reuse
+## Related work reused
 
-- #511: stepped sliders must not send renderer echoes back as user edits.
-- #510: panel groups and their layout conventions; reconcile panel edits after
-  this lands rather than implementing a competing layout system.
-- #512: help dialog sizing.
-- #505: native archives, bundled resources and native cross-platform CI.
-- #504: release version alignment; do not publish or bump again independently.
+Slider echo suppression (#511), panel groups (#510) and bounded help sizing
+(#512) were integrated before the dependent panel changes. Native archives and
+bundled resource discovery reuse #505; version alignment reuses #504. No release
+tag, promotion or publication is part of this execution.
 
 ## Parity and regression matrix
 
@@ -46,23 +48,39 @@ The presence of a panel is not proof of behavioural or visual parity.
 
 | User journey | Native implementation | Outstanding acceptance |
 |---|---|---|
-| Edit speaker names, input/output paths, tracker address | Present; transient strings lose drafts | Typing over multiple frames; external echo while editing; Enter, blur, Escape; change selection |
-| Edit renderer-owned scripts | Present; save/error handling incomplete | Ack, rejected write, delayed reply, close/reopen, dirty document |
-| Open Studio and reconnect | Present; saved target not used by default | Saved target, explicit override, local/remote, missing renderer, restart |
-| Manage standalone renderer/services | Present; blocking operations and inconsistent status | Ownership, timeout, unavailable manager, cancellation, shutdown |
-| Drive embedded renderer | Present; capability policy incomplete | Hide/disable irrelevant input/output/resampler/process actions |
-| Show meters and timed speaker/object tests | Present, core services | Stops and subscriptions work without frames; quiet/minimized window |
-| Mirror display preferences to mpv | Present; revision and wakeup issues | One sync on reconnect, changed values only, external overlay changes |
-| Change layouts/profiles/render parameters | Present | Allowed/frozen/unsupported/rejected commands; preserved coordinates and channel contract |
-| Use binaural processing and SOFA | Present | Local/remote file flow, failure/cancellation, tracking and calibration |
-| Inspect diagnostics and tune resampling | Present | Timestamped samples, gaps, paused display, minimized window, cancel/quit restoration |
-| Navigate the 3D scene | Present | Picking, gizmos, trails, heatmaps, head pose; overlays never resize the viewport |
-| Save preferences and upgrade | Present; debounce lacks final flush | Immediate quit, write failure, corrupt file, version migration |
-| Install and update | Work in #505/#504 | Clean-machine archives, resources, version and correct update artifact |
+| Edit speaker names, input/output paths, tracker address | Persistent drafts; explicit commit/cancel and target changes (#514/#542) | Real IME and keyboard platform matrix: V04–V07 |
+| Edit renderer-owned scripts | Ack/error/deadline lifecycle, dirty guard and tagged requests (#515, #526, #527); session-bound async picks (#540/#541) | Live rejected write/reconnect/late pick: L02/L04 |
+| Open Studio and reconnect | Core connection policy and reset, saved target/explicit overrides (#516, #521) | Real endpoints/restart and all-platform exit: L01/V09 |
+| Manage standalone renderer/services | Owned, bounded jobs and asynchronous host/config operations (#519, #535, #537, #538) | Disposable OS manager and authorization paths: L09 |
+| Drive embedded renderer | Core capability policy and offline/legacy fallback (#518) | Standalone/embedded fixture comparison: L03 |
+| Show meters and timed speaker/object tests | Core-owned clock, listener and shutdown; explicit wakeups (#517, #520) | Real audio stop/lateness: L06 |
+| Mirror display preferences to mpv | Revision-sensitive synchronization and reconnect wakeup (#517) | mpv integration: L08 |
+| Change layouts/profiles/render parameters | Typed profile intents and isolated panel (#529); asynchronous session-safe layout transfers (#539) | L05, including freeze/reconnect while choosing a file |
+| Use binaural processing and SOFA | Existing core transfer jobs; async picker/deletion and hidden-panel completion (#540) | Local/remote fixtures, tracking/calibration, cancellation: L08 |
+| Inspect diagnostics and tune resampling | Bounded reception histories, gaps and pause semantics (#523, #530) | Live wizard restoration and minimized view: L07 |
+| Navigate the 3D scene | Stable overlays; volume work outside model lock (#524); software-GPU observations recorded | Real GPU picking, scale, trails, heatmaps: V01–V03/V07 |
+| Save preferences and upgrade | Atomic/coalesced writes and final flush; schema/read-only protection; native legacy migration (#522, #531, #532, #538) | OS permissions and clean upgrade/rollback: P01–P04/P06 |
+| Install and update | Native archives/resources and aligned versions (#505, #504) | Actual clean-machine launch, signing/quarantine, update asset: P05 |
 
-Intentional differences: obsolete PCM controls stay retired; panel organization
-may differ; the native script editor uses the Studio palette rather than the
-web editor's theme picker. Other differences require an explicit entry here.
+Known differences and limits:
+
+- Obsolete PCM controls stay retired. Panel organization may differ. The native
+  script editor uses the Studio palette rather than the web editor's theme picker.
+- Native JSON preferences migrate from the old checkout namespace; browser
+  localStorage is not imported automatically. Transfer web-only preferences
+  manually in a backed-up test namespace (P04).
+- Legacy renderers without `fileRequestIds` cannot correlate interrupted
+  same-parameter replies reliably. Upgrade both sides for strict correlation.
+- Some secondary status/error text remains English. English/French resources
+  and CJK glyph availability do not establish full translation or IME parity.
+- OS dialogs and accepted filesystem/DNS/authorization calls are not forcibly
+  killed at quit. Owned jobs are joined, so shutdown can wait on the OS.
+- Multiple processes sharing one configuration namespace use last-writer-wins;
+  external OSC configuration edits are picked up on restart. Use isolated
+  namespaces for simultaneous sessions.
+- ProfilePanel is the tested extraction pattern; the remaining panels and
+  context-backed help/section state still need gradual extraction. This work
+  does not claim that every panel is independent of StudioSpike.
 
 ## Test layers
 
@@ -96,36 +114,37 @@ all-platform compilation and the same interaction/visual acceptance checks.
 Core must remain free of UI dependencies; scene may depend on wgpu, not a UI
 toolkit. Guard failures must not be hidden by a failed dependency inspection.
 
-## Completion record
+## Implementation and evidence record
 
-- [ ] 01 Baseline and validation foundation
-- [ ] 02 Text drafts
-- [ ] 03 Script editor
-- [ ] 04 Connection and events
-- [ ] 05 Wakeups and overlay
-- [ ] 06 Capabilities
-- [ ] 07 Host operations
-- [ ] 08 Runtime lifecycle
-- [ ] 09 Startup and paths
-- [ ] 10 Persistence
-- [ ] 11 Panel boundaries
-- [ ] 12 Shared typed domains
-- [ ] 13 Telemetry and performance
-- [ ] 14 Localization and accessibility
-- [ ] 15 Contribution and CI
-- [ ] 16 Distribution acceptance
+| Lots | Delivered changes | Evidence / remaining acceptance |
+|---|---|---|
+| 01 | Baseline, regression matrix, isolated validation scripts | This record and the manual scenario IDs; [observations](studio-native-acceptance.md) |
+| 02 | Text drafts (#514/#542) and echo suppression (#511) | Multi-frame egui input/echo/commit/cancel tests; V04–V07 remain manual |
+| 03 | Script lifecycle (#515/#526), wire correlation (#527), async choices (#540/#541) | Host and renderer tests; L04 for actual file/connection failures |
+| 04–06 | Connection/reset (#516), wakeups/overlay (#517), capabilities (#518) | Core/fake-transport tests; L01/L03/L08 |
+| 07 | Host operations (#519), mpv config (#535), runtime config (#538), layout/pickers (#539/#540) | Non-blocking job/poll tests; native OS interaction L05/L08/L09 |
+| 08 | Owned runtime (#520) and bounded workers (#537) | Listener/clock/job lifecycle tests; V09/L06/L09 |
+| 09 | Startup modes (#521), installed resources (#505) | Startup tests and Linux release staging smoke; P05 on clean OS images |
+| 10 | Atomic persistence/migration (#522/#531), schema protection (#532), config cache/writer (#538) | Temp-file failure/final-flush/concurrency tests; P01–P04/P06 |
+| 11 | Independent profile panel (#529) | Multi-frame Unicode/focus tests; remaining extraction is incremental |
+| 12 | Shared wire parser (#525), typed profile actions (#529), core layout normalization (#539) | Tauri host type-check in CI plus core domain tests |
+| 13 | Diagnostic/resampler histories (#523/#530), volume lock reduction (#524), frame percentiles (#534) | Measured CPU capture p95 below 0.05 ms locally; real-GPU frame/service budgets require manual recordings |
+| 14 | Named keyboard-accessible controls (#528), visual/input protocol (#534) | Headless AccessKit/input tests and software-renderer smoke; real IME/readers/OS scale remain manual |
+| 15 | Contributor guide, dependency/lockfile/build gates (#533) | Relative links verified; fail-closed dependency checks exercised; Linux/Windows/macOS CI |
+| 16 | Native package/resources (#505), version alignment (#504), platform recipe (#534) | Publication intentionally not performed; final sign-off requires P05/P06 and all applicable manual rows |
 
-Full completion requires green CI and review, no known blocking regression,
-manual platform/audio evidence, and documented remaining intentional differences.
+The implementation and reproducible manual procedure are separate deliverables.
+Full platform/audio parity sign-off requires completed manual reports and no
+blocking regressions; neither green CI nor this table substitutes for them.
 
 ### Script editor, first correction
 
 Save acknowledgements finish the pending state without replacing newer typing;
 load replies preserve a buffer edited after the request, and renderer errors
 reach the editor. A new request clears buffered old replies. These behaviours
-have unit coverage. Lot 03 remains open: the legacy protocol has no correlation
-identifier for late same-parameter responses; request deadlines and dirty-close
-confirmation still need implementation.
+have unit coverage. The subsequent #526/#527 corrections add deadlines, dirty-close confirmation
+and optional tagged replies. Legacy untagged peers retain the ambiguity recorded
+above.
 
 ### Startup policy
 
@@ -133,9 +152,8 @@ Normal startup now reads the saved renderer and Studio listen port. `--register`
 and `--listen-port` override those values; `--listen-only` and `--synthetic`
 start passively with an ephemeral port by default and suppress auto-launch.
 DNS runs off the first-paint path. The config namespace matches Tauri by default
-and continues to honor `OMNIPHONY_CONFIG_DIR/studio`. Resource discovery for
-installed archives belongs to the existing native distribution PR; migration of
-the old checkout-relative native preferences remains in lot10.
+and continues to honor `OMNIPHONY_CONFIG_DIR/studio`. Installed resource discovery is covered by #505 and old checkout-relative native
+preferences by #522; neither depends on the launch working directory.
 
 ### Durable preferences
 
@@ -162,7 +180,8 @@ retain arrivals. History is bounded to 64 selected metrics, 12,001 samples each
 and a 60-second retention window. The view copies only arrivals after its cursor;
 pause freezes its cache and time axis while reception continues. Reconnect clears
 the trace. Gaps longer than one second break plotted lines and reject FFT windows.
-The separate resampler plot and scene model-lock measurements remain in lot13.
+The resampler plot follows the same reception-based principle in #530;
+scene model-lock measurements are recorded below.
 
 ### Volume calculation and model lock
 
@@ -211,9 +230,8 @@ failure. Close, quit, New, Reload and file selection ask before discarding a
 dirty document or abandoning a pending request. Save acknowledgements mark
 only the submitted revision as saved; typing after Save remains dirty.
 
-This does not cancel a renderer write already in flight. Correlation of late
-same-parameter responses from the legacy untagged protocol remains open in
-lot03 and requires a compatible wire-protocol extension.
+This does not cancel a renderer write already in flight. The #527 wire extension below correlates late replies on upgraded peers;
+legacy untagged responses retain their documented ambiguity.
 
 ### Correlated script file requests
 
@@ -284,8 +302,8 @@ polls without waiting, shows pending work and refuses duplicate operations. A
 result invalidated by closing the section cannot replace the next fresh read.
 Write failures remain visible until reopening the section and are logged by
 the core. Tests use controlled channels and never modify the user's mpv file.
-This does not yet move the other layout/configuration file operations off the
-UI thread or provide cancellation of all generic background jobs (lots07–08).
+Layout/configuration operations and owned background jobs are covered by the
+subsequent changes described in this record. OS calls remain non-forcible.
 
 ### File choices during connection transitions
 
@@ -310,8 +328,8 @@ the original document with defaults.
 
 External edits to osc_config.json are loaded on the next Studio start. This is
 one writer per host instance, not cross-process locking: simultaneous instances
-still use last-writer-wins persistence. Local layout content import/export and
-native picker filesystem checks remain separate non-blocking-I/O work.
+still use last-writer-wins persistence. Layout file bytes and directory probes
+use the owned jobs described above.
 
 ### Generated backend file-path drafts
 
@@ -326,6 +344,7 @@ backend/session and bounded storage. The core session token also rejects drafts
 during connection transitions and revalidates immediately around command
 queuing, preventing a path typed in profile A from being applied to profile B.
 The targeted workspace suite passes 339 tests; one manual benchmark is ignored.
+
 
 ### Preference schema compatibility
 
