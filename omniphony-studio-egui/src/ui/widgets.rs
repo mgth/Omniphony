@@ -360,6 +360,16 @@ pub fn toggle_buttons<'a, T: PartialEq + Clone>(
     picked
 }
 
+/// A slider on a grid: the user's edits snap to `step`, the value already
+/// there is left alone. egui's default snaps the existing value too, while
+/// drawing, and reports that as a change — and a value the renderer echoed
+/// as an `f32` rarely sits on the grid (`59 %` comes back as `58.999996`), so
+/// a form that committed on change re-planned the layout on every frame, for
+/// as long as its section stayed open.
+pub fn stepped<'a>(slider: egui::Slider<'a>, step: f64) -> egui::Slider<'a> {
+    slider.step_by(step).clamping(egui::SliderClamping::Edits)
+}
+
 /// `.gain-box`: a label, a slider, and the value with its unit. `format`
 /// renders the readout so each caller keeps the web's exact formatting.
 ///
@@ -431,9 +441,8 @@ fn slider_row(
         );
         let room = ui.available_width() - label_width - ui.spacing().item_spacing.x;
         ui.spacing_mut().slider_width = room.clamp(MIN_TRACK, full_track.max(MIN_TRACK));
-        egui::Slider::new(value, range)
+        stepped(egui::Slider::new(value, range), step)
             .show_value(false)
-            .step_by(step)
             .ui(ui)
             .changed()
     })
@@ -583,11 +592,7 @@ fn slider_line_with(
             }
         });
         ui.spacing_mut().slider_width = ui.available_width().max(MIN_TRACK);
-        ui.add(
-            egui::Slider::new(value, range)
-                .step_by(step)
-                .show_value(false),
-        )
+        ui.add(stepped(egui::Slider::new(value, range), step).show_value(false))
     })
     .inner
 }
