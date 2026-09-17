@@ -8,7 +8,6 @@
 use super::HostPaths;
 use super::OscControlMsg;
 use super::{SharedState, send_control};
-use crate::host::config::{load_config, save_config};
 use crate::osc_contract;
 use std::env;
 use std::fs::File;
@@ -243,12 +242,14 @@ fn resolve_orender_launch_spec(
 
     // Persist the connection settings used for this launch, preserving the
     // fields this function doesn't manage (auto-start / keep-alive toggles).
-    let mut cfg = load_config(&state.config_dir);
-    cfg.host = host.trim().to_string();
-    cfg.osc_rx_port = osc_rx_port;
-    cfg.osc_port = osc_port;
-    cfg.osc_metering_enabled = osc_metering_enabled;
-    let _ = save_config(&state.config_dir, &cfg);
+    if let Err(error) = state.config.update(|cfg| {
+        cfg.host = host.trim().to_string();
+        cfg.osc_rx_port = osc_rx_port;
+        cfg.osc_port = osc_port;
+        cfg.osc_metering_enabled = osc_metering_enabled;
+    }) {
+        log::warn!("[osc] {error}");
+    }
 
     Ok(OrenderLaunchSpec { orender_path, args })
 }
@@ -274,7 +275,7 @@ pub fn stop_launched_renderer(state: &SharedState) {
     if !matches!(child.try_wait(), Ok(None)) {
         return;
     }
-    if crate::host::config::load_config(&state.config_dir).keep_renderer_alive_on_quit {
+    if state.config.snapshot().keep_renderer_alive_on_quit {
         return;
     }
     send_control(
@@ -519,10 +520,8 @@ pub fn get_orender_service_status() -> Result<OrenderServiceStatus, String> {
 /// auto-start watchdog — otherwise it would spawn a competing CLI standby — and
 /// suppress any in-flight check. The user can re-enable auto-start afterwards.
 fn disable_autostart_for_service(state: &SharedState) {
-    let mut cfg = load_config(&state.config_dir);
-    if cfg.auto_start_renderer {
-        cfg.auto_start_renderer = false;
-        let _ = save_config(&state.config_dir, &cfg);
+    if let Err(error) = state.config.update(|cfg| cfg.auto_start_renderer = false) {
+        log::warn!("[osc] {error}");
     }
     state.watchdog.lock().unwrap().suppressed = true;
 }
@@ -822,7 +821,7 @@ pub fn autostart_orender(
     app: &HostPaths,
     state: &SharedState,
 ) -> Result<serde_json::Value, String> {
-    let mut cfg = load_config(&state.config_dir);
+    let mut cfg = state.config.snapshot();
     let target = (*state.stats.target.lock().unwrap()).ok_or("no active renderer target")?;
     cfg.host = target.ip().to_string();
     cfg.osc_rx_port = target.port();

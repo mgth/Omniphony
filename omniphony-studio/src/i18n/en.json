@@ -1,4 +1,6 @@
 {
+  "status.preferencesSaveError": "Preferences: {error}",
+  "status.connectionConfigError": "OSC configuration: {error}",
   "osc.service.notInstalled": "Not installed",
   "osc.service.installed": "Installed",
   "osc.service.running": "Running",

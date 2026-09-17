@@ -1027,6 +1027,9 @@ impl eframe::App for StudioSpike {
         self.host.shutdown_jobs();
         self.stop_launched_renderer();
         self.listener.shutdown();
+        if let Err(error) = self.host.shutdown_config() {
+            log::error!("[osc] final configuration save failed: {error}");
+        }
         self.persist_prefs();
         if let Err(error) = self.prefs_writer.shutdown() {
             log::error!("[prefs] final save failed: {error}");

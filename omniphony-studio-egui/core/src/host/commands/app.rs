@@ -9,7 +9,7 @@
 
 use super::OscControlMsg;
 use super::{SharedState, send_control};
-use crate::host::config::{OscConfig, load_config, save_config};
+use crate::host::config::OscConfig;
 
 /// Return type for [`get_about_info`]. Public so the UI crate can name it; its
 /// fields stay private, and the About box reads it serialised, as the web did.
@@ -27,9 +27,10 @@ pub struct AboutInfo {
 pub fn set_metering_enabled(state: &SharedState, enabled: bool) {
     state.inner.lock().unwrap().app.osc_metering_enabled = Some(u8::from(enabled));
     send_control(&state.osc_tx, OscControlMsg::SetMeteringEnabled { enabled });
-    let mut config = load_config(&state.config_dir);
-    config.osc_metering_enabled = enabled;
-    if let Err(e) = save_config(&state.config_dir, &config) {
+    if let Err(e) = state
+        .config
+        .update(|config| config.osc_metering_enabled = enabled)
+    {
         eprintln!("[osc] could not save the configuration: {e}");
     }
 }
@@ -193,7 +194,7 @@ pub fn get_state(state: &SharedState) -> serde_json::Value {
 }
 
 pub fn get_osc_config(state: &SharedState) -> OscConfig {
-    load_config(&state.config_dir)
+    state.config.snapshot()
 }
 
 /// Hostname loopback test used by the auto-start watchdog.
@@ -218,6 +219,17 @@ pub fn renderer_is_local(state: &SharedState) -> bool {
         .is_some_and(|target| target.ip().is_loopback())
 }
 
+pub fn set_host_switches(
+    state: &SharedState,
+    auto_start: bool,
+    keep_alive: bool,
+) -> Result<(), String> {
+    state.config.update(|config| {
+        config.auto_start_renderer = auto_start;
+        config.keep_renderer_alive_on_quit = keep_alive;
+    })
+}
+
 pub fn get_about_info() -> AboutInfo {
     AboutInfo {
         name: "Omniphony Studio",
@@ -229,12 +241,11 @@ pub fn get_about_info() -> AboutInfo {
 }
 
 pub fn save_osc_config(state: &SharedState, mut config: OscConfig) -> Result<(), String> {
-    // The JS config form doesn't carry server-only fields; preserve them from
-    // the persisted copy so a save doesn't wipe the remembered import dir.
-    let persisted = load_config(&state.config_dir);
-    config.last_layout_import_dir = persisted.last_layout_import_dir;
-    config.rust_auto_tune = persisted.rust_auto_tune;
-    save_config(&state.config_dir, &config)?;
+    state.config.update(|persisted| {
+        config.last_layout_import_dir = persisted.last_layout_import_dir.clone();
+        config.rust_auto_tune = persisted.rust_auto_tune;
+        *persisted = config.clone();
+    })?;
     // A config change re-arms the auto-start watchdog after a failure streak.
     state.watchdog.lock().unwrap().rearm();
     state.inner.lock().unwrap().osc_metering_enabled =
@@ -251,9 +262,9 @@ pub fn save_osc_config(state: &SharedState, mut config: OscConfig) -> Result<(),
 
 pub fn control_osc_metering(state: &SharedState, enable: i32) -> Result<(), String> {
     let enabled = enable != 0;
-    let mut cfg = load_config(&state.config_dir);
-    cfg.osc_metering_enabled = enabled;
-    save_config(&state.config_dir, &cfg)?;
+    state
+        .config
+        .update(|cfg| cfg.osc_metering_enabled = enabled)?;
     state.inner.lock().unwrap().osc_metering_enabled = Some(if enabled { 1 } else { 0 });
     send_control(&state.osc_tx, OscControlMsg::SetMeteringEnabled { enabled });
     Ok(())
@@ -277,18 +288,12 @@ mod reconnect_tests {
 
     #[test]
     fn local_file_access_follows_transport_instead_of_persisted_preferences() {
-        let mut state = crate::host::commands::tests::state();
-        let directory = tempfile::tempdir().unwrap();
-        state.config_dir = directory.path().into();
+        let state = crate::host::commands::tests::state();
         for saved_host in ["127.0.0.1", "192.0.2.10"] {
-            save_config(
-                &state.config_dir,
-                &OscConfig {
-                    host: saved_host.into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+            state
+                .config
+                .update(|config| config.host = saved_host.into())
+                .unwrap();
             for (target, local) in [
                 (None, false),
                 (Some("127.0.0.1:9000"), true),

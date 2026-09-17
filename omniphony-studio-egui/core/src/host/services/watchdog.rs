@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 
 use super::Tick;
 use crate::host::commands::{SharedState, app, orender};
-use crate::host::config::load_config;
 use crate::i18n::t;
 
 /// `WATCHDOG_INTERVAL`: how often the rules below are re-checked.
@@ -83,7 +82,7 @@ impl Watchdog {
         }
         // Re-read the configuration at check time, so a panel edit applies
         // without a restart.
-        let cfg = load_config(&state.config_dir);
+        let cfg = state.config.snapshot();
         let Some(target) = *state.stats.target.lock().unwrap() else {
             return due;
         };

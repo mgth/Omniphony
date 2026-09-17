@@ -109,6 +109,7 @@ impl HostPaths {
 /// compiler saying the same thing.
 pub struct SharedState {
     pub(crate) jobs: crate::host::services::jobs::Jobs,
+    pub(crate) config: crate::host::config::RuntimeConfig,
     pub(crate) inner: SharedLive,
     pub(crate) osc_tx: ControlTx,
     /// Where this host keeps its configuration. A path, so reading it is
@@ -156,6 +157,7 @@ impl SharedState {
     ) -> Self {
         Self {
             jobs: Default::default(),
+            config: crate::host::config::RuntimeConfig::new(&config_dir, waker.clone()),
             inner,
             osc_tx,
             config_dir,
@@ -174,6 +176,14 @@ impl SharedState {
     /// Refuse new jobs and finish every accepted operation before tearing down the host.
     pub fn shutdown_jobs(&self) {
         self.jobs.shutdown();
+    }
+
+    pub fn config_error(&self) -> Option<String> {
+        self.config.error()
+    }
+
+    pub fn shutdown_config(&self) -> Result<(), String> {
+        self.config.shutdown()
     }
 
     /// Read the model. Writing it is a command's job.
@@ -294,6 +304,7 @@ pub(crate) mod tests {
         std::mem::forget(rx);
         SharedState {
             jobs: Default::default(),
+            config: crate::host::config::RuntimeConfig::memory(),
             inner: Arc::new(Mutex::new(crate::osc::dispatch::Live::new(
                 crate::model::app_state::AppState::new(Vec::new()),
             ))),
