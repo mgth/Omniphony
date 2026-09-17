@@ -2,8 +2,8 @@ name: CI
 
 # Integration gate for the `main` (integration) and `release` branches.
 # Linux validates formatting, tests, native Studio, the web frontend and the
-# Tauri host. macOS and Windows compile the renderer; Windows also checks the
-# shared Studio core. Release archives are built by release.yml.
+# Tauri host. macOS and Windows compile the renderer and native Studio; Windows
+# also checks the shared core on stable. Release archives are built by release.yml.
 #
 # NOTE on scope: `clippy` is NOT gated yet — the workspace currently has ~70
 # clippy warnings plus a couple of deny-level lints, several inside hot audio
