@@ -15,6 +15,7 @@ pub mod interests;
 pub mod jobs;
 pub mod meters;
 pub mod object_test;
+pub mod operations;
 pub mod overlay;
 pub mod speaker_test;
 pub mod updates;
