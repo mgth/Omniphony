@@ -84,6 +84,12 @@ pub const CONTROL_AUTO_GAIN_CEILING: &str = "/omniphony/control/auto_gain_ceilin
 // name, content]` writes the renderer-managed store and rebuilds. The whole file
 // rides in a single message (small text); an absolute handle is only honoured for
 // a loopback caller.
+// Optional correlation extension: get[backend,key,name-or-empty,request_id]
+// and put[backend,key,name,content,request_id] carry an opaque string <=64 bytes.
+// A capable renderer advertises fileRequestIds=true and appends the same id to
+// content[backend,key,name,content,id] or error[backend,key,message,id]. Older
+// clients omit it and receive the original payload shape. No cancellation or
+// idempotent-write guarantee is implied by correlation.
 pub const CONTROL_BACKEND_FILE_GET: &str = "/omniphony/control/backend/file/get";
 pub const CONTROL_BACKEND_FILE_LIST: &str = "/omniphony/control/backend/file/list";
 pub const CONTROL_BACKEND_FILE_PUT: &str = "/omniphony/control/backend/file/put";

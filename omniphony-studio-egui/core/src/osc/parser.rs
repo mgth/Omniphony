@@ -573,6 +573,8 @@ pub enum OscEvent {
         key: String,
         name: String,
         content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
     #[serde(rename = "state:backend:file:list")]
     StateBackendFileList {
@@ -584,6 +586,8 @@ pub enum OscEvent {
         backend: String,
         key: String,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
     #[serde(rename = "state:config:save_error")]
     StateConfigSaveError {
@@ -1096,6 +1100,7 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 key: raw_args.get(1).and_then(unwrap_string)?,
                 name: raw_args.get(2).and_then(unwrap_string).unwrap_or_default(),
                 content: raw_args.get(3).and_then(unwrap_string).unwrap_or_default(),
+                request_id: raw_args.get(4).and_then(unwrap_string),
             }),
             // [backend_id, json_names]
             "list" => Some(OscEvent::StateBackendFileList {
@@ -1107,6 +1112,7 @@ fn parse_omniphony_state(parts: &[&str], args: &[f64], raw_args: &[OscType]) -> 
                 backend: raw_args.first().and_then(unwrap_string)?,
                 key: raw_args.get(1).and_then(unwrap_string)?,
                 message: raw_args.get(2).and_then(unwrap_string).unwrap_or_default(),
+                request_id: raw_args.get(3).and_then(unwrap_string),
             }),
             _ => None,
         },
@@ -1648,4 +1654,32 @@ pub enum HeartbeatResponse {
     Ack,
     Unknown,
     None,
+}
+
+#[cfg(test)]
+mod request_id_tests {
+    use super::*;
+    #[test]
+    fn backend_file_reply_tag_is_optional_and_preserved() {
+        for tag in [None, Some("request-a")] {
+            let mut args = vec![
+                OscType::String("script".into()),
+                OscType::String("file".into()),
+                OscType::String("file.lua".into()),
+                OscType::String("return 1".into()),
+            ];
+            if let Some(tag) = tag {
+                args.push(OscType::String(tag.into()));
+            }
+            let event = parse_osc_message(
+                "/omniphony/state/backend/file/content",
+                &args,
+                CoordinateFormat::Cartesian,
+            );
+            let Some(OscEvent::StateBackendFileContent { request_id, .. }) = event else {
+                panic!("file reply");
+            };
+            assert_eq!(request_id.as_deref(), tag);
+        }
+    }
 }

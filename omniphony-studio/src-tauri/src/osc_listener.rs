@@ -3198,6 +3198,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 key,
                 name,
                 content,
+                ..
             } => (
                 Some((
                     "backend-file:content",
@@ -3220,6 +3221,7 @@ fn handle_event(ev: OscEvent, app: &AppHandle, state: &Arc<Mutex<AppState>>) {
                 backend,
                 key,
                 message,
+                ..
             } => (
                 Some((
                     "backend-file:error",

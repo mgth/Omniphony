@@ -214,3 +214,17 @@ only the submitted revision as saved; typing after Save remains dirty.
 This does not cancel a renderer write already in flight. Correlation of late
 same-parameter responses from the legacy untagged protocol remains open in
 lot03 and requires a compatible wire-protocol extension.
+
+### Correlated script file requests
+
+The renderer advertises `fileRequestIds` and echoes an optional opaque request
+identifier on file content and error replies. The native host tags each request,
+rejects late/wrong/duplicate tagged responses, and requires the tag from a
+renderer advertising support. This extension preserves original argument shapes
+for older clients. It correlates acknowledgements; it does not make a write
+idempotent or cancel work already accepted by the renderer.
+
+Legacy renderers remain usable through their untagged replies, with the
+unavoidable old ambiguity after an interrupted same-parameter request. Upgrade
+the renderer to obtain strict correlation. Both standalone and embedded
+renderer capability documents advertise the extension.
