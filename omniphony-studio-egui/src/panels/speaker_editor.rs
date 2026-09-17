@@ -143,21 +143,20 @@ impl StudioSpike {
     }
 
     fn speaker_tabs(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            for (tab, key) in [
-                (SpeakerTab::Edit, "speakerTabs.edit"),
-                (SpeakerTab::Test, "speakerTabs.test"),
-            ] {
-                let active = self.speaker_tab == tab;
-                if ui.selectable_label(active, t(key)).clicked() {
-                    self.speaker_tab = tab;
-                    if tab == SpeakerTab::Edit {
-                        // Leaving the test pane stops whatever it started.
-                        self.stop_speaker_test();
-                    }
-                }
+        if let Some(tab) = widgets::tab_bar(
+            ui,
+            &self.speaker_tab,
+            &[
+                (SpeakerTab::Edit, t("speakerTabs.edit")),
+                (SpeakerTab::Test, t("speakerTabs.test")),
+            ],
+        ) {
+            self.speaker_tab = tab;
+            if tab == SpeakerTab::Edit {
+                // Leaving the test pane stops whatever it started.
+                self.stop_speaker_test();
             }
-        });
+        }
     }
 
     /// Reorder and delete. Both rewrite the layout, so both are refused while

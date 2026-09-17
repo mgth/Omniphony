@@ -654,3 +654,28 @@ mod slider_line_tests {
         assert_eq!(decimals_for(10.0), 0);
     }
 }
+
+/// A row of equal tabs (`#rendererTabsBar`, the speaker editor's Edit/Test):
+/// one active out of `options`, each an equal share of the width, the
+/// inactive ones quieter. Returns the newly picked value.
+pub fn tab_bar<T: PartialEq + Clone>(ui: &mut Ui, current: &T, options: &[(T, &str)]) -> Option<T> {
+    let mut picked = None;
+    ui.columns(options.len().max(1), |columns| {
+        for (column, (value, label)) in columns.iter_mut().zip(options) {
+            let active = value == current;
+            let size = vec2(column.available_width(), column.spacing().interact_size.y);
+            let mut text = egui::RichText::new(*label);
+            if !active {
+                text = text.color(theme::TEXT_MUTED);
+            }
+            if column
+                .add_sized(size, egui::Button::selectable(active, text))
+                .clicked()
+                && !active
+            {
+                picked = Some(value.clone());
+            }
+        }
+    });
+    picked
+}

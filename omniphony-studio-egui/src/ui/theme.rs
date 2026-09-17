@@ -64,6 +64,16 @@ pub const FILL_ACTIVE: Color32 = Color32::from_rgba_premultiplied(46, 46, 46, 46
 /// Control outline (`rgba(255,255,255,.2)`).
 pub const CONTROL_BORDER: Color32 = Color32::from_rgba_premultiplied(51, 51, 51, 51);
 
+/// The wash of a group's card and of its inset body (`.renderer-subpanel`,
+/// `.renderer-subpanel-body`, `.adaptive-subpanel`, `.input-panel-shell`:
+/// `rgba(255,255,255,.03)`). The inset sits on the card, so it reads one
+/// wash brighter than it, which is what sets it apart without a border.
+pub const GROUP_FILL: Color32 = Color32::from_rgba_premultiplied(8, 8, 8, 8);
+/// The hairline around a group's card (`1px rgba(255,255,255,.08)`).
+pub const HAIRLINE: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
+/// Group titles are the one place the stylesheet uses plain white.
+pub const TEXT_WHITE: Color32 = Color32::WHITE;
+
 /// The stylesheet's workhorse size: selects, buttons, editor labels, list
 /// rows. `#overlay` itself is 14 px, but almost every control inside is 12.
 pub const FONT_SIZE: f32 = 12.0;
@@ -79,6 +89,9 @@ pub const FONT_SIZE_SECTION: f32 = 11.0;
 pub const PANEL_RADIUS: u8 = 12;
 /// Controls and chips.
 pub const CONTROL_RADIUS: u8 = 6;
+/// A group's card (`border-radius: 8px`); its inset body takes the control
+/// radius.
+pub const GROUP_RADIUS: u8 = 8;
 
 /// `#overlay { padding: .75rem 1rem }` at a 16 px root.
 pub const PANEL_PADDING_X: f32 = 16.0;
@@ -89,6 +102,15 @@ pub const PANEL_EDGE_MARGIN: f32 = 16.0;
 pub const ROW_GAP: f32 = 3.0;
 /// Gap between the overlay's direct children (`gap: .4rem`).
 pub const PANEL_GAP: f32 = 6.0;
+/// A group's card: `padding: .4rem .5rem`.
+pub const GROUP_PADDING_X: f32 = 8.0;
+pub const GROUP_PADDING_Y: f32 = 6.0;
+/// Between two groups of a section (`.renderer-panel-stack { gap: .35rem }`).
+pub const GROUP_GAP: f32 = 6.0;
+/// The inset body: `margin-left: 1rem; padding: .3rem .4rem`.
+pub const INSET_INDENT: f32 = 16.0;
+pub const INSET_PADDING_X: f32 = 6.0;
+pub const INSET_PADDING_Y: f32 = 5.0;
 
 /// Frame of one floating overlay.
 pub fn panel_frame() -> egui::Frame {
@@ -194,6 +216,8 @@ mod tests {
             (FILL_HOVER, 31),
             (FILL_ACTIVE, 46),
             (CONTROL_BORDER, 51),
+            (GROUP_FILL, 8),
+            (HAIRLINE, 20),
         ] {
             assert_eq!(
                 colour.to_srgba_unmultiplied(),

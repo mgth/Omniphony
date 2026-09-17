@@ -13,6 +13,7 @@ use crate::app::StudioSpike;
 use crate::host::commands::SharedState;
 use crate::host::commands::binaural as cmd;
 use crate::i18n::{t, tf};
+use crate::ui::group::Group;
 use crate::ui::{theme, widgets};
 
 /// HRTF sources, in the select's order.
@@ -78,15 +79,20 @@ impl StudioSpike {
     fn hrtf_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
         let source = text(doc, &["hrirSource"]).unwrap_or_else(|| "saf".to_owned());
         let effective = text(doc, &["hrirEffective"]);
-        ui.add_space(4.0);
-        widgets::label_row_help(
-            ui,
-            RichText::new("HRTF")
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT_STRONG),
-            "help.binaural.hrtf",
-            |ui| {
-                let mut chosen = source.clone();
+        // The source select and, for a SOFA file, its Browse button: only
+        // reachable while a SOFA file is what the renderer would use — picking
+        // one otherwise would download a file nothing plays.
+        let mut chosen = source.clone();
+        let mut browse = false;
+        Group::new("HRTF")
+            .help("help.binaural.hrtf")
+            .actions(|ui| {
+                if source == "sofa" {
+                    browse = ui
+                        .button(t("backend.file.browse"))
+                        .on_hover_text(t("binaural.sofaBrowseTitle"))
+                        .clicked();
+                }
                 widgets::bounded_combo(ui, 160.0, |ui, w| {
                     egui::ComboBox::from_id_salt("hrir-source")
                         .selected_text(t(HRIR_SOURCES
@@ -102,27 +108,31 @@ impl StudioSpike {
                             }
                         })
                 });
-                if chosen != source {
-                    self.send_hrir_source(&chosen);
-                }
-                // The browser is only reachable while a SOFA file is what the
-                // renderer would use — picking one otherwise would download a
-                // file nothing plays.
-                if source == "sofa"
-                    && ui
-                        .button(t("backend.file.browse"))
-                        .on_hover_text(t("binaural.sofaBrowseTitle"))
-                        .clicked()
-                {
-                    self.open_sofa_browser();
-                }
-            },
-        );
+            })
+            .show(ui, |ui| {
+                self.hrtf_rows(ui, doc, &source, effective.as_deref())
+            });
+        if chosen != source {
+            self.send_hrir_source(&chosen);
+        }
+        if browse {
+            self.open_sofa_browser();
+        }
+    }
 
+    /// The HRTF group's inset: what was loaded, the EQ, the head, the update
+    /// lattice, and the parametric sources' own settings.
+    fn hrtf_rows(
+        &mut self,
+        ui: &mut Ui,
+        doc: Option<&serde_json::Value>,
+        source: &str,
+        effective: Option<&str>,
+    ) {
         // The renderer says what it actually loaded; a fallback means the
         // requested source did not work.
-        if let Some(effective) = &effective
-            && *effective != source
+        if let Some(effective) = effective
+            && effective != source
         {
             let line = tf("binaural.hrtfFallback", &[("effective", effective)]);
             let mut label = ui.label(
@@ -332,12 +342,10 @@ impl StudioSpike {
     }
 
     fn distance_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(t("binaural.distanceTitle"))
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT_STRONG),
-        );
+        Group::new(t("binaural.distanceTitle")).show(ui, |ui| self.distance_rows(ui, doc));
+    }
+
+    fn distance_rows(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
         let mut scale = number(doc, &["unitScaleM"], 1.0) as f32;
         if widgets::value_slider_help(
             ui,
@@ -362,14 +370,12 @@ impl StudioSpike {
     }
 
     fn room_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(t("binaural.roomTitle"))
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT_STRONG),
-        );
+        Group::new(t("binaural.roomTitle")).show(ui, |ui| self.room_rows(ui, doc));
+    }
 
-        // Early reflections, then their parameters while they are on.
+    /// Early reflections and their parameters while they are on, then the
+    /// late reverb and its own.
+    fn room_rows(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
         let mut reflections = flag(doc, &["reflections", "enabled"], false);
         if widgets::switch_row_help(
             ui,
@@ -531,29 +537,29 @@ impl StudioSpike {
     }
 
     fn tracking_block(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>) {
-        ui.add_space(4.0);
         let step = number(doc, &["tracking", "calibrationStep"], 0.0) as usize;
-        let calibrated = flag(doc, &["tracking", "axesCalibrated"], false);
-        widgets::label_row_help(
-            ui,
-            RichText::new(t("binaural.headTrackingTitle"))
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT_STRONG),
-            "help.binaural.headTracking",
-            |ui| {
-                if ui
+        let (mut calibrate, mut recenter) = (false, false);
+        Group::new(t("binaural.headTrackingTitle"))
+            .help("help.binaural.headTracking")
+            .actions(|ui| {
+                calibrate = ui
                     .button(t("binaural.calibrateAxes"))
                     .on_hover_text(t("help.binaural.calibrateAxes"))
-                    .clicked()
-                {
-                    let axis = CALIBRATION_STEPS.get(step).copied().unwrap_or("front");
-                    cmd::control_head_calibrate(&self.host, axis.to_owned());
-                }
-                if ui.button(t("binaural.recenter")).clicked() {
-                    cmd::control_head_recenter(&self.host);
-                }
-            },
-        );
+                    .clicked();
+                recenter = ui.button(t("binaural.recenter")).clicked();
+            })
+            .show(ui, |ui| self.tracking_rows(ui, doc, step));
+        if calibrate {
+            let axis = CALIBRATION_STEPS.get(step).copied().unwrap_or("front");
+            cmd::control_head_calibrate(&self.host, axis.to_owned());
+        }
+        if recenter {
+            cmd::control_head_recenter(&self.host);
+        }
+    }
+
+    fn tracking_rows(&mut self, ui: &mut Ui, doc: Option<&serde_json::Value>, step: usize) {
+        let calibrated = flag(doc, &["tracking", "axesCalibrated"], false);
         // Where the calibration is up to, in the user's terms.
         if calibrated {
             widgets::note(ui, t("binaural.calibrateDone"));

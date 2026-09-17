@@ -14,6 +14,7 @@ use crate::host::commands::adaptive::{self, Param, Switch};
 use crate::host::commands::resampling;
 use crate::i18n::{t, tf};
 use crate::model::app_state::AppState;
+use crate::ui::group::Group;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
@@ -408,13 +409,8 @@ impl StudioSpike {
         };
         let silence = Switch::SilenceFar.get(&self.host.read().app);
 
+        // One group per subpanel of the web form (`.adaptive-subpanel`).
         for (index, (caption, rows)) in SUBPANELS.iter().enumerate() {
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(t(caption))
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-            );
             // The switches of the first and last subpanels, in the web's
             // places: far actions first, diagnostics last.
             let switches: &[usize] = match index {
@@ -422,45 +418,47 @@ impl StudioSpike {
                 2 => &[3, 4, 5],
                 _ => &[],
             };
-            for i in switches {
-                let (switch, label, help) = &SWITCHES[*i];
-                let mut value = switch.get(&self.host.read().app);
-                // Label, help mark and switch on one line, the switch placed
-                // first: it used to fall to a line of its own below its label.
-                if widgets::label_row_help(ui, t(label), *help, |ui| {
-                    widgets::switch(ui, &mut value).changed()
-                }) {
-                    adaptive::set_switch(&self.host, *switch, value);
+            Group::new(t(caption)).show(ui, |ui| {
+                for i in switches {
+                    let (switch, label, help) = &SWITCHES[*i];
+                    let mut value = switch.get(&self.host.read().app);
+                    // Label, help mark and switch on one line, the switch placed
+                    // first: it used to fall to a line of its own below its label.
+                    if widgets::label_row_help(ui, t(label), *help, |ui| {
+                        widgets::switch(ui, &mut value).changed()
+                    }) {
+                        adaptive::set_switch(&self.host, *switch, value);
+                    }
                 }
-            }
-            for row in *rows {
-                let enabled = match row.gate {
-                    Gate::Always => true,
-                    Gate::FarMode => far_mode,
-                    Gate::Adaptive => adaptive_on,
-                    Gate::Silence => silence,
-                };
-                let stored = row.param.get(&self.host.read().app);
-                let mut value = *self.adaptive_edits.get(&row.param).unwrap_or(&stored);
-                let (min, max) = row.param.range();
-                ui.add_enabled_ui(enabled, |ui| {
-                    widgets::label_row_help(ui, t(row.label), row.help, |ui| {
-                        let mut drag = egui::DragValue::new(&mut value)
-                            .speed(row.step)
-                            .range(min..=max)
-                            .fixed_decimals(row.decimals);
-                        if !row.unit.is_empty() {
-                            drag = drag.suffix(format!(" {}", row.unit));
-                        }
-                        if ui
-                            .add_sized(egui::vec2(84.0, ui.spacing().interact_size.y), drag)
-                            .changed()
-                        {
-                            self.adaptive_edits.insert(row.param, value);
-                        }
+                for row in *rows {
+                    let enabled = match row.gate {
+                        Gate::Always => true,
+                        Gate::FarMode => far_mode,
+                        Gate::Adaptive => adaptive_on,
+                        Gate::Silence => silence,
+                    };
+                    let stored = row.param.get(&self.host.read().app);
+                    let mut value = *self.adaptive_edits.get(&row.param).unwrap_or(&stored);
+                    let (min, max) = row.param.range();
+                    ui.add_enabled_ui(enabled, |ui| {
+                        widgets::label_row_help(ui, t(row.label), row.help, |ui| {
+                            let mut drag = egui::DragValue::new(&mut value)
+                                .speed(row.step)
+                                .range(min..=max)
+                                .fixed_decimals(row.decimals);
+                            if !row.unit.is_empty() {
+                                drag = drag.suffix(format!(" {}", row.unit));
+                            }
+                            if ui
+                                .add_sized(egui::vec2(84.0, ui.spacing().interact_size.y), drag)
+                                .changed()
+                            {
+                                self.adaptive_edits.insert(row.param, value);
+                            }
+                        });
                     });
-                });
-            }
+                }
+            });
         }
 
         let dirty = !self.adaptive_edits.is_empty();

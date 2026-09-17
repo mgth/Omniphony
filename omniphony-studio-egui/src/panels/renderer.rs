@@ -1,7 +1,9 @@
-//! The renderer panel (`#rendererSection`, `ui/renderer-panel.js`): output
-//! mode, the Renderer/Binaural tab pair, the evaluation grid, ramp mode, the
-//! backend with its schema-generated parameters, distance diffuse, the
-//! distance model and the crossover.
+//! The renderer panel (`#rendererSection`, `ui/renderer-panel.js`): the
+//! output mode, the Renderer/Binaural tab pair, and the groups of each tab —
+//! backend, evaluation, distance model, distance diffuse and ramp on the
+//! Renderer tab, the four binaural groups on the other, the crossover on
+//! both. Laid out as `PANELS.md` says: one group per concern, its key control
+//! in the bar, its rows in the inset.
 
 use egui::{RichText, Ui};
 
@@ -9,9 +11,12 @@ use crate::app::StudioSpike;
 use crate::host::commands::SharedState;
 use crate::host::commands::{binaural, engine, render};
 use crate::i18n::{t, tf};
+use crate::ui::group::Group;
 use crate::ui::help::{self, Help};
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
+
+use super::renderer_perf;
 
 /// Which half of the panel is showing (`body.studio-tab-binaural`). UI state,
 /// not persisted, Renderer first.
@@ -100,7 +105,7 @@ const METRICS: &[(&str, &str)] = &[
 
 impl StudioSpike {
     pub(crate) fn renderer_section(&mut self, ui: &mut Ui) {
-        let summary = {
+        let (summary, embedded) = {
             let live = self.host.read();
             let mode = live
                 .app
@@ -109,27 +114,77 @@ impl StudioSpike {
                 .clone()
                 .or_else(|| live.app.render_evaluation_mode_state.selection.clone())
                 .unwrap_or_else(|| "auto".to_owned());
-            tf("renderer.summary", &[("mode", evaluation_label(&mode))])
+            // `renderEvaluationMode`: the backend the engine runs, then the
+            // mode it evaluates it in.
+            let b = &live.app.render_backend_state;
+            let backend_id = b
+                .effective
+                .clone()
+                .or_else(|| b.selection.clone())
+                .unwrap_or_else(|| "vbap".to_owned());
+            let backend = b
+                .effective_label
+                .clone()
+                .filter(|_| b.effective.as_deref() == Some(backend_id.as_str()))
+                .unwrap_or_else(|| backend_label(&backend_id));
+            let embedded = live
+                .app
+                .producer_capabilities
+                .as_ref()
+                .and_then(|c| c.get("variant"))
+                .and_then(|v| v.as_str())
+                == Some("embedded");
+            (
+                format!(
+                    "{backend} / {}",
+                    tf("renderer.summary", &[("mode", evaluation_label(&mode))])
+                ),
+                embedded,
+            )
         };
-        Section::new("rendererSection", "section.renderer")
-            .summary(summary)
-            .show(ui, |ui| {
-                self.renderer_perf(ui);
-                self.output_mode_row(ui);
-                self.renderer_tabs(ui);
-                match self.renderer_tab {
-                    RendererTab::Renderer => {
-                        self.evaluation_block(ui);
-                        self.ramp_row(ui);
-                        self.backend_block(ui);
-                        self.distance_diffuse_block(ui);
-                        self.distance_model_block(ui);
-                    }
-                    RendererTab::Binaural => self.binaural_tab(ui),
+        // The gauge's bar sits in the header, as `#rendererPerfWrap` does, so
+        // it stays in view with the section folded; its numbers open the body.
+        let perf = self.perf_snapshot();
+        let mut section = Section::new("rendererSection", "section.renderer").summary(summary);
+        if let Some(perf) = perf {
+            section = section.header_widget(move |ui| renderer_perf::perf_bar(ui, &perf));
+        }
+        section.show(ui, |ui| {
+            if let Some(perf) = &perf {
+                renderer_perf::perf_readouts(ui, perf);
+            }
+            self.output_mode_row(ui);
+            // The embedded host applies the output mode at player start.
+            if embedded {
+                widgets::note(ui, t("outputMode.mpvNote"));
+            }
+            ui.add_space(2.0);
+            if let Some(tab) = widgets::tab_bar(
+                ui,
+                &self.renderer_tab,
+                &[
+                    (RendererTab::Renderer, t("rendererTabs.renderer")),
+                    (RendererTab::Binaural, t("rendererTabs.binaural")),
+                ],
+            ) {
+                self.renderer_tab = tab;
+            }
+            // Groups in the order their choices constrain one another: the
+            // backend first, since it says which evaluation modes exist; the
+            // two distance treatments it applies; how gains move between
+            // frames; and last the crossover, which both tabs share.
+            match self.renderer_tab {
+                RendererTab::Renderer => {
+                    self.backend_group(ui);
+                    self.evaluation_group(ui);
+                    self.distance_model_group(ui);
+                    self.distance_diffuse_group(ui);
+                    self.ramp_group(ui);
                 }
-                // Shown on both tabs.
-                self.crossover_block(ui);
-            });
+                RendererTab::Binaural => self.binaural_tab(ui),
+            }
+            self.crossover_group(ui);
+        });
     }
 
     fn output_mode_row(&mut self, ui: &mut Ui) {
@@ -173,326 +228,12 @@ impl StudioSpike {
         }
     }
 
-    fn renderer_tabs(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            for (tab, key) in [
-                (RendererTab::Renderer, "rendererTabs.renderer"),
-                (RendererTab::Binaural, "rendererTabs.binaural"),
-            ] {
-                let active = self.renderer_tab == tab;
-                if ui.selectable_label(active, t(key)).clicked() {
-                    self.renderer_tab = tab;
-                }
-            }
-        });
-    }
-
-    // ── evaluation ───────────────────────────────────────────────────────
-
-    fn evaluation_block(&mut self, ui: &mut Ui) {
-        let (
-            selection,
-            effective,
-            allowed,
-            caps,
-            cartesian,
-            polar,
-            allow_neg_z,
-            interpolation,
-            intervals,
-            meters_per_unit,
-        ) = {
-            let live = self.host.read();
-            let s = &live.app.render_evaluation_mode_state;
-            (
-                s.selection.clone().unwrap_or_else(|| "auto".to_owned()),
-                s.effective.clone(),
-                if live
-                    .app
-                    .render_backend_state
-                    .allowed_evaluation_modes
-                    .is_empty()
-                {
-                    EVALUATION_MODES.iter().map(|m| (*m).to_owned()).collect()
-                } else {
-                    live.app
-                        .render_backend_state
-                        .allowed_evaluation_modes
-                        .clone()
-                },
-                live.app.render_backend_state.capabilities.clone(),
-                live.app.vbap_cartesian.clone(),
-                live.app.vbap_polar.clone(),
-                live.app.vbap_allow_negative_z,
-                live.app.vbap_polar.position_interpolation.unwrap_or(true),
-                live.app.object_size_intervals,
-                // Room scale: metres per scene unit, from the renderer's room domain.
-                live.app.room_ratio.scale_m.max(0.001),
-            )
-        };
-        ui.add_space(4.0);
-        widgets::label_row_info(
-            ui,
-            RichText::new(t("evaluation.title"))
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT_STRONG),
-            "evaluation",
-            |ui| {
-                ui.label(
-                    RichText::new(
-                        effective
-                            .as_deref()
-                            .map(evaluation_label)
-                            .unwrap_or_else(|| t("vbap.status.idle")),
-                    )
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-                );
-                let mut chosen = selection.clone();
-                widgets::bounded_combo(ui, 150.0, |ui, w| {
-                    egui::ComboBox::from_id_salt("evaluation-mode")
-                        .selected_text(evaluation_label(&selection))
-                        .width(w)
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            for mode in &allowed {
-                                ui.selectable_value(
-                                    &mut chosen,
-                                    mode.clone(),
-                                    evaluation_label(mode),
-                                );
-                            }
-                        })
-                });
-                if chosen != selection && allowed.contains(&chosen) {
-                    render::control_render_evaluation_mode(&self.host, chosen);
-                }
-            },
-        );
-
-        // Which grid block applies: `auto` follows the effective mode.
-        let visible_mode = if selection == "auto" {
-            effective.clone().unwrap_or_else(|| "auto".to_owned())
-        } else {
-            selection.clone()
-        };
-        let supports_cartesian = caps
-            .as_ref()
-            .is_none_or(|c| c.supports_precomputed_cartesian);
-        let supports_polar = caps.as_ref().is_none_or(|c| c.supports_precomputed_polar);
-        let show_cartesian = visible_mode == "precomputed_cartesian" && supports_cartesian;
-        let show_polar = visible_mode == "precomputed_polar" && supports_polar;
-
-        if show_cartesian {
-            help::label(
-                ui,
-                RichText::new(t("eval.cartesianGrid"))
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-                "help.eval.cartesianGrid",
-            );
-            help::card(ui, "help.eval.cartesianGrid");
-            ui.horizontal(|ui| {
-                // Steps are the room extent over the count: 2 units across X
-                // and Y, 1 unit up.
-                self.grid_field(
-                    ui,
-                    "X",
-                    cartesian.x_size,
-                    1,
-                    render::control_render_evaluation_cartesian_x_size,
-                );
-                self.grid_field(
-                    ui,
-                    "Y",
-                    cartesian.y_size,
-                    1,
-                    render::control_render_evaluation_cartesian_y_size,
-                );
-                self.grid_field(
-                    ui,
-                    "Z+",
-                    cartesian.z_size,
-                    1,
-                    render::control_render_evaluation_cartesian_z_size,
-                );
-                self.grid_field(
-                    ui,
-                    "Z-",
-                    cartesian.z_neg_size,
-                    0,
-                    render::control_render_evaluation_cartesian_z_neg_size,
-                );
-            });
-            ui.horizontal(|ui| {
-                step_label(
-                    ui,
-                    cartesian
-                        .x_size
-                        .map(|n| 2.0 / n as f64 * meters_per_unit * 1000.0),
-                    "mm",
-                );
-                step_label(
-                    ui,
-                    cartesian
-                        .y_size
-                        .map(|n| 2.0 / n as f64 * meters_per_unit * 1000.0),
-                    "mm",
-                );
-                step_label(
-                    ui,
-                    cartesian
-                        .z_size
-                        .map(|n| 1.0 / n as f64 * meters_per_unit * 1000.0),
-                    "mm",
-                );
-                let z_neg = cartesian
-                    .z_neg_size
-                    .filter(|n| *n > 0 && allow_neg_z != Some(false))
-                    .map(|n| 1.0 / n as f64 * meters_per_unit * 1000.0);
-                step_label(ui, z_neg, "mm");
-            });
-        }
-
-        if show_polar {
-            help::label(
-                ui,
-                RichText::new(t("eval.polarGrid"))
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-                "help.eval.polarGrid",
-            );
-            help::card(ui, "help.eval.polarGrid");
-            ui.horizontal(|ui| {
-                self.grid_field(
-                    ui,
-                    "az",
-                    polar.azimuth_resolution,
-                    1,
-                    render::control_render_evaluation_polar_azimuth_resolution,
-                );
-                self.grid_field(
-                    ui,
-                    "el",
-                    polar.elevation_resolution,
-                    1,
-                    render::control_render_evaluation_polar_elevation_resolution,
-                );
-                self.grid_field(
-                    ui,
-                    "d",
-                    polar.distance_res,
-                    1,
-                    render::control_render_evaluation_polar_distance_res,
-                );
-            });
-            ui.horizontal(|ui| {
-                step_label(ui, polar.azimuth_resolution.map(|n| 360.0 / n as f64), "°");
-                let elevation_span = if allow_neg_z == Some(false) {
-                    90.0
-                } else {
-                    180.0
-                };
-                step_label(
-                    ui,
-                    polar
-                        .elevation_resolution
-                        .map(|n| elevation_span / n as f64),
-                    "°",
-                );
-                let distance_step = match (polar.distance_max, polar.distance_res) {
-                    (Some(max), Some(res)) if res > 0 => Some(max / res as f64),
-                    _ => None,
-                };
-                step_label(ui, distance_step, "");
-            });
-            let mut distance_max = polar.distance_max.unwrap_or(2.0) as f32;
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("d max")
-                        .size(theme::FONT_SIZE_SMALL)
-                        .color(theme::TEXT_MUTED),
-                );
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut distance_max)
-                            .speed(0.01)
-                            .range(0.01..=f32::MAX),
-                    )
-                    .changed()
-                {
-                    render::control_render_evaluation_polar_distance_max(&self.host, distance_max);
-                }
-            });
-        }
-
-        if show_cartesian || show_polar {
-            let mut on = interpolation;
-            if widgets::switch_row_help(
-                ui,
-                t("vbap.positionInterpolation"),
-                "help.vbap.positionInterpolation",
-                &mut on,
-            ) {
-                render::control_render_evaluation_position_interpolation(&self.host, i32::from(on));
-            }
-        }
-
-        // Hidden only when the backend says it cannot size events.
-        let supports_size = caps.as_ref().is_none_or(|c| c.supports_spread);
-        if supports_size {
-            let mut value = intervals;
-            widgets::label_row_help(
-                ui,
-                t("evaluation.objectSizeIntervals"),
-                "help.eval.objectSizeIntervals",
-                |ui| {
-                    if ui
-                        .add(egui::DragValue::new(&mut value).range(0..=u32::MAX))
-                        .changed()
-                    {
-                        render::control_render_evaluation_object_size_intervals(
-                            &self.host,
-                            value as i32,
-                        );
-                    }
-                },
-            );
-        }
-    }
-
-    /// One integer field of an evaluation grid. `floor` is the smallest value
-    /// the renderer accepts (1 everywhere but the negative-Z count).
-    fn grid_field(
-        &mut self,
-        ui: &mut Ui,
-        placeholder: &str,
-        current: Option<u32>,
-        floor: u32,
-        send: fn(&SharedState, i32),
-    ) {
-        let mut value = current.unwrap_or(floor);
-        ui.vertical(|ui| {
-            ui.label(
-                RichText::new(placeholder)
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-            );
-            if ui
-                .add_sized(
-                    egui::vec2(48.0, ui.spacing().interact_size.y),
-                    egui::DragValue::new(&mut value).range(floor..=u32::MAX),
-                )
-                .changed()
-            {
-                send(&self.host, value.max(floor) as i32);
-            }
-        });
-    }
-
     // ── backend and its schema-generated parameters ──────────────────────
 
-    fn backend_block(&mut self, ui: &mut Ui) {
+    /// Bar: the title (its help names the chosen backend), the recompute
+    /// status, the backend select and — when it differs — what the engine
+    /// actually runs. Inset: the backend's own parameters.
+    fn backend_group(&mut self, ui: &mut Ui) {
         let (selection, effective, effective_label, available, values, frozen, status) = {
             let live = self.host.read();
             let b = &live.app.render_backend_state;
@@ -511,42 +252,49 @@ impl StudioSpike {
             )
         };
         let backends = backend_list(&available);
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            help::overlay_title(
-                ui,
-                RichText::new(t("backend.title"))
-                    .size(theme::FONT_SIZE)
-                    .color(theme::TEXT_STRONG),
-                || backend_overlay(&selection, &backends),
-            );
-            ui.label(
-                RichText::new(status.0)
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(status.1),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(
-                        effective_label
-                            .clone()
-                            .or_else(|| effective.clone())
-                            .unwrap_or_else(|| "—".to_owned()),
-                    )
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-                );
-                let mut chosen = selection.clone();
+        let selected_label = backends
+            .iter()
+            .find(|(id, _)| *id == selection)
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| selection.clone());
+        // What the engine runs, when that is not what was asked for: a build
+        // that failed, or a backend the engine substituted.
+        let running = effective
+            .as_ref()
+            .filter(|id| **id != selection)
+            .map(|id| effective_label.clone().unwrap_or_else(|| backend_label(id)));
+        // The script backend follows the selection so its file field stays
+        // reachable while its build fails; everything else follows what the
+        // engine actually runs.
+        let visible = if selection == "script" {
+            selection.clone()
+        } else {
+            effective.clone().unwrap_or_else(|| selection.clone())
+        };
+        let mut chosen = selection.clone();
+        let mut group =
+            Group::new(t("backend.title")).overlay(|| backend_overlay(&selection, &backends));
+        // Only while there is something to say: at rest the web shows an em
+        // dash, which next to a title reads as punctuation.
+        if let Some((text, colour)) = status {
+            group = group.status(text, colour);
+        }
+        group
+            .actions(|ui| {
+                if let Some(running) = &running {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(running)
+                                .size(theme::FONT_SIZE_SMALL)
+                                .color(theme::TEXT_MUTED),
+                        )
+                        .truncate(),
+                    );
+                }
                 ui.add_enabled_ui(!frozen, |ui| {
                     widgets::bounded_combo(ui, 150.0, |ui, w| {
                         egui::ComboBox::from_id_salt("render-backend")
-                            .selected_text(
-                                backends
-                                    .iter()
-                                    .find(|(id, _)| *id == selection)
-                                    .map(|(_, label)| label.clone())
-                                    .unwrap_or_else(|| selection.clone()),
-                            )
+                            .selected_text(&selected_label)
                             .width(w)
                             .truncate()
                             .show_ui(ui, |ui| {
@@ -556,26 +304,18 @@ impl StudioSpike {
                             })
                     });
                 });
-                if chosen != selection && !chosen.is_empty() {
-                    render::control_render_backend(&self.host, chosen);
+            })
+            .show(ui, |ui| {
+                // `hybrid` has a bespoke panel of its own, not a generated one.
+                if visible == "hybrid" {
+                    self.hybrid_block(ui, &available, &values);
+                } else {
+                    self.backend_params_for(ui, &visible, &available, &values);
                 }
             });
-        });
-
-        // The script backend follows the selection so its file field stays
-        // reachable while its build fails; everything else follows what the
-        // engine actually runs.
-        let visible = if selection == "script" {
-            selection.clone()
-        } else {
-            effective.clone().unwrap_or(selection)
-        };
-        // `hybrid` has a bespoke panel of its own, not a generated one.
-        if visible == "hybrid" {
-            self.hybrid_block(ui, &available, &values);
-            return;
+        if chosen != selection && !chosen.is_empty() {
+            render::control_render_backend(&self.host, chosen);
         }
-        self.backend_params_for(ui, &visible, &available, &values);
     }
 
     /// One control per declared parameter of the visible backend
@@ -782,179 +522,453 @@ impl StudioSpike {
         render::control_backend_param(&self.host, key.to_owned(), value, Some(backend.to_owned()));
     }
 
-    // ── ramp, crossover, distance ────────────────────────────────────────
+    // ── evaluation ───────────────────────────────────────────────────────
 
-    fn ramp_row(&mut self, ui: &mut Ui) {
-        let current = {
+    /// Bar: the mode select and, while the choice is `auto`, the mode it
+    /// resolved to. Inset: the grid of the precomputed mode in force, then
+    /// the interpolation switch and the size intervals — nothing at all in
+    /// realtime with a backend that cannot size events.
+    fn evaluation_group(&mut self, ui: &mut Ui) {
+        let (
+            selection,
+            effective,
+            allowed,
+            caps,
+            cartesian,
+            polar,
+            allow_neg_z,
+            interpolation,
+            intervals,
+            meters_per_unit,
+        ) = {
             let live = self.host.read();
-            live.app
-                .audio
-                .ramp_mode
-                .clone()
-                .unwrap_or_else(|| "frame".into())
+            let s = &live.app.render_evaluation_mode_state;
+            (
+                s.selection.clone().unwrap_or_else(|| "auto".to_owned()),
+                s.effective.clone(),
+                if live
+                    .app
+                    .render_backend_state
+                    .allowed_evaluation_modes
+                    .is_empty()
+                {
+                    EVALUATION_MODES.iter().map(|m| (*m).to_owned()).collect()
+                } else {
+                    live.app
+                        .render_backend_state
+                        .allowed_evaluation_modes
+                        .clone()
+                },
+                live.app.render_backend_state.capabilities.clone(),
+                live.app.vbap_cartesian.clone(),
+                live.app.vbap_polar.clone(),
+                live.app.vbap_allow_negative_z,
+                live.app.vbap_polar.position_interpolation.unwrap_or(true),
+                live.app.object_size_intervals,
+                // Room scale: metres per scene unit, from the renderer's room domain.
+                live.app.room_ratio.scale_m.max(0.001),
+            )
         };
-        let current = if RAMP_MODES.iter().any(|(id, _)| *id == current) {
-            current
+        // What the engine resolved the choice to, when that says more than
+        // the choice itself.
+        let resolved = effective
+            .as_ref()
+            .filter(|mode| **mode != selection)
+            .map(|mode| evaluation_label(mode));
+        // Which grid block applies: `auto` follows the effective mode.
+        let visible_mode = if selection == "auto" {
+            effective.clone().unwrap_or_else(|| "auto".to_owned())
         } else {
-            "frame".to_owned()
+            selection.clone()
         };
-        let mut chosen = current.clone();
-        ui.add_space(4.0);
-        widgets::label_row_info(
-            ui,
-            RichText::new(t("renderer.rampTitle"))
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT_STRONG),
-            "rampMode",
-            |ui| {
-                widgets::bounded_combo(ui, 140.0, |ui, w| {
-                    egui::ComboBox::from_id_salt("ramp-mode")
-                        .selected_text(t(RAMP_MODES
-                            .iter()
-                            .find(|(id, _)| *id == current)
-                            .map(|(_, key)| *key)
-                            .unwrap_or("audio.rampModeFrame")))
+        let supports_cartesian = caps
+            .as_ref()
+            .is_none_or(|c| c.supports_precomputed_cartesian);
+        let supports_polar = caps.as_ref().is_none_or(|c| c.supports_precomputed_polar);
+        let show_cartesian = visible_mode == "precomputed_cartesian" && supports_cartesian;
+        let show_polar = visible_mode == "precomputed_polar" && supports_polar;
+        // Hidden only when the backend says it cannot size events.
+        let supports_size = caps.as_ref().is_none_or(|c| c.supports_spread);
+
+        let mut chosen = selection.clone();
+        Group::new(t("evaluation.title"))
+            .info("evaluation")
+            .actions(|ui| {
+                if let Some(resolved) = resolved {
+                    ui.label(
+                        RichText::new(resolved)
+                            .size(theme::FONT_SIZE_SMALL)
+                            .color(theme::TEXT_MUTED),
+                    );
+                }
+                widgets::bounded_combo(ui, 150.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("evaluation-mode")
+                        .selected_text(evaluation_label(&selection))
                         .width(w)
                         .truncate()
                         .show_ui(ui, |ui| {
-                            for (id, key) in RAMP_MODES {
+                            for mode in &allowed {
+                                ui.selectable_value(
+                                    &mut chosen,
+                                    mode.clone(),
+                                    evaluation_label(mode),
+                                );
+                            }
+                        })
+                });
+            })
+            .show(ui, |ui| {
+                if show_cartesian {
+                    self.cartesian_grid(ui, &cartesian, allow_neg_z, meters_per_unit);
+                }
+                if show_polar {
+                    self.polar_grid(ui, &polar, allow_neg_z);
+                }
+                if show_cartesian || show_polar {
+                    let mut on = interpolation;
+                    if widgets::switch_row_help(
+                        ui,
+                        t("vbap.positionInterpolation"),
+                        "help.vbap.positionInterpolation",
+                        &mut on,
+                    ) {
+                        render::control_render_evaluation_position_interpolation(
+                            &self.host,
+                            i32::from(on),
+                        );
+                    }
+                }
+                if supports_size {
+                    let mut value = intervals;
+                    widgets::label_row_help(
+                        ui,
+                        t("evaluation.objectSizeIntervals"),
+                        "help.eval.objectSizeIntervals",
+                        |ui| {
+                            if ui
+                                .add(egui::DragValue::new(&mut value).range(0..=u32::MAX))
+                                .changed()
+                            {
+                                render::control_render_evaluation_object_size_intervals(
+                                    &self.host,
+                                    value as i32,
+                                );
+                            }
+                        },
+                    );
+                }
+            });
+        if chosen != selection && allowed.contains(&chosen) {
+            render::control_render_evaluation_mode(&self.host, chosen);
+        }
+    }
+
+    /// The cartesian grid's four counts and the step each makes.
+    fn cartesian_grid(
+        &mut self,
+        ui: &mut Ui,
+        cartesian: &crate::model::app_state::VbapCartesian,
+        allow_neg_z: Option<bool>,
+        meters_per_unit: f64,
+    ) {
+        help::label(
+            ui,
+            RichText::new(t("eval.cartesianGrid"))
+                .size(theme::FONT_SIZE_SMALL)
+                .color(theme::TEXT_MUTED),
+            "help.eval.cartesianGrid",
+        );
+        help::card(ui, "help.eval.cartesianGrid");
+        ui.horizontal(|ui| {
+            // Steps are the room extent over the count: 2 units across X
+            // and Y, 1 unit up.
+            self.grid_field(
+                ui,
+                "X",
+                cartesian.x_size,
+                1,
+                render::control_render_evaluation_cartesian_x_size,
+            );
+            self.grid_field(
+                ui,
+                "Y",
+                cartesian.y_size,
+                1,
+                render::control_render_evaluation_cartesian_y_size,
+            );
+            self.grid_field(
+                ui,
+                "Z+",
+                cartesian.z_size,
+                1,
+                render::control_render_evaluation_cartesian_z_size,
+            );
+            self.grid_field(
+                ui,
+                "Z-",
+                cartesian.z_neg_size,
+                0,
+                render::control_render_evaluation_cartesian_z_neg_size,
+            );
+        });
+        ui.horizontal(|ui| {
+            step_label(
+                ui,
+                cartesian
+                    .x_size
+                    .map(|n| 2.0 / n as f64 * meters_per_unit * 1000.0),
+                "mm",
+            );
+            step_label(
+                ui,
+                cartesian
+                    .y_size
+                    .map(|n| 2.0 / n as f64 * meters_per_unit * 1000.0),
+                "mm",
+            );
+            step_label(
+                ui,
+                cartesian
+                    .z_size
+                    .map(|n| 1.0 / n as f64 * meters_per_unit * 1000.0),
+                "mm",
+            );
+            let z_neg = cartesian
+                .z_neg_size
+                .filter(|n| *n > 0 && allow_neg_z != Some(false))
+                .map(|n| 1.0 / n as f64 * meters_per_unit * 1000.0);
+            step_label(ui, z_neg, "mm");
+        });
+    }
+
+    /// The polar grid's three resolutions, the step each makes, and the
+    /// distance the grid reaches.
+    fn polar_grid(
+        &mut self,
+        ui: &mut Ui,
+        polar: &crate::model::app_state::VbapPolar,
+        allow_neg_z: Option<bool>,
+    ) {
+        help::label(
+            ui,
+            RichText::new(t("eval.polarGrid"))
+                .size(theme::FONT_SIZE_SMALL)
+                .color(theme::TEXT_MUTED),
+            "help.eval.polarGrid",
+        );
+        help::card(ui, "help.eval.polarGrid");
+        ui.horizontal(|ui| {
+            self.grid_field(
+                ui,
+                "az",
+                polar.azimuth_resolution,
+                1,
+                render::control_render_evaluation_polar_azimuth_resolution,
+            );
+            self.grid_field(
+                ui,
+                "el",
+                polar.elevation_resolution,
+                1,
+                render::control_render_evaluation_polar_elevation_resolution,
+            );
+            self.grid_field(
+                ui,
+                "d",
+                polar.distance_res,
+                1,
+                render::control_render_evaluation_polar_distance_res,
+            );
+        });
+        ui.horizontal(|ui| {
+            step_label(ui, polar.azimuth_resolution.map(|n| 360.0 / n as f64), "°");
+            let elevation_span = if allow_neg_z == Some(false) {
+                90.0
+            } else {
+                180.0
+            };
+            step_label(
+                ui,
+                polar
+                    .elevation_resolution
+                    .map(|n| elevation_span / n as f64),
+                "°",
+            );
+            let distance_step = match (polar.distance_max, polar.distance_res) {
+                (Some(max), Some(res)) if res > 0 => Some(max / res as f64),
+                _ => None,
+            };
+            step_label(ui, distance_step, "");
+        });
+        let mut distance_max = polar.distance_max.unwrap_or(2.0) as f32;
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("d max")
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(theme::TEXT_MUTED),
+            );
+            if ui
+                .add(
+                    egui::DragValue::new(&mut distance_max)
+                        .speed(0.01)
+                        .range(0.01..=f32::MAX),
+                )
+                .changed()
+            {
+                render::control_render_evaluation_polar_distance_max(&self.host, distance_max);
+            }
+        });
+    }
+
+    /// One integer field of an evaluation grid. `floor` is the smallest value
+    /// the renderer accepts (1 everywhere but the negative-Z count).
+    fn grid_field(
+        &mut self,
+        ui: &mut Ui,
+        placeholder: &str,
+        current: Option<u32>,
+        floor: u32,
+        send: fn(&SharedState, i32),
+    ) {
+        let mut value = current.unwrap_or(floor);
+        ui.vertical(|ui| {
+            ui.label(
+                RichText::new(placeholder)
+                    .size(theme::FONT_SIZE_SMALL)
+                    .color(theme::TEXT_MUTED),
+            );
+            if ui
+                .add_sized(
+                    egui::vec2(48.0, ui.spacing().interact_size.y),
+                    egui::DragValue::new(&mut value).range(floor..=u32::MAX),
+                )
+                .changed()
+            {
+                send(&self.host, value.max(floor) as i32);
+            }
+        });
+    }
+
+    // ── distance, ramp, crossover ────────────────────────────────────────
+
+    /// Bar: the model select. Inset: its metric, once there is a model.
+    fn distance_model_group(&mut self, ui: &mut Ui) {
+        let (value, metric) = {
+            let live = self.host.read();
+            (
+                live.app
+                    .distance_model
+                    .value
+                    .clone()
+                    .unwrap_or_else(|| "none".into()),
+                live.app
+                    .distance_model
+                    .metric
+                    .clone()
+                    .unwrap_or_else(|| "spherical".into()),
+            )
+        };
+        let value = if DISTANCE_MODELS.iter().any(|(id, _)| *id == value) {
+            value
+        } else {
+            "none".to_owned()
+        };
+        let mut chosen = value.clone();
+        let picked_metric = Group::new(t("distance.model"))
+            .overlay(|| help::Overlay::keys("distance.modelInfoTitle", "distance.modelInfoBody"))
+            .actions(|ui| {
+                widgets::bounded_combo(ui, 150.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("distance-model")
+                        .selected_text(t(DISTANCE_MODELS
+                            .iter()
+                            .find(|(id, _)| *id == value)
+                            .map(|(_, key)| *key)
+                            .unwrap_or("distance.model.none")))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            for (id, key) in DISTANCE_MODELS {
                                 ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
                             }
                         })
                 });
-            },
-        );
-        if chosen != current {
-            engine::control_ramp_mode(&self.host, chosen);
+            })
+            .show(ui, |ui| {
+                // The metric only means something once a model is applied.
+                (value != "none")
+                    .then(|| {
+                        self.metric_row(
+                            ui,
+                            "distance-model-metric",
+                            "help.distanceModel.metric",
+                            &metric,
+                        )
+                    })
+                    .flatten()
+            });
+        if chosen != value {
+            render::control_distance_model(&self.host, chosen);
+        }
+        if let Some(metric) = picked_metric {
+            render::control_distance_model_metric(&self.host, metric);
         }
     }
 
-    fn crossover_block(&mut self, ui: &mut Ui) {
-        let (crossover, kind, transition) = {
-            let live = self.host.read();
-            (
-                live.app.live_options.crossover.clone(),
-                live.option_str("crossover_type")
-                    .unwrap_or_else(|| "lr4".into()),
-                live.option_f64("crossover_fir_transition_ratio")
-                    .unwrap_or(0.5),
-            )
-        };
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(t("renderer.crossoverTitle"))
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT_STRONG),
-        );
-        let mut chosen = kind.clone();
-        widgets::label_row_help(
-            ui,
-            t("renderer.crossoverTypeLabel"),
-            "help.renderer.crossoverType",
-            |ui| {
-                widgets::bounded_combo(ui, 160.0, |ui, w| {
-                    egui::ComboBox::from_id_salt("crossover-type")
-                        .selected_text(t(if kind == "fir" {
-                            "renderer.crossoverType.fir"
-                        } else {
-                            "renderer.crossoverType.lr4"
-                        }))
-                        .width(w)
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut chosen,
-                                "lr4".to_owned(),
-                                t("renderer.crossoverType.lr4"),
-                            );
-                            ui.selectable_value(
-                                &mut chosen,
-                                "fir".to_owned(),
-                                t("renderer.crossoverType.fir"),
-                            );
-                        })
-                });
-            },
-        );
-        if chosen != kind {
-            self.set_option("crossover_type", serde_json::json!(chosen));
-        }
-        if kind == "fir" {
-            let mut ratio = transition as f32;
-            if widgets::value_slider_help(
-                ui,
-                t("renderer.crossoverTransitionLabel"),
-                "help.renderer.crossoverTransition",
-                &mut ratio,
-                0.05..=2.0,
-                0.05,
-                |v| format!("{v:.2}"),
-            ) {
-                self.set_option(
-                    "crossover_fir_transition_ratio",
-                    serde_json::json!(ratio as f64),
-                );
-            }
-        }
-        widgets::note(ui, &crossover_info(crossover.as_ref()));
-    }
-
-    fn distance_diffuse_block(&mut self, ui: &mut Ui) {
+    /// Bar: the effect's switch. Inset: its parameters, while it is on.
+    fn distance_diffuse_group(&mut self, ui: &mut Ui) {
         let state = {
             let live = self.host.read();
             live.app.distance_diffuse.clone()
         };
-        ui.add_space(4.0);
-        let mut enabled = state.enabled.unwrap_or(false);
-        widgets::label_row_info(
-            ui,
-            RichText::new(t("distance.title"))
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT_STRONG),
-            "distance",
-            |ui| {
-                if widgets::switch(ui, &mut enabled).changed() {
-                    render::control_distance_diffuse_enabled(&self.host, i32::from(enabled));
+        let enabled = state.enabled.unwrap_or(false);
+        let mut on = enabled;
+        Group::new(t("distance.title"))
+            .info("distance")
+            .actions(|ui| {
+                widgets::switch(ui, &mut on);
+            })
+            .show(ui, |ui| {
+                // The parameters collapse with the effect, as in the web panel.
+                if !enabled {
+                    return;
                 }
-            },
-        );
-        // The parameters collapse with the effect, as in the web panel.
-        if !enabled {
-            return;
-        }
-        let metric = state.metric.clone().unwrap_or_else(|| "spherical".into());
-        if let Some(chosen) = self.metric_row(
-            ui,
-            "distance-diffuse-metric",
-            "help.distanceDiffuse.metric",
-            &metric,
-        ) {
-            render::control_distance_diffuse_metric(&self.host, chosen);
-        }
-        self.mirror_axes_rows(ui, state.mirror_axes.unwrap_or_default());
-        let mut threshold = state.threshold.unwrap_or(1.0) as f32;
-        if widgets::value_slider_help(
-            ui,
-            t("distance.threshold"),
-            "help.distanceDiffuse.threshold",
-            &mut threshold,
-            0.1..=2.0,
-            0.01,
-            |v| format!("{v:.2}"),
-        ) {
-            render::control_distance_diffuse_threshold(&self.host, threshold);
-        }
-        let mut curve = state.curve.unwrap_or(1.0) as f32;
-        if widgets::value_slider_help(
-            ui,
-            t("distance.curve"),
-            "help.distanceDiffuse.curve",
-            &mut curve,
-            0.5..=2.0,
-            0.05,
-            |v| format!("{v:.2}"),
-        ) {
-            render::control_distance_diffuse_curve(&self.host, curve);
+                let metric = state.metric.clone().unwrap_or_else(|| "spherical".into());
+                if let Some(chosen) = self.metric_row(
+                    ui,
+                    "distance-diffuse-metric",
+                    "help.distanceDiffuse.metric",
+                    &metric,
+                ) {
+                    render::control_distance_diffuse_metric(&self.host, chosen);
+                }
+                self.mirror_axes_rows(ui, state.mirror_axes.unwrap_or_default());
+                let mut threshold = state.threshold.unwrap_or(1.0) as f32;
+                if widgets::value_slider_help(
+                    ui,
+                    t("distance.threshold"),
+                    "help.distanceDiffuse.threshold",
+                    &mut threshold,
+                    0.1..=2.0,
+                    0.01,
+                    |v| format!("{v:.2}"),
+                ) {
+                    render::control_distance_diffuse_threshold(&self.host, threshold);
+                }
+                let mut curve = state.curve.unwrap_or(1.0) as f32;
+                if widgets::value_slider_help(
+                    ui,
+                    t("distance.curve"),
+                    "help.distanceDiffuse.curve",
+                    &mut curve,
+                    0.5..=2.0,
+                    0.05,
+                    |v| format!("{v:.2}"),
+                ) {
+                    render::control_distance_diffuse_curve(&self.host, curve);
+                }
+            });
+        if on != enabled {
+            render::control_distance_diffuse_enabled(&self.host, i32::from(on));
         }
     }
 
@@ -996,71 +1010,114 @@ impl StudioSpike {
         }
     }
 
-    fn distance_model_block(&mut self, ui: &mut Ui) {
-        let (value, metric) = {
+    /// A group that is its select: how gains move between frames.
+    fn ramp_group(&mut self, ui: &mut Ui) {
+        let current = {
             let live = self.host.read();
-            (
-                live.app
-                    .distance_model
-                    .value
-                    .clone()
-                    .unwrap_or_else(|| "none".into()),
-                live.app
-                    .distance_model
-                    .metric
-                    .clone()
-                    .unwrap_or_else(|| "spherical".into()),
-            )
+            live.app
+                .audio
+                .ramp_mode
+                .clone()
+                .unwrap_or_else(|| "frame".into())
         };
-        let value = if DISTANCE_MODELS.iter().any(|(id, _)| *id == value) {
-            value
+        let current = if RAMP_MODES.iter().any(|(id, _)| *id == current) {
+            current
         } else {
-            "none".to_owned()
+            "frame".to_owned()
         };
-        ui.add_space(4.0);
-        let mut chosen = value.clone();
-        widgets::label_row_info_keys(
-            ui,
-            RichText::new(t("distance.model"))
-                .size(theme::FONT_SIZE)
-                .color(theme::TEXT_STRONG),
-            "distance.modelInfoTitle",
-            "distance.modelInfoBody",
-            |ui| {
-                widgets::bounded_combo(ui, 150.0, |ui, w| {
-                    egui::ComboBox::from_id_salt("distance-model")
-                        .selected_text(t(DISTANCE_MODELS
+        let mut chosen = current.clone();
+        Group::new(t("renderer.rampTitle"))
+            .info("rampMode")
+            .actions(|ui| {
+                widgets::bounded_combo(ui, 140.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("ramp-mode")
+                        .selected_text(t(RAMP_MODES
                             .iter()
-                            .find(|(id, _)| *id == value)
+                            .find(|(id, _)| *id == current)
                             .map(|(_, key)| *key)
-                            .unwrap_or("distance.model.none")))
+                            .unwrap_or("audio.rampModeFrame")))
                         .width(w)
                         .truncate()
                         .show_ui(ui, |ui| {
-                            for (id, key) in DISTANCE_MODELS {
+                            for (id, key) in RAMP_MODES {
                                 ui.selectable_value(&mut chosen, (*id).to_owned(), t(key));
                             }
                         })
                 });
-            },
-        );
-        if chosen != value {
-            render::control_distance_model(&self.host, chosen);
-        }
-        // The metric only means something once a model is applied.
-        if value != "none"
-            && let Some(chosen) = self.metric_row(
-                ui,
-                "distance-model-metric",
-                "help.distanceModel.metric",
-                &metric,
-            )
-        {
-            render::control_distance_model_metric(&self.host, chosen);
+            })
+            .bar(ui);
+        if chosen != current {
+            engine::control_ramp_mode(&self.host, chosen);
         }
     }
 
-    /// The spherical/Chebyshev select shared by both distance blocks.
+    /// Shown on both tabs. Bar: the filter. Inset: the FIR's transition
+    /// width while that is the filter, and what the renderer actually built.
+    fn crossover_group(&mut self, ui: &mut Ui) {
+        let (crossover, kind, transition) = {
+            let live = self.host.read();
+            (
+                live.app.live_options.crossover.clone(),
+                live.option_str("crossover_type")
+                    .unwrap_or_else(|| "lr4".into()),
+                live.option_f64("crossover_fir_transition_ratio")
+                    .unwrap_or(0.5),
+            )
+        };
+        let mut chosen = kind.clone();
+        let mut ratio = transition as f32;
+        let ratio_changed = Group::new(t("renderer.crossoverTitle"))
+            .help("help.renderer.crossoverType")
+            .actions(|ui| {
+                widgets::bounded_combo(ui, 160.0, |ui, w| {
+                    egui::ComboBox::from_id_salt("crossover-type")
+                        .selected_text(t(if kind == "fir" {
+                            "renderer.crossoverType.fir"
+                        } else {
+                            "renderer.crossoverType.lr4"
+                        }))
+                        .width(w)
+                        .truncate()
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut chosen,
+                                "lr4".to_owned(),
+                                t("renderer.crossoverType.lr4"),
+                            );
+                            ui.selectable_value(
+                                &mut chosen,
+                                "fir".to_owned(),
+                                t("renderer.crossoverType.fir"),
+                            );
+                        })
+                });
+            })
+            .show(ui, |ui| {
+                let changed = kind == "fir"
+                    && widgets::value_slider_help(
+                        ui,
+                        t("renderer.crossoverTransitionLabel"),
+                        "help.renderer.crossoverTransition",
+                        &mut ratio,
+                        0.05..=2.0,
+                        0.05,
+                        |v| format!("{v:.2}"),
+                    );
+                widgets::note(ui, &crossover_info(crossover.as_ref()));
+                changed
+            });
+        if chosen != kind {
+            self.set_option("crossover_type", serde_json::json!(chosen));
+        }
+        if ratio_changed {
+            self.set_option(
+                "crossover_fir_transition_ratio",
+                serde_json::json!(ratio as f64),
+            );
+        }
+    }
+
+    /// The spherical/Chebyshev select shared by both distance groups.
     fn metric_row(&mut self, ui: &mut Ui, id: &str, help: &str, current: &str) -> Option<String> {
         let mut chosen = current.to_owned();
         widgets::label_row_help(ui, t("distance.metric"), help, |ui| {
@@ -1185,6 +1242,18 @@ pub(crate) fn backend_list(available: &serde_json::Value) -> Vec<(String, String
     .collect()
 }
 
+/// `backendLabel`: the built-in names, or the raw id.
+fn backend_label(id: &str) -> String {
+    match id {
+        "vbap" => "VBAP",
+        "barycenter" => "Barycenter",
+        "experimental_distance" => "Distance",
+        "hybrid" => "Hybrid",
+        other => other,
+    }
+    .to_owned()
+}
+
 /// A translated parameter label wins over the schema's own.
 fn param_label(key: &str, spec: &serde_json::Value) -> String {
     let translated = t(&format!("backendParam.{key}"));
@@ -1238,17 +1307,17 @@ fn option_label(key: &str, value: &str, option: &serde_json::Value) -> String {
 
 /// `renderVbapStatus`: the engine's recompute state, the error it reported, or
 /// our own silence timeout — a flag in the model, said here in the user's
-/// language.
+/// language. `None` while nothing has happened yet.
 fn vbap_status(
     error: &Option<String>,
     recomputing: Option<bool>,
     timed_out: bool,
-) -> (String, egui::Color32) {
+) -> Option<(String, egui::Color32)> {
     match (error, recomputing, timed_out) {
-        (Some(message), _, _) => (message.clone(), theme::ERROR),
-        (None, _, true) => (t("vbap.status.noAck").to_owned(), theme::ERROR),
-        (None, Some(true), _) => (t("vbap.status.computing").to_owned(), theme::WARN),
-        (None, Some(false), _) => (t("vbap.status.ready").to_owned(), theme::OK),
-        (None, None, _) => (t("vbap.status.idle").to_owned(), theme::TEXT_MUTED),
+        (Some(message), _, _) => Some((message.clone(), theme::ERROR)),
+        (None, _, true) => Some((t("vbap.status.noAck").to_owned(), theme::ERROR)),
+        (None, Some(true), _) => Some((t("vbap.status.computing").to_owned(), theme::WARN)),
+        (None, Some(false), _) => Some((t("vbap.status.ready").to_owned(), theme::OK)),
+        (None, None, _) => None,
     }
 }
