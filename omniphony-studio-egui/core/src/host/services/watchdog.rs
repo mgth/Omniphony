@@ -33,10 +33,6 @@ const FAST_FAIL: Duration = Duration::from_secs(5);
 /// not bad luck, and a spawn loop would bury the reason in the log.
 const COOLDOWN: Duration = Duration::from_secs(5);
 const MAX_ATTEMPTS: u8 = 3;
-/// A packet this recent means the renderer is still talking to us (the status
-/// line's own rule).
-const ALIVE: Duration = Duration::from_secs(7);
-
 #[derive(Default)]
 pub struct Watchdog {
     last_tick: Option<Instant>,
@@ -58,12 +54,12 @@ impl Watchdog {
         let changed = reap_renderer_child(state);
         // Connected: nothing to do until the link could go stale, which is the
         // next moment this could have anything to say.
-        if let Some(quiet_for) = connected_for(state) {
+        if state.stats.connection_state() == crate::osc::ConnectionState::Connected {
             self.disconnected_since = None;
             state.watchdog.lock().unwrap().check_requested_at = None;
             return Tick {
                 changed,
-                next: Some(now + ALIVE.saturating_sub(quiet_for)),
+                next: Some(now + TICK),
             };
         }
         let due = Tick {
@@ -158,14 +154,6 @@ impl Watchdog {
 
 /// How long the renderer has been quiet while still counting as connected, or
 /// `None` when the link is down.
-fn connected_for(state: &SharedState) -> Option<Duration> {
-    use std::sync::atomic::Ordering;
-    if !state.stats.registered.load(Ordering::Relaxed) {
-        return None;
-    }
-    state.stats.since_last_packet().filter(|d| *d < ALIVE)
-}
-
 /// Reap the tracked child whatever the connection state, so a renderer that
 /// died is noticed even while another one answers. Says whether anything was
 /// written to the log.

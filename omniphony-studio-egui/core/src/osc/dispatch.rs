@@ -792,6 +792,11 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
         OscEvent::StateSpeakers { value } => {
             snapshot_if(apply_speakers_domain_state(&mut live.app, &value))
         }
+        OscEvent::StateInputPipe { value } => {
+            let changed = live.app.orender_input_pipe.as_ref() != Some(&value);
+            live.app.orender_input_pipe = Some(value);
+            snapshot_if(changed)
+        }
         OscEvent::StateInput { value } => {
             snapshot_if(apply_input_domain_state(&mut live.app, &value))
         }

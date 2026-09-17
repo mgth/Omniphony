@@ -7,7 +7,6 @@
 //! the place where a new raw send would have to be justified.
 
 #![allow(dead_code)] // one method per host command, ported ahead of its panel
-use std::net::SocketAddr;
 
 use rosc::OscType;
 
@@ -58,10 +57,6 @@ impl Ctl {
         if let Ok(value) = serde_json::to_string(payload) {
             self.send_string(address, &value);
         }
-    }
-
-    pub fn reconnect(&self, target: SocketAddr) {
-        let _ = self.tx.send(Control::Reconnect { target });
     }
 
     pub fn set_metering(&self, enabled: bool) {

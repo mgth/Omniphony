@@ -46,6 +46,15 @@ pub type SharedLive = Arc<Mutex<Live>>;
 /// from the listener thread and must be cheap and non-blocking.
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
+/// Transport state shared by panels and host commands. Only the listener
+/// changes registration; drawing never guesses connectivity from frame timing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionState {
+    Initializing,
+    Connected,
+    Reconnecting,
+}
+
 pub struct OscStats {
     pub packets: AtomicU64,
     pub messages: AtomicU64,
@@ -53,6 +62,8 @@ pub struct OscStats {
     pub ignored: AtomicU64,
     pub heartbeat_acks: AtomicU64,
     pub registered: AtomicBool,
+    /// Advances once per newly acknowledged registration, not per snapshot.
+    pub connection_epoch: AtomicU64,
     pub listen_port: AtomicU64,
     /// Milliseconds since `start` at the last received packet.
     pub last_packet_ms: AtomicU64,
@@ -70,11 +81,22 @@ impl OscStats {
             ignored: AtomicU64::new(0),
             heartbeat_acks: AtomicU64::new(0),
             registered: AtomicBool::new(false),
+            connection_epoch: AtomicU64::new(0),
             listen_port: AtomicU64::new(0),
             last_packet_ms: AtomicU64::new(0),
             start: Instant::now(),
             target: Mutex::new(None),
         })
+    }
+
+    pub fn connection_state(&self) -> ConnectionState {
+        if self.registered.load(Ordering::Relaxed) {
+            ConnectionState::Connected
+        } else if self.target.lock().unwrap().is_some() {
+            ConnectionState::Reconnecting
+        } else {
+            ConnectionState::Initializing
+        }
     }
 
     pub fn since_last_packet(&self) -> Option<Duration> {
@@ -200,7 +222,12 @@ fn listener_loop(
 
     loop {
         match socket.recv_from(&mut buf) {
-            Ok((n, _from)) => {
+            Ok((n, from)) => {
+                // Renderer replies use a separate ephemeral UDP socket. Restrict
+                // the peer IP, not its port; listen-only accepts any sender.
+                if !accepts_sender(register, from) {
+                    continue;
+                }
                 stats.packets.fetch_add(1, Ordering::Relaxed);
                 stats
                     .last_packet_ms
@@ -280,7 +307,11 @@ fn listener_loop(
                     stats.registered.store(false, Ordering::Relaxed);
                     last_ack = Instant::now();
                     last_snapshot_request = Instant::now();
-                    live.lock().unwrap().app.osc_snapshot_ready = false;
+                    {
+                        let mut model = live.lock().unwrap();
+                        reset_connection_model(&mut model);
+                    }
+                    repaint_pending = true;
                     send_register(&socket, target, port, metering);
                 }
                 Control::SetMetering { enabled } => {
@@ -344,6 +375,7 @@ fn listener_loop(
                 {
                     log::warn!("[osc] heartbeat timeout, re-registering");
                     stats.registered.store(false, Ordering::Relaxed);
+                    repaint_pending = true;
                     send_register(&socket, addr, port, metering);
                 }
             }
@@ -363,6 +395,26 @@ fn listener_loop(
             }
         }
     }
+}
+
+fn accepts_sender(target: Option<SocketAddr>, sender: SocketAddr) -> bool {
+    target.is_none_or(|target| target.ip() == sender.ip())
+}
+
+fn reset_connection_model(model: &mut Live) {
+    // Keep local choices and logs. Every measurement, test run and fetched
+    // schema belongs to the old producer, including auto-tune's revert data.
+    model.app.reset_runtime_state();
+    let app = std::mem::replace(
+        &mut model.app,
+        crate::model::app_state::AppState::new(Vec::new()),
+    );
+    let mut fresh = Live::new(app);
+    fresh.overlay_prefs = model.overlay_prefs.take();
+    fresh.interests = std::mem::take(&mut model.interests);
+    fresh.log = std::mem::take(&mut model.log);
+    fresh.snapshot_epoch = model.snapshot_epoch.wrapping_add(1);
+    *model = fresh;
 }
 
 #[derive(Default)]
@@ -394,9 +446,34 @@ fn handle_packet(packet: &OscPacket, live: &mut Live, stats: &OscStats, out: &mu
 
 fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut PacketOutcome) {
     stats.messages.fetch_add(1, Ordering::Relaxed);
+    if m.addr == crate::osc_contract::STATE_SHUTDOWN {
+        stats.registered.store(false, Ordering::Relaxed);
+        live.app.osc_snapshot_ready = false;
+        out.change = out.change.max(Change::Snapshot);
+        return;
+    }
     match is_heartbeat_address(&m.addr) {
         HeartbeatResponse::Ack => {
-            stats.registered.store(true, Ordering::Relaxed);
+            if let Some(epoch) = m.args.iter().find_map(|arg| match arg {
+                OscType::Int(epoch) => Some(*epoch),
+                _ => None,
+            }) {
+                let changed = live
+                    .app
+                    .producer_epoch
+                    .is_some_and(|previous| previous != epoch);
+                if changed {
+                    reset_connection_model(live);
+                    stats.registered.store(false, Ordering::Relaxed);
+                    out.reregister = true;
+                    out.change = out.change.max(Change::Snapshot);
+                }
+                live.app.producer_epoch = Some(epoch);
+            }
+            if !stats.registered.swap(true, Ordering::Relaxed) {
+                stats.connection_epoch.fetch_add(1, Ordering::Relaxed);
+                out.change = out.change.max(Change::Snapshot);
+            }
             stats.heartbeat_acks.fetch_add(1, Ordering::Relaxed);
             out.ack = true;
             return;
@@ -406,6 +483,7 @@ fn handle_message(m: &OscMessage, live: &mut Live, stats: &OscStats, out: &mut P
             // loop logs the transition once and the retries at `debug`.
             out.lost_registration = stats.registered.swap(false, Ordering::Relaxed);
             out.reregister = true;
+            out.change = out.change.max(Change::Snapshot);
             return;
         }
         HeartbeatResponse::None => {}
@@ -600,4 +678,106 @@ pub fn spawn_synthetic(
             }
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    #[test]
+    fn replies_from_a_separate_renderer_socket_are_accepted() {
+        let control = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let replies = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        replies
+            .send_to(b"reply", client.local_addr().unwrap())
+            .unwrap();
+        let (_, sender) = client.recv_from(&mut [0; 64]).unwrap();
+        assert_ne!(control.local_addr().unwrap().port(), sender.port());
+        assert!(accepts_sender(Some(control.local_addr().unwrap()), sender));
+        assert!(!accepts_sender(
+            Some("127.0.0.2:9000".parse().unwrap()),
+            sender
+        ));
+        assert!(accepts_sender(None, sender));
+    }
+
+    #[test]
+    fn registration_epochs_ignore_repeated_acks_and_track_producer_swaps() {
+        let stats = OscStats::new();
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        assert_eq!(stats.connection_state(), ConnectionState::Initializing);
+        *stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+        assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
+        let ack = |epoch| OscMessage {
+            addr: "/omniphony/heartbeat/ack".into(),
+            args: vec![OscType::Int(epoch)],
+        };
+        handle_message(&ack(1), &mut live, &stats, &mut PacketOutcome::default());
+        assert_eq!(stats.connection_state(), ConnectionState::Connected);
+        assert_eq!(stats.connection_epoch.load(Ordering::Relaxed), 1);
+        let mut unchanged = PacketOutcome::default();
+        handle_message(&ack(1), &mut live, &stats, &mut unchanged);
+        assert_eq!(unchanged.change, Change::None);
+        assert_eq!(stats.connection_epoch.load(Ordering::Relaxed), 1);
+        live.app.orender_input_pipe = Some("stale".into());
+        let mut swapped = PacketOutcome::default();
+        handle_message(&ack(2), &mut live, &stats, &mut swapped);
+        assert!(swapped.reregister);
+        assert!(live.app.orender_input_pipe.is_none());
+        assert_eq!(live.app.producer_epoch, Some(2));
+        assert_eq!(stats.connection_epoch.load(Ordering::Relaxed), 2);
+        handle_message(
+            &OscMessage {
+                addr: "/omniphony/heartbeat/unknown".into(),
+                args: vec![],
+            },
+            &mut live,
+            &stats,
+            &mut PacketOutcome::default(),
+        );
+        assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
+    }
+
+    #[test]
+    fn graceful_shutdown_disconnects_immediately_after_a_fresh_ack() {
+        let stats = OscStats::new();
+        *stats.target.lock().unwrap() = Some("127.0.0.1:9000".parse().unwrap());
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        handle_message(
+            &OscMessage {
+                addr: "/omniphony/heartbeat/ack".into(),
+                args: vec![],
+            },
+            &mut live,
+            &stats,
+            &mut PacketOutcome::default(),
+        );
+        let mut outcome = PacketOutcome::default();
+        handle_message(
+            &OscMessage {
+                addr: crate::osc_contract::STATE_SHUTDOWN.into(),
+                args: vec![],
+            },
+            &mut live,
+            &stats,
+            &mut outcome,
+        );
+        assert_eq!(stats.connection_state(), ConnectionState::Reconnecting);
+        assert_eq!(outcome.change, Change::Snapshot);
+    }
+
+    #[test]
+    fn input_pipe_is_applied_and_repaints_only_on_change() {
+        let mut live = Live::new(crate::model::app_state::AppState::new(Vec::new()));
+        let event = || parser::OscEvent::StateInputPipe {
+            value: "input.pipe".into(),
+        };
+        assert_eq!(apply_event(&mut live, event()), Change::Snapshot);
+        assert_eq!(live.app.orender_input_pipe.as_deref(), Some("input.pipe"));
+        assert_eq!(apply_event(&mut live, event()), Change::None);
+    }
 }
