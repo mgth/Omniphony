@@ -48,7 +48,7 @@ The presence of a panel is not proof of behavioural or visual parity.
 
 | User journey | Native implementation | Outstanding acceptance |
 |---|---|---|
-| Edit speaker names, input/output paths, tracker address | Persistent drafts; explicit commit/cancel and target changes (#514) | Real IME and keyboard platform matrix: V04–V07 |
+| Edit speaker names, input/output paths, tracker address | Persistent drafts; explicit commit/cancel and target changes (#514/#542) | Real IME and keyboard platform matrix: V04–V07 |
 | Edit renderer-owned scripts | Ack/error/deadline lifecycle, dirty guard and tagged requests (#515, #526, #527); session-bound async picks (#540/#541) | Live rejected write/reconnect/late pick: L02/L04 |
 | Open Studio and reconnect | Core connection policy and reset, saved target/explicit overrides (#516, #521) | Real endpoints/restart and all-platform exit: L01/V09 |
 | Manage standalone renderer/services | Owned, bounded jobs and asynchronous host/config operations (#519, #535, #537, #538) | Disposable OS manager and authorization paths: L09 |
@@ -119,7 +119,7 @@ toolkit. Guard failures must not be hidden by a failed dependency inspection.
 | Lots | Delivered changes | Evidence / remaining acceptance |
 |---|---|---|
 | 01 | Baseline, regression matrix, isolated validation scripts | This record and the manual scenario IDs; [observations](studio-native-acceptance.md) |
-| 02 | Text drafts (#514) and echo suppression (#511) | Multi-frame egui input/echo/commit/cancel tests; V04–V07 remain manual |
+| 02 | Text drafts (#514/#542) and echo suppression (#511) | Multi-frame egui input/echo/commit/cancel tests; V04–V07 remain manual |
 | 03 | Script lifecycle (#515/#526), wire correlation (#527), async choices (#540/#541) | Host and renderer tests; L04 for actual file/connection failures |
 | 04–06 | Connection/reset (#516), wakeups/overlay (#517), capabilities (#518) | Core/fake-transport tests; L01/L03/L08 |
 | 07 | Host operations (#519), mpv config (#535), runtime config (#538), layout/pickers (#539/#540) | Non-blocking job/poll tests; native OS interaction L05/L08/L09 |

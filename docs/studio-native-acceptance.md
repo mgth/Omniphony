@@ -98,8 +98,9 @@ those historical results remain averages and are not retroactively percentiles.
 
 ## Final combined release smoke
 
-The combined candidate `9100bc10` was built in release mode after all planned
-code changes and the pending-connection file-choice correction. The native
+The combined candidate `9100bc10` was built in release mode after the
+pending-connection file-choice correction, before the final generated backend
+path-draft follow-up (#542). The native
 workspace passed 344 tests; the manual CPU benchmark remained intentionally
 ignored in that run. Version manifests and lockfiles agree on 0.6.0. No tag or
 release was published.
@@ -117,3 +118,12 @@ remains a failed shutdown observation on this software graphics stack, consisten
 with the earlier minimal eframe reproduction; it is not a passing V09 result or
 a demonstrated Studio runtime teardown failure. Real-GPU and supported-platform
 V09 runs remain required by the manual procedure.
+
+After the final backend path-draft correction (#542), combined candidate
+`5465a0d7` passes **348 native workspace tests** (209 core, 119 UI, two
+architecture gates and 18 scene tests); one manual CPU benchmark is ignored.
+The locked, offline Linux release build also succeeds. This later validation
+covers the complete code stack, including the version/schema/accessibility and
+resampler changes. It does not repeat the graphics smoke or change the failed
+software-stack shutdown observation above. Real GPU, Windows and macOS manual
+acceptance remains to be recorded using the separate procedure.
