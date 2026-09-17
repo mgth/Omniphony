@@ -96,10 +96,10 @@ impl SessionToken {
             && live.app.active_profile == self.profile
     }
 
-    /// Keep validation and queuing a local-file action in one connection
+    /// Keep validation and queuing a session-bound action in one connection
     /// critical section. In particular a DNS worker cannot enqueue Reconnect
     /// between a successful validation and the caller's control message.
-    pub fn with_local_target<R>(&self, state: &SharedState, work: impl FnOnce() -> R) -> Option<R> {
+    pub fn with_current<R>(&self, state: &SharedState, work: impl FnOnce() -> R) -> Option<R> {
         let request = state.connection_request.lock().unwrap();
         {
             let live = state.inner.lock().unwrap();
@@ -118,16 +118,20 @@ impl SessionToken {
                 return None;
             }
         }
-        if !state
-            .stats
-            .target
-            .lock()
-            .unwrap()
-            .is_some_and(|target| target.ip().is_loopback())
-        {
-            return None;
-        }
         Some(work())
+    }
+
+    pub fn with_local_target<R>(&self, state: &SharedState, work: impl FnOnce() -> R) -> Option<R> {
+        self.with_current(state, || {
+            let local = state
+                .stats
+                .target
+                .lock()
+                .unwrap()
+                .is_some_and(|target| target.ip().is_loopback());
+            if local { Some(work()) } else { None }
+        })
+        .flatten()
     }
 
     /// Runs on the application thread after the worker returns. Filesystem
@@ -459,6 +463,31 @@ mod tests {
         assert_eq!(
             token.with_local_target(&state, || panic!("local path must not be sent remotely")),
             None::<()>
+        );
+    }
+    #[test]
+    fn changed_profile_or_pending_connection_refuses_a_typed_path_at_commit() {
+        let state = super::super::tests::state();
+        state.inner.lock().unwrap().app.active_profile = Some("A".into());
+        let token = SessionToken::new(&state);
+        assert_eq!(
+            token.with_current(&state, || "remote paths may be typed"),
+            Some("remote paths may be typed")
+        );
+        state.inner.lock().unwrap().app.active_profile = Some("B".into());
+        assert!(
+            token
+                .with_current(&state, || panic!("A draft must not modify B"))
+                .is_none()
+        );
+        let token = SessionToken::new(&state);
+        super::super::app::begin_connection(&state);
+        assert!(
+            token
+                .with_current(&state, || panic!(
+                    "connection transition must not accept an old draft"
+                ))
+                .is_none()
         );
     }
     #[test]

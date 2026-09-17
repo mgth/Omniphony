@@ -312,3 +312,17 @@ External edits to osc_config.json are loaded on the next Studio start. This is
 one writer per host instance, not cross-process locking: simultaneous instances
 still use last-writer-wins persistence. Local layout content import/export and
 native picker filesystem checks remain separate non-blocking-I/O work.
+
+### Generated backend file-path drafts
+
+Generated backend path/file controls use the same persistent draft widget as
+speaker/path/tracker fields. Independent fields preserve typing through frames
+and external echoes, commit once on Enter/blur and cancel on Escape. Drafts are
+keyed by backend and parameter, reset on profile or renderer-session changes, and retained
+only for fields visible in the current/previous frame. Browse/Edit structural
+clicks discard the pending path draft before any blur can send it. Headless
+multi-frame tests cover Unicode paste, multiple fields, echo/commit, changed
+backend/session and bounded storage. The core session token also rejects drafts
+during connection transitions and revalidates immediately around command
+queuing, preventing a path typed in profile A from being applied to profile B.
+The targeted workspace suite passes 339 tests; one manual benchmark is ignored.
