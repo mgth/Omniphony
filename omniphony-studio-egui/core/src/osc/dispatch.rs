@@ -1148,8 +1148,16 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             key,
             name,
             content,
+            request_id,
         } => {
-            crate::host::services::backend_files::finish(live, &backend, &key);
+            if !crate::host::services::backend_files::finish(
+                live,
+                &backend,
+                &key,
+                request_id.as_deref(),
+            ) {
+                return Change::None;
+            }
             live.backend_file_content = Some(BackendFile {
                 backend,
                 key,
@@ -1162,8 +1170,16 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             backend,
             key,
             message,
+            request_id,
         } => {
-            crate::host::services::backend_files::finish(live, &backend, &key);
+            if !crate::host::services::backend_files::finish(
+                live,
+                &backend,
+                &key,
+                request_id.as_deref(),
+            ) {
+                return Change::None;
+            }
             live.push_log("error", "backend", format!("{backend}/{key}: {message}"));
             live.backend_file_error = Some(BackendFileError {
                 backend,

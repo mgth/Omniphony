@@ -439,13 +439,13 @@ pub fn control_backend_param(
 /// The renderer replies on `/omniphony/state/backend/file/content` (or `.../error`),
 /// surfaced to the frontend by the OSC listener as a `backend-file-content` event.
 pub fn backend_file_get(state: &SharedState, backend: String, key: String, name: Option<String>) {
-    crate::host::services::backend_files::begin(state, &backend, &key);
-    let mut args = vec![rosc::OscType::String(backend), rosc::OscType::String(key)];
-    if let Some(name) = name {
-        // An explicit name previews any managed-store file; omitted, the renderer
-        // reads the param's current handle.
-        args.push(rosc::OscType::String(name));
-    }
+    let request_id = crate::host::services::backend_files::begin(state, &backend, &key);
+    let args = vec![
+        rosc::OscType::String(backend),
+        rosc::OscType::String(key),
+        rosc::OscType::String(name.unwrap_or_default()),
+        rosc::OscType::String(request_id),
+    ];
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
@@ -477,7 +477,7 @@ pub fn backend_file_put(
     name: String,
     content: String,
 ) {
-    crate::host::services::backend_files::begin(state, &backend, &key);
+    let request_id = crate::host::services::backend_files::begin(state, &backend, &key);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {
@@ -487,6 +487,7 @@ pub fn backend_file_put(
                 rosc::OscType::String(key),
                 rosc::OscType::String(name),
                 rosc::OscType::String(content),
+                rosc::OscType::String(request_id),
             ],
         },
     );

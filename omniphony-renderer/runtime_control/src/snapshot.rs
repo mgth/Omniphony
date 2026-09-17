@@ -340,6 +340,7 @@ fn build_renderer_capabilities_json(has_audio: bool, has_input: bool) -> String 
         "realtime": ["master_gain", "speaker_gain"],
         "spatial": true,
         "metering": true,
+        "fileRequestIds": true,
         "controlConfig": control_config
     })
     .to_string()
@@ -358,6 +359,7 @@ mod capability_tests {
         let v = parse(&build_renderer_capabilities_json(true, true));
         assert_eq!(v["variant"], "standalone");
         assert_eq!(v["host"], "cli");
+        assert_eq!(v["fileRequestIds"], true);
         let domains = v["domains"].as_array().unwrap();
         assert!(domains.iter().any(|d| d == "audio"));
         assert!(domains.iter().any(|d| d == "input"));
@@ -372,6 +374,7 @@ mod capability_tests {
         let v = parse(&build_renderer_capabilities_json(false, false));
         assert_eq!(v["variant"], "embedded");
         assert_eq!(v["host"], "mpv");
+        assert_eq!(v["fileRequestIds"], true);
         let domains = v["domains"].as_array().unwrap();
         assert!(!domains.iter().any(|d| d == "audio"));
         assert!(!domains.iter().any(|d| d == "input"));

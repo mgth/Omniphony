@@ -887,6 +887,7 @@ mod connection_tests {
                         key: "file".into(),
                         name: "file.lua".into(),
                         content: "saved".into(),
+                        request_id: None,
                     },
                 );
             }
