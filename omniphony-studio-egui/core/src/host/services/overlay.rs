@@ -10,6 +10,7 @@
 //! and a fresh connection. The renderer comes up on its own persisted values,
 //! so the whole set is pushed again whenever it has just told us its state.
 
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use super::Tick;
@@ -38,6 +39,8 @@ pub fn set_overlay_prefs(state: &SharedState, prefs: OverlayPrefs) {
     let mut live = state.inner.lock().unwrap();
     if live.overlay_prefs.as_ref() != Some(&prefs) {
         live.overlay_prefs = Some(prefs);
+        drop(live);
+        (state.waker)();
     }
 }
 
@@ -49,36 +52,58 @@ pub struct MpvOverlay {
 
 impl MpvOverlay {
     pub fn tick(&mut self, state: &SharedState, _now: Instant) -> Tick {
-        let (wanted, epoch) = {
-            let live = state.inner.lock().unwrap();
-            (live.overlay_prefs.clone(), live.snapshot_epoch)
-        };
+        if state.stats.connection_state() != crate::osc::ConnectionState::Connected {
+            return Tick::idle();
+        }
+        let epoch = state.stats.connection_epoch.load(Ordering::Relaxed);
+        let wanted = state.inner.lock().unwrap().overlay_prefs.clone();
         let Some(wanted) = wanted else {
             return Tick::idle();
         };
-        // A new snapshot epoch is a renderer that has just told us its whole
-        // state — which is exactly when its overlay is back on its own
-        // defaults.
-        let reconnected = self.pushed_epoch != Some(epoch);
-        if !reconnected && self.pushed.as_ref() == Some(&wanted) {
-            return Tick::idle();
+        let previous = if self.pushed_epoch == Some(epoch) {
+            self.pushed.as_ref()
+        } else {
+            None
+        };
+        if previous.is_none_or(|old| old.objects != wanted.objects) {
+            mpv_overlay::mpv_overlay_set_objects(state, wanted.objects);
         }
-        mpv_overlay::mpv_overlay_set_objects(state, wanted.objects);
-        mpv_overlay::mpv_overlay_set_labels(state, wanted.labels);
-        mpv_overlay::mpv_overlay_set_heatmap_enabled(state, wanted.heatmap);
-        mpv_overlay::mpv_overlay_set_heatmap_bands(state, wanted.bands);
-        mpv_overlay::mpv_overlay_set_heatmap_colormap(state, wanted.colormap);
-        // The custom stops go with the colormap that uses them: pushing the
-        // colormap without them would show the overlay's own gradient under
-        // Studio's choice of "Custom".
-        mpv_overlay::mpv_overlay_set_heatmap_custom_stops(state, wanted.stops.clone());
-        mpv_overlay::mpv_overlay_set_trail_prefs(
-            state,
-            wanted.trails,
-            wanted.trail_ttl_ms,
-            if wanted.trail_line { "line" } else { "diffuse" }.to_owned(),
-            wanted.teleport_threshold,
-        );
+        if previous.is_none_or(|old| old.labels != wanted.labels) {
+            mpv_overlay::mpv_overlay_set_labels(state, wanted.labels);
+        }
+        if previous.is_none_or(|old| old.heatmap != wanted.heatmap) {
+            mpv_overlay::mpv_overlay_set_heatmap_enabled(state, wanted.heatmap);
+        }
+        if previous.is_none_or(|old| old.bands != wanted.bands) {
+            mpv_overlay::mpv_overlay_set_heatmap_bands(state, wanted.bands);
+        }
+        if previous.is_none_or(|old| old.colormap != wanted.colormap) {
+            mpv_overlay::mpv_overlay_set_heatmap_colormap(state, wanted.colormap);
+        }
+        if previous.is_none_or(|old| old.stops != wanted.stops) {
+            mpv_overlay::mpv_overlay_set_heatmap_custom_stops(state, wanted.stops.clone());
+        }
+        if previous.is_none_or(|old| {
+            (
+                old.trails,
+                old.trail_ttl_ms,
+                old.trail_line,
+                old.teleport_threshold,
+            ) != (
+                wanted.trails,
+                wanted.trail_ttl_ms,
+                wanted.trail_line,
+                wanted.teleport_threshold,
+            )
+        }) {
+            mpv_overlay::mpv_overlay_set_trail_prefs(
+                state,
+                wanted.trails,
+                wanted.trail_ttl_ms,
+                if wanted.trail_line { "line" } else { "diffuse" }.to_owned(),
+                wanted.teleport_threshold,
+            );
+        }
         self.pushed = Some(wanted);
         self.pushed_epoch = Some(epoch);
         Tick::idle()
@@ -90,22 +115,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn everything_is_pushed_again_on_a_fresh_connection() {
-        let state = crate::host::commands::tests::state();
+    fn unrelated_snapshots_send_nothing_and_reconnection_sends_one_full_set() {
+        let mut state = crate::host::commands::tests::state();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.osc_tx = tx;
         let mut service = MpvOverlay::default();
         set_overlay_prefs(&state, OverlayPrefs::default());
         service.tick(&state, Instant::now());
-        let pushed = service.pushed.clone();
-        assert!(pushed.is_some());
-
-        // Nothing changed: nothing to do.
+        assert_eq!(rx.try_iter().count(), 0, "offline changes stay pending");
+        state.stats.registered.store(true, Ordering::Relaxed);
         service.tick(&state, Instant::now());
-        assert_eq!(service.pushed_epoch, Some(0));
-
-        // A renderer that has just restated its whole state gets the set back,
-        // because its overlay came up on its own values.
-        state.inner.lock().unwrap().snapshot_epoch = 1;
+        assert_eq!(rx.try_iter().count(), 7);
+        state.inner.lock().unwrap().snapshot_epoch += 1;
         service.tick(&state, Instant::now());
-        assert_eq!(service.pushed_epoch, Some(1));
+        assert_eq!(rx.try_iter().count(), 0);
+        set_overlay_prefs(
+            &state,
+            OverlayPrefs {
+                labels: true,
+                ..Default::default()
+            },
+        );
+        service.tick(&state, Instant::now());
+        let sent: Vec<_> = rx.try_iter().collect();
+        assert_eq!(sent.len(), 1);
+        assert!(
+            matches!(&sent[0], crate::osc::Control::Send { address, .. } if address == crate::osc_contract::CONTROL_OVERLAY_LABELS)
+        );
+        state.stats.connection_epoch.fetch_add(1, Ordering::Relaxed);
+        service.tick(&state, Instant::now());
+        assert_eq!(rx.try_iter().count(), 7);
+        service.tick(&state, Instant::now());
+        assert_eq!(rx.try_iter().count(), 0);
     }
 }
