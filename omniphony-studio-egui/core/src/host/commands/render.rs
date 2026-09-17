@@ -435,10 +435,20 @@ pub fn control_backend_param(
     );
 }
 
+// A buffered reply predating this action must never satisfy the next request.
+// The legacy wire protocol has no request id; late same-parameter packets still
+// require protocol correlation, tracked in studio-native-completion.md.
+fn clear_backend_file_reply(state: &SharedState) {
+    let mut live = state.inner.lock().unwrap();
+    live.backend_file_content = None;
+    live.backend_file_error = None;
+}
+
 /// Request the current content of an editable backend file from the renderer.
 /// The renderer replies on `/omniphony/state/backend/file/content` (or `.../error`),
 /// surfaced to the frontend by the OSC listener as a `backend-file-content` event.
 pub fn backend_file_get(state: &SharedState, backend: String, key: String, name: Option<String>) {
+    clear_backend_file_reply(state);
     let mut args = vec![rosc::OscType::String(backend), rosc::OscType::String(key)];
     if let Some(name) = name {
         // An explicit name previews any managed-store file; omitted, the renderer
@@ -476,6 +486,7 @@ pub fn backend_file_put(
     name: String,
     content: String,
 ) {
+    clear_backend_file_reply(state);
     send_control(
         &state.osc_tx,
         OscControlMsg::SendArgs {

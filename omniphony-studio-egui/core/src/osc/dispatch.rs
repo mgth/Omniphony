@@ -150,6 +150,7 @@ pub struct Live {
     /// Script files declared by each backend, and the last one fetched.
     pub backend_files: HashMap<String, Vec<String>>,
     pub backend_file_content: Option<BackendFile>,
+    pub backend_file_error: Option<BackendFileError>,
 }
 
 /// One rendered log line. `src/log.js` keeps the newest 120 and prefixes the
@@ -214,6 +215,14 @@ pub struct BackendFile {
     pub key: String,
     pub name: String,
     pub content: String,
+}
+
+/// Failure returned by the renderer for an editable backend file.
+#[derive(Clone, Debug)]
+pub struct BackendFileError {
+    pub backend: String,
+    pub key: String,
+    pub message: String,
 }
 
 /// The host's `LATENCY_RAW_WINDOW_MS`.
@@ -410,6 +419,7 @@ impl Live {
             object_test_clip: None,
             backend_files: HashMap::new(),
             backend_file_content: None,
+            backend_file_error: None,
             options_schema: None,
             object_generators_schema: None,
             phantom_schema: None,
@@ -1125,6 +1135,11 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             message,
         } => {
             live.push_log("error", "backend", format!("{backend}/{key}: {message}"));
+            live.backend_file_error = Some(BackendFileError {
+                backend,
+                key,
+                message,
+            });
             Change::Snapshot
         }
 

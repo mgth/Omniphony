@@ -1,5 +1,9 @@
 {
   "common.valueRequired": "A value is required.",
+  "backend.file.editor.waitCancelled": "Waiting cancelled; your edits were kept. The renderer may still finish the request.",
+  "backend.file.editor.cancelWait": "Cancel wait",
+  "backend.file.editor.editedDuringLoad": "The buffer changed while loading; your edits were kept. Reload to replace them.",
+  "backend.file.editor.saved": "Saved.",
   "app.title": "Omniphony Studio",
   "app.subtitle": "Spatial Control",
   "updates.checkLabel": "Check for updates on startup",
