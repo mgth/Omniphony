@@ -460,12 +460,15 @@ impl StudioSpike {
                     if edit {
                         self.open_script_editor(backend, key, language, extensions.clone());
                     }
-                    if browse
-                        && let Some(path) =
-                            crate::ui::file_dialogs::pick_backend_file_path(extensions)
-                    {
-                        text = path;
-                        changed = true;
+                    if browse {
+                        self.pick_files(
+                            ui.ctx(),
+                            crate::ui::file_dialogs::Purpose::Backend {
+                                backend: backend.to_owned(),
+                                key: key.to_owned(),
+                            },
+                            &extensions,
+                        );
                     }
                     changed.then(|| serde_json::json!(text.trim()))
                 }
