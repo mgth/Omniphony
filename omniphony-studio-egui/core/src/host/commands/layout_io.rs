@@ -56,6 +56,7 @@ pub fn import_layout_from_path(
 /// must not replace a different renderer session or profile.
 #[derive(Debug)]
 pub struct SessionToken {
+    eligible: bool,
     request: u64,
     epoch: u64,
     context_generation: u64,
@@ -66,6 +67,8 @@ impl SessionToken {
         let request = *state.connection_request.lock().unwrap();
         let live = state.inner.lock().unwrap();
         Self {
+            eligible: live.pending_connection_request.is_none()
+                && live.queued_connection_request.is_none(),
             request,
             epoch: state
                 .stats
@@ -81,7 +84,10 @@ impl SessionToken {
     pub fn is_current(&self, state: &SharedState) -> bool {
         let request = state.connection_request.lock().unwrap();
         let live = state.inner.lock().unwrap();
-        *request == self.request
+        self.eligible
+            && live.pending_connection_request.is_none()
+            && live.queued_connection_request.is_none()
+            && *request == self.request
             && state
                 .stats
                 .connection_epoch
@@ -98,7 +104,10 @@ impl SessionToken {
         let request = state.connection_request.lock().unwrap();
         {
             let live = state.inner.lock().unwrap();
-            if *request != self.request
+            if !self.eligible
+                || live.pending_connection_request.is_some()
+                || live.queued_connection_request.is_some()
+                || *request != self.request
                 || state
                     .stats
                     .connection_epoch
@@ -127,7 +136,10 @@ impl SessionToken {
     pub fn apply(self, state: &SharedState, mut layout: Layout) -> Result<(), String> {
         let request = state.connection_request.lock().unwrap();
         let mut live = state.inner.lock().unwrap();
-        if *request != self.request
+        if !self.eligible
+            || live.pending_connection_request.is_some()
+            || live.queued_connection_request.is_some()
+            || *request != self.request
             || state
                 .stats
                 .connection_epoch

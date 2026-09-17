@@ -286,3 +286,14 @@ Write failures remain visible until reopening the section and are logged by
 the core. Tests use controlled channels and never modify the user's mpv file.
 This does not yet move the other layout/configuration file operations off the
 UI thread or provide cancellation of all generic background jobs (lots07–08).
+
+### File choices during connection transitions
+
+Native file-choice tokens also cover the interval between reserving a DNS intent
+and draining its reconnect command. The model tracks pending resolution and
+queued transport transition separately, and reconnect commands carry the local
+intent identifier (not a wire-protocol change). Tokens created in either phase
+remain ineligible even if resolution later fails. Only a matching transport
+reset clears its queued transition; an old producer restart, a superseded DNS
+failure or an older queued command cannot release a newer transition. Tests
+exercise all these interleavings without a network lookup or live renderer.

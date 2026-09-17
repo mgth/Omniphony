@@ -59,6 +59,7 @@ pub enum OscControlMsg {
         args: Vec<OscType>,
     },
     Reconnect {
+        request: u64,
         host: String,
         rx_port: u16,
         listen_port: u16,
@@ -222,13 +223,18 @@ pub fn send_control(tx: &ControlTx, msg: OscControlMsg) {
             args: vec![OscType::Float(a), OscType::Float(b), OscType::Float(c)],
         },
         OscControlMsg::SendArgs { address, args } => Control::Send { address, args },
-        OscControlMsg::Reconnect { host, rx_port, .. } => {
+        OscControlMsg::Reconnect {
+            host,
+            rx_port,
+            request,
+            ..
+        } => {
             match host
                 .trim_matches(['[', ']'])
                 .parse::<std::net::IpAddr>()
                 .map(|ip| std::net::SocketAddr::new(ip, rx_port))
             {
-                Ok(target) => Control::Reconnect { target },
+                Ok(target) => Control::Reconnect { target, request },
                 Err(e) => {
                     log::warn!("[control] reconnect target {host}:{rx_port}: {e}");
                     return;

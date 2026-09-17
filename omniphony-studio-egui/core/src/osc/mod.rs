@@ -131,6 +131,7 @@ pub enum Control {
     /// Point the client at another renderer: register there, request the
     /// snapshot, restate the metering choice.
     Reconnect {
+        request: u64,
         target: SocketAddr,
     },
     /// Toggle the meter streams (sent now and again after every register).
@@ -303,7 +304,7 @@ fn listener_loop(
         // the same: no socket target, no send).
         while let Ok(msg) = control.try_recv() {
             match msg {
-                Control::Reconnect { target } => {
+                Control::Reconnect { target, request } => {
                     register = Some(target);
                     *stats.target.lock().unwrap() = register;
                     stats.registered.store(false, Ordering::Relaxed);
@@ -311,7 +312,7 @@ fn listener_loop(
                     last_snapshot_request = Instant::now();
                     {
                         let mut model = live.lock().unwrap();
-                        reset_connection_model(&mut model);
+                        apply_connection_reset(&mut model, request);
                     }
                     repaint_pending = true;
                     send_register(&socket, target, port, metering);
@@ -407,6 +408,13 @@ fn accepts_sender(target: Option<SocketAddr>, sender: SocketAddr) -> bool {
     target.is_none_or(|target| target.ip() == sender.ip())
 }
 
+fn apply_connection_reset(model: &mut Live, request: u64) {
+    reset_connection_model(model);
+    if model.queued_connection_request == Some(request) {
+        model.queued_connection_request = None;
+    }
+}
+
 fn reset_connection_model(model: &mut Live) {
     // Keep local choices and logs. Every measurement, test run and fetched
     // schema belongs to the old producer, including auto-tune's revert data.
@@ -440,6 +448,8 @@ fn reset_connection_model(model: &mut Live) {
     fresh.log = std::mem::take(&mut model.log);
     fresh.snapshot_epoch = model.snapshot_epoch.wrapping_add(1);
     fresh.layout_context_generation = model.layout_context_generation.wrapping_add(1);
+    fresh.pending_connection_request = model.pending_connection_request;
+    fresh.queued_connection_request = model.queued_connection_request;
     *model = fresh;
 }
 
@@ -846,6 +856,46 @@ mod connection_tests {
         assert_eq!(live.app.orender_input_pipe.as_deref(), Some("input.pipe"));
         assert_eq!(apply_event(&mut live, event()), Change::None);
     }
+    #[test]
+    fn native_file_choices_wait_for_the_matching_transport_transition() {
+        use crate::host::commands::{app, layout_io::SessionToken};
+        let state = crate::host::commands::tests::state();
+        app::connect_to(&state, "127.0.0.1", 9000).unwrap();
+        let request = state.read().queued_connection_request.unwrap();
+        let queued_choice = SessionToken::new(&state);
+        assert!(!queued_choice.is_current(&state));
+        apply_connection_reset(&mut state.inner.lock().unwrap(), request);
+        assert!(!queued_choice.is_current(&state));
+        assert!(SessionToken::new(&state).is_current(&state));
+
+        app::connect_to(&state, "127.0.0.2", 9000).unwrap();
+        let queued = state.read().queued_connection_request.unwrap();
+        let dns = app::begin_connection(&state);
+        // A producer restart on the old endpoint cannot finish either phase.
+        reset_connection_model(&mut state.inner.lock().unwrap());
+        assert_eq!(state.read().pending_connection_request, Some(dns));
+        assert_eq!(state.read().queued_connection_request, Some(queued));
+        apply_connection_reset(&mut state.inner.lock().unwrap(), queued);
+        assert_eq!(state.read().queued_connection_request, None);
+        assert_eq!(state.read().pending_connection_request, Some(dns));
+        assert!(!SessionToken::new(&state).is_current(&state));
+    }
+
+    #[test]
+    fn draining_an_old_reconnect_does_not_release_a_newer_queued_transition() {
+        use crate::host::commands::{app, layout_io::SessionToken};
+        let state = crate::host::commands::tests::state();
+        app::connect_to(&state, "127.0.0.1", 9000).unwrap();
+        let first = state.read().queued_connection_request.unwrap();
+        app::connect_to(&state, "127.0.0.2", 9000).unwrap();
+        let last = state.read().queued_connection_request.unwrap();
+        apply_connection_reset(&mut state.inner.lock().unwrap(), first);
+        assert_eq!(state.read().queued_connection_request, Some(last));
+        assert!(!SessionToken::new(&state).is_current(&state));
+        apply_connection_reset(&mut state.inner.lock().unwrap(), last);
+        assert!(SessionToken::new(&state).is_current(&state));
+    }
+
     #[test]
     fn transport_reset_invalidates_native_file_choices_before_new_ack() {
         let state = crate::host::commands::tests::state();
