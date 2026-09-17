@@ -81,6 +81,7 @@ pub struct StudioSpike {
     /// Named-pipe path remembered while the file output is switched off.
     pub(crate) audio_pipe_path: String,
     pub(crate) input_edits: crate::panels::audio_input::InputEdits,
+    pub(crate) backend_path_edits: crate::panels::renderer::BackendPathDrafts,
     pub(crate) output_path_edit: crate::ui::text_draft::TextDraft,
     pub(crate) speaker_name_edit: crate::ui::text_draft::TextDraft,
     pub(crate) head_address_edit: crate::ui::text_draft::TextDraft,
@@ -430,6 +431,7 @@ impl StudioSpike {
             renderer_tab: Default::default(),
             audio_pipe_path: String::new(),
             input_edits: Default::default(),
+            backend_path_edits: Default::default(),
             output_path_edit: Default::default(),
             speaker_name_edit: Default::default(),
             head_address_edit: Default::default(),

@@ -18,6 +18,71 @@ use crate::ui::{theme, widgets};
 
 use super::renderer_perf;
 
+/// Drafts for the few file/path parameters in a generated backend form. Keys
+/// include backend identity; storage is bounded to fields visible this frame
+/// or the preceding frame, and a new renderer session drops every old draft.
+#[derive(Default)]
+pub struct BackendPathDrafts {
+    entries: Vec<PathDraft>,
+    frame: Option<u64>,
+    epoch: Option<u64>,
+    context: Option<crate::host::commands::layout_io::SessionToken>,
+}
+struct PathDraft {
+    id: egui::Id,
+    seen: u64,
+    draft: crate::ui::text_draft::TextDraft,
+}
+impl BackendPathDrafts {
+    fn discard_context(&mut self) {
+        self.entries.clear();
+    }
+    fn sync_context(&mut self, host: &SharedState) -> bool {
+        if self
+            .context
+            .as_ref()
+            .is_none_or(|context| !context.is_current(host))
+        {
+            self.discard_context();
+            self.context = Some(crate::host::commands::layout_io::SessionToken::new(host));
+        }
+        self.context
+            .as_ref()
+            .is_some_and(|context| context.is_current(host))
+    }
+
+    fn field(
+        &mut self,
+        id: egui::Id,
+        epoch: u64,
+        frame: u64,
+    ) -> &mut crate::ui::text_draft::TextDraft {
+        if self.epoch != Some(epoch) {
+            self.entries.clear();
+            self.epoch = Some(epoch);
+        }
+        if self.frame != Some(frame) {
+            self.entries
+                .retain(|entry| entry.seen >= frame.saturating_sub(1));
+            self.frame = Some(frame);
+        }
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.id == id)
+            .unwrap_or_else(|| {
+                self.entries.push(PathDraft {
+                    id,
+                    seen: frame,
+                    draft: Default::default(),
+                });
+                self.entries.len() - 1
+            });
+        self.entries[index].seen = frame;
+        &mut self.entries[index].draft
+    }
+}
+
 /// Which half of the panel is showing (`body.studio-tab-binaural`). UI state,
 /// not persisted, Renderer first.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -339,6 +404,7 @@ impl StudioSpike {
         else {
             return;
         };
+        let context_current = self.backend_path_edits.sync_context(&self.host);
         let stored = values.get(backend);
         for spec in params {
             let Some(key) = spec.get("key").and_then(|v| v.as_str()) else {
@@ -410,8 +476,8 @@ impl StudioSpike {
                     (chosen != current).then(|| serde_json::json!(chosen))
                 }
                 "path" | "file" => {
-                    let mut text = value.as_str().unwrap_or("").to_owned();
-                    let mut changed = false;
+                    let source = value.as_str().unwrap_or("");
+                    let mut committed = None;
                     let extensions: Vec<String> = kind
                         .and_then(|k| k.get("extensions"))
                         .and_then(|v| v.as_array())
@@ -436,26 +502,40 @@ impl StudioSpike {
                     let local = crate::host::commands::app::renderer_is_local(&self.host);
                     let mut browse = false;
                     let mut edit = false;
-                    widgets::label_row_help(ui, &label, help, |ui| {
-                        if editable {
-                            edit = ui.button(t("backend.file.edit")).clicked();
-                        }
-                        if local {
-                            browse = ui.button(t("backend.file.browse")).clicked();
-                        }
-                        changed = ui
-                            .add(
-                                egui::TextEdit::singleline(&mut text)
-                                    .desired_width(120.0)
-                                    .hint_text(match extensions.first() {
-                                        Some(ext) => format!("name.{ext}"),
-                                        None if kind_type == "path" => {
-                                            "/path/to/backend.lua".to_owned()
-                                        }
-                                        None => "name.ext".to_owned(),
-                                    }),
-                            )
-                            .lost_focus();
+                    let epoch = self
+                        .osc_stats
+                        .connection_epoch
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    ui.add_enabled_ui(context_current, |ui| {
+                        widgets::label_row_help(ui, &label, help, |ui| {
+                            if editable {
+                                edit = ui.button(t("backend.file.edit")).clicked();
+                            }
+                            if local {
+                                browse = ui.button(t("backend.file.browse")).clicked();
+                            }
+                            let draft = self.backend_path_edits.field(
+                                ui.make_persistent_id(("backend-file", backend, key, epoch)),
+                                epoch,
+                                ui.ctx().cumulative_frame_nr(),
+                            );
+                            if edit || browse {
+                                draft.discard();
+                            }
+                            let hint = match extensions.first() {
+                                Some(ext) => format!("name.{ext}"),
+                                None if kind_type == "path" => "/path/to/backend.lua".to_owned(),
+                                None => "name.ext".to_owned(),
+                            };
+                            committed = draft.show(
+                                ui,
+                                ("backend-file", backend, key, epoch),
+                                source,
+                                &hint,
+                                120.0,
+                                true,
+                            );
+                        });
                     });
                     if edit {
                         self.open_script_editor(backend, key, language, extensions.clone());
@@ -470,7 +550,7 @@ impl StudioSpike {
                             &extensions,
                         );
                     }
-                    changed.then(|| serde_json::json!(text.trim()))
+                    committed.map(serde_json::Value::String)
                 }
                 _ => {
                     let is_int = kind_type == "int";
@@ -515,13 +595,21 @@ impl StudioSpike {
                 }
             };
             if let Some(value) = sent {
-                self.send_backend_param(backend, key, value);
+                if matches!(kind_type, "path" | "file") {
+                    if let Some(context) = &self.backend_path_edits.context {
+                        context.with_current(&self.host, || {
+                            self.send_backend_param(backend, key, value)
+                        });
+                    }
+                } else {
+                    self.send_backend_param(backend, key, value);
+                }
             }
         }
     }
 
     /// `sendBackendParam`: no optimistic write, the renderer echoes the value.
-    fn send_backend_param(&mut self, backend: &str, key: &str, value: serde_json::Value) {
+    fn send_backend_param(&self, backend: &str, key: &str, value: serde_json::Value) {
         render::control_backend_param(&self.host, key.to_owned(), value, Some(backend.to_owned()));
     }
 
@@ -1322,5 +1410,168 @@ fn vbap_status(
         (None, Some(true), _) => Some((t("vbap.status.computing").to_owned(), theme::WARN)),
         (None, Some(false), _) => Some((t("vbap.status.ready").to_owned(), theme::OK)),
         (None, None, _) => None,
+    }
+}
+
+#[cfg(test)]
+mod path_draft_tests {
+    use super::*;
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+    fn frame(
+        ctx: &egui::Context,
+        drafts: &mut BackendPathDrafts,
+        backend: &str,
+        epoch: u64,
+        source: &str,
+        focus: bool,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, String)> {
+        let mut sent = Vec::new();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                for name in ["first", "second"] {
+                    let id = ("backend-file", backend, name, epoch);
+                    if focus && name == "first" {
+                        ui.memory_mut(|memory| memory.request_focus(ui.make_persistent_id(id)));
+                    }
+                    if let Some(value) = drafts
+                        .field(ui.make_persistent_id(id), epoch, ctx.cumulative_frame_nr())
+                        .show(ui, id, source, "", 160.0, true)
+                    {
+                        sent.push((name.to_owned(), value));
+                    }
+                }
+            },
+        );
+        output.textures_delta.clear();
+        sent
+    }
+    #[test]
+    fn two_file_fields_keep_typing_across_echoes_and_only_commit_the_edited_field() {
+        let ctx = egui::Context::default();
+        let mut drafts = BackendPathDrafts::default();
+        frame(&ctx, &mut drafts, "backend", 0, "old.lua", true, vec![]);
+        assert!(
+            frame(
+                &ctx,
+                &mut drafts,
+                "backend",
+                0,
+                "old.lua",
+                false,
+                vec![egui::Event::Paste("中é".into())]
+            )
+            .is_empty()
+        );
+        assert!(frame(&ctx, &mut drafts, "backend", 0, "server.lua", false, vec![]).is_empty());
+        let sent = frame(
+            &ctx,
+            &mut drafts,
+            "backend",
+            0,
+            "server.lua",
+            false,
+            vec![key(egui::Key::Enter)],
+        );
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "first");
+        assert!(sent[0].1.contains("中é"));
+        assert!(frame(&ctx, &mut drafts, "backend", 0, &sent[0].1, false, vec![]).is_empty());
+    }
+    #[test]
+    fn invalidated_profile_context_discards_typing_even_with_the_same_field_and_epoch() {
+        let ctx = egui::Context::default();
+        let mut drafts = BackendPathDrafts::default();
+        frame(
+            &ctx,
+            &mut drafts,
+            "backend",
+            0,
+            "profile-a.lua",
+            true,
+            vec![],
+        );
+        frame(
+            &ctx,
+            &mut drafts,
+            "backend",
+            0,
+            "profile-a.lua",
+            false,
+            vec![egui::Event::Paste("old draft".into())],
+        );
+        // The adapter invalidates on a changed core SessionToken. The renderer
+        // may keep exactly the same backend/key/transport epoch in profile B.
+        drafts.discard_context();
+        assert!(
+            frame(
+                &ctx,
+                &mut drafts,
+                "backend",
+                0,
+                "profile-b.lua",
+                false,
+                vec![key(egui::Key::Enter)]
+            )
+            .is_empty()
+        );
+    }
+    #[test]
+    fn changed_backend_or_session_never_commits_an_old_path_and_storage_is_bounded() {
+        let ctx = egui::Context::default();
+        let mut drafts = BackendPathDrafts::default();
+        for change_session in [false, true] {
+            frame(&ctx, &mut drafts, "before", 0, "old.lua", true, vec![]);
+            frame(
+                &ctx,
+                &mut drafts,
+                "before",
+                0,
+                "old.lua",
+                false,
+                vec![egui::Event::Text("X".into())],
+            );
+            let (backend, epoch) = if change_session {
+                ("before", 1)
+            } else {
+                ("after", 0)
+            };
+            assert!(
+                frame(
+                    &ctx,
+                    &mut drafts,
+                    backend,
+                    epoch,
+                    "new.lua",
+                    false,
+                    vec![key(egui::Key::Enter)]
+                )
+                .is_empty()
+            );
+        }
+        for index in 0..30 {
+            frame(
+                &ctx,
+                &mut drafts,
+                &format!("backend-{index}"),
+                1,
+                "",
+                false,
+                vec![],
+            );
+            assert!(drafts.entries.len() <= 4);
+        }
     }
 }
