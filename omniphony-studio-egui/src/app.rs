@@ -801,7 +801,6 @@ impl StudioSpike {
                             self.room_geometry_section(ui);
                             self.drc_section(ui);
                             self.objects_section(ui);
-                            self.tool_sections(ui);
                         },
                     );
                 });

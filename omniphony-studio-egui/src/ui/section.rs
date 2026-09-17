@@ -87,15 +87,6 @@ impl<'a> Section<'a> {
         }
     }
 
-    /// A section of this host's own, with no web counterpart and so no
-    /// `data-i18n` key: its title is given as is.
-    pub fn titled(id: &'a str, title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-            ..Self::new(id, "section.display")
-        }
-    }
-
     /// The collapsed header's one-line summary (`.panel-summary`).
     pub fn summary(mut self, summary: impl Into<String>) -> Self {
         self.summary = Some(summary.into());
@@ -262,7 +253,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (mut widget_drawn, mut body_drawn) = (false, false);
         let mut output = ctx.run_ui(Default::default(), |ui| {
-            Section::titled("closed", "Closed")
+            Section::new("closed", "section.display")
                 .default_open(false)
                 .header_widget(|_| widget_drawn = true)
                 .show(ui, |_| body_drawn = true);
