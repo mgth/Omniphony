@@ -163,3 +163,34 @@ and a 60-second retention window. The view copies only arrivals after its cursor
 pause freezes its cache and time axis while reception continues. Reconnect clears
 the trace. Gaps longer than one second break plotted lines and reject FFT windows.
 The separate resampler plot and scene model-lock measurements remain in lot13.
+
+### Volume calculation and model lock
+
+Volume inputs are captured while reading the model; the expensive voxel loops
+run after releasing its guard. Decoded gain artifacts are immutable `Arc`s and
+the object input buffer reuses its allocation. Regular room/object geometry
+still reads the model under a guard, so this is not a claim that every scene
+operation is outside the lock.
+
+Reproducible CPU-only measurement, 2026-09-17: Linux x86_64, Ryzen 9 9950X,
+release build, default room, 64³ object volume, 20 forced rebuilds per case.
+No window, GPU, audio or 100 Hz network workload is included. Values below are
+milliseconds; capture excludes lock acquisition and other scene geometry.
+
+| Objects | Previous rebuild p50/p95 (under lock) | New capture p50/p95 | New total p50/p95 |
+|---|---|---|---|
+| 24 | 5.474 / 6.339 | 0.001070 / 0.003550 | 4.997 / 5.301 |
+| 64 | 13.358 / 14.153 | 0.006410 / 0.009690 | 12.798 / 13.004 |
+
+Volumes disabled measured below 0.001 ms in both cases. Total-time differences
+are small enough not to infer a throughput improvement from this short run;
+the demonstrated improvement is removal of the rebuild from the model lock.
+The initial local regression target is capture p95 below 0.05 ms for 64 objects;
+it is not a portable CI timing assertion. Run from `omniphony-studio-egui`:
+
+```sh
+cargo test -p omniphony-studio-scene --release --locked volume_cpu_benchmark -- --ignored --nocapture
+```
+
+Full frame/GPU, minimized CPU/RSS and service-deadline measurements remain
+separate acceptance work in lot13.

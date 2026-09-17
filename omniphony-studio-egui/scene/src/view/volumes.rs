@@ -164,6 +164,60 @@ pub struct VolumeState {
     slots: [SlotState; 4],
 }
 
+/// Small owned inputs captured under the model lock. Immutable gain artifacts
+/// are shared by Arc; the object buffer reuses its allocation across frames.
+pub struct VolumeInput {
+    room: RoomRatio,
+    objects: Vec<ActiveObject>,
+    global: Option<Arc<GainTable>>,
+    speaker: Option<Arc<GainTable>>,
+    discontinuity: Option<Arc<GainTable>>,
+    selected_speaker: Option<usize>,
+}
+impl Default for VolumeInput {
+    fn default() -> Self {
+        Self {
+            room: RoomRatio::default(),
+            objects: Vec::new(),
+            global: None,
+            speaker: None,
+            discontinuity: None,
+            selected_speaker: None,
+        }
+    }
+}
+impl VolumeInput {
+    pub fn capture(
+        &mut self,
+        live: &Live,
+        settings: &VolumeSettings,
+        selected_speaker: Option<usize>,
+    ) {
+        self.room.clone_from(&live.app.room_ratio);
+        self.objects.clear();
+        if settings.object_field_enabled {
+            self.objects.extend(active_objects(live, settings));
+        }
+        self.global = settings
+            .global_enabled
+            .then(|| live.gain_tables.get(&-1).cloned())
+            .flatten();
+        self.speaker = settings
+            .speaker_enabled
+            .then(|| selected_speaker.and_then(|i| live.gain_tables.get(&(i as i64)).cloned()))
+            .flatten();
+        self.discontinuity = settings
+            .discontinuity_enabled
+            .then(|| {
+                live.gain_tables
+                    .get(&settings.discontinuity_mode.table_index())
+                    .cloned()
+            })
+            .flatten();
+        self.selected_speaker = selected_speaker;
+    }
+}
+
 /// One active object for the client-side field, in ADM units.
 pub struct ActiveObject {
     pub x: f64,
@@ -173,7 +227,10 @@ pub struct ActiveObject {
 }
 
 /// `collectActiveObjects`: unmuted objects with a finite, positive energy.
-pub fn active_objects(live: &Live, settings: &VolumeSettings) -> Vec<ActiveObject> {
+pub fn active_objects<'a>(
+    live: &'a Live,
+    settings: &'a VolumeSettings,
+) -> impl Iterator<Item = ActiveObject> + 'a {
     live.app
         .sources
         .iter()
@@ -202,7 +259,6 @@ pub fn active_objects(live: &Live, settings: &VolumeSettings) -> Vec<ActiveObjec
                 },
             )
         })
-        .collect()
 }
 
 /// Texel centre coordinates in Omniphony units along each texture axis.
@@ -511,14 +567,14 @@ fn uniforms(
 /// cadence and only when their signature changed (static providers).
 #[allow(clippy::too_many_arguments)]
 pub fn build(
-    live: &Live,
+    input: &VolumeInput,
     settings: &VolumeSettings,
     state: &mut VolumeState,
-    bounds: &RoomBounds,
-    room: &RoomRatio,
-    selected_speaker: Option<usize>,
     now: Instant,
 ) -> Vec<VolumeDraw> {
+    let room = &input.room;
+    let bounds = &RoomBounds::from_ratio(room);
+    let selected_speaker = input.selected_speaker;
     let mut draws = Vec::new();
     let n = settings.resolution.clamp(8, 64);
     let refresh = Duration::from_millis(u64::from(settings.refresh_ms.max(40)));
@@ -530,7 +586,7 @@ pub fn build(
 
     // --- object energy field (live, no signature) ---
     if settings.object_field_enabled {
-        let objects = active_objects(live, settings);
+        let objects = &input.objects;
         let slot = &mut state.slots[SLOT_OBJECT_FIELD];
         if objects.is_empty() {
             slot.data = None;
@@ -580,7 +636,7 @@ pub fn build(
 
     // --- global energy deviation (table -1, precoloured, absolute) ---
     if settings.global_enabled
-        && let Some(table) = live.gain_tables.get(&-1)
+        && let Some(table) = input.global.as_deref()
         && let Some(bt) = band_table(table)
     {
         let scale = settings.global_scale_db.clamp(1.0, 40.0);
@@ -661,7 +717,7 @@ pub fn build(
     // --- selected speaker heatmap volume ---
     if settings.speaker_enabled
         && let Some(si) = selected_speaker
-        && let Some(table) = live.gain_tables.get(&(si as i64))
+        && let Some(table) = input.speaker.as_deref()
         && let Some(bt) = band_table(table)
     {
         let all = settings.all_bands && bt.bands.len() > 1;
@@ -763,9 +819,7 @@ pub fn build(
 
     // --- discontinuity (tables -2 / -3, precoloured amber, absolute) ---
     if settings.discontinuity_enabled
-        && let Some(table) = live
-            .gain_tables
-            .get(&settings.discontinuity_mode.table_index())
+        && let Some(table) = input.discontinuity.as_deref()
         && let Some(bt) = band_table(table)
     {
         let scale = settings.discontinuity_scale.clamp(0.05, 2.0);
@@ -848,4 +902,127 @@ pub fn wanted_tables(settings: &VolumeSettings, selected_speaker: Option<usize>)
     v.sort_unstable();
     v.dedup();
     v
+}
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+    use crate::model::app_state::{AppState, Meter, SourcePosition};
+    fn fixture(count: usize) -> Live {
+        let mut live = Live::new(AppState::new(Vec::new()));
+        for i in 0..count {
+            let id = i.to_string();
+            live.app.sources.insert(
+                id.clone(),
+                SourcePosition {
+                    x: i as f64 / count as f64,
+                    y: 0.2,
+                    z: 0.4,
+                    ..Default::default()
+                },
+            );
+            live.app.source_levels.insert(
+                id,
+                Meter {
+                    peak_dbfs: -10.0,
+                    rms_dbfs: -20.0,
+                },
+            );
+        }
+        live
+    }
+    #[test]
+    fn captured_volume_is_independent_of_later_model_updates() {
+        let mut live = fixture(24);
+        let settings = VolumeSettings {
+            object_field_enabled: true,
+            resolution: 8,
+            ..Default::default()
+        };
+        let mut input = VolumeInput::default();
+        input.capture(&live, &settings, None);
+        let now = Instant::now();
+        let expected = build(&input, &settings, &mut VolumeState::default(), now);
+        live.app.sources.clear();
+        live.app.room_ratio.width = 2.0;
+        let actual = build(&input, &settings, &mut VolumeState::default(), now);
+        assert_eq!(
+            actual[0].upload.as_ref().unwrap().texels,
+            expected[0].upload.as_ref().unwrap().texels
+        );
+        assert_eq!(actual[0].uniforms.box_min, expected[0].uniforms.box_min);
+        let capacity = input.objects.capacity();
+        input.capture(&live, &settings, None);
+        assert!(build(&input, &settings, &mut VolumeState::default(), now).is_empty());
+        assert_eq!(input.objects.capacity(), capacity);
+    }
+    #[test]
+    fn capture_shares_immutable_artifacts_and_releases_disabled_providers() {
+        let mut live = fixture(0);
+        let table = Arc::new(GainTable::Cartesian {
+            version: 1,
+            speaker_count: 0,
+            x_positions: vec![],
+            y_positions: vec![],
+            z_positions: vec![],
+            gains: vec![],
+        });
+        live.gain_tables.insert(-1, table.clone());
+        let mut input = VolumeInput::default();
+        input.capture(
+            &live,
+            &VolumeSettings {
+                global_enabled: true,
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(Arc::ptr_eq(input.global.as_ref().unwrap(), &table));
+        live.gain_tables.clear();
+        assert_eq!(input.global.as_ref().unwrap().version(), 1);
+        input.capture(&live, &VolumeSettings::default(), None);
+        assert!(input.global.is_none());
+    }
+
+    #[test]
+    #[ignore = "manual CPU benchmark; run release with --ignored --nocapture"]
+    fn volume_cpu_benchmark() {
+        for count in [24, 64] {
+            for enabled in [false, true] {
+                let live = fixture(count);
+                let settings = VolumeSettings {
+                    object_field_enabled: enabled,
+                    ..Default::default()
+                };
+                let mut state = VolumeState::default();
+                let mut input = VolumeInput::default();
+                let mut capture_times = Vec::new();
+                let mut durations = Vec::new();
+                for _ in 0..20 {
+                    let started = Instant::now();
+                    input.capture(&live, &settings, None);
+                    capture_times.push(started.elapsed().as_secs_f64() * 1000.0);
+                    let draws = build(
+                        &input,
+                        &settings,
+                        &mut state,
+                        Instant::now() + Duration::from_secs(60),
+                    );
+                    std::hint::black_box(draws);
+                    durations.push(started.elapsed().as_secs_f64() * 1000.0);
+                    state = VolumeState::default(); // measure actual rebuild cost
+                }
+                durations.sort_by(f64::total_cmp);
+                capture_times.sort_by(f64::total_cmp);
+                println!(
+                    "capture_ms_p50={:.6} p95={:.6}",
+                    capture_times[10], capture_times[18]
+                );
+                println!(
+                    "objects={count} enabled={enabled} resolution=64 cpu_ms_p50={:.3} p95={:.3}",
+                    durations[10], durations[18]
+                );
+            }
+        }
+    }
 }
