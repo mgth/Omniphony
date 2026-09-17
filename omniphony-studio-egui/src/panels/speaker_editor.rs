@@ -205,17 +205,19 @@ impl StudioSpike {
         let speaker = held.as_ref().unwrap_or(speaker);
         ui.add_enabled_ui(!frozen, |ui| {
             // Name.
-            let mut name = speaker.id.clone();
-            widgets::label_row_help(ui, t("common.name"), "help.speaker.name", |ui| {
-                if ui
-                    .add(egui::TextEdit::singleline(&mut name).desired_width(150.0))
-                    .lost_focus()
-                    && name.trim() != speaker.id
-                    && !name.trim().is_empty()
-                {
-                    self.edit_speaker(id, "name", serde_json::json!(name.trim()));
-                }
+            let name = widgets::label_row_help(ui, t("common.name"), "help.speaker.name", |ui| {
+                self.speaker_name_edit.show(
+                    ui,
+                    ("speaker-name", index),
+                    &speaker.id,
+                    "",
+                    150.0,
+                    false,
+                )
             });
+            if let Some(name) = name {
+                self.edit_speaker(id, "name", serde_json::json!(name));
+            }
 
             // Coordinates: the two tables of the web editor, normalised on one
             // row and metres on the next. Metres are the normalised value

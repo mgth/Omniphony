@@ -11,5 +11,6 @@ pub mod meter;
 pub mod overlay;
 pub mod scene;
 pub mod section;
+pub mod text_draft;
 pub mod theme;
 pub mod widgets;

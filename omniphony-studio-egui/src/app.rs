@@ -83,6 +83,10 @@ pub struct StudioSpike {
     pub(crate) renderer_tab: crate::panels::renderer::RendererTab,
     /// Named-pipe path remembered while the file output is switched off.
     pub(crate) audio_pipe_path: String,
+    pub(crate) input_edits: crate::panels::audio_input::InputEdits,
+    pub(crate) output_path_edit: crate::ui::text_draft::TextDraft,
+    pub(crate) speaker_name_edit: crate::ui::text_draft::TextDraft,
+    pub(crate) head_address_edit: crate::ui::text_draft::TextDraft,
     /// Speaker editor: tab, and the test pane's own settings (the web keeps
     /// these in `localStorage`, keyed `speakerTest.*`).
     pub(crate) speaker_tab: crate::panels::speaker_editor::SpeakerTab,
@@ -403,6 +407,10 @@ impl StudioSpike {
             mpv_orender: None,
             renderer_tab: Default::default(),
             audio_pipe_path: String::new(),
+            input_edits: Default::default(),
+            output_path_edit: Default::default(),
+            speaker_name_edit: Default::default(),
+            head_address_edit: Default::default(),
             speaker_tab: Default::default(),
             speaker_test_mode: "toggle".to_owned(),
             speaker_test_isolation: "test_only".to_owned(),
@@ -578,7 +586,7 @@ impl StudioSpike {
                 }
             }
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if !ui.ctx().text_edit_focused() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.selection = Selection::default();
         }
         if self.camera.update() {

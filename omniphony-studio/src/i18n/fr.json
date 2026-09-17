@@ -1,4 +1,5 @@
 {
+  "common.valueRequired": "Une valeur est nécessaire.",
   "app.title": "Omniphony Studio",
   "app.subtitle": "Contrôle spatial",
   "updates.checkLabel": "Vérifier les mises à jour au démarrage",

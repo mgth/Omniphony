@@ -578,25 +578,24 @@ impl StudioSpike {
         }
 
         let address = text(doc, &["tracking", "address"]).unwrap_or_default();
-        let mut edited = address.clone();
-        widgets::label_row_help(
+        let edited = widgets::label_row_help(
             ui,
             t("binaural.oscAddressLabel"),
             "help.binaural.oscAddress",
             |ui| {
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut edited)
-                            .desired_width(170.0)
-                            .hint_text("/android/rotationvector"),
-                    )
-                    .lost_focus()
-                    && edited.trim() != address
-                {
-                    cmd::control_head_tracking_address(&self.host, edited.trim().to_owned());
-                }
+                self.head_address_edit.show(
+                    ui,
+                    "tracking-address",
+                    &address,
+                    "/android/rotationvector",
+                    170.0,
+                    true,
+                )
             },
         );
+        if let Some(address) = edited {
+            cmd::control_head_tracking_address(&self.host, address);
+        }
 
         let format = text(doc, &["tracking", "format"]).unwrap_or_else(|| "auto".to_owned());
         let mut chosen = format.clone();

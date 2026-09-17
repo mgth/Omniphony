@@ -1,4 +1,5 @@
 {
+  "common.valueRequired": "A value is required.",
   "app.title": "Omniphony Studio",
   "app.subtitle": "Spatial Control",
   "updates.checkLabel": "Check for updates on startup",
