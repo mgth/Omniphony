@@ -40,10 +40,25 @@ fn path(config_dir: &Path) -> PathBuf {
     config_dir.join("studio-egui-prefs.json")
 }
 
-pub fn load(config_dir: &Path) -> Prefs {
-    json_store::load(&path(config_dir))
+pub fn load(config_dir: &Path, legacy_dir: &Path) -> (Prefs, Option<String>) {
+    let migration_error = if crate::host::runtime_env::config_dir().is_none() {
+        json_store::migrate::<Prefs>(&path(legacy_dir), &path(config_dir)).err()
+    } else {
+        None
+    };
+    let (prefs, load_error) = json_store::load(&path(config_dir));
+    (prefs, load_error.or(migration_error))
 }
 
-pub fn save(config_dir: &Path, prefs: &Prefs) {
-    json_store::save(&path(config_dir), prefs);
+pub fn writer(
+    config_dir: &Path,
+    wake: crate::osc::Waker,
+    error: Option<String>,
+) -> std::io::Result<json_store::Writer<Prefs>> {
+    json_store::Writer::new(
+        path(config_dir),
+        std::time::Duration::from_millis(600),
+        wake,
+        error,
+    )
 }

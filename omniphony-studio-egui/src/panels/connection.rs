@@ -50,6 +50,9 @@ impl StudioSpike {
     /// The status line: a coloured dot and one line of text, like the web
     /// `#oscStatus` row.
     pub(crate) fn connection_line(&mut self, ui: &mut egui::Ui) {
+        if let Some(error) = self.prefs_writer.error() {
+            ui.colored_label(theme::WARN, format!("Preferences: {error}"));
+        }
         let port = self.osc_stats.listen_port.load(Ordering::Relaxed);
         let state = self.osc_state();
         let mut text = t(state.key()).to_owned();
