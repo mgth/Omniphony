@@ -15,6 +15,7 @@ pub mod backend_files;
 pub mod interests;
 pub mod jobs;
 pub mod meters;
+pub mod mpv_config;
 pub mod object_test;
 pub mod operations;
 pub mod overlay;
