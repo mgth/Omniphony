@@ -158,9 +158,42 @@ pub fn select_resample(state: &super::commands::SharedState, plot_open: bool) {
     }
 }
 
+/// Refresh both collection interest and the consumer cache. This also releases
+/// the cache after the last consumer closes, when no plot draw will run again.
+pub fn refresh_resample(state: &super::commands::SharedState, plot_open: bool, trace: &mut Trace) {
+    select_resample(state, plot_open);
+    let live = state.read();
+    if live.resample_wanted {
+        live.resampling.copy_to(trace);
+    } else {
+        *trace = Trace::default();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_last_consumer_releases_history_and_cache_but_the_wizard_keeps_them() {
+        let state = crate::host::commands::tests::state();
+        let mut trace = Trace::default();
+        refresh_resample(&state, true, &mut trace);
+        state
+            .inner
+            .lock()
+            .unwrap()
+            .resampling
+            .record_value("latency", 4.0, Instant::now());
+        refresh_resample(&state, true, &mut trace);
+        assert_eq!(trace.series["latency"].len(), 1);
+        crate::host::services::auto_tune::open(&state);
+        refresh_resample(&state, false, &mut trace);
+        assert_eq!(trace.series["latency"].len(), 1);
+        crate::host::services::auto_tune::close(&state);
+        refresh_resample(&state, false, &mut trace);
+        assert!(trace.series.is_empty());
+        assert!(state.read().resampling.series.is_empty());
+    }
     #[test]
     fn independently_published_scalars_keep_their_own_timestamps() {
         let mut history = History::default();

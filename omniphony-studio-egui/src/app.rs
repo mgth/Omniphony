@@ -1010,7 +1010,11 @@ impl eframe::App for StudioSpike {
         self.declare_overlay_prefs();
         self.declare_object_test_marker();
         self.declare_idle_feed_interest();
-        crate::host::diagnostics::select_resample(&self.host, self.resample_plot_open);
+        crate::host::diagnostics::refresh_resample(
+            &self.host,
+            self.resample_plot_open,
+            &mut self.resample_series,
+        );
         self.check_recompute_ack(&ctx);
         self.declare_gaintable_interest();
         self.persist_prefs();
