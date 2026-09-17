@@ -40,6 +40,12 @@ pub fn set_meter_rate_hz(state: &SharedState, hz: f32) {
     super::diag::control_metering_rate_hz(state, hz);
 }
 
+/// Passive/synthetic startup must not launch a real renderer implicitly.
+/// An explicit launch action can re-arm the watchdog later.
+pub fn suppress_autostart(state: &SharedState) {
+    state.watchdog.lock().unwrap().suppressed = true;
+}
+
 /// Lift the watchdog's suppression, which installing the service sets: turning
 /// auto-start back on is the user saying the watchdog may try again.
 pub fn resume_watchdog(state: &SharedState) {
@@ -62,7 +68,11 @@ pub fn connect_to(
     host: &str,
     port: u16,
 ) -> Result<std::net::SocketAddr, String> {
-    let target = format!("{}:{}", host.trim(), port);
+    let host = host.trim().trim_matches(['[', ']']);
+    let target = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => std::net::SocketAddr::new(ip, port).to_string(),
+        Err(_) => format!("{host}:{port}"),
+    };
     let Some(addr) = crate::osc::resolve(&target) else {
         let message = format!("cannot resolve {target}");
         state
@@ -139,7 +149,7 @@ pub fn get_osc_config(state: &SharedState) -> OscConfig {
 
 /// Loopback test shared by [`renderer_is_local`] and the auto-start watchdog.
 pub fn host_is_local(host: &str) -> bool {
-    let host = host.trim();
+    let host = host.trim().trim_matches(['[', ']']);
     host.is_empty()
         || host.eq_ignore_ascii_case("localhost")
         || host == "::1"

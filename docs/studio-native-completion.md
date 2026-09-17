@@ -126,3 +126,13 @@ reach the editor. A new request clears buffered old replies. These behaviours
 have unit coverage. Lot 03 remains open: the legacy protocol has no correlation
 identifier for late same-parameter responses; request deadlines and dirty-close
 confirmation still need implementation.
+
+### Startup policy
+
+Normal startup now reads the saved renderer and Studio listen port. `--register`
+and `--listen-port` override those values; `--listen-only` and `--synthetic`
+start passively with an ephemeral port by default and suppress auto-launch.
+DNS runs off the first-paint path. The config namespace matches Tauri by default
+and continues to honor `OMNIPHONY_CONFIG_DIR/studio`. Resource discovery for
+installed archives belongs to the existing native distribution PR; migration of
+the old checkout-relative native preferences remains in lot10.

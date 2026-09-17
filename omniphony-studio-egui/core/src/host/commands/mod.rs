@@ -203,7 +203,11 @@ pub fn send_control(tx: &ControlTx, msg: OscControlMsg) {
         },
         OscControlMsg::SendArgs { address, args } => Control::Send { address, args },
         OscControlMsg::Reconnect { host, rx_port, .. } => {
-            match format!("{host}:{rx_port}").parse() {
+            match host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .map(|ip| std::net::SocketAddr::new(ip, rx_port))
+            {
                 Ok(target) => Control::Reconnect { target },
                 Err(e) => {
                     log::warn!("[control] reconnect target {host}:{rx_port}: {e}");

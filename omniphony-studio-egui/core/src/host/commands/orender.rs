@@ -822,7 +822,10 @@ pub fn autostart_orender(
     app: &HostPaths,
     state: &SharedState,
 ) -> Result<serde_json::Value, String> {
-    let cfg = load_config(&state.config_dir);
+    let mut cfg = load_config(&state.config_dir);
+    let target = (*state.stats.target.lock().unwrap()).ok_or("no active renderer target")?;
+    cfg.host = target.ip().to_string();
+    cfg.osc_rx_port = target.port();
     let spec = resolve_orender_launch_spec(
         app,
         state,
