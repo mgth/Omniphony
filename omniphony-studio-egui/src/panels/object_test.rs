@@ -14,6 +14,7 @@ use crate::app::StudioSpike;
 use crate::host::commands::gain;
 use crate::host::services::object_test::{ObjectTestMarker, set_object_test_marker};
 use crate::i18n::t;
+use crate::ui::group::Group;
 use crate::ui::{help, theme, widgets};
 use crate::view::gizmos;
 
@@ -433,20 +434,26 @@ impl StudioSpike {
         }
     }
 
-    /// The orbit: axis, radius, turn time, and the free-axis angles.
+    /// The orbit: the axis in the bar; radius, turn time and the free
+    /// axis's angles in the inset.
     fn object_test_orbit_controls(&mut self, ui: &mut Ui) {
         let axis = self.prefs.object_test.rotation.axis.clone();
-        if let Some(chosen) = select_row(
-            ui,
-            t("objectTest.rotationAxis"),
-            "help.objectTestRotation",
-            "object-test-axis",
-            &axis,
-            AXES,
-        ) {
+        let mut chosen = None;
+        Group::new(t("objectTest.rotationAxis"))
+            .help("help.objectTestRotation")
+            .actions(|ui| {
+                widgets::bounded_combo(ui, 150.0, |ui, w| {
+                    chosen = combo(ui, "object-test-axis", &axis, AXES, w);
+                });
+            })
+            .show(ui, |ui| self.object_test_orbit_rows(ui, &axis));
+        if let Some(chosen) = chosen {
             self.prefs.object_test.rotation.axis = chosen;
             self.apply_object_test_rotation();
         }
+    }
+
+    fn object_test_orbit_rows(&mut self, ui: &mut Ui, axis: &str) {
         let mut radius = self.prefs.object_test.rotation.radius;
         if self.radius_row(ui, &mut radius) {
             self.prefs.object_test.rotation.radius = snap_radius(radius);
@@ -473,7 +480,7 @@ impl StudioSpike {
                 self.apply_object_test_rotation();
             }
         });
-        if self.prefs.object_test.rotation.axis != "free" {
+        if axis != "free" {
             return;
         }
         let mut azimuth = self.prefs.object_test.rotation.azimuth as f32;

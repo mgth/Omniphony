@@ -15,6 +15,10 @@ short version:
   applies the optimistic value and sends. The panel calls it with `&self.host`.
   Look for an existing one first: about 150 were ported from the Tauri host and
   are unused.
+- **A panel is laid out as [`PANELS.md`](PANELS.md) says**: a section, groups
+  inside it (`ui::group::Group`), rows inside their insets. The group's key
+  control goes in its bar, everything else in the inset; a heading is never a
+  bare bold label with an `add_space` above it.
 - **Periodic behaviour** is a service in `core/src/host/` with
   `tick(now) -> Option<Instant>`. It is never a `maintain_*` function in
   `panels/`.

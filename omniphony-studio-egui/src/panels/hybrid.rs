@@ -63,13 +63,11 @@ impl StudioSpike {
         if !tabs.contains(&self.hybrid_tab) {
             self.hybrid_tab = tabs[0].clone();
         }
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t("hybrid.title"))
-                    .size(theme::FONT_SIZE)
-                    .color(theme::TEXT_STRONG),
-            );
-            for id in &tabs {
+        // One tab per half, the mix first: the bar above already says the
+        // backend is a hybrid, so the tabs need no title of their own.
+        let labels: Vec<(String, String)> = tabs
+            .iter()
+            .map(|id| {
                 let label = if id == "hybrid" {
                     t("hybrid.tabMix").to_owned()
                 } else {
@@ -79,11 +77,16 @@ impl StudioSpike {
                         .map(|(_, label)| label)
                         .unwrap_or_else(|| id.clone())
                 };
-                if ui.selectable_label(&self.hybrid_tab == id, label).clicked() {
-                    self.hybrid_tab = id.clone();
-                }
-            }
-        });
+                (id.clone(), label)
+            })
+            .collect();
+        let options: Vec<(String, &str)> = labels
+            .iter()
+            .map(|(id, label)| (id.clone(), label.as_str()))
+            .collect();
+        if let Some(tab) = widgets::tab_bar(ui, &self.hybrid_tab, &options) {
+            self.hybrid_tab = tab;
+        }
         if self.hybrid_tab != "hybrid" {
             let backend = self.hybrid_tab.clone();
             self.backend_params_for(ui, &backend, available, values);

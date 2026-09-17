@@ -42,9 +42,11 @@ struct StageTime {
     max: Option<f64>,
 }
 
-/// The whole gauge's numbers, already untangled.
-#[derive(Default)]
-struct Perf {
+/// The whole gauge's numbers, already untangled. Taken once per frame by
+/// [`StudioSpike::perf_snapshot`] and drawn twice: the bar in the section's
+/// header, the readouts at the top of its body.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Perf {
     stages: [StageTime; 4],
     frame: Option<f64>,
 }
@@ -63,57 +65,15 @@ impl Perf {
 }
 
 impl StudioSpike {
-    /// Drawn in the renderer section's header, as the web draws it.
-    pub(crate) fn renderer_perf(&mut self, ui: &mut Ui) {
+    /// The gauge's numbers, or `None` while metering is off: with it off the
+    /// renderer stops sending the timings, and a gauge frozen on its last
+    /// values is worse than no gauge.
+    pub(crate) fn perf_snapshot(&self) -> Option<Perf> {
         let metering = {
             let live = self.host.read();
             live.app.osc_metering_enabled.unwrap_or(0) != 0
         };
-        if !metering {
-            return;
-        }
-        let perf = self.collect_perf();
-        self.perf_bar(ui, &perf);
-        // The readouts show the one-second average, not the instantaneous
-        // value: at frame rate the latter is unreadable, and the question is
-        // what the stage costs, not what it cost once.
-        let scale = perf.frame.filter(|f| f.is_finite() && *f > 0.0);
-        ui.horizontal_wrapped(|ui| {
-            for (index, key) in [
-                "renderer.perf.decode",
-                "renderer.perf.crossover",
-                "renderer.perf.render",
-                "renderer.perf.write",
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let value = ms_with_pct(perf.stages[index].mean, scale);
-                ui.label(
-                    RichText::new(tf(key, &[("value", &value)]))
-                        .size(theme::FONT_SIZE_SMALL)
-                        .color(theme::TEXT),
-                );
-            }
-            ui.label(
-                RichText::new(tf(
-                    "renderer.perf.frame",
-                    &[("value", &ms_or_dash(perf.frame))],
-                ))
-                .size(theme::FONT_SIZE_SMALL)
-                .color(theme::TEXT_MUTED),
-            );
-        });
-        ui.horizontal_wrapped(|ui| {
-            for index in 0..4 {
-                let value = ms_with_pct(perf.stages[index].max, scale);
-                ui.label(
-                    RichText::new(tf("renderer.perf.max", &[("value", &value)]))
-                        .size(theme::FONT_SIZE_SMALL)
-                        .color(theme::TEXT_DIM),
-                );
-            }
-        });
+        metering.then(|| self.collect_perf())
     }
 
     /// Crossover time is *contained* in render time, so it is carved out of it
@@ -171,39 +131,93 @@ impl StudioSpike {
             frame: live.app.frame_duration_ms,
         }
     }
+}
 
-    fn perf_bar(&self, ui: &mut Ui, perf: &Perf) {
-        let (rect, _) = ui.allocate_exact_size(
-            vec2(ui.available_width().min(180.0), BAR_HEIGHT),
-            egui::Sense::hover(),
-        );
-        let painter = ui.painter();
-        painter.rect_filled(rect, 2.0, theme::FILL);
-        let scale = perf.scale_ms();
-        let x_for = |ms: f64| rect.left() + ((ms / scale).clamp(0.0, 1.0) as f32) * rect.width();
-        let mut start = 0.0;
-        for (index, stage) in perf.stages.iter().enumerate() {
-            let end = start + stage.now;
-            if stage.now > 0.0 {
-                let segment =
-                    egui::Rect::from_x_y_ranges(x_for(start)..=x_for(end), rect.y_range());
-                painter.rect_filled(segment, 0.0, SEGMENT[index]);
-            }
-            start = end;
+/// The bar, in the section's header (`#rendererPerfWrap`'s `.meter-bar`): the
+/// four stages end to end against the frame budget, with the cumulative
+/// worst cases as markers, so a spike that has already passed is still
+/// visible where it would have landed. The readouts are its tooltip, so the
+/// numbers are one hover away with the section folded.
+pub(crate) fn perf_bar(ui: &mut Ui, perf: &Perf) {
+    let width = (ui.available_width() * 0.45).clamp(60.0, 180.0);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, BAR_HEIGHT), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 2.0, theme::FILL);
+    let scale = perf.scale_ms();
+    let x_for = |ms: f64| rect.left() + ((ms / scale).clamp(0.0, 1.0) as f32) * rect.width();
+    let mut start = 0.0;
+    for (index, stage) in perf.stages.iter().enumerate() {
+        let end = start + stage.now;
+        if stage.now > 0.0 {
+            let segment = egui::Rect::from_x_y_ranges(x_for(start)..=x_for(end), rect.y_range());
+            painter.rect_filled(segment, 0.0, SEGMENT[index]);
         }
-        // Markers at the cumulative worst cases, so a spike that has already
-        // passed is still visible where it would have landed.
-        let mut cumulative = 0.0;
-        for (index, stage) in perf.stages.iter().enumerate() {
-            let Some(max) = stage.max else { continue };
-            cumulative += max;
-            painter.vline(
-                x_for(cumulative),
-                rect.y_range(),
-                egui::Stroke::new(1.5, MARKER[index]),
-            );
-        }
+        start = end;
     }
+    let mut cumulative = 0.0;
+    for (index, stage) in perf.stages.iter().enumerate() {
+        let Some(max) = stage.max else { continue };
+        cumulative += max;
+        painter.vline(
+            x_for(cumulative),
+            rect.y_range(),
+            egui::Stroke::new(1.5, MARKER[index]),
+        );
+    }
+    response.on_hover_text(readout_lines(perf).join("\n"));
+}
+
+/// The readouts under the bar: the one-second average of each stage, not the
+/// instantaneous value — at frame rate the latter is unreadable, and the
+/// question is what the stage costs, not what it cost once — then the worst
+/// cases.
+pub(crate) fn perf_readouts(ui: &mut Ui, perf: &Perf) {
+    let [means, maxes] = readout_lines(perf);
+    ui.label(
+        RichText::new(means)
+            .size(theme::FONT_SIZE_SMALL)
+            .color(theme::TEXT),
+    );
+    ui.label(
+        RichText::new(maxes)
+            .size(theme::FONT_SIZE_SMALL)
+            .color(theme::TEXT_DIM),
+    );
+}
+
+/// The two readout lines: the averages with the frame budget, then the maxima.
+fn readout_lines(perf: &Perf) -> [String; 2] {
+    let scale = perf.frame.filter(|f| f.is_finite() && *f > 0.0);
+    let means = [
+        "renderer.perf.decode",
+        "renderer.perf.crossover",
+        "renderer.perf.render",
+        "renderer.perf.write",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, key)| {
+        tf(
+            key,
+            &[("value", &ms_with_pct(perf.stages[index].mean, scale))],
+        )
+    })
+    .chain(std::iter::once(tf(
+        "renderer.perf.frame",
+        &[("value", &ms_or_dash(perf.frame))],
+    )))
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let maxes = (0..4)
+        .map(|index| {
+            tf(
+                "renderer.perf.max",
+                &[("value", &ms_with_pct(perf.stages[index].max, scale))],
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    [means, maxes]
 }
 
 /// `msWithPct`: milliseconds, and what fraction of the frame budget that is.

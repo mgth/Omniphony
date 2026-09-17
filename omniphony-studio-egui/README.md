@@ -27,6 +27,7 @@ state directly instead of a camelCase JSON mirror.
 | `src/prefs/` | What the UI remembers across launches (the file I/O is the core's) |
 | `src/ui/` | The Studio's look: theme, side-panel geometry, sections, generic widgets, file dialogs |
 | `src/panels/` | The panels themselves, one module per group of sections |
+| `PANELS.md` | How a panel is laid out: the section, its groups, their insets and rows |
 | `src/view/` | Model → frame: objects, speakers, room, trails, volumes |
 | `src/render/` | wgpu renderer hosted by an `egui_wgpu::Callback`; camera; head glTF; volumes |
 

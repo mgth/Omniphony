@@ -2,6 +2,7 @@
 //! recurring controls. The panels themselves live in `src/panels/`.
 
 pub mod file_dialogs;
+pub mod group;
 pub mod help;
 pub mod icons;
 pub mod layout;

@@ -14,6 +14,7 @@ use crate::host::commands::adaptive::{self, Param, Switch};
 use crate::host::commands::resampling;
 use crate::i18n::{t, tf};
 use crate::model::app_state::AppState;
+use crate::ui::group::Group;
 use crate::ui::section::Section;
 use crate::ui::{theme, widgets};
 
@@ -357,37 +358,10 @@ impl StudioSpike {
         );
     }
 
-    /// The adaptive controller: its switches, its three groups of numbers,
-    /// and the pause control.
+    /// The adaptive controller: its three groups of numbers, the controller's
+    /// own switch in its group's bar, and the pause control under it.
     fn adaptive_form(&mut self, ui: &mut Ui, adaptive_on: bool, paused: bool) {
-        ui.separator();
         let mut on = adaptive_on;
-        if widgets::switch_row_help(ui, t("adaptive.title"), "help.adaptive.title", &mut on) {
-            resampling::set_adaptive_resampling_enabled(&self.host, on);
-        }
-        ui.horizontal_wrapped(|ui| {
-            let label = if paused {
-                format!("▶ {}", t("adaptive.resume"))
-            } else {
-                format!("⏸ {}", t("adaptive.pause"))
-            };
-            if ui
-                .add_enabled(adaptive_on, egui::Button::new(label))
-                .clicked()
-            {
-                resampling::set_adaptive_resampling_paused(&self.host, !paused);
-            }
-            // Only reachable while paused: it is a diagnostic, not a control.
-            if adaptive_on && paused && ui.button(t("adaptive.resetRatio")).clicked() {
-                resampling::control_adaptive_resampling_reset_ratio(&self.host);
-            }
-            // The wizard patches this controller live, so it only makes sense
-            // while there is one running to patch.
-            if adaptive_on && !paused {
-                self.auto_tune_button(ui);
-            }
-        });
-
         // The far mode fires when any of its three actions is armed.
         let far_mode = {
             let live = self.host.read();
@@ -408,13 +382,8 @@ impl StudioSpike {
         };
         let silence = Switch::SilenceFar.get(&self.host.read().app);
 
+        // One group per subpanel of the web form (`.adaptive-subpanel`).
         for (index, (caption, rows)) in SUBPANELS.iter().enumerate() {
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(t(caption))
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-            );
             // The switches of the first and last subpanels, in the web's
             // places: far actions first, diagnostics last.
             let switches: &[usize] = match index {
@@ -422,45 +391,63 @@ impl StudioSpike {
                 2 => &[3, 4, 5],
                 _ => &[],
             };
-            for i in switches {
-                let (switch, label, help) = &SWITCHES[*i];
-                let mut value = switch.get(&self.host.read().app);
-                // Label, help mark and switch on one line, the switch placed
-                // first: it used to fall to a line of its own below its label.
-                if widgets::label_row_help(ui, t(label), *help, |ui| {
-                    widgets::switch(ui, &mut value).changed()
-                }) {
-                    adaptive::set_switch(&self.host, *switch, value);
-                }
-            }
-            for row in *rows {
-                let enabled = match row.gate {
-                    Gate::Always => true,
-                    Gate::FarMode => far_mode,
-                    Gate::Adaptive => adaptive_on,
-                    Gate::Silence => silence,
-                };
-                let stored = row.param.get(&self.host.read().app);
-                let mut value = *self.adaptive_edits.get(&row.param).unwrap_or(&stored);
-                let (min, max) = row.param.range();
-                ui.add_enabled_ui(enabled, |ui| {
-                    widgets::label_row_help(ui, t(row.label), row.help, |ui| {
-                        let mut drag = egui::DragValue::new(&mut value)
-                            .speed(row.step)
-                            .range(min..=max)
-                            .fixed_decimals(row.decimals);
-                        if !row.unit.is_empty() {
-                            drag = drag.suffix(format!(" {}", row.unit));
-                        }
-                        if ui
-                            .add_sized(egui::vec2(84.0, ui.spacing().interact_size.y), drag)
-                            .changed()
-                        {
-                            self.adaptive_edits.insert(row.param, value);
-                        }
-                    });
+            // The controller's group carries the switch that runs it
+            // (`#adaptiveResamplingToggle`), with the pause and the wizard
+            // as its first row.
+            let mut group = Group::new(t(caption));
+            if index == 1 {
+                group = group.help("help.adaptive.title").actions(|ui| {
+                    widgets::switch(ui, &mut on);
                 });
             }
+            group.show(ui, |ui| {
+                if index == 1 {
+                    self.adaptive_run_row(ui, adaptive_on, paused);
+                }
+                for i in switches {
+                    let (switch, label, help) = &SWITCHES[*i];
+                    let mut value = switch.get(&self.host.read().app);
+                    // Label, help mark and switch on one line, the switch placed
+                    // first: it used to fall to a line of its own below its label.
+                    if widgets::label_row_help(ui, t(label), *help, |ui| {
+                        widgets::switch(ui, &mut value).changed()
+                    }) {
+                        adaptive::set_switch(&self.host, *switch, value);
+                    }
+                }
+                for row in *rows {
+                    let enabled = match row.gate {
+                        Gate::Always => true,
+                        Gate::FarMode => far_mode,
+                        Gate::Adaptive => adaptive_on,
+                        Gate::Silence => silence,
+                    };
+                    let stored = row.param.get(&self.host.read().app);
+                    let mut value = *self.adaptive_edits.get(&row.param).unwrap_or(&stored);
+                    let (min, max) = row.param.range();
+                    ui.add_enabled_ui(enabled, |ui| {
+                        widgets::label_row_help(ui, t(row.label), row.help, |ui| {
+                            let mut drag = egui::DragValue::new(&mut value)
+                                .speed(row.step)
+                                .range(min..=max)
+                                .fixed_decimals(row.decimals);
+                            if !row.unit.is_empty() {
+                                drag = drag.suffix(format!(" {}", row.unit));
+                            }
+                            if ui
+                                .add_sized(egui::vec2(84.0, ui.spacing().interact_size.y), drag)
+                                .changed()
+                            {
+                                self.adaptive_edits.insert(row.param, value);
+                            }
+                        });
+                    });
+                }
+            });
+        }
+
+        if on != adaptive_on {
+            resampling::set_adaptive_resampling_enabled(&self.host, on);
         }
 
         let dirty = !self.adaptive_edits.is_empty();
@@ -476,6 +463,33 @@ impl StudioSpike {
                 .clicked()
             {
                 self.adaptive_edits.clear();
+            }
+        });
+    }
+
+    /// Pause or resume the controller, reset its ratio while paused, and the
+    /// auto-tune wizard while it runs.
+    fn adaptive_run_row(&mut self, ui: &mut Ui, adaptive_on: bool, paused: bool) {
+        ui.horizontal_wrapped(|ui| {
+            let label = if paused {
+                format!("▶ {}", t("adaptive.resume"))
+            } else {
+                format!("⏸ {}", t("adaptive.pause"))
+            };
+            if ui
+                .add_enabled(adaptive_on, egui::Button::new(label))
+                .clicked()
+            {
+                resampling::set_adaptive_resampling_paused(&self.host, !paused);
+            }
+            // Only reachable while paused: it is a diagnostic, not a control.
+            if adaptive_on && paused && ui.button(t("adaptive.resetRatio")).clicked() {
+                resampling::control_adaptive_resampling_reset_ratio(&self.host);
+            }
+            // The wizard patches this controller live, so it only makes sense
+            // while there is one running to patch.
+            if adaptive_on && !paused {
+                self.auto_tune_button(ui);
             }
         });
     }
