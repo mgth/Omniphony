@@ -233,15 +233,21 @@ impl StudioSpike {
             )
         };
         let target = state.requested.or(state.target).or(state.latency);
-        let summary = match state.instant {
-            Some(v) => format!("{v} ms"),
-            None => "—".to_owned(),
-        };
+        // The meter sits in the header, beside the title, as the web's grid
+        // puts it (`#latencySection`, column 2 of row 1): in view whether the
+        // section is open or folded, with the numbers it summarises below it.
+        // Bar and reading are one widget rather than a header widget and the
+        // section's summary, so the reading gets a fixed box and cannot move
+        // the bar from one frame to the next.
+        let reading = reading(state.instant);
         Section::new("latencySection", "section.latency")
             .info("adaptive")
-            .summary(summary)
+            .header_widget(|ui| {
+                crate::ui::meter::row_with_readout(ui, READOUT_ADVANCES, &reading, |ui, width| {
+                    latency_meter(ui, width, &state, stats.as_ref(), target);
+                })
+            })
             .show(ui, |ui| {
-                latency_meter(ui, &state, stats.as_ref(), target);
                 readouts(ui, &state, stats.as_ref());
                 if adaptive_on {
                     self.resample_meter(ui);
@@ -482,9 +488,32 @@ impl StudioSpike {
     }
 }
 
-/// The instant latency against its target, with the spread over the window.
+/// The header's reading: the instant latency, or the placeholder when the
+/// renderer has reported none.
+fn reading(instant: Option<i64>) -> String {
+    match instant {
+        Some(v) => format!("{v} ms"),
+        None => "—".to_owned(),
+    }
+}
+
+/// The readout's box, in monospace advances, as `panels::audio` has one for
+/// the master meter. Eight hold `99999 ms`, well past the latency the
+/// controller would still call a latency, and the `—` placeholder is one
+/// character. Nothing clamps the figure the renderer reports — unlike the
+/// master's `rms_dbfs` — so a wider one is clipped to the box by
+/// `row_with_readout` instead of running over the bar.
+const READOUT_ADVANCES: f32 = 8.0;
+
+/// The bar's own height, and the floor its width takes: an overlay dragged to
+/// its narrowest shortens the bar rather than inverting it.
+const BAR_HEIGHT: f32 = 8.0;
+
+/// The instant latency against its target, with the spread over the window,
+/// at the width the header leaves it.
 fn latency_meter(
     ui: &mut Ui,
+    width: f32,
     state: &LatencyView,
     stats: Option<&crate::host::timing_stats::WindowStats>,
     target: Option<i64>,
@@ -494,8 +523,10 @@ fn latency_meter(
         Some(t) => (2.0 * t as f64).max(100.0),
         None => 2000.0,
     };
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(width.max(BAR_HEIGHT), BAR_HEIGHT),
+        egui::Sense::hover(),
+    );
     let painter = ui.painter();
     painter.rect_filled(rect, 4.0, theme::FILL);
     let at = |ms: f64| rect.left() + rect.width() * (ms / max_ms).clamp(0.0, 1.0) as f32;
@@ -628,5 +659,26 @@ impl LatencyView {
             target: app.latency.latency_target_ms,
             requested: app.latency.latency_requested_ms,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{READOUT_ADVANCES, reading};
+
+    /// The reading's box is a fixed number of advances so the bar beside it
+    /// never moves. Every latency worth calling one fits in it — and past
+    /// that the box does not grow, `row_with_readout` clips.
+    #[test]
+    fn a_plausible_reading_fits_the_fixed_readout_box() {
+        let box_chars = READOUT_ADVANCES as usize;
+        for ms in [0, 1, 40, 500, 2_000, 99_999] {
+            assert!(
+                reading(Some(ms)).chars().count() <= box_chars,
+                "{ms} ms overflows the box"
+            );
+        }
+        assert!(reading(None).chars().count() <= box_chars);
+        assert!(reading(Some(1_000_000)).chars().count() > box_chars);
     }
 }

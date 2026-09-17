@@ -15,9 +15,10 @@
 //! gradient would spill square corners over the rounded track underneath.
 
 use egui::epaint::{Mesh, Vertex, WHITE_UV};
-use egui::{Color32, Painter, Rect, Response, Sense, Ui, pos2, vec2};
+use egui::{Align2, Color32, Painter, Rect, Response, Sense, Ui, pos2, vec2};
 
 use crate::host::peak_hold::{METER_DB_MAX, METER_DB_MIN};
+use crate::ui::theme;
 
 /// The stops of `linear-gradient(90deg, #4dd7ff 0%, #7bff6a 60%, #ffd13a 82%,
 /// #ff5d5d 100%)`.
@@ -158,6 +159,35 @@ const CONTRIB: [(f32, [u8; 3]); 2] = [(0.0, [0x8a, 0xf0, 0xff]), (1.0, [0xff, 0x
 /// What the level drops to while a contribution is painted over it, so the two
 /// are read as foreground and background rather than as one bar.
 const UNDER_CONTRIB: u8 = 97; // 0.38 × 255
+
+/// A meter that takes its row with the reading in a fixed box at the right
+/// end — the shape `.master-header` gives the master meter, and the latency
+/// section's grid its own. `bar` draws the meter at the width handed to it.
+///
+/// The box is fixed on purpose: one sized to the reading would drag the bar a
+/// few points left and right every time the number gained or lost a digit,
+/// which is the one thing a meter must not do. `advances` is that width in
+/// monospace advances — pick it from the widest reading the caller can
+/// produce. A longer one is clipped to the box rather than let over the bar.
+pub fn row_with_readout(ui: &mut Ui, advances: f32, reading: &str, bar: impl FnOnce(&mut Ui, f32)) {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let (advance, row_height) = ui.fonts_mut(|f| (f.glyph_width(&font, '0'), f.row_height(&font)));
+    let box_width = advance * advances;
+    bar(
+        ui,
+        ui.available_width() - box_width - ui.spacing().item_spacing.x,
+    );
+    let (rect, _) = ui.allocate_exact_size(vec2(box_width, row_height), Sense::hover());
+    ui.painter()
+        .with_clip_rect(rect.intersect(ui.clip_rect()))
+        .text(
+            rect.right_center(),
+            Align2::RIGHT_CENTER,
+            reading,
+            font,
+            theme::TEXT_STRONG,
+        );
+}
 
 /// `.meter-bar.level-meter` at a width the caller decides: `level` and `peak`
 /// are already mapped to 0..1 by the caller (`meter_fraction`), `clipping`
