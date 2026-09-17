@@ -80,8 +80,7 @@ impl StudioSpike {
                                     .color(theme::TEXT_STRONG),
                             );
                             let response = ui.add(
-                                egui::Slider::new(&mut value, 0.0..=2.0)
-                                    .step_by(0.01)
+                                widgets::stepped(egui::Slider::new(&mut value, 0.0..=2.0), 0.01)
                                     .show_value(false),
                             );
                             if response.double_clicked() {

@@ -87,9 +87,8 @@ impl StudioSpike {
             }
             if ui
                 .add(
-                    egui::Slider::new(&mut gain, -24.0..=12.0)
-                        .show_value(false)
-                        .step_by(0.1),
+                    widgets::stepped(egui::Slider::new(&mut gain, -24.0..=12.0), 0.1)
+                        .show_value(false),
                 )
                 .changed()
             {

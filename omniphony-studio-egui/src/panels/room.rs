@@ -279,8 +279,7 @@ fn center_blend_row(ui: &mut Ui, blend: &mut f64) -> Step {
                 )
                 .on_hover_text(t("room.centerBlend.resetTitle"));
             let slider = ui.add(
-                egui::Slider::new(&mut percent, 0.0..=100.0)
-                    .step_by(1.0)
+                widgets::stepped(egui::Slider::new(&mut percent, 0.0..=100.0), 1.0)
                     .show_value(false),
             );
             (slider, value)
@@ -297,4 +296,40 @@ fn center_blend_row(ui: &mut Ui, blend: &mut f64) -> Step {
         *blend = f64::from(percent / 100.0);
     }
     step
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The renderer keeps the blend as an `f32` and echoes it back, so the
+    /// `59 %` the slider sent returns as `58.999996 %`. A stepped slider that
+    /// snapped an existing value to its grid while drawing reported a change
+    /// nobody made: the form committed on every frame, the renderer re-planned
+    /// the layout at the frame rate and echoed the same value again — a loop
+    /// that only stopped with the section folded.
+    #[test]
+    fn an_echoed_blend_is_not_a_change() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 60.0));
+        let echoed = f64::from(0.59_f32);
+        let mut blend = echoed;
+        for frame in 0..3 {
+            let mut step = Step::default();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| step = center_blend_row(ui, &mut blend),
+            );
+            // Nothing paints here; egui still wants its font atlas taken.
+            output.textures_delta.clear();
+            assert!(
+                !step.preview && !step.commit,
+                "frame {frame}: the slider reported a change nobody made"
+            );
+        }
+        assert_eq!(blend, echoed, "the slider rewrote a value nobody touched");
+    }
 }

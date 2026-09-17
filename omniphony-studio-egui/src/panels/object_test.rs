@@ -464,9 +464,8 @@ impl StudioSpike {
             );
             if ui
                 .add(
-                    egui::Slider::new(&mut pos, 0.0..=PERIOD_STEPS)
-                        .show_value(false)
-                        .step_by(1.0),
+                    widgets::stepped(egui::Slider::new(&mut pos, 0.0..=PERIOD_STEPS), 1.0)
+                        .show_value(false),
                 )
                 .changed()
             {
@@ -518,9 +517,8 @@ impl StudioSpike {
                 ),
             );
             let response = ui.add(
-                egui::Slider::new(radius, 0.0..=RADIUS_MAX)
-                    .show_value(false)
-                    .step_by(0.01),
+                widgets::stepped(egui::Slider::new(radius, 0.0..=RADIUS_MAX), 0.01)
+                    .show_value(false),
             );
             changed = response.changed();
             // The marks are guides; `snap_radius` is what lands on them.
