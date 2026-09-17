@@ -37,15 +37,35 @@ pub struct ScriptEditor {
     pub status: Option<(String, bool)>,
     /// Snapshot of the view buffer at request time, to protect ongoing typing.
     pending: Option<Pending>,
+    saved_text: String,
+    saved_name: String,
+    confirm: Option<Action>,
 }
 
 #[derive(Clone, Debug)]
 enum Pending {
     Load { text: String },
-    Save,
+    Save { text: String, name: String },
 }
 
 impl ScriptEditor {
+    fn dirty(&self) -> bool {
+        self.text != self.saved_text || self.name != self.saved_name
+    }
+    fn needs_confirmation(&self) -> bool {
+        self.dirty() || self.pending.is_some()
+    }
+
+    fn request_action(&mut self, action: Action) -> Option<Action> {
+        if !matches!(action, Action::Save) && self.needs_confirmation() {
+            self.confirm = Some(action);
+            None
+        } else {
+            self.confirm = None;
+            Some(action)
+        }
+    }
+
     fn cancel_wait(&mut self) {
         self.pending = None;
         self.status = Some((t("backend.file.editor.waitCancelled").to_owned(), false));
@@ -56,12 +76,16 @@ impl ScriptEditor {
             Some(Pending::Load { text }) if text == self.text => {
                 self.text = file.content;
                 self.name = file.name;
+                self.saved_text.clone_from(&self.text);
+                self.saved_name.clone_from(&self.name);
                 self.status = Some((t("backend.file.editor.loaded").to_owned(), false));
             }
             Some(Pending::Load { .. }) => {
                 self.status = Some((t("backend.file.editor.editedDuringLoad").to_owned(), true));
             }
-            Some(Pending::Save) => {
+            Some(Pending::Save { text, name }) => {
+                self.saved_text = text;
+                self.saved_name = name;
                 // Acknowledgement is about the submitted revision. Typing and
                 // filename edits made since Save belong to the next revision.
                 self.status = Some((t("backend.file.editor.saved").to_owned(), false));
@@ -280,8 +304,28 @@ impl StudioSpike {
                 self.script_editor_body(ui, (content.height() * 0.88).min(660.0));
             });
         if modal.should_close() {
-            self.script_editor = None;
+            self.request_script_action(Action::Close, ctx);
         }
+        if ctx.input(|i| i.viewport().close_requested())
+            && self
+                .script_editor
+                .as_ref()
+                .is_some_and(ScriptEditor::needs_confirmation)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.request_script_action(Action::Quit, ctx);
+        }
+    }
+
+    fn request_script_action(&mut self, action: Action, ctx: &egui::Context) {
+        let ready = self
+            .script_editor
+            .as_mut()
+            .and_then(|editor| editor.request_action(action));
+        if let Some(action) = ready {
+            self.apply_script_action(action, ctx);
+        }
+        ctx.request_repaint();
     }
 
     fn script_editor_body(&mut self, ui: &mut Ui, height: f32) {
@@ -290,7 +334,6 @@ impl StudioSpike {
         };
         let (backend, key) = (editor.backend.clone(), editor.key.clone());
         let renderer_is_local = editor.renderer_is_local;
-        let extensions = editor.extensions.clone();
         let files: Vec<String> = {
             let live = self.host.read();
             live.backend_files
@@ -298,6 +341,7 @@ impl StudioSpike {
                 .cloned()
                 .unwrap_or_default()
         };
+        let mut close = false;
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(t("backend.file.editor.title"))
@@ -311,10 +355,30 @@ impl StudioSpike {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(t("backend.file.editor.close")).clicked() {
-                    self.script_editor = None;
+                    close = true;
                 }
             });
         });
+        if close {
+            self.request_script_action(Action::Close, ui.ctx());
+        }
+        let mut confirmed = None;
+        if let Some(editor) = &mut self.script_editor
+            && editor.confirm.is_some()
+        {
+            ui.colored_label(theme::WARN, t("backend.file.editor.discardPrompt"));
+            ui.horizontal(|ui| {
+                if ui.button(t("backend.file.editor.keepEditing")).clicked() {
+                    editor.confirm = None;
+                }
+                if ui.button(t("backend.file.editor.discard")).clicked() {
+                    confirmed = editor.confirm.take();
+                }
+            });
+        }
+        if let Some(action) = confirmed {
+            self.apply_script_action(action, ui.ctx());
+        }
         if self.script_editor.is_none() {
             return;
         }
@@ -366,6 +430,7 @@ impl StudioSpike {
             && let Some(editor) = &mut self.script_editor
         {
             editor.cancel_wait();
+            crate::host::services::backend_files::cancel(&self.host);
         }
 
         // The editor itself takes what the toolbar and the status line leave.
@@ -404,13 +469,34 @@ impl StudioSpike {
         }
 
         if let Some(name) = open {
-            if let Some(editor) = &mut self.script_editor {
-                editor.name = name.clone();
-            }
-            self.request_backend_file(Some(name));
+            self.request_script_action(Action::Open(name), ui.ctx());
         }
+        if let Some(action) = action {
+            self.request_script_action(action, ui.ctx());
+        }
+    }
+
+    fn apply_script_action(&mut self, action: Action, ctx: &egui::Context) {
         match action {
-            Some(Action::Browse) => {
+            Action::Close | Action::Quit => {
+                crate::host::services::backend_files::cancel(&self.host);
+                self.script_editor = None;
+                if matches!(action, Action::Quit) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            Action::Open(name) => {
+                if let Some(editor) = &mut self.script_editor {
+                    editor.name = name.clone();
+                }
+                self.request_backend_file(Some(name));
+            }
+            Action::Browse => {
+                let extensions = self
+                    .script_editor
+                    .as_ref()
+                    .map(|e| e.extensions.clone())
+                    .unwrap_or_default();
                 if let Some(path) = crate::ui::file_dialogs::pick_backend_file_path(extensions) {
                     if let Some(editor) = &mut self.script_editor {
                         editor.name = path.clone();
@@ -418,7 +504,8 @@ impl StudioSpike {
                     self.request_backend_file(Some(path));
                 }
             }
-            Some(Action::New) => {
+            Action::New => {
+                crate::host::services::backend_files::cancel(&self.host);
                 if let Some(editor) = &mut self.script_editor {
                     let ext = editor
                         .extensions
@@ -431,7 +518,7 @@ impl StudioSpike {
                     editor.status = Some((t("backend.file.editor.new").to_owned(), false));
                 }
             }
-            Some(Action::Reload) => {
+            Action::Reload => {
                 let name = self
                     .script_editor
                     .as_ref()
@@ -439,8 +526,7 @@ impl StudioSpike {
                     .filter(|n| !n.is_empty());
                 self.request_backend_file(name);
             }
-            Some(Action::Save) => self.save_backend_file(),
-            None => {}
+            Action::Save => self.save_backend_file(),
         }
     }
 
@@ -454,7 +540,10 @@ impl StudioSpike {
             return;
         }
         editor.status = Some((t("backend.file.editor.saving").to_owned(), false));
-        editor.pending = Some(Pending::Save);
+        editor.pending = Some(Pending::Save {
+            text: editor.text.clone(),
+            name: name.clone(),
+        });
         let (backend, key, content) = (
             editor.backend.clone(),
             editor.key.clone(),
@@ -480,6 +569,14 @@ impl StudioSpike {
         {
             if let Some(editor) = &mut self.script_editor {
                 editor.pending = None;
+                use crate::osc::dispatch::BackendFileFailure;
+                let message = match message {
+                    BackendFileFailure::Renderer(message) => message,
+                    BackendFileFailure::TimedOut => t("backend.file.editor.timedOut").to_owned(),
+                    BackendFileFailure::ConnectionChanged => {
+                        t("backend.file.editor.connectionChanged").to_owned()
+                    }
+                };
                 editor.status = Some((message, true));
             }
             return;
@@ -493,7 +590,11 @@ impl StudioSpike {
     }
 }
 
+#[derive(Clone, Debug)]
 enum Action {
+    Close,
+    Quit,
+    Open(String),
     Browse,
     New,
     Reload,
@@ -518,7 +619,10 @@ mod tests {
         let mut editor = ScriptEditor {
             text: "unsaved".into(),
             name: "next.lua".into(),
-            pending: Some(Pending::Save),
+            pending: Some(Pending::Save {
+                text: "submitted".into(),
+                name: "saved.lua".into(),
+            }),
             ..Default::default()
         };
         editor.cancel_wait();
@@ -533,7 +637,10 @@ mod tests {
         let mut editor = ScriptEditor {
             text: "newer revision".into(),
             name: "next.lua".into(),
-            pending: Some(Pending::Save),
+            pending: Some(Pending::Save {
+                text: "submitted".into(),
+                name: "saved.lua".into(),
+            }),
             ..Default::default()
         };
         editor.accept_content(reply());
@@ -570,6 +677,41 @@ mod tests {
         editor.text = "typed".into();
         editor.accept_content(reply());
         assert_eq!(editor.text, "typed");
+    }
+
+    #[test]
+    fn destructive_actions_require_confirmation_and_save_acks_track_revisions() {
+        let mut editor = ScriptEditor::default();
+        assert!(editor.request_action(Action::Close).is_some());
+        editor.text = "unsaved".into();
+        for action in [
+            Action::Close,
+            Action::Quit,
+            Action::New,
+            Action::Reload,
+            Action::Browse,
+            Action::Open("another.lua".into()),
+        ] {
+            assert!(editor.request_action(action).is_none());
+            assert!(editor.confirm.is_some());
+            editor.confirm = None; // Keep editing
+            assert_eq!(editor.text, "unsaved");
+        }
+        assert!(editor.request_action(Action::Save).is_some());
+        editor.name = "saved.lua".into();
+        editor.pending = Some(Pending::Save {
+            text: editor.text.clone(),
+            name: editor.name.clone(),
+        });
+        editor.accept_content(reply());
+        assert!(!editor.dirty());
+        editor.pending = Some(Pending::Save {
+            text: editor.text.clone(),
+            name: editor.name.clone(),
+        });
+        editor.text.push_str(" newer");
+        editor.accept_content(reply());
+        assert!(editor.dirty());
     }
 
     fn kinds(src: &str) -> Vec<(&str, Tok)> {

@@ -202,3 +202,15 @@ maintaining a second 1,444-line copy. Existing parser tests remain in the core;
 serialization and public event variants are unchanged. Linux CI type-checks the
 Tauri host with its committed lockfile, without requiring a release sidecar
 bundle, to catch shared-core dependency and API drift before release.
+### Script draft protection and deadlines
+
+File requests now have a 15-second deadline on the core service clock, so hiding
+or minimizing the editor cannot suspend timeout handling. Connection changes
+interrupt pending requests with a typed failure; local UI code translates that
+failure. Close, quit, New, Reload and file selection ask before discarding a
+dirty document or abandoning a pending request. Save acknowledgements mark
+only the submitted revision as saved; typing after Save remains dirty.
+
+This does not cancel a renderer write already in flight. Correlation of late
+same-parameter responses from the legacy untagged protocol remains open in
+lot03 and requires a compatible wire-protocol extension.

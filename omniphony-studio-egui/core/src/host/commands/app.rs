@@ -160,11 +160,15 @@ pub fn take_backend_file(
 }
 
 /// Consume a failure only for the editor that requested this parameter.
-pub fn take_backend_file_error(state: &SharedState, backend: &str, key: &str) -> Option<String> {
+pub fn take_backend_file_error(
+    state: &SharedState,
+    backend: &str,
+    key: &str,
+) -> Option<crate::osc::dispatch::BackendFileFailure> {
     let mut live = state.inner.lock().unwrap();
     match &live.backend_file_error {
         Some(error) if error.backend == backend && error.key == key => {
-            live.backend_file_error.take().map(|error| error.message)
+            live.backend_file_error.take().map(|error| error.failure)
         }
         _ => None,
     }

@@ -416,6 +416,10 @@ fn reset_connection_model(model: &mut Live) {
         crate::model::app_state::AppState::new(Vec::new()),
     );
     let mut fresh = Live::new(app);
+    fresh.backend_file_error = model
+        .backend_file_pending
+        .take()
+        .map(crate::host::services::backend_files::interrupted);
     fresh.overlay_prefs = model.overlay_prefs.take();
     fresh.interests = std::mem::take(&mut model.interests);
     fresh.diagnostics = std::mem::take(&mut model.diagnostics);

@@ -68,6 +68,7 @@ pub const TRAIL_MAX_POINTS: usize = 240;
 /// The whole live model: the host's `AppState` plus the UI-only mirrors.
 pub struct Live {
     pub diagnostics: crate::host::diagnostics::History,
+    pub backend_file_pending: Option<crate::host::services::backend_files::Pending>,
     pub app: AppState,
     /// Whether the renderer has ever published a master level. Until it has,
     /// the host derives one from the speakers.
@@ -223,7 +224,13 @@ pub struct BackendFile {
 pub struct BackendFileError {
     pub backend: String,
     pub key: String,
-    pub message: String,
+    pub failure: BackendFileFailure,
+}
+#[derive(Clone, Debug)]
+pub enum BackendFileFailure {
+    Renderer(String),
+    TimedOut,
+    ConnectionChanged,
 }
 
 /// The host's `LATENCY_RAW_WINDOW_MS`.
@@ -421,6 +428,7 @@ impl Live {
             object_test_clip: None,
             backend_files: HashMap::new(),
             backend_file_content: None,
+            backend_file_pending: None,
             backend_file_error: None,
             options_schema: None,
             object_generators_schema: None,
@@ -1141,6 +1149,7 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             name,
             content,
         } => {
+            crate::host::services::backend_files::finish(live, &backend, &key);
             live.backend_file_content = Some(BackendFile {
                 backend,
                 key,
@@ -1154,11 +1163,12 @@ fn apply_event_inner(live: &mut Live, ev: OscEvent) -> Change {
             key,
             message,
         } => {
+            crate::host::services::backend_files::finish(live, &backend, &key);
             live.push_log("error", "backend", format!("{backend}/{key}: {message}"));
             live.backend_file_error = Some(BackendFileError {
                 backend,
                 key,
-                message,
+                failure: BackendFileFailure::Renderer(message),
             });
             Change::Snapshot
         }
