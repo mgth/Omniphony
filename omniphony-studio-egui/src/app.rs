@@ -1011,13 +1011,12 @@ impl eframe::App for StudioSpike {
     /// `beforeunload`: a test left playing would outlive the window, so the
     /// renderer is told to stop before this host goes away.
     fn on_exit(&mut self) {
-        self.services.shutdown();
+        self.services.stop_audio_operations(&self.host);
         if let Some(synthetic) = &mut self.synthetic {
             synthetic.shutdown();
         }
-        crate::host::services::auto_tune::revert(&self.host);
-        self.stop_speaker_test();
         self.stop_object_test();
+        self.services.shutdown();
         self.stop_launched_renderer();
         self.listener.shutdown();
     }

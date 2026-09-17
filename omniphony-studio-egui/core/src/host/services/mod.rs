@@ -106,7 +106,18 @@ pub struct ServiceRuntime {
     watchdog: Worker,
 }
 impl ServiceRuntime {
+    /// Stop periodic producers, then terminate audio operations immediately.
+    /// A slow watchdog join must not extend a test tone's safety deadline.
+    pub fn stop_audio_operations(&mut self, state: &SharedState) {
+        self.watchdog.request_stop();
+        self.clock.shutdown();
+        speaker_test::stop(state);
+        auto_tune::revert(state);
+    }
+
     pub fn shutdown(&mut self) {
+        self.clock.request_stop();
+        self.watchdog.request_stop();
         self.clock.shutdown();
         self.watchdog.shutdown();
     }
@@ -157,6 +168,35 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
+
+    #[test]
+    fn shutdown_sends_stop_before_joining_a_blocked_watchdog() {
+        let mut state = crate::host::commands::tests::state();
+        let (tx, commands) = std::sync::mpsc::channel();
+        state.osc_tx = tx;
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let mut runtime = ServiceRuntime {
+            clock: Worker::spawn("test-clock", |stop| {
+                while !stop.cancelled() {
+                    stop.wait(None);
+                }
+            })
+            .unwrap(),
+            watchdog: Worker::spawn("test-watchdog", move |_| {
+                let _ = wait.recv();
+            })
+            .unwrap(),
+        };
+        speaker_test::start(&state, 2, -8.0, "test_only".into(), "burst");
+        commands.try_iter().for_each(drop);
+        runtime.stop_audio_operations(&state);
+        assert!(
+            matches!(commands.try_recv().unwrap(), crate::osc::Control::Send { args, .. } if matches!(args.first(), Some(rosc::OscType::Int(-1))))
+        );
+        assert!(state.read().speaker_test.running.is_none());
+        release.send(()).unwrap();
+        runtime.shutdown();
+    }
 
     /// A burst has to end on time with the clock parked on a distant deadline.
     ///

@@ -43,10 +43,15 @@ impl Worker {
             thread: Some(thread),
         })
     }
-    pub fn shutdown(&mut self) {
+    pub fn request_stop(&self) {
         self.stop.0.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
+        if let Some(thread) = &self.thread {
             thread.thread().unpark();
+        }
+    }
+    pub fn shutdown(&mut self) {
+        self.request_stop();
+        if let Some(thread) = self.thread.take() {
             if thread.join().is_err() {
                 log::error!("runtime worker panicked during shutdown");
             }

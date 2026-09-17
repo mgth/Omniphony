@@ -308,8 +308,10 @@ pub fn expected_orender_path(app: &HostPaths, orender_path: Option<String>) -> O
 }
 
 fn run_command(mut cmd: ProcessCommand, action: &str) -> Result<String, String> {
-    let output = crate::host::process::capture(&mut cmd, std::time::Duration::from_secs(10))
-        .map_err(|e| format!("{action}: {e}"))?;
+    // Actions can include an interactive elevation prompt; timing out its
+    // parent does not cancel the elevated action. Short limits apply only to
+    // non-interactive discovery/status queries below.
+    let output = cmd.output().map_err(|e| format!("{action}: {e}"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
