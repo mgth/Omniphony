@@ -439,6 +439,7 @@ fn reset_connection_model(model: &mut Live) {
     fresh.diagnostics.restart();
     fresh.log = std::mem::take(&mut model.log);
     fresh.snapshot_epoch = model.snapshot_epoch.wrapping_add(1);
+    fresh.layout_context_generation = model.layout_context_generation.wrapping_add(1);
     *model = fresh;
 }
 

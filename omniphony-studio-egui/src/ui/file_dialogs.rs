@@ -7,43 +7,9 @@
 use rfd::FileDialog;
 
 use crate::host::commands::layout_io;
-use crate::host::commands::{HostPaths, SharedState};
 
 fn path_string(path: std::path::PathBuf) -> String {
     path.to_string_lossy().to_string()
-}
-
-pub fn pick_import_layout_path(app: &HostPaths, state: &SharedState) -> Option<String> {
-    let mut dialog = FileDialog::new().add_filter("Layout", &["json", "yaml", "yml"]);
-    if let Some(dir) = layout_io::import_start_dir(app, state) {
-        dialog = dialog.set_directory(dir);
-    }
-    let picked = dialog.pick_file()?;
-    if let Some(parent) = picked.parent() {
-        layout_io::remember_import_dir(state, parent);
-    }
-    Some(path_string(picked))
-}
-
-/// Picker for the dedicated "Presets" button: always opens in the bundled
-/// presets dir. Unlike the generic import picker it ignores — and doesn't
-/// update — the remembered import dir, since the presets live at a fixed
-/// location the user shouldn't have to navigate back to.
-pub fn pick_preset_layout_path(app: &HostPaths) -> Option<String> {
-    let mut dialog = FileDialog::new().add_filter("Layout", &["json", "yaml", "yml"]);
-    if let Some(dir) = layout_io::presets_dir(app) {
-        dialog = dialog.set_directory(dir);
-    }
-    dialog.pick_file().map(path_string)
-}
-
-pub fn pick_export_layout_path(suggested_name: Option<String>) -> Option<String> {
-    FileDialog::new()
-        .add_filter("Layout YAML", &["yaml", "yml"])
-        .add_filter("Layout JSON", &["json"])
-        .set_file_name(layout_io::layout_export_file_name(suggested_name))
-        .save_file()
-        .map(path_string)
 }
 
 pub fn pick_import_evaluation_artifact_path() -> Option<String> {

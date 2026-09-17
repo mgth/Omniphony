@@ -103,6 +103,8 @@ pub struct Live {
     pub last_frame_reset: Option<Instant>,
     /// Bumped on every `Change::Snapshot`; the UI compares it to rebuild caches.
     pub snapshot_epoch: u64,
+    /// Layout imports must not outlive a transport reset or local profile intent.
+    pub(crate) layout_context_generation: u64,
     /// Origin of the millisecond clock the rolling windows are keyed on.
     pub started: Instant,
     /// Instant latency over the last four seconds, so the meter can show the
@@ -438,6 +440,7 @@ impl Live {
             clip: None,
             last_frame_reset: None,
             snapshot_epoch: 0,
+            layout_context_generation: 0,
             started: Instant::now(),
         }
     }

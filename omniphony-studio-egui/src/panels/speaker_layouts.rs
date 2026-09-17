@@ -11,23 +11,9 @@
 use egui::Ui;
 
 use crate::app::StudioSpike;
-use crate::host::commands::HostPaths;
 use crate::host::commands::speakers;
-use crate::i18n::{t, tf};
-use crate::model::layouts::{Layout, Speaker};
-
-/// The renderer's own mirror of the live layout. Pushing it back would echo
-/// what the renderer just said.
-const LIVE_LAYOUT_KEY: &str = "omniphony-live";
-
-/// Which picker an import starts from.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Pick {
-    /// The bundled presets folder.
-    Presets,
-    /// Wherever the user last imported from.
-    Import,
-}
+use crate::i18n::t;
+use crate::model::layouts::Speaker;
 
 impl StudioSpike {
     /// Presets, Import, Export, Add — right of the Speakers header.
@@ -47,115 +33,26 @@ impl StudioSpike {
         // anything placed from the configured width landed inside it. They
         // wrap instead, as the web's flex row does.
         ui.horizontal_wrapped(|ui| {
-            ui.add_enabled_ui(!frozen, |ui| {
+            ui.add_enabled_ui(!frozen && !self.layout_transfer.busy(), |ui| {
                 if ui
                     .button(t("config.presets"))
                     .on_hover_text(t("config.presetsHint"))
                     .clicked()
                 {
-                    self.import_layout(Pick::Presets);
+                    self.layout_transfer.import(&self.host, true);
                 }
                 if ui.button(t("config.import")).clicked() {
-                    self.import_layout(Pick::Import);
+                    self.layout_transfer.import(&self.host, false);
                 }
                 if ui.button(t("config.export")).clicked() {
-                    self.export_layout();
+                    self.layout_transfer.export(&self.host);
                 }
                 if ui.button(format!("+ {}", t("speaker.add"))).clicked() {
                     self.add_speaker();
                 }
             });
         });
-    }
-
-    fn import_layout(&mut self, pick: Pick) {
-        let paths = HostPaths::bundled();
-        let state = self.host.clone();
-        let path = match pick {
-            Pick::Presets => crate::ui::file_dialogs::pick_preset_layout_path(&paths),
-            Pick::Import => crate::ui::file_dialogs::pick_import_layout_path(&paths, &state),
-        };
-        // An empty answer is a cancelled dialog, which is not a failure.
-        let Some(path) = path.filter(|p| !p.trim().is_empty()) else {
-            return;
-        };
-        self.log(
-            "info",
-            "layout",
-            tf("log.layoutImportRequested", &[("path", &path)]),
-        );
-        match crate::host::commands::layout_io::import_layout_from_path(&state, path.clone()) {
-            Ok(payload) => {
-                let key = payload
-                    .get("selectedLayoutKey")
-                    .and_then(|k| k.as_str())
-                    .map(str::to_owned);
-                if let Some(key) = key {
-                    self.apply_layout_to_renderer(&key);
-                }
-                self.speaker_name_edit.discard();
-                self.selection.speaker = None;
-                self.log(
-                    "info",
-                    "layout",
-                    tf("log.layoutImported", &[("path", &path)]),
-                );
-            }
-            Err(error) => self.log(
-                "error",
-                "layout",
-                tf("log.layoutImportFailed", &[("error", &error)]),
-            ),
-        }
-    }
-
-    /// Push a whole layout to the renderer and commit it. Without this an
-    /// import would change only Studio's picture of the room.
-    fn apply_layout_to_renderer(&mut self, key: &str) {
-        if key.is_empty() || key == LIVE_LAYOUT_KEY {
-            return;
-        }
-        let payload = {
-            let live = self.host.read();
-            let Some(layout) = live.app.layouts.iter().find(|l| l.key == key) else {
-                return;
-            };
-            replace_layout_payload(layout)
-        };
-        speakers::apply_layout_document(&self.host, payload);
-    }
-
-    fn export_layout(&mut self) {
-        let layout = {
-            let live = self.host.read();
-            let key = live.app.selected_layout_key.clone();
-            live.app
-                .layouts
-                .iter()
-                .find(|l| Some(&l.key) == key.as_ref())
-                .cloned()
-        };
-        let Some(layout) = layout else { return };
-        let suggested =
-            crate::host::commands::layout_io::default_layout_export_name(layout.clone());
-        let Some(path) = crate::ui::file_dialogs::pick_export_layout_path(Some(suggested))
-            .filter(|p| !p.trim().is_empty())
-        else {
-            return;
-        };
-        let exported = path.clone();
-        match crate::host::commands::layout_io::export_layout_to_path(path, layout) {
-            Ok(()) => self.log(
-                "info",
-                "layout",
-                tf("log.layoutExported", &[("path", &exported)]),
-            ),
-            Err(error) => self.log(
-                "error",
-                "layout",
-                tf("log.layoutExportFailed", &[("error", &error)]),
-            ),
-        }
+        self.layout_transfer.show_status(ui);
     }
 
     /// Append a speaker at the selected one's pose. A new speaker is nearly
@@ -203,117 +100,5 @@ impl StudioSpike {
     /// One line into the log overlay.
     pub(crate) fn log(&self, level: &str, target: &str, message: impl Into<String>) {
         crate::host::commands::app::push_log(&self.host, level, target, message.into());
-    }
-}
-
-/// `buildReplaceLayoutPayload`: the whole layout as one patch, with the
-/// frontend's clamps — which are the ones that matter, since the web never uses
-/// the host's single-field helpers.
-fn replace_layout_payload(layout: &Layout) -> serde_json::Value {
-    let speakers: Vec<serde_json::Value> = layout
-        .speakers
-        .iter()
-        .enumerate()
-        .map(|(index, speaker)| {
-            let name = if speaker.id.is_empty() {
-                format!("spk-{index}")
-            } else {
-                speaker.id.clone()
-            };
-            serde_json::json!({
-                "name": name,
-                "coordMode": speaker.coord_mode,
-                "x": speaker.x.clamp(-1.0, 1.0),
-                "y": speaker.y.clamp(-1.0, 1.0),
-                "z": speaker.z.clamp(-1.0, 1.0),
-                "azimuth": finite_or(speaker.azimuth_deg, 0.0),
-                "elevation": finite_or(speaker.elevation_deg, 0.0),
-                "distance": number_or(speaker.distance_m, 1.0).max(0.01),
-                "spatialize": speaker.spatialize != 0,
-                "delayMs": speaker.delay_ms.max(0.0),
-                // A band edge of zero means "no edge", which is null on the
-                // wire and not a 0 Hz corner.
-                "freqLow": positive(speaker.freq_low),
-                "freqHigh": positive(speaker.freq_high),
-            })
-        })
-        .collect();
-    serde_json::json!({ "replaceLayout": {
-        "radiusM": number_or(layout.radius_m, 1.0).max(0.01),
-        "speakers": speakers,
-    }})
-}
-
-/// The web's `Number.isFinite(v) ? v : fallback`: an honest zero survives.
-fn finite_or(value: f64, fallback: f64) -> f64 {
-    if value.is_finite() { value } else { fallback }
-}
-
-/// The web's `Number(v) || fallback`: a zero is not a radius or a distance, so
-/// it falls back rather than collapsing the room.
-fn number_or(value: f64, fallback: f64) -> f64 {
-    if value.is_finite() && value != 0.0 {
-        value
-    } else {
-        fallback
-    }
-}
-
-fn positive(value: Option<f32>) -> Option<f32> {
-    value.filter(|v| v.is_finite() && *v > 0.0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn speaker(id: &str) -> Speaker {
-        Speaker {
-            id: id.to_owned(),
-            x: 2.0,
-            y: -3.0,
-            z: 0.5,
-            azimuth_deg: 30.0,
-            elevation_deg: 0.0,
-            distance_m: 0.0,
-            coord_mode: "cartesian".to_owned(),
-            spatialize: 0,
-            delay_ms: -5.0,
-            freq_low: Some(0.0),
-            freq_high: Some(120.0),
-        }
-    }
-
-    #[test]
-    fn the_replace_patch_carries_the_frontends_own_clamps() {
-        let layout = Layout {
-            key: "k".to_owned(),
-            name: "n".to_owned(),
-            speakers: vec![
-                speaker("L"),
-                Speaker {
-                    id: String::new(),
-                    ..speaker("")
-                },
-            ],
-            radius_m: 0.0,
-        };
-        let payload = replace_layout_payload(&layout);
-        let patch = &payload["replaceLayout"];
-        // A zero radius is not a room: it falls back rather than collapsing.
-        assert_eq!(patch["radiusM"], 1.0);
-        let first = &patch["speakers"][0];
-        assert_eq!(first["x"], 1.0, "out-of-cube coordinates are clamped");
-        assert_eq!(first["y"], -1.0);
-        // A zero distance is not a distance: it falls back to one metre
-        // rather than collapsing the speaker onto the listener.
-        assert_eq!(first["distance"], 1.0);
-        assert_eq!(first["delayMs"], 0.0, "a negative delay is not a delay");
-        assert_eq!(first["spatialize"], false);
-        // An empty band edge is null, not a 0 Hz corner.
-        assert!(first["freqLow"].is_null());
-        assert_eq!(first["freqHigh"], 120.0);
-        // An unnamed speaker gets its index, so the renderer can address it.
-        assert_eq!(patch["speakers"][1]["name"], "spk-1");
     }
 }
