@@ -1,5 +1,7 @@
 {
   "common.valueRequired": "Une valeur est nécessaire.",
+  "backend.file.editor.waitCancelled": "Attente annulée ; vos modifications sont conservées. Le renderer peut encore terminer la requête.",
+  "backend.file.editor.cancelWait": "Annuler l’attente",
   "backend.file.editor.editedDuringLoad": "Le texte a changé pendant le chargement ; vos modifications sont conservées. Rechargez pour les remplacer.",
   "backend.file.editor.saved": "Enregistré.",
   "app.title": "Omniphony Studio",

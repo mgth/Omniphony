@@ -46,6 +46,11 @@ enum Pending {
 }
 
 impl ScriptEditor {
+    fn cancel_wait(&mut self) {
+        self.pending = None;
+        self.status = Some((t("backend.file.editor.waitCancelled").to_owned(), false));
+    }
+
     fn accept_content(&mut self, file: crate::osc::dispatch::BackendFile) {
         match self.pending.take() {
             Some(Pending::Load { text }) if text == self.text => {
@@ -356,6 +361,13 @@ impl StudioSpike {
             });
         });
 
+        if busy
+            && ui.button(t("backend.file.editor.cancelWait")).clicked()
+            && let Some(editor) = &mut self.script_editor
+        {
+            editor.cancel_wait();
+        }
+
         // The editor itself takes what the toolbar and the status line leave.
         let body_height = (height - 90.0).max(160.0);
         let language = self.script_editor.as_ref().and_then(|e| e.language.clone());
@@ -499,6 +511,21 @@ mod tests {
             name: "saved.lua".into(),
             content: "remote".into(),
         }
+    }
+
+    #[test]
+    fn cancelling_wait_preserves_buffer_and_ignores_the_abandoned_reply() {
+        let mut editor = ScriptEditor {
+            text: "unsaved".into(),
+            name: "next.lua".into(),
+            pending: Some(Pending::Save),
+            ..Default::default()
+        };
+        editor.cancel_wait();
+        editor.accept_content(reply());
+        assert!(editor.pending.is_none());
+        assert_eq!(editor.text, "unsaved");
+        assert_eq!(editor.name, "next.lua");
     }
 
     #[test]
