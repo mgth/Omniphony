@@ -21,8 +21,9 @@ pub mod updates;
 pub mod virtual_bed;
 pub mod watchdog;
 
+use crate::host::runtime::Worker;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::host::commands::SharedState;
@@ -51,7 +52,6 @@ impl Tick {
 pub struct Services {
     pub meters: meters::Meters,
     pub speaker_test: speaker_test::SpeakerTest,
-    pub watchdog: watchdog::Watchdog,
     pub gain_tables: interests::GainTables,
     pub idle_feed: interests::IdleFeed,
     pub diagnostics: interests::Diagnostics,
@@ -69,7 +69,6 @@ impl Services {
         for tick in [
             self.meters.tick(state, now),
             self.speaker_test.tick(state, now),
-            self.watchdog.tick(state, now),
             self.gain_tables.tick(state, now),
             self.idle_feed.tick(state, now),
             self.diagnostics.tick(state, now),
@@ -88,58 +87,69 @@ impl Services {
     }
 }
 
-/// A handle on the clock: nudge it when something it watches may have changed
-/// (a packet applied, an interest declared) and it runs its services again.
-#[derive(Clone)]
+/// Cloneable wake handle. Thread::unpark coalesces bursts into one token;
+/// it has no unbounded notification queue and does not own the running state.
+#[derive(Clone, Default)]
 pub struct ServiceClock {
-    nudge: Sender<()>,
+    thread: Arc<Mutex<Option<std::thread::Thread>>>,
 }
-
 impl ServiceClock {
-    /// Make the handle before the thread: the listener is given it as part of
-    /// its waker, and the thread starts once the host state exists.
-    pub fn new() -> (Self, Receiver<()>) {
-        let (nudge, rx) = mpsc::channel();
-        (Self { nudge }, rx)
-    }
-
-    /// Ask for a pass. Cheap and never blocks; a dead clock is ignored,
-    /// because nothing here is worth failing a UI action for.
     pub fn nudge(&self) {
-        let _ = self.nudge.send(());
+        if let Some(thread) = &*self.thread.lock().unwrap() {
+            thread.unpark();
+        }
     }
 }
 
-/// Run the services until the handle is dropped. `waker` is called after a
-/// pass that changed the model, so a falling meter is shown without anything
-/// else having to happen.
+pub struct ServiceRuntime {
+    clock: Worker,
+    watchdog: Worker,
+}
+impl ServiceRuntime {
+    pub fn shutdown(&mut self) {
+        self.clock.shutdown();
+        self.watchdog.shutdown();
+    }
+}
+
+/// The periodic watchdog has its own worker: DNS, configuration and service
+/// manager calls must never delay the speaker-test safety clock.
 pub fn spawn(
     state: Arc<SharedState>,
     waker: Waker,
-    nudges: Receiver<()>,
-) -> std::io::Result<std::thread::JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("studio-services".into())
-        .spawn(move || {
-            let mut services = Services::default();
-            loop {
-                let tick = services.tick(&state, Instant::now());
-                if tick.changed {
-                    waker();
-                }
-                let wait = tick
-                    .next
-                    .map(|at| at.saturating_duration_since(Instant::now()));
-                let waited = match wait {
-                    Some(wait) => nudges.recv_timeout(wait),
-                    // Nothing pending: sleep until something happens.
-                    None => nudges.recv().map_err(|_| RecvTimeoutError::Disconnected),
-                };
-                if matches!(waited, Err(RecvTimeoutError::Disconnected)) {
-                    return;
-                }
+    clock: ServiceClock,
+) -> std::io::Result<ServiceRuntime> {
+    let service_state = state.clone();
+    let repaint = waker.clone();
+    let clock = Worker::spawn("studio-services", move |stop| {
+        *clock.thread.lock().unwrap() = Some(std::thread::current());
+        let mut services = Services::default();
+        while !stop.cancelled() {
+            let tick = services.tick(&service_state, Instant::now());
+            if tick.changed {
+                repaint();
             }
-        })
+            stop.wait(
+                tick.next
+                    .map(|at| at.saturating_duration_since(Instant::now())),
+            );
+        }
+        *clock.thread.lock().unwrap() = None;
+    })?;
+    let watchdog = Worker::spawn("studio-watchdog", move |stop| {
+        let mut watchdog = watchdog::Watchdog::default();
+        while !stop.cancelled() {
+            let tick = watchdog.tick(&state, Instant::now(), &stop);
+            if tick.changed {
+                waker();
+            }
+            stop.wait(
+                tick.next
+                    .map(|at| at.saturating_duration_since(Instant::now())),
+            );
+        }
+    })?;
+    Ok(ServiceRuntime { clock, watchdog })
 }
 
 #[cfg(test)]
@@ -157,7 +167,7 @@ mod tests {
     #[test]
     fn a_burst_ends_on_time_while_the_clock_is_parked() {
         // `clock` is held to the end: dropping the sender would end the loop.
-        let (clock, nudges) = ServiceClock::new();
+        let clock = ServiceClock::default();
         // Wired as the app wires it: what the host announces reaches the clock.
         let state = Arc::new(crate::host::commands::tests::state_with_waker({
             let clock = clock.clone();
@@ -172,7 +182,7 @@ mod tests {
             Ordering::Relaxed,
         );
 
-        spawn(state.clone(), Arc::new(|| {}), nudges).unwrap();
+        let mut runtime = spawn(state.clone(), Arc::new(|| {}), clock.clone()).unwrap();
         // Let the loop take its pass and settle into the long sleep.
         std::thread::sleep(Duration::from_millis(200));
 
@@ -194,6 +204,7 @@ mod tests {
             "burst was cut short of its {:?} window",
             speaker_test::BURST
         );
-        drop(clock);
+        runtime.shutdown();
+        assert_eq!(Arc::strong_count(&state), 1);
     }
 }

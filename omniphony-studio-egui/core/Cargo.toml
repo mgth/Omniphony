@@ -23,6 +23,7 @@ serde_json = "1"
 # Gain-table artifacts arrive zlib-compressed over OSC (same as the Tauri host).
 flate2 = "1"
 log = "0.4"
+tempfile = "3"
 # Cross-platform RSS readout for the stats panel (also used by the Tauri Studio).
 memory-stats = "1"
 # The one HTTP client, for the SOFA catalogue. Same crate and major as the

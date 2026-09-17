@@ -40,7 +40,12 @@ pub struct Watchdog {
 }
 
 impl Watchdog {
-    pub fn tick(&mut self, state: &SharedState, now: Instant) -> Tick {
+    pub fn tick(
+        &mut self,
+        state: &SharedState,
+        now: Instant,
+        stop: &crate::host::runtime::StopToken,
+    ) -> Tick {
         if self
             .last_tick
             .is_some_and(|at| now.duration_since(at) < TICK)
@@ -110,6 +115,9 @@ impl Watchdog {
         if std::net::UdpSocket::bind(("0.0.0.0", cfg.osc_rx_port)).is_err() {
             state.watchdog.lock().unwrap().check_requested_at = None;
             return due;
+        }
+        if stop.cancelled() {
+            return Tick::idle();
         }
         match orender::autostart_orender(&HostPaths::default(), state) {
             Ok(info) => {

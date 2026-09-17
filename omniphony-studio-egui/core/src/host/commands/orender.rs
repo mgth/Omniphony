@@ -152,19 +152,20 @@ fn resolve_orender_binary(
         } else {
             "which"
         };
-        ProcessCommand::new(lookup_cmd)
-            .arg("orender")
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .and_then(|out| {
-                let resolved = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if resolved.is_empty() {
-                    None
-                } else {
-                    Some(PathBuf::from(resolved))
-                }
-            })
+        crate::host::process::capture(
+            ProcessCommand::new(lookup_cmd).arg("orender"),
+            std::time::Duration::from_secs(2),
+        )
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| {
+            let resolved = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if resolved.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(resolved))
+            }
+        })
     })
     .ok_or_else(|| "orender binary not found".to_string())
 }
@@ -307,7 +308,8 @@ pub fn expected_orender_path(app: &HostPaths, orender_path: Option<String>) -> O
 }
 
 fn run_command(mut cmd: ProcessCommand, action: &str) -> Result<String, String> {
-    let output = cmd.output().map_err(|e| format!("{action}: {e}"))?;
+    let output = crate::host::process::capture(&mut cmd, std::time::Duration::from_secs(10))
+        .map_err(|e| format!("{action}: {e}"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
@@ -450,26 +452,33 @@ pub fn get_orender_service_status() -> Result<OrenderServiceStatus, String> {
     #[cfg(target_os = "linux")]
     {
         let service_name = linux_user_service_name();
-        let output = ProcessCommand::new("systemctl")
-            .args([
+        let output = crate::host::process::capture(
+            ProcessCommand::new("systemctl").args([
                 "--user",
                 "show",
                 "-p",
                 "LoadState",
                 "--value",
                 &service_name,
-            ])
-            .output()
-            .map_err(|e| format!("query service status: {e}"))?;
+            ]),
+            std::time::Duration::from_secs(2),
+        )
+        .map_err(|e| format!("query service status: {e}"))?;
         let load_state = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let installed =
             output.status.success() && load_state != "not-found" && !load_state.is_empty();
         let running = if installed {
-            ProcessCommand::new("systemctl")
-                .args(["--user", "is-active", "--quiet", &service_name])
-                .status()
-                .map(|status| status.success())
-                .unwrap_or(false)
+            crate::host::process::capture(
+                ProcessCommand::new("systemctl").args([
+                    "--user",
+                    "is-active",
+                    "--quiet",
+                    &service_name,
+                ]),
+                std::time::Duration::from_secs(2),
+            )
+            .map(|output| output.status.success())
+            .unwrap_or(false)
         } else {
             false
         };
@@ -482,10 +491,11 @@ pub fn get_orender_service_status() -> Result<OrenderServiceStatus, String> {
 
     #[cfg(target_os = "windows")]
     {
-        let output = ProcessCommand::new("sc")
-            .args(["query", ORENDER_SERVICE_NAME])
-            .output()
-            .map_err(|e| format!("query service status: {e}"))?;
+        let output = crate::host::process::capture(
+            ProcessCommand::new("sc").args(["query", ORENDER_SERVICE_NAME]),
+            std::time::Duration::from_secs(2),
+        )
+        .map_err(|e| format!("query service status: {e}"))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let missing =
