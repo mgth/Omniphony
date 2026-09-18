@@ -1226,7 +1226,8 @@ fn row_line(ui: &mut Ui, row: &Row, action: &mut RowAction) {
                     .monospace()
                     .size(theme::FONT_SIZE_SMALL)
                     .color(theme::TEXT_MUTED),
-            ),
+            )
+            .selectable(false),
         );
         // The web's `1fr`: the meter takes whatever the fixed columns to its
         // right leave. Those are placed first, right to left, and the meter is
@@ -1346,6 +1347,11 @@ mod tests {
     /// sit over them and take every click for the row.
     #[test]
     fn the_squares_of_a_row_take_their_own_clicks() {
+        check_row_clicks(true);
+        check_row_clicks(false);
+    }
+
+    fn check_row_clicks(speaker: bool) {
         use super::{Row, RowAction, RowState, list_row};
         let row = Row {
             id: "3".to_owned(),
@@ -1358,7 +1364,7 @@ mod tests {
             detail: None,
             position: None,
             spatialize: true,
-            speaker: true,
+            speaker,
             freq_low: None,
             freq_high: None,
             contribution: None,
@@ -1409,10 +1415,11 @@ mod tests {
             run(vec![button(true)]);
             name(run(vec![button(false)]).0)
         };
-        // Walk in from the right edge: the margin, S, M, then the meter.
+        // Walk across the whole row, including the dB text: only M/S
+        // consume their clicks; all readouts and the badge select the row.
         let mut seen: Vec<&str> = Vec::new();
         let mut x = rect.right() - 2.0;
-        while x > rect.center().x {
+        while x > rect.left() + 2.0 {
             let hit = click(x);
             if seen.last() != Some(&hit) {
                 seen.push(hit);
