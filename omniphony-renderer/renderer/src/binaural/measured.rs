@@ -24,8 +24,10 @@
 //! The interaural delay itself is supplied analytically ([`super::itd`]), so
 //! nothing of the measurement's phase is needed beyond its magnitude.
 
-use realfft::RealFftPlanner;
+use std::sync::Arc;
+
 use realfft::num_complex::Complex;
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 
 use super::hrir::{HRIR_LEN, HrirPair, HrirProvider};
 
@@ -233,19 +235,32 @@ impl MeasuredHrirData {
     /// (the interpolation kernel is linear-phase), hence the reconstruction
     /// runs again on the result.
     pub fn resampled_to(self, target: u32) -> Self {
+        use rayon::prelude::*;
+
         if self.sample_rate == target {
             return self;
         }
         let from = self.sample_rate;
+        // Both the kernel table and the FFT plans are built once for the whole
+        // set: they used to be rebuilt per response (a windowed sinc evaluated
+        // at every output sample, a fresh planner in every `minimum_phase`),
+        // which was most of the cost of a rebuild.
+        let kernel = ResampleKernel::new(from, target);
+        let out_len = self.irs.first().map_or(0, |(l, _)| kernel.out_len(l.len()));
+        // `collect` on an indexed parallel iterator restores the input order,
+        // which `dirs`, `vecs` and `tri` index into.
         let irs = self
             .irs
-            .iter()
-            .map(|(l, r)| {
-                (
-                    minimum_phase(&resample_ir(l, from, target)),
-                    minimum_phase(&resample_ir(r, from, target)),
-                )
-            })
+            .par_iter()
+            .map_init(
+                || (MinPhase::new(out_len), Vec::new()),
+                |(min_phase, buf), (l, r)| {
+                    kernel.resample_into(l, buf);
+                    let left = min_phase.run(buf);
+                    kernel.resample_into(r, buf);
+                    (left, min_phase.run(buf))
+                },
+            )
             .collect();
         Self {
             sample_rate: target,
@@ -601,33 +616,94 @@ fn dir_vec(az_deg: f32, el_deg: f32) -> [f32; 3] {
     [ce * az.sin(), ce * az.cos(), el.sin()]
 }
 
+/// Half-width of the resampling kernel, in input samples.
+const HALF_WIDTH: isize = 16;
+/// Taps per kernel row.
+const KERNEL_WIDTH: usize = 2 * HALF_WIDTH as usize;
+
 /// Offline windowed-sinc resampler for measured IRs (Blackman window,
 /// half-width 16 input samples, low-passed at the lower of the two Nyquists
-/// so downsampling does not alias). Build-time only — O(len·32) per IR.
-fn resample_ir(x: &[f32], from: u32, to: u32) -> Vec<f32> {
-    const HALF_WIDTH: isize = 16;
-    let ratio = to as f64 / from as f64;
-    let cutoff = ratio.min(1.0);
-    let out_len = ((x.len() as f64) * ratio).round() as usize;
-    let mut out = Vec::with_capacity(out_len);
-    for n in 0..out_len {
-        // Position of output sample `n` on the input's sample axis.
-        let t = n as f64 / ratio;
-        let k0 = t.floor() as isize;
-        let mut acc = 0.0f64;
-        for k in (k0 - HALF_WIDTH + 1)..=(k0 + HALF_WIDTH) {
-            if k < 0 || k as usize >= x.len() {
-                continue;
+/// so downsampling does not alias). Build-time only.
+///
+/// The taps depend only on where the output sample falls *between* two input
+/// samples, and `n·from/to` takes just `to / gcd(from, to)` distinct fractional
+/// values — 147 for 48 k → 44.1 k, two for 96 k, four for 192 k. They are
+/// tabulated once here instead of at every output sample, which is what made a
+/// rebuild evaluate tens of millions of `sin`/`cos` (32 taps × 3 transcendentals
+/// per output sample, for 1672 responses).
+struct ResampleKernel {
+    from: u32,
+    to: u32,
+    /// Distinct fractional positions, `to / gcd(from, to)`.
+    phases: usize,
+    /// `phases` rows of [`KERNEL_WIDTH`] taps; output `n` uses row `n % phases`.
+    taps: Vec<f64>,
+}
+
+impl ResampleKernel {
+    fn new(from: u32, to: u32) -> Self {
+        let ratio = to as f64 / from as f64;
+        let cutoff = ratio.min(1.0);
+        let phases = (to / gcd(from, to)) as usize;
+        let mut taps = vec![0.0f64; phases * KERNEL_WIDTH];
+        for (p, row) in taps.chunks_exact_mut(KERNEL_WIDTH).enumerate() {
+            // Only the fractional part of the position matters; the integer
+            // part just selects which input samples the row multiplies.
+            let t = p as f64 / ratio;
+            let frac = t - t.floor();
+            for (j, tap) in row.iter_mut().enumerate() {
+                let d = frac + (HALF_WIDTH - 1 - j as isize) as f64;
+                let w = 0.42
+                    + 0.5 * (std::f64::consts::PI * d / HALF_WIDTH as f64).cos()
+                    + 0.08 * (2.0 * std::f64::consts::PI * d / HALF_WIDTH as f64).cos();
+                *tap = cutoff * sinc(std::f64::consts::PI * cutoff * d) * w;
             }
-            let d = t - k as f64;
-            let w = 0.42
-                + 0.5 * (std::f64::consts::PI * d / HALF_WIDTH as f64).cos()
-                + 0.08 * (2.0 * std::f64::consts::PI * d / HALF_WIDTH as f64).cos();
-            acc += x[k as usize] as f64 * cutoff * sinc(std::f64::consts::PI * cutoff * d) * w;
         }
-        out.push(acc as f32);
+        Self {
+            from,
+            to,
+            phases,
+            taps,
+        }
     }
-    out
+
+    /// Length of the resampled response for an input of `in_len` samples.
+    fn out_len(&self, in_len: usize) -> usize {
+        ((in_len as f64) * (self.to as f64 / self.from as f64)).round() as usize
+    }
+
+    /// Resample `x` into `out`, reusing whatever `out` already holds.
+    fn resample_into(&self, x: &[f32], out: &mut Vec<f32>) {
+        let out_len = self.out_len(x.len());
+        out.clear();
+        out.reserve(out_len);
+        for n in 0..out_len {
+            // First input sample the row multiplies. `floor(n·from/to)` is the
+            // integer division, so the position never drifts along the response.
+            let k0 = (n as u64 * self.from as u64 / self.to as u64) as isize - HALF_WIDTH + 1;
+            let row = &self.taps[(n % self.phases) * KERNEL_WIDTH..][..KERNEL_WIDTH];
+            let mut acc = 0.0f64;
+            for (j, &tap) in row.iter().enumerate() {
+                let k = k0 + j as isize;
+                if k < 0 || k as usize >= x.len() {
+                    continue;
+                }
+                acc += x[k as usize] as f64 * tap;
+            }
+            out.push(acc as f32);
+        }
+    }
+
+    #[cfg(test)]
+    fn resample(&self, x: &[f32]) -> Vec<f32> {
+        let mut out = Vec::new();
+        self.resample_into(x, &mut out);
+        out
+    }
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 fn sinc(x: f64) -> f64 {
@@ -643,57 +719,120 @@ fn sinc(x: f64) -> f64 {
 /// response. The transform size is sixteen times the response length so the
 /// cepstrum does not alias onto itself. Build-time only (`f64`, four
 /// transforms per response).
+///
+/// One-shot; to run it over a set of responses, hold a [`MinPhase`] and call
+/// [`MinPhase::run`] so the plans and buffers are built once.
 pub fn minimum_phase(ir: &[f32]) -> Vec<f32> {
-    let n = ir.len();
-    if n == 0 {
+    if ir.is_empty() {
         return Vec::new();
     }
-    let m = (16 * n).next_power_of_two().max(2048);
-    let half = m / 2;
-    let mut planner = RealFftPlanner::<f64>::new();
-    let fft = planner.plan_fft_forward(m);
-    let ifft = planner.plan_fft_inverse(m);
-    let scale = 1.0 / m as f64;
+    MinPhase::new(ir.len()).run(ir)
+}
 
-    let mut x = fft.make_input_vec();
-    for (dst, &v) in x.iter_mut().zip(ir) {
-        *dst = v as f64;
+/// FFT plans and working buffers for [`minimum_phase`], reusable across
+/// responses of the same length.
+///
+/// Planning is what this saves: the plans only depend on the transform size,
+/// which is fixed for a whole set, yet a one-shot call built a fresh
+/// `RealFftPlanner` and planned both transforms every time — 3344 plans to
+/// resample the 1672 embedded responses. The four buffers are reused too, so a
+/// response costs one allocation (its own output) instead of eight.
+struct MinPhase {
+    /// Response length these plans and buffers are sized for.
+    n: usize,
+    /// Transform size.
+    m: usize,
+    fft: Arc<dyn RealToComplex<f64>>,
+    ifft: Arc<dyn ComplexToReal<f64>>,
+    real_a: Vec<f64>,
+    real_b: Vec<f64>,
+    cplx_a: Vec<Complex<f64>>,
+    cplx_b: Vec<Complex<f64>>,
+}
+
+impl MinPhase {
+    /// Plans and buffers for responses of `n` samples.
+    fn new(n: usize) -> Self {
+        let m = (16 * n).next_power_of_two().max(2048);
+        let mut planner = RealFftPlanner::<f64>::new();
+        let fft = planner.plan_fft_forward(m);
+        let ifft = planner.plan_fft_inverse(m);
+        Self {
+            n,
+            m,
+            real_a: fft.make_input_vec(),
+            real_b: ifft.make_output_vec(),
+            cplx_a: fft.make_output_vec(),
+            cplx_b: fft.make_output_vec(),
+            fft,
+            ifft,
+        }
     }
-    let mut spec = fft.make_output_vec();
-    fft.process(&mut x, &mut spec).expect("forward FFT");
 
-    let peak = spec.iter().map(|c| c.norm()).fold(0.0f64, f64::max);
-    if peak <= 0.0 {
-        return vec![0.0; n];
+    /// Minimum-phase response of `ir`. Re-plans if `ir` is not the length this
+    /// was built for, so a caller may size it from the first response alone.
+    fn run(&mut self, ir: &[f32]) -> Vec<f32> {
+        let n = ir.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        if n != self.n {
+            *self = Self::new(n);
+        }
+        let m = self.m;
+        let half = m / 2;
+        let scale = 1.0 / m as f64;
+
+        // Both transforms use their input buffer as scratch, so every buffer is
+        // written in full before it is read — never carried over from the
+        // previous response.
+        self.real_a.fill(0.0);
+        for (dst, &v) in self.real_a.iter_mut().zip(ir) {
+            *dst = v as f64;
+        }
+        self.fft
+            .process(&mut self.real_a, &mut self.cplx_a)
+            .expect("forward FFT");
+
+        let peak = self.cplx_a.iter().map(|c| c.norm()).fold(0.0f64, f64::max);
+        if peak <= 0.0 {
+            return vec![0.0; n];
+        }
+        let floor = peak * MIN_PHASE_FLOOR;
+        for (dst, src) in self.cplx_b.iter_mut().zip(&self.cplx_a) {
+            *dst = Complex::new(src.norm().max(floor).ln(), 0.0);
+        }
+        self.ifft
+            .process(&mut self.cplx_b, &mut self.real_b)
+            .expect("inverse FFT of the log magnitude");
+
+        // Fold the cepstrum onto the causal side, over the spent input buffer.
+        self.real_a[0] = self.real_b[0] * scale;
+        for k in 1..half {
+            self.real_a[k] = 2.0 * self.real_b[k] * scale;
+        }
+        self.real_a[half] = self.real_b[half] * scale;
+        self.real_a[half + 1..].fill(0.0);
+        self.fft
+            .process(&mut self.real_a, &mut self.cplx_a)
+            .expect("forward FFT of the folded cepstrum");
+
+        for (dst, src) in self.cplx_b.iter_mut().zip(&self.cplx_a) {
+            *dst = src.exp();
+        }
+        // A real spectrum has real DC and Nyquist bins; the transforms above
+        // leave rounding noise on them, which the real inverse refuses.
+        self.cplx_b[0].im = 0.0;
+        self.cplx_b[half].im = 0.0;
+        self.ifft
+            .process(&mut self.cplx_b, &mut self.real_b)
+            .expect("inverse FFT of the minimum-phase spectrum");
+        self.real_b
+            .iter()
+            .take(n)
+            .map(|&v| (v * scale) as f32)
+            .collect()
     }
-    let floor = peak * MIN_PHASE_FLOOR;
-    let mut log_mag: Vec<Complex<f64>> = spec
-        .iter()
-        .map(|c| Complex::new(c.norm().max(floor).ln(), 0.0))
-        .collect();
-    let mut cepstrum = ifft.make_output_vec();
-    ifft.process(&mut log_mag, &mut cepstrum)
-        .expect("inverse FFT of the log magnitude");
-
-    let mut folded = fft.make_input_vec();
-    folded[0] = cepstrum[0] * scale;
-    for k in 1..half {
-        folded[k] = 2.0 * cepstrum[k] * scale;
-    }
-    folded[half] = cepstrum[half] * scale;
-    let mut log_h = fft.make_output_vec();
-    fft.process(&mut folded, &mut log_h)
-        .expect("forward FFT of the folded cepstrum");
-
-    let mut h_min: Vec<Complex<f64>> = log_h.iter().map(|c| c.exp()).collect();
-    // A real spectrum has real DC and Nyquist bins; the transforms above
-    // leave rounding noise on them, which the real inverse refuses.
-    h_min[0].im = 0.0;
-    h_min[half].im = 0.0;
-    let mut out = ifft.make_output_vec();
-    ifft.process(&mut h_min, &mut out)
-        .expect("inverse FFT of the minimum-phase spectrum");
-    out.iter().take(n).map(|&v| (v * scale) as f32).collect()
 }
 
 /// Onset-align `ir` and copy `HRIR_LEN` taps into `out`. Idempotent for an
@@ -867,7 +1006,7 @@ mod tests {
                 ((2.0 * std::f64::consts::PI * f0 * t).sin() * w) as f32
             })
             .collect();
-        let y = resample_ir(&x, from, to);
+        let y = ResampleKernel::new(from, to).resample(&x);
         assert_eq!(y.len(), 441);
         // Quadrature projection at f0 on the target rate vs. an off frequency.
         let project = |f: f64| -> f64 {
@@ -885,6 +1024,98 @@ mod tests {
             on > off * 5.0,
             "tone did not stay at {f0} Hz: on={on} off={off}"
         );
+    }
+
+    /// The kernel the table replaced: a windowed sinc evaluated at every
+    /// output sample. Kept here as the reference the table must reproduce.
+    fn per_sample_resample_ir(x: &[f32], from: u32, to: u32) -> Vec<f32> {
+        let ratio = to as f64 / from as f64;
+        let cutoff = ratio.min(1.0);
+        let out_len = ((x.len() as f64) * ratio).round() as usize;
+        let mut out = Vec::with_capacity(out_len);
+        for n in 0..out_len {
+            let t = n as f64 / ratio;
+            let k0 = t.floor() as isize;
+            let mut acc = 0.0f64;
+            for k in (k0 - HALF_WIDTH + 1)..=(k0 + HALF_WIDTH) {
+                if k < 0 || k as usize >= x.len() {
+                    continue;
+                }
+                let d = t - k as f64;
+                let w = 0.42
+                    + 0.5 * (std::f64::consts::PI * d / HALF_WIDTH as f64).cos()
+                    + 0.08 * (2.0 * std::f64::consts::PI * d / HALF_WIDTH as f64).cos();
+                acc += x[k as usize] as f64 * cutoff * sinc(std::f64::consts::PI * cutoff * d) * w;
+            }
+            out.push(acc as f32);
+        }
+        out
+    }
+
+    /// Tabulating the kernel must not change a single sample: the table is an
+    /// optimisation, not a new resampler. Checked on the shipped responses at
+    /// every rate the engine builds the set for.
+    #[test]
+    fn the_kernel_table_matches_the_per_sample_kernel() {
+        let set = MeasuredHrirData::saf_kemar();
+        for to in [44_100u32, 96_000, 192_000] {
+            let kernel = ResampleKernel::new(48_000, to);
+            for (i, (l, r)) in set.irs.iter().enumerate().step_by(37) {
+                for (ear, ir) in [("left", l), ("right", r)] {
+                    assert_eq!(
+                        kernel.resample(ir),
+                        per_sample_resample_ir(ir, 48_000, to),
+                        "direction {i} {ear} differs at {to} Hz"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every phase of the table must be exercised, including those past the
+    /// length of a stored response — an input long enough to wrap the cycle
+    /// pins the rows a 128-tap response never reaches.
+    #[test]
+    fn the_kernel_table_matches_on_a_full_phase_cycle() {
+        let (from, to) = (48_000u32, 44_100u32);
+        let kernel = ResampleKernel::new(from, to);
+        assert_eq!(kernel.phases, 147);
+        let x: Vec<f32> = (0..400)
+            .map(|i| ((i as f64 * 0.37).sin() / (1.0 + i as f64 * 0.01)) as f32)
+            .collect();
+        assert!(kernel.out_len(x.len()) > kernel.phases);
+        assert_eq!(kernel.resample(&x), per_sample_resample_ir(&x, from, to));
+    }
+
+    /// Carrying one `MinPhase` across responses must give exactly what the
+    /// one-shot calls give — no state may leak from the previous response.
+    #[test]
+    fn a_reused_min_phase_matches_one_shot_calls() {
+        let set = MeasuredHrirData::saf_kemar();
+        let kernel = ResampleKernel::new(48_000, 44_100);
+        let mut state = MinPhase::new(kernel.out_len(set.irs[0].0.len()));
+        let mut buf = Vec::new();
+        for (i, (l, r)) in set.irs.iter().enumerate().step_by(23) {
+            for (ear, ir) in [("left", l), ("right", r)] {
+                kernel.resample_into(ir, &mut buf);
+                assert_eq!(
+                    state.run(&buf),
+                    minimum_phase(&buf),
+                    "direction {i} {ear} differs"
+                );
+            }
+        }
+    }
+
+    /// A `MinPhase` sized for one length must re-plan rather than return a
+    /// truncated or mis-scaled response when handed another.
+    #[test]
+    fn a_min_phase_re_plans_for_a_new_length() {
+        let mut state = MinPhase::new(64);
+        for n in [64usize, 256, 64, 118] {
+            let ir: Vec<f32> = (0..n).map(|i| (i as f32 * 0.21).sin()).collect();
+            assert_eq!(state.run(&ir), minimum_phase(&ir), "length {n} differs");
+        }
     }
 
     /// Building the SAF set at a non-native rate must actually change the
