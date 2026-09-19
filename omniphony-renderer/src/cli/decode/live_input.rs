@@ -484,6 +484,7 @@ fn run_pipewire_bridge_capture_loop(
             let _ = tx_for_frame.try_send(Ok(DecoderMessage::AudioData(DecodedAudioData {
                 source: DecodedSource::Bridge,
                 frame,
+                declared_poses: None,
                 decode_time_ms,
                 sent_at: Instant::now(),
             })));
@@ -561,6 +562,7 @@ fn run_pipewire_bridge_pw_stream_backend(
             let _ = tx.try_send(Ok(DecoderMessage::AudioData(DecodedAudioData {
                 source: DecodedSource::Live,
                 frame,
+                declared_poses: None,
                 decode_time_ms: 0.0,
                 sent_at: Instant::now(),
             })));

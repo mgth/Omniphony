@@ -155,6 +155,68 @@ const ALIASES: &[(RChannelLabel, &[&str])] = &[
         &["TC", "TPC", "TOPCENTER", "TOPMIDDLECENTER"],
     ),
     (RChannelLabel::Tfc, &["TFC", "TPFC", "TOPFRONTCENTER"]),
+    // Height tier: over the floor speaker of the same name at about 30° of
+    // elevation (BS.2051 `U+030`/`U+000`/`U+110`), which is not the ceiling
+    // corner the top tier means. `HL`/`HR`/`HEIGHTLEFT`/`HEIGHTRIGHT` stay
+    // with the top-front pair above: they predate this tier and a saved
+    // layout that uses them must keep meaning what it meant.
+    (
+        RChannelLabel::Lh,
+        &[
+            "LH",
+            "LEFTHEIGHT",
+            "FRONTHEIGHTLEFT",
+            "FRONTLEFTHEIGHT",
+            "FHL",
+        ],
+    ),
+    (
+        RChannelLabel::Rh,
+        &[
+            "RH",
+            "RIGHTHEIGHT",
+            "FRONTHEIGHTRIGHT",
+            "FRONTRIGHTHEIGHT",
+            "FHR",
+        ],
+    ),
+    (
+        RChannelLabel::Ch,
+        &[
+            "CH",
+            "HC",
+            "CENTERHEIGHT",
+            "CENTREHEIGHT",
+            "HEIGHTCENTER",
+            "HEIGHTCENTRE",
+            "FRONTHEIGHTCENTER",
+            "FHC",
+        ],
+    ),
+    (
+        RChannelLabel::Lhs,
+        &[
+            "LHS",
+            "HLS",
+            "LEFTHEIGHTSURROUND",
+            "LEFTSURROUNDHEIGHT",
+            "HEIGHTLEFTSURROUND",
+            "SURROUNDHEIGHTLEFT",
+            "SHL",
+        ],
+    ),
+    (
+        RChannelLabel::Rhs,
+        &[
+            "RHS",
+            "HRS",
+            "RIGHTHEIGHTSURROUND",
+            "RIGHTSURROUNDHEIGHT",
+            "HEIGHTRIGHTSURROUND",
+            "SURROUNDHEIGHTRIGHT",
+            "SHR",
+        ],
+    ),
 ];
 
 /// Canonical short name for a label — the form used in bundled layout YAMLs,
@@ -188,6 +250,11 @@ pub fn canonical_name(label: RChannelLabel) -> &'static str {
         Tbr => "TBR",
         Tc => "TC",
         Tfc => "TFC",
+        Lh => "Lh",
+        Rh => "Rh",
+        Ch => "Ch",
+        Lhs => "Lhs",
+        Rhs => "Rhs",
         Object => "Object",
         Unknown => "Unknown",
     }
@@ -268,6 +335,16 @@ mod tests {
         assert_eq!(label_for_name("LTR"), Tbl);
         assert_eq!(label_for_name("RTR"), Tbr);
         assert_eq!(label_for_name("TopMiddleCenter"), Tc);
+        // The height tier under its Auro-3D, DTS-HD and long spellings; the
+        // legacy `HL`/`HR` spellings keep resolving to the top-front pair.
+        assert_eq!(label_for_name("Lh"), Lh);
+        assert_eq!(label_for_name("left height"), Lh);
+        assert_eq!(label_for_name("HC"), Ch);
+        assert_eq!(label_for_name("HLs"), Lhs);
+        assert_eq!(label_for_name("HRs"), Rhs);
+        assert_eq!(label_for_name("right_surround_height"), Rhs);
+        assert_eq!(label_for_name("HL"), Tfl);
+        assert_eq!(label_for_name("HR"), Tfr);
         assert_eq!(label_for_name("nonsense"), Unknown);
     }
 

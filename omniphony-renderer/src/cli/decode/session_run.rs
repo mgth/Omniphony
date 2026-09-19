@@ -451,6 +451,9 @@ fn handle_audio_message(
         return handler.poll_runtime_state();
     }
     let frame = decoded.frame;
+    if let Some(poses) = decoded.declared_poses {
+        handler.spatial.declared_poses = poses;
+    }
     if frame.is_new_segment {
         handler.spatial.segment_start_samples = handler.session.decoded_samples;
         // Use the live-active backend (not the launch one) so a segment
@@ -603,6 +606,7 @@ fn pump_idle_feed(
         DecodedAudioData {
             source: DecodedSource::Bridge,
             frame,
+            declared_poses: None,
             decode_time_ms: 0.0,
             sent_at: std::time::Instant::now(),
         },

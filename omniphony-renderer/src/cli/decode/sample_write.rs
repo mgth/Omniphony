@@ -415,7 +415,11 @@ impl<'a> SampleWriteCoordinator<'a> {
                     // params, so the planner reuses it until one of them
                     // actually changes, instead of rebuilding a label→speaker
                     // map and re-solving the depth warp on every frame.
-                    match self.spatial.bed_planner.plan(renderer, labels) {
+                    match self.spatial.bed_planner.plan(
+                        renderer,
+                        labels,
+                        &self.spatial.declared_poses,
+                    ) {
                         BedPlanKind::Events => {
                             // Spatial mode mixes per channel: direct channels
                             // route one-hot by label, virtual channels render
@@ -686,6 +690,7 @@ impl<'a> SampleWriteCoordinator<'a> {
                             build_virtual_bed_objects(
                                 labels,
                                 virtual_bed_layout.as_ref(),
+                                &self.spatial.declared_poses,
                                 Some(output_layout),
                                 room_ratio,
                                 room_ratio_rear,

@@ -225,6 +225,7 @@ pub fn reset_virtual_bed(state: &SharedState) {
                         y: 0.0,
                         z: 0.0,
                         spatialize: true,
+                        polar: None,
                     });
                     default_entry(&room, &base)
                 })

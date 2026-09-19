@@ -32,7 +32,10 @@ import { buildChannelAliasMap, normalizeChannelName } from '../channel-aliases.j
 // Fallback editable fixed-channel set with default ADM cartesian poses
 // (X left/right, Y rear/front, Z down/up; ear level Z = 0). LFE channels
 // default to direct because they cannot be VBAP-panned. The renderer-published
-// catalogue replaces these values when available.
+// catalogue replaces these values when available. A channel the renderer
+// defines by an angle rather than a corner (the height tier, 30° over the
+// floor speaker of the same name) carries a polar default; its x/y/z are that
+// angle on the unit sphere, for display only.
 const FALLBACK_BED = [
   { name: 'L', x: -1, y: 1, z: 0, spatialize: true },
   { name: 'R', x: 1, y: 1, z: 0, spatialize: true },
@@ -57,7 +60,12 @@ const FALLBACK_BED = [
   { name: 'TSL', x: -1, y: 0, z: 1, spatialize: true },
   { name: 'TSR', x: 1, y: 0, z: 1, spatialize: true },
   { name: 'TC', x: 0, y: 0, z: 1, spatialize: true },
-  { name: 'TFC', x: 0, y: 1, z: 1, spatialize: true }
+  { name: 'TFC', x: 0, y: 1, z: 1, spatialize: true },
+  { name: 'Lh', x: -0.433, y: 0.75, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: -30, elevation: 30 },
+  { name: 'Rh', x: 0.433, y: 0.75, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: 30, elevation: 30 },
+  { name: 'Ch', x: 0, y: 0.866, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: 0, elevation: 30 },
+  { name: 'Lhs', x: -0.8138, y: -0.2962, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: -110, elevation: 30 },
+  { name: 'Rhs', x: 0.8138, y: -0.2962, z: 0.5, spatialize: true, coordMode: 'polar', azimuth: 110, elevation: 30 }
 ];
 
 // Memoised view of the renderer-published fixed-channel catalogue: the alias map
@@ -137,8 +145,30 @@ function admToPolar(x, y, z) {
 }
 
 // Default model entry for a channel: the canonical ADM cartesian corner, with
-// the polar form derived so the editor/renderer can use either.
+// the polar form derived so the editor/renderer can use either. A channel the
+// renderer defines by an angle (catalogue entry or fallback with a polar
+// default) starts as a polar entry, so it renders at that angle whatever the
+// room is instead of freezing the unit-sphere point into a cartesian corner.
 function defaultEntry(base) {
+  const baseMode = String(base.coordMode || base.coord_mode || '').toLowerCase();
+  if (baseMode === 'polar' && Number.isFinite(Number(base.azimuth))) {
+    const azimuth = Number(base.azimuth);
+    const elevation = Number(base.elevation) || 0;
+    const distance = Number(base.distance) > 0 ? Number(base.distance) : 1.0;
+    const norm = polarToAdm(azimuth, elevation, distance);
+    return {
+      name: base.name,
+      coordMode: 'polar',
+      azimuth,
+      elevation,
+      distance,
+      x: norm.x,
+      y: norm.y,
+      z: norm.z,
+      spatialize: base.spatialize !== false,
+      gainDb: 0
+    };
+  }
   const polar = admToPolar(base.x, base.y, base.z);
   return {
     name: base.name,
@@ -199,7 +229,11 @@ export function effectiveChannels() {
         x: Number(entry.x) || 0,
         y: Number(entry.y) || 0,
         z: Number(entry.z) || 0,
-        spatialize: entry.spatialize !== false
+        spatialize: entry.spatialize !== false,
+        coordMode: entry.coord_mode,
+        azimuth: entry.azimuth,
+        elevation: entry.elevation,
+        distance: entry.distance
       }))
     : FALLBACK_BED;
   const bases = [...published];

@@ -12,7 +12,7 @@ use crate::overlay;
 use crate::renderer_build::{SpatialRendererParams, build_spatial_renderer};
 use crate::{channel_objects, object_gen, render, spatial, virtual_bed};
 use anyhow::{Result, anyhow, bail};
-use bridge_api::{RChannelLabel, RCoordinateFormat, RDecodedFrame, RInputTransport};
+use bridge_api::{RChannelLabel, RChannelPose, RCoordinateFormat, RDecodedFrame, RInputTransport};
 use renderer::config::Config;
 use renderer::metering::AudioMeter;
 use renderer::spatial_renderer::{SpatialChannelEvent, SpatialRenderer};
@@ -68,6 +68,11 @@ pub struct Engine {
     /// Cached object↔channel declaration from the bridge (sparse emission),
     /// sorted by channel. See `docs/channel-object-contract.md`.
     object_channels: Vec<(u32, usize)>,
+    /// The poses the bridge declares for the current labels
+    /// (`FormatBridge::fixed_channel_poses`), read once per label change —
+    /// `declared_poses_labels` remembers which labels they were read for.
+    declared_poses: Vec<RChannelPose>,
+    declared_poses_labels: Vec<RChannelLabel>,
     has_objects: bool,
     loudness_applied: bool,
     decoded_samples: u64,
@@ -264,6 +269,8 @@ impl Engine {
             fixed_planner: virtual_bed::FixedChannelPlanner::new(),
             bed_planner: virtual_bed::BedChannelPlanner::new(),
             object_channels: Vec::new(),
+            declared_poses: Vec::new(),
+            declared_poses_labels: Vec::new(),
             has_objects: false,
             loudness_applied: false,
             decoded_samples: 0,
@@ -684,6 +691,8 @@ impl Engine {
         self.fixed_planner.reset();
         self.bed_planner.reset();
         self.object_channels.clear();
+        self.declared_poses.clear();
+        self.declared_poses_labels.clear();
         self.frame_events.clear();
         self.loudness_applied = false;
         self.object_names.clear();
@@ -776,6 +785,20 @@ impl Engine {
         self.renderer
             .renderer_control()
             .set_fixed_channel_processing(state.to_string());
+    }
+
+    /// Re-read the bridge's declared channel poses when the frame's labels
+    /// differ from the ones they were read for. A steady stream compares one
+    /// short slice per frame and never calls into the bridge.
+    fn refresh_declared_poses(&mut self, labels: &[RChannelLabel]) {
+        if self.declared_poses_labels.as_slice() == labels {
+            return;
+        }
+        self.declared_poses.clear();
+        self.declared_poses
+            .extend(self.bridge.bridge.fixed_channel_poses().into_iter());
+        self.declared_poses_labels.clear();
+        self.declared_poses_labels.extend_from_slice(labels);
     }
 
     /// Push the live DRC mode to the bridge when it changes (selects which DRC
@@ -914,6 +937,7 @@ impl Engine {
             }
             overlay::clear();
         }
+        self.refresh_declared_poses(&frame.channel_labels);
 
         // Dialogue normalisation (from major-sync frames), applied once.
         if !self.loudness_applied {
@@ -951,6 +975,7 @@ impl Engine {
             // host), and the plan is cached on (labels, options epoch).
             self.fixed_planner.plan_object_stream_fixed(
                 &frame.channel_labels,
+                &self.declared_poses,
                 &self.renderer,
                 &mut self.frame_events,
             );
@@ -979,6 +1004,7 @@ impl Engine {
                 let mut objects = virtual_bed::build_fixed_channel_objects(
                     &self.renderer,
                     self.fixed_planner.fixed_labels(),
+                    &self.declared_poses,
                 )
                 .unwrap_or_default();
                 objects.extend(spatial::build_object_metas(
@@ -1060,7 +1086,10 @@ impl Engine {
             // The plan depends only on the labels and a few live params, so the
             // planner reuses it until one of them actually changes — a steady
             // stream plans once instead of ~1200 times a second.
-            match self.bed_planner.plan(&self.renderer, labels) {
+            match self
+                .bed_planner
+                .plan(&self.renderer, labels, &self.declared_poses)
+            {
                 virtual_bed::BedPlanKind::Events => {
                     // Spatial mode mixes per channel: direct channels route
                     // one-hot by label, virtual channels render as VBAP
@@ -1185,6 +1214,7 @@ impl Engine {
                 let mut objects = virtual_bed::build_virtual_bed_objects(
                     labels,
                     virtual_bed_layout.as_ref(),
+                    &self.declared_poses,
                     Some(output_layout),
                     room_ratio,
                     room_ratio_rear,

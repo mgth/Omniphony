@@ -4,7 +4,7 @@ use audio_input::InputControl;
 use audio_output::AdaptiveResamplingConfig;
 #[cfg(target_os = "linux")]
 use audio_output::pipewire::PipewireBufferConfig;
-use bridge_api::RCoordinateFormat;
+use bridge_api::{RChannelPose, RCoordinateFormat};
 use orender_engine::osc::OscSender;
 use renderer::metering::AudioMeter;
 use std::sync::Arc;
@@ -132,6 +132,10 @@ pub struct SpatialState {
     /// Cached object↔channel declaration from the bridge (sparse emission),
     /// sorted by channel.
     pub object_channels: Vec<(u32, usize)>,
+    /// The poses the bridge declared for the current labels, as last sent
+    /// by the decoder thread (`DecodedAudioData::declared_poses`). Kept
+    /// across segment resets: the decoder thread re-sends on a label change.
+    pub declared_poses: Vec<RChannelPose>,
     pub object_names: std::collections::HashMap<u32, String>,
     pub au_index: u64,
     pub segment_index: u32,
@@ -152,6 +156,7 @@ impl Default for SpatialState {
             bed_events: Vec::new(),
             channel_objects: orender_engine::channel_objects::ChannelObjectStages::new(),
             object_channels: Vec::new(),
+            declared_poses: Vec::new(),
             object_names: std::collections::HashMap::new(),
             au_index: 0,
             segment_index: 0,

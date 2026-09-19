@@ -8,7 +8,7 @@
 //! `orender` CLI and the embedded engine for identical behaviour.
 
 use crate::osc::ObjectMeta;
-use bridge_api::RChannelLabel;
+use bridge_api::{RChannelLabel, RChannelPose};
 use renderer::live_params::SurroundPlacement;
 use renderer::speaker_layout::SpeakerLayout;
 use std::collections::HashMap;
@@ -154,6 +154,52 @@ fn speaker_pose_to_normalized(
     }
 }
 
+/// Normalized ADM position that renders at an absolute direction under the
+/// room in force: spherical → real ADM → inverse room warp, the conversion the
+/// polar branch of [`speaker_pose_to_normalized`] makes for a placement entry
+/// that states an angle. A corner channel is deliberately carried around by
+/// the room warp; a channel stated as an angle — a pose the bridge declared,
+/// or a height-tier label — must land on that angle whatever the room is.
+fn angles_to_normalized(
+    azimuth_deg: f32,
+    elevation_deg: f32,
+    room_ratio: [f32; 3],
+    room_ratio_rear: f32,
+    room_ratio_lower: f32,
+    room_ratio_center_blend: f32,
+) -> (f32, f32, f32) {
+    let (sx, sy, sz) = renderer::spatial_vbap::spherical_to_adm(azimuth_deg, elevation_deg, 1.0);
+    let [x, y, z] = inverse_room_scaled_position(
+        [sx, sy, sz],
+        room_ratio,
+        room_ratio_rear,
+        room_ratio_lower,
+        room_ratio_center_blend,
+    );
+    (x, y, z)
+}
+
+/// Labels defined by a direction rather than by a corner of the room: the
+/// height tier, over the floor speaker of the same name at 30° of elevation
+/// (ITU-R BS.2051 `U+030`, `U-030`, `U+000`, `U+110`, `U-110`; Auro-3D's
+/// height layer; DTS-HD's `Lh`/`Rh`/`Ch`/`Lhs`/`Rhs`). Returned as
+/// `(canonical name, azimuth, elevation)`; `None` for every other label.
+///
+/// Every other fallback pose in this file is a corner of the normalized room
+/// and moves with the room ratio. These are angles and must not, which is why
+/// they resolve through [`angles_to_normalized`] instead of the cartesian
+/// corner fallback.
+pub(crate) fn angle_defined_pose(label: RChannelLabel) -> Option<(&'static str, f32, f32)> {
+    Some(match label {
+        RChannelLabel::Lh => ("Lh", -30.0, 30.0),
+        RChannelLabel::Rh => ("Rh", 30.0, 30.0),
+        RChannelLabel::Ch => ("Ch", 0.0, 30.0),
+        RChannelLabel::Lhs => ("Lhs", -110.0, 30.0),
+        RChannelLabel::Rhs => ("Rhs", 110.0, 30.0),
+        _ => return None,
+    })
+}
+
 fn label_aliases(label: RChannelLabel, use_7_1: bool) -> Option<&'static [&'static str]> {
     match label {
         RChannelLabel::L => Some(&["FL", "L", "FrontLeft", "LeftFront"]),
@@ -253,6 +299,13 @@ fn label_aliases(label: RChannelLabel, use_7_1: bool) -> Option<&'static [&'stat
         RChannelLabel::Tsr => Some(&["TSR", "Tsr", "TpSR", "TopSideRight", "UpperSideRight"]),
         RChannelLabel::Tc => Some(&["TC", "TpC", "TopCenter", "TopMiddleCenter"]),
         RChannelLabel::Tfc => Some(&["TFC", "Tfc", "TpFC", "TopFrontCenter"]),
+        // Height tier (30° over the floor speaker of the same name). `HL`/`HR`
+        // are not here: they have always meant the top-front pair.
+        RChannelLabel::Lh => Some(&["Lh", "LeftHeight", "FrontHeightLeft", "FHL"]),
+        RChannelLabel::Rh => Some(&["Rh", "RightHeight", "FrontHeightRight", "FHR"]),
+        RChannelLabel::Ch => Some(&["Ch", "HC", "CenterHeight", "HeightCenter", "FHC"]),
+        RChannelLabel::Lhs => Some(&["Lhs", "HLs", "LeftHeightSurround", "HeightLeftSurround"]),
+        RChannelLabel::Rhs => Some(&["Rhs", "HRs", "RightHeightSurround", "HeightRightSurround"]),
         _ => None,
     }
 }
@@ -294,7 +347,17 @@ fn fallback_virtual_bed_pose(
         RChannelLabel::Tsr => ("TSR", 1.0, 0.0, 1.0),
         RChannelLabel::Tc => ("TC", 0.0, 0.0, 1.0),
         RChannelLabel::Tfc => ("TFC", 0.0, 1.0, 1.0),
-        _ => return None,
+        // The height tier is an angle, not a corner: here it is that angle on
+        // the unit sphere, the normalized position it occupies in a room of
+        // equal proportions — which is the room this catalogue describes. The
+        // pose resolver never reaches this arm for these labels (it converts
+        // the angle under the actual room first); this serves the published
+        // catalogue and the consumers that have no room ratio to hand.
+        _ => {
+            let (name, azimuth, elevation) = angle_defined_pose(label)?;
+            let (x, y, z) = renderer::spatial_vbap::spherical_to_adm(azimuth, elevation, 1.0);
+            return Some((name.to_string(), x, y, z));
+        }
     };
     Some((name.to_string(), x, y, z))
 }
@@ -306,26 +369,39 @@ fn fallback_virtual_bed_pose(
 /// deliberately excluded.
 pub fn fixed_channel_catalog_json() -> String {
     use RChannelLabel::{
-        C, Cb, L, LFE, LFE2, Lb, Ls, Lsc, Lsd, Lw, R, Rb, Rs, Rsc, Rsd, Rw, Tbl, Tbr, Tc, Tfc, Tfl,
-        Tfr, Tsl, Tsr,
+        C, Cb, Ch, L, LFE, LFE2, Lb, Lh, Lhs, Ls, Lsc, Lsd, Lw, R, Rb, Rh, Rhs, Rs, Rsc, Rsd, Rw,
+        Tbl, Tbr, Tc, Tfc, Tfl, Tfr, Tsl, Tsr,
     };
-    const FIXED: [RChannelLabel; 24] = [
+    const FIXED: [RChannelLabel; 29] = [
         L, R, C, LFE, Ls, Rs, Lb, Rb, Tfl, Tfr, Tbl, Tbr, Lsc, Rsc, Cb, Lsd, Rsd, Lw, Rw, LFE2,
-        Tsl, Tsr, Tc, Tfc,
+        Tsl, Tsr, Tc, Tfc, Lh, Rh, Ch, Lhs, Rhs,
     ];
     let entries: Vec<serde_json::Value> = FIXED
         .iter()
         .filter_map(|&label| {
             let (_, x, y, z) = fallback_virtual_bed_pose(label, true)?;
-            Some(serde_json::json!({
+            let mut entry = serde_json::json!({
                 "label": bridge_api::labels::canonical_name(label),
                 "aliases": bridge_api::labels::aliases_for(label),
                 "group": if z > 0.0 { "height" } else { "floor" },
+                "coord_mode": "cartesian",
                 "x": x,
                 "y": y,
                 "z": z,
                 "spatialize": default_channel_spatialize(label),
-            }))
+            });
+            // A label defined by an angle publishes it, so an editor defaults
+            // the channel to a polar entry that renders at that angle in any
+            // room, instead of freezing the unit-sphere point above into a
+            // cartesian corner that the room warp would then carry around.
+            if let Some((_, azimuth, elevation)) = angle_defined_pose(label) {
+                let map = entry.as_object_mut().expect("object");
+                map.insert("coord_mode".into(), "polar".into());
+                map.insert("azimuth".into(), azimuth.into());
+                map.insert("elevation".into(), elevation.into());
+                map.insert("distance".into(), 1.0.into());
+            }
+            Some(entry)
         })
         .collect();
     serde_json::Value::Array(entries).to_string()
@@ -397,6 +473,7 @@ fn resolve_virtual_bed_pose(
     label: RChannelLabel,
     use_7_1: bool,
     input_layout: Option<&SpeakerLayout>,
+    declared_poses: &[RChannelPose],
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -407,6 +484,7 @@ fn resolve_virtual_bed_pose(
         label,
         use_7_1,
         input_layout,
+        declared_poses,
         room_ratio,
         room_ratio_rear,
         room_ratio_lower,
@@ -420,15 +498,26 @@ fn resolve_virtual_bed_pose(
     })
 }
 
-/// Resolve a channel's bed pose as a **normalized ADM position** in [-1, 1],
-/// trying the user's virtual bed, then the bundled 5.1/7.1 layout, then the
-/// built-in fallback. Each source is converted per its `coord_mode`
-/// ([`speaker_pose_to_normalized`]); the fallback is always polar.
+/// Resolve a channel's bed pose as a **normalized ADM position** in [-1, 1].
+/// Sources, most specific first:
+///
+/// 1. the user's placement layout (`input_layout`, the live `virtual_bed`),
+///    converted per its entry's `coord_mode` ([`speaker_pose_to_normalized`]);
+/// 2. the pose the format declared for the label (`declared_poses`, from
+///    [`bridge_api::FormatBridge::fixed_channel_poses`]): an absolute angle,
+///    converted under the room in force ([`angles_to_normalized`]);
+/// 3. the bundled 5.1/7.1 layout;
+/// 4. the built-in catalogue — an angle for the height tier
+///    ([`angle_defined_pose`]), a cartesian corner for everything else.
+///
+/// The bridge describes, the renderer decides: a declared pose is the format's
+/// default for the label, and the user's own entry for that label still wins.
 #[allow(clippy::too_many_arguments)]
 fn resolve_virtual_bed_pose_raw(
     label: RChannelLabel,
     use_7_1: bool,
     input_layout: Option<&SpeakerLayout>,
+    declared_poses: &[RChannelPose],
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -444,6 +533,23 @@ fn resolve_virtual_bed_pose_raw(
                 room_ratio_center_blend,
             ));
         }
+    }
+
+    if let Some(pose) = declared_poses.iter().find(|pose| pose.label == label) {
+        let (x, y, z) = angles_to_normalized(
+            pose.azimuth_deg,
+            pose.elevation_deg,
+            room_ratio,
+            room_ratio_rear,
+            room_ratio_lower,
+            room_ratio_center_blend,
+        );
+        return Some((
+            bridge_api::labels::canonical_name(label).to_string(),
+            x,
+            y,
+            z,
+        ));
     }
 
     let layouts = virtual_bed_layouts();
@@ -465,6 +571,19 @@ fn resolve_virtual_bed_pose_raw(
         }
     }
 
+    // A label defined by an angle lands on that angle whatever the room is.
+    if let Some((name, azimuth, elevation)) = angle_defined_pose(label) {
+        let (x, y, z) = angles_to_normalized(
+            azimuth,
+            elevation,
+            room_ratio,
+            room_ratio_rear,
+            room_ratio_lower,
+            room_ratio_center_blend,
+        );
+        return Some((name.to_string(), x, y, z));
+    }
+
     // Cartesian corner fallback: use x/y/z directly (clamped), exactly like the
     // cartesian branch of `speaker_pose_to_normalized`. No `spherical_to_adm` +
     // inverse-room-warp round-trip, which previously pulled corner channels off
@@ -483,6 +602,7 @@ fn resolve_virtual_bed_pose_raw(
 pub fn build_virtual_bed_events(
     channel_labels: &[RChannelLabel],
     input_layout: Option<&SpeakerLayout>,
+    declared_poses: &[RChannelPose],
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
     room_ratio_lower: f32,
@@ -502,6 +622,7 @@ pub fn build_virtual_bed_events(
             *label,
             use_7_1,
             input_layout,
+            declared_poses,
             room_ratio,
             room_ratio_rear,
             room_ratio_lower,
@@ -533,6 +654,7 @@ pub fn build_virtual_bed_events(
 pub fn build_virtual_bed_objects(
     channel_labels: &[RChannelLabel],
     virtual_bed: Option<&SpeakerLayout>,
+    declared_poses: &[RChannelPose],
     output_layout: Option<&SpeakerLayout>,
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
@@ -559,6 +681,7 @@ pub fn build_virtual_bed_objects(
             *label,
             use_7_1,
             virtual_bed,
+            declared_poses,
             room_ratio,
             room_ratio_rear,
             room_ratio_lower,
@@ -700,6 +823,7 @@ pub fn plan_channel_render(
     mode: renderer::live_params::ChannelRenderMode,
     channel_labels: &[RChannelLabel],
     virtual_bed: Option<&SpeakerLayout>,
+    declared_poses: &[RChannelPose],
     output_layout: Option<&SpeakerLayout>,
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
@@ -713,6 +837,7 @@ pub fn plan_channel_render(
         ChannelRenderMode::Spatial => build_virtual_bed_plan(
             channel_labels,
             virtual_bed,
+            declared_poses,
             output_layout,
             room_ratio,
             room_ratio_rear,
@@ -732,6 +857,7 @@ pub fn plan_channel_render(
 fn build_virtual_bed_plan(
     channel_labels: &[RChannelLabel],
     virtual_bed: Option<&SpeakerLayout>,
+    declared_poses: &[RChannelPose],
     output_layout: Option<&SpeakerLayout>,
     room_ratio: [f32; 3],
     room_ratio_rear: f32,
@@ -762,6 +888,7 @@ fn build_virtual_bed_plan(
                 *label,
                 use_7_1,
                 virtual_bed,
+                declared_poses,
                 room_ratio,
                 room_ratio_rear,
                 room_ratio_lower,
@@ -826,6 +953,7 @@ fn build_virtual_bed_plan(
 pub fn build_fixed_channel_objects(
     renderer: &renderer::spatial_renderer::SpatialRenderer,
     fixed_labels: &[RChannelLabel],
+    declared_poses: &[RChannelPose],
 ) -> Option<Vec<ObjectMeta>> {
     if fixed_labels.is_empty() {
         return None;
@@ -853,6 +981,7 @@ pub fn build_fixed_channel_objects(
     build_virtual_bed_objects(
         fixed_labels,
         virtual_bed_layout.as_ref(),
+        declared_poses,
         Some(&layout),
         room_ratio,
         room_ratio_rear,
@@ -875,6 +1004,9 @@ pub fn build_fixed_channel_objects(
 #[derive(Clone, PartialEq)]
 struct BedPlanKey {
     labels: Vec<RChannelLabel>,
+    /// The poses the bridge declared for these labels. Declaration-level like
+    /// the labels, so a steady stream compares a short slice per frame.
+    declared_poses: Vec<RChannelPose>,
     mode: renderer::live_params::ChannelRenderMode,
     virtual_bed: Option<SpeakerLayout>,
     surround_placement: SurroundPlacement,
@@ -947,6 +1079,7 @@ impl BedChannelPlanner {
         &mut self,
         renderer: &renderer::spatial_renderer::SpatialRenderer,
         channel_labels: &[RChannelLabel],
+        declared_poses: &[RChannelPose],
     ) -> BedPlanKind {
         let control = renderer.renderer_control();
         let geometry_generation = control.geometry_generation();
@@ -956,12 +1089,13 @@ impl BedChannelPlanner {
         let key = {
             let live = control.live.read();
             if let (Some(previous), Some(kind)) = (self.key.as_ref(), self.kind)
-                && previous.matches(&live, channel_labels, geometry_generation)
+                && previous.matches(&live, channel_labels, declared_poses, geometry_generation)
             {
                 return kind;
             }
             BedPlanKey {
                 labels: channel_labels.to_vec(),
+                declared_poses: declared_poses.to_vec(),
                 mode: live.channel_render_mode,
                 virtual_bed: live.virtual_bed.clone(),
                 surround_placement: live.surround_placement,
@@ -978,6 +1112,7 @@ impl BedChannelPlanner {
             key.mode,
             &key.labels,
             key.virtual_bed.as_ref(),
+            &key.declared_poses,
             Some(&output_layout),
             key.room_ratio,
             key.room_ratio_rear,
@@ -1030,10 +1165,12 @@ impl BedPlanKey {
         &self,
         live: &renderer::live_params::LiveParams,
         channel_labels: &[RChannelLabel],
+        declared_poses: &[RChannelPose],
         geometry_generation: u64,
     ) -> bool {
         let Self {
             labels,
+            declared_poses: planned_poses,
             mode,
             virtual_bed,
             surround_placement,
@@ -1052,6 +1189,7 @@ impl BedPlanKey {
             && *room_ratio_lower == live.room_ratio_lower
             && *room_ratio_center_blend == live.room_ratio_center_blend
             && labels == channel_labels
+            && planned_poses == declared_poses
             && *virtual_bed == live.virtual_bed
     }
 }
@@ -1064,6 +1202,9 @@ impl BedPlanKey {
 #[derive(Default)]
 pub struct FixedChannelPlanner {
     planned_labels: Vec<RChannelLabel>,
+    /// The poses the bridge declared for the planned labels (part of the key:
+    /// the same labels with other poses is another plan).
+    planned_poses: Vec<RChannelPose>,
     planned_epoch: Option<u64>,
     applied_routes: Option<Vec<renderer::spatial_renderer::ChannelRoute>>,
     /// Bed-entry trim per fixed channel index, cached at plan time so the
@@ -1080,6 +1221,7 @@ impl FixedChannelPlanner {
     /// Forget everything (stream reset / new segment).
     pub fn reset(&mut self) {
         self.planned_labels.clear();
+        self.planned_poses.clear();
         self.planned_epoch = None;
         self.applied_routes = None;
         self.trims.clear();
@@ -1122,6 +1264,7 @@ impl FixedChannelPlanner {
     pub fn plan_object_stream_fixed(
         &mut self,
         channel_labels: &[RChannelLabel],
+        declared_poses: &[RChannelPose],
         renderer: &renderer::spatial_renderer::SpatialRenderer,
         out: &mut Vec<renderer::spatial_renderer::SpatialChannelEvent>,
     ) {
@@ -1133,7 +1276,10 @@ impl FixedChannelPlanner {
 
         let control = renderer.renderer_control();
         let epoch = control.options_epoch();
-        if self.planned_epoch == Some(epoch) && self.planned_labels == fixed {
+        if self.planned_epoch == Some(epoch)
+            && self.planned_labels == fixed
+            && self.planned_poses == declared_poses
+        {
             return;
         }
 
@@ -1173,6 +1319,7 @@ impl FixedChannelPlanner {
             renderer::live_params::ChannelRenderMode::Spatial,
             fixed,
             virtual_bed_layout.as_ref(),
+            declared_poses,
             Some(&output_layout),
             room_ratio,
             room_ratio_rear,
@@ -1190,6 +1337,7 @@ impl FixedChannelPlanner {
         }
 
         self.planned_labels = fixed.to_vec();
+        self.planned_poses = declared_poses.to_vec();
         self.planned_epoch = Some(epoch);
     }
 }
@@ -1213,7 +1361,8 @@ mod tests {
             labels,
             [
                 "L", "R", "C", "LFE", "Ls", "Rs", "Lb", "Rb", "TFL", "TFR", "TBL", "TBR", "Lsc",
-                "Rsc", "Cb", "Lsd", "Rsd", "Lw", "Rw", "LFE2", "TSL", "TSR", "TC", "TFC",
+                "Rsc", "Cb", "Lsd", "Rsd", "Lw", "Rw", "LFE2", "TSL", "TSR", "TC", "TFC", "Lh",
+                "Rh", "Ch", "Lhs", "Rhs",
             ]
         );
 
@@ -1244,9 +1393,24 @@ mod tests {
 
         let tfc = entry("TFC");
         assert_eq!(tfc["group"], "height");
+        assert_eq!(tfc["coord_mode"], "cartesian");
+        assert!(tfc.get("azimuth").is_none());
         assert_eq!(tfc["x"], 0.0);
         assert_eq!(tfc["y"], 1.0);
         assert_eq!(tfc["z"], 1.0);
+
+        // The height tier publishes its angle, so an editor defaults it to a
+        // polar entry, and the unit-sphere point for consumers that only
+        // read x/y/z.
+        let lhs = entry("Lhs");
+        assert_eq!(lhs["group"], "height");
+        assert_eq!(lhs["coord_mode"], "polar");
+        assert_eq!(lhs["azimuth"], -110.0);
+        assert_eq!(lhs["elevation"], 30.0);
+        assert_eq!(lhs["distance"], 1.0);
+        assert!(lhs["x"].as_f64().unwrap() < -0.8);
+        assert!(lhs["y"].as_f64().unwrap() < -0.29);
+        assert!((lhs["z"].as_f64().unwrap() - 0.5).abs() < 1e-6);
 
         // Every entry carries its label's accepted spellings, so Studio can match
         // channel names with the renderer's own alias tolerance.
@@ -1276,7 +1440,7 @@ mod tests {
         use RChannelLabel::*;
         let fixed = [
             L, R, C, LFE, LFE2, Ls, Rs, Lb, Rb, Cb, Lsc, Rsc, Lw, Rw, Lsd, Rsd, Tfl, Tfr, Tsl, Tsr,
-            Tbl, Tbr, Tc, Tfc,
+            Tbl, Tbr, Tc, Tfc, Lh, Rh, Ch, Lhs, Rhs,
         ];
         for label in fixed {
             let aliases = label_aliases(label, true).expect("planner aliases");
@@ -1295,7 +1459,7 @@ mod tests {
         use RChannelLabel::*;
         let fixed = [
             L, R, C, LFE, Ls, Rs, Tfl, Tfr, Tsl, Tsr, Tbl, Tbr, Lsc, Rsc, Lb, Rb, Cb, Tc, Lsd, Rsd,
-            Lw, Rw, Tfc, LFE2,
+            Lw, Rw, Tfc, LFE2, Lh, Rh, Ch, Lhs, Rhs,
         ];
         for label in fixed {
             assert!(
@@ -1321,6 +1485,7 @@ mod tests {
         let events = build_virtual_bed_events(
             &labels,
             None,
+            &[],
             UNIT_ROOM,
             1.0,
             1.0,
@@ -1363,6 +1528,7 @@ mod tests {
         let events = build_virtual_bed_events(
             &labels,
             None,
+            &[],
             UNIT_ROOM,
             1.0,
             1.0,
@@ -1393,6 +1559,7 @@ mod tests {
         let events = build_virtual_bed_events(
             &labels,
             None,
+            &[],
             UNIT_ROOM,
             1.0,
             1.0,
@@ -1413,6 +1580,7 @@ mod tests {
         let events = build_virtual_bed_events(
             &labels,
             None,
+            &[],
             UNIT_ROOM,
             1.0,
             1.0,
@@ -1423,6 +1591,7 @@ mod tests {
         let objects = build_virtual_bed_objects(
             &labels,
             None,
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1465,6 +1634,125 @@ mod tests {
         }
     }
 
+    /// Azimuth/elevation the binaural stage would read off a normalized pose
+    /// once the room warp has been applied to it.
+    fn rendered_angles(pos: (f32, f32, f32), room: [f32; 3], rear: f32) -> (f32, f32) {
+        let [px, py, pz] = omniphony_geometry::f32::room_scaled_position(
+            [pos.0, pos.1, pos.2],
+            room,
+            rear,
+            1.0,
+            0.0,
+        );
+        (
+            px.atan2(py).to_degrees(),
+            pz.atan2((px * px + py * py).sqrt()).to_degrees(),
+        )
+    }
+
+    /// The height tier renders at its stated angles, and goes on doing so in a
+    /// room that is not a cube: a corner-shaped pose is carried around by the
+    /// depth warp, an angle is not. The second room is the engine's default.
+    #[test]
+    fn height_tier_sits_at_its_angles_in_any_room() {
+        use RChannelLabel::{Ch, Lh, Lhs, Rh, Rhs};
+        const TIER: [(RChannelLabel, f32, f32); 5] = [
+            (Lh, -30.0, 30.0),
+            (Rh, 30.0, 30.0),
+            (Ch, 0.0, 30.0),
+            (Lhs, -110.0, 30.0),
+            (Rhs, 110.0, 30.0),
+        ];
+        for (room, rear) in [(UNIT_ROOM, 1.0f32), ([1.0, 2.0, 1.0], 2.0f32)] {
+            for (label, want_az, want_el) in TIER {
+                let (_, x, y, z) = resolve_virtual_bed_pose(
+                    label,
+                    true,
+                    None,
+                    &[],
+                    room,
+                    rear,
+                    1.0,
+                    0.0,
+                    SurroundPlacement::Side,
+                )
+                .unwrap_or_else(|| panic!("no pose for {label:?}"));
+                let (az, el) = rendered_angles((x, y, z), room, rear);
+                assert!(
+                    (el - want_el).abs() < 0.05,
+                    "{label:?} elevation in room {room:?}: want {want_el}, got {el}"
+                );
+                assert!(
+                    (az - want_az).abs() < 0.05,
+                    "{label:?} azimuth in room {room:?}: want {want_az}, got {az}"
+                );
+            }
+        }
+    }
+
+    /// A pose the bridge declared places the channel at that angle under the
+    /// room in force, ahead of the layout corner the label would otherwise
+    /// get; the user's own entry for the label still wins over it.
+    #[test]
+    fn declared_pose_is_the_format_default_below_the_user_bed() {
+        let room = [1.0, 2.0, 1.0];
+        let rear = 2.0;
+        let declared = [RChannelPose {
+            label: RChannelLabel::Ls,
+            azimuth_deg: -110.0,
+            elevation_deg: 0.0,
+        }];
+        // `use_7_1 = true`: no surround-placement override on Ls.
+        let resolve = |bed: Option<&SpeakerLayout>, declared: &[RChannelPose]| {
+            let (_, x, y, z) = resolve_virtual_bed_pose(
+                RChannelLabel::Ls,
+                true,
+                bed,
+                declared,
+                room,
+                rear,
+                1.0,
+                0.0,
+                SurroundPlacement::Side,
+            )
+            .expect("Ls resolves");
+            rendered_angles((x, y, z), room, rear)
+        };
+
+        let (az, el) = resolve(None, &declared);
+        assert!((az + 110.0).abs() < 0.05, "declared azimuth: got {az}");
+        assert!(el.abs() < 0.05, "declared elevation: got {el}");
+
+        // Without the declaration the label is the side corner (-1, 0, 0),
+        // which is -90° in any room.
+        let (az, _) = resolve(None, &[]);
+        assert!((az + 90.0).abs() < 0.05, "corner azimuth: got {az}");
+
+        // The user placed Ls: their entry wins over the declaration.
+        let bed = bed_with_ls_at(-135.0);
+        let (az, _) = resolve(Some(&bed), &declared);
+        assert!((az + 135.0).abs() < 0.05, "user azimuth: got {az}");
+
+        // A declaration for a label not being resolved changes nothing.
+        let other = [RChannelPose {
+            label: RChannelLabel::Rs,
+            azimuth_deg: 110.0,
+            elevation_deg: 0.0,
+        }];
+        let (az, _) = resolve(None, &other);
+        assert!((az + 90.0).abs() < 0.05, "unrelated declaration: got {az}");
+    }
+
+    fn bed_with_ls_at(azimuth: f32) -> SpeakerLayout {
+        use renderer::speaker_layout::Speaker;
+        SpeakerLayout::from_speakers(vec![
+            Speaker::new("L", -30.0, 0.0),
+            Speaker::new("R", 30.0, 0.0),
+            Speaker::new("Ls", azimuth, 0.0),
+        ])
+        .expect("valid virtual bed")
+    }
+
     #[test]
     fn objects_anchor_direct_channels_to_their_speaker() {
         // Default 5.1: LFE is direct, the rest virtualized. With an output
@@ -1483,6 +1771,7 @@ mod tests {
         let objects = build_virtual_bed_objects(
             &labels,
             None,
+            &[],
             Some(&output),
             UNIT_ROOM,
             1.0,
@@ -1524,6 +1813,7 @@ mod tests {
         let objects = build_virtual_bed_objects(
             &labels,
             Some(&bed),
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1572,6 +1862,7 @@ mod tests {
             renderer::live_params::ChannelRenderMode::Spatial,
             &labels,
             Some(&bed),
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1616,6 +1907,7 @@ mod tests {
             renderer::live_params::ChannelRenderMode::Spatial,
             &[RChannelLabel::L, RChannelLabel::C, RChannelLabel::R],
             Some(&bed),
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1656,6 +1948,7 @@ mod tests {
         let objects = build_virtual_bed_objects(
             &labels,
             Some(&bed),
+            &[],
             None,
             room,
             1.0,
@@ -1681,6 +1974,7 @@ mod tests {
             renderer::live_params::ChannelRenderMode::Spatial,
             &labels,
             Some(&bed),
+            &[],
             None,
             room,
             1.0,
@@ -1717,6 +2011,7 @@ mod tests {
         let side = build_virtual_bed_objects(
             &labels,
             None,
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1728,6 +2023,7 @@ mod tests {
         let back = build_virtual_bed_objects(
             &labels,
             None,
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1777,6 +2073,7 @@ mod tests {
         let side = build_virtual_bed_objects(
             &labels,
             None,
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1788,6 +2085,7 @@ mod tests {
         let back = build_virtual_bed_objects(
             &labels,
             None,
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1890,6 +2188,7 @@ mod tests {
             renderer::live_params::ChannelRenderMode::Host,
             &BED_5_1,
             None,
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1912,6 +2211,7 @@ mod tests {
             renderer::live_params::ChannelRenderMode::Spatial,
             &BED_5_1,
             None,
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -1962,6 +2262,7 @@ mod tests {
             renderer::live_params::ChannelRenderMode::Spatial,
             &BED_5_1,
             Some(&bed),
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -2010,6 +2311,7 @@ mod tests {
             renderer::live_params::ChannelRenderMode::Spatial,
             &labels,
             Some(&bed),
+            &[],
             None,
             UNIT_ROOM,
             1.0,
@@ -2074,6 +2376,7 @@ mod tests {
             renderer::live_params::ChannelRenderMode::Spatial,
             &BED_5_1,
             bed,
+            &[],
             None,
             room_ratio,
             1.0,
@@ -2166,7 +2469,7 @@ mod tests {
 
         let mut planner = FixedChannelPlanner::new();
         let mut out = Vec::new();
-        planner.plan_object_stream_fixed(&labels, &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, &[], &renderer, &mut out);
         assert!(!out.is_empty(), "initial plan emits the prefix events");
         assert_eq!(
             planner.fixed_trims(),
@@ -2188,12 +2491,12 @@ mod tests {
         // Without the epoch bump the plan is (wrongly, if the handler forgot
         // it) considered current.
         out.clear();
-        planner.plan_object_stream_fixed(&labels, &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, &[], &renderer, &mut out);
         assert!(out.is_empty(), "no epoch bump → cached plan");
 
         control.bump_options_epoch();
         out.clear();
-        planner.plan_object_stream_fixed(&labels, &renderer, &mut out);
+        planner.plan_object_stream_fixed(&labels, &[], &renderer, &mut out);
         let lfe_event = out
             .iter()
             .find(|e| e.channel_idx == 3)

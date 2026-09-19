@@ -295,6 +295,11 @@ pub fn input_has_height(labels: &[RChannelLabel]) -> bool {
                 | RChannelLabel::Tbr
                 | RChannelLabel::Tc
                 | RChannelLabel::Tfc
+                | RChannelLabel::Lh
+                | RChannelLabel::Rh
+                | RChannelLabel::Ch
+                | RChannelLabel::Lhs
+                | RChannelLabel::Rhs
         )
     })
 }
@@ -366,6 +371,12 @@ pub(crate) fn channel_3d_position(
     placement: SurroundPlacement,
 ) -> Option<[f64; 3]> {
     use RChannelLabel::*;
+    // The height tier is stated as an angle, not a corner: its canonical
+    // position is that angle on the unit sphere.
+    if let Some((_, azimuth, elevation)) = crate::virtual_bed::angle_defined_pose(label) {
+        let (x, y, z) = renderer::spatial_vbap::spherical_to_adm(azimuth, elevation, 1.0);
+        return Some([x as f64, y as f64, z as f64]);
+    }
     let top = match label {
         Tfl => [-1.0, 1.0, 1.0],
         Tfr => [1.0, 1.0, 1.0],
