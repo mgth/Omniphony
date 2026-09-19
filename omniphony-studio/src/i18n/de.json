@@ -758,6 +758,8 @@
   "display.speakerFaceListener": "Auf Hörer ausrichten",
   "mpvOverlay.title": "mpv-Overlay",
   "speaker.freqLow": "Min. Frequenz (Hz)",
+  "speaker.freqHigh": "Max. Frequenz (Hz)",
+  "speaker.output": "Ausgang",
   "telemetry.diagPlotToggle": "Diagnose-Metrik-Diagramm umschalten",
   "log.stateLoaded": "Anfangszustand geladen.",
   "log.stateLoadFailed": "Anfangszustand konnte nicht geladen werden: {error}",

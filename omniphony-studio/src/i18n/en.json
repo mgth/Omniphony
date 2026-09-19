@@ -775,6 +775,8 @@
   "display.speakerFaceListener": "Aim at listener",
   "mpvOverlay.title": "mpv overlay",
   "speaker.freqLow": "Freq. min (Hz)",
+  "speaker.freqHigh": "Freq. max (Hz)",
+  "speaker.output": "Output",
   "telemetry.diagPlotToggle": "Toggle diagnostic-metrics plot",
   "log.stateLoaded": "Initial state loaded.",
   "log.stateLoadFailed": "Failed to load initial state: {error}",

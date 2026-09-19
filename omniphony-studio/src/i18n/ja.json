@@ -758,6 +758,8 @@
   "display.speakerFaceListener": "リスナーに向ける",
   "mpvOverlay.title": "mpv オーバーレイ",
   "speaker.freqLow": "最低周波数 (Hz)",
+  "speaker.freqHigh": "最高周波数 (Hz)",
+  "speaker.output": "出力",
   "telemetry.diagPlotToggle": "診断メトリクスのプロットを切り替え",
   "log.stateLoaded": "初期状態を読み込みました。",
   "log.stateLoadFailed": "初期状態の読み込みに失敗しました: {error}",

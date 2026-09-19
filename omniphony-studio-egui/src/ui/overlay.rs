@@ -221,8 +221,11 @@ fn drag_handle(
 /// The web's pinned editor slot (`#speakerEditSection`, `#channelEditSection`,
 /// `#objectTestEditSection`): a temporary editing panel at the foot of an
 /// overlay, below its scroll, so it stays in view while the list above it
-/// keeps scrolling. At most 45 % of the window high, as `max-height: 45vh`,
-/// scrolling inside itself past that so a tall editor never starves the list.
+/// keeps scrolling. At most half the window high, scrolling inside itself
+/// past that so a tall editor never starves the list. The web capped it at
+/// `max-height: 45vh`; the speaker editor's Edit tab, laid out in groups,
+/// stands just about that tall on a 1080-line screen, and an editor that
+/// scrolls inside its slot loses its own header first.
 ///
 /// It is carved out of the overlay with a bottom panel, and the list's
 /// `CentralPanel` — called after this — takes what it leaves, so opening an
@@ -234,9 +237,9 @@ fn drag_handle(
 /// in a scroll area, a scroll area is bounded by the room it is given, and the
 /// room it is given is the panel's own initial sliver — so the content never
 /// overflows and the panel never learns it should be taller. The first frame
-/// opens at the full 45 % and settles on the content from the next.
+/// opens at the full half and settles on the content from the next.
 pub fn pinned_slot(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
-    let max = ui.ctx().content_rect().height() * 0.45;
+    let max = ui.ctx().content_rect().height() * 0.5;
     let key = Id::new((id, "content-height"));
     let wanted: f32 = ui.data(|d| d.get_temp(key)).unwrap_or(max);
     egui::Panel::bottom(Id::new(id))

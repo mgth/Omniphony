@@ -24,7 +24,8 @@ use crate::host::commands::engine;
 use crate::i18n::t;
 use crate::model::app_state::RoomRatio;
 use crate::ui::group::Group;
-use crate::ui::{help, theme, widgets};
+use crate::ui::widgets::{CoordCell, CoordRow};
+use crate::ui::{section, theme, widgets};
 use crate::view::gizmos::EditMode;
 
 // ---------------------------------------------------------------------------
@@ -66,19 +67,11 @@ impl StudioSpike {
                 family_placement(&live.app, family).effective_mode,
             )
         };
-        ui.add_space(theme::PANEL_GAP);
-        ui.separator();
-        ui.label(
-            RichText::new(format!(
-                "{} — {} · {}",
-                t("channelEdit.title"),
-                name,
-                t(family.i18n_key())
-            ))
-            .size(theme::FONT_SIZE_SECTION)
-            .color(theme::TEXT_STRONG),
-        );
+        let trailing = format!("{name} · {}", t(family.i18n_key()));
+        section::pinned_header(ui, t("channelEdit.title"), Some(&trailing));
 
+        // The gain first, before the routing: an input trim that applies in
+        // both placements, so it must not read as a setting of one of them.
         let mut gain = channel.gain_db as f32;
         widgets::label_row_help(ui, t("channelEdit.gain"), "help.channelEdit.gain", |ui| {
             let readout = if gain > 0.0 {
@@ -108,18 +101,19 @@ impl StudioSpike {
             }
         });
 
-        // Virtual or direct. The web puts this on a switch whose *label* is
-        // the current state, so the control reads "Direct" when it is direct
-        // and "Virtual" when it is virtual — and nothing says which way the
-        // switch would move you. Both choices are shown here instead, one
-        // highlighted: a deliberate divergence, asked for because the web's
-        // version is read backwards as often as forwards.
+        // Routing: virtual or direct, the choice in the bar. The web puts this
+        // on a switch whose *label* is the current state, so the control reads
+        // "Direct" when it is direct and "Virtual" when it is virtual — and
+        // nothing says which way the switch would move you. Both choices are
+        // shown here instead, one highlighted: a deliberate divergence, asked
+        // for because the web's version is read backwards as often as
+        // forwards. A direct channel says which speaker it reaches in the
+        // inset; a virtual one has nothing to add, and the inset goes.
         let spatialize = channel.spatialize;
-        widgets::label_row_help(
-            ui,
-            t("channelEdit.routing"),
-            "help.channelEdit.routing",
-            |ui| {
+        let mut routing = spatialize;
+        Group::new(t("channelEdit.routing"))
+            .help("help.channelEdit.routing")
+            .actions(|ui| {
                 if let Some(picked) = widgets::toggle_buttons(
                     ui,
                     &spatialize,
@@ -128,30 +122,28 @@ impl StudioSpike {
                         (true, t("virtualBed.virtual")),
                     ],
                 ) {
-                    self.commit_channel(&name, |c| c.spatialize = picked);
+                    routing = picked;
                 }
-            },
-        );
-
-        // Direct: the coordinates below are the speaker's, and nothing about
-        // the position is editable.
-        if let Some(direct) = &direct {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(t("channelEdit.destinationSpeaker"))
-                        .size(theme::FONT_SIZE_SMALL)
-                        .color(theme::TEXT_MUTED),
-                );
-                ui.label(RichText::new(match direct {
-                    Some((_, label)) => label.clone(),
-                    None => t("channelEdit.noMatchingSpeaker").to_owned(),
-                }));
+            })
+            .show(ui, |ui| {
+                if let Some(direct) = &direct {
+                    widgets::label_row(ui, t("channelEdit.destinationSpeaker"), |ui| {
+                        let target = match direct {
+                            Some((_, label)) => label.as_str(),
+                            None => t("channelEdit.noMatchingSpeaker"),
+                        };
+                        ui.label(RichText::new(target).color(theme::TEXT_STRONG));
+                    });
+                    widgets::note(ui, t("channelEdit.destinationPosition"));
+                }
             });
-            widgets::note(ui, t("channelEdit.destinationPosition"));
+        if routing != spatialize {
+            self.commit_channel(&name, |c| c.spatialize = routing);
         }
 
         // A direct channel with a resolved speaker shows that speaker's own
-        // coordinate mode; otherwise the editor's own choice decides.
+        // coordinate mode; otherwise the editor's own choice decides. Direct,
+        // the coordinates are the speaker's and nothing about them is editable.
         let speaker = direct.clone().flatten().and_then(|(index, _)| {
             let live = self.host.read();
             live.selected_speakers().get(index).cloned()
@@ -194,8 +186,8 @@ impl StudioSpike {
                         ui,
                         &mode,
                         &[
-                            (CoordMode::Cartesian, t("common.cartesian")),
-                            (CoordMode::Polar, t("common.polar")),
+                            (CoordMode::Cartesian, t("common.cartesianShort")),
+                            (CoordMode::Polar, t("common.polarShort")),
                         ],
                     ) {
                         chosen = picked;
@@ -203,26 +195,22 @@ impl StudioSpike {
                 });
             })
             .show(ui, |ui| {
-                match mode {
-                    CoordMode::Cartesian => {
-                        self.channel_cartesian_table(ui, &name, position, &room, scale_m, editable)
-                    }
-                    CoordMode::Polar => {
-                        self.channel_polar_table(ui, &name, position, &room, scale_m, editable)
-                    }
-                }
                 // The speaker editor's "3D Edit" toggle, which the web had on
                 // this editor too: a virtual channel is dragged with the same
                 // gizmo. A direct channel sits where its speaker is and has
                 // nothing to arm.
-                self.gizmo_button(
-                    ui,
-                    match mode {
-                        CoordMode::Cartesian => EditMode::Cartesian,
-                        CoordMode::Polar => EditMode::Polar,
-                    },
-                    !editable,
-                );
+                let edit_mode = match mode {
+                    CoordMode::Cartesian => EditMode::Cartesian,
+                    CoordMode::Polar => EditMode::Polar,
+                };
+                self.coord_table_with_gizmo(ui, edit_mode, !editable, |this, ui| match mode {
+                    CoordMode::Cartesian => {
+                        this.channel_cartesian_table(ui, &name, position, &room, scale_m, editable)
+                    }
+                    CoordMode::Polar => {
+                        this.channel_polar_table(ui, &name, position, &room, scale_m, editable)
+                    }
+                });
             });
         if chosen != mode {
             self.channel_coord_mode = chosen;
@@ -265,48 +253,50 @@ impl StudioSpike {
         scale_m: f64,
         editable: bool,
     ) {
-        let adm = position.unwrap_or([f64::NAN; 3]);
+        let adm = position.unwrap_or([0.0; 3]);
         let meters = adm_to_meters(room, adm, scale_m);
-        let mut edit: Option<[f64; 3]> = None;
-        ui.add_enabled_ui(editable, |ui| {
-            ui.horizontal(|ui| {
-                coord_label(ui, t("speaker.normalizedCoords"));
-                for (index, axis) in ["X", "Y", "Z"].into_iter().enumerate() {
-                    let mut value = adm[index] as f32;
-                    axis_label(ui, axis);
-                    if coord_field(ui, &mut value, 0.001, Some(-1.0..=1.0), adm[index].is_nan()) {
-                        let mut next = adm;
-                        next[index] = f64::from(value).clamp(-1.0, 1.0);
-                        edit = Some(next);
-                    }
-                }
-            });
-            ui.horizontal(|ui| {
-                help::label(
-                    ui,
-                    RichText::new(t("speaker.metersCoords"))
-                        .size(theme::FONT_SIZE_SMALL)
-                        .color(theme::TEXT_MUTED),
-                    "help.speaker.positionMeters",
-                );
-                for (index, axis) in ["X", "Y", "Z"].into_iter().enumerate() {
-                    let mut value = meters[index] as f32;
-                    axis_label(ui, axis);
-                    if coord_field(ui, &mut value, 0.01, None, adm[index].is_nan()) {
-                        // The edited axis in metres, the other two canonical:
-                        // converting all three back would round-trip values the
-                        // user did not touch.
-                        let mut next_m = meters;
-                        next_m[index] = f64::from(value);
-                        edit = Some(meters_to_adm(room, next_m, scale_m));
-                    }
-                }
-            });
-            help::card(ui, "help.speaker.positionMeters");
-        });
-        if let Some(next) = edit {
-            self.set_channel_cartesian(name, next);
-        }
+        // A direct channel with no matching speaker has nothing to show, so
+        // its cells are blanked rather than filled with a made-up zero.
+        let cell = |value: f64, speed: f64, decimals: usize| {
+            if position.is_some() {
+                CoordCell::field(value as f32, speed, decimals)
+            } else {
+                CoordCell::Blank
+            }
+        };
+        let mut rows = [
+            CoordRow {
+                label: t("speaker.normalizedCoords"),
+                help: None,
+                cells: adm.map(|v| cell(v, 0.001, 3).in_range(-1.0..=1.0)),
+            },
+            CoordRow {
+                label: t("speaker.metersCoords"),
+                help: Some("help.speaker.positionMeters".into()),
+                cells: meters.map(|v| cell(v, 0.01, 2)),
+            },
+        ];
+        let edited = ui
+            .add_enabled_ui(editable, |ui| {
+                widgets::coord_table(ui, ("channel-cartesian", name), ["X", "Y", "Z"], &mut rows)
+            })
+            .inner;
+        let next = match edited {
+            Some((0, axis, value)) => {
+                let mut next = adm;
+                next[axis] = f64::from(value).clamp(-1.0, 1.0);
+                next
+            }
+            // The edited axis in metres, the other two canonical: converting
+            // all three back would round-trip values the user did not touch.
+            Some((_, axis, value)) => {
+                let mut next_m = meters;
+                next_m[axis] = f64::from(value);
+                meters_to_adm(room, next_m, scale_m)
+            }
+            None => return,
+        };
+        self.set_channel_cartesian(name, next);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -319,50 +309,55 @@ impl StudioSpike {
         scale_m: f64,
         editable: bool,
     ) {
-        let blank = position.is_none();
         let adm = position.unwrap_or([0.0; 3]);
         let (az, el, dist) = adm_to_polar(room, adm);
         let meters = adm_to_meters(room, adm, scale_m);
         let dist_m = (meters[0] * meters[0] + meters[1] * meters[1] + meters[2] * meters[2]).sqrt();
-        let mut edit: Option<(f64, f64, f64)> = None;
-        ui.add_enabled_ui(editable, |ui| {
-            ui.horizontal(|ui| {
-                coord_label(ui, t("speaker.normalizedCoords"));
-                let mut a = az as f32;
-                axis_label(ui, "Az°");
-                if coord_field(ui, &mut a, 0.1, None, blank) {
-                    edit = Some((f64::from(a), el, dist));
-                }
-                let mut e = el as f32;
-                axis_label(ui, "El°");
-                if coord_field(ui, &mut e, 0.1, None, blank) {
-                    edit = Some((az, f64::from(e), dist));
-                }
-                let mut d = dist as f32;
-                axis_label(ui, "Dist");
-                if coord_field(ui, &mut d, 0.001, Some(0.01..=f32::MAX), blank) {
-                    edit = Some((az, el, f64::from(d)));
-                }
-            });
-            ui.horizontal(|ui| {
-                help::label(
+        let cell = |value: f64, speed: f64, decimals: usize| {
+            if position.is_some() {
+                CoordCell::field(value as f32, speed, decimals)
+            } else {
+                CoordCell::Blank
+            }
+        };
+        let mut rows = [
+            CoordRow {
+                label: t("speaker.normalizedCoords"),
+                help: None,
+                cells: [
+                    cell(az, 0.1, 1),
+                    cell(el, 0.1, 1),
+                    cell(dist, 0.001, 3).in_range(0.01..=f32::MAX),
+                ],
+            },
+            CoordRow {
+                label: t("speaker.metersCoords"),
+                help: Some("help.speaker.positionMeters".into()),
+                cells: [
+                    CoordCell::Empty,
+                    CoordCell::Empty,
+                    cell(dist_m, 0.01, 2).in_range(0.01..=f32::MAX),
+                ],
+            },
+        ];
+        let edited = ui
+            .add_enabled_ui(editable, |ui| {
+                widgets::coord_table(
                     ui,
-                    RichText::new(t("speaker.metersCoords"))
-                        .size(theme::FONT_SIZE_SMALL)
-                        .color(theme::TEXT_MUTED),
-                    "help.speaker.positionMeters",
-                );
-                let mut d = dist_m as f32;
-                axis_label(ui, "Dist");
-                if coord_field(ui, &mut d, 0.01, Some(0.01..=f32::MAX), blank) {
-                    edit = Some((az, el, f64::from(d) / scale_m));
-                }
-            });
-            help::card(ui, "help.speaker.positionMeters");
-        });
-        if let Some((az, el, dist)) = edit {
-            self.set_channel_polar(name, az, el, dist);
-        }
+                    ("channel-polar", name),
+                    ["Az°", "El°", "Dist"],
+                    &mut rows,
+                )
+            })
+            .inner;
+        let (az, el, dist) = match edited {
+            Some((0, 0, azimuth)) => (f64::from(azimuth), el, dist),
+            Some((0, 1, elevation)) => (az, f64::from(elevation), dist),
+            Some((0, _, distance)) => (az, el, f64::from(distance)),
+            Some((_, _, metres)) => (az, el, f64::from(metres) / scale_m),
+            None => return,
+        };
+        self.set_channel_polar(name, az, el, dist);
     }
 
     // -----------------------------------------------------------------------
@@ -465,41 +460,4 @@ impl StudioSpike {
         };
         engine::set_placement_layout(&self.host, family, payload);
     }
-}
-
-fn coord_label(ui: &mut Ui, text: &str) {
-    ui.label(
-        RichText::new(text)
-            .size(theme::FONT_SIZE_SMALL)
-            .color(theme::TEXT_MUTED),
-    );
-}
-
-fn axis_label(ui: &mut Ui, text: &str) {
-    ui.label(
-        RichText::new(text)
-            .size(theme::FONT_SIZE_SMALL)
-            .color(theme::TEXT_DIM),
-    );
-}
-
-/// One coordinate cell. A direct channel with no matching speaker has nothing
-/// to show, so the cell is blanked rather than filled with a made-up zero.
-fn coord_field(
-    ui: &mut Ui,
-    value: &mut f32,
-    speed: f64,
-    range: Option<std::ops::RangeInclusive<f32>>,
-    blank: bool,
-) -> bool {
-    let size = egui::vec2(56.0, ui.spacing().interact_size.y);
-    if blank {
-        ui.add_sized(size, egui::Label::new("—"));
-        return false;
-    }
-    let mut drag = egui::DragValue::new(value).speed(speed);
-    if let Some(range) = range {
-        drag = drag.range(range);
-    }
-    ui.add_sized(size, drag).changed()
 }

@@ -14,8 +14,11 @@ use crate::host::services::speaker_test;
 use crate::i18n::t;
 use crate::model::layouts::Speaker;
 use crate::ui::group::Group;
-use crate::ui::{help, theme, widgets};
+use crate::ui::widgets::{CoordCell, CoordRow};
+use crate::ui::{section, theme, widgets};
 use crate::view::gizmos::EditMode;
+
+use super::row_glyphs::Filter;
 
 /// Which tab of the editor is showing (`body.speaker-tab-test`).
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -134,13 +137,10 @@ impl StudioSpike {
                 live.app.room_ratio.scale_m.max(0.001),
             )
         };
-        ui.add_space(theme::PANEL_GAP);
-        ui.separator();
-        ui.label(
-            RichText::new(t("section.speakerEditor"))
-                .size(theme::FONT_SIZE_SECTION)
-                .color(theme::TEXT_STRONG),
-        );
+        // A section's header, with the row this editor is on at its right
+        // end, so Up and Down have something to be read against.
+        let position = format!("{} / {}", index + 1, count);
+        section::pinned_header(ui, t("section.speakerEditor"), Some(&position));
         self.speaker_tabs(ui);
         if self.layout_row(ui, index, count, frozen) {
             self.speaker_name_edit.discard();
@@ -194,6 +194,9 @@ impl StudioSpike {
         clicked.is_some()
     }
 
+    /// The Edit tab: what the speaker is — its name, whether it takes part in
+    /// panning — in rows, then a group for where it stands and one for what
+    /// it puts out.
     fn speaker_edit_tab(
         &mut self,
         ui: &mut Ui,
@@ -209,7 +212,6 @@ impl StudioSpike {
         let held = self.speaker_at_edit_pin(index, speaker);
         let speaker = held.as_ref().unwrap_or(speaker);
         ui.add_enabled_ui(!frozen, |ui| {
-            // Name.
             let name = widgets::label_row_help(ui, t("common.name"), "help.speaker.name", |ui| {
                 self.speaker_name_edit.show(
                     ui,
@@ -223,116 +225,6 @@ impl StudioSpike {
             if let Some(name) = name {
                 self.edit_speaker(id, "name", serde_json::json!(name));
             }
-
-            // Coordinates: the two tables of the web editor, normalised on one
-            // row and metres on the next. Metres are the normalised value
-            // times the room scale, so only one of the pair is ever sent.
-            let mode = if speaker.coord_mode == "polar" {
-                CoordMode::Polar
-            } else {
-                CoordMode::Cartesian
-            };
-            // Coordinates: the mode in the bar, the two tables and the 3D
-            // edit toggle in the inset.
-            let mut chosen = mode;
-            Group::new(coordinates_title())
-                .help("help.speaker.position")
-                .actions(|ui| {
-                    if let Some(picked) = widgets::toggle_buttons(
-                        ui,
-                        &mode,
-                        &[
-                            (CoordMode::Polar, t("common.polarShort")),
-                            (CoordMode::Cartesian, t("common.cartesianShort")),
-                        ],
-                    ) {
-                        chosen = picked;
-                    }
-                })
-                .show(ui, |ui| {
-                    match mode {
-                        CoordMode::Cartesian => {
-                            self.cartesian_table(ui, id, speaker, scale_m);
-                        }
-                        CoordMode::Polar => {
-                            self.polar_table(ui, id, speaker, scale_m);
-                        }
-                    }
-                    self.gizmo_button(
-                        ui,
-                        match mode {
-                            CoordMode::Cartesian => EditMode::Cartesian,
-                            CoordMode::Polar => EditMode::Polar,
-                        },
-                        frozen,
-                    );
-                });
-            if chosen != mode {
-                let value = match chosen {
-                    CoordMode::Cartesian => "cartesian",
-                    CoordMode::Polar => "polar",
-                };
-                self.edit_speaker(id, "coordMode", serde_json::json!(value));
-            }
-
-            // Gain is realtime, like the master and the list rows.
-            let gain = {
-                let live = self.host.read();
-                live.app
-                    .speaker_gains
-                    .get(&index.to_string())
-                    .copied()
-                    .unwrap_or(1.0)
-            };
-            let mut value = gain as f32;
-            if widgets::value_slider_help(
-                ui,
-                t("speaker.gain"),
-                "help.speaker.gain",
-                &mut value,
-                0.0..=2.0,
-                0.01,
-                |v| crate::panels::audio::format_linear_as_db(Some(v as f64)),
-            ) {
-                self.set_speaker_gain(index, value);
-            }
-
-            // Delay belongs to the speakers document, not the layout.
-            let mut delay = speaker.delay_ms as f32;
-            widgets::label_row_help(ui, t("speaker.delayMs"), "help.speaker.delayMs", |ui| {
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut delay)
-                            .speed(0.1)
-                            .range(0.0..=f32::MAX),
-                    )
-                    .changed()
-                {
-                    self.set_speaker_delay(id, delay as f64);
-                }
-            });
-            // The same delay in samples, both readouts kept in step.
-            let mut samples = (speaker.delay_ms.max(0.0) / 1000.0 * DELAY_SAMPLE_RATE_HZ).round();
-            widgets::label_row_help(
-                ui,
-                t("speaker.delaySamples"),
-                "help.speaker.delaySamples",
-                |ui| {
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut samples)
-                                .speed(1.0)
-                                .range(0.0..=f64::MAX)
-                                .fixed_decimals(0),
-                        )
-                        .changed()
-                    {
-                        self.set_speaker_delay(id, samples.round() * 1000.0 / DELAY_SAMPLE_RATE_HZ);
-                    }
-                },
-            );
-            self.delay_tools_row(ui);
-
             let mut spatialize = speaker.spatialize != 0;
             if widgets::switch_row_help(
                 ui,
@@ -343,214 +235,279 @@ impl StudioSpike {
                 self.edit_speaker(id, "spatialize", serde_json::json!(spatialize));
             }
 
-            // Band limits: empty means full range, which is why they are
-            // optional in the model and sent as zero to clear.
-            self.frequency_row(
-                ui,
-                id,
-                t("speaker.freqLow"),
-                "help.speaker.freqLow",
-                "freqLow",
-                speaker.freq_low,
-            );
-            self.frequency_row(
-                ui,
-                id,
-                "Freq. max (Hz)",
-                "help.speaker.freqHigh",
-                "freqHigh",
-                speaker.freq_high,
-            );
+            // Coordinates: the mode in the bar; in the inset the table — the
+            // web editor's two rows, normalised and metres, metres being the
+            // normalised value times the room scale, so only one of the pair
+            // is ever sent — and the 3D edit toggle.
+            let mode = if speaker.coord_mode == "polar" {
+                CoordMode::Polar
+            } else {
+                CoordMode::Cartesian
+            };
+            let mut chosen = mode;
+            Group::new(coordinates_title())
+                .help("help.speaker.position")
+                .actions(|ui| {
+                    if let Some(picked) = widgets::toggle_buttons(
+                        ui,
+                        &mode,
+                        &[
+                            (CoordMode::Cartesian, t("common.cartesianShort")),
+                            (CoordMode::Polar, t("common.polarShort")),
+                        ],
+                    ) {
+                        chosen = picked;
+                    }
+                })
+                .show(ui, |ui| {
+                    let edit_mode = match mode {
+                        CoordMode::Cartesian => EditMode::Cartesian,
+                        CoordMode::Polar => EditMode::Polar,
+                    };
+                    self.coord_table_with_gizmo(ui, edit_mode, frozen, |this, ui| match mode {
+                        CoordMode::Cartesian => this.cartesian_table(ui, id, speaker, scale_m),
+                        CoordMode::Polar => this.polar_table(ui, id, speaker, scale_m),
+                    });
+                });
+            if chosen != mode {
+                let value = match chosen {
+                    CoordMode::Cartesian => "cartesian",
+                    CoordMode::Polar => "polar",
+                };
+                self.edit_speaker(id, "coordMode", serde_json::json!(value));
+            }
+
+            // Output: the gain — realtime, like the master and the list rows —
+            // then the delay, which belongs to the speakers document rather
+            // than the layout, in milliseconds and in samples with the two
+            // kept in step, the bulk tools under them, and the band limits.
+            // Empty limits mean full range, which is why they are optional in
+            // the model and sent as zero to clear; the bar names the shape the
+            // two make, when they make one.
+            let filter = Filter::of(speaker.freq_low, speaker.freq_high);
+            let mut output = Group::new(t("speaker.output"));
+            if filter != Filter::Full {
+                output = output.status(t(filter.title()), theme::TEXT_MUTED);
+            }
+            output.show(ui, |ui| {
+                let gain = {
+                    let live = self.host.read();
+                    live.app
+                        .speaker_gains
+                        .get(&index.to_string())
+                        .copied()
+                        .unwrap_or(1.0)
+                };
+                let mut value = gain as f32;
+                if widgets::value_slider_help(
+                    ui,
+                    t("speaker.gain"),
+                    "help.speaker.gain",
+                    &mut value,
+                    0.0..=2.0,
+                    0.01,
+                    |v| crate::panels::audio::format_linear_as_db(Some(v as f64)),
+                ) {
+                    self.set_speaker_gain(index, value);
+                }
+                let mut delay = speaker.delay_ms as f32;
+                widgets::label_row_help(ui, t("speaker.delayMs"), "help.speaker.delayMs", |ui| {
+                    let field = egui::DragValue::new(&mut delay)
+                        .speed(0.1)
+                        .range(0.0..=f32::MAX);
+                    if widgets::number_field(ui, widgets::FIELD_WIDTH, field).changed() {
+                        self.set_speaker_delay(id, delay as f64);
+                    }
+                });
+                let mut samples =
+                    (speaker.delay_ms.max(0.0) / 1000.0 * DELAY_SAMPLE_RATE_HZ).round();
+                widgets::label_row_help(
+                    ui,
+                    t("speaker.delaySamples"),
+                    "help.speaker.delaySamples",
+                    |ui| {
+                        let field = egui::DragValue::new(&mut samples)
+                            .speed(1.0)
+                            .range(0.0..=f64::MAX)
+                            .fixed_decimals(0);
+                        if widgets::number_field(ui, widgets::FIELD_WIDTH, field).changed() {
+                            self.set_speaker_delay(
+                                id,
+                                samples.round() * 1000.0 / DELAY_SAMPLE_RATE_HZ,
+                            );
+                        }
+                    },
+                );
+                self.delay_tools_row(ui);
+                self.frequency_row(
+                    ui,
+                    id,
+                    t("speaker.freqLow"),
+                    "help.speaker.freqLow",
+                    "freqLow",
+                    speaker.freq_low,
+                );
+                self.frequency_row(
+                    ui,
+                    id,
+                    t("speaker.freqHigh"),
+                    "help.speaker.freqHigh",
+                    "freqHigh",
+                    speaker.freq_high,
+                );
+            });
         });
+    }
+
+    /// The coordinate table with the "3D Edit" toggle at its right, as the
+    /// web's `.coord-table-row` lays them out — the toggle centred on the
+    /// table's height, a handle to the whole of it; under the table,
+    /// right-aligned, on a panel too narrow for both. Shared with the channel
+    /// editor.
+    pub(crate) fn coord_table_with_gizmo(
+        &mut self,
+        ui: &mut Ui,
+        wanted: EditMode,
+        frozen: bool,
+        table: impl FnOnce(&mut Self, &mut Ui),
+    ) {
+        let spacing = ui.spacing().item_spacing.x;
+        let button_width = egui::WidgetText::from(t("speaker.edit3d"))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Button,
+            )
+            .size()
+            .x
+            + 2.0 * ui.spacing().button_padding.x;
+        let table_min = widgets::coord_table_min_width(
+            ui,
+            &[t("speaker.normalizedCoords"), t("speaker.metersCoords")],
+        );
+        if ui.available_width() - button_width - spacing >= table_min {
+            ui.horizontal(|ui| {
+                let table_width = ui.available_width() - button_width - spacing;
+                ui.vertical(|ui| {
+                    ui.set_max_width(table_width);
+                    table(self, ui);
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.gizmo_toggle(ui, wanted, frozen);
+                });
+            });
+        } else {
+            table(self, ui);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.gizmo_toggle(ui, wanted, frozen);
+                });
+            });
+        }
     }
 
     /// The "3D Edit" toggle of the speaker and channel editors: it arms the
     /// gizmo for the mode being edited, and only one mode is ever armed — two
     /// sets of handles on one target would be two answers to the same
     /// question.
-    pub(crate) fn gizmo_button(&mut self, ui: &mut Ui, wanted: EditMode, frozen: bool) {
+    fn gizmo_toggle(&mut self, ui: &mut Ui, wanted: EditMode, frozen: bool) {
         let gizmo = self.settings.gizmo;
         let armed = gizmo.mode == wanted
             && match wanted {
                 EditMode::Cartesian => gizmo.cartesian_armed,
                 EditMode::Polar => gizmo.polar_armed,
             };
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add_enabled(
-                        !frozen,
-                        egui::Button::selectable(armed, t("speaker.edit3d")),
-                    )
-                    .clicked()
-                {
-                    let gizmo = &mut self.settings.gizmo;
-                    gizmo.mode = wanted;
-                    match wanted {
-                        EditMode::Cartesian => {
-                            gizmo.cartesian_armed = !armed;
-                            gizmo.polar_armed = false;
-                        }
-                        EditMode::Polar => {
-                            gizmo.polar_armed = !armed;
-                            gizmo.cartesian_armed = false;
-                        }
-                    }
+        if ui
+            .add_enabled(
+                !frozen,
+                egui::Button::selectable(armed, t("speaker.edit3d")),
+            )
+            .clicked()
+        {
+            let gizmo = &mut self.settings.gizmo;
+            gizmo.mode = wanted;
+            match wanted {
+                EditMode::Cartesian => {
+                    gizmo.cartesian_armed = !armed;
+                    gizmo.polar_armed = false;
                 }
-            });
-        });
+                EditMode::Polar => {
+                    gizmo.polar_armed = !armed;
+                    gizmo.cartesian_armed = false;
+                }
+            }
+        }
     }
 
     fn cartesian_table(&mut self, ui: &mut Ui, id: i32, speaker: &Speaker, scale_m: f64) {
-        let axes = [
-            ("X", speaker.x, "x"),
-            ("Y", speaker.y, "y"),
-            ("Z", speaker.z, "z"),
+        const KEYS: [&str; 3] = ["x", "y", "z"];
+        let adm = [speaker.x, speaker.y, speaker.z];
+        let mut rows = [
+            CoordRow {
+                label: t("speaker.normalizedCoords"),
+                help: None,
+                cells: adm.map(|v| CoordCell::field(v as f32, 0.001, 3).in_range(-1.0..=1.0)),
+            },
+            CoordRow {
+                label: t("speaker.metersCoords"),
+                help: Some("help.speaker.positionMeters".into()),
+                cells: adm.map(|v| CoordCell::field((v * scale_m) as f32, 0.01, 2)),
+            },
         ];
-        ui.horizontal(|ui| {
-            let width = widgets::fitted_field_width(
-                ui,
-                &[t("speaker.normalizedCoords"), "X", "Y", "Z"],
-                3,
-                30.0,
-                56.0,
-            );
-            ui.label(
-                RichText::new(t("speaker.normalizedCoords"))
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-            );
-            for (label, value, key) in axes {
-                let mut v = value as f32;
-                ui.label(
-                    RichText::new(label)
-                        .size(theme::FONT_SIZE_SMALL)
-                        .color(theme::TEXT_DIM),
-                );
-                if ui
-                    .add_sized(
-                        egui::vec2(width, ui.spacing().interact_size.y),
-                        egui::DragValue::new(&mut v).speed(0.001).range(-1.0..=1.0),
-                    )
-                    .changed()
-                {
-                    self.edit_speaker(id, key, serde_json::json!(v.clamp(-1.0, 1.0)));
-                }
+        match widgets::coord_table(ui, ("speaker-cartesian", id), ["X", "Y", "Z"], &mut rows) {
+            Some((0, axis, value)) => {
+                self.edit_speaker(id, KEYS[axis], serde_json::json!(value.clamp(-1.0, 1.0)));
             }
-        });
-        ui.horizontal(|ui| {
-            help::label(
-                ui,
-                RichText::new(t("speaker.metersCoords"))
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-                "help.speaker.positionMeters",
-            );
-            let width = widgets::fitted_field_width(ui, &["X", "Y", "Z"], 3, 30.0, 56.0);
-            for (label, value, key) in axes {
-                let mut metres = (value * scale_m) as f32;
-                ui.label(
-                    RichText::new(label)
-                        .size(theme::FONT_SIZE_SMALL)
-                        .color(theme::TEXT_DIM),
-                );
-                if ui
-                    .add_sized(
-                        egui::vec2(width, ui.spacing().interact_size.y),
-                        egui::DragValue::new(&mut metres).speed(0.01),
-                    )
-                    .changed()
-                {
-                    let normalised = (metres as f64 / scale_m).clamp(-1.0, 1.0);
-                    self.edit_speaker(id, key, serde_json::json!(normalised));
-                }
+            Some((_, axis, metres)) => {
+                let normalised = (f64::from(metres) / scale_m).clamp(-1.0, 1.0);
+                self.edit_speaker(id, KEYS[axis], serde_json::json!(normalised));
             }
-        });
-        help::card(ui, "help.speaker.positionMeters");
+            None => {}
+        }
     }
 
     fn polar_table(&mut self, ui: &mut Ui, id: i32, speaker: &Speaker, scale_m: f64) {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t("speaker.normalizedCoords"))
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-            );
-            let width = widgets::fitted_field_width(ui, &["Az°", "El°", "Dist"], 3, 30.0, 56.0);
-            let mut az = speaker.azimuth_deg as f32;
-            let mut el = speaker.elevation_deg as f32;
-            let mut distance = speaker.distance_m as f32;
-            ui.label(
-                RichText::new("Az°")
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_DIM),
-            );
-            if ui
-                .add_sized(
-                    egui::vec2(width, ui.spacing().interact_size.y),
-                    egui::DragValue::new(&mut az).speed(0.1),
-                )
-                .changed()
-            {
-                self.edit_speaker(id, "azimuth", serde_json::json!(az));
+        let mut rows = [
+            CoordRow {
+                label: t("speaker.normalizedCoords"),
+                help: None,
+                cells: [
+                    CoordCell::field(speaker.azimuth_deg as f32, 0.1, 1),
+                    CoordCell::field(speaker.elevation_deg as f32, 0.1, 1),
+                    CoordCell::field(speaker.distance_m as f32, 0.001, 3).in_range(0.01..=f32::MAX),
+                ],
+            },
+            // Only the distance has a length: the angles are what they are.
+            CoordRow {
+                label: t("speaker.metersCoords"),
+                help: Some("help.speaker.positionMeters".into()),
+                cells: [
+                    CoordCell::Empty,
+                    CoordCell::Empty,
+                    CoordCell::field((speaker.distance_m * scale_m) as f32, 0.01, 2)
+                        .in_range(0.01..=f32::MAX),
+                ],
+            },
+        ];
+        match widgets::coord_table(ui, ("speaker-polar", id), ["Az°", "El°", "Dist"], &mut rows) {
+            Some((0, 0, azimuth)) => self.edit_speaker(id, "azimuth", serde_json::json!(azimuth)),
+            Some((0, 1, elevation)) => {
+                self.edit_speaker(id, "elevation", serde_json::json!(elevation));
             }
-            ui.label(
-                RichText::new("El°")
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_DIM),
-            );
-            if ui
-                .add_sized(
-                    egui::vec2(width, ui.spacing().interact_size.y),
-                    egui::DragValue::new(&mut el).speed(0.1),
-                )
-                .changed()
-            {
-                self.edit_speaker(id, "elevation", serde_json::json!(el));
-            }
-            ui.label(
-                RichText::new("Dist")
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_DIM),
-            );
-            if ui
-                .add_sized(
-                    egui::vec2(width, ui.spacing().interact_size.y),
-                    egui::DragValue::new(&mut distance)
-                        .speed(0.001)
-                        .range(0.01..=f32::MAX),
-                )
-                .changed()
-            {
+            Some((0, _, distance)) => {
                 self.edit_speaker(id, "distance", serde_json::json!(distance.max(0.01)));
             }
-        });
-        ui.horizontal(|ui| {
-            help::label(
-                ui,
-                RichText::new(t("speaker.metersCoords"))
-                    .size(theme::FONT_SIZE_SMALL)
-                    .color(theme::TEXT_MUTED),
-                "help.speaker.positionMeters",
-            );
-            let mut metres = (speaker.distance_m * scale_m) as f32;
-            if ui
-                .add_sized(
-                    egui::vec2(56.0, ui.spacing().interact_size.y),
-                    egui::DragValue::new(&mut metres)
-                        .speed(0.01)
-                        .range(0.01..=f32::MAX),
-                )
-                .changed()
-            {
-                let normalised = (metres as f64 / scale_m).max(0.01);
+            Some((_, _, metres)) => {
+                let normalised = (f64::from(metres) / scale_m).max(0.01);
                 self.edit_speaker(id, "distance", serde_json::json!(normalised));
             }
-        });
-        help::card(ui, "help.speaker.positionMeters");
+            None => {}
+        }
     }
 
-    /// A band limit: empty means full range, so zero clears it.
+    /// A band limit: empty means full range, so zero clears it — and shows as
+    /// a dash rather than a 0 Hz corner.
     fn frequency_row(
         &mut self,
         ui: &mut Ui,
@@ -562,12 +519,25 @@ impl StudioSpike {
     ) {
         let mut value = current.unwrap_or(0.0);
         widgets::label_row_help(ui, label, help, |ui| {
-            let response = ui.add(
-                egui::DragValue::new(&mut value)
-                    .speed(10.0)
-                    .range(0.0..=f32::MAX)
-                    .suffix(" Hz"),
-            );
+            let field = egui::DragValue::new(&mut value)
+                .speed(10.0)
+                .range(0.0..=f32::MAX)
+                .custom_formatter(|v, _| {
+                    if v > 0.0 {
+                        format!("{v:.0} Hz")
+                    } else {
+                        "—".to_owned()
+                    }
+                })
+                .custom_parser(|text| {
+                    let text = text.trim().trim_end_matches("Hz").trim();
+                    if text.is_empty() || text == "—" {
+                        Some(0.0)
+                    } else {
+                        text.parse().ok()
+                    }
+                });
+            let response = widgets::number_field(ui, widgets::FIELD_WIDTH, field);
             if response.changed() {
                 // Zero is "no limit", not a 0 Hz corner.
                 let sent = if value > 0.0 {
@@ -583,67 +553,81 @@ impl StudioSpike {
         });
     }
 
+    /// The Test tab: one group, the pink-noise button in its bar and, in its
+    /// inset, the trigger, the isolation and the level — global settings
+    /// rather than this speaker's, so they sit beside the button instead of
+    /// repeating for every speaker.
     fn speaker_test_tab(&mut self, ui: &mut Ui, index: usize) {
         let running = self.host.read().speaker_test.running == Some(index);
-        widgets::label_row_help(ui, t("speaker.test"), "help.speaker.test", |ui| {
-            let label = if running {
-                t("speaker.testStop")
-            } else {
-                t("speaker.testPlay")
-            };
-            let button = ui.add(egui::Button::new(label).fill(if running {
-                theme::FILL_ACTIVE
-            } else {
-                theme::FILL
-            }));
-            if self.speaker_test_mode == "hold" {
-                // Hold: the test lasts exactly as long as the press.
-                if button.is_pointer_button_down_on() && !running {
-                    self.start_speaker_test(index);
-                } else if running && !button.is_pointer_button_down_on() {
-                    self.stop_speaker_test();
-                }
-            } else if button.clicked() {
-                if running {
-                    self.stop_speaker_test();
+        let hold = self.speaker_test_mode == "hold";
+        // What the button asked: `Some(true)` to start, `Some(false)` to stop.
+        // Read after the group, whose bar borrows nothing of the editor.
+        let mut wanted = None;
+        Group::new(t("speaker.test"))
+            .help("help.speaker.test")
+            .actions(|ui| {
+                let label = if running {
+                    t("speaker.testStop")
                 } else {
-                    self.start_speaker_test(index);
+                    t("speaker.testPlay")
+                };
+                let button = ui.add(egui::Button::new(label).fill(if running {
+                    theme::FILL_ACTIVE
+                } else {
+                    theme::FILL
+                }));
+                if hold {
+                    // Hold: the test lasts exactly as long as the press.
+                    let down = button.is_pointer_button_down_on();
+                    if down && !running {
+                        wanted = Some(true);
+                    } else if running && !down {
+                        wanted = Some(false);
+                    }
+                } else if button.clicked() {
+                    wanted = Some(!running);
                 }
-            }
-        });
-        let mode = self.speaker_test_mode.clone();
-        if let Some(chosen) = select_row(
-            ui,
-            t("speaker.testMode"),
-            "help.speaker.testMode",
-            "speaker-test-mode",
-            &mode,
-            TEST_MODES,
-        ) {
-            self.speaker_test_mode = chosen;
-        }
-        let isolation = self.speaker_test_isolation.clone();
-        if let Some(chosen) = select_row(
-            ui,
-            t("speaker.testIsolation"),
-            "help.speaker.testIsolation",
-            "speaker-test-isolation",
-            &isolation,
-            TEST_ISOLATIONS,
-        ) {
-            self.speaker_test_isolation = chosen;
-        }
-        let mut level = self.speaker_test_level_db;
-        if widgets::value_slider_help(
-            ui,
-            t("speaker.testLevel"),
-            "help.speaker.testLevel",
-            &mut level,
-            -60.0..=0.0,
-            1.0,
-            |v| format!("{v:.0} dBFS"),
-        ) {
-            self.speaker_test_level_db = level;
+            })
+            .show(ui, |ui| {
+                let mode = self.speaker_test_mode.clone();
+                if let Some(chosen) = select_row(
+                    ui,
+                    t("speaker.testMode"),
+                    "help.speaker.testMode",
+                    "speaker-test-mode",
+                    &mode,
+                    TEST_MODES,
+                ) {
+                    self.speaker_test_mode = chosen;
+                }
+                let isolation = self.speaker_test_isolation.clone();
+                if let Some(chosen) = select_row(
+                    ui,
+                    t("speaker.testIsolation"),
+                    "help.speaker.testIsolation",
+                    "speaker-test-isolation",
+                    &isolation,
+                    TEST_ISOLATIONS,
+                ) {
+                    self.speaker_test_isolation = chosen;
+                }
+                let mut level = self.speaker_test_level_db;
+                if widgets::value_slider_help(
+                    ui,
+                    t("speaker.testLevel"),
+                    "help.speaker.testLevel",
+                    &mut level,
+                    -60.0..=0.0,
+                    1.0,
+                    |v| format!("{v:.0} dBFS"),
+                ) {
+                    self.speaker_test_level_db = level;
+                }
+            });
+        match wanted {
+            Some(true) => self.start_speaker_test(index),
+            Some(false) => self.stop_speaker_test(),
+            None => {}
         }
     }
 

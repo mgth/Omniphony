@@ -78,7 +78,9 @@ diffuse's parameters) uses `show` and lets the empty inset vanish on its own.
 
 **What is never a group.** A list (objects, speakers, channels): its rows are
 the content, and it takes the section's width. An editor pinned at the foot
-of an overlay: it is a section. A single row: a row.
+of an overlay: it is a section, headed by `section::pinned_header` — the rule
+and the title without the chevron, and at the right end which row of the list
+it is on — with its own rows and groups under it. A single row: a row.
 
 ## Rows
 
@@ -94,7 +96,9 @@ controls are placed from the right and never overflow the panel.
 | Label with the value, slider | `slider_line_help` | The Display sliders, where the value is part of the label and the track takes the rest. |
 | Label and buttons | `label_buttons_help` | Actions on a whole block (layout, delete). Wraps to a line of equal buttons when the panel is narrow. |
 | Sub-row | `label_row` with a `RichText` at `FONT_SIZE_SMALL` in `TEXT_FAINT` | The quieter rows under a row they detail (the mirror-axis switches). |
-| Caption over a block | `help::label` + `help::card` | A label that heads several widgets on the next lines (a grid of fields). |
+| Caption over a block | `help::label` + `help::card` | A label that heads several widgets on the next lines. |
+| Coordinate table | `coord_table` | The editors' position: axis heads over a column of equal fields per axis, a row per representation (normalised, metres). One `Grid`, so the columns line up whatever the row labels measure — never two `horizontal`s of `label, field, label, field`. A cell with nothing to show is a dash. The editors draw it through `coord_table_with_gizmo`, which puts the 3D Edit toggle at its right, or under it on a panel too narrow for both. |
+| Numeric field | `number_field` | A lone `DragValue` at the right end of a `label_row`, `FIELD_WIDTH` wide so consecutive fields line up, in the editors' field style (monospace, 11 px) like the cells of the table. |
 | Note | `note` | One line of `FONT_SIZE_SMALL` in `TEXT_MUTED` under the rows it explains. |
 | Banner | `banner`, `banner_with` | Something the user has to act on: a missing bridge, an update. |
 | Tabs | `tab_bar` | Equal-width tabs, one active, above the groups they switch. |
@@ -212,8 +216,8 @@ if chosen != current {
 | Fixed-channel sources (`sources_2d.rs`) | Height generator (choice; reason and parameters), Phantom extraction (likewise) | follows |
 | Display (`display.rs`, the scene panel) | Object appearance, Trails, Speakers — each with its show switch in the bar | follows |
 | Heatmaps (`display.rs`) | Objects, Total energy, Speakers, Usage breaks — each with its switch in the bar — and Common parameters | follows |
-| Speaker editor (`speaker_editor.rs`) | Edit / Test tabs (`tab_bar`); Coordinates (mode in the bar; tables and 3D edit in the inset) | follows |
-| Channel editor (`channel_editor.rs`) | Coordinates, as the speaker editor's | follows |
+| Speaker editor (`speaker_editor.rs`) | Edit / Test tabs (`tab_bar`) under a `pinned_header`; Edit: Name and Spatialize rows, then Coordinates (mode in the bar; `coord_table` and 3D edit in the inset) and Output (gain, delay in ms and samples, delay tools, the two band limits; the filter shape as status); Test: one group, the pink-noise button in the bar, trigger, isolation and level in the inset | follows |
+| Channel editor (`channel_editor.rs`) | Gain row under a `pinned_header`, then Routing (Direct / Virtual in the bar; the destination speaker in the inset, direct only) and Coordinates, as the speaker editor's | follows |
 | Object injection editor (`object_test.rs`) | Rotation axis (axis in the bar; radius, turn time, free-axis angles in the inset) | follows |
 | Audio output, OSC, Room geometry, Diagnostics | — | rows only: nothing to group. OSC's renderer buttons stay a row under a rule for want of a title of their own |
 | Objects, Speakers, Headphones lists | — | lists: rows are the content, no group |
